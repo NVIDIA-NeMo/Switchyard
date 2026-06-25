@@ -57,6 +57,13 @@ For source installs, non-interactive configuration, and a curl sanity check, use
 
     [Routing Overview](routing_algorithms/overview.md)
 
+- **Prepare skill distillation**
+
+    Save a namespace for future session learning without changing request
+    routing.
+
+    [Skill Distillation](skill_distillation.md)
+
 - **Understand the system**
 
     See how clients, routing policy, model backends, and operations fit

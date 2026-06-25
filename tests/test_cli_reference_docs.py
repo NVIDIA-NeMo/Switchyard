@@ -63,6 +63,42 @@ def test_cli_reference_documents_every_serve_flag() -> None:
     )
 
 
+def test_cli_reference_documents_every_configure_flag() -> None:
+    parser = _build_parser()
+    configure = _subparsers(parser)["configure"]
+    doc = CLI_REFERENCE.read_text()
+    configure_section = _markdown_section(doc, "switchyard configure")
+
+    expected = _long_options(configure) | {"--routing-profiles"}
+    missing = sorted(flag for flag in expected if flag not in configure_section)
+
+    assert not missing, (
+        "docs/cli_reference.md configure section missing flags: "
+        + ", ".join(missing)
+    )
+
+
+def test_cli_reference_omits_unsupported_skill_distillation_flags() -> None:
+    configure_section = _markdown_section(
+        CLI_REFERENCE.read_text(),
+        "switchyard configure",
+    )
+    unsupported_flags = {
+        "--skill-session-store",
+        "--skill-trigger",
+        "--skill-mount",
+        "--skill-stage-only",
+        "--skill-lookback-sessions",
+    }
+
+    stale = sorted(flag for flag in unsupported_flags if flag in configure_section)
+
+    assert not stale, (
+        "docs/cli_reference.md configure section documents unsupported flags: "
+        + ", ".join(stale)
+    )
+
+
 def test_cli_reference_serve_overview_points_to_config_path() -> None:
     serve_row = next(
         line

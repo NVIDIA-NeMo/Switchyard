@@ -3,8 +3,6 @@
 
 """Status view for launcher configuration and local tool readiness."""
 
-from __future__ import annotations
-
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -147,6 +145,16 @@ def _format_launch_target(target: LaunchTarget) -> list[str]:
     return lines
 
 
+def _format_skill_distillation() -> str:
+    config = load_user_config().skill_distillation
+    if not config.configured:
+        return "skill distillation: not configured"
+    return (
+        f"skill distillation: configured; namespace: {config.namespace}; "
+        "trace capture: project-local when implemented"
+    )
+
+
 def render_status(request: StatusRequest) -> str:
     """Return a human-readable status report."""
 
@@ -184,6 +192,7 @@ def render_status(request: StatusRequest) -> str:
             "strong/weak); plan-execute (strong-planner + weak-executor) via a "
             "type: plan_execute route in a --routing-profiles bundle",
         )
+    lines.append(_format_skill_distillation())
     lines += [
         "",
         "Launch defaults",

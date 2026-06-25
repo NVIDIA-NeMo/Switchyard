@@ -3,8 +3,6 @@
 
 """Human-readable CLI output helpers."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from typing import cast
 
@@ -109,6 +107,16 @@ def format_config_snapshot(snapshot: Mapping[str, object]) -> str:
             lines.append("Routing profiles (saved bundle)")
             for route_id in route_ids:
                 lines.append(f"  {route_id}")
+
+    skill_distillation = _mapping(snapshot.get("skill_distillation"))
+    if skill_distillation:
+        lines.append("")
+        lines.append("Skill distillation")
+        namespace = _string(skill_distillation.get("namespace"))
+        lines.append(f"  configured: {bool(namespace)}")
+        lines.append(f"  namespace: {namespace or '<not configured>'}")
+        if namespace:
+            lines.append("  trace capture: project-local when implemented")
 
     launch = _mapping(snapshot.get("launch"))
     if launch:
