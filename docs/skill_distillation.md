@@ -1,34 +1,52 @@
 # Skill Distillation
 
-Skill distillation turns selected past agent sessions into reusable guidance,
-often a portable skill centered on `SKILL.md`. The model is not retrained.
-Switchyard's role is the trace substrate: name the workflow, collect structured
-session traces when that support lands, and keep enough provenance for a
-separate distillation tool or harness-specific adapter to consume later.
+Skill distillation turns agent sessions into a reusable skill for the same
+kind of work. The model is not retrained. Switchyard saves the session history,
+uses it to update a `SKILL.md`, and makes the active skill available to later
+agent launches for the same namespace.
 
-The current implementation defines the product shape and saved configuration
-only. It does not implement session capture, drafting, adoption, rollback,
-external import, validation runs, or agent activation.
+The current release adds the saved configuration only. It does not yet save
+session files, run distillation, update skills, import external runs, validate
+results, or mount skills into launched agents. The namespace saved here is the
+public config shape those later pieces will use.
 
-## V1 Workflow
+## Configure It
 
-The intended v1 flow is:
-
-```text
-run agents -> save session traces -> distill outside the proxy -> review/test -> adopt in the target harness
-```
-
-The user-facing command shape is:
+Choose a short namespace for the task or workflow you want the skill to learn:
 
 ```bash
 switchyard configure --skill-distillation tooluniverse-trialqa
-switchyard launch codex
 switchyard configure --show
 ```
 
-For now, `configure` stores only the namespace so future trace capture has a
-stable grouping key. Distillation, review, adoption, and skill activation remain
-future work and are expected to be harness-specific.
+The namespace is stored in the user config and can be updated without provider
+credentials. To remove it:
+
+```bash
+switchyard configure --disable-skill-distillation
+```
+
+## Intended Workflow
+
+Once launcher support lands, the flow should be automatic:
+
+```text
+configure a namespace
+run an agent through switchyard launch
+save the session under that namespace
+distill when the session ends
+create or update the namespace's active SKILL.md
+load that active skill in the next launch for the same namespace
+```
+
+If no skill exists yet, the first distilled session creates one. Later sessions
+update the existing skill and keep enough history to inspect or roll back the
+change.
+
+Skill distillation is namespace-based. The namespace is saved user
+configuration, not a per-request header. A future request may be recorded as
+part of a saved session, but a single HTTP request should not change which skill
+is being learned or used.
 
 ## Config
 
@@ -47,37 +65,31 @@ The config is intentionally small:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `namespace` | unset | Required when configuring the future trace collection namespace. |
+| `namespace` | unset | Name that groups saved sessions and generated skills for one workflow. |
 
 Namespaces must be safe local path components: letters, numbers, dot,
 underscore, and hyphen only. They cannot be `.` or `..`.
 
-The top-level `skill_distillation` key is omitted when the workflow is not
-configured. Use `switchyard configure --disable-skill-distillation` to remove
-it without touching provider credentials. `namespace` is the only supported key
-today; any extra manually edited keys are rejected instead of being treated as
-dormant product behavior.
+The top-level `skill_distillation` key is omitted when skill distillation is
+not configured. `namespace` is the only supported key today. Extra manually
+edited keys are rejected instead of being treated as inactive future options.
 
 ## Decisions
 
-Generated outputs should stay portable and reviewable. A future candidate may
-contain `SKILL.md` and human-readable support reports, but generated Python or
-other executable artifacts are out of scope for the initial workflow.
+Generated output should stay portable and easy to review. Switchyard should
+write `SKILL.md` and human-readable reports, not generated Python or other
+executable files.
 
-Switchyard should not become a request-path memory system, and skill generation
-should not run inside normal request handling. Distillation and activation are
-closer to the target agent than to the proxy, so future implementations should
-use harness-specific adapters rather than assuming one generated artifact can
-be mounted everywhere.
+Skill generation should happen after sessions finish, not during normal model
+request handling. Switchyard owns the saved sessions, local files, distillation
+hooks, validation hooks, history, and launch-time skill loading. It should not
+turn every request into a memory update.
 
-The namespace is saved user configuration, not a per-request header. Future
-request metadata may be captured as trace evidence, but individual requests
-should not reconfigure skill distillation behavior.
-
-Cheating prevention is explicit rather than automatic adoption. Drafts stay
-staged by default, humans adopt them, every final rule should link back to
-supporting sessions, and later review checks should flag answer leakage, source
-IDs, URLs, benchmark shortcuts, and task-specific details before a skill is used.
+The automatic workflow still needs guardrails. Every skill update should record
+which sessions supported it, keep the previous active skill available for
+rollback, and produce review output. Later checks should flag answer leakage,
+source IDs, URLs, benchmark shortcuts, and task-specific details before a skill
+is trusted.
 
 ## Planned Store Layout
 
@@ -97,6 +109,6 @@ Future work should use inspectable local files:
   history.jsonl
 ```
 
-The ledger should track which captured sessions have already been consumed by a
-candidate. That lets future distillation default to "new traces not yet used"
-instead of depending on a persistent lookback-count knob.
+The ledger should track which saved sessions have already contributed to a
+skill update. That lets distillation use new sessions by default instead of
+depending on a long-lived lookback-count setting.

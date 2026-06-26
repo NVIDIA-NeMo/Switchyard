@@ -1036,7 +1036,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAMESPACE",
         default=None,
         help=(
-            "Configure skill distillation for this namespace, stored as one safe local path "
+            "Save the skill distillation namespace, stored as one safe local path "
             "component (for example: tooluniverse-trialqa)."
         ),
     )

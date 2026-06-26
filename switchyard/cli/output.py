@@ -116,7 +116,7 @@ def format_config_snapshot(snapshot: Mapping[str, object]) -> str:
         lines.append(f"  configured: {bool(namespace)}")
         lines.append(f"  namespace: {namespace or '<not configured>'}")
         if namespace:
-            lines.append("  trace capture: project-local when implemented")
+            lines.append("  session learning: namespace saved")
 
     launch = _mapping(snapshot.get("launch"))
     if launch:

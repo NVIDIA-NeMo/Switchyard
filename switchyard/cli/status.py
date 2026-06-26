@@ -151,7 +151,7 @@ def _format_skill_distillation() -> str:
         return "skill distillation: not configured"
     return (
         f"skill distillation: configured; namespace: {config.namespace}; "
-        "trace capture: project-local when implemented"
+        "session learning: namespace saved"
     )
 
 

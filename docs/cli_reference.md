@@ -438,7 +438,7 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 | `--provider`, `--base-url`, `--api-key` | Provider-level defaults applied to every launcher. Also act as one-off overrides for `--show` (changes the row that's used to resolve "base URL source" and "API key source") and for the `--list-models` discovery call. |
 | `--claude-*` / `--codex-*` / `--openclaw-*` | Per-launcher overrides on top of the provider defaults. |
 | `--routing-profiles PATH` | Global flag; pass before `configure`. Parses the YAML at `PATH` and stores the parsed bundle inline in `~/.config/switchyard/config.json`. Subsequent `serve` and `launch` runs use this when no `--routing-profiles` is on the CLI. Pass an empty string to clear. |
-| `--skill-distillation NAMESPACE` | Configure a safe local path component for future skill-distillation trace collection. This stores the namespace only; capture, drafting, and activation are not implemented by this config path. |
+| `--skill-distillation NAMESPACE` | Save the namespace that will group skill-distillation sessions and generated skills. This stores the namespace only; session saving, distillation, and launch-time skill loading are separate implementation work. |
 | `--disable-skill-distillation` | Remove the saved skill distillation config. Cannot be combined with `--skill-distillation`. |
 | `--query` / `-q SUBSTRING` | With `--list-models`, case-insensitive substring filter. |
 | `--limit N` | With `--list-models`, cap on the number of models printed (default: 50; pass `0` for unlimited). |
@@ -457,7 +457,7 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 ```
 
 Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
-The top-level key is omitted when skill distillation is not configured. `namespace` is the only supported key today; any extra manually edited keys are rejected instead of being treated as dormant product behavior.
+The top-level key is omitted when skill distillation is not configured. `namespace` is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.
 
 **Examples**
 
@@ -492,10 +492,10 @@ switchyard configure --target provider --provider openrouter \
   --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.ai/api/v1 \
   --no-tui --no-model-discovery
 
-# Enable skill distillation config without provider credentials
+# Save a skill distillation namespace without provider credentials
 switchyard configure --skill-distillation tooluniverse-trialqa
 
-# Disable skill distillation config without touching provider credentials
+# Remove the skill distillation namespace without touching provider credentials
 switchyard configure --disable-skill-distillation
 
 # Wipe everything
