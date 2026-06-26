@@ -11,6 +11,7 @@ from switchyard.cli.config.user_config import (
     DEFAULT_PROVIDER,
     DEFAULT_SECRETS_SECTION_PRIORITY,
     LaunchTarget,
+    SkillDistillationConfig,
     load_user_config,
     load_user_credentials,
     resolve_provider_connectivity,
@@ -145,8 +146,7 @@ def _format_launch_target(target: LaunchTarget) -> list[str]:
     return lines
 
 
-def _format_skill_distillation() -> str:
-    config = load_user_config().skill_distillation
+def _format_skill_distillation(config: SkillDistillationConfig) -> str:
     if not config.configured:
         return "skill distillation: not configured"
     return (
@@ -192,7 +192,7 @@ def render_status(request: StatusRequest) -> str:
             "strong/weak); plan-execute (strong-planner + weak-executor) via a "
             "type: plan_execute route in a --routing-profiles bundle",
         )
-    lines.append(_format_skill_distillation())
+    lines.append(_format_skill_distillation(user_config.skill_distillation))
     lines += [
         "",
         "Launch defaults",

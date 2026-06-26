@@ -404,7 +404,7 @@ switchyard launch openclaw --model openai/gpt-4o-mini -- --message "Hello"
 ## `switchyard configure`
 
 Persist user-level Switchyard defaults under `~/.config/switchyard/`. Credentials are stored separately from non-secret config, with owner-only file permissions.
-Skill distillation config also lives in this file under `skill_distillation` and can be updated without configuring provider credentials.
+Skill distillation config also lives in `~/.config/switchyard/config.json` under `skill_distillation` and can be updated without configuring provider credentials.
 
 **Synopsis**
 

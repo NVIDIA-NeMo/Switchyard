@@ -116,6 +116,8 @@ class SkillDistillationConfig:
         return self.namespace is not None
 
     def is_default(self) -> bool:
+        """Return whether this matches an unconfigured skill distillation config."""
+
         return self == SkillDistillationConfig()
 
 
