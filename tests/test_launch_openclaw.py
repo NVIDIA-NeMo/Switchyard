@@ -651,14 +651,7 @@ class TestLaunchOpenclaw:
         assert fake_server.should_exit is True
 
     def test_uses_openai_translation_chain(self, monkeypatch, tmp_path):
-        """OpenClaw speaks OpenAI Chat Completions → backend is an
-        OpenAI-native backend behind the stats wrapper.
-        """
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
+        """OpenClaw speaks OpenAI Chat Completions → backend is an OpenAI-native backend."""
         model = "nvidia/moonshotai/kimi-k2.5"
         captured_switchyard: dict = {}
 
@@ -670,7 +663,7 @@ class TestLaunchOpenclaw:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if hasattr(component, "supported_request_types")
             )
             return _make_fake_server(started=True), MagicMock()
 
@@ -705,25 +698,18 @@ class TestLaunchOpenclaw:
         table = captured_switchyard["app"]
         assert table.registered_models() == [model]
         assert table.default_model() == model
-        assert isinstance(captured_switchyard["backend"], StatsLlmBackend)
         assert [
             item.value
             for item in captured_switchyard["backend"].supported_request_types
         ] == ["openai_chat"]
-        assert any(
-            isinstance(component, StatsResponseProcessor)
-            for component in captured_switchyard["switchyard"].iter_components()
-        )
 
-    def test_tty_mode_wraps_openclaw_with_stats_footer(self, monkeypatch, tmp_path):
-        """Interactive OpenClaw launches should get the Switchyard footer."""
+    def test_tty_mode_runs_openclaw_in_shell_tui(self, monkeypatch, tmp_path):
+        """Interactive OpenClaw launches run the child inside a ``ShellTUI``."""
         captured: dict = {}
 
         class FakeShellTUI:
-            def __init__(self, command, footer_fn, footer_height, env):
+            def __init__(self, command, env):
                 captured["command"] = command
-                captured["footer_fn"] = footer_fn
-                captured["footer_height"] = footer_height
                 captured["env"] = env
 
             def run(self):
@@ -766,10 +752,6 @@ class TestLaunchOpenclaw:
 
         assert exit_code == 0
         assert captured["command"] == ["/fake/bin/openclaw", "chat", "--verbose"]
-        assert callable(captured["footer_height"]) and captured["footer_height"]() == 2
-        rows = captured["footer_fn"](120)
-        assert len(rows) == 2
-        assert "switchyard" in rows[0][0]
         assert captured["env"]["OPENCLAW_STATE_DIR"] == str(tmp_path / "ws-tty")
 
     def test_smoke_with_routing_profiles_errors_clearly(

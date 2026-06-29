@@ -10,11 +10,9 @@ spawn a child process.
 """
 
 import argparse
-import asyncio
 import logging
 import subprocess
 from pathlib import Path
-from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,10 +20,8 @@ import pytest
 from switchyard.cli.launchers.claude_code_launcher import (
     _EXIT_BINARY_NOT_FOUND,
     _EXIT_SIGINT,
-    ProxyHealthMonitor,
     _find_claude_binary,
     _find_free_port,
-    _make_footer_fn,
     _ModelRewriteRequestProcessor,
     _print_ready_banner,
     launch_claude,
@@ -41,7 +37,6 @@ from switchyard.lib.route_table import RouteTable
 from switchyard.lib.route_table_builders import (
     random_routing_virtual_model_id,
 )
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 
 
@@ -532,9 +527,7 @@ class TestLaunchClaude:
         assert intake.session_id == "sess-cli"
 
     def test_selects_native_backend_when_probe_true(self, monkeypatch):
-        """Probe returning True -> chain stats-wraps an Anthropic-native backend."""
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
+        """Probe returning True -> chain uses an Anthropic-native backend."""
         monkeypatch.setattr(
             "switchyard.lib.backends.backend_format_resolver."
             "probe_anthropic_messages_support_sync",
@@ -552,7 +545,7 @@ class TestLaunchClaude:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if hasattr(component, "supported_request_types")
             )
             fake_server = _make_fake_server(started=True)
             return fake_server, MagicMock()
@@ -585,7 +578,6 @@ class TestLaunchClaude:
         assert table.default_model() == model
         assert table.lookup_switchyard(f"claude-{model}") is table.lookup_switchyard(model)
         backend = captured_switchyard["backend"]
-        assert isinstance(backend, StatsLlmBackend)
         assert [item.value for item in backend.supported_request_types] == ["anthropic"]
         assert not any(
             isinstance(component, ModelRewriteRequestProcessor)
@@ -593,8 +585,7 @@ class TestLaunchClaude:
         )
 
     def test_selects_translated_backend_when_probe_false(self, monkeypatch):
-        """Probe returning False -> chain stats-wraps an OpenAI-native backend."""
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
+        """Probe returning False -> chain uses an OpenAI-native backend."""
         # Default autouse fixture already sets probe to False; no override needed.
 
         model = "nvidia/moonshotai/kimi-k2.5"
@@ -608,7 +599,7 @@ class TestLaunchClaude:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if hasattr(component, "supported_request_types")
             )
             fake_server = _make_fake_server(started=True)
             return fake_server, MagicMock()
@@ -641,7 +632,6 @@ class TestLaunchClaude:
         assert table.default_model() == model
         assert table.lookup_switchyard(f"claude-{model}") is table.lookup_switchyard(model)
         backend = captured_switchyard["backend"]
-        assert isinstance(backend, StatsLlmBackend)
         assert [item.value for item in backend.supported_request_types] == ["openai_chat"]
         assert not any(
             isinstance(component, ModelRewriteRequestProcessor)
@@ -822,11 +812,11 @@ class TestPrintReadyBanner:
     status line entirely.
     """
 
-    def test_includes_proxy_url_and_stats_curl(self, capsys):
+    def test_includes_proxy_url_and_metrics_curl(self, capsys):
         _print_ready_banner(46385, "azure/anthropic/claude-opus-4-6")
         err = capsys.readouterr().err
         assert "http://127.0.0.1:46385" in err
-        assert "curl -s http://127.0.0.1:46385/v1/routing/stats" in err
+        assert "curl -s http://127.0.0.1:46385/metrics" in err
         assert "azure/anthropic/claude-opus-4-6" in err
 
     def test_writes_to_stderr_not_stdout(self, capsys):
@@ -843,116 +833,6 @@ class TestPrintReadyBanner:
             logging.getLogger("switchyard").setLevel(logging.NOTSET)
         assert "http://127.0.0.1:4000" in capsys.readouterr().err
 
-
-# ---------------------------------------------------------------------------
-# _make_footer_fn — passthrough vs random-routing layouts
-# ---------------------------------------------------------------------------
-
-
-class _StubHealth:
-    """Minimal stand-in for ``ProxyHealthMonitor`` — the renderer only
-    calls ``poll()`` (no-op here) and reads the ``indicator`` tuple.
-    Avoids opening a real socket from a unit test.
-    """
-
-    def __init__(self, indicator: tuple[str, int] = ("●", 1)) -> None:
-        self._indicator = indicator
-
-    def poll(self) -> None:
-        return None
-
-    @property
-    def indicator(self) -> tuple[str, int]:
-        return self._indicator
-
-
-def _strip_ansi(s: str) -> str:
-    import re
-    return re.sub(r"\x1b\[[0-9;]*m", "", s)
-
-
-def _record_stats(
-    stats: StatsAccumulator,
-    model: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-    tier: str | None = None,
-) -> None:
-    async def _record() -> None:
-        await stats.record_success(model=model, tier=tier)
-        await stats.record_usage(
-            model=model,
-            tier=tier,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
-
-    asyncio.run(_record())
-
-
-class TestMakeFooterFn:
-    """Footer: aggregate row + one row per active model tier."""
-
-    def test_renders_two_rows_with_active_model(self):
-        stats = StatsAccumulator()
-        _record_stats(
-            stats,
-            model="kimi-k2.5", tier="strong",
-            prompt_tokens=800, completion_tokens=400,
-        )
-        fn = _make_footer_fn(
-            stats, "openai/openai/kimi-k2.5", cast(ProxyHealthMonitor, _StubHealth()),
-        )
-        rows = fn(120)
-        assert len(rows) == 2
-        agg, tier = (_strip_ansi(r[0]) for r in rows)
-        # Aggregate row carries totals but no model name.
-        assert "1 req" in agg and "800 in" in agg and "400 out" in agg
-        assert "kimi-k2.5" not in agg
-        # Tier row carries the model the backend actually saw.
-        assert "kimi-k2.5" in tier
-        assert "1 req" in tier
-
-    def test_renders_two_rows_at_zero_traffic_with_default_label(self):
-        stats = StatsAccumulator()
-        fn = _make_footer_fn(
-            stats, "openai/openai/kimi-k2.5",
-            cast(ProxyHealthMonitor, _StubHealth()),
-        )
-        rows = fn(120)
-        assert len(rows) == 2
-        # Aggregate is non-empty even at zero traffic; tier falls back to
-        # the launch default label.
-        assert _strip_ansi(rows[0][0]).strip() != ""
-        assert "kimi-k2.5" in _strip_ansi(rows[1][0])
-
-    def test_shows_one_row_per_active_tier(self):
-        """Two-tier routing → 3 rows total: aggregate + one per model."""
-        stats = StatsAccumulator()
-        _record_stats(
-            stats,
-            model="aws/anthropic/bedrock-claude-opus-4-7", tier="strong",
-            prompt_tokens=120, completion_tokens=80,
-        )
-        _record_stats(
-            stats,
-            model="nvidia/deepseek-ai/evals-deepseek-v4-pro", tier="weak",
-            prompt_tokens=200, completion_tokens=150,
-        )
-        fn = _make_footer_fn(
-            stats, "switchyard-deterministic-abc12345",
-            cast(ProxyHealthMonitor, _StubHealth()),
-        )
-        rows = fn(120)
-        assert len(rows) == 3
-        agg = _strip_ansi(rows[0][0])
-        tier_texts = [_strip_ansi(r[0]) for r in rows[1:]]
-        # Aggregate sees both calls.
-        assert "2 req" in agg
-        # Both models appear, one per row.
-        all_text = " ".join(tier_texts)
-        assert "bedrock-claude-opus-4-7" in all_text
-        assert "evals-deepseek-v4-pro" in all_text
 
 _MINIMAL_YAML_BUNDLE = (
     "routes:\n"

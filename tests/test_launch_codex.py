@@ -564,14 +564,7 @@ class TestLaunchCodex:
         assert fake_server.should_exit is True
 
     def test_uses_openai_translation_chain(self, monkeypatch):
-        """Codex always speaks Responses API → backend always
-        an OpenAI-native backend behind the stats wrapper.
-        """
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
+        """Codex always speaks Responses API → backend is an OpenAI-native backend."""
         model = "nvidia/moonshotai/kimi-k2.5"
         captured_switchyard: dict = {}
 
@@ -583,7 +576,7 @@ class TestLaunchCodex:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if hasattr(component, "supported_request_types")
             )
             return _make_fake_server(started=True), MagicMock()
 
@@ -613,7 +606,6 @@ class TestLaunchCodex:
         table = captured_switchyard["app"]
         assert table.registered_models() == [model]
         assert table.default_model() == model
-        assert isinstance(captured_switchyard["backend"], StatsLlmBackend)
         assert [
             item.value
             for item in captured_switchyard["backend"].supported_request_types
@@ -622,20 +614,14 @@ class TestLaunchCodex:
             isinstance(component, _ModelRewriteRequestProcessor)
             for component in captured_switchyard["switchyard"].iter_components()
         )
-        assert any(
-            isinstance(component, StatsResponseProcessor)
-            for component in captured_switchyard["switchyard"].iter_components()
-        )
 
-    def test_tty_mode_wraps_codex_with_stats_footer(self, monkeypatch):
-        """Interactive Codex launches should get the same Switchyard footer."""
+    def test_tty_mode_runs_codex_in_shell_tui(self, monkeypatch):
+        """Interactive Codex launches run the child inside a ``ShellTUI``."""
         captured: dict = {}
 
         class FakeShellTUI:
-            def __init__(self, command, footer_fn, footer_height, env):
+            def __init__(self, command, env):
                 captured["command"] = command
-                captured["footer_fn"] = footer_fn
-                captured["footer_height"] = footer_height
                 captured["env"] = env
 
             def run(self):
@@ -680,10 +666,6 @@ class TestLaunchCodex:
             "hi",
         ]
         assert any(v.startswith("model_catalog_json=") for v in captured["command"])
-        assert callable(captured["footer_height"]) and captured["footer_height"]() == 2
-        rows = captured["footer_fn"](120)
-        assert len(rows) == 2
-        assert "switchyard" in rows[0][0]
         assert captured["env"]["OPENAI_API_KEY"] == "switchyard"
 
     def test_smoke_with_routing_profiles_errors_clearly(
