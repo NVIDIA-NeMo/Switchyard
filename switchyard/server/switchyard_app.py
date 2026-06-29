@@ -21,6 +21,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 
+from switchyard.lib import observability
 from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.endpoints.anthropic_messages_endpoint import (
     AnthropicMessagesEndpoint,
@@ -151,6 +152,10 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
         return invalid_request_response(str(exc), code="empty_messages")
 
     app.state.switchyard = switchyard
+
+    # Bring up the OTel SDK (no-op when the otel extra is absent / disabled) so the
+    # /metrics scrape endpoint and OTLP export are live for the server's lifetime.
+    observability.init_observability()
 
     @app.middleware("http")
     async def _record_client_outcome(request, call_next):  # type: ignore[no-untyped-def]

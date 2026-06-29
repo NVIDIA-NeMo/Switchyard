@@ -40,6 +40,7 @@ _instance_id: str | None = None
 _tracer: Any = None
 _meter: Any = None
 _prometheus_reader: Any = None
+_prometheus_registry: Any = None
 
 #: Instrumentation scope name used for the tracer and meter.
 _SCOPE = "switchyard"
@@ -68,7 +69,8 @@ def init_observability() -> bool:
     call repeatedly; subsequent calls return the established state without
     rebuilding providers.
     """
-    global _initialized, _enabled, _instance_id, _tracer, _meter, _prometheus_reader
+    global _initialized, _enabled, _instance_id, _tracer, _meter
+    global _prometheus_reader, _prometheus_registry
 
     if _initialized:
         return _enabled
@@ -99,6 +101,7 @@ def init_observability() -> bool:
         from opentelemetry.trace.propagation.tracecontext import (
             TraceContextTextMapPropagator,
         )
+        from prometheus_client import CollectorRegistry
     except Exception:
         # otel extra not installed → stay a no-op.
         return False
@@ -116,7 +119,10 @@ def init_observability() -> bool:
     tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(tracer_provider)
 
-    _prometheus_reader = PrometheusMetricReader()
+    # Own a dedicated registry rather than the process-global default so the
+    # scrape surface is self-contained (and tests stay isolated).
+    _prometheus_registry = CollectorRegistry()
+    _prometheus_reader = PrometheusMetricReader(registry=_prometheus_registry)
     meter_provider = MeterProvider(
         resource=resource,
         metric_readers=[
@@ -177,12 +183,19 @@ def prometheus_reader() -> Any:
     return _prometheus_reader
 
 
+def prometheus_registry() -> Any:
+    """Return the dedicated Prometheus ``CollectorRegistry`` (or ``None``)."""
+    return _prometheus_registry
+
+
 def reset_for_test() -> None:
     """Reset module state. Test seam only — not part of the public contract."""
-    global _initialized, _enabled, _instance_id, _tracer, _meter, _prometheus_reader
+    global _initialized, _enabled, _instance_id, _tracer, _meter
+    global _prometheus_reader, _prometheus_registry
     _initialized = False
     _enabled = False
     _instance_id = None
     _tracer = None
     _meter = None
     _prometheus_reader = None
+    _prometheus_registry = None
