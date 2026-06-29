@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from switchyard.lib import metrics, spans
+from switchyard.lib import metrics, otel_usage, spans
 from switchyard.lib.proxy_context import (
     CTX_PROXY_ACTUAL_MODEL,
     CTX_ROUTER_NAME,
@@ -216,6 +216,9 @@ class ComponentChainProfile:
     ) -> ChatResponse:
         """Execute the complete profile lifecycle with an existing context."""
         started = time.monotonic()
+        # Stamp request start so the usage recorder can compute TTFT on the first
+        # streamed chunk.
+        ctx.metadata[otel_usage.CTX_REQUEST_START] = started
         try:
             processed = await self.process_with_context(input, ctx)
             session_key: str | None = None
@@ -277,6 +280,9 @@ class ComponentChainProfile:
             raise SwitchyardBackendError(
                 f"Profile backend returned {actual}, expected ChatResponse"
             )
+        # Record token/cost (and install the TTFT/usage tap for streams) before the
+        # response flows on to the response-side components and out to the client.
+        otel_usage.record_response_usage(ctx, response, model, tier)
         with spans.stage_span("switchyard.response_processors"):
             return await self.rprocess(processed, response)
 

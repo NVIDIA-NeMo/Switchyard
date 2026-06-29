@@ -89,6 +89,9 @@ async def test_executor_emits_spans_and_latency_metrics():
     assert "switchyard.model_call_latency_ms" in names
     assert "switchyard.routing_overhead_ms" in names
     assert "switchyard.requests" in names
+    # Token usage recorded from the non-streaming response body.
+    assert "switchyard.prompt_tokens" in names
+    assert "switchyard.completion_tokens" in names
 
 
 def _make_ctx():
