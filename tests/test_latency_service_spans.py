@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Datadog routing spans/tags emitted by ``LatencyServiceLLMBackend``.
+"""OTel routing spans/attributes emitted by ``LatencyServiceLLMBackend``.
 
 The backend emits a ``switchyard.route_decision`` span around endpoint selection
 and a ``switchyard.upstream_attempt`` span around each upstream call. These tests
-install a fake tracer (so no ddtrace install is needed) and assert the tag set.
+bind an in-memory OTel span exporter and assert the recorded attribute set.
 """
 
 from __future__ import annotations
@@ -17,11 +17,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import openai
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
-from switchyard.lib import tracing
+from switchyard.lib import spans
 from switchyard.lib.backends.health_poller import (
     EndpointHealth,
     EndpointHealthStatus,
@@ -38,43 +41,30 @@ from switchyard.lib.proxy_context import ProxyContext
 from switchyard_rust.core import ChatRequest
 
 # ---------------------------------------------------------------------------
-# Fake tracer (stands in for ddtrace so no install is required)
+# In-memory OTel span exporter (no collector needed)
 # ---------------------------------------------------------------------------
 
 
-class _FakeSpan:
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.tags: dict[str, Any] = {}
+class _SpanRecorder:
+    """Thin wrapper exposing finished spans by name with their attributes."""
 
-    def set_tag(self, key: str, value: Any) -> None:
-        self.tags[key] = value
+    def __init__(self, exporter: InMemorySpanExporter) -> None:
+        self._exporter = exporter
 
-    def __enter__(self) -> _FakeSpan:
-        return self
-
-    def __exit__(self, *_args: object) -> bool:
-        return False
-
-
-class _FakeTracer:
-    def __init__(self) -> None:
-        self.spans: list[_FakeSpan] = []
-
-    def trace(self, name: str) -> _FakeSpan:
-        span = _FakeSpan(name)
-        self.spans.append(span)
-        return span
-
-    def named(self, name: str) -> list[_FakeSpan]:
-        return [span for span in self.spans if span.name == name]
+    def named(self, name: str) -> list[Any]:
+        return [s for s in self._exporter.get_finished_spans() if s.name == name]
 
 
 @pytest.fixture
-def tracer(monkeypatch: pytest.MonkeyPatch) -> _FakeTracer:
-    fake = _FakeTracer()
-    monkeypatch.setattr(tracing, "_dd_tracer", fake)
-    return fake
+def tracer() -> Any:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    spans.reset_for_test(provider.get_tracer("switchyard"))
+    try:
+        yield _SpanRecorder(exporter)
+    finally:
+        spans.reset_for_test(None)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +137,7 @@ def _api_status_error(status_code: int) -> openai.APIStatusError:
 # ---------------------------------------------------------------------------
 
 
-async def test_success_emits_route_and_attempt_spans(tracer: _FakeTracer) -> None:
+async def test_success_emits_route_and_attempt_spans(tracer: Any) -> None:
     backend = _make_backend(_config("model-A"))
     _set_health(backend, {"model-A": EndpointHealth(EndpointHealthStatus.HEALTHY, 50.0)})
     backend._clients["model-A"].acompletion = AsyncMock(return_value=_completion())
@@ -159,8 +149,8 @@ async def test_success_emits_route_and_attempt_spans(tracer: _FakeTracer) -> Non
     assert len(route) == 1
     assert len(attempt) == 1
 
-    # poll-age is absent (poller never recorded a success) — None tags are skipped.
-    assert route[0].tags == {
+    # poll-age is absent (poller never recorded a success) — None attrs are skipped.
+    assert dict(route[0].attributes) == {
         "switchyard.model": "incoming",
         "switchyard.candidate_endpoints": "model-A",
         "switchyard.selected_endpoint": "model-A",
@@ -168,7 +158,7 @@ async def test_success_emits_route_and_attempt_spans(tracer: _FakeTracer) -> Non
         "switchyard.affinity_hit": False,
     }
 
-    assert attempt[0].tags == {
+    assert dict(attempt[0].attributes) == {
         "switchyard.model": "incoming",
         "switchyard.selected_endpoint": "model-A",
         "switchyard.retry_count": 0,
@@ -177,7 +167,7 @@ async def test_success_emits_route_and_attempt_spans(tracer: _FakeTracer) -> Non
     }
 
 
-async def test_poll_age_tag_present_after_a_poll(tracer: _FakeTracer) -> None:
+async def test_poll_age_tag_present_after_a_poll(tracer: Any) -> None:
     backend = _make_backend(_config("model-A"))
     _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
     backend._poller._last_success_at = time.monotonic()
@@ -186,10 +176,10 @@ async def test_poll_age_tag_present_after_a_poll(tracer: _FakeTracer) -> None:
     await backend.call(ProxyContext(), _request())
 
     route = tracer.named("switchyard.route_decision")[0]
-    assert route.tags["switchyard.latency_service_poll_age_ms"] >= 0.0
+    assert route.attributes["switchyard.latency_service_poll_age_ms"] >= 0.0
 
 
-async def test_api_status_error_tags(tracer: _FakeTracer) -> None:
+async def test_api_status_error_tags(tracer: Any) -> None:
     backend = _make_backend(_config("model-A"))
     _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
     backend._clients["model-A"].acompletion = AsyncMock(
@@ -200,12 +190,12 @@ async def test_api_status_error_tags(tracer: _FakeTracer) -> None:
         await backend.call(ProxyContext(), _request())
 
     attempt = tracer.named("switchyard.upstream_attempt")[0]
-    assert attempt.tags["switchyard.upstream_status_code"] == 429
-    assert attempt.tags["switchyard.outcome"] == "retryable_error"
-    assert attempt.tags["switchyard.error_code"] == "429"
+    assert attempt.attributes["switchyard.upstream_status_code"] == 429
+    assert attempt.attributes["switchyard.outcome"] == "retryable_error"
+    assert attempt.attributes["switchyard.error_code"] == "429"
 
 
-async def test_generic_error_tags(tracer: _FakeTracer) -> None:
+async def test_generic_error_tags(tracer: Any) -> None:
     backend = _make_backend(_config("model-A"))
     _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
     backend._clients["model-A"].acompletion = AsyncMock(side_effect=RuntimeError("down"))
@@ -214,13 +204,13 @@ async def test_generic_error_tags(tracer: _FakeTracer) -> None:
         await backend.call(ProxyContext(), _request())
 
     attempt = tracer.named("switchyard.upstream_attempt")[0]
-    assert attempt.tags["switchyard.outcome"] == "retryable_error"
-    assert attempt.tags["switchyard.error_code"] == "none"
+    assert attempt.attributes["switchyard.outcome"] == "retryable_error"
+    assert attempt.attributes["switchyard.error_code"] == "none"
     # A non-HTTP failure has no status line.
-    assert "switchyard.upstream_status_code" not in attempt.tags
+    assert "switchyard.upstream_status_code" not in attempt.attributes
 
 
-async def test_retry_count_is_sequential_and_ends_success(tracer: _FakeTracer) -> None:
+async def test_retry_count_is_sequential_and_ends_success(tracer: Any) -> None:
     backend = _make_backend(_config("model-A", "model-B", max_retries=1))
     _set_health(backend, {
         "model-A": EndpointHealthStatus.HEALTHY,
@@ -233,11 +223,11 @@ async def test_retry_count_is_sequential_and_ends_success(tracer: _FakeTracer) -
 
     attempts = tracer.named("switchyard.upstream_attempt")
     # retry_count is the 0-based attempt index, monotonically increasing.
-    assert [a.tags["switchyard.retry_count"] for a in attempts] == list(range(len(attempts)))
-    assert attempts[-1].tags["switchyard.outcome"] == "success"
+    assert [a.attributes["switchyard.retry_count"] for a in attempts] == list(range(len(attempts)))
+    assert attempts[-1].attributes["switchyard.outcome"] == "success"
 
 
-async def test_was_fastest_false_when_latency_unknown(tracer: _FakeTracer) -> None:
+async def test_was_fastest_false_when_latency_unknown(tracer: Any) -> None:
     backend = _make_backend(_config("model-A", "model-B"))
     # Both HEALTHY but no latency samples -> uniform pick, "fastest" undefined.
     _set_health(backend, {
@@ -251,8 +241,8 @@ async def test_was_fastest_false_when_latency_unknown(tracer: _FakeTracer) -> No
     await backend.call(ProxyContext(), _request())
 
     route = tracer.named("switchyard.route_decision")[0]
-    assert route.tags["switchyard.was_fastest_selected"] is False
-    assert route.tags["switchyard.selected_endpoint"] in selected
+    assert route.attributes["switchyard.was_fastest_selected"] is False
+    assert route.attributes["switchyard.selected_endpoint"] in selected
 
 
 async def test_call_works_without_tracer() -> None:

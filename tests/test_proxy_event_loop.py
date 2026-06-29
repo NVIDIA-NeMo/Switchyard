@@ -53,7 +53,6 @@ from switchyard.cli.launchers.claude_code_launcher import (
 from switchyard.lib.backends.backend_format_resolver import (
     probe_anthropic_messages_support_sync,
 )
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 _BASE_URL = "https://fake-inference.example.com/v1"
 _MESSAGES_URL = "https://fake-inference.example.com/v1/messages"
@@ -230,7 +229,6 @@ def test_no_asyncio_run_during_switchyard_construction():
             api_key="test-key",
             base_url=_BASE_URL,
             timeout=1.0,
-            stats=StatsAccumulator(),
         )
 
     assert not run_calls, (
@@ -261,7 +259,6 @@ def test_proxy_request_completes_not_hanging():
     loop would await primitives bound to the now-closed startup loop.
     """
     port = _find_free_port()
-    stats = StatsAccumulator()
 
     with _OpenAICompatStub() as upstream:
         switchyard = _build_claude_switchyard(
@@ -269,7 +266,6 @@ def test_proxy_request_completes_not_hanging():
             api_key="test-key",
             base_url=upstream.base_url,
             timeout=2.0,
-            stats=stats,
         )
         server, thread = _spawn_proxy_thread(switchyard, port)
         try:
@@ -324,14 +320,12 @@ def test_proxy_built_after_closed_loop_documents_hang_risk():
 
     # Step 2 — build async clients (now with no running loop, but L1 is gone).
     port = _find_free_port()
-    stats = StatsAccumulator()
     with _OpenAICompatStub() as upstream:
         switchyard = _build_claude_switchyard(
             model="test-model",
             api_key="test-key",
             base_url=upstream.base_url,
             timeout=1.0,
-            stats=stats,
         )
         server, thread = _spawn_proxy_thread(switchyard, port)
         completed = threading.Event()

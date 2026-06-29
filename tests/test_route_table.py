@@ -18,7 +18,6 @@ from switchyard.lib.endpoints.responses_endpoint import ResponsesEndpoint
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
 from switchyard.lib.route_table import RouteTable
 from switchyard.lib.route_table_builders import build_passthrough_table
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.lib.switchyard import Switchyard
 from switchyard.server.switchyard_app import build_switchyard_app
 
@@ -198,7 +197,6 @@ def test_models_endpoint_lists_discovered_catalog_models() -> None:
                 base_url="https://primary.example/v1",
             ),
         ),
-        StatsAccumulator(),
         discovery_fn=discover,
     )
 
@@ -255,7 +253,6 @@ def test_models_endpoint_returns_static_models_and_warning_when_discovery_fails(
                 base_url="https://primary.example/v1",
             ),
         ),
-        StatsAccumulator(),
         discovery_fn=discover,
     )
 
