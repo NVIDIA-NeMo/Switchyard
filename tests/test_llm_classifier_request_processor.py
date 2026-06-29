@@ -481,16 +481,22 @@ async def test_request_summary_drops_anthropic_tool_input_schema() -> None:
     assert "input_schema" not in summary
 
 
-async def test_classifier_records_tokens_into_stats_when_accumulator_wired() -> None:
-    """Classifier overhead lands in the dedicated classifier bucket.
+async def test_classifier_records_tokens_via_otel_under_classifier_role() -> None:
+    """Classifier overhead lands in the OTel token counters tagged ``classifier``.
 
-    Without this wiring the classifier's LLM spend was invisible to
-    ``/v1/routing/stats`` — exactly the gap that flattered the
-    classifier-vs-force-strong cost comparison in TB-lite runs.
+    Tagging the spend with ``tier="classifier"`` keeps the classifier's LLM
+    tokens out of the routed-traffic buckets even when it shares a model id.
     """
-    from switchyard.lib.stats_accumulator import StatsAccumulator
+    import importlib
 
-    accumulator = StatsAccumulator()
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    metrics = importlib.import_module("switchyard.lib.metrics")
+    metrics.reset_for_test(provider.get_meter("switchyard"))
+
     fake = _FakeClassifierClient(
         _signals_json(),
         usage=_FakeUsage(prompt_tokens=420, completion_tokens=80, cached_tokens=10),
@@ -498,30 +504,28 @@ async def test_classifier_records_tokens_into_stats_when_accumulator_wired() -> 
     processor = LLMClassifierRequestProcessor(
         LLMClassifierConfig(model="router-classifier"),
         client=fake,
-        stats_accumulator=accumulator,
     )
 
     await processor.process(ProxyContext(), _request())
     await processor.process(ProxyContext(), _request())
 
-    snapshot = accumulator.snapshot_sync()
-    # Backend bucket untouched — the classifier doesn't show up among
-    # routed-traffic models even though it ran twice.
-    assert snapshot["models"] == {}
-    assert snapshot["total_requests"] == 0
-    # Classifier block carries the per-call totals + cost.
-    classifier = snapshot["classifier"]
-    assert classifier["total_requests"] == 2
-    assert classifier["models"]["router-classifier"]["calls"] == 2
-    assert classifier["models"]["router-classifier"]["prompt_tokens"] == 840
-    assert classifier["models"]["router-classifier"]["completion_tokens"] == 160
-    assert classifier["models"]["router-classifier"]["cached_tokens"] == 20
-    # Latency was recorded — at least one sample in the histogram.
-    assert classifier["models"]["router-classifier"]["model_call_latency"]["count"] == 2
+    counters: dict[str, int] = {}
+    for rm in reader.get_metrics_data().resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                for point in metric.data.data_points:
+                    if point.attributes.get("tier") == "classifier":
+                        counters[metric.name] = counters.get(metric.name, 0) + point.value
+
+    assert counters["switchyard.prompt_tokens"] == 840
+    assert counters["switchyard.completion_tokens"] == 160
+    assert counters["switchyard.cached_tokens"] == 20
+
+    metrics.reset_for_test(None)
 
 
-async def test_classifier_skips_stats_recording_when_no_accumulator() -> None:
-    """Backwards compat: omitting the accumulator must not raise."""
+async def test_classifier_token_recording_is_safe_without_observability() -> None:
+    """Omitting observability (no meter) must not raise on the recording path."""
     fake = _FakeClassifierClient(
         _signals_json(),
         usage=_FakeUsage(prompt_tokens=100, completion_tokens=20),
@@ -531,39 +535,5 @@ async def test_classifier_skips_stats_recording_when_no_accumulator() -> None:
         client=fake,
     )
 
-    # No accumulator wired; processor still resolves successfully.
+    # No meter bound; record helpers no-op and process resolves successfully.
     await processor.process(ProxyContext(), _request())
-
-
-async def test_classifier_records_error_on_failure_path() -> None:
-    """Fail-open path stamps abstain signals and records the error.
-
-    The classifier call failed, so there are no tokens to charge — but the
-    failure itself must surface on ``/v1/routing/stats`` so a silent
-    fail-open does not hide the failure rate.  ``total_requests`` and
-    ``total_errors`` both increment; per-model ``calls`` stays at zero
-    (it counts completed, token-bearing calls), and per-model ``errors``
-    increments so ``errors / (calls + errors)`` reads as the true
-    failure rate.
-    """
-    from switchyard.lib.stats_accumulator import StatsAccumulator
-
-    accumulator = StatsAccumulator()
-    fake = _FakeClassifierClient(RuntimeError("upstream 503"))
-    processor = LLMClassifierRequestProcessor(
-        LLMClassifierConfig(model="router-classifier"),
-        client=fake,
-        stats_accumulator=accumulator,
-    )
-
-    await processor.process(ProxyContext(), _request())
-
-    snapshot = accumulator.snapshot_sync()
-    classifier = snapshot["classifier"]
-    assert classifier["total_requests"] == 1
-    assert classifier["total_errors"] == 1
-    model_stats = classifier["models"]["router-classifier"]
-    assert model_stats["calls"] == 0
-    assert model_stats["errors"] == 1
-    assert model_stats["prompt_tokens"] == 0
-    assert model_stats["completion_tokens"] == 0

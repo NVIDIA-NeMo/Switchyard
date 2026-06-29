@@ -19,7 +19,6 @@ from switchyard.lib.backends.deterministic_routing_llm_backend import (
     DeterministicRoutingLLMBackend,
 )
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
-from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.profiles.deterministic_routing_profile_config import (
     DeterministicRoutingProfileConfig,
@@ -114,11 +113,3 @@ def test_openai_strong_tier_is_not_wrapped() -> None:
     assert not isinstance(
         backend._backends["strong"], AnthropicCacheBreakpointBackend,
     )
-
-
-def test_cache_wrap_is_outermost_with_stats_enabled() -> None:
-    # StatsLlmBackend requires a Rust-native inner, so the Python cache wrapper
-    # must sit outside it — build must succeed and the wrapper be the outer.
-    backend = _backend(_config(strong_format=BackendFormat.ANTHROPIC, enable_stats=True))
-    assert isinstance(backend._backends["strong"], AnthropicCacheBreakpointBackend)
-    assert isinstance(backend._backends["strong"]._inner, StatsLlmBackend)

@@ -18,10 +18,6 @@ from switchyard.lib.processors.llm_classifier import (
     LLMClassifierRequestProcessor,
     SignalTierSelectorRequestProcessor,
 )
-from switchyard.lib.processors.stats_request_processor import StatsRequestProcessor
-from switchyard.lib.processors.stats_response_processor_accumulator import (
-    StatsResponseProcessor,
-)
 from switchyard.lib.profiles import (
     DeterministicRoutingConfig,
     DeterministicRoutingPresets,
@@ -34,7 +30,6 @@ from switchyard.lib.profiles.deterministic_routing_profile_config import (
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.route_table_builders import deterministic_routing_virtual_model_id
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest, ChatResponse
 from switchyard_rust.translation import TranslationEngine
 
@@ -88,7 +83,6 @@ def _config(
 def _deterministic_routing_switchyard(
     config: DeterministicRoutingConfig,
     *,
-    stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: list[Any] | None = None,
     extra_request_processors: list[Any] | None = None,
     extra_response_processors: list[Any] | None = None,
@@ -98,8 +92,6 @@ def _deterministic_routing_switchyard(
         DeterministicRoutingProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats_accumulator,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors or (),
             post_request_processors=extra_request_processors or (),
             response_processors=extra_response_processors or (),
@@ -197,30 +189,6 @@ class TestProfileStructure:
         )
         assert classifier_idx < selector_idx
 
-    def test_stats_processors_wired_when_enabled(self) -> None:
-        switchyard = _deterministic_routing_switchyard(_config())
-        assert any(
-            isinstance(c, StatsRequestProcessor)
-            for c in switchyard.iter_components()
-        )
-        assert any(
-            isinstance(c, StatsResponseProcessor)
-            for c in switchyard.iter_components()
-        )
-
-    def test_stats_processors_absent_when_disabled(self) -> None:
-        switchyard = _deterministic_routing_switchyard(
-            _config(enable_stats=False),
-        )
-        assert not any(
-            isinstance(c, StatsRequestProcessor)
-            for c in switchyard.iter_components()
-        )
-        assert not any(
-            isinstance(c, StatsResponseProcessor)
-            for c in switchyard.iter_components()
-        )
-
     def test_extra_processors_are_wired(self) -> None:
         request_processor = _NoopRequestProcessor()
         response_processor = _NoopResponseProcessor()
@@ -240,30 +208,12 @@ class TestProfileStructure:
             pre_routing_request_processors=[pre],
         )
         components = list(switchyard.iter_components())
-        stats_idx = next(
-            idx for idx, c in enumerate(components)
-            if isinstance(c, StatsRequestProcessor)
-        )
         pre_idx = components.index(pre)
         classifier_idx = next(
             idx for idx, c in enumerate(components)
             if isinstance(c, LLMClassifierRequestProcessor)
         )
-        assert stats_idx < pre_idx < classifier_idx
-
-    async def test_shared_stats_accumulator(self) -> None:
-        """Recording on the shared accumulator must surface in the response processor."""
-        stats = StatsAccumulator()
-        switchyard = _deterministic_routing_switchyard(
-            _config(),
-            stats_accumulator=stats,
-        )
-        response_processor = next(
-            c for c in switchyard.iter_components()
-            if isinstance(c, StatsResponseProcessor)
-        )
-        await stats.record_success("aws/anthropic/bedrock-claude-opus-4-7")
-        assert response_processor.accumulator.snapshot_sync()["total_requests"] == 1
+        assert pre_idx < classifier_idx
 
 
 class TestStderrSuppression:
