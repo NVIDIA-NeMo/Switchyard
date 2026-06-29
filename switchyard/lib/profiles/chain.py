@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib import metrics, spans
+from switchyard.lib.proxy_context import CTX_PROXY_ACTUAL_MODEL, ProxyContext
 from switchyard.lib.roles import LLMBackend
 from switchyard.lib.session_affinity import CTX_SESSION_KEY
 from switchyard.lib.session_cache import SessionCache
@@ -158,16 +160,26 @@ class ComponentChainProfile:
     ) -> ChainProcessedRequest:
         """Run request-side components against the caller-supplied context."""
         current: Any = input.request
-        for processor in self._request_processors:
-            try:
-                current = await processor.process(ctx, current)
-            except Exception as error:
-                raise SwitchyardProcessorError(str(error)) from error
-            if not isinstance(current, ChatRequest):
-                actual = type(current).__name__
-                raise SwitchyardProcessorError(
-                    f"Request processor returned {actual}, expected ChatRequest"
-                )
+        # The request-processor loop IS the in-process routing overhead: time it
+        # and record it under the router strategy (classifier/planner LLM calls
+        # open their own child spans, so they stay bucketed separately).
+        started = time.monotonic()
+        with spans.stage_span("switchyard.request_processors"):
+            for processor in self._request_processors:
+                try:
+                    current = await processor.process(ctx, current)
+                except Exception as error:
+                    raise SwitchyardProcessorError(str(error)) from error
+                if not isinstance(current, ChatRequest):
+                    actual = type(current).__name__
+                    raise SwitchyardProcessorError(
+                        f"Request processor returned {actual}, expected ChatRequest"
+                    )
+        overhead_ms = (time.monotonic() - started) * 1000.0
+        _, _, router = _otel_labels(ctx, current)
+        metrics.record_latencies(
+            model="", tier=None, router=router, routing_overhead_ms=overhead_ms
+        )
         return ChainProcessedRequest.from_context(ctx, current)
 
     async def rprocess(
@@ -199,42 +211,70 @@ class ComponentChainProfile:
         ctx: ProxyContext,
     ) -> ChatResponse:
         """Execute the complete profile lifecycle with an existing context."""
-        processed = await self.process_with_context(input, ctx)
-        session_key: str | None = None
-        if self._session_evictions is not None:
-            session_key = _derive_session_key(ctx, input.request)
-            session_evicted: frozenset[str] = self._session_evictions.get(session_key) or frozenset()
-            if session_evicted:
-                merged = set(processed.evicted_targets) | session_evicted
-                processed.evicted_targets = tuple(sorted(merged))
-                processed.sync_to_context()
-                self._rewrite_evicted_pick(processed)
+        started = time.monotonic()
         try:
-            return await self._call_backend_stage(processed)
-        except SwitchyardContextWindowExceededError as error:
-            if self._fallback_target_on_evict is None:
-                raise
-            return await self._retry_after_context_overflow(processed, error, session_key)
+            processed = await self.process_with_context(input, ctx)
+            session_key: str | None = None
+            if self._session_evictions is not None:
+                session_key = _derive_session_key(ctx, input.request)
+                session_evicted: frozenset[str] = (
+                    self._session_evictions.get(session_key) or frozenset()
+                )
+                if session_evicted:
+                    merged = set(processed.evicted_targets) | session_evicted
+                    processed.evicted_targets = tuple(sorted(merged))
+                    processed.sync_to_context()
+                    self._rewrite_evicted_pick(processed)
+            try:
+                return await self._call_backend_stage(processed)
+            except SwitchyardContextWindowExceededError as error:
+                if self._fallback_target_on_evict is None:
+                    raise
+                return await self._retry_after_context_overflow(processed, error, session_key)
+        finally:
+            # End-to-end latency + request count, recorded once per top-level call
+            # (backend-attempt latency and errors are recorded in the backend stage).
+            model, tier, router = _otel_labels(ctx, input.request)
+            total_ms = (time.monotonic() - started) * 1000.0
+            metrics.record_latencies(model=model, tier=tier, router=router, total_ms=total_ms)
+            metrics.record_request(model=model, tier=tier, router=router)
 
     async def _call_backend_stage(
         self,
         processed: ChainProcessedRequest,
     ) -> ChatResponse:
         """Call the backend and then response-side components."""
+        ctx = processed.ctx
+        model, tier, _ = _otel_labels(ctx, processed.request)
+        started = time.monotonic()
         try:
-            response: Any = await self._backend.call(processed.ctx, processed.request)
+            with spans.stage_span(
+                "switchyard.backend_call", {"model": model, "tier": tier}
+            ):
+                response: Any = await self._backend.call(ctx, processed.request)
         except SwitchyardContextWindowExceededError:
             raise
         except SwitchyardUpstreamError:
+            metrics.record_error(model=model, tier=tier)
             raise
         except Exception as error:
+            metrics.record_error(model=model, tier=tier)
             raise SwitchyardBackendError(str(error)) from error
+        # Prefer a backend-reported latency (e.g. the latency-service backend times
+        # only the upstream attempt); else use the measured wall time.
+        backend_ms = getattr(ctx, "backend_call_latency_ms", None) or (
+            (time.monotonic() - started) * 1000.0
+        )
+        # Re-read labels: routing/selection may have been finalized by the backend.
+        model, tier, _ = _otel_labels(ctx, processed.request)
+        metrics.record_latencies(model=model, tier=tier, router=None, model_call_ms=backend_ms)
         if not isinstance(response, ChatResponse):
             actual = type(response).__name__
             raise SwitchyardBackendError(
                 f"Profile backend returned {actual}, expected ChatResponse"
             )
-        return await self.rprocess(processed, response)
+        with spans.stage_span("switchyard.response_processors"):
+            return await self.rprocess(processed, response)
 
     async def _retry_after_context_overflow(
         self,
@@ -307,6 +347,28 @@ def _context_selected_target(ctx: ProxyContext) -> str | None:
     """Return a normalized selected target from the compatibility context."""
     selected = ctx.selected_target
     return selected if isinstance(selected, str) and selected else None
+
+
+#: Metadata key carrying the router-strategy name, stamped by routing processors
+#: so executor-level metrics can label routing overhead by strategy.
+CTX_ROUTER_NAME = "_router"
+
+
+def _otel_labels(ctx: ProxyContext, request: ChatRequest) -> tuple[str, str | None, str | None]:
+    """Return ``(model, tier, router)`` for OTel metric attributes.
+
+    Mirrors the tier resolution the stats response processor used: the
+    random-routing / RouteLLM tier metadata when present, else a ``strong``/
+    ``weak`` selected target. ``router`` is the strategy name when a routing
+    processor stamped one (``None`` for passthrough chains).
+    """
+    model = ctx.selected_model or ctx.metadata.get(CTX_PROXY_ACTUAL_MODEL) or request.model
+    tier = ctx.metadata.get("_random_routing_tier") or ctx.metadata.get("_routellm_tier")
+    if not tier:
+        selected = ctx.selected_target
+        tier = selected if selected in {"strong", "weak"} else None
+    router = ctx.metadata.get(CTX_ROUTER_NAME)
+    return str(model or "unknown"), tier, router
 
 
 def _overflow_target_id(
