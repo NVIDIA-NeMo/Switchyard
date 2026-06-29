@@ -14,7 +14,7 @@ from switchyard.lib.processors.routellm_request_processor import (
 )
 from switchyard.lib.profiles.routellm import RouteLLMConfig, RouteLLMProfileConfig
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard_rust.components import MultiLlmBackend, StatsLlmBackend
+from switchyard_rust.components import MultiLlmBackend
 from switchyard_rust.core import ChatRequest
 
 
@@ -67,16 +67,20 @@ def test_profile_builds_multi_llm_backend_without_stats() -> None:
     ]
 
 
-def test_profile_wraps_multi_llm_backend_with_stats_when_enabled() -> None:
+def test_profile_runtime_components_keep_multi_llm_backend() -> None:
+    # The chain executor emits metrics via OTel, so no stats wrapper is added;
+    # the runtime chain keeps the raw MultiLlmBackend.
     config = _config(enable_stats=True)
     profile = (
         RouteLLMProfileConfig.from_config(config)
         .build()
-        .with_runtime_components(enable_stats=config.enable_stats)
+        .with_runtime_components()
     )
-    backend = next(component for component in profile.iter_components() if isinstance(component, StatsLlmBackend))
+    backend = next(
+        component for component in profile.iter_components()
+        if isinstance(component, MultiLlmBackend)
+    )
 
-    assert isinstance(backend, StatsLlmBackend)
     assert [item.value for item in backend.supported_request_types] == [
         "openai_chat",
         "openai_responses",

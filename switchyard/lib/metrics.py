@@ -314,6 +314,16 @@ def _state() -> dict[str, Any] | None:
     return _instruments
 
 
+def ensure_instruments() -> None:
+    """Force instrument creation so observable gauges report on the next scrape.
+
+    Instruments are otherwise built lazily on the first ``record_*`` call; the
+    ``/metrics`` handler calls this so pull-only series (build info, latency-
+    service health gauges) appear even before any request has been served.
+    """
+    _state()
+
+
 def _attrs(**kwargs: Any) -> dict[str, Any]:
     """Build an attribute dict, dropping ``None`` values."""
     return {k: v for k, v in kwargs.items() if v is not None}

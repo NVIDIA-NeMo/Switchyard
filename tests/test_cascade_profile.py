@@ -9,7 +9,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 

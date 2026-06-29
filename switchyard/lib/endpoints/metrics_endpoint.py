@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter
 from fastapi.responses import Response
 
-from switchyard.lib import observability
+from switchyard.lib import metrics, observability
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -35,6 +35,9 @@ def register_metrics_endpoint(app: FastAPI) -> None:
         registry = observability.prometheus_registry()
         if registry is None:
             return Response(content="", media_type=PROMETHEUS_CONTENT_TYPE)
+        # Build instruments so pull-only series (build info, latency-service
+        # health gauges) render even before the first request is served.
+        metrics.ensure_instruments()
         from prometheus_client import generate_latest
 
         return Response(

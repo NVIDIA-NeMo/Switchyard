@@ -23,7 +23,6 @@ from switchyard.lib.processors.random_routing_request_processor import (
 )
 from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
-    RandomRoutingProfileConfig,
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard_rust.components import (
@@ -280,42 +279,3 @@ class TestRandomRoutingProcessorContract:
         assert processor_config.rng_seed == 99
         assert not hasattr(processor_config, "enable_stats")
         assert not hasattr(processor_config, "preset")
-
-    async def test_profile_stats_backend_and_response_processor_share_accumulator(self) -> None:
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-        from switchyard.lib.stats_accumulator import StatsAccumulator
-        from switchyard_rust.components import StatsLlmBackend
-
-        stats = StatsAccumulator()
-        config = RandomRoutingConfig(
-            strong=_target("strong", "strong-model"),
-            weak=_target("weak", "weak-model"),
-            strong_probability=0.5,
-            enable_stats=True,
-            fallback_target_on_evict="strong",
-        )
-        profile = (
-            RandomRoutingProfileConfig.from_config(config)
-            .build()
-            .with_runtime_components(
-                stats_accumulator=stats,
-                enable_stats=config.enable_stats,
-            )
-        )
-        components = profile.iter_components()
-        backend = next(component for component in components if isinstance(component, StatsLlmBackend))
-        response_processor = next(
-            component
-            for component in components
-            if isinstance(component, StatsResponseProcessor)
-        )
-
-        assert isinstance(backend, StatsLlmBackend)
-        assert isinstance(response_processor, StatsResponseProcessor)
-
-        await backend.accumulator.record_success("strong-model", tier="strong")
-        snapshot = response_processor.accumulator.snapshot_sync()
-        assert snapshot["total_requests"] == 1
-        assert snapshot["tiers"]["strong"]["calls"] == 1

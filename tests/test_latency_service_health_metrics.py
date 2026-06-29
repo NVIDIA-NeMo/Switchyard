@@ -1,22 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end gates for latency-service routing-state metrics.
+"""End-to-end gates for latency-service routing-state metrics (OTel).
 
-The Prometheus exposition rendered from the accumulator covers request
-flow but says nothing about *why* a request landed on a given endpoint.
-The latency-service backend now contributes per-endpoint verdict gauges
-and poll-loop health gauges so dashboards can see the routing inputs,
-not just outputs.
+The latency-service backend contributes per-endpoint verdict gauges and
+poll-loop health gauges/counters to the OTel meter via observable callbacks
+reading a snapshot it exposes. These tests assert both the snapshot source and
+the rendered OTel Prometheus surface.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import time
+from collections.abc import Iterator
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
+from opentelemetry.sdk.metrics import MeterProvider
+from prometheus_client import CollectorRegistry
 
+from switchyard.lib import metrics, observability
 from switchyard.lib.backends.health_poller import (
     EndpointHealth,
     EndpointHealthStatus,
@@ -29,16 +35,15 @@ from switchyard.lib.config.latency_service_backend_config import (
     LatencyServiceBackendConfig,
     LatencyServiceEndpoint,
 )
-from switchyard.lib.endpoints import prometheus_emitter
 from switchyard.lib.profiles import LatencyServiceProfileConfig, ProfileSwitchyard
 from switchyard.server.switchyard_app import build_switchyard_app
 
 
 @pytest.fixture(autouse=True)
-def _clean_table():
-    prometheus_emitter._clear_for_tests()
+def _clear_source() -> Iterator[None]:
+    metrics.register_latency_service_source(None)
     yield
-    prometheus_emitter._clear_for_tests()
+    metrics.register_latency_service_source(None)
 
 
 def _config(*models: str) -> LatencyServiceBackendConfig:
@@ -62,7 +67,7 @@ def _latency_service_switchyard(
     return ProfileSwitchyard(
         LatencyServiceProfileConfig.from_config(config)
         .build()
-        .with_runtime_components(enable_stats=config.enable_stats)
+        .with_runtime_components()
     )
 
 
@@ -75,14 +80,13 @@ def _make_backend(config: LatencyServiceBackendConfig) -> LatencyServiceLLMBacke
             return LatencyServiceLLMBackend(config)
 
 
-def _emit(backend: LatencyServiceLLMBackend) -> str:
-    """Render this backend's emitter output as a single string."""
-    return "\n".join(backend._render_prometheus_lines())
+def _snapshot(backend: LatencyServiceLLMBackend) -> dict[str, Any]:
+    """Read the backend's OTel metrics snapshot (what the gauges observe)."""
+    return backend._metrics_snapshot()
 
 
-class TestEndpointStatusGauge:
-    def test_emits_one_row_per_status_per_endpoint(self) -> None:
-        """Three-state encoding lets `sum by (status)` give a clean histogram."""
+class TestEndpointStatusSnapshot:
+    def test_one_entry_per_endpoint(self) -> None:
         backend = _make_backend(_config("model-A", "model-B"))
         with backend._cache_lock:
             backend._health_cache["model-A"] = EndpointHealth(
@@ -92,24 +96,16 @@ class TestEndpointStatusGauge:
                 EndpointHealthStatus.DEGRADED, 800.0,
             )
 
-        out = _emit(backend)
-        assert 'switchyard_endpoint_status{model="model-A",status="healthy"} 1' in out
-        assert 'switchyard_endpoint_status{model="model-A",status="degraded"} 0' in out
-        assert 'switchyard_endpoint_status{model="model-A",status="unknown"} 0' in out
-        assert 'switchyard_endpoint_status{model="model-B",status="degraded"} 1' in out
-        assert 'switchyard_endpoint_status{model="model-B",status="healthy"} 0' in out
+        snap = _snapshot(backend)
+        assert snap["endpoint_status"] == {"model-A": "healthy", "model-B": "degraded"}
 
     def test_unknown_default_before_first_poll(self) -> None:
-        """New backends start with every endpoint UNKNOWN."""
         backend = _make_backend(_config("model-A"))
-        out = _emit(backend)
-        assert 'switchyard_endpoint_status{model="model-A",status="unknown"} 1' in out
-        assert 'switchyard_endpoint_status{model="model-A",status="healthy"} 0' in out
+        assert _snapshot(backend)["endpoint_status"] == {"model-A": "unknown"}
 
 
-class TestEndpointLatencyGauge:
-    def test_emits_only_for_endpoints_with_sample(self) -> None:
-        """Absence is meaningful: don't emit a zero where no sample exists."""
+class TestEndpointLatencySnapshot:
+    def test_latency_present_only_when_sampled(self) -> None:
         backend = _make_backend(_config("with-sample", "no-sample"))
         with backend._cache_lock:
             backend._health_cache["with-sample"] = EndpointHealth(
@@ -119,193 +115,165 @@ class TestEndpointLatencyGauge:
                 EndpointHealthStatus.HEALTHY, None,
             )
 
-        out = _emit(backend)
-        assert (
-            'switchyard_endpoint_last_latency_ms{model="with-sample"} 250.5' in out
-        )
-        assert 'switchyard_endpoint_last_latency_ms{model="no-sample"}' not in out
+        latencies = _snapshot(backend)["endpoint_last_latency_ms"]
+        assert latencies["with-sample"] == 250.5
+        assert latencies["no-sample"] is None
 
 
-class TestPollHealthGauges:
+class TestPollHealthSnapshot:
     def test_before_first_poll_signals_never_polled(self) -> None:
-        """poll_ok=0 + no poll_age line lets a scraper detect "never polled"."""
         backend = _make_backend(_config("model-A"))
-        out = _emit(backend)
-        assert "switchyard_latency_service_poll_ok 0" in out
-        assert "switchyard_latency_service_poll_age_seconds" not in out.replace(
-            "# HELP switchyard_latency_service_poll_age_seconds", ""
-        ).replace(
-            "# TYPE switchyard_latency_service_poll_age_seconds", ""
-        )
-        assert "switchyard_latency_service_polls_total 0" in out
-        assert "switchyard_latency_service_poll_failures_total 0" in out
+        snap = _snapshot(backend)
+        assert snap["poll_ok"] is False
+        assert "poll_age_seconds" not in snap
+        assert snap["polls"] == 0
+        assert snap["poll_failures"] == 0
 
-    def test_after_successful_poll_emits_age_and_ok(self) -> None:
+    def test_after_successful_poll_reports_age_and_ok(self) -> None:
         backend = _make_backend(_config("model-A"))
         backend._poller._poll_count = 3
         backend._poller._last_poll_ok = True
-        backend._poller._last_success_at = __import__("time").monotonic() - 1.0
+        backend._poller._last_success_at = time.monotonic() - 1.0
 
-        out = _emit(backend)
-        assert "switchyard_latency_service_poll_ok 1" in out
-        assert "switchyard_latency_service_polls_total 3" in out
-        # Age value is positive — exact value depends on test wall time.
-        age_lines = [
-            line for line in out.splitlines()
-            if line.startswith("switchyard_latency_service_poll_age_seconds ")
-        ]
-        assert len(age_lines) == 1
-        age_value = float(age_lines[0].split()[-1])
-        assert age_value > 0
+        snap = _snapshot(backend)
+        assert snap["poll_ok"] is True
+        assert snap["polls"] == 3
+        assert snap["poll_age_seconds"] > 0
 
-    def test_poll_failure_flips_ok_to_zero(self) -> None:
-        """Even with prior successes, a recorded failure flips poll_ok off
-        so dashboards alarm on the *latest* poll result, not history."""
+    def test_poll_failure_flips_ok_to_false(self) -> None:
         backend = _make_backend(_config("model-A"))
         backend._poller._poll_count = 5
-        backend._poller._last_success_at = __import__("time").monotonic() - 1.0
+        backend._poller._last_success_at = time.monotonic() - 1.0
         backend._poller._poll_failures = 1
         backend._poller._last_poll_ok = False
 
-        out = _emit(backend)
-        assert "switchyard_latency_service_poll_ok 0" in out
-        assert "switchyard_latency_service_poll_failures_total 1" in out
+        snap = _snapshot(backend)
+        assert snap["poll_ok"] is False
+        assert snap["poll_failures"] == 1
 
-    def test_success_after_prior_failure_emits_ok(self) -> None:
-        """Prior failures are historical counters; poll_ok tracks latest outcome."""
+
+class TestSourceLifecycle:
+    def test_construction_registers_source(self) -> None:
         backend = _make_backend(_config("model-A"))
-        backend._poller._poll_count = 5
-        backend._poller._poll_failures = 1
-        backend._poller._last_poll_ok = True
-        backend._poller._last_success_at = __import__("time").monotonic() - 1.0
-
-        out = _emit(backend)
-        assert "switchyard_latency_service_poll_ok 1" in out
-        assert "switchyard_latency_service_poll_failures_total 1" in out
-
-
-class TestEmitterLifecycle:
-    def test_construction_registers_emitter(self) -> None:
-        assert prometheus_emitter._EMITTERS == []
-        backend = _make_backend(_config("model-A"))
-        assert len(prometheus_emitter._EMITTERS) == 1
-        # Confirm table output includes this backend's lines.
-        assert "switchyard_endpoint_status" in prometheus_emitter.render()
+        assert metrics._latency_service_source is not None
         backend.shutdown()
-        assert prometheus_emitter._EMITTERS == []
+        assert metrics._latency_service_source is None
 
     def test_shutdown_idempotent(self) -> None:
-        """Lifespan tear-down may call shutdown more than once."""
         backend = _make_backend(_config("model-A"))
         backend.shutdown()
         backend.shutdown()
-        assert prometheus_emitter._EMITTERS == []
+        assert metrics._latency_service_source is None
 
 
 class TestRoutingOverhead:
     async def test_metrics_record_routing_overhead_for_python_backend(self) -> None:
-        """End-to-end: a request through the latency-service chain must
-        publish ``switchyard_routing_overhead_ms`` with non-zero count.
-
-        Before ``ctx.backend_call_latency_ms`` existed, the Rust response
-        processor had no backend-latency reading to subtract from total,
-        and the summary stayed at ``count=0`` even under heavy load.
-        """
-        from unittest.mock import AsyncMock
-
-        from openai.types.chat import ChatCompletion
-        from openai.types.chat.chat_completion import Choice
-        from openai.types.chat.chat_completion_message import ChatCompletionMessage
+        """A request through the latency-service chain records routing_overhead_ms."""
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
         from switchyard_rust.core import ChatRequest
 
-        with patch(
-            "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
-        ) as mock_cls:
-            mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
-            with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
-                switchyard = _latency_service_switchyard(
-                    LatencyServiceBackendConfig(
-                        latency_service_url="http://latency.test:8080",
-                        endpoints=[
-                            LatencyServiceEndpoint(
-                                model="model-A",
-                                api_key="test-key",
-                                base_url="http://llm.test/v1",
-                            ),
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader])
+        metrics.reset_for_test(provider.get_meter("switchyard"))
+        try:
+            with patch(
+                "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
+            ) as mock_cls:
+                mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
+                with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
+                    switchyard = _latency_service_switchyard(
+                        LatencyServiceBackendConfig(
+                            latency_service_url="http://latency.test:8080",
+                            endpoints=[
+                                LatencyServiceEndpoint(
+                                    model="model-A",
+                                    api_key="test-key",
+                                    base_url="http://llm.test/v1",
+                                ),
+                            ],
+                        )
+                    )
+                    backend = next(
+                        component
+                        for component in switchyard.iter_components()
+                        if hasattr(component, "_clients")
+                    )
+                    from openai.types.chat import ChatCompletion
+                    from openai.types.chat.chat_completion import Choice
+                    from openai.types.chat.chat_completion_message import (
+                        ChatCompletionMessage,
+                    )
+
+                    completion = ChatCompletion(
+                        id="cmpl-test",
+                        object="chat.completion",
+                        created=1700000000,
+                        model="model-A",
+                        choices=[
+                            Choice(
+                                index=0,
+                                message=ChatCompletionMessage(role="assistant", content="ok"),
+                                finish_reason="stop",
+                            )
                         ],
                     )
-                )
+                    backend._clients["model-A"].acompletion = AsyncMock(return_value=completion)
 
-                backend = next(
-                    component
-                    for component in switchyard.iter_components()
-                    if hasattr(component, "_clients")
-                )
-                completion = ChatCompletion(
-                    id="cmpl-test",
-                    object="chat.completion",
-                    created=1700000000,
-                    model="model-A",
-                    choices=[
-                        Choice(
-                            index=0,
-                            message=ChatCompletionMessage(role="assistant", content="ok"),
-                            finish_reason="stop",
-                        )
-                    ],
-                )
-                backend._clients["model-A"].acompletion = AsyncMock(return_value=completion)
+                    await switchyard.call(ChatRequest.openai_chat({
+                        "model": "model-A",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    }))
 
-                await switchyard.call(ChatRequest.openai_chat({
-                    "model": "model-A",
-                    "messages": [{"role": "user", "content": "hi"}],
-                }))
-
-                app = build_switchyard_app(switchyard)
-                with TestClient(app, raise_server_exceptions=False) as client:
-                    metrics = client.get("/metrics")
-
-        assert metrics.status_code == 200
-        body = metrics.text
-        count_line = next(
-            line for line in body.splitlines()
-            if line.startswith("switchyard_routing_overhead_ms_count")
-        )
-        count = int(count_line.split()[-1])
-        assert count >= 1, f"expected non-zero routing_overhead samples, body=\n{body}"
+            count = 0
+            for rm in reader.get_metrics_data().resource_metrics:
+                for sm in rm.scope_metrics:
+                    for metric in sm.metrics:
+                        if metric.name == "switchyard.routing_overhead_ms":
+                            count += sum(p.count for p in metric.data.data_points)
+            assert count >= 1
+        finally:
+            metrics.reset_for_test(None)
 
 
 class TestEndToEnd:
-    def test_metrics_endpoint_includes_health_lines(self) -> None:
-        """Wire the full chain via the recipe and verify /metrics carries
-        the new lines on top of the standard accumulator exposition."""
-        with patch(
-            "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
-        ) as mock_cls:
-            mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
-            with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
-                switchyard = _latency_service_switchyard(
-                    LatencyServiceBackendConfig(
-                        latency_service_url="http://latency.test:8080",
-                        endpoints=[
-                            LatencyServiceEndpoint(
-                                model="model-A",
-                                api_key="test-key",
-                                base_url="http://llm.test/v1",
-                            ),
-                        ],
+    def test_metrics_endpoint_includes_health_lines(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The full chain's /metrics carries the latency-service health surface."""
+        reg = CollectorRegistry()
+        reader = PrometheusMetricReader(registry=reg)
+        provider = MeterProvider(metric_readers=[reader])
+        metrics.reset_for_test(provider.get_meter("switchyard"))
+        monkeypatch.setattr(observability, "prometheus_registry", lambda: reg)
+        monkeypatch.setattr(observability, "is_enabled", lambda: True)
+        monkeypatch.setattr(observability, "init_observability", lambda: True)
+        try:
+            with patch(
+                "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
+            ) as mock_cls:
+                mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
+                with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
+                    switchyard = _latency_service_switchyard(
+                        LatencyServiceBackendConfig(
+                            latency_service_url="http://latency.test:8080",
+                            endpoints=[
+                                LatencyServiceEndpoint(
+                                    model="model-A",
+                                    api_key="test-key",
+                                    base_url="http://llm.test/v1",
+                                ),
+                            ],
+                        )
                     )
-                )
-                app = build_switchyard_app(switchyard)
+                    app = build_switchyard_app(switchyard)
+                    with TestClient(app, raise_server_exceptions=False) as client:
+                        resp = client.get("/metrics")
 
-                with TestClient(app, raise_server_exceptions=False) as client:
-                    metrics = client.get("/metrics")
-
-        assert metrics.status_code == 200
-        body = metrics.text
-        # Both surfaces coexist on the same scrape.
-        assert "switchyard_requests_total" in body
-        assert "switchyard_endpoint_status" in body
-        assert "switchyard_latency_service_poll_ok" in body
-        assert "switchyard_latency_service_polls_total" in body
+            assert resp.status_code == 200
+            body = resp.text
+            assert "switchyard_endpoint_status" in body
+            assert "switchyard_latency_service_poll_ok" in body
+            assert "switchyard_latency_service_polls_total" in body
+        finally:
+            metrics.reset_for_test(None)
