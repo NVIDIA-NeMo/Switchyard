@@ -21,13 +21,13 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 
-from switchyard.lib import observability
-from switchyard.lib.endpoints import outcome_metrics
+from switchyard.lib import metrics, observability
 from switchyard.lib.endpoints.anthropic_messages_endpoint import (
     AnthropicMessagesEndpoint,
 )
 from switchyard.lib.endpoints.base import Endpoint
 from switchyard.lib.endpoints.dispatch import invalid_request_response
+from switchyard.lib.endpoints.metrics_endpoint import register_metrics_endpoint
 from switchyard.lib.endpoints.models_endpoint import ModelsEndpoint
 from switchyard.lib.endpoints.openai_chat_endpoint import (
     OpenAIChatEndpoint,
@@ -156,10 +156,11 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
     # Bring up the OTel SDK (no-op when the otel extra is absent / disabled) so the
     # /metrics scrape endpoint and OTLP export are live for the server's lifetime.
     observability.init_observability()
+    register_metrics_endpoint(app)
 
     @app.middleware("http")
     async def _record_client_outcome(request, call_next):  # type: ignore[no-untyped-def]
-        """Tally every LLM-route response into the outcome counters.
+        """Tally every LLM-route response into the outcome counter.
 
         Runs after the endpoint produces its response, so it sees the
         final status code regardless of how it was generated (success,
@@ -167,7 +168,9 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
         """
         response = await call_next(request)
         if request.url.path in _LLM_ROUTES:
-            outcome_metrics.record_client_response(response.status_code)
+            metrics.record_client_response(
+                outcome=metrics.classify(response.status_code)
+            )
         return response
 
     # Route tables can contain hundreds of per-model components that contribute

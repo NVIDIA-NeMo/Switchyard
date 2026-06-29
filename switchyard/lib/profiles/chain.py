@@ -20,7 +20,6 @@ from switchyard.lib.roles import LLMBackend
 from switchyard.lib.session_affinity import CTX_SESSION_KEY
 from switchyard.lib.session_cache import SessionCache
 from switchyard.lib.session_key import session_key_from_body
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import (
     ChatRequest,
     ChatResponse,
@@ -109,46 +108,28 @@ class ComponentChainProfile:
 
     def with_runtime_components(
         self,
-        stats_accumulator: StatsAccumulator | None = None,
+        stats_accumulator: object = None,
         enable_stats: bool = True,
         pre_request_processors: Sequence[Any] = (),
         post_request_processors: Sequence[Any] = (),
         response_processors: Sequence[Any] = (),
     ) -> ComponentChainProfile:
-        """Return a copy with serving-level stats and processor hooks applied.
+        """Return a copy with serving-level processor hooks applied.
 
-        Profile configs stay user-facing and parseable; shared serving resources
-        such as one route-table accumulator or Intake processors are attached by
-        the builder that hosts the profile.
+        Per-request metrics (latency, tokens, cost, routing decisions) are emitted
+        directly by the chain executor via OpenTelemetry, so no stats components are
+        attached here. ``stats_accumulator`` / ``enable_stats`` are accepted but
+        ignored for call-site compatibility during the OTel migration.
         """
-        from switchyard.lib.processors.stats_request_processor import (
-            StatsRequestProcessor,
-        )
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        request_chain: list[Any] = []
-        response_chain: list[Any] = list(self._response_processors)
-        backend = self._backend
-        stats: StatsAccumulator | None = None
-
-        if enable_stats:
-            stats = stats_accumulator or StatsAccumulator()
-            request_chain.append(StatsRequestProcessor())
-            backend = _attach_stats_to_backend(backend, stats)
-            response_chain.append(StatsResponseProcessor(stats))
-
-        request_chain.extend(pre_request_processors)
+        request_chain: list[Any] = list(pre_request_processors)
         request_chain.extend(self._request_processors)
         request_chain.extend(post_request_processors)
+        response_chain: list[Any] = list(self._response_processors)
         response_chain.extend(response_processors)
-        if stats is not None:
-            _attach_stats_to_request_processors(request_chain, stats)
 
         return ComponentChainProfile(
             request_processors=request_chain,
-            backend=backend,
+            backend=self._backend,
             response_processors=response_chain,
             fallback_target_on_evict=self._fallback_target_on_evict,
         )
@@ -385,76 +366,3 @@ def _overflow_target_id(
     if isinstance(target_id, str) and target_id:
         return target_id
     return processed.selected_target
-
-
-def _attach_stats_to_backend(
-    backend: LLMBackend,
-    stats: StatsAccumulator,
-) -> LLMBackend:
-    """Wrap native backends or wire existing Python stats hooks in place."""
-    from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-    try:
-        return StatsLlmBackend(backend, stats)
-    except TypeError:
-        # Python-only backends cannot be wrapped by the Rust stats binding.
-        # Fail loudly if the backend does not expose one of the known
-        # compatibility hooks; silent metrics loss is worse than a build error.
-        if not _attach_stats_to_python_backend(backend, stats):
-            backend_type = type(backend).__qualname__
-            raise TypeError(
-                f"{backend_type} cannot be wrapped for stats and exposes no "
-                "Python stats compatibility hook"
-            ) from None
-        return backend
-
-
-def _attach_stats_to_python_backend(
-    backend: LLMBackend,
-    stats: StatsAccumulator,
-) -> bool:
-    """Wire stats into Python-only backend shapes that already support it."""
-    attached = False
-    if hasattr(backend, "_stats"):
-        cast(Any, backend)._stats = stats
-        attached = True
-
-    inner = getattr(backend, "_inner", None)
-    if inner is not None:
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-        try:
-            cast(Any, backend)._inner = StatsLlmBackend(inner, stats)
-            attached = True
-        except TypeError:
-            attached = _attach_stats_to_python_backend(inner, stats) or attached
-
-    nested = getattr(backend, "_backends", None)
-    if not isinstance(nested, dict):
-        return attached
-
-    from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-    for label, child in list(nested.items()):
-        try:
-            nested[label] = StatsLlmBackend(child, stats)
-            attached = True
-        except TypeError:
-            attached = _attach_stats_to_python_backend(child, stats) or attached
-    return attached
-
-
-def _attach_stats_to_request_processors(
-    processors: Sequence[Any],
-    stats: StatsAccumulator,
-) -> None:
-    """Wire existing classifier/planner stats hooks without config fields."""
-    for processor in processors:
-        attach_stats = getattr(processor, "attach_stats_accumulator", None)
-        if callable(attach_stats):
-            attach_stats(stats)
-        if hasattr(processor, "_stats_accumulator"):
-            cast(Any, processor)._stats_accumulator = stats
-
-
-__all__ = ["ChainProcessedRequest", "ComponentChainProfile"]

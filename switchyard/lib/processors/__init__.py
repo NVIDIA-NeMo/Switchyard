@@ -8,15 +8,6 @@ from typing import TYPE_CHECKING, Any
 from switchyard.lib.processors.model_rewrite_request_processor import (
     ModelRewriteRequestProcessor,
 )
-from switchyard.lib.processors.stats_request_processor import (
-    StatsRequestProcessor,
-)
-from switchyard.lib.processors.stats_response_processor_accumulator import (
-    StatsResponseProcessor,
-)
-from switchyard.lib.processors.stats_response_processor_live_collector import (
-    StatsResponseProcessor as StatsResponseProcessorLiveCollector,
-)
 
 if TYPE_CHECKING:
     from switchyard.lib.processors.intake_client import IntakeClient
@@ -30,9 +21,6 @@ __all__ = [
     "IntakeRequestProcessor",
     "IntakeResponseProcessor",
     "ModelRewriteRequestProcessor",
-    "StatsRequestProcessor",
-    "StatsResponseProcessor",
-    "StatsResponseProcessorLiveCollector",
 ]
 
 

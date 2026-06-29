@@ -8,12 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import time
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from switchyard.lib import metrics
+from switchyard.lib.cost_estimator import estimate_model_cost
 from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.processors._structured_output import build_response_format
 from switchyard.lib.processors.llm_classifier.signals import (
@@ -24,7 +25,6 @@ from switchyard.lib.processors.llm_classifier.signals import (
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.session_affinity import SessionAffinity
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 
 log = logging.getLogger(__name__)
@@ -72,12 +72,11 @@ class ClassifierCompletion:
 
     Carries the raw ``content`` (a JSON string to be parsed into
     :class:`RouteDecision`) and the raw SDK ``usage`` object so the
-    processor can record token spend into a
-    :class:`~switchyard.lib.stats_accumulator.StatsAccumulator` when one
-    is wired in. ``usage`` is intentionally typed as ``Any`` — the
-    OpenAI-Python SDK's ``CompletionUsage`` shape is what we have today;
-    custom client implementations may return any duck-typed object with
-    the same attribute set.
+    processor can record classifier token/cost spend via OpenTelemetry.
+    ``usage`` is intentionally typed as ``Any`` — the OpenAI-Python SDK's
+    ``CompletionUsage`` shape is what we have today; custom client
+    implementations may return any duck-typed object with the same
+    attribute set.
     """
 
     content: str
@@ -310,12 +309,10 @@ class LLMClassifierRequestProcessor:
         *,
         client: LLMClassifierClient | None = None,
         signal_schema: type[RouteDecision] = RouteSignals,
-        stats_accumulator: StatsAccumulator | None = None,
         affinity: SessionAffinity | None = None,
     ) -> None:
         self._config = config
         self._signal_schema = signal_schema
-        self._stats_accumulator = stats_accumulator
         # Shared tier-pin store. Once a conversation is pinned, its tier is
         # fixed, so the classifier verdict would be ignored — skip the LLM call.
         self._affinity = affinity
@@ -351,7 +348,6 @@ class LLMClassifierRequestProcessor:
             max_chars=self._config.max_request_chars,
             recent_turn_window=self._config.recent_turn_window,
         )
-        started_at = time.perf_counter()
         try:
             completion = await self._client.classify(
                 model=self._config.model,
@@ -369,25 +365,13 @@ class LLMClassifierRequestProcessor:
                 "stamping abstain signals: %s",
                 exc,
             )
-            if self._stats_accumulator is not None:
-                # Record the failure into the classifier bucket so
-                # ``/v1/routing/stats`` reports ``classifier.total_errors``
-                # alongside ``classifier.total_requests`` — otherwise a
-                # silent fail-open hides the failure rate from the
-                # benchmark observer.  Mirrors the success-branch
-                # ``_record_classifier_call`` below.
-                await self._stats_accumulator.record_classifier_error(self._config.model)
             signals = self._signal_schema.make_abstain(
                 self._config.fallback_recommended_tier,
             )
             _fail_open_exc: Exception | None = exc
         else:
             _fail_open_exc = None
-            if self._stats_accumulator is not None:
-                await self._record_classifier_call(
-                    usage=completion.usage,
-                    latency_ms=(time.perf_counter() - started_at) * 1000,
-                )
+            self._record_classifier_call(usage=completion.usage)
 
         ctx.metadata[CTX_DETERMINISTIC_ROUTE_SIGNALS] = signals
         # One-line dump of the extracted signals + the deterministic
@@ -414,22 +398,14 @@ class LLMClassifierRequestProcessor:
             sys.stderr.flush()
         return request
 
-    async def _record_classifier_call(
-        self,
-        *,
-        usage: Any,
-        latency_ms: float,
-    ) -> None:
-        """Extract token counts from the SDK ``usage`` object and record them.
+    def _record_classifier_call(self, *, usage: Any) -> None:
+        """Record classifier token + cost spend via OTel under ``role=classifier``.
 
-        Records into the classifier bucket on :class:`StatsAccumulator`
-        so the classifier model's token spend doesn't merge with the
-        same-named backend tier (default TB-lite config has classifier
-        and weak both pointing at Nemotron-3-Super-v3). Latency is
-        recorded too so the per-request classifier-tax line shows up
-        on the snapshot's classifier-models block.
+        Tagging the spend with ``role="classifier"`` keeps the classifier
+        model's token/cost out of the routed-traffic buckets even when the
+        classifier and a routed tier share a model id (default TB-lite config
+        points classifier and weak both at Nemotron-3-Super-v3).
         """
-        assert self._stats_accumulator is not None
         prompt = 0
         completion = 0
         cached = 0
@@ -439,13 +415,22 @@ class LLMClassifierRequestProcessor:
             ptd = getattr(usage, "prompt_tokens_details", None)
             if ptd is not None:
                 cached = getattr(ptd, "cached_tokens", 0) or 0
-        await self._stats_accumulator.record_classifier_usage(
-            model=self._config.model,
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            cached_tokens=cached,
-            latency_ms=latency_ms,
+        model = self._config.model
+        metrics.record_tokens(
+            model=model, tier="classifier", prompt=prompt, completion=completion, cached=cached
         )
+        costs = estimate_model_cost(model, prompt, completion, cached)
+        for kind, key in (
+            ("input", "base_input_cost"),
+            ("cached", "cached_input_cost"),
+            ("output", "output_cost"),
+        ):
+            value = costs.get(key, 0.0)
+            if value:
+                metrics.record_cost(
+                    model=model, tier="classifier", role="classifier",
+                    kind=kind, cost_usd=value,
+                )
 
 
 def parse_route_decision(

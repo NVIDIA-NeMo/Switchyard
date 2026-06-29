@@ -42,7 +42,6 @@ from switchyard.lib.profiles.deterministic_routing_config import (
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +71,6 @@ def random_routing_virtual_model_id(config: RandomRoutingConfig) -> str:
 
 def build_random_routing_switchyard(
     config: RandomRoutingConfig,
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -83,8 +81,6 @@ def build_random_routing_switchyard(
         RandomRoutingProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -93,8 +89,6 @@ def build_random_routing_switchyard(
 
 def build_tier_passthrough_switchyard(
     tier: LlmTarget,
-    stats: StatsAccumulator,
-    enable_stats: bool = True,
     extra_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -107,8 +101,6 @@ def build_tier_passthrough_switchyard(
         )
         .build()
         .with_runtime_components(
-            enable_stats=enable_stats,
-            stats_accumulator=stats,
             pre_request_processors=extra_request_processors,
             response_processors=extra_response_processors,
         )
@@ -137,8 +129,6 @@ def build_single_model_table(
 
 def build_passthrough_table(
     tiers: Sequence[LlmTarget],
-    stats: StatsAccumulator,
-    enable_stats: bool = True,
     discovery_fn: DiscoveryFn | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
@@ -171,8 +161,6 @@ def build_passthrough_table(
             tier.model,
             build_tier_passthrough_switchyard(
                 tier,
-                stats,
-                enable_stats=enable_stats,
                 extra_request_processors=pre_routing_request_processors,
                 extra_response_processors=extra_response_processors,
             ),
@@ -286,7 +274,6 @@ def register_random_routing_policy(
 
 def build_random_routing_table(
     config: RandomRoutingConfig,
-    stats: StatsAccumulator,
     random_routing_switchyard: ChainRuntime,
     routing_model: str | None = None,
     discovery_fn: DiscoveryFn | None = None,
@@ -302,8 +289,6 @@ def build_random_routing_table(
     """
     table = build_passthrough_table(
         (config.strong, config.weak),
-        stats,
-        enable_stats=config.enable_stats,
         discovery_fn=discovery_fn,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
@@ -341,7 +326,6 @@ def deterministic_routing_virtual_model_id(
 
 def build_deterministic_routing_switchyard(
     config: DeterministicRoutingConfig,
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -355,8 +339,6 @@ def build_deterministic_routing_switchyard(
         DeterministicRoutingProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -413,7 +395,6 @@ def register_deterministic_routing_policy(
 
 def build_deterministic_routing_table(
     config: DeterministicRoutingConfig,
-    stats: StatsAccumulator,
     deterministic_routing_switchyard: ChainRuntime,
     routing_model: str | None = None,
     discovery_fn: DiscoveryFn | None = None,
@@ -423,8 +404,6 @@ def build_deterministic_routing_table(
     """Compose discovery + deterministic-routing-policy layers."""
     table = build_passthrough_table(
         (config.strong, config.weak),
-        stats,
-        enable_stats=config.enable_stats,
         discovery_fn=discovery_fn,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
@@ -457,7 +436,6 @@ def plan_execute_virtual_model_id(config: PlanExecuteConfig) -> str:
 
 def build_plan_execute_switchyard(
     config: PlanExecuteConfig,
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -468,8 +446,6 @@ def build_plan_execute_switchyard(
         PlanExecuteProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -514,7 +490,6 @@ def register_plan_execute_policy(
 
 def build_plan_execute_table(
     config: PlanExecuteConfig,
-    stats: StatsAccumulator,
     plan_execute_switchyard: ChainRuntime,
     routing_model: str | None = None,
     discovery_fn: DiscoveryFn | None = None,
@@ -529,8 +504,6 @@ def build_plan_execute_table(
     """
     table = build_passthrough_table(
         (config.executor,),
-        stats,
-        enable_stats=config.enable_stats,
         discovery_fn=discovery_fn,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,

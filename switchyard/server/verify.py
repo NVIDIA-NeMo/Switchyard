@@ -74,7 +74,6 @@ from switchyard.lib.backends.backend_format_resolver import (
 )
 from switchyard.lib.route_table import SwitchyardApp
 from switchyard.lib.route_table_builders import build_single_model_table
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.server.switchyard_app import build_switchyard_app
 
 logger = logging.getLogger(__name__)
@@ -1042,7 +1041,6 @@ def verify_proxy(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
-            stats=StatsAccumulator(),
         )
         server, thread, resolved_port = _start_proxy(switchyard, port)
         state.server = server
@@ -1110,7 +1108,6 @@ def verify_claude(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
-            stats=StatsAccumulator(),
         )
         server, thread, resolved_port = _start_proxy(switchyard, port)
         state.server = server
@@ -1189,7 +1186,7 @@ def verify_codex(
 
     def _start() -> str:
         chain = _build_codex_switchyard(
-            model, api_key, base_url, timeout, StatsAccumulator(),
+            model, api_key, base_url, timeout,
         )
         switchyard = build_single_model_table(model, chain)
         server, thread, resolved_port = _start_proxy(switchyard, port)
@@ -1267,7 +1264,7 @@ def verify_openclaw(
         # so we always build the OpenAI translation chain — no probe
         # required (matches launch_openclaw).
         switchyard = _build_openclaw_switchyard(
-            model, api_key, base_url, timeout, StatsAccumulator(),
+            model, api_key, base_url, timeout,
         )
         server, thread, resolved_port = _start_proxy(switchyard, port)
         state.server = server

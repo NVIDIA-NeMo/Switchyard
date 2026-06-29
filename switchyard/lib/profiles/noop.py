@@ -20,7 +20,6 @@ from switchyard.lib.chat_response.openai_chat import ResponseStream
 from switchyard.lib.profiles.chain import _context_from_input
 from switchyard.lib.profiles.table import profile_config
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import (
     ChatRequest,
     ChatRequestType,
@@ -134,30 +133,23 @@ class NoopProfile:
 
     def with_runtime_components(
         self,
-        stats_accumulator: StatsAccumulator | None = None,
+        stats_accumulator: object = None,
         enable_stats: bool = True,
         pre_request_processors: Sequence[Any] = (),
         post_request_processors: Sequence[Any] = (),
         response_processors: Sequence[Any] = (),
     ) -> "NoopProfile":
-        """Return a no-op profile with route-table processors attached."""
-        from switchyard.lib.processors.stats_request_processor import (
-            StatsRequestProcessor,
-        )
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
+        """Return a no-op profile with route-table processors attached.
 
-        request_chain: list[Any] = []
-        response_chain: list[Any] = list(self._response_processors)
-        if enable_stats:
-            stats = stats_accumulator or StatsAccumulator()
-            request_chain.append(StatsRequestProcessor())
-            response_chain.append(StatsResponseProcessor(stats))
-
-        request_chain.extend(pre_request_processors)
+        Per-request metrics are emitted by the chain executor via
+        OpenTelemetry, so no stats components are attached here.
+        ``stats_accumulator`` / ``enable_stats`` are accepted but ignored for
+        call-site compatibility during the OTel migration.
+        """
+        request_chain: list[Any] = list(pre_request_processors)
         request_chain.extend(self._request_processors)
         request_chain.extend(post_request_processors)
+        response_chain: list[Any] = list(self._response_processors)
         response_chain.extend(response_processors)
         return NoopProfile(
             request_processors=tuple(request_chain),

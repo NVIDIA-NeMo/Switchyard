@@ -108,14 +108,18 @@ class ShellTUI:
     def __init__(
         self,
         command: list[str],
-        footer_fn: Callable[[int], list[tuple[str, int]]],
-        footer_height: Callable[[], int] = lambda: 1,
+        footer_fn: Callable[[int], list[tuple[str, int]]] | None = None,
+        footer_height: Callable[[], int] | None = None,
         refresh_hz: float = 2.0,
         env: dict[str, str] | None = None,
     ) -> None:
         self.command = command
-        self.footer_fn = footer_fn
-        self._footer_height_fn: Callable[[], int] = footer_height
+        # No footer by default: the embedded child gets the full terminal.
+        # Callers can still supply a footer renderer + height.
+        self.footer_fn = footer_fn if footer_fn is not None else (lambda _cols: [])
+        self._footer_height_fn: Callable[[], int] = (
+            footer_height if footer_height is not None else (lambda: 0)
+        )
         self.refresh_interval = 1.0 / refresh_hz
         self._env = env
         self._out_lock = threading.Lock()

@@ -21,7 +21,8 @@ ever an attribute.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from opentelemetry.metrics import Observation
@@ -31,6 +32,84 @@ if TYPE_CHECKING:
 _meter: Any = None
 _meter_resolved: bool = False
 _instruments: dict[str, Any] = {}
+
+# ---------------------------------------------------------------------------
+# Outcome classification — shared by the client-outcome middleware, the
+# upstream-attempt accounting, and the latency-service backend. These are pure
+# helpers (no instrument state) so they work regardless of whether
+# observability is enabled.
+# ---------------------------------------------------------------------------
+
+OutcomeBucket = Literal["success", "retryable_error", "other_error"]
+
+#: HTTP status codes the success criterion counts as router-rescuable errors.
+RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 500, 504})
+
+#: Status codes emitted verbatim as the ``code`` label. Anything else is
+#: clamped to its class (``"4xx"`` / ``"5xx"`` / …) so a misbehaving upstream
+#: cannot inflate label cardinality.
+KNOWN_STATUS_CODES: frozenset[int] = frozenset(
+    {200, 400, 401, 403, 404, 408, 409, 422, 429, 500, 502, 503, 504}
+)
+
+#: ``code`` label value for a non-HTTP failure (network error, pre-status
+#: timeout) — the request never received a status line, so there is no code.
+NO_STATUS_CODE: str = "none"
+
+
+def classify(status_code: int) -> OutcomeBucket:
+    """Map an HTTP status code to its outcome bucket.
+
+    2xx → ``success``; 429 / 500 / 504 → ``retryable_error``; everything else
+    → ``other_error``.
+    """
+    if 200 <= status_code < 300:
+        return "success"
+    if status_code in RETRYABLE_STATUSES:
+        return "retryable_error"
+    return "other_error"
+
+
+def code_label(status_code: int | None) -> str:
+    """Render the ``code`` label for one upstream attempt.
+
+    ``None`` (non-HTTP failure) → :data:`NO_STATUS_CODE`; a known code is
+    emitted verbatim; any other HTTP code is clamped to its class.
+    """
+    if status_code is None:
+        return NO_STATUS_CODE
+    if status_code in KNOWN_STATUS_CODES:
+        return str(status_code)
+    if 100 <= status_code < 600:
+        return f"{status_code // 100}xx"
+    return "other"
+
+
+# ---------------------------------------------------------------------------
+# Latency-service observable-gauge source. The latency-service backend registers
+# a callable that returns a snapshot of its poll/health/affinity state; the
+# observable-gauge callbacks below read it on each scrape. Counters (polls,
+# poll_failures, affinity hits/misses) are surfaced as observable gauges over
+# the backend's own cumulative integers so they need no per-event recording.
+# ---------------------------------------------------------------------------
+
+#: Snapshot the latency-service source returns. Keys are optional; callbacks
+#: skip missing ones.
+LatencyServiceSnapshot = dict[str, Any]
+
+_latency_service_source: Callable[[], LatencyServiceSnapshot] | None = None
+
+
+def register_latency_service_source(
+    source: Callable[[], LatencyServiceSnapshot] | None,
+) -> None:
+    """Register (or clear) the latency-service state source for the gauges.
+
+    Single-process server: one latency-service backend at a time owns the
+    source. Passing ``None`` clears it (called from the backend's ``shutdown``).
+    """
+    global _latency_service_source
+    _latency_service_source = source
 
 # Running totals exposed as gauges to preserve the historical
 # `switchyard_total_requests` / `switchyard_total_errors` series. Counters
@@ -64,6 +143,94 @@ def _total_errors_callback(_options: Any) -> list[Observation]:  # pragma: no co
     return [Observation(_total_errors, {})]
 
 
+def _ls_snapshot() -> LatencyServiceSnapshot:
+    """Return the current latency-service snapshot, or empty when unregistered."""
+    if _latency_service_source is None:
+        return {}
+    try:
+        return _latency_service_source()
+    except Exception:  # pragma: no cover - defensive; never break a scrape
+        return {}
+
+
+def _endpoint_status_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    obs: list[Observation] = []
+    for model_id, current in snap.get("endpoint_status", {}).items():
+        for status in ("healthy", "degraded", "unknown"):
+            value = 1 if status == current else 0
+            obs.append(Observation(value, {"model": model_id, "status": status}))
+    return obs
+
+
+def _endpoint_last_latency_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    return [
+        Observation(latency_ms, {"model": model_id})
+        for model_id, latency_ms in snap.get("endpoint_last_latency_ms", {}).items()
+        if latency_ms is not None
+    ]
+
+
+def _poll_ok_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    if "poll_ok" not in snap:
+        return []
+    return [Observation(1 if snap["poll_ok"] else 0, {})]
+
+
+def _poll_age_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    age = snap.get("poll_age_seconds")
+    if age is None:
+        return []
+    return [Observation(age, {})]
+
+
+def _polls_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    if "polls" not in snap:
+        return []
+    return [Observation(snap["polls"], {})]
+
+
+def _poll_failures_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    if "poll_failures" not in snap:
+        return []
+    return [Observation(snap["poll_failures"], {})]
+
+
+def _affinity_hits_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    if "affinity_hits" not in snap:
+        return []
+    return [Observation(snap["affinity_hits"], {})]
+
+
+def _affinity_misses_callback(_options: Any) -> list[Observation]:  # pragma: no cover
+    from opentelemetry.metrics import Observation
+
+    snap = _ls_snapshot()
+    if "affinity_misses" not in snap:
+        return []
+    return [Observation(snap["affinity_misses"], {})]
+
+
 def _build_instruments(meter: Any) -> dict[str, Any]:
     """Create every instrument against *meter*. Called once per meter."""
     inst: dict[str, Any] = {}
@@ -83,13 +250,6 @@ def _build_instruments(meter: Any) -> dict[str, Any]:
     inst["client_responses"] = meter.create_counter("switchyard.client_responses")
     inst["upstream_attempts"] = meter.create_counter("switchyard.upstream_attempts")
     inst["retry_recovered"] = meter.create_counter("switchyard.retry_recovered")
-    inst["latency_service_polls"] = meter.create_counter("switchyard.latency_service_polls")
-    inst["latency_service_poll_failures"] = meter.create_counter(
-        "switchyard.latency_service_poll_failures"
-    )
-    inst["affinity_hits"] = meter.create_counter("switchyard.affinity_hits")
-    inst["affinity_misses"] = meter.create_counter("switchyard.affinity_misses")
-
     # Histograms → Prometheus `_bucket`/`_sum`/`_count`.
     inst["model_call_latency_ms"] = meter.create_histogram("switchyard.model_call_latency_ms")
     inst["total_latency_ms"] = meter.create_histogram("switchyard.total_latency_ms")
@@ -103,6 +263,37 @@ def _build_instruments(meter: Any) -> dict[str, Any]:
         "switchyard.total_requests", callbacks=[_total_requests_callback]
     )
     meter.create_observable_gauge("switchyard.total_errors", callbacks=[_total_errors_callback])
+
+    # Latency-service health/affinity surface — observed from the backend's
+    # state on each scrape. Status / latency / poll_ok / poll_age are gauges;
+    # polls / poll_failures / affinity hits+misses are cumulative observable
+    # counters so the Prometheus exporter renders them with the historical
+    # `_total` suffix.
+    meter.create_observable_gauge(
+        "switchyard.endpoint_status", callbacks=[_endpoint_status_callback]
+    )
+    meter.create_observable_gauge(
+        "switchyard.endpoint_last_latency_ms",
+        callbacks=[_endpoint_last_latency_callback],
+    )
+    meter.create_observable_gauge(
+        "switchyard.latency_service_poll_ok", callbacks=[_poll_ok_callback]
+    )
+    meter.create_observable_gauge(
+        "switchyard.latency_service_poll_age_seconds", callbacks=[_poll_age_callback]
+    )
+    meter.create_observable_counter(
+        "switchyard.latency_service_polls", callbacks=[_polls_callback]
+    )
+    meter.create_observable_counter(
+        "switchyard.latency_service_poll_failures", callbacks=[_poll_failures_callback]
+    )
+    meter.create_observable_counter(
+        "switchyard.affinity_hits", callbacks=[_affinity_hits_callback]
+    )
+    meter.create_observable_counter(
+        "switchyard.affinity_misses", callbacks=[_affinity_misses_callback]
+    )
 
     return inst
 
@@ -251,8 +442,10 @@ def record_retry_recovered() -> None:
 def reset_for_test(meter: Any) -> None:
     """Rebind the meter and clear instruments. Test seam only."""
     global _meter, _meter_resolved, _instruments, _total_requests, _total_errors
+    global _latency_service_source
     _meter = meter
     _meter_resolved = True
     _instruments = {}
     _total_requests = 0
     _total_errors = 0
+    _latency_service_source = None

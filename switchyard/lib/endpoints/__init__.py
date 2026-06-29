@@ -18,10 +18,8 @@ if TYPE_CHECKING:
         OpenAIChatEndpoint,
     )
     from switchyard.lib.endpoints.responses_endpoint import ResponsesEndpoint
-    from switchyard.lib.endpoints.stats_endpoint import StatsEndpoint
 
 __all__ = [
-    "StatsEndpoint",
     "AnthropicMessagesEndpoint",
     "ModelsEndpoint",
     "OpenAIChatEndpoint",
@@ -31,10 +29,7 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     """Lazy load HTTP endpoint classes that require fastapi."""
-    if name == "StatsEndpoint":
-        from switchyard.lib.endpoints.stats_endpoint import StatsEndpoint
-        return StatsEndpoint
-    elif name == "AnthropicMessagesEndpoint":
+    if name == "AnthropicMessagesEndpoint":
         from switchyard.lib.endpoints.anthropic_messages_endpoint import (
             AnthropicMessagesEndpoint,
         )

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 
 from fastapi.responses import JSONResponse
 
-from switchyard.lib.endpoints import outcome_metrics
+from switchyard.lib import metrics
 from switchyard.lib.endpoints.error_envelope import error_response, upstream_error_response
 from switchyard.lib.proxy_context import (
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
@@ -51,7 +51,7 @@ def record_upstream_attempt_success(ctx: ProxyContext) -> None:
     """
     if ctx.metadata.get(CTX_UPSTREAM_ATTEMPTS_RECORDED):
         return
-    outcome_metrics.record_upstream_attempt(200)
+    _record_attempt(200)
 
 
 def record_upstream_attempt_failure(ctx: ProxyContext, exc: BaseException) -> None:
@@ -71,13 +71,21 @@ def record_upstream_attempt_failure(ctx: ProxyContext, exc: BaseException) -> No
         return
     status = ctx.metadata.get(CTX_UPSTREAM_HTTP_STATUS)
     if isinstance(status, int):
-        outcome_metrics.record_upstream_attempt(status)
+        _record_attempt(status)
         return
     if isinstance(exc, SwitchyardUpstreamError):
         rust_status = getattr(exc, "status_code", None)
-        outcome_metrics.record_upstream_attempt(
-            rust_status if isinstance(rust_status, int) else None
-        )
+        _record_attempt(rust_status if isinstance(rust_status, int) else None)
+
+
+def _record_attempt(status_code: int | None) -> None:
+    """Record one upstream attempt, classifying status into outcome/code.
+
+    A non-HTTP failure (``status_code=None``) is bucketed as ``retryable_error``
+    — exactly the fault a health-aware router should absorb by retrying.
+    """
+    outcome = "retryable_error" if status_code is None else metrics.classify(status_code)
+    metrics.record_upstream_attempt(outcome=outcome, code=metrics.code_label(status_code))
 
 
 def upstream_response_from_ctx(

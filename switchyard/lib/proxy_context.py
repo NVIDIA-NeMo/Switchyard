@@ -62,7 +62,7 @@ CTX_UPSTREAM_HTTP_STATUS = "_upstream_http_status"
 CTX_UPSTREAM_HTTP_BODY = "_upstream_http_body"
 
 #: Set truthy by a backend that records its own per-attempt
-#: ``switchyard.lib.endpoints.outcome_metrics`` upstream-attempt counters
+#: ``switchyard.lib.metrics`` upstream-attempt counters
 #: (e.g. :class:`LatencyServiceLLMBackend`, which retries across endpoints and
 #: must count each attempt). When present, the endpoint layer skips its
 #: single-attempt fallback recording for this request so retry fan-out is not

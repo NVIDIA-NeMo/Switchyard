@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from switchyard.lib import metrics, spans
 from switchyard.lib.processors.cascade import (
@@ -25,7 +25,6 @@ from switchyard.lib.proxy_context import CTX_ROUTER_NAME
 if TYPE_CHECKING:
     from switchyard.lib.backends.llm_target import LlmTarget
     from switchyard.lib.proxy_context import ProxyContext
-    from switchyard.lib.stats_accumulator import StatsAccumulator
     from switchyard_rust.core import ChatRequest
 
 log = logging.getLogger(__name__)
@@ -59,13 +58,6 @@ class CascadeRequestProcessor:
         self._classifier = classifier
         self._max_index = len(targets) - 1
         self._decision_log = decision_log if decision_log is not None else CascadeDecisionLog()
-        self._stats_accumulator: StatsAccumulator | None = None
-
-    def attach_stats_accumulator(self, stats_accumulator: StatsAccumulator) -> None:
-        """Attach serving-level stats to cascade-only routing components."""
-        self._stats_accumulator = stats_accumulator
-        if self._classifier is not None:
-            self._classifier.attach_stats_accumulator(stats_accumulator)
 
     def decision_stats(self) -> dict[str, int]:
         """Snapshot of decision-source counts since process start."""
@@ -84,7 +76,6 @@ class CascadeRequestProcessor:
         idx = await self._resolve_index(ctx)
         ctx.selected_target = self._target_ids[idx]
         ctx.selected_model = self._target_models[idx]
-        await self._record_decision_source(ctx)
         tier = "strong" if idx == STRONG else "weak"
         source = ctx.metadata.get(CONTEXT_KEY)
         ctx.metadata[CTX_ROUTER_NAME] = "cascade"
@@ -114,21 +105,6 @@ class CascadeRequestProcessor:
             log.exception("cascade picker raised; falling back to index 0 (weak)")
             return WEAK
         return max(0, min(idx, self._max_index))
-
-    async def _record_decision_source(self, ctx: ProxyContext) -> None:
-        """Copy the picker source stamp into shared routing stats when available."""
-        if self._stats_accumulator is None:
-            return
-        source = ctx.metadata.get(CONTEXT_KEY)
-        if not isinstance(source, str) or not source:
-            return
-        try:
-            await cast(Any, self._stats_accumulator).record_routing_decision(
-                "cascade",
-                source,
-            )
-        except Exception:
-            log.debug("failed to record cascade decision source", exc_info=True)
 
 
 __all__ = [

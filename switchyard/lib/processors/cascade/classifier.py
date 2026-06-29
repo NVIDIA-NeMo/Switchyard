@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from switchyard.lib import metrics
+from switchyard.lib.cost_estimator import estimate_model_cost
 from switchyard.lib.llm_client import OpenAILLMClient
 
 if TYPE_CHECKING:
     from switchyard.lib.proxy_context import ProxyContext
-    from switchyard_rust.components import StatsAccumulator, ToolResultSignal
+    from switchyard_rust.components import ToolResultSignal
 
 log = logging.getLogger(__name__)
 
@@ -158,14 +159,12 @@ class TierClassifier:
         recent_turn_window: int = 3,
         disable_reasoning: bool = True,
         client: _LLMClient | None = None,
-        stats_accumulator: StatsAccumulator | None = None,
     ) -> None:
         if recent_turn_window < 0:
             raise ValueError(f"recent_turn_window must be >= 0, got {recent_turn_window}")
         self._model = model
         self._api_key = api_key
         self._recent_turn_window = recent_turn_window
-        self._stats = stats_accumulator
         # Reasoning models on the NVIDIA Inference Hub (DeepSeek V4 Flash /
         # V4 Pro, R1-style) misroute strict-`response_format` JSON into
         # `reasoning_content` while leaving `content` empty. Passing
@@ -182,10 +181,6 @@ class TierClassifier:
                 max_retries=0,
             ))
         self._client = client
-
-    def attach_stats_accumulator(self, stats_accumulator: StatsAccumulator) -> None:
-        """Attach the serving-level accumulator used for classifier overhead."""
-        self._stats = stats_accumulator
 
     async def classify(self, ctx: ProxyContext, signal: ToolResultSignal) -> str | None:
         """Return ``"strong"``, ``"weak"``, or ``None`` (fall-open)."""
@@ -208,7 +203,6 @@ class TierClassifier:
         # enough to fit reasoning_content + JSON when the
         # `enable_thinking=False` hint is ignored upstream, but never
         # binds on non-reasoning models that emit ~10 tokens of JSON.
-        started_at = time.perf_counter()
         try:
             response = await self._client.acompletion(
                 model=self._model,
@@ -223,27 +217,38 @@ class TierClassifier:
             )
         except Exception:
             log.warning("classifier call failed; falling open", exc_info=True)
-            if self._stats is not None:
-                try:
-                    await self._stats.record_classifier_error(self._model)
-                except Exception:
-                    pass
             return None
-        latency_ms = (time.perf_counter() - started_at) * 1000.0
-        if self._stats is not None:
-            try:
-                usage = getattr(response, "usage", None)
-                details = getattr(usage, "prompt_tokens_details", None)
-                await self._stats.record_classifier_usage(
-                    self._model,
-                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                    cached_tokens=getattr(details, "cached_tokens", None) or 0,
-                    latency_ms=latency_ms,
-                )
-            except Exception:
-                pass
+        self._record_usage(response)
         return _parse_tier(response)
+
+    def _record_usage(self, response: object) -> None:
+        """Record classifier token + cost spend via OTel (``role=classifier``)."""
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            details = getattr(usage, "prompt_tokens_details", None)
+            prompt = getattr(usage, "prompt_tokens", 0) or 0
+            completion = getattr(usage, "completion_tokens", 0) or 0
+            cached = getattr(details, "cached_tokens", None) or 0
+            metrics.record_tokens(
+                model=self._model, tier="classifier",
+                prompt=prompt, completion=completion, cached=cached,
+            )
+            costs = estimate_model_cost(self._model, prompt, completion, cached)
+            for kind, key in (
+                ("input", "base_input_cost"),
+                ("cached", "cached_input_cost"),
+                ("output", "output_cost"),
+            ):
+                value = costs.get(key, 0.0)
+                if value:
+                    metrics.record_cost(
+                        model=self._model, tier="classifier", role="classifier",
+                        kind=kind, cost_usd=value,
+                    )
+        except Exception:
+            log.debug("failed to record cascade classifier usage", exc_info=True)
 
 
 __all__ = ["STRONG_TIER", "TierClassifier", "WEAK_TIER"]

@@ -73,8 +73,6 @@ from switchyard.cli.launchers.launcher_runtime import (
     suppress_uvicorn_stream_handlers,
     wait_for_proxy_ready,
 )
-from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
-from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
 )
@@ -90,7 +88,6 @@ from switchyard.lib.route_table_builders import (
     build_single_model_table,
     build_tier_passthrough_switchyard,
 )
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.server.shell_tui import ShellTUI
 
 logger = logging.getLogger(__name__)
@@ -159,11 +156,10 @@ def _build_switchyard(
     api_key: str,
     base_url: str,
     timeout: float | None,
-    stats: StatsAccumulator,
     extra_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
-    """OpenAI Chat Completions translation chain with live stats.
+    """OpenAI Chat Completions translation chain.
 
     OpenClaw's ``models.providers.switchyard`` block declares
     ``api: "openai-completions"``, so the inbound request lands on
@@ -181,8 +177,6 @@ def _build_switchyard(
             base_url=base_url,
             timeout_secs=timeout,
         ),
-        stats=stats,
-        enable_stats=True,
         extra_request_processors=extra_request_processors,
         extra_response_processors=extra_response_processors,
     )
@@ -396,7 +390,6 @@ def _run_openclaw_with_switchyard(
     display_model: str,
     port: int | None,
     openclaw_args: list[str],
-    stats: StatsAccumulator,
     catalog_entries: Sequence[OpenClawModelCatalogEntry],
     intake: LaunchIntakeConfig | None = None,
     strategy_summary: str | None = None,
@@ -450,17 +443,8 @@ def _run_openclaw_with_switchyard(
             banner_pause()
 
         if stdin_is_tty():
-            footer = LiveStatsFooter(
-                stats,
-                display_model,
-                ProxyHealthMonitor(resolved_port),
-                table=table,
-                strategy_label=strategy_summary.split(":")[0].strip() if strategy_summary else None,
-            )
             return ShellTUI(
                 command=_openclaw_command(openclaw_bin, openclaw_args),
-                footer_fn=footer.as_footer_fn(),
-                footer_height=lambda: footer.height,
                 env=_openclaw_env(workspace=workspace, intake=intake),
             ).run()
 
@@ -523,14 +507,12 @@ def launch_openclaw(
     Returns the ``openclaw`` process's exit code (or ``127`` if the
     binary wasn't found, ``130`` on Ctrl-C).
     """
-    stats = StatsAccumulator()
     intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
     switchyard = _build_switchyard(
         model,
         api_key,
         base_url,
         timeout,
-        stats,
         extra_request_processors=intake_request,
         extra_response_processors=intake_response,
     )
@@ -553,7 +535,6 @@ def launch_openclaw(
         assert isinstance(table, RouteTable)
         yaml_table = load_route_bundle_table(
             routing_profiles,
-            stats_accumulator=stats,
             pre_routing_request_processors=intake_request,
             extra_response_processors=intake_response,
         )
@@ -581,7 +562,6 @@ def launch_openclaw(
         display_model=model,
         port=port,
         openclaw_args=openclaw_args,
-        stats=stats,
         catalog_entries=catalog_entries,
         intake=intake,
         strategy_summary=strategy_summary,
@@ -648,11 +628,9 @@ def launch_openclaw_deterministic_routing(
     def _discovery_fn(base_url: str, api_key: str) -> list[str]:
         return fetch_model_ids(base_url, api_key)
 
-    stats = StatsAccumulator()
     intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
     switchyard = build_deterministic_routing_switchyard(
         config,
-        stats,
         pre_routing_request_processors=intake_request,
         extra_response_processors=intake_response,
     )
@@ -660,7 +638,6 @@ def launch_openclaw_deterministic_routing(
     discovery_fn = None if discovery_disabled else _discovery_fn
     model_table = build_deterministic_routing_table(
         config,
-        stats,
         deterministic_routing_switchyard=switchyard,
         routing_model=routing_model,
         discovery_fn=discovery_fn,
@@ -695,7 +672,6 @@ def launch_openclaw_deterministic_routing(
         display_model=routing_model,
         port=port,
         openclaw_args=openclaw_args,
-        stats=stats,
         catalog_entries=catalog_entries,
         intake=intake,
         strategy_summary=deterministic_strategy_summary(config),
