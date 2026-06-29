@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
+from switchyard.lib import metrics, spans
+from switchyard.lib.proxy_context import CTX_ROUTER_NAME
 from switchyard_rust.components import set_stats_route_label
 from switchyard_rust.core import ChatRequestType, request_type_matches
 
@@ -96,19 +98,35 @@ class RouteLLMRequestProcessor:
 
         score = float(self._classifier.calculate_strong_win_rate(prompt))
         tier = "strong" if score >= self._config.threshold else "weak"
-        self._stamp(ctx, tier)
+        self._stamp(ctx, tier, score=score)
         log.info(
             "RouteLLM: score=%.4f threshold=%.4f -> %s",
             score, self._config.threshold, tier,
         )
         return request
 
-    def _stamp(self, ctx: ProxyContext, tier: str) -> None:
+    def _stamp(self, ctx: ProxyContext, tier: str, score: float | None = None) -> None:
         target = self._config.strong if tier == "strong" else self._config.weak
         ctx.metadata[CTX_ROUTELLM_TIER] = tier
         set_stats_route_label(ctx, tier)
         ctx.selected_target = target.id
         ctx.selected_model = target.model
+        ctx.metadata[CTX_ROUTER_NAME] = "routellm"
+        # ``score=None`` marks a default-to-strong fallback (no classifier run).
+        with spans.route_decision_span(
+            router="routellm",
+            tier=tier,
+            selected_model=target.model,
+            selected_target=target.id,
+            score=score,
+            threshold=self._config.threshold,
+        ):
+            pass
+        metrics.record_routing_decision(
+            router="routellm",
+            source="classifier" if score is not None else "default",
+            tier=tier,
+        )
 
     # ------------------------------------------------------------------
     # Classifier load / unload — overridable for non-routellm classifiers.

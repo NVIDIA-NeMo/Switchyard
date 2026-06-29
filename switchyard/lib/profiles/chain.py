@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from switchyard.lib import metrics, spans
-from switchyard.lib.proxy_context import CTX_PROXY_ACTUAL_MODEL, ProxyContext
+from switchyard.lib.proxy_context import (
+    CTX_PROXY_ACTUAL_MODEL,
+    CTX_ROUTER_NAME,
+    ProxyContext,
+)
 from switchyard.lib.roles import LLMBackend
 from switchyard.lib.session_affinity import CTX_SESSION_KEY
 from switchyard.lib.session_cache import SessionCache
@@ -347,11 +351,6 @@ def _context_selected_target(ctx: ProxyContext) -> str | None:
     """Return a normalized selected target from the compatibility context."""
     selected = ctx.selected_target
     return selected if isinstance(selected, str) and selected else None
-
-
-#: Metadata key carrying the router-strategy name, stamped by routing processors
-#: so executor-level metrics can label routing overhead by strategy.
-CTX_ROUTER_NAME = "_router"
 
 
 def _otel_labels(ctx: ProxyContext, request: ChatRequest) -> tuple[str, str | None, str | None]:

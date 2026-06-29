@@ -10,6 +10,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from switchyard.lib import metrics, spans
 from switchyard.lib.processors.cascade import (
     CONTEXT_KEY,
     STRONG,
@@ -19,6 +20,7 @@ from switchyard.lib.processors.cascade import (
     pick_weak_default,
 )
 from switchyard.lib.processors.cascade.classifier import RECENT_MESSAGES_KEY, TierClassifier
+from switchyard.lib.proxy_context import CTX_ROUTER_NAME
 
 if TYPE_CHECKING:
     from switchyard.lib.backends.llm_target import LlmTarget
@@ -83,6 +85,22 @@ class CascadeRequestProcessor:
         ctx.selected_target = self._target_ids[idx]
         ctx.selected_model = self._target_models[idx]
         await self._record_decision_source(ctx)
+        tier = "strong" if idx == STRONG else "weak"
+        source = ctx.metadata.get(CONTEXT_KEY)
+        ctx.metadata[CTX_ROUTER_NAME] = "cascade"
+        with spans.route_decision_span(
+            router="cascade",
+            tier=tier,
+            selected_model=ctx.selected_model,
+            selected_target=ctx.selected_target,
+            source=source if isinstance(source, str) else None,
+        ):
+            pass
+        metrics.record_routing_decision(
+            router="cascade",
+            source=source if isinstance(source, str) and source else None,
+            tier=tier,
+        )
         log.debug(
             "cascade pick: idx=%d target=%s model=%s",
             idx, ctx.selected_target, ctx.selected_model,
