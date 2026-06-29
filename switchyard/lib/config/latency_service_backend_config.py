@@ -90,13 +90,10 @@ class LatencyServiceBackendConfig(BaseModel):
             its endpoint degrades or the call fails. Per process. Default off.
         affinity_max_sessions: Bounded-LRU cap on pinned conversations; ignored
             when ``session_affinity`` is off.
-        enable_stats: When ``True`` (default), the factory wires a
-            :class:`StatsRequestProcessor` + :class:`StatsResponseProcessor`
-            pair sharing one :class:`StatsAccumulator` and wraps the
-            backend in :class:`StatsLlmBackend`, so the chain contributes
-            ``GET /metrics``, ``GET /v1/stats``, and the legacy
-            ``GET /v1/routing/stats`` aliases via the standard
-            ``get_endpoint()`` mechanism in :func:`build_switchyard_app`.
+        enable_stats: Retained config key (accepted, no longer wires anything).
+            Per-request metrics are emitted by the chain executor via
+            OpenTelemetry and exposed at ``GET /metrics``; see
+            :mod:`switchyard.lib.observability`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

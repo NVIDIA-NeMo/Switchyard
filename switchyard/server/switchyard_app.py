@@ -38,9 +38,9 @@ from switchyard.lib.endpoints.responses_endpoint import (
 from switchyard_rust.core import SwitchyardInvalidRequestError
 
 #: Inbound LLM-serving paths whose response status codes feed the
-#: client-side outcome counter. Other routes (/v1/models, /v1/stats,
-#: /metrics, /health) are excluded — they don't represent router-served
-#: LLM traffic and would distort the error-rate ratio.
+#: client-side outcome counter. Other routes (/v1/models, /metrics, /health)
+#: are excluded — they don't represent router-served LLM traffic and would
+#: distort the error-rate ratio.
 _LLM_ROUTES: frozenset[str] = frozenset({
     "/v1/chat/completions",
     "/v1/messages",

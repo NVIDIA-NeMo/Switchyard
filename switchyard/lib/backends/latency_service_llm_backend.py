@@ -316,10 +316,11 @@ class LatencyServiceLLMBackend(LLMBackend):
     # -- Request processing (hot path — no Latency Service call) ------------
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
-        # This backend records its own per-attempt ``outcome_metrics`` counters
-        # below (one per failover attempt). Claim attempt accounting for this
-        # request so the endpoint-layer fallback in ``dispatch`` /
-        # ``handle_chain_exception`` does not double-count the retry fan-out.
+        # This backend records its own per-attempt upstream counters via
+        # ``metrics.record_upstream_attempt`` below (one per failover attempt).
+        # Claim attempt accounting for this request so the endpoint-layer
+        # fallback in ``dispatch`` / ``handle_chain_exception`` does not
+        # double-count the retry fan-out.
         ctx.metadata[CTX_UPSTREAM_ATTEMPTS_RECORDED] = True
         # Captured before the per-attempt ``body["model"]`` override so the span
         # records the model the client asked for, not the selected endpoint.
