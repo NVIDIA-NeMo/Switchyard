@@ -215,8 +215,9 @@ Use these rings as starting points, not replacements for dynamic search.
 - Endpoints read `request.app.state.switchyard`; it may be a single profile-backed runtime or a `RouteTable`.
 - Random routing uses `strong_probability` (`rng.random() < strong_probability`); do not revive the
   old inverted threshold semantics.
-- Stats paths often require a shared `StatsAccumulator` across request/response processors and
-  `StatsLlmBackend`.
+- Metrics are OpenTelemetry: the chain executor records via `switchyard.lib.metrics` helpers and
+  `switchyard.lib.otel_usage`; `/metrics` is served from the OTel Prometheus registry. There is no
+  `StatsAccumulator` stack on the Python side.
 - Pytest has `addopts = "-x"`; use `-o addopts=` when triaging all failures.
 - Generated docs artifacts and local virtualenvs are not CI inputs; remove them or keep them out of
   local validation.
