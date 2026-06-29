@@ -81,8 +81,10 @@ def test_no_unit_suffix_in_prometheus_render():
     # The Prometheus exporter appends a unit suffix only when the instrument has a
     # `unit`. None of our instruments set one, so latency names stay `_ms` (not `_ms_ms`).
     from opentelemetry.exporter.prometheus import PrometheusMetricReader
+    from prometheus_client import CollectorRegistry, generate_latest
 
-    reader = PrometheusMetricReader()
+    registry = CollectorRegistry()  # isolated registry — no cross-test leakage
+    reader = PrometheusMetricReader(registry=registry)
     provider = MeterProvider(metric_readers=[reader])
     meter = provider.get_meter("switchyard")
     metrics = importlib.import_module("switchyard.lib.metrics")
@@ -92,9 +94,7 @@ def test_no_unit_suffix_in_prometheus_render():
         model_call_ms=10.0, total_ms=12.0, routing_overhead_ms=2.0,
     )
 
-    import prometheus_client
-
-    out = prometheus_client.generate_latest().decode()
+    out = generate_latest(registry).decode()
     assert "switchyard_total_latency_ms_bucket" in out
     assert "_ms_ms" not in out
     assert "switchyard_requests_total" not in out  # not recorded in this test
