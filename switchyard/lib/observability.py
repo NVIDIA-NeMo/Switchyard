@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import uuid
 from importlib.metadata import version as _pkg_version
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:  # avoid importing the (optional) OTel API at module load
     from opentelemetry.metrics import Meter
@@ -47,7 +47,7 @@ _SCOPE = "switchyard"
 
 
 def _truthy(value: str | None) -> bool:
-    return bool(value) and value.strip().lower() in {"1", "true", "yes", "on"}
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _service_name() -> str:
@@ -170,12 +170,12 @@ def service_instance_id() -> str | None:
 
 def get_tracer() -> Tracer | None:
     """Return the process tracer, or ``None`` when observability is disabled."""
-    return _tracer
+    return cast("Tracer | None", _tracer)
 
 
 def get_meter() -> Meter | None:
     """Return the process meter, or ``None`` when observability is disabled."""
-    return _meter
+    return cast("Meter | None", _meter)
 
 
 def prometheus_reader() -> Any:

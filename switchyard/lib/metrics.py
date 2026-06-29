@@ -21,7 +21,10 @@ ever an attribute.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from opentelemetry.metrics import Observation
 
 # Module state. Built once from the process meter (or a test meter). All access
 # goes through `_state()`, which lazily initializes from observability.
@@ -37,7 +40,7 @@ _total_requests: int = 0
 _total_errors: int = 0
 
 
-def _build_info_callback(_options: Any):  # pragma: no cover - trivial callback
+def _build_info_callback(_options: Any) -> list[Observation]:  # pragma: no cover
     from importlib.metadata import version as _pkg_version
 
     from opentelemetry.metrics import Observation
@@ -49,13 +52,13 @@ def _build_info_callback(_options: Any):  # pragma: no cover - trivial callback
     return [Observation(1, {"version": ver})]
 
 
-def _total_requests_callback(_options: Any):  # pragma: no cover - trivial callback
+def _total_requests_callback(_options: Any) -> list[Observation]:  # pragma: no cover
     from opentelemetry.metrics import Observation
 
     return [Observation(_total_requests, {})]
 
 
-def _total_errors_callback(_options: Any):  # pragma: no cover - trivial callback
+def _total_errors_callback(_options: Any) -> list[Observation]:  # pragma: no cover
     from opentelemetry.metrics import Observation
 
     return [Observation(_total_errors, {})]
