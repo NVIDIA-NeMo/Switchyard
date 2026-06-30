@@ -5,8 +5,20 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      devzone_stage_artifactory:
+        description: "Stage .dev wheels to Artifactory only; no Kitmaker or PyPI publish."
+        required: true
+        type: boolean
+        default: false
+      devzone_version:
+        description: "PEP 440 .dev version for Artifactory-only staged wheels."
+        required: true
+        type: string
+        default: "0.0.1.dev0"
 
 env:
+  DEVZONE_PACKAGE_NAME: "nemo-switchyard"
   MATURIN_VERSION: "1.11.5"
   # Delete this variable when public GitHub/PyPI publishing is officially enabled.
   SWITCHYARD_GITHUB_PUBLISH_DISABLED: "1"
@@ -103,6 +115,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Stamp Devzone package metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
+        shell: bash
+        run: |
+          python scripts/release/set_devzone_prerelease_version.py \
+            "${{ inputs.devzone_version }}" \
+            --package-name "${DEVZONE_PACKAGE_NAME}"
       - name: Setup QEMU for Linux cross builds
         if: matrix.label == 'linux-aarch64'
         uses: docker/setup-qemu-action@v3
@@ -204,6 +223,130 @@ jobs:
         with:
           name: switchyard-wheel-${{ matrix.label }}
           path: dist/*
+
+  stage-devzone-artifactory:
+    name: Stage Devzone wheels to Artifactory
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
+    needs: [wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: switchyard-wheel-*
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify wheel metadata
+        env:
+          EXPECTED_NAME: ${{ env.DEVZONE_PACKAGE_NAME }}
+          EXPECTED_VERSION_INPUT: ${{ inputs.devzone_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_VERSION="$(python scripts/release/set_devzone_prerelease_version.py \
+            "${EXPECTED_VERSION_INPUT}" \
+            --print-version)"
+          EXPECTED_PREFIX="${EXPECTED_NAME//-/_}"
+          export EXPECTED_NAME EXPECTED_PREFIX EXPECTED_VERSION
+
+          python - <<'PY'
+          import email
+          import glob
+          import os
+          import zipfile
+
+          expected_name = os.environ["EXPECTED_NAME"]
+          expected_prefix = os.environ["EXPECTED_PREFIX"]
+          expected_version = os.environ["EXPECTED_VERSION"]
+          wheels = sorted(glob.glob("dist/*.whl"))
+          if not wheels:
+              raise SystemExit("no wheels downloaded")
+
+          for path in wheels:
+              filename = os.path.basename(path)
+              if not filename.startswith(f"{expected_prefix}-{expected_version}-"):
+                  raise SystemExit(
+                      f"{filename}: expected prefix {expected_prefix}-{expected_version}-"
+                  )
+              with zipfile.ZipFile(path) as wheel:
+                  metadata_name = next(
+                      name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+                  )
+                  metadata = email.message_from_bytes(wheel.read(metadata_name))
+              if metadata["Name"] != expected_name:
+                  raise SystemExit(f"{filename}: Name={metadata['Name']!r}")
+              if metadata["Version"] != expected_version:
+                  raise SystemExit(f"{filename}: Version={metadata['Version']!r}")
+              print(f"{filename}: {metadata['Name']} {metadata['Version']}")
+          PY
+      - name: Upload wheels to Artifactory
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
+          PACKAGE_NAME: ${{ env.DEVZONE_PACKAGE_NAME }}
+          VERSION_INPUT: ${{ inputs.devzone_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ARTIFACTORY_URL}" ]; then
+            echo "::error::ARTIFACTORY_URL is required"
+            exit 1
+          fi
+          if [ -z "${ARTIFACTORY_USER}" ] || [ -z "${ARTIFACTORY_TOKEN}" ]; then
+            echo "::error::ARTIFACTORY_USER and ARTIFACTORY_TOKEN are required"
+            exit 1
+          fi
+
+          VERSION="$(python scripts/release/set_devzone_prerelease_version.py \
+            "${VERSION_INPUT}" \
+            --print-version)"
+          BASE_URL="${ARTIFACTORY_URL%/}/${PACKAGE_NAME}/dev/${VERSION}/${GITHUB_RUN_ID}-${GITHUB_SHA:0:12}"
+          mkdir -p release
+
+          export BASE_URL
+          python - <<'PY' > release/wheel-urls.json
+          import glob
+          import json
+          import os
+
+          base_url = os.environ["BASE_URL"]
+          urls = [f"{base_url}/{os.path.basename(path)}" for path in sorted(glob.glob("dist/*.whl"))]
+          print(json.dumps({"wheel_urls": urls}, indent=2))
+          PY
+
+          echo "## Artifactory Wheel Staging" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| Wheel | URL |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "|---|---|" >> "${GITHUB_STEP_SUMMARY}"
+
+          for wheel in dist/*.whl; do
+            filename="$(basename "${wheel}")"
+            target_url="${BASE_URL}/${filename}"
+            body_file="$(mktemp)"
+            http_code="$(curl -sSL -o "${body_file}" -w "%{http_code}" \
+              --connect-timeout 30 --max-time 300 \
+              --retry 3 --retry-delay 5 --retry-all-errors \
+              -u "${ARTIFACTORY_USER}:${ARTIFACTORY_TOKEN}" \
+              -T "${wheel}" \
+              "${target_url}")"
+            if [ "${http_code}" != "201" ]; then
+              echo "::error::Artifactory deploy failed: HTTP ${http_code} at ${target_url}"
+              cat "${body_file}" || true
+              exit 1
+            fi
+            rm -f "${body_file}"
+            echo "| \`${filename}\` | ${target_url} |" >> "${GITHUB_STEP_SUMMARY}"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devzone-wheel-urls
+          path: release/wheel-urls.json
 
   list-distributions:
     name: List distributions
