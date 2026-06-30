@@ -24,7 +24,7 @@ def test_version_flag_prints_version_and_exits(capsys: pytest.CaptureFixture[str
 
 
 def test_switchyard_version_matches_installed_metadata() -> None:
-    assert _switchyard_version() == version("switchyard")
+    assert _switchyard_version() == version("nemo-switchyard")
 
 
 def test_switchyard_version_falls_back_to_dunder_when_uninstalled() -> None:
@@ -32,6 +32,6 @@ def test_switchyard_version_falls_back_to_dunder_when_uninstalled() -> None:
 
     with patch(
         "switchyard.cli.switchyard_cli.version",
-        side_effect=PackageNotFoundError("switchyard"),
+        side_effect=PackageNotFoundError("nemo-switchyard"),
     ):
         assert _switchyard_version() == __version__

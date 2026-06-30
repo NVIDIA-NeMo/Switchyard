@@ -32,7 +32,7 @@ For system context and request lifecycle diagrams, see
 ## First Run
 
 ```bash
-pip install "switchyard[cli,server]"
+pip install "nemo-switchyard[cli,server]"
 switchyard configure
 switchyard launch claude
 ```

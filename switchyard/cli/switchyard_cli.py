@@ -852,7 +852,7 @@ def _switchyard_version() -> str:
     with ``pyproject.toml``.
     """
     try:
-        return version("switchyard")
+        return version("nemo-switchyard")
     except PackageNotFoundError:
         from switchyard import __version__
 

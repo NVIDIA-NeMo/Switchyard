@@ -40,7 +40,7 @@ traffic that sits between client applications and LLM backends.
 - **Rust core** (PyO3) — chain execution, the latency-aware router, and the
   tool-result signal collector are implemented in Rust and re-exported to
   Python.
-- **Packaging** — `pip install switchyard` with optional extras `[server]`,
+- **Packaging** — `pip install nemo-switchyard` with optional extras `[server]`,
   `[cli]`, `[gpu]`, `[all]`. See [Installation](INSTALLATION.md).
 
 ### Deprecated

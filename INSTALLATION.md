@@ -12,7 +12,7 @@ Switchyard supports modular installation based on your use case. Install only th
 For applications that use Switchyard as a Python library for routing and recipe composition:
 
 ```bash
-pip install switchyard
+pip install nemo-switchyard
 ```
 
 **Includes:**
@@ -34,7 +34,7 @@ pip install switchyard
 Add FastAPI and Uvicorn to run Switchyard as a standalone HTTP proxy:
 
 ```bash
-pip install switchyard[server]
+pip install nemo-switchyard[server]
 ```
 
 **Adds:**
@@ -49,7 +49,7 @@ pip install switchyard[server]
 Add terminal UI support for the `switchyard launch claude` command:
 
 ```bash
-pip install switchyard[cli]
+pip install nemo-switchyard[cli]
 ```
 
 **Adds:**
@@ -64,7 +64,7 @@ pip install switchyard[cli]
 All optional dependencies for complete feature set:
 
 ```bash
-pip install switchyard[all]
+pip install nemo-switchyard[all]
 ```
 
 Equivalent to: `switchyard[server,cli]`
@@ -73,22 +73,22 @@ Equivalent to: `switchyard[server,cli]`
 
 **Middleware plugin (no server/CLI):**
 ```bash
-pip install switchyard                  # Core only
+pip install nemo-switchyard                  # Core only
 ```
 
 **Proxy server without launcher:**
 ```bash
-pip install switchyard[server]
+pip install nemo-switchyard[server]
 ```
 
 **Full Claude Code integration:**
 ```bash
-pip install switchyard[cli]             # Includes core
+pip install nemo-switchyard[cli]             # Includes core
 ```
 
 **Production deployment with all features:**
 ```bash
-pip install switchyard[all]
+pip install nemo-switchyard[all]
 ```
 
 ## Dependency Structure
@@ -131,7 +131,7 @@ You're trying to run the HTTP server without the `[server]` extra:
 
 ```bash
 # Install with server support
-pip install switchyard[server]
+pip install nemo-switchyard[server]
 ```
 
 ```python
@@ -145,7 +145,7 @@ You're trying to run the CLI launcher without the `[cli]` extra:
 
 ```bash
 # Install CLI support
-pip install switchyard[cli]
+pip install nemo-switchyard[cli]
 ```
 
 ```python
@@ -174,7 +174,7 @@ This includes:
 - pytest, ruff, mypy, respx for testing
 
 > **Note:** dev tooling lives in a PEP 735 dependency group, not an extra,
-> so `pip install switchyard[dev]` is **not supported** and dev tooling
+> so `pip install nemo-switchyard[dev]` is **not supported** and dev tooling
 > never appears in the published wheel's METADATA (it's invisible to
 > downstream vulnerability scans).
 

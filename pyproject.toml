@@ -3,7 +3,7 @@ requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "switchyard"
+name = "nemo-switchyard"
 version = "0.1.0"
 description = "Typed, composable LLM routing with request/response translation and multi-backend orchestration"
 readme = "README.md"
@@ -26,10 +26,10 @@ classifiers = [
 # Core dependencies — minimal set for the foundation library (core/ + recipes/).
 # No server, CLI, ML, GPU, or orchestrator packages.
 # Users install extras based on their use case:
-#   pip install switchyard                 # Core + recipes only
-#   pip install switchyard[server]         # Add FastAPI/Uvicorn for e2e
-#   pip install switchyard[cli]            # Add prompt-toolkit for CLI
-#   pip install switchyard[all]            # Everything
+#   pip install nemo-switchyard                 # Core + recipes only
+#   pip install nemo-switchyard[server]         # Add FastAPI/Uvicorn for e2e
+#   pip install nemo-switchyard[cli]            # Add prompt-toolkit for CLI
+#   pip install nemo-switchyard[all]            # Everything
 dependencies = [
     "openai>=2.34.0,<3.0",
     "anthropic>=0.99.0,<1.0",
@@ -77,14 +77,14 @@ tracing = [
 
 # Intake — NeMo Platform SDK required by IntakeClient for telemetry capture.
 # Only needed when --intake-enabled is passed to ``switchyard launch``.
-# Install with: pip install switchyard[intake]
+# Install with: pip install nemo-switchyard[intake]
 intake = [
     "nemo-platform>=0.1.0,<1.0",
 ]
 
 # Everything — all optional dependencies for full-featured deployment.
 all = [
-    "switchyard[server,cli,gpu,tracing,intake]",
+    "nemo-switchyard[server,cli,gpu,tracing,intake]",
 ]
 
 # Dev tooling lives in a PEP 735 dependency group rather than an optional
@@ -113,7 +113,7 @@ dev = [
     # Harbor is needed for local evaluation runs and supports the package floor.
     # Package users still do not see it in published metadata.
     "harbor @ git+https://github.com/harbor-framework/harbor.git@v0.6.4 ; python_version >= '3.12'",
-    "switchyard[server]",
+    "nemo-switchyard[server]",
     "pytest-markdown-docs>=0.9.2",
 ]
 docs = [

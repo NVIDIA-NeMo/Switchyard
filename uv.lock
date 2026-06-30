@@ -2272,6 +2272,113 @@ wheels = [
 ]
 
 [[package]]
+name = "nemo-switchyard"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "httpx" },
+    { name = "openai" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "ddtrace" },
+    { name = "fastapi" },
+    { name = "nemo-platform" },
+    { name = "prompt-toolkit" },
+    { name = "routellm", extra = ["serve"] },
+    { name = "sse-starlette" },
+    { name = "transformers" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+cli = [
+    { name = "prompt-toolkit" },
+]
+gpu = [
+    { name = "routellm", extra = ["serve"] },
+    { name = "transformers" },
+]
+intake = [
+    { name = "nemo-platform" },
+]
+server = [
+    { name = "fastapi" },
+    { name = "sse-starlette" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+tracing = [
+    { name = "ddtrace" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "harbor" },
+    { name = "httpx" },
+    { name = "maturin" },
+    { name = "mypy" },
+    { name = "nemo-switchyard", extra = ["server"] },
+    { name = "prometheus-client" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-markdown-docs" },
+    { name = "pytest-mock" },
+    { name = "pytest-timeout" },
+    { name = "respx" },
+    { name = "ruff" },
+    { name = "socksio" },
+]
+docs = [
+    { name = "mkdocs" },
+    { name = "mkdocs-material" },
+    { name = "watchdog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.99.0,<1.0" },
+    { name = "ddtrace", marker = "extra == 'tracing'", specifier = ">=2.9,<4" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.136.1,<1.0" },
+    { name = "httpx", specifier = ">=0.28.1,<1.0" },
+    { name = "nemo-platform", marker = "extra == 'intake'", specifier = ">=0.1.0,<1.0" },
+    { name = "nemo-switchyard", extras = ["server", "cli", "gpu", "tracing", "intake"], marker = "extra == 'all'" },
+    { name = "openai", specifier = ">=2.34.0,<3.0" },
+    { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.52,<4.0" },
+    { name = "pydantic", specifier = ">=2.13.3,<3.0" },
+    { name = "routellm", extras = ["serve"], marker = "extra == 'gpu'", specifier = ">=0.2.0,<1.0" },
+    { name = "sse-starlette", marker = "extra == 'server'", specifier = ">=3.4.1,<4.0" },
+    { name = "transformers", marker = "extra == 'gpu'", specifier = ">=5.8.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.46.0,<1.0" },
+]
+provides-extras = ["server", "cli", "gpu", "tracing", "intake", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "harbor", marker = "python_full_version >= '3.12'", git = "https://github.com/harbor-framework/harbor.git?rev=v0.6.4" },
+    { name = "httpx", specifier = ">=0.28.1,<1.0" },
+    { name = "maturin", specifier = ">=1.9,<2.0" },
+    { name = "mypy", specifier = ">=1.20.2,<2.0" },
+    { name = "nemo-switchyard", extras = ["server"] },
+    { name = "prometheus-client", specifier = ">=0.21.0,<1.0" },
+    { name = "pytest", specifier = ">=9.0.3,<10.0" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0,<2.0" },
+    { name = "pytest-cov", specifier = ">=7.1.0,<8.0" },
+    { name = "pytest-markdown-docs", specifier = ">=0.9.2" },
+    { name = "pytest-mock", specifier = ">=3.15.1,<4.0" },
+    { name = "pytest-timeout", specifier = ">=2.4.0,<3.0" },
+    { name = "respx", specifier = ">=0.23.1,<1.0" },
+    { name = "ruff", specifier = ">=0.15.12,<1.0" },
+    { name = "socksio", specifier = ">=1.0.0,<2.0" },
+]
+docs = [
+    { name = "mkdocs", specifier = ">=1.6.0,<2.0" },
+    { name = "mkdocs-material", specifier = ">=9.5.0,<10.0" },
+    { name = "watchdog", specifier = ">=4.0.0,<5.0" },
+]
+
+[[package]]
 name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4349,113 +4456,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f0/e6/5cd8559ec2bb332e6027840c1be292f9989c2fc7b47bf40800aec5586791/supabase_functions-2.30.0.tar.gz", hash = "sha256:025acfd25f1c000ba43d0f7b8e366b0d2e9dfc784b842528e21973eb33006113", size = 4683, upload-time = "2026-05-06T17:35:32.246Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/53/da/9dedab32775df04cc22ca72f194b78e895d940f195bed3e02882a65daa9b/supabase_functions-2.30.0-py3-none-any.whl", hash = "sha256:92419459f102767b954cd034856e4ded8e34c78660b32442d66c8b2899c68011", size = 8803, upload-time = "2026-05-06T17:35:31.342Z" },
-]
-
-[[package]]
-name = "switchyard"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "httpx" },
-    { name = "openai" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "ddtrace" },
-    { name = "fastapi" },
-    { name = "nemo-platform" },
-    { name = "prompt-toolkit" },
-    { name = "routellm", extra = ["serve"] },
-    { name = "sse-starlette" },
-    { name = "transformers" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-cli = [
-    { name = "prompt-toolkit" },
-]
-gpu = [
-    { name = "routellm", extra = ["serve"] },
-    { name = "transformers" },
-]
-intake = [
-    { name = "nemo-platform" },
-]
-server = [
-    { name = "fastapi" },
-    { name = "sse-starlette" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-tracing = [
-    { name = "ddtrace" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "harbor" },
-    { name = "httpx" },
-    { name = "maturin" },
-    { name = "mypy" },
-    { name = "prometheus-client" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-markdown-docs" },
-    { name = "pytest-mock" },
-    { name = "pytest-timeout" },
-    { name = "respx" },
-    { name = "ruff" },
-    { name = "socksio" },
-    { name = "switchyard", extra = ["server"] },
-]
-docs = [
-    { name = "mkdocs" },
-    { name = "mkdocs-material" },
-    { name = "watchdog" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.99.0,<1.0" },
-    { name = "ddtrace", marker = "extra == 'tracing'", specifier = ">=2.9,<4" },
-    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.136.1,<1.0" },
-    { name = "httpx", specifier = ">=0.28.1,<1.0" },
-    { name = "nemo-platform", marker = "extra == 'intake'", specifier = ">=0.1.0,<1.0" },
-    { name = "openai", specifier = ">=2.34.0,<3.0" },
-    { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.52,<4.0" },
-    { name = "pydantic", specifier = ">=2.13.3,<3.0" },
-    { name = "routellm", extras = ["serve"], marker = "extra == 'gpu'", specifier = ">=0.2.0,<1.0" },
-    { name = "sse-starlette", marker = "extra == 'server'", specifier = ">=3.4.1,<4.0" },
-    { name = "switchyard", extras = ["server", "cli", "gpu", "tracing", "intake"], marker = "extra == 'all'" },
-    { name = "transformers", marker = "extra == 'gpu'", specifier = ">=5.8.0" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.46.0,<1.0" },
-]
-provides-extras = ["server", "cli", "gpu", "tracing", "intake", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "harbor", marker = "python_full_version >= '3.12'", git = "https://github.com/harbor-framework/harbor.git?rev=v0.6.4" },
-    { name = "httpx", specifier = ">=0.28.1,<1.0" },
-    { name = "maturin", specifier = ">=1.9,<2.0" },
-    { name = "mypy", specifier = ">=1.20.2,<2.0" },
-    { name = "prometheus-client", specifier = ">=0.21.0,<1.0" },
-    { name = "pytest", specifier = ">=9.0.3,<10.0" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0,<2.0" },
-    { name = "pytest-cov", specifier = ">=7.1.0,<8.0" },
-    { name = "pytest-markdown-docs", specifier = ">=0.9.2" },
-    { name = "pytest-mock", specifier = ">=3.15.1,<4.0" },
-    { name = "pytest-timeout", specifier = ">=2.4.0,<3.0" },
-    { name = "respx", specifier = ">=0.23.1,<1.0" },
-    { name = "ruff", specifier = ">=0.15.12,<1.0" },
-    { name = "socksio", specifier = ">=1.0.0,<2.0" },
-    { name = "switchyard", extras = ["server"] },
-]
-docs = [
-    { name = "mkdocs", specifier = ">=1.6.0,<2.0" },
-    { name = "mkdocs-material", specifier = ">=9.5.0,<10.0" },
-    { name = "watchdog", specifier = ">=4.0.0,<5.0" },
 ]
 
 [[package]]

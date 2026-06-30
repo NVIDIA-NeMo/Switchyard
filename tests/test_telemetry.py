@@ -41,7 +41,7 @@ def test_get_telemetry_headers_uses_switchyard_package_version(
     monkeypatch.setattr(importlib.metadata, "version", fake_version)
 
     assert get_telemetry_headers() == {HEADER_NAME: "1.2.3"}
-    assert package_names == ["switchyard"]
+    assert package_names == ["nemo-switchyard"]
 
 
 @pytest.mark.parametrize("envvar", [OPT_OUT_ENVVAR, LEGACY_OPT_OUT_ENVVAR])

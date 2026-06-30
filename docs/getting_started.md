@@ -11,7 +11,7 @@
 ## Install
 
 ```bash
-pip install "switchyard[cli,server]"
+pip install "nemo-switchyard[cli,server]"
 ```
 
 ## Configure
