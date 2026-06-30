@@ -351,7 +351,10 @@ mod tests {
         );
         record_routing_decision("cascade", Some("override"), Some("strong"));
 
-        let text = render_prometheus().expect("prometheus render should succeed");
+        let text = match render_prometheus() {
+            Ok(text) => text,
+            Err(error) => panic!("prometheus render should succeed: {error}"),
+        };
         // Counters render with `_total`; no `_ms_ms` double suffix.
         assert!(text.contains("switchyard_requests_total"));
         assert!(text.contains("switchyard_prompt_tokens_total"));
