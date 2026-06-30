@@ -29,7 +29,7 @@ def _reset_telemetry_env(monkeypatch: pytest.MonkeyPatch) -> None:
     _get_version.cache_clear()
 
 
-def test_get_telemetry_headers_uses_switchyard_package_version(
+def test_get_telemetry_headers_uses_distribution_package_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_names: list[str] = []
@@ -41,7 +41,7 @@ def test_get_telemetry_headers_uses_switchyard_package_version(
     monkeypatch.setattr(importlib.metadata, "version", fake_version)
 
     assert get_telemetry_headers() == {HEADER_NAME: "1.2.3"}
-    assert package_names == ["switchyard"]
+    assert package_names == ["nemo-switchyard"]
 
 
 @pytest.mark.parametrize("envvar", [OPT_OUT_ENVVAR, LEGACY_OPT_OUT_ENVVAR])
