@@ -34,12 +34,12 @@ CascadeProfile
   -> call the selected native target backend
 ```
 
-`CascadeProfile` uses the Rust `ToolResultSignal` extractor for severity,
-write/edit/read counts, recent-window slices, pure-bash streak, tests-passed,
-and turn depth. The profile keeps the routing decision as typed per-call state,
-records the decision source in
-`/v1/stats.routing_decisions.cascade`, and buckets model/tier usage through the
-standard stats accumulator.
+`CascadeProfile` uses the same Rust `ToolResultSignal` extractor as the legacy
+chain path: severity, write/edit/read counts, recent-window slices,
+pure-bash streak, tests-passed, and turn depth. The profile keeps the routing
+decision as typed per-call state, records the decision source as
+`switchyard_routing_decisions_total{router="cascade",source=...,tier=...}`, and
+records model/tier usage through the OpenTelemetry metrics served at `/metrics`.
 
 If the selected backend returns a context-window overflow, the profile retries
 once against `fallback_target_on_evict`. A second overflow returns
@@ -117,9 +117,9 @@ raising it shifts work from the dimensions scorer to the classifier
 | `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence scorer outputs go to the LLM classifier before falling back to the default tier. The Rust schema uses `0.7` when the field is omitted. |
 | `1.0` | yes (required) | Classifier-driven. Equivalent to the legacy `coding_agent` profile. |
 
-The dimensions-vs-llm-classifier split is dataset-dependent. Measure it in
-production via `routing_decisions.cascade` on `/v1/stats` rather than relying on
-priors from this doc.
+The dimensions-vs-llm-classifier split is dataset-dependent — measure it in
+production via `switchyard_routing_decisions_total{router="cascade"}` on
+`/metrics` rather than relying on priors from this doc.
 
 ### Calibrating the threshold from run data
 
@@ -268,21 +268,21 @@ exception types and error envelopes.
 
 ## Observability
 
-### Per-tier token / cost stats (standard)
+### Per-tier token / cost metrics (standard)
 
 ```bash
-curl http://localhost:4000/v1/stats
+curl http://localhost:4000/metrics
 ```
 
-Returns the `StatsAccumulator` snapshot: per-model calls, tokens,
-latency, cost. Bucketed by `ctx.selected_model`; the `tier` field comes
-from `ctx.selected_target`. The same shape lands in
-`routing_stats_final.json` for batch runs.
+Returns the OpenTelemetry Prometheus surface — per-model request, token,
+latency, and cost series labelled by `model` and `tier`. The `tier` label
+comes from the cascade decision; classifier spend is tagged `tier="classifier"`.
 
 ### Decision-source metadata (cascade-specific)
 
-The profile records decision-source counts under
-`routing_decisions.cascade` in the stats JSON. The possible values are:
+The profile records decision-source counts as
+`switchyard_routing_decisions_total{router="cascade",source=...,tier=...}`.
+The possible `source` values are:
 
 | Source | When |
 |---|---|
@@ -291,10 +291,10 @@ The profile records decision-source counts under
 | `llm-classifier` | Scorer was ambiguous and the classifier returned a verdict. |
 | `fall_open` | Scorer was ambiguous and the classifier failed or wasn't configured. Default tier used. |
 
-Harness writers snapshot stats with:
+Harness writers snapshot the Prometheus surface with:
 
 ```bash
-curl -s http://localhost:4000/v1/stats > routing_stats_final.json
+curl -s http://localhost:4000/metrics > routing_metrics_final.prom
 ```
 
 ---

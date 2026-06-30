@@ -746,12 +746,12 @@ class TestCall:
 
         assert response_type_matches(result, ChatResponseType.OPENAI_COMPLETION)
         assert result.body["choices"][0]["message"]["content"] == "world"
-        # ``selected_model`` is the cross-language ctx field the Rust
-        # ``StatsResponseProcessor`` reads to attribute tokens and
-        # end-to-end latency per endpoint on /metrics.
+        # ``selected_model`` is the cross-language ctx field the OTel usage
+        # recorder reads to attribute tokens and end-to-end latency per
+        # endpoint on /metrics.
         assert ctx.selected_model == "model-A"
         # ``backend_call_latency_ms`` is the second cross-language hook —
-        # the response processor uses it to compute ``routing_overhead_ms``.
+        # the OTel usage recorder uses it to compute ``routing_overhead_ms``.
         # Mocked upstream returns instantly so latency is small but non-None.
         assert ctx.backend_call_latency_ms is not None
         assert ctx.backend_call_latency_ms >= 0.0

@@ -225,8 +225,8 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 
 **Notes**
 
-- `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health`. There is no flag to expose just one request API.
-- `GET /v1/stats` and `GET /v1/routing/stats` are available on both serve paths.
+- `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health` — there is no flag to expose just one request API.
+- Both `serve --config` and the legacy route-bundle serve register `GET /metrics`, the OpenTelemetry Prometheus scrape surface. The earlier JSON `GET /v1/stats` / `GET /v1/routing/stats` endpoints were removed in the OpenTelemetry migration.
 - The deprecated route-bundle path accepts `--inbound` for compatibility but ignores it; all supported request APIs are always registered.
 - `serve --config` does not support `--reload`, `--workers > 1`, Intake options, `--enable-rl-logging`, or any explicit `--inbound` value.
 - Rust-defined and Python-defined profiles use the same profile-config schema. The profile `type` decides which implementation builds that profile.
