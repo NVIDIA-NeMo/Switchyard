@@ -83,6 +83,8 @@ jobs:
 
   wheels:
     name: Wheel (${{ matrix.label }})
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
+    needs: [python-release-checks, rust-release-checks]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -224,17 +226,60 @@ jobs:
           name: switchyard-wheel-${{ matrix.label }}
           path: dist/*
 
+  devzone-artifactory-wheel:
+    name: Devzone Artifactory probe wheel
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Stamp Devzone package metadata
+        shell: bash
+        run: |
+          python scripts/release/set_devzone_prerelease_version.py \
+            "${{ inputs.devzone_version }}" \
+            --package-name "${DEVZONE_PACKAGE_NAME}"
+      - name: Build manylinux x86_64 wheel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            -e MATURIN_VERSION="${MATURIN_VERSION}" \
+            -v "${GITHUB_WORKSPACE}:/io" \
+            -w /io \
+            "quay.io/pypa/manylinux2014_x86_64" \
+            /bin/bash -lc '
+              set -euxo pipefail
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              source "${HOME}/.cargo/env"
+              PYTHON=/opt/python/cp312-cp312/bin/python
+              "${PYTHON}" -m pip install --upgrade pip
+              "${PYTHON}" -m pip install "maturin==${MATURIN_VERSION}"
+              "${PYTHON}" -m maturin build \
+                --release \
+                --locked \
+                --compatibility pypi \
+                --out dist \
+                --interpreter "${PYTHON}"
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devzone-wheel-linux-x86_64
+          path: dist/*.whl
+
   stage-devzone-artifactory:
     name: Stage Devzone wheels to Artifactory
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
-    needs: [wheels]
+    needs: [devzone-artifactory-wheel]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: switchyard-wheel-*
+          pattern: devzone-wheel-*
           merge-multiple: true
       - uses: actions/setup-python@v5
         with:
