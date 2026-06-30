@@ -7,19 +7,19 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use switchyard_components::otel_metrics;
 use switchyard_components_v2::{
-    profile_stats_accumulator, LlmRoutingProfileConfig, LlmRoutingTierMapping, Profile,
-    ProfileConfig, ProfileHooks, ProfileInput, RequestMetadata,
+    LlmRoutingProfileConfig, LlmRoutingTierMapping, Profile, ProfileConfig, ProfileHooks,
+    ProfileInput, RequestMetadata,
 };
 use switchyard_core::{
     BackendFormat, ChatRequest, LlmTarget, LlmTargetId, ModelId, Result, SwitchyardError,
 };
-use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Clone, Debug, PartialEq)]
 struct ObservedRequest {
@@ -341,11 +341,6 @@ fn complex_signals() -> Value {
     })
 }
 
-fn stats_test_lock() -> &'static AsyncMutex<()> {
-    static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| AsyncMutex::new(()))
-}
-
 #[test]
 fn profile_config_macro_adds_type_metadata_and_strict_serde() -> Result<()> {
     let server = MockOpenAiServer::spawn(Some(medium_signals()), 200)?;
@@ -369,8 +364,6 @@ fn profile_config_macro_adds_type_metadata_and_strict_serde() -> Result<()> {
 
 #[tokio::test]
 async fn process_routes_medium_policy_to_weak_with_required_tool_call() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn(Some(medium_signals()), 200)?;
     let profile = config(&server.base_url())?.build()?;
 
@@ -397,8 +390,6 @@ async fn process_routes_medium_policy_to_weak_with_required_tool_call() -> Resul
 
 #[tokio::test]
 async fn yaml_overrides_classifier_tool_contract_and_tier_mapping() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn(Some(medium_signals()), 200)?;
     let mut config = config(&server.base_url())?;
     config.classifier_max_tokens = 64;
@@ -470,8 +461,6 @@ fn config_rejects_non_strict_classifier_tool_schema() -> Result<()> {
 
 #[tokio::test]
 async fn low_confidence_defaults_to_strong() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let mut signals = medium_signals();
     signals["recommended_tier"] = json!("simple");
     signals["confidence"] = json!(0.2);
@@ -492,8 +481,6 @@ async fn low_confidence_defaults_to_strong() -> Result<()> {
 
 #[tokio::test]
 async fn classifier_failure_fails_open_with_visible_decision_source() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn(None, 200)?;
     let profile = config(&server.base_url())?.build()?;
 
@@ -503,16 +490,14 @@ async fn classifier_failure_fails_open_with_visible_decision_source() -> Result<
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
+    // Classifier failures are fail-open with a visible decision source and are
+    // intentionally not counted as metric errors, matching the Python path.
     assert_eq!(processed.decision.source, "classifier_error_fall_open");
-    let stats = profile_stats_accumulator().snapshot()?;
-    assert_eq!(stats.classifier.total_errors, 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn classifier_failure_fails_closed_when_fail_open_is_disabled() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn(None, 200)?;
     let mut config = config(&server.base_url())?;
     config.classifier_fail_open = false;
@@ -525,15 +510,11 @@ async fn classifier_failure_fails_closed_when_fail_open_is_disabled() -> Result<
         .ok_or_else(|| SwitchyardError::Other("expected classifier failure".to_string()))?;
 
     assert!(error.to_string().contains("LLM classifier failed"));
-    let stats = profile_stats_accumulator().snapshot()?;
-    assert_eq!(stats.classifier.total_errors, 1);
     Ok(())
 }
 
 #[tokio::test]
-async fn run_records_backend_and_classifier_stats() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
+async fn run_emits_backend_and_classifier_metrics() -> Result<()> {
     let server = MockOpenAiServer::spawn(Some(complex_signals()), 200)?;
     let profile = config(&server.base_url())?.build()?;
 
@@ -562,17 +543,19 @@ async fn run_records_backend_and_classifier_stats() -> Result<()> {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].path, "/classifier/v1/chat/completions");
     assert_eq!(requests[1].path, "/strong/v1/chat/completions");
-    let stats = profile_stats_accumulator().snapshot()?;
-    assert_eq!(stats.classifier.total_requests, 1);
-    assert!(stats.models.contains_key("frontier/model"));
-    assert!(stats.tiers.contains_key("strong"));
+    // The process meter is a singleton; assert the metric surface mentions the
+    // routed model, the strong tier, and the classifier role.
+    let metrics = otel_metrics::render_prometheus().map_err(SwitchyardError::Other)?;
+    assert!(metrics.contains("frontier/model"));
+    assert!(metrics.contains("tier=\"strong\""));
+    // Classifier token spend is tagged with tier="classifier" so it never aliases
+    // routed-tier buckets even on a shared model id.
+    assert!(metrics.contains("tier=\"classifier\""));
     Ok(())
 }
 
 #[tokio::test]
 async fn run_retries_fallback_target_after_context_window_overflow() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn_with_backend_mode(
         Some(medium_signals()),
         BackendMode::WeakContextOverflowThenOk,
@@ -617,8 +600,6 @@ async fn run_retries_fallback_target_after_context_window_overflow() -> Result<(
 
 #[tokio::test]
 async fn run_normalizes_reasoning_effort_and_applies_provider_defaults() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn(Some(medium_signals()), 200)?;
     let mut config = config(&server.base_url())?;
     config.classifier.model = ModelId::new("nvidia/deepseek-ai/deepseek-v4-flash")?;
@@ -665,8 +646,6 @@ async fn run_normalizes_reasoning_effort_and_applies_provider_defaults() -> Resu
 
 #[tokio::test]
 async fn run_records_selected_backend_failure() -> Result<()> {
-    let _guard = stats_test_lock().lock().await;
-    profile_stats_accumulator().reset()?;
     let server = MockOpenAiServer::spawn(Some(complex_signals()), 503)?;
     let profile = config(&server.base_url())?.build()?;
 
@@ -676,12 +655,7 @@ async fn run_records_selected_backend_failure() -> Result<()> {
         })?;
 
     assert!(error.to_string().contains("selected backend failed"));
-    let stats = profile_stats_accumulator().snapshot()?;
-    assert_eq!(stats.total_errors, 1);
-    let model = stats
-        .models
-        .get("frontier/model")
-        .ok_or_else(|| SwitchyardError::Other("frontier/model stats missing".to_string()))?;
-    assert_eq!(model.errors, 1);
+    let metrics = otel_metrics::render_prometheus().map_err(SwitchyardError::Other)?;
+    assert!(metrics.contains("switchyard_errors_total"));
     Ok(())
 }

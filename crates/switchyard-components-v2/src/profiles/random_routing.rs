@@ -6,15 +6,14 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use switchyard_components::otel_metrics;
 use switchyard_components::request_processors::{
     RandomRoutingDecision, RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier,
 };
 use switchyard_components::stats::usage_from_body;
-use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result, SwitchyardError};
 
 use crate::backend::{native_target_backend, TargetBackend};
-use crate::profile_stats_accumulator;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -50,7 +49,6 @@ impl ProfileConfig for RandomRoutingProfileConfig {
             router: RandomRoutingEngine::new(router_config)?,
             strong_backend: native_target_backend(self.strong.clone())?,
             weak_backend: native_target_backend(self.weak.clone())?,
-            stats: profile_stats_accumulator(),
         })
     }
 }
@@ -60,7 +58,6 @@ pub struct RandomRoutingProfile {
     router: RandomRoutingEngine,
     strong_backend: TargetBackend,
     weak_backend: TargetBackend,
-    stats: StatsAccumulator,
 }
 
 /// Processed random-routing request with the profile-owned routing decision.
@@ -154,29 +151,38 @@ impl Profile for RandomRoutingProfile {
         {
             Ok(response) => response,
             Err(error) => {
-                self.stats.record_error(
+                otel_metrics::record_error(
                     decision.selected_model.as_str(),
                     Some(decision.tier.as_str()),
-                )?;
+                    None,
+                );
                 return Err(error);
             }
         };
         let backend_latency_ms = backend_started_at.elapsed().as_secs_f64() * 1000.0;
-        self.stats.record_success(
+        otel_metrics::record_routing_decision("random", Some("coin"), Some(decision.tier.as_str()));
+        otel_metrics::record_request(
             decision.selected_model.as_str(),
-            Some(backend_latency_ms),
             Some(decision.tier.as_str()),
-        )?;
+            Some("random"),
+        );
         let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
         let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
+        otel_metrics::record_latencies(
             decision.selected_model.as_str(),
-            usage,
+            Some(decision.tier.as_str()),
+            Some("random"),
+            Some(backend_latency_ms),
             Some(total_latency_ms),
             Some(routing_overhead_ms),
+        );
+        let usage = response.body().map(usage_from_body).unwrap_or_default();
+        otel_metrics::record_usage_and_cost(
+            decision.selected_model.as_str(),
             Some(decision.tier.as_str()),
-        )?;
+            "routed",
+            usage,
+        );
         let response = self.rprocess(&processed, response).await?;
         Ok(ProfileResponse::with_routing_metadata(
             response,
@@ -303,7 +309,6 @@ mod tests {
             router: RandomRoutingEngine::new(router_config)?,
             strong_backend,
             weak_backend,
-            stats: StatsAccumulator::new(),
         };
         Ok((profile, calls))
     }
@@ -353,10 +358,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_records_stats_with_selected_random_tier() -> Result<()> {
+    async fn run_emits_otel_metrics_with_selected_random_tier() -> Result<()> {
         let (profile, _calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
+            target("strong", "frontier-random/model")?,
+            target("weak", "cheap-random/model")?,
             1.0,
         )?;
 
@@ -367,21 +372,16 @@ mod tests {
             }))))
             .await?;
 
-        let snapshot = profile.stats.snapshot()?;
-        assert_eq!(snapshot.total_requests, 1);
-        assert_eq!(snapshot.total_tokens.prompt, 11);
-        assert_eq!(snapshot.total_tokens.completion, 7);
-        let model = snapshot.models.get("frontier/model").ok_or_else(|| {
-            SwitchyardError::Other("frontier model stats should be present".into())
-        })?;
-        assert_eq!(model.calls, 1);
-        assert_eq!(model.tier.as_deref(), Some("strong"));
-        let tier = snapshot
-            .tiers
-            .get("strong")
-            .ok_or_else(|| SwitchyardError::Other("strong tier stats should be present".into()))?;
-        assert_eq!(tier.calls, 1);
-        assert_eq!(tier.model, "frontier/model");
+        // The process meter is a singleton; assert the surface mentions the
+        // selected model, the strong tier label, and the random router.
+        let metrics = switchyard_components::otel_metrics::render_prometheus()
+            .map_err(SwitchyardError::Other)?;
+        assert!(
+            metrics.contains("frontier-random/model"),
+            "expected metrics for the selected model in:\n{metrics}"
+        );
+        assert!(metrics.contains("tier=\"strong\""));
+        assert!(metrics.contains("router=\"random\""));
         Ok(())
     }
 

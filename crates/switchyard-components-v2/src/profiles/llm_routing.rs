@@ -9,14 +9,13 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use switchyard_components::otel_metrics;
 use switchyard_components::stats::usage_from_body;
-use switchyard_components::StatsAccumulator;
 use switchyard_core::{
     BackendFormat, ChatRequest, ChatResponse, LlmTarget, LlmTargetId, Result, SwitchyardError,
 };
 
 use crate::backend::{native_target_backend, TargetBackend};
-use crate::profile_stats_accumulator;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -126,7 +125,6 @@ impl ProfileConfig for LlmRoutingProfileConfig {
                 .clone()
                 .unwrap_or_else(|| policy.default_tier_mapping()),
             classifier_tool: LlmRoutingClassifierTool::from_config(policy, self),
-            stats: profile_stats_accumulator(),
         })
     }
 }
@@ -147,7 +145,6 @@ pub struct LlmRoutingProfile {
     default_tier: String,
     tier_mapping: LlmRoutingTierMapping,
     classifier_tool: LlmRoutingClassifierTool,
-    stats: StatsAccumulator,
 }
 
 /// Processed LLM-routing request with the profile-owned route decision.
@@ -198,18 +195,19 @@ impl LlmRoutingProfile {
             "tool_choice": self.classifier_tool.choice(),
         }));
 
-        let started_at = Instant::now();
         let response = self.classifier_backend.call(&classifier_request).await?;
-        let latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
         let raw = classifier_tool_arguments(&response, &self.classifier_tool.name)?;
         let signals = self.policy.parse_signals(&raw)?;
         validate_signals(&signals)?;
         let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_classifier_usage(
+        // Classifier token/cost recorded under role="classifier" so the overhead
+        // never aliases routed-tier spend on a shared model id.
+        otel_metrics::record_usage_and_cost(
             self.classifier_target.model.as_str(),
+            Some("classifier"),
+            "classifier",
             usage,
-            Some(latency_ms),
-        )?;
+        );
         Ok(signals)
     }
 
@@ -218,8 +216,8 @@ impl LlmRoutingProfile {
         let decision = match self.classify(&input.request).await {
             Ok(signals) => self.select(&signals)?,
             Err(error) => {
-                self.stats
-                    .record_classifier_error(self.classifier_target.model.as_str())?;
+                // Classifier failures are fail-open and intentionally not counted,
+                // matching the Python deterministic-routing path.
                 if self.classifier_fail_open {
                     let signals = ClassifierSignals::abstain(self.policy);
                     self.default_decision(
@@ -233,6 +231,11 @@ impl LlmRoutingProfile {
             }
         };
         input.request.set_model(&decision.selected_model);
+        otel_metrics::record_routing_decision(
+            "deterministic",
+            Some(decision.source.as_str()),
+            Some(decision.tier.as_str()),
+        );
         Ok(LlmRoutingProcessedRequest {
             profile_input: input,
             decision,
@@ -424,29 +427,36 @@ impl LlmRoutingProfile {
         response: &ChatResponse,
         total_latency_ms: f64,
         backend_latency_ms: f64,
-    ) -> Result<()> {
-        self.stats.record_success(
+    ) {
+        otel_metrics::record_request(
             decision.selected_model.as_str(),
-            Some(backend_latency_ms),
             Some(decision.tier.as_str()),
-        )?;
+            Some("deterministic"),
+        );
         let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
+        otel_metrics::record_latencies(
             decision.selected_model.as_str(),
-            usage,
+            Some(decision.tier.as_str()),
+            Some("deterministic"),
+            Some(backend_latency_ms),
             Some(total_latency_ms),
             Some(routing_overhead_ms),
-            Some(decision.tier.as_str()),
-        )?;
-        Ok(())
-    }
-
-    fn record_error(&self, decision: &LlmRoutingDecision) -> Result<()> {
-        self.stats.record_error(
+        );
+        let usage = response.body().map(usage_from_body).unwrap_or_default();
+        otel_metrics::record_usage_and_cost(
             decision.selected_model.as_str(),
             Some(decision.tier.as_str()),
-        )
+            "routed",
+            usage,
+        );
+    }
+
+    fn record_error(&self, decision: &LlmRoutingDecision) {
+        otel_metrics::record_error(
+            decision.selected_model.as_str(),
+            Some(decision.tier.as_str()),
+            None,
+        );
     }
 
     fn routing_metadata(&self, decision: &LlmRoutingDecision) -> RoutingMetadata {
@@ -495,7 +505,7 @@ impl Profile for LlmRoutingProfile {
                     &response,
                     total_latency_ms,
                     first_backend_latency_ms,
-                )?;
+                );
                 let response = self.rprocess(&processed, response).await?;
                 return Ok(ProfileResponse::with_routing_metadata(
                     response,
@@ -513,7 +523,7 @@ impl Profile for LlmRoutingProfile {
                             &response,
                             total_latency_ms,
                             retry_backend_latency_ms,
-                        )?;
+                        );
                         let response = self.rprocess(&retry, response).await?;
                         return Ok(ProfileResponse::with_routing_metadata(
                             response,
@@ -521,7 +531,7 @@ impl Profile for LlmRoutingProfile {
                         ));
                     }
                     Err(SwitchyardError::ContextWindowExceeded { target_id, .. }) => {
-                        self.record_error(&retry.decision)?;
+                        self.record_error(&retry.decision);
                         return Err(SwitchyardError::ContextPoolExhausted {
                             last_target_id: target_id,
                             reason: "all attempted targets returned context-window overflow"
@@ -529,13 +539,13 @@ impl Profile for LlmRoutingProfile {
                         });
                     }
                     Err(error) => {
-                        self.record_error(&retry.decision)?;
+                        self.record_error(&retry.decision);
                         return Err(error);
                     }
                 }
             }
             Err(error) => {
-                self.record_error(&processed.decision)?;
+                self.record_error(&processed.decision);
                 return Err(error);
             }
         }

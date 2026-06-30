@@ -6,12 +6,11 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
+use switchyard_components::otel_metrics;
 use switchyard_components::stats::usage_from_body;
-use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result};
 
 use crate::backend::{native_target_backend, TargetBackend};
-use crate::profile_stats_accumulator;
 use crate::{profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse};
 
 /// Config for the flatter passthrough profile.
@@ -29,7 +28,6 @@ impl ProfileConfig for PassthroughProfileConfig {
     fn build(&self) -> Result<Self::Runtime> {
         Ok(PassthroughProfile {
             backend: native_target_backend(self.target.clone())?,
-            stats: profile_stats_accumulator(),
         })
     }
 }
@@ -37,7 +35,6 @@ impl ProfileConfig for PassthroughProfileConfig {
 /// Passthrough profile in the flatter design.
 pub struct PassthroughProfile {
     backend: TargetBackend,
-    stats: StatsAccumulator,
 }
 
 #[async_trait]
@@ -78,23 +75,24 @@ impl Profile for PassthroughProfile {
         let response = match self.backend.call(&processed.request).await {
             Ok(response) => response,
             Err(error) => {
-                self.stats.record_error(target_model.as_str(), None)?;
+                otel_metrics::record_error(target_model.as_str(), None, None);
                 return Err(error);
             }
         };
         let backend_latency_ms = backend_started_at.elapsed().as_secs_f64() * 1000.0;
-        self.stats
-            .record_success(target_model.to_string(), Some(backend_latency_ms), None)?;
+        otel_metrics::record_request(target_model.as_str(), None, None);
         let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
         let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
-            target_model.to_string(),
-            usage,
+        otel_metrics::record_latencies(
+            target_model.as_str(),
+            None,
+            None,
+            Some(backend_latency_ms),
             Some(total_latency_ms),
             Some(routing_overhead_ms),
-            None,
-        )?;
+        );
+        let usage = response.body().map(usage_from_body).unwrap_or_default();
+        otel_metrics::record_usage_and_cost(target_model.as_str(), None, "routed", usage);
         let response = self.rprocess(&processed, response).await?;
         Ok(ProfileResponse::from(response))
     }
@@ -170,7 +168,6 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let profile = PassthroughProfile {
             backend: backend(&target, calls.clone()),
-            stats: StatsAccumulator::new(),
         };
         Ok((profile, calls))
     }
@@ -200,8 +197,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_records_stats_for_single_target() -> Result<()> {
-        let (profile, _calls) = profile(target("direct", "provider/model")?)?;
+    async fn run_emits_otel_metrics_for_single_target() -> Result<()> {
+        let (profile, _calls) = profile(target("direct", "metrics-passthrough/model")?)?;
 
         let _response = profile
             .run(profile_input(ChatRequest::openai_chat(json!({
@@ -210,15 +207,15 @@ mod tests {
             }))))
             .await?;
 
-        let snapshot = profile.stats.snapshot()?;
-        assert_eq!(snapshot.total_requests, 1);
-        assert_eq!(snapshot.total_tokens.prompt, 5);
-        assert_eq!(snapshot.total_tokens.completion, 3);
-        let model = snapshot.models.get("provider/model").ok_or_else(|| {
-            SwitchyardError::Other("provider model stats should be present".into())
-        })?;
-        assert_eq!(model.calls, 1);
-        assert_eq!(model.tier, None);
+        // The process meter is a singleton, so assert the metric surface mentions
+        // this target rather than exact counts another test may have moved.
+        let metrics = switchyard_components::otel_metrics::render_prometheus()
+            .map_err(SwitchyardError::Other)?;
+        assert!(
+            metrics.contains("metrics-passthrough/model"),
+            "expected request metrics for the target model in:\n{metrics}"
+        );
+        assert!(metrics.contains("switchyard_requests_total"));
         Ok(())
     }
 

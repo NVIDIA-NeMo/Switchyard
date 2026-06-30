@@ -11,12 +11,11 @@ use serde_json::{json, Value};
 use switchyard_components::dimension_collector::{
     extract_tool_signals_with_window, ToolResultSignal, DEFAULT_RECENT_WINDOW,
 };
+use switchyard_components::otel_metrics;
 use switchyard_components::stats::{usage_from_body, TokenUsage};
-use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatRequest, ChatResponse, LlmTarget, LlmTargetId, Result, SwitchyardError};
 
 use crate::backend::{native_target_backend, TargetBackend};
-use crate::profile_stats_accumulator;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -139,7 +138,6 @@ impl ProfileConfig for CascadeProfileConfig {
                 .as_ref()
                 .map(CascadeTierClassifier::new)
                 .transpose()?,
-            stats: profile_stats_accumulator(),
             enable_stats: self.enable_stats,
         })
     }
@@ -218,7 +216,6 @@ pub struct CascadeProfile {
     confidence_threshold: f64,
     signal_recent_window: usize,
     classifier: Option<CascadeTierClassifier>,
-    stats: StatsAccumulator,
     enable_stats: bool,
 }
 
@@ -305,7 +302,7 @@ impl CascadeProfile {
         let original_model = input.request.model().map(std::borrow::ToOwned::to_owned);
         let decision = self.pick(&input.request, &signal, original_model).await?;
         input.request.set_model(decision.selected_model.as_str());
-        self.record_decision_source(decision.source)?;
+        self.record_decision_source(&decision);
         Ok(CascadeProcessedRequest {
             profile_input: input,
             decision,
@@ -351,7 +348,7 @@ impl CascadeProfile {
 
         if let Some(classifier) = &self.classifier {
             if let Some(tier) = classifier
-                .classify(request, signal, self.stats_handle())
+                .classify(request, signal, self.enable_stats)
                 .await
             {
                 return self.decision_for_tier(
@@ -468,15 +465,14 @@ impl CascadeProfile {
         (result, latency_ms)
     }
 
-    fn stats_handle(&self) -> Option<&StatsAccumulator> {
-        self.enable_stats.then_some(&self.stats)
-    }
-
-    fn record_decision_source(&self, source: CascadeDecisionSource) -> Result<()> {
-        if let Some(stats) = self.stats_handle() {
-            stats.record_routing_decision(CASCADE_PROFILE_TYPE, source.as_str())?;
+    fn record_decision_source(&self, decision: &CascadeDecision) {
+        if self.enable_stats {
+            otel_metrics::record_routing_decision(
+                CASCADE_PROFILE_TYPE,
+                Some(decision.source.as_str()),
+                Some(decision.tier.as_str()),
+            );
         }
-        Ok(())
     }
 
     fn record_success(
@@ -485,34 +481,40 @@ impl CascadeProfile {
         response: &ChatResponse,
         total_latency_ms: f64,
         backend_latency_ms: f64,
-    ) -> Result<()> {
-        if let Some(stats) = self.stats_handle() {
-            stats.record_success(
+    ) {
+        if self.enable_stats {
+            otel_metrics::record_request(
                 decision.selected_model.as_str(),
-                Some(backend_latency_ms),
                 Some(decision.tier.as_str()),
-            )?;
+                Some(CASCADE_PROFILE_TYPE),
+            );
             let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-            let usage = response.body().map(usage_from_body).unwrap_or_default();
-            stats.record_usage_after_success_attribution(
+            otel_metrics::record_latencies(
                 decision.selected_model.as_str(),
-                usage,
+                Some(decision.tier.as_str()),
+                Some(CASCADE_PROFILE_TYPE),
+                Some(backend_latency_ms),
                 Some(total_latency_ms),
                 Some(routing_overhead_ms),
-                Some(decision.tier.as_str()),
-            )?;
-        }
-        Ok(())
-    }
-
-    fn record_error(&self, decision: &CascadeDecision) -> Result<()> {
-        if let Some(stats) = self.stats_handle() {
-            stats.record_error(
+            );
+            let usage = response.body().map(usage_from_body).unwrap_or_default();
+            otel_metrics::record_usage_and_cost(
                 decision.selected_model.as_str(),
                 Some(decision.tier.as_str()),
-            )?;
+                "routed",
+                usage,
+            );
         }
-        Ok(())
+    }
+
+    fn record_error(&self, decision: &CascadeDecision) {
+        if self.enable_stats {
+            otel_metrics::record_error(
+                decision.selected_model.as_str(),
+                Some(decision.tier.as_str()),
+                None,
+            );
+        }
     }
 
     fn routing_metadata(&self, decision: &CascadeDecision) -> RoutingMetadata {
@@ -566,7 +568,7 @@ impl Profile for CascadeProfile {
                     &response,
                     total_latency_ms,
                     first_backend_latency_ms,
-                )?;
+                );
                 let response = self.rprocess(&processed, response).await?;
                 return Ok(ProfileResponse::with_routing_metadata(
                     response,
@@ -584,7 +586,7 @@ impl Profile for CascadeProfile {
                             &response,
                             total_latency_ms,
                             retry_backend_latency_ms,
-                        )?;
+                        );
                         let response = self.rprocess(&retry, response).await?;
                         return Ok(ProfileResponse::with_routing_metadata(
                             response,
@@ -592,7 +594,7 @@ impl Profile for CascadeProfile {
                         ));
                     }
                     Err(SwitchyardError::ContextWindowExceeded { target_id, .. }) => {
-                        self.record_error(&retry.decision)?;
+                        self.record_error(&retry.decision);
                         return Err(SwitchyardError::ContextPoolExhausted {
                             last_target_id: target_id,
                             reason: "all attempted targets returned context-window overflow"
@@ -600,13 +602,13 @@ impl Profile for CascadeProfile {
                         });
                     }
                     Err(error) => {
-                        self.record_error(&retry.decision)?;
+                        self.record_error(&retry.decision);
                         return Err(error);
                     }
                 }
             }
             Err(error) => {
-                self.record_error(&processed.decision)?;
+                self.record_error(&processed.decision);
                 return Err(error);
             }
         }
@@ -748,9 +750,8 @@ impl CascadeTierClassifier {
         &self,
         request: &ChatRequest,
         signal: &ToolResultSignal,
-        stats: Option<&StatsAccumulator>,
+        enable_stats: bool,
     ) -> Option<CascadeTier> {
-        let started_at = Instant::now();
         let response = match self
             .client
             .post(chat_completions_url(self.config.base_url.as_deref()))
@@ -762,7 +763,6 @@ impl CascadeTierClassifier {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!(error = %error, "cascade classifier call failed; falling open");
-                record_classifier_error(stats, self.config.model.as_str());
                 return None;
             }
         };
@@ -772,7 +772,6 @@ impl CascadeTierClassifier {
                 status = %response.status(),
                 "cascade classifier returned error status; falling open"
             );
-            record_classifier_error(stats, self.config.model.as_str());
             return None;
         }
 
@@ -780,21 +779,17 @@ impl CascadeTierClassifier {
             Ok(body) => body,
             Err(error) => {
                 tracing::warn!(error = %error, "cascade classifier returned invalid JSON; falling open");
-                record_classifier_error(stats, self.config.model.as_str());
                 return None;
             }
         };
-        record_classifier_usage(
-            stats,
-            self.config.model.as_str(),
-            usage_from_body(&body),
-            started_at.elapsed().as_secs_f64() * 1000.0,
-        );
-        let tier = parse_classifier_tier(&body);
-        if tier.is_none() {
-            record_classifier_error(stats, self.config.model.as_str());
+        // Record classifier token/cost under role="classifier" so the overhead
+        // never aliases routed-tier spend on a shared model id. Classifier
+        // failures are fail-open and intentionally not counted, matching the
+        // Python classifier processor.
+        if enable_stats {
+            record_classifier_usage(self.config.model.as_str(), usage_from_body(&body));
         }
-        tier
+        parse_classifier_tier(&body)
     }
 
     fn request_body(&self, request: &ChatRequest, signal: &ToolResultSignal) -> Value {
@@ -820,25 +815,8 @@ impl CascadeTierClassifier {
     }
 }
 
-fn record_classifier_usage(
-    stats: Option<&StatsAccumulator>,
-    model: &str,
-    usage: TokenUsage,
-    latency_ms: f64,
-) {
-    if let Some(stats) = stats {
-        if let Err(error) = stats.record_classifier_usage(model, usage, Some(latency_ms)) {
-            tracing::debug!(error = %error, "failed to record cascade classifier usage");
-        }
-    }
-}
-
-fn record_classifier_error(stats: Option<&StatsAccumulator>, model: &str) {
-    if let Some(stats) = stats {
-        if let Err(error) = stats.record_classifier_error(model) {
-            tracing::debug!(error = %error, "failed to record cascade classifier error");
-        }
-    }
+fn record_classifier_usage(model: &str, usage: TokenUsage) {
+    otel_metrics::record_usage_and_cost(model, Some("classifier"), "classifier", usage);
 }
 
 fn parse_classifier_tier(body: &Value) -> Option<CascadeTier> {
@@ -1138,7 +1116,6 @@ mod tests {
             confidence_threshold,
             signal_recent_window: DEFAULT_RECENT_WINDOW,
             classifier: None,
-            stats: StatsAccumulator::new(),
             enable_stats: true,
         };
         Ok((profile, calls))
@@ -1195,21 +1172,13 @@ mod tests {
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
 
-        let snapshot = profile.stats.snapshot()?;
-        assert_eq!(
-            snapshot
-                .routing_decisions
-                .get("cascade")
-                .and_then(|sources| sources.get("override")),
-            Some(&1)
-        );
-        assert_eq!(
-            snapshot
-                .models
-                .get("frontier/model")
-                .and_then(|model| model.tier.as_deref()),
-            Some("strong")
-        );
+        // The process meter is a singleton; assert the metric surface emitted the
+        // override routing decision and the strong-tier request label.
+        let metrics = switchyard_components::otel_metrics::render_prometheus()
+            .map_err(SwitchyardError::Other)?;
+        assert!(metrics.contains("switchyard_routing_decisions_total"));
+        assert!(metrics.contains("source=\"override\""));
+        assert!(metrics.contains("router=\"cascade\""));
         Ok(())
     }
 
@@ -1284,22 +1253,13 @@ mod tests {
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
 
-        let snapshot = profile.stats.snapshot()?;
-        assert_eq!(snapshot.total_requests, 1);
-        assert_eq!(
-            snapshot
-                .models
-                .get("frontier/model")
-                .and_then(|model| model.tier.as_deref()),
-            Some("strong")
-        );
-        assert_eq!(
-            snapshot
-                .routing_decisions
-                .get("cascade")
-                .and_then(|sources| sources.get("fall_open")),
-            Some(&1)
-        );
+        // The fallback retry routes to strong; assert the metric surface emitted
+        // the fall_open routing decision and a strong-tier request label.
+        let metrics = switchyard_components::otel_metrics::render_prometheus()
+            .map_err(SwitchyardError::Other)?;
+        assert!(metrics.contains("source=\"fall_open\""));
+        assert!(metrics.contains("router=\"cascade\""));
+        assert!(metrics.contains("tier=\"strong\""));
         Ok(())
     }
 
