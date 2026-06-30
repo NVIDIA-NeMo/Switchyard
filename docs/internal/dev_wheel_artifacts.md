@@ -7,8 +7,8 @@ Switchyard currently follows the OSS-style NeMo path for GitHub builds:
 - regular CI runs tests, linting, type checks, Rust checks, and slim-install smoke checks;
 - manual dev builds create one Linux x86_64 wheel as a one-day GitHub Actions artifact;
 - manual dev matrix builds create the full sdist and wheel set as GitHub Actions artifacts;
-- root `v0.1.0`-style tags run the complete release validation and wheel matrix;
-- public PyPI/GitHub publishing happens only from approved `v0.1.0`-style tag releases.
+- root `vMAJOR.MINOR.PATCH` tags run the complete release validation and wheel matrix;
+- public PyPI/GitHub publishing happens only from approved `vMAJOR.MINOR.PATCH` tag releases.
 
 Wheel metadata uses the public distribution name `nemo-switchyard`, while the Python import and CLI
 stay `switchyard`.
@@ -61,7 +61,7 @@ publish anything to PyPI.
 
 ## Official Release Build
 
-Create a root `v0.1.0`-style tag only when a real release has been approved. Tag pushes run:
+Create a root `vMAJOR.MINOR.PATCH` tag only when a real release has been approved. Tag pushes run:
 
 - Python release checks on Python 3.12, 3.13, and 3.14;
 - Rust fmt, clippy, and workspace tests;
@@ -71,7 +71,7 @@ Create a root `v0.1.0`-style tag only when a real release has been approved. Tag
 - native wheel smoke installs where the runner can execute the artifact.
 
 The workflow rejects release tags that do not exactly match `pyproject.toml`'s package version. For
-the `0.1.0` release, push the `v0.1.0` tag.
+example, package version `0.0.1` must be released with the `v0.0.1` tag.
 
 The official `publish` job uses `uv publish --trusted-publishing always`, so PyPI project creation
 and uploads require a matching pending trusted publisher:
