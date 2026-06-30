@@ -58,7 +58,8 @@ For CI automation, use a Kitmaker service-account token instead of a personal us
 The workflow `.github/workflows/devzone-prerelease.yml` does not need release secrets to build and
 verify GitHub wheel artifacts.
 
-Kitmaker credentials are needed only for the later Portal/API submission:
+Kitmaker credentials are needed only when `kitmaker_dry_run=true` or for a later Portal/API
+submission:
 
 | Secret | Purpose |
 |---|---|
@@ -98,6 +99,7 @@ Use these inputs for the first GitHub-artifact-only staging run:
 |---|---|
 | `version` | `0.0.1.dev0` |
 | `target_sha` | empty, or a full source SHA |
+| `kitmaker_dry_run` | `false` for artifact-only, `true` for Kitmaker `upload=false` |
 
 The workflow:
 
@@ -106,15 +108,16 @@ The workflow:
 3. Verifies every wheel has `Name: nemo-switchyard` and the requested version.
 4. Uploads each wheel as a `devzone-wheel-*` GitHub Actions artifact with one-day retention.
 5. Downloads the artifacts in a verifier job and re-checks the wheel metadata.
+6. If `kitmaker_dry_run=true`, submits the GitHub artifact archive URL(s) to Kitmaker with
+   `upload: false`.
 
 The first GitHub-artifact-only run intentionally skips the full Python/Rust release checks and wheel
 smoke installs. It proves the `.dev` metadata, wheel build, GitHub artifact upload, and artifact
 download path before adding Kitmaker or release validation back into the loop.
 
-GitHub Actions artifacts are authenticated, short-lived handoff artifacts. If the Kitmaker API path
-requires direct fetch URLs, do not submit raw GitHub artifact API URLs unless the Portal flow has
-explicitly been validated with them. Download the artifacts before expiry and use the approved
-Kitmaker handoff.
+GitHub Actions artifacts are authenticated, short-lived ZIP archive URLs. The dry-run path exists to
+validate whether Kitmaker accepts that handoff shape. If Portal cannot fetch or unpack those URLs,
+download the artifacts before expiry and use the approved Kitmaker handoff.
 
 ## Artifact Requirements
 
@@ -209,7 +212,7 @@ uv run --isolated --no-project \
 | `Project name mismatch` | Request `project_name` does not match Portal project | Use `nemo-switchyard` exactly |
 | `Not authorized to create releases` | Token owner is not project owner/PIC | Transfer Portal project ownership or use the correct service token |
 | GitHub artifact expired | Artifacts are retained for one day | Rerun the workflow and download the new artifact |
-| Release fails during URL fetch | Wheel URL is not directly downloadable by Portal | Use a Kitmaker-approved fetchable artifact handoff |
+| Dry run fails during URL fetch | GitHub artifact archive URL is not a supported Portal handoff | Use a Kitmaker-approved fetchable artifact handoff |
 | Wheel tag check fails | Local wheel uses `linux_x86_64` instead of manylinux | Build with the manylinux release workflow |
 | Install cannot find package | Package name or version mismatch | Install `nemo-switchyard==0.0.1.dev0` with `--pre` or explicit version |
 

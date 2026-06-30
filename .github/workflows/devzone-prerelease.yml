@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      kitmaker_dry_run:
+        description: "Submit GitHub artifact URLs to Kitmaker with upload=false."
+        required: true
+        type: boolean
+        default: false
 
 env:
   DEVZONE_PACKAGE_NAME: "nemo-switchyard"
@@ -210,3 +215,88 @@ jobs:
                   raise SystemExit(f"{filename}: Version={metadata['Version']!r}")
               print(f"{filename}: {metadata['Name']} {metadata['Version']}")
           PY
+
+  kitmaker-dry-run:
+    name: Kitmaker dry run
+    if: ${{ inputs.kitmaker_dry_run }}
+    needs: [prepare, verify-artifacts]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Submit GitHub artifact URLs to Kitmaker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC_EMAIL: ${{ secrets.KITMAKER_PIC_EMAIL }}
+          KITMAKER_PROJECT_ID: ${{ secrets.KITMAKER_PROJECT_ID }}
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${KITMAKER_API_TOKEN}" ] || [ -z "${KITMAKER_PROJECT_ID}" ]; then
+            echo "::error::KITMAKER_API_TOKEN and KITMAKER_PROJECT_ID are required"
+            exit 1
+          fi
+          if [ -z "${KITMAKER_PIC_EMAIL}" ]; then
+            echo "::error::KITMAKER_PIC_EMAIL is required"
+            exit 1
+          fi
+
+          mkdir -p release
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            -o release/github-artifacts.json
+
+          python - <<'PY'
+          import json
+          import os
+
+          with open("release/github-artifacts.json", encoding="utf-8") as handle:
+              artifacts = json.load(handle)["artifacts"]
+          urls = [
+              artifact["archive_download_url"]
+              for artifact in artifacts
+              if artifact["name"].startswith("devzone-wheel-") and not artifact["expired"]
+          ]
+          if not urls:
+              raise SystemExit("no active devzone-wheel-* GitHub artifacts found")
+          payload = {
+              "project_name": os.environ["PACKAGE_NAME"],
+              "payload": [
+                  {
+                      "pic": os.environ["KITMAKER_PIC_EMAIL"],
+                      "job_type": "wheel-release-job",
+                      "url": url,
+                      "upload": False,
+                  }
+                  for url in sorted(urls)
+              ],
+          }
+          with open("release/kitmaker-dry-run-payload.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2)
+          PY
+
+          curl -fsSL \
+            -X POST "https://kitmaker-portal.nvidia.com/api/v0/projects/${KITMAKER_PROJECT_ID}/releases" \
+            -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data @release/kitmaker-dry-run-payload.json \
+            -o release/kitmaker-dry-run-response.json
+
+          echo "## Kitmaker Dry Run" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Submitted GitHub artifact URL(s) to Kitmaker with \`upload=false\`." >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kitmaker-dry-run-response
+          path: |
+            release/github-artifacts.json
+            release/kitmaker-dry-run-payload.json
+            release/kitmaker-dry-run-response.json
+          retention-days: 1
