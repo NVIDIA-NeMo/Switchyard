@@ -27,6 +27,7 @@ permissions:
 jobs:
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -47,6 +48,7 @@ jobs:
 
   rust-release-checks:
     name: Release Rust checks
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +63,7 @@ jobs:
 
   source-dist:
     name: Source distribution
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ubuntu-latest
     steps:
@@ -80,7 +83,6 @@ jobs:
 
   wheels:
     name: Wheel (${{ matrix.label }})
-    needs: [python-release-checks, rust-release-checks]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -168,7 +170,7 @@ jobs:
             --out dist \
             --target "${{ matrix.rust_target }}"
       - name: Smoke install native wheel on Python 3.12
-        if: matrix.smoke
+        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory) }}
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -191,11 +193,11 @@ jobs:
           print("rust extension", _switchyard_rust.__name__)
           PY
       - uses: actions/setup-python@v5
-        if: matrix.smoke
+        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory) }}
         with:
           python-version: "3.14"
       - name: Smoke install native wheel on Python 3.14
-        if: matrix.smoke
+        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory) }}
         shell: bash
         run: |
           python -m pip install --upgrade pip
