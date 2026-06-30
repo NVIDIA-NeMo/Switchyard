@@ -10,8 +10,8 @@ wheels separate from official tag-gated release builds.
 
 | Channel | Trigger | CI owner | Destination | Runbook |
 |---|---|---|---|---|
-| Dev wheel artifact | Manual `publish.yml` dispatch with `build_dev_artifact=true` | GitHub Actions | One-day GitHub artifact | `docs/internal/dev_wheel_artifacts.md` |
-| Dev matrix artifact | Manual `publish.yml` dispatch with `build_dev_matrix=true` | GitHub Actions | Full matrix GitHub artifacts | `docs/internal/dev_wheel_artifacts.md` |
+| Dev wheel artifact | Manual `publish.yml` dispatch with `build_dev_artifact=true` | GitHub Actions | One-day GitHub artifact | `docs/internal/release_workflow.md` |
+| Dev matrix artifact | Manual `publish.yml` dispatch with `build_dev_matrix=true` | GitHub Actions | Full matrix GitHub artifacts | `docs/internal/release_workflow.md` |
 | Official release build | Root `vMAJOR.MINOR.PATCH` tag | GitHub Actions `.github/workflows/publish.yml` | Full release artifact matrix + PyPI Trusted Publishing via `uv publish` | `.github/workflows/publish.yml` |
 
 GitHub-hosted runners cannot currently reach NVIDIA-internal Artifactory or Kitmaker Portal from
@@ -67,9 +67,7 @@ When editing release scripts, package metadata, package release docs, or this sk
 
 ```bash
 uv run ruff check scripts/release/set_dev_wheel_version.py tests/test_dev_wheel_versioning.py
-uv run pytest tests/test_internal_release_versioning.py -v
 uv run pytest tests/test_dev_wheel_versioning.py -v
-python scripts/release/set_internal_version.py internal/v0.1.1-rc.1 --print-python-version
 python scripts/release/set_dev_wheel_version.py 0.0.1.dev0 --print-version
 git diff --check
 ```
@@ -93,7 +91,6 @@ make publish
 
 ## References
 
-- Dev wheel artifact runbook: `docs/internal/dev_wheel_artifacts.md`
-- Internal version helper: `scripts/release/set_internal_version.py`
+- Release workflow runbook: `docs/internal/release_workflow.md`
 - Dev wheel version helper: `scripts/release/set_dev_wheel_version.py`
 - Public GitHub build workflow: `.github/workflows/publish.yml`

@@ -38,7 +38,7 @@ def test_parse_dev_wheel_version(raw_version: str, normalized: str) -> None:
         "0.0.1",
         "0.0.1rc1",
         "0.0.1.dev.a",
-        "internal/v0.0.1-dev.0",
+        "release/v0.0.1-dev.0",
         "v0.0.1.dev0",
     ],
 )

@@ -1,6 +1,6 @@
-# Dev Wheel Artifacts
+# Release Workflow
 
-Audience: Switchyard maintainers who need a temporary wheel to test before an official release.
+Audience: Switchyard maintainers who need temporary wheel artifacts or an official PyPI release.
 
 Switchyard currently follows the OSS-style NeMo path for GitHub builds:
 
