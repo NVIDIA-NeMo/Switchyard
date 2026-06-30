@@ -4,11 +4,24 @@
 
 # Switchyard
 
-Typed, composable LLM routing and format translation for Python. Route traffic between multiple LLM providers, translate between OpenAI and Anthropic APIs, collect usage statistics, and build profile-backed routing flows with strong typing and minimal boilerplate.
+Switchyard is a Python proxy for LLM traffic. It routes requests across
+providers, translates between the OpenAI and Anthropic APIs, collects usage
+statistics, and lets you build typed, profile-backed routing flows with little
+boilerplate.
 
-**Why Switchyard?** Point coding agents like **Claude Code** and **Codex** at compatible open-source models. Switchyard transparently translates between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats, so each agent keeps speaking its native API while requests are served by vLLM, NVIDIA NIM, Ollama, or any OpenAI-compatible endpoint. The same proxy can also **route across multiple models** for A/B benchmarking splits, signal-driven cascade escalation, or a custom router you wire in.
+**Why Switchyard?** Point a coding agent such as Claude Code or Codex at an
+open-source model. Switchyard translates between the OpenAI Chat, Anthropic
+Messages, and OpenAI Responses formats, so the agent keeps speaking its native
+API while the request is served by vLLM, NVIDIA NIM, Ollama, or any
+OpenAI-compatible endpoint. The same proxy can spread traffic across several
+models for A/B benchmarking, signal-driven cascade escalation, or a router you
+write yourself.
 
-**Launcher routing is explicit**: launchers default to built-in LLM-classifier routing, which you can tune with `--weak-model`, `--classifier-model`, `--profile`, and `--classifier-min-confidence`; use `--model X` for single-model passthrough. The deprecated `--routing-profiles FILE` path remains for launcher-owned legacy bundles.
+**Launcher routing is explicit.** By default, launchers use the built-in
+LLM-classifier router, which you tune with `--weak-model`, `--classifier-model`,
+`--profile`, and `--classifier-min-confidence`. Use `--model X` for
+single-model passthrough. The `--routing-profiles FILE` path is deprecated and
+remains only for launcher-owned legacy bundles.
 
 ## Features
 
@@ -167,17 +180,23 @@ asyncio.run(main())
 
 ## Architecture
 
-Switchyard sits between client applications and one or more LLM backends:
+Switchyard sits between your client applications and one or more LLM backends:
 
-```text
-clients --> Switchyard --> model backends
-            +--------> routing, translation, and fallback
+```mermaid
+flowchart LR
+    clients["Clients"]
+    switchyard["Switchyard<br/>routing · translation · fallback"]
+    backends["Model backends"]
+
+    clients -->|"OpenAI / Anthropic API"| switchyard
+    switchyard -->|"provider-native format"| backends
 ```
 
-Clients keep their supported OpenAI or Anthropic API format while Switchyard
-selects a configured model endpoint and translates the response back to the
-expected shape. See [Architecture](docs/architecture.md) for system context and
-the end-to-end request flow.
+Clients keep their native OpenAI or Anthropic API format. Switchyard picks a
+configured backend, forwards the request in that backend's own format, and
+translates the response back into the shape the client expects. See
+[Architecture](docs/architecture.md) for the system context and the full
+request flow.
 
 ## Installation Options
 
