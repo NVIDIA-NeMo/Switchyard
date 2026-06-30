@@ -31,69 +31,18 @@ env:
   MATURIN_VERSION: "1.11.5"
 
 jobs:
-  source-dist:
-    name: Source distribution
+  # Regular CI intentionally builds one wheel only. The complete cross-platform
+  # wheel matrix is expensive and belongs to the tag-gated release workflow in
+  # `.github/workflows/publish.yml`.
+  wheel:
+    name: Wheel (linux-x86_64)
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --locked
-      - name: Build sdist
-        run: uv run maturin sdist --out dist
-
-  wheels:
-    name: Wheel (${{ matrix.label }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: linux-x86_64
-            os: ubuntu-latest
-            rust_target: x86_64-unknown-linux-gnu
-            manylinux_arch: x86_64
-            smoke: true
-          - label: linux-aarch64
-            os: ubuntu-latest
-            rust_target: aarch64-unknown-linux-gnu
-            manylinux_arch: aarch64
-            smoke: false
-          - label: macos-x86_64
-            os: macos-15-intel
-            rust_target: x86_64-apple-darwin
-            smoke: true
-          - label: macos-arm64
-            os: macos-14
-            rust_target: aarch64-apple-darwin
-            smoke: true
-          - label: windows-x86_64
-            os: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            smoke: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Setup QEMU for Linux cross builds
-        if: matrix.label == 'linux-aarch64'
-        uses: docker/setup-qemu-action@v3
-      - name: Install maturin
-        if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "maturin==${MATURIN_VERSION}"
-      - name: Install Rust target
-        if: runner.os != 'Linux'
-        shell: bash
-        run: rustup target add "${{ matrix.rust_target }}"
-      - name: Build manylinux wheel
-        if: runner.os == 'Linux'
+      - name: Build manylinux x86_64 wheel
         shell: bash
         run: |
           set -euxo pipefail
@@ -101,7 +50,7 @@ jobs:
             -e MATURIN_VERSION="${MATURIN_VERSION}" \
             -v "${GITHUB_WORKSPACE}:/io" \
             -w /io \
-            "quay.io/pypa/manylinux2014_${{ matrix.manylinux_arch }}" \
+            "quay.io/pypa/manylinux2014_x86_64" \
             /bin/bash -lc '
               set -euxo pipefail
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
@@ -116,18 +65,7 @@ jobs:
                 --out dist \
                 --interpreter "${PYTHON}"
             '
-      - name: Build native wheel
-        if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          python -m maturin build \
-            --release \
-            --locked \
-            --compatibility pypi \
-            --out dist \
-            --target "${{ matrix.rust_target }}"
-      - name: Smoke install native wheel on Python 3.12
-        if: matrix.smoke
+      - name: Smoke install wheel on Python 3.12
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -150,11 +88,9 @@ jobs:
           print("rust extension", _switchyard_rust.__name__)
           PY
       - uses: actions/setup-python@v5
-        if: matrix.smoke
         with:
           python-version: "3.14"
-      - name: Smoke install native wheel on Python 3.14
-        if: matrix.smoke
+      - name: Smoke install wheel on Python 3.14
         shell: bash
         run: |
           python -m pip install --upgrade pip
