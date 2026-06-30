@@ -20,8 +20,6 @@ on:
 env:
   DEVZONE_PACKAGE_NAME: "nemo-switchyard"
   MATURIN_VERSION: "1.11.5"
-  # Delete this variable when public GitHub/PyPI publishing is officially enabled.
-  SWITCHYARD_GITHUB_PUBLISH_DISABLED: "1"
 
 permissions:
   contents: read
@@ -363,7 +361,8 @@ jobs:
 
   publish:
     name: Publish distributions
-    if: ${{ env.SWITCHYARD_GITHUB_PUBLISH_DISABLED == '' }}
+    # Public PyPI/GitHub publishing is intentionally disabled until the OSS release gate is ready.
+    if: ${{ false }}
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
     permissions:
