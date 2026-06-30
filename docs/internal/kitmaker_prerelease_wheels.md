@@ -4,8 +4,8 @@ Audience: Switchyard maintainers publishing public prerelease wheels to NVIDIA's
 index at `pypi.nvidia.com`.
 
 This path is for wheels that are safe to expose publicly but should not go to public PyPI yet.
-The workflow intentionally stages artifacts in Artifactory first, then asks Kitmaker Portal to
-fetch those URLs. Do not create GitHub release tags for this path.
+The workflow intentionally stages artifacts in Artifactory first. Kitmaker Portal submission is
+opt-in after those staged URLs exist. Do not create GitHub release tags for this path.
 
 ## What Kitmaker Portal Is
 
@@ -95,13 +95,13 @@ Start the manual workflow:
 Actions -> Build Devzone prerelease wheels -> Run workflow
 ```
 
-Use these inputs for the first dry run:
+Use these inputs for the first Artifactory-only staging run:
 
 | Input | Value |
 |---|---|
 | `version` | `0.0.1.dev0` |
 | `target_sha` | empty, or a full source SHA |
-| `kitmaker_dry_run` | `true` |
+| `kitmaker_dry_run` | `false` |
 | `kitmaker_upload` | `false` |
 
 The workflow:
@@ -112,10 +112,11 @@ The workflow:
 4. Verifies every wheel has `Name: nemo-switchyard` and the requested version.
 5. Stages wheels to Artifactory.
 6. Uploads a `wheel-urls.json` artifact.
-7. Submits the Artifactory URLs to Kitmaker with `upload: false` when dry-run is enabled.
+7. Submits the Artifactory URLs to Kitmaker with `upload: false` only when dry-run is enabled.
 
-To publish after review, rerun the workflow with `kitmaker_upload=true`. The publish job is gated
-by the `devzone-prerelease-publish` GitHub environment and submits `upload: true`.
+For the first Kitmaker preflight after staging succeeds, rerun with `kitmaker_dry_run=true` and
+`kitmaker_upload=false`. To publish after review, rerun with `kitmaker_upload=true`. The publish
+job is gated by the `devzone-prerelease-publish` GitHub environment and submits `upload: true`.
 
 ## Artifact Requirements
 

@@ -14,10 +14,10 @@ on:
         type: string
         default: ""
       kitmaker_dry_run:
-        description: "Submit staged wheel URLs to Kitmaker with upload=false."
+        description: "Submit staged wheel URLs to Kitmaker with upload=false after Artifactory staging."
         required: true
         type: boolean
-        default: true
+        default: false
       kitmaker_upload:
         description: "Submit staged wheel URLs to Kitmaker with upload=true after approval."
         required: true

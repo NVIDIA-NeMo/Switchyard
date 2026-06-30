@@ -22,7 +22,8 @@ with `uv publish`.
 - Do not create GitHub Releases for Devzone prereleases.
 - Do not use `uv publish` for `pypi.nvidia.com`; submit staged wheel URLs to Kitmaker.
 - Keep `.dev` prereleases public-safe because `pypi.nvidia.com` is externally visible.
-- Treat `upload: false` Kitmaker dry-runs as the default preflight.
+- Stage `.dev` wheels to Artifactory first; treat Kitmaker `upload: false` as the first
+  publication preflight after staged URLs exist.
 - Require an explicit protected environment before any Kitmaker request uses `upload: true`.
 
 ## Devzone Prerelease Shape
@@ -37,7 +38,7 @@ those URLs to Kitmaker.
 |---|---|---|
 | `version` | `0.0.1.dev0` | PEP 440 prerelease version for wheel metadata |
 | `target_sha` | current workflow SHA | Commit to build |
-| `kitmaker_dry_run` | `true` | Submit `upload: false` Kitmaker checks |
+| `kitmaker_dry_run` | `false` | Submit `upload: false` Kitmaker checks after Artifactory staging |
 | `kitmaker_upload` | `false` | Submit `upload: true` after environment approval |
 
 ## Required Secrets
