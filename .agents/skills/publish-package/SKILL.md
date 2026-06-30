@@ -38,6 +38,9 @@ The initial Artifactory probe intentionally skips full Python/Rust release check
 installs. It should only prove `.dev` metadata stamping, wheel builds, direct Artifactory upload,
 and generated wheel URLs.
 
+Artifactory upload jobs must run on NVIDIA self-hosted runners such as `prod-tester-amd-v1`;
+GitHub-hosted runners cannot resolve `artifactory.nvidia.com`.
+
 | Input | Default | Meaning |
 |---|---|---|
 | `version` | `0.0.1.dev0` | PEP 440 prerelease version for wheel metadata |

@@ -171,7 +171,7 @@ jobs:
   stage-artifactory:
     name: Stage wheels to Artifactory
     needs: [prepare, wheels]
-    runs-on: ubuntu-latest
+    runs-on: prod-tester-amd-v1
     steps:
       - uses: actions/download-artifact@v4
         with:
