@@ -16,7 +16,8 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use switchyard_components_v2::{
     parse_profile_config_str, profile_stats_accumulator, Profile, ProfileConfigFormat,
-    ProfileInput, ProfileResponse, RoutingMetadata,
+    ProfileInput, ProfileResponse, RoutingMetadata, ROUTING_DECISION_SCHEMA_VERSION,
+    ROUTING_REQUEST_SCHEMA_VERSION,
 };
 use switchyard_core::{
     ChatRequestType, ChatResponse, ModelId, Result, StreamEvent, SwitchyardError,
@@ -69,6 +70,326 @@ profiles:
         json_body(chat).await?["choices"][0]["message"]["content"],
         "ok"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_uses_configured_random_profile_without_backend_dispatch() -> TestResult {
+    let app = build_switchyard_router(state_from_yaml(
+        r#"
+targets:
+  strong:
+    model: upstream-strong
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+  weak:
+    model: upstream-weak
+    format: responses
+    base_url: http://127.0.0.1:1/v1
+profiles:
+  remote-random:
+    type: random-routing
+    strong: strong
+    weak: weak
+    strong_probability: 1.0
+    rng_seed: 7
+"#,
+    )?);
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json("remote-random", "none", None)),
+        )?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let decision = json_body(response).await?;
+    assert_eq!(decision["schema_version"], ROUTING_DECISION_SCHEMA_VERSION);
+    assert_eq!(decision["router"]["name"], "random-routing");
+    assert_eq!(decision["route"]["backend_id"], "strong");
+    assert_eq!(decision["route"]["target_model"], "upstream-strong");
+    assert_eq!(decision["route"]["target_protocol_profile"], "openai_chat");
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_classifies_materialized_llm_request_without_target_dispatch(
+) -> TestResult {
+    let classifier_response = json!({
+        "id": "chatcmpl-classifier",
+        "object": "chat.completion",
+        "model": "classifier-model",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call-route",
+                    "type": "function",
+                    "function": {
+                        "name": "select_route",
+                        "arguments": {
+                            "recommended_tier": "complex",
+                            "confidence": 0.95,
+                            "abstain": false,
+                            "turn_type": "debug",
+                            "code_modification_scope": "cross_module",
+                            "tool_call_count_estimate": 4,
+                            "requires_codebase_context": true
+                        }
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    });
+    let Some(classifier) = HttpStub::start_with_response(1, classifier_response)? else {
+        log_loopback_bind_skip();
+        return Ok(());
+    };
+    let app = build_switchyard_router(state_from_yaml(&format!(
+        r#"
+targets:
+  strong:
+    model: upstream-strong
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+  weak:
+    model: upstream-weak
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+  classifier:
+    model: classifier-model
+    format: openai
+    base_url: {classifier_url}
+profiles:
+  remote-llm:
+    type: llm-routing
+    strong: strong
+    weak: weak
+    classifier: classifier
+    fallback_target_on_evict: strong
+    profile_name: coding_agent
+    classifier_min_confidence: 0.0
+"#,
+        classifier_url = classifier.base_url
+    ))?);
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json(
+                "remote-llm",
+                "full_body",
+                Some(json!({
+                    "body": {
+                        "model": "client/model",
+                        "messages": [{"role": "user", "content": "debug failing tests"}]
+                    }
+                })),
+            )),
+        )?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let decision = json_body(response).await?;
+    assert_eq!(decision["router"]["name"], "llm-routing");
+    assert_eq!(decision["route"]["backend_id"], "strong");
+    assert_eq!(decision["confidence"], 0.95);
+    assert_eq!(classifier.requests()?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_distinguishes_malformed_unknown_and_unsupported_profiles() -> TestResult
+{
+    let app = build_switchyard_router(state_from_yaml(
+        r#"
+profiles:
+  bench:
+    type: noop
+"#,
+    )?);
+
+    let malformed = app
+        .clone()
+        .oneshot(raw_request("POST", "/v1/routing/decision", "{")?)
+        .await?;
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(malformed).await?["error"]["code"], "invalid_body");
+
+    let mut missing_id = routing_request_json("bench", "summary_only", None);
+    missing_id["decision_profile"]
+        .as_object_mut()
+        .ok_or("decision_profile was not an object")?
+        .remove("profile_id");
+    let missing_id = app
+        .clone()
+        .oneshot(request("POST", "/v1/routing/decision", Some(missing_id))?)
+        .await?;
+    assert_eq!(missing_id.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(missing_id).await?["error"]["code"],
+        "invalid_body"
+    );
+
+    let unknown = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json("missing", "summary_only", None)),
+        )?)
+        .await?;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        json_body(unknown).await?["error"]["code"],
+        "decision_profile_not_found"
+    );
+
+    let unsupported = app
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json("bench", "summary_only", None)),
+        )?)
+        .await?;
+    assert_eq!(unsupported.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        json_body(unsupported).await?["error"]["code"],
+        "decision_not_supported"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_validates_schema_and_attempt_before_unknown_profile_lookup() -> TestResult
+{
+    let app = build_switchyard_router(state_from_yaml(
+        r#"
+profiles:
+  bench:
+    type: noop
+"#,
+    )?);
+
+    let mut invalid_schema = routing_request_json("missing", "summary_only", None);
+    invalid_schema["schema_version"] = json!("switchyard.routing_request.v999");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(invalid_schema),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = json_body(response).await?;
+    assert_eq!(error["error"]["code"], "invalid_request_error");
+    assert!(error["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("schema_version")));
+
+    for (routing_attempt, max_routing_attempts) in [(0, 1), (2, 1), (1, 0)] {
+        let mut invalid_attempt = routing_request_json("missing", "summary_only", None);
+        invalid_attempt["attempt"]["routing_attempt"] = json!(routing_attempt);
+        invalid_attempt["attempt"]["max_routing_attempts"] = json!(max_routing_attempts);
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/v1/routing/decision",
+                Some(invalid_attempt),
+            )?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = json_body(response).await?;
+        assert_eq!(error["error"]["code"], "invalid_request_error");
+        assert!(error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("routing_attempt")));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_rejects_unknown_inbound_before_unknown_profile_lookup() -> TestResult {
+    let app = build_switchyard_router(state_from_yaml(
+        r#"
+targets:
+  strong:
+    model: upstream-strong
+    format: openai
+  weak:
+    model: upstream-weak
+    format: openai
+profiles:
+  remote-random:
+    type: random-routing
+    strong: strong
+    weak: weak
+    strong_probability: 1.0
+"#,
+    )?);
+    let mut body = routing_request_json("missing", "summary_only", None);
+    body["protocol"]["inbound_profile"] = json!("unrecognized-chat-format");
+
+    let response = app
+        .oneshot(request("POST", "/v1/routing/decision", Some(body))?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = json_body(response).await?;
+    assert_eq!(error["error"]["code"], "invalid_request_error");
+    assert!(error["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unsupported inbound_profile")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn llm_decision_rejects_summary_only_materialization_before_classifier_call() -> TestResult {
+    let app = build_switchyard_router(state_from_yaml(
+        r#"
+targets:
+  strong:
+    model: upstream-strong
+    format: openai
+  weak:
+    model: upstream-weak
+    format: openai
+  classifier:
+    model: classifier-model
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+profiles:
+  remote-llm:
+    type: llm-routing
+    strong: strong
+    weak: weak
+    classifier: classifier
+    fallback_target_on_evict: strong
+    profile_name: coding_agent
+"#,
+    )?);
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json("remote-llm", "summary_only", None)),
+        )?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = json_body(response).await?;
+    assert!(error["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("materialized current_request.body")));
     Ok(())
 }
 
@@ -727,6 +1048,28 @@ struct HttpStub {
 impl HttpStub {
     /// Binds an ephemeral port and accepts the expected number of stub requests.
     fn start(expected_requests: usize) -> TestResult<Option<Self>> {
+        Self::start_with_response(
+            expected_requests,
+            json!({
+                "id": "chatcmpl-stub",
+                "object": "chat.completion",
+                "model": "stub",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "stub-ok"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }),
+        )
+    }
+
+    /// Binds an ephemeral port and serves a caller-supplied JSON response.
+    fn start_with_response(expected_requests: usize, response: Value) -> TestResult<Option<Self>> {
         let listener = match StdTcpListener::bind("127.0.0.1:0") {
             Ok(listener) => listener,
             Err(error) if error.kind() == ErrorKind::PermissionDenied => return Ok(None),
@@ -747,22 +1090,7 @@ impl HttpStub {
                         }
                     }
                 }
-                let response = json!({
-                    "id": "chatcmpl-stub",
-                    "object": "chat.completion",
-                    "model": "stub",
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "stub-ok"},
-                        "finish_reason": "stop",
-                    }],
-                    "usage": {
-                        "prompt_tokens": 1,
-                        "completion_tokens": 1,
-                        "total_tokens": 2,
-                    },
-                })
-                .to_string();
+                let response = response.to_string();
                 let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -845,6 +1173,46 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+fn routing_request_json(
+    profile_id: &str,
+    request_materialization: &str,
+    current_request: Option<Value>,
+) -> Value {
+    let mut request = json!({
+        "schema_version": ROUTING_REQUEST_SCHEMA_VERSION,
+        "decision_profile": {
+            "profile_id": profile_id,
+            "router": "legacy-relay-router",
+            "request_materialization": request_materialization
+        },
+        "identity": {
+            "session_id": "session-1",
+            "request_id": "request-1",
+            "harness": "server-test",
+            "source": "nemo-relay",
+            "quality": "native"
+        },
+        "protocol": {
+            "inbound_profile": "openai_chat",
+            "inbound_endpoint": "/v1/chat/completions",
+            "desired_response_profile": "openai_chat"
+        },
+        "request_summary": {
+            "client_requested_model": "client/model",
+            "tool_count_in_payload": 0,
+            "has_system_prompt": false
+        },
+        "attempt": {
+            "routing_attempt": 1,
+            "max_routing_attempts": 1
+        }
+    });
+    if let Some(current_request) = current_request {
+        request["current_request"] = current_request;
+    }
+    request
 }
 
 fn state_from_yaml(input: &str) -> TestResult<ServerState> {

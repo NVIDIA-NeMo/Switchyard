@@ -24,7 +24,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 use switchyard_components_v2::{
     parse_profile_config_path, profile_stats_accumulator, ProfileConfigPlan, ProfileInput,
-    ProfileResponse, RequestMetadata, RoutingMetadata,
+    ProfileResponse, RequestMetadata, RoutingMetadata, RoutingRequest,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, SwitchyardError};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
@@ -78,6 +78,14 @@ impl ServerState {
         let profile = self.registry.lookup(input.request.model())?;
         profile.run(input).await
     }
+
+    /// Produces one routing decision through the configured profile registry.
+    async fn decide_route(
+        &self,
+        request: RoutingRequest,
+    ) -> Result<switchyard_components_v2::RoutingDecision> {
+        self.registry.decide(request).await
+    }
 }
 
 /// Runtime options shared by the Rust binary and Python binding.
@@ -124,6 +132,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
+        .route("/v1/routing/decision", post(routing_decision))
         .route("/v1/models", get(models))
         // Keep the legacy routing stats aliases wired to the same handlers.
         .route("/v1/stats", get(stats))
@@ -237,6 +246,31 @@ async fn openai_responses(
         metadata_from_headers(&headers, ChatRequestType::OpenAiResponses),
     )
     .await
+}
+
+async fn routing_decision(
+    State(state): State<ServerState>,
+    body: std::result::Result<Json<RoutingRequest>, JsonRejection>,
+) -> Response {
+    let request = match routing_json_body(body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    match state.decide_route(request).await {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => llm_error(error),
+    }
+}
+
+fn routing_json_body(
+    body: std::result::Result<Json<RoutingRequest>, JsonRejection>,
+) -> std::result::Result<RoutingRequest, Box<Response>> {
+    match body {
+        Ok(Json(value)) => Ok(value),
+        Err(error) => Err(Box::new(invalid_body_error(format!(
+            "Routing decision request body must match the JSON contract: {error}"
+        )))),
+    }
 }
 
 fn llm_json_body(
@@ -363,6 +397,28 @@ fn llm_error(error: SwitchyardError) -> Response {
                     "message": format!("No route registered for model {}", model.as_str()),
                     "type": "model_not_found",
                     "code": "model_not_found",
+                }
+            })),
+        )
+            .into_response(),
+        SwitchyardError::DecisionProfileNotFound { profile_id } => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": {
+                    "message": format!("No Decision API profile registered for {profile_id}"),
+                    "type": "decision_profile_not_found",
+                    "code": "decision_profile_not_found",
+                }
+            })),
+        )
+            .into_response(),
+        SwitchyardError::DecisionUnsupported { profile_id } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": {
+                    "message": format!("Profile {profile_id} does not support the Decision API"),
+                    "type": "unsupported_profile_error",
+                    "code": "decision_not_supported",
                 }
             })),
         )
@@ -533,6 +589,7 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
     push_line(&mut output, "    POST /v1/chat/completions");
     push_line(&mut output, "    POST /v1/messages");
     push_line(&mut output, "    POST /v1/responses");
+    push_line(&mut output, "    POST /v1/routing/decision");
     push_line(&mut output, "    GET  /v1/routing/stats");
     push_line(&mut output, "    POST /v1/routing/stats/reset");
     push_line(&mut output, "");

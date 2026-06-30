@@ -18,8 +18,8 @@ use switchyard_core::{
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
 use crate::{
-    profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
-    RoutingMetadata,
+    decision_for_llm_routing, profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput,
+    ProfileResponse, RoutingDecision, RoutingMetadata, RoutingRequest,
 };
 
 const TIER_STRONG: &str = "strong";
@@ -418,6 +418,17 @@ impl LlmRoutingProfile {
         }
     }
 
+    /// Returns selected target metadata for a decision-only integration.
+    pub(crate) fn target_for_decision(&self, decision: &LlmRoutingDecision) -> Result<&LlmTarget> {
+        self.backend_for_target_id_str(&decision.selected_target)
+            .map(TargetBackend::target)
+    }
+
+    /// Returns the configured classifier-policy version for Decision API metadata.
+    pub(crate) fn decision_router_version(&self) -> String {
+        format!("{}:v1", self.policy.as_str())
+    }
+
     fn record_success(
         &self,
         decision: &LlmRoutingDecision,
@@ -539,6 +550,11 @@ impl Profile for LlmRoutingProfile {
                 return Err(error);
             }
         }
+    }
+
+    /// Classifies a materialized request without dispatching the selected target.
+    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
+        decision_for_llm_routing(self, request).await
     }
 }
 
