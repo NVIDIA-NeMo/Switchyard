@@ -23,6 +23,7 @@ nav:
   - Guides:
       - Agent Launchers: guides/agent_launchers.md
   - Concepts:
+      - Core Concepts: core_concepts.md
       - Architecture: architecture.md
   - Routing:
       - Overview: routing_algorithms/overview.md
