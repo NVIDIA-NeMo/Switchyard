@@ -10,6 +10,7 @@
 pub mod backends;
 pub mod dimension_collector;
 pub mod intake;
+pub mod otel_metrics;
 pub mod request_processors;
 pub mod response_processors;
 pub mod stats;

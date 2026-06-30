@@ -15,7 +15,12 @@ rust-version.workspace = true
 async-stream = "0.3"
 async-trait = "0.1"
 futures-util = "0.3"
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-prometheus = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 parking_lot = "0.12"
+prometheus = { workspace = true }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
