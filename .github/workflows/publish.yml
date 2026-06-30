@@ -273,7 +273,7 @@ jobs:
     name: Stage Devzone wheels to Artifactory
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
     needs: [devzone-artifactory-wheel]
-    runs-on: ubuntu-latest
+    runs-on: prod-tester-amd-v1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

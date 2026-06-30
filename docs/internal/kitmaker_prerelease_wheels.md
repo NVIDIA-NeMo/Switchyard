@@ -117,6 +117,10 @@ The first Artifactory-only staging run intentionally skips the full Python/Rust 
 wheel smoke installs. It proves the staging URL, credentials, wheel metadata, and Artifactory upload
 path before adding Kitmaker or release validation back into the loop.
 
+The Artifactory upload job must run on an NVIDIA self-hosted runner such as `prod-tester-amd-v1`.
+GitHub-hosted runners cannot resolve `artifactory.nvidia.com`, so they can build wheels but cannot
+perform the final upload.
+
 For the first Kitmaker preflight after staging succeeds, rerun with `kitmaker_dry_run=true` and
 `kitmaker_upload=false`. To publish after review, rerun with `kitmaker_upload=true`. The publish
 job is gated by the `devzone-prerelease-publish` GitHub environment and submits `upload: true`.
