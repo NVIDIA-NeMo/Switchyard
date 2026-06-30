@@ -45,9 +45,9 @@ def _is_opted_out() -> bool:
 
 @lru_cache(maxsize=1)
 def _get_version() -> str:
-    """Read the installed ``switchyard`` package version once."""
+    """Read the installed ``nemo-switchyard`` package version once."""
     try:
-        return importlib.metadata.version("switchyard")
+        return importlib.metadata.version("nemo-switchyard")
     except Exception:
         log.debug("telemetry: could not read switchyard package version", exc_info=True)
         return "unknown"

@@ -37,7 +37,7 @@ remains only for launcher-owned legacy bundles.
 ### Install from PyPI
 
 ```bash
-pip install "switchyard[cli,server]"
+pip install "nemo-switchyard[cli,server]"
 ```
 
 ### Install from source for local use (requires uv)
@@ -203,15 +203,15 @@ request flow.
 Install from PyPI:
 
 ```bash
-pip install switchyard
+pip install nemo-switchyard
 ```
 
 Optional extras:
 
 ```bash
-pip install "switchyard[server]"   # FastAPI / Uvicorn HTTP endpoints
-pip install "switchyard[cli]"      # Interactive CLI launchers (Claude / Codex)
-pip install "switchyard[all]"      # Server, CLI, GPU routing, and tracing extras
+pip install "nemo-switchyard[server]"   # FastAPI / Uvicorn HTTP endpoints
+pip install "nemo-switchyard[cli]"      # Interactive CLI launchers (Claude / Codex)
+pip install "nemo-switchyard[all]"      # Server, CLI, GPU routing, and tracing extras
 ```
 
 See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds.

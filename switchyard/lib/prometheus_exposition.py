@@ -33,7 +33,7 @@ from importlib.metadata import version as _pkg_version
 from typing import Any
 
 try:
-    _SWITCHYARD_VERSION = _pkg_version("switchyard")
+    _SWITCHYARD_VERSION = _pkg_version("nemo-switchyard")
 except Exception:
     _SWITCHYARD_VERSION = "unknown"
 

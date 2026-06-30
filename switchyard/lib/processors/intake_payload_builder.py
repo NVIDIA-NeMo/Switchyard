@@ -289,7 +289,7 @@ def _str_or_none(value: object) -> str | None:
 @cache
 def _switchyard_version() -> str:
     try:
-        return version("switchyard")
+        return version("nemo-switchyard")
     except PackageNotFoundError:
         return "unknown"
 

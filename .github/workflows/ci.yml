@@ -132,7 +132,7 @@ jobs:
       - name: pytest
         run: uv run pytest tests/ -v -m "not integration"
 
-  # Regression guard: the default install of switchyard (without extras)
+  # Regression guard: the default install of nemo-switchyard (without extras)
   # must NOT drag in torch / transformers / routellm / litellm /
   # openai-agents / docx. Catches accidental top-level imports of
   # heavy packages before they hit users as ~1 GB of install bloat.
@@ -142,8 +142,8 @@ jobs:
     name: Slim install smoke test
     runs-on: ubuntu-latest
     env:
-      SWITCHYARD_DEFAULT_PACKAGE: "switchyard @ file://${{ github.workspace }}"
-      SWITCHYARD_EXTRAS_PACKAGE: "switchyard[cli,server] @ file://${{ github.workspace }}"
+      SWITCHYARD_DEFAULT_PACKAGE: "nemo-switchyard @ file://${{ github.workspace }}"
+      SWITCHYARD_EXTRAS_PACKAGE: "nemo-switchyard[cli,server] @ file://${{ github.workspace }}"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

@@ -65,7 +65,7 @@ The hard GitHub Actions gates live in `.github/workflows/ci.yml`:
 - Rust workspace gate: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   and `cargo test --workspace`
 - slim-install smoke: isolated `uv run --with` default install/import checks, heavy-package
-  absence, and CLI help checks with `switchyard[cli,server] @ file://...`
+  absence, and CLI help checks with `nemo-switchyard[cli,server] @ file://...`
 - `uv run mypy switchyard` is a signal job (`continue-on-error`) but should still be run for typed
   package code, public APIs, profiles, route bundles, backends, request/response models, and translation changes.
 
@@ -137,8 +137,8 @@ default install:
 
 ```bash
 SWITCHYARD_ROOT="$(git rev-parse --show-toplevel)"
-SWITCHYARD_DEFAULT_PACKAGE="switchyard @ file://${SWITCHYARD_ROOT}"
-SWITCHYARD_EXTRAS_PACKAGE="switchyard[cli,server] @ file://${SWITCHYARD_ROOT}"
+SWITCHYARD_DEFAULT_PACKAGE="nemo-switchyard @ file://${SWITCHYARD_ROOT}"
+SWITCHYARD_EXTRAS_PACKAGE="nemo-switchyard[cli,server] @ file://${SWITCHYARD_ROOT}"
 cd /tmp
 uv run --isolated --no-project --python 3.12 \
   --with "${SWITCHYARD_DEFAULT_PACKAGE}" \
@@ -288,8 +288,8 @@ explicit user intent; after changing dependencies run `uv lock`, `uv sync`, and 
 
 ### Stale package names
 
-The package and CLI are `switchyard`. Do not reintroduce `nemo_switchyard` imports or public docs
-unless a test explicitly preserves legacy context. Check:
+The distribution package is `nemo-switchyard`; imports and the CLI are `switchyard`. Do not
+introduce `nemo_switchyard` imports or publish docs that imply `pip install switchyard`. Check:
 
 ```bash
 uv run pytest tests/test_cli_stale_names.py tests/test_no_stale_module_paths.py tests/test_version_package_name.py -v -o addopts=

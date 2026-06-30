@@ -2,7 +2,8 @@
 
 Switchyard is a Python library for LLM traffic orchestration. It sits between client applications (Claude Code, OpenAI / Anthropic SDK clients, Codex CLI) and LLM backends, handling routing, format translation, logging, A/B testing, and health-aware multi-endpoint serving.
 
-> **Note:** The package was renamed from `nemo-switchyard` to `switchyard` in the open-source release. All imports use `switchyard.*`, and the CLI command is `switchyard` (registered via `pyproject.toml` scripts).
+> **Note:** The public distribution is `nemo-switchyard`. All imports use `switchyard.*`,
+> and the CLI command is `switchyard` (registered via `pyproject.toml` scripts).
 
 ## Engineering Guidelines
 
@@ -183,7 +184,7 @@ switchyard/
 │   │   ├── intake_response_processor.py
 │   │   ├── intake_payload_builder.py
 │   │   └── intake_client.py
-│   ├── endpoints/                  # FastAPI endpoint wrappers (require `switchyard[server]`)
+│   ├── endpoints/                  # FastAPI endpoint wrappers (require `nemo-switchyard[server]`)
 │   │   ├── openai_chat_endpoint.py         # OpenAIChatEndpoint
 │   │   ├── anthropic_messages_endpoint.py  # AnthropicMessagesEndpoint
 │   │   ├── responses_endpoint.py           # ResponsesEndpoint
@@ -193,7 +194,7 @@ switchyard/
 │   └── config/
 │       ├── intake_sink_config.py
 │       └── latency_service_backend_config.py
-├── cli/                            # CLI (requires `switchyard[cli]`)
+├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
 │   ├── switchyard_cli.py           # `switchyard` entry point
 │   ├── launch_command.py           # `switchyard launch claude/codex`
 │   ├── configure_command.py        # `switchyard configure`
@@ -218,10 +219,10 @@ tests/                              # Unit tests (pytest)
 ## Tech Stack
 
 - **Python 3.12+**, async-first (asyncio)
-- **FastAPI + Uvicorn** for HTTP (`switchyard[server]`), **sse-starlette** for SSE streaming
+- **FastAPI + Uvicorn** for HTTP (`nemo-switchyard[server]`), **sse-starlette** for SSE streaming
 - **OpenAI SDK** (`openai>=2.30`) — primary client; the translation engine converts all inbound formats to Chat Completions
 - **Anthropic SDK** (`anthropic>=0.94`)
-- **RouteLLM** for ML-based strong/weak routing (`switchyard[gpu]`)
+- **RouteLLM** for ML-based strong/weak routing (`nemo-switchyard[gpu]`)
 - **httpx** for direct HTTP (health polling, Anthropic Messages)
 - **uv** as the package manager (preferred over pip)
 - **pytest + pytest-asyncio** for testing, **respx** for HTTP mocking

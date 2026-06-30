@@ -11,7 +11,7 @@ wheels separate from official tag-gated release builds.
 | Channel | Trigger | CI owner | Destination | Runbook |
 |---|---|---|---|---|
 | Dev wheel artifact | Manual `publish.yml` dispatch with `build_dev_artifact=true` | GitHub Actions | One-day GitHub artifact | `docs/internal/dev_wheel_artifacts.md` |
-| Official release build | Root `v*` tag | GitHub Actions `.github/workflows/publish.yml` | Full release artifact matrix; publish job still disabled | `.github/workflows/publish.yml` |
+| Official release build | Root `v*` tag | GitHub Actions `.github/workflows/publish.yml` | Full release artifact matrix + PyPI Trusted Publishing via `uv publish` | `.github/workflows/publish.yml` |
 
 GitHub-hosted runners cannot currently reach NVIDIA-internal Artifactory or Kitmaker Portal from
 this repo, and GitHub Packages is not a PyPI-compatible package index. Do not add Artifactory,
@@ -26,15 +26,15 @@ changes and the release process is explicitly approved.
 - Keep `.dev` artifacts public-safe because GitHub Actions artifacts may be shared for review.
 - Full wheel matrices belong only on root `v*` tag releases.
 - Manual dev builds should build exactly one Linux x86_64 wheel artifact with one-day retention.
-- Leave the public publish job disabled until the OSS release gate is approved.
+- Use PyPI Trusted Publishing with the GitHub environment named `pypi`; do not add long-lived PyPI tokens.
 
 ## Dev Wheel Artifact Shape
 
 Use the workflow-dispatch path in `.github/workflows/publish.yml`.
 
-It stamps build-local package metadata as `nemo-switchyard`, builds one manylinux x86_64 abi3 wheel,
-uploads it as `dev-wheel-linux-x86_64` with one-day retention, then downloads it again to verify the
-wheel `Name` and `Version`.
+It stamps a build-local `.dev` version, builds one manylinux x86_64 abi3 wheel, uploads it as
+`dev-wheel-linux-x86_64` with one-day retention, then downloads it again to verify the wheel `Name`
+and `Version`.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -45,8 +45,16 @@ wheel `Name` and `Version`.
 
 The dev artifact build does not require release secrets.
 
-The official publish job is currently disabled. When public publishing is approved, configure the
-credentials required by the chosen PyPI publishing method before removing the hard-disabled guard.
+The official publish job uses `uv publish --trusted-publishing always`; no PyPI token is required.
+Before cutting the first tag, create the pending PyPI trusted publisher for:
+
+| Field | Value |
+|---|---|
+| Project | `nemo-switchyard` |
+| Owner | `NVIDIA-NeMo` |
+| Repository | `Switchyard` |
+| Workflow | `publish.yml` |
+| Environment | `pypi` |
 
 ## Local Preflight For Release-Infrastructure Changes
 

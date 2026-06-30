@@ -161,7 +161,7 @@ def test_label_value_escapes_backslash_quote_and_newline():
 
 def test_build_info_gauge_present() -> None:
     from importlib.metadata import version as pkg_version
-    ver = pkg_version("switchyard")
+    ver = pkg_version("nemo-switchyard")
     text = render_prometheus({"total_requests": 0, "total_errors": 0, "models": {}})
     _, type_map, samples = _parse(text)
     assert type_map.get("switchyard_build_info") == "gauge"
@@ -171,6 +171,6 @@ def test_build_info_gauge_present() -> None:
 
 def test_build_info_gauge_carries_version_label() -> None:
     from importlib.metadata import version as pkg_version
-    expected = pkg_version("switchyard")
+    expected = pkg_version("nemo-switchyard")
     text = render_prometheus({"total_requests": 0, "total_errors": 0, "models": {}})
     assert f'version="{expected}"' in text
