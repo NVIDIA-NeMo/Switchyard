@@ -110,6 +110,27 @@ jobs:
             --package-name "${DEV_PACKAGE_NAME}"
       - name: Build sdist
         run: uv run maturin sdist --out dist
+      - name: Verify sdist license files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+
+          archives = list(Path("dist").glob("*.tar.gz"))
+          if len(archives) != 1:
+              raise SystemExit(f"expected one sdist archive, found {archives}")
+
+          with tarfile.open(archives[0]) as archive:
+              archive_paths = set(archive.getnames())
+
+          expected_suffixes = {"LICENSE", "NOTICE"}
+          present_suffixes = {Path(path).name for path in archive_paths}
+          missing = sorted(expected_suffixes - present_suffixes)
+          if missing:
+              raise SystemExit(f"{archives[0]} is missing required license files: {missing}")
+
+          print(f"{archives[0]} contains {', '.join(sorted(expected_suffixes))}")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: nemo-switchyard-sdist
