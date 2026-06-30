@@ -27,10 +27,6 @@ from switchyard_rust import (
     OpenAiNativeBackend,
     ProxyContext,
     RandomRoutingProcessorConfig,
-    StatsAccumulator,
-    StatsLlmBackend,
-    StatsRequestProcessor,
-    StatsResponseProcessor,
 )
 
 
@@ -52,9 +48,7 @@ def test_component_exports_are_callable_processors_and_native_backends() -> None
     openai_target = _target("openai", "gpt-test", format=BackendFormat.OPENAI)
     anthropic_target = _target("anthropic", "claude-test", format=BackendFormat.ANTHROPIC)
 
-    assert callable(StatsRequestProcessor().process)
     assert callable(IntakeRequestProcessor().process)
-    assert callable(StatsResponseProcessor(StatsAccumulator()).process)
     assert isinstance(OpenAiNativeBackend(openai_target), LLMBackend)
     assert isinstance(AnthropicNativeBackend(anthropic_target), LLMBackend)
 
@@ -100,82 +94,6 @@ def test_config_bindings_validate_and_own_values() -> None:
         )
 
 
-async def test_stats_processors_share_rust_accumulator() -> None:
-    stats = StatsAccumulator()
-    request_processor = StatsRequestProcessor()
-    response_processor = StatsResponseProcessor(stats)
-    ctx = ProxyContext()
-    request = ChatRequest.openai_chat({"model": "client-model", "messages": []})
-
-    processed = await request_processor.process(ctx, request)
-    ctx.selected_model = "served-model"
-    response = await response_processor.process(
-        ctx,
-        ChatResponse.openai_completion({
-            "model": "served-model",
-            "usage": {
-                "prompt_tokens": 11,
-                "completion_tokens": 7,
-                "prompt_tokens_details": {
-                    "cached_tokens": 3,
-                    "cache_creation_tokens": 2,
-                },
-                "completion_tokens_details": {"reasoning_tokens": 5},
-            },
-        }),
-    )
-
-    assert processed.model == "client-model"
-    assert response.body["model"] == "served-model"
-    snapshot = stats.snapshot_sync()
-    model_stats = snapshot["models"]["served-model"]
-    assert model_stats["prompt_tokens"] == 11
-    assert model_stats["completion_tokens"] == 7
-    assert model_stats["cached_tokens"] == 3
-    assert model_stats["cache_creation_tokens"] == 2
-    assert model_stats["reasoning_tokens"] == 5
-    assert model_stats["total_latency"]["count"] == 1
-
-
-async def test_stream_callbacks_survive_handoff_to_rust_response_processor() -> None:
-    async def source():
-        yield {"choices": [{"delta": {"content": "hi"}}]}
-        yield {
-            "choices": [{"delta": {}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
-        }
-
-    tapped: list[dict[str, object]] = []
-    mapped: list[dict[str, object]] = []
-    completed = False
-
-    async def tap(event: dict[str, object]) -> None:
-        tapped.append(dict(event))
-
-    async def map_event(event: dict[str, object]) -> dict[str, object]:
-        mapped.append(dict(event))
-        return {**event, "mapped": True}
-
-    async def on_complete() -> None:
-        nonlocal completed
-        completed = True
-
-    stats = StatsAccumulator()
-    ctx = ProxyContext()
-    ctx.selected_model = "served-model"
-    response = ChatResponse.openai_stream(source())
-    response.stream.tap(tap).map(map_event).on_complete(on_complete)
-
-    processed = await StatsResponseProcessor(stats).process(ctx, response)
-    events = [event async for event in processed.stream]
-
-    assert [event["mapped"] for event in events] == [True, True]
-    assert len(tapped) == 2
-    assert len(mapped) == 2
-    assert completed is True
-    assert stats.snapshot_sync()["models"]["served-model"]["prompt_tokens"] == 1
-
-
 def test_backend_bindings_construct_without_provider_sdks_or_network() -> None:
     openai_target = _target("openai", "gpt-test", format=BackendFormat.OPENAI)
     responses_target = _target("responses", "gpt-responses", format=BackendFormat.RESPONSES)
@@ -183,13 +101,11 @@ def test_backend_bindings_construct_without_provider_sdks_or_network() -> None:
     openai = OpenAiNativeBackend(openai_target)
     responses = OpenAiNativeBackend(responses_target)
     anthropic = AnthropicNativeBackend(anthropic_target)
-    stats = StatsAccumulator()
 
     multi = MultiLlmBackend([
         LlmTargetBackend(openai_target, openai),
         (anthropic_target, anthropic),
     ], default_target_id="openai")
-    stats_backend = StatsLlmBackend(openai, stats)
 
     assert [request_type.value for request_type in openai.supported_request_types] == [
         "openai_chat"
@@ -202,7 +118,6 @@ def test_backend_bindings_construct_without_provider_sdks_or_network() -> None:
     ]
     assert set(multi.target_ids()) == {"openai", "anthropic"}
     assert multi.default_target_id() == "openai"
-    assert stats_backend.supported_request_types == openai.supported_request_types
 
 
 def test_backend_bindings_reject_invalid_native_composition() -> None:
@@ -236,8 +151,9 @@ def test_wrappers_require_rust_native_backend_instances() -> None:
         async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
             return ChatResponse.openai_completion({"model": request.model})
 
+    target = _target("openai", "gpt-test", format=BackendFormat.OPENAI)
     with pytest.raises(TypeError):
-        StatsLlmBackend(PythonOnlyBackend(), StatsAccumulator())
+        MultiLlmBackend([LlmTargetBackend(target, PythonOnlyBackend())])
 
 
 def test_intake_response_processor_validates_http_sink_config() -> None:
