@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "nemo-switchyard"
-version = "0.0.1"
+version = "0.1.0"
 description = "Typed, composable LLM routing with request/response translation and multi-backend orchestration"
 readme = "README.md"
 license = "Apache-2.0"
