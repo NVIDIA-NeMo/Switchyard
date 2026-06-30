@@ -220,6 +220,59 @@ def test_proxy_context_is_rust_owned_with_rust_metadata_mapping() -> None:
     assert ctx.backend_call_latency_ms is None
 
 
+def test_proxy_context_records_generalized_routing_trace_events() -> None:
+    ctx = ProxyContext(request_id="request-1")
+
+    evaluation = ctx.record_routing_event({
+        "kind": "evaluation",
+        "producer": "llm_classifier",
+        "name": "classifier_call",
+        "schema": "llm_classifier.classifier_call/v1",
+        "input": {"request_summary": "fix the bug"},
+        "output": {"recommended_tier": "complex"},
+        "duration_ms": 12.5,
+        "status": "success",
+    })
+    decision = ctx.record_routing_event({
+        "kind": "decision",
+        "producer": "llm_classifier",
+        "name": "tier_selection",
+        "phase": "initial",
+        "based_on": [evaluation["sequence"]],
+        "selection": {"tier": "strong", "model": "strong-model"},
+        "source": "policy_tier",
+        "confidence": 0.9,
+    })
+
+    assert evaluation["sequence"] == 0
+    assert decision["sequence"] == 1
+    assert ctx.routing_trace == {
+        "schema_version": 1,
+        "request_id": "request-1",
+        "events": [evaluation, decision],
+    }
+
+
+def test_proxy_context_rejects_invalid_routing_decision_event() -> None:
+    ctx = ProxyContext()
+
+    with pytest.raises(ValueError, match="must select a tier, target, or model"):
+        ctx.record_routing_event({
+            "kind": "decision",
+            "producer": "random_routing",
+            "name": "weighted_selection",
+            "source": "weighted_draw",
+        })
+
+    with pytest.raises(ValueError, match="unknown field `duraton_ms`"):
+        ctx.record_routing_event({
+            "kind": "evaluation",
+            "producer": "random_routing",
+            "name": "weighted_draw",
+            "duraton_ms": 1.0,
+        })
+
+
 def test_proxy_context_evicted_targets_are_mutable_from_python() -> None:
     ctx = ProxyContext()
 
