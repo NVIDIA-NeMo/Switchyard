@@ -1,0 +1,503 @@
+name: Build Devzone prerelease wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "PEP 440 .dev version to publish, for example 0.0.1.dev0"
+        required: true
+        type: string
+        default: "0.0.1.dev0"
+      target_sha:
+        description: "Full source commit SHA to build. Empty uses this workflow run's SHA."
+        required: false
+        type: string
+        default: ""
+      kitmaker_dry_run:
+        description: "Submit staged wheel URLs to Kitmaker with upload=false."
+        required: true
+        type: boolean
+        default: true
+      kitmaker_upload:
+        description: "Submit staged wheel URLs to Kitmaker with upload=true after approval."
+        required: true
+        type: boolean
+        default: false
+
+env:
+  DEVZONE_PACKAGE_NAME: "nemo-switchyard"
+  MATURIN_VERSION: "1.11.5"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare prerelease metadata
+    runs-on: ubuntu-latest
+    outputs:
+      package_name: ${{ steps.prepare.outputs.package_name }}
+      package_prefix: ${{ steps.prepare.outputs.package_prefix }}
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+      version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate prerelease inputs
+        id: prepare
+        env:
+          INPUT_SHA: ${{ inputs.target_sha }}
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA="${INPUT_SHA:-${GITHUB_SHA}}"
+          if ! [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target_sha must be a full 40-character lowercase hex SHA"
+            exit 1
+          fi
+
+          VERSION="$(python scripts/release/set_devzone_prerelease_version.py "${INPUT_VERSION}" --print-version)"
+          PACKAGE_PREFIX="${DEVZONE_PACKAGE_NAME//-/_}"
+
+          echo "package_name=${DEVZONE_PACKAGE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "package_prefix=${PACKAGE_PREFIX}" >> "${GITHUB_OUTPUT}"
+          echo "source_sha=${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "## Devzone Prerelease"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Package | \`${DEVZONE_PACKAGE_NAME}\` |"
+            echo "| Version | \`${VERSION}\` |"
+            echo "| Source SHA | \`${SOURCE_SHA}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  python-release-checks:
+    name: Python checks (${{ matrix.python-version }})
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --locked
+      - name: Run lint checks
+        run: uv run ruff check .
+      - name: Run tests
+        run: uv run pytest tests/ -v -x -m "not integration"
+
+  rust-release-checks:
+    name: Rust checks
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+
+  wheels:
+    name: Wheel (${{ matrix.label }})
+    needs: [prepare, python-release-checks, rust-release-checks]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            manylinux_arch: x86_64
+            smoke: true
+          - label: linux-aarch64
+            os: ubuntu-latest
+            rust_target: aarch64-unknown-linux-gnu
+            manylinux_arch: aarch64
+            smoke: false
+          - label: macos-x86_64
+            os: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            smoke: true
+          - label: macos-arm64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            smoke: true
+          - label: windows-x86_64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            smoke: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Stamp Devzone package metadata
+        shell: bash
+        run: |
+          python scripts/release/set_devzone_prerelease_version.py \
+            "${{ needs.prepare.outputs.version }}" \
+            --package-name "${{ needs.prepare.outputs.package_name }}"
+      - name: Setup QEMU for Linux cross builds
+        if: matrix.label == 'linux-aarch64'
+        uses: docker/setup-qemu-action@v3
+      - name: Install maturin
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==${MATURIN_VERSION}"
+      - name: Install Rust target
+        if: runner.os != 'Linux'
+        shell: bash
+        run: rustup target add "${{ matrix.rust_target }}"
+      - name: Build manylinux wheel
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e MATURIN_VERSION="${MATURIN_VERSION}" \
+            -v "${GITHUB_WORKSPACE}:/io" \
+            -w /io \
+            "quay.io/pypa/manylinux2014_${{ matrix.manylinux_arch }}" \
+            /bin/bash -lc '
+              set -euo pipefail
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              source "${HOME}/.cargo/env"
+              PYTHON=/opt/python/cp312-cp312/bin/python
+              "${PYTHON}" -m pip install --upgrade pip
+              "${PYTHON}" -m pip install "maturin==${MATURIN_VERSION}"
+              "${PYTHON}" -m maturin build \
+                --release \
+                --locked \
+                --compatibility pypi \
+                --out dist \
+                --interpreter "${PYTHON}"
+            '
+      - name: Build native wheel
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python -m maturin build \
+            --release \
+            --locked \
+            --compatibility pypi \
+            --out dist \
+            --target "${{ matrix.rust_target }}"
+      - name: Smoke install native wheel on Python 3.12
+        if: matrix.smoke
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --force-reinstall dist/*.whl
+          python - <<'PY'
+          import os
+          import sys
+          import tempfile
+
+          os.chdir(tempfile.mkdtemp(prefix="switchyard-wheel-smoke-"))
+          workspace = os.environ.get("GITHUB_WORKSPACE")
+          sys.path = [entry for entry in sys.path if entry not in ("", workspace)]
+
+          import switchyard
+          import switchyard_rust
+          from switchyard_rust import _switchyard_rust
+
+          print("switchyard", switchyard.__version__)
+          print("switchyard_rust", switchyard_rust.__file__)
+          print("rust extension", _switchyard_rust.__name__)
+          PY
+      - uses: actions/setup-python@v5
+        if: matrix.smoke
+        with:
+          python-version: "3.14"
+      - name: Smoke install native wheel on Python 3.14
+        if: matrix.smoke
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --force-reinstall dist/*.whl
+          python - <<'PY'
+          import os
+          import sys
+          import tempfile
+
+          os.chdir(tempfile.mkdtemp(prefix="switchyard-wheel-smoke-"))
+          workspace = os.environ.get("GITHUB_WORKSPACE")
+          sys.path = [entry for entry in sys.path if entry not in ("", workspace)]
+
+          import switchyard
+          import switchyard_rust
+          from switchyard_rust import _switchyard_rust
+
+          print("switchyard", switchyard.__version__)
+          print("switchyard_rust", switchyard_rust.__file__)
+          print("rust extension", _switchyard_rust.__name__)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devzone-wheel-${{ matrix.label }}
+          path: dist/*.whl
+
+  stage-artifactory:
+    name: Stage wheels to Artifactory
+    needs: [prepare, wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: devzone-wheel-*
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify wheel metadata
+        env:
+          EXPECTED_NAME: ${{ needs.prepare.outputs.package_name }}
+          EXPECTED_PREFIX: ${{ needs.prepare.outputs.package_prefix }}
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import email
+          import glob
+          import os
+          import zipfile
+
+          expected_name = os.environ["EXPECTED_NAME"]
+          expected_prefix = os.environ["EXPECTED_PREFIX"]
+          expected_version = os.environ["EXPECTED_VERSION"]
+          wheels = sorted(glob.glob("dist/*.whl"))
+          if not wheels:
+              raise SystemExit("no wheels downloaded")
+
+          for path in wheels:
+              filename = os.path.basename(path)
+              if not filename.startswith(f"{expected_prefix}-{expected_version}-"):
+                  raise SystemExit(
+                      f"{filename}: expected prefix {expected_prefix}-{expected_version}-"
+                  )
+              with zipfile.ZipFile(path) as wheel:
+                  metadata_name = next(
+                      name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+                  )
+                  metadata = email.message_from_bytes(wheel.read(metadata_name))
+              if metadata["Name"] != expected_name:
+                  raise SystemExit(f"{filename}: Name={metadata['Name']!r}")
+              if metadata["Version"] != expected_version:
+                  raise SystemExit(f"{filename}: Version={metadata['Version']!r}")
+              print(f"{filename}: {metadata['Name']} {metadata['Version']}")
+          PY
+      - name: Upload wheels to Artifactory
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ARTIFACTORY_URL}" ]; then
+            echo "::error::ARTIFACTORY_URL is required"
+            exit 1
+          fi
+          if [ -z "${ARTIFACTORY_USER}" ] || [ -z "${ARTIFACTORY_TOKEN}" ]; then
+            echo "::error::ARTIFACTORY_USER and ARTIFACTORY_TOKEN are required"
+            exit 1
+          fi
+
+          BASE_URL="${ARTIFACTORY_URL%/}/${PACKAGE_NAME}/dev/${VERSION}/${GITHUB_RUN_ID}-${SOURCE_SHA:0:12}"
+          mkdir -p release
+
+          export BASE_URL
+          python - <<'PY' > release/wheel-urls.json
+          import glob
+          import json
+          import os
+
+          base_url = os.environ["BASE_URL"]
+          urls = [f"{base_url}/{os.path.basename(path)}" for path in sorted(glob.glob("dist/*.whl"))]
+          print(json.dumps({"wheel_urls": urls}, indent=2))
+          PY
+
+          echo "## Artifactory Wheel Staging" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| Wheel | URL |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "|---|---|" >> "${GITHUB_STEP_SUMMARY}"
+
+          for wheel in dist/*.whl; do
+            filename="$(basename "${wheel}")"
+            target_url="${BASE_URL}/${filename}"
+            body_file="$(mktemp)"
+            http_code="$(curl -sSL -o "${body_file}" -w "%{http_code}" \
+              --connect-timeout 30 --max-time 300 \
+              --retry 3 --retry-delay 5 --retry-all-errors \
+              -u "${ARTIFACTORY_USER}:${ARTIFACTORY_TOKEN}" \
+              -T "${wheel}" \
+              "${target_url}")"
+            if [ "${http_code}" != "201" ]; then
+              echo "::error::Artifactory deploy failed: HTTP ${http_code} at ${target_url}"
+              cat "${body_file}" || true
+              exit 1
+            fi
+            rm -f "${body_file}"
+            echo "| \`${filename}\` | ${target_url} |" >> "${GITHUB_STEP_SUMMARY}"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devzone-wheel-urls
+          path: release/wheel-urls.json
+
+  kitmaker-dry-run:
+    name: Kitmaker dry run
+    needs: [prepare, stage-artifactory]
+    if: ${{ inputs.kitmaker_dry_run || inputs.kitmaker_upload }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: devzone-wheel-urls
+          path: release
+      - name: Submit Kitmaker upload=false request
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC_EMAIL: ${{ secrets.KITMAKER_PIC_EMAIL }}
+          KITMAKER_PROJECT_ID: ${{ secrets.KITMAKER_PROJECT_ID }}
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${KITMAKER_API_TOKEN}" ] || [ -z "${KITMAKER_PROJECT_ID}" ]; then
+            echo "::error::KITMAKER_API_TOKEN and KITMAKER_PROJECT_ID are required"
+            exit 1
+          fi
+          if [ -z "${KITMAKER_PIC_EMAIL}" ]; then
+            echo "::error::KITMAKER_PIC_EMAIL is required"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+
+          urls = json.loads(open("release/wheel-urls.json", encoding="utf-8").read())["wheel_urls"]
+          payload = {
+              "project_name": os.environ["PACKAGE_NAME"],
+              "payload": [
+                  {
+                      "pic": os.environ["KITMAKER_PIC_EMAIL"],
+                      "job_type": "wheel-release-job",
+                      "url": url,
+                      "upload": False,
+                  }
+                  for url in urls
+              ],
+          }
+          with open("release/kitmaker-dry-run-payload.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2)
+          PY
+
+          curl -fsSL \
+            -X POST "https://kitmaker-portal.nvidia.com/api/v0/projects/${KITMAKER_PROJECT_ID}/releases" \
+            -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data @release/kitmaker-dry-run-payload.json \
+            -o release/kitmaker-dry-run-response.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kitmaker-dry-run-response
+          path: release/kitmaker-dry-run-response.json
+
+  kitmaker-publish:
+    name: Kitmaker publish
+    needs: [prepare, kitmaker-dry-run]
+    if: ${{ inputs.kitmaker_upload }}
+    runs-on: ubuntu-latest
+    environment: devzone-prerelease-publish
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: devzone-wheel-urls
+          path: release
+      - name: Submit Kitmaker upload=true request
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC_EMAIL: ${{ secrets.KITMAKER_PIC_EMAIL }}
+          KITMAKER_PROJECT_ID: ${{ secrets.KITMAKER_PROJECT_ID }}
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${KITMAKER_API_TOKEN}" ] || [ -z "${KITMAKER_PROJECT_ID}" ]; then
+            echo "::error::KITMAKER_API_TOKEN and KITMAKER_PROJECT_ID are required"
+            exit 1
+          fi
+          if [ -z "${KITMAKER_PIC_EMAIL}" ]; then
+            echo "::error::KITMAKER_PIC_EMAIL is required"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+
+          urls = json.loads(open("release/wheel-urls.json", encoding="utf-8").read())["wheel_urls"]
+          payload = {
+              "project_name": os.environ["PACKAGE_NAME"],
+              "payload": [
+                  {
+                      "pic": os.environ["KITMAKER_PIC_EMAIL"],
+                      "job_type": "wheel-release-job",
+                      "url": url,
+                      "upload": True,
+                  }
+                  for url in urls
+              ],
+          }
+          with open("release/kitmaker-publish-payload.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2)
+          PY
+
+          curl -fsSL \
+            -X POST "https://kitmaker-portal.nvidia.com/api/v0/projects/${KITMAKER_PROJECT_ID}/releases" \
+            -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data @release/kitmaker-publish-payload.json \
+            -o release/kitmaker-publish-response.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kitmaker-publish-response
+          path: release/kitmaker-publish-response.json
