@@ -18,7 +18,9 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 LatencyServiceRequestType = Literal["openai_chat", "openai_responses"]
-LatencyServiceCredentialPolicy = Literal["configured_endpoint", "caller_override"]
+LatencyServiceCredentialPolicy = Literal[
+    "configured_endpoint", "caller_override", "caller_required"
+]
 
 
 class LatencyServiceEndpoint(BaseModel):
@@ -81,10 +83,19 @@ class LatencyServiceBackendConfig(BaseModel):
         max_retries: On error, retry on a different endpoint up to this
             many times.  Dedup prevents re-selecting an endpoint that
             already failed for the same request.
-        credential_policy: Which credential wins when the inbound HTTP
-            request carries a caller key.  ``"configured_endpoint"`` keeps
-            using each endpoint's configured ``api_key``; ``"caller_override"``
-            opts into BYO-key forwarding.
+        credential_policy: Which credential authenticates the upstream call.
+            The caller key is read from the ``x-switchyard-api-key`` header
+            (preferred — it survives proxies such as LiteLLM that strip
+            ``Authorization``), then ``Authorization: Bearer`` / ``x-api-key``, on
+            every ingress path (``/chat/completions``, ``/responses``,
+            ``/messages``).  ``"configured_endpoint"`` always uses each endpoint's
+            configured ``api_key`` and ignores any caller key.  ``"caller_override"``
+            opts into BYO-key forwarding: a caller key is used when present, else
+            the call falls back to the configured ``api_key``.  ``"caller_required"``
+            forwards the caller key but never falls back — a request with no caller
+            key is rejected with HTTP 401 and the configured ``api_key`` is never
+            used for upstream inference (use this for per-user spend attribution,
+            e.g. the ``nvidia/switchyard/*`` Inference Hub routes).
         session_affinity: When ``True``, pin each conversation to the endpoint
             that first served it (cache stays warm); a pin is broken only when
             its endpoint degrades or the call fails. Per process. Default off.

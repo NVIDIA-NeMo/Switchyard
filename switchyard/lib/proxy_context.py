@@ -34,8 +34,9 @@ CTX_ORIGINAL_MODEL = "_original_model"
 CTX_TARGET_FORMAT = "_target_format"
 
 #: Caller-supplied API key extracted from the inbound request's
-#: ``Authorization: Bearer <key>`` (or ``x-api-key``) header. Set by the
-#: HTTP endpoint after header parsing; consumed by backends that support
+#: ``x-switchyard-api-key`` header (preferred — survives proxies that strip
+#: ``Authorization``), or ``Authorization: Bearer <key>`` / ``x-api-key``. Set by
+#: the HTTP endpoint after header parsing; consumed by backends that support
 #: opt-in per-caller credential forwarding.
 #: Absent when the caller did not supply a credential or supplied a known
 #: launcher-sentinel placeholder.

@@ -1,0 +1,70 @@
+# =============================================================================
+# Latency-aware routing with per-caller key attribution (BYO key, required)
+# =============================================================================
+#
+# Use this when every upstream call must be billed to the *caller's* own API key
+# (e.g. per-user Inference Hub spend attribution) and the service-level key must
+# NEVER authenticate caller inference.
+#
+# What `credential_policy: caller_required` does:
+#   * The caller key is read from the `x-switchyard-api-key` request header
+#     (preferred), then `Authorization: Bearer` / `x-api-key`.
+#   * Present  -> forwarded upstream as `Authorization: Bearer <key>`; spend is
+#     attributed to that caller.
+#   * Missing  -> the request is rejected with HTTP 401 BEFORE any upstream call;
+#     the configured endpoint key is never used.
+#   (Applies to every ingress path: /v1/chat/completions, /v1/responses, /v1/messages.)
+#
+# Why a dedicated header? A proxy in front of Switchyard (e.g. LiteLLM) consumes
+# the `Authorization` header for its own auth and strips it before the upstream
+# call. The custom `x-switchyard-api-key` header passes through untouched.
+#
+# How clients send the header:
+#   * Codex CLI:             env_http_headers / http_headers
+#   * OpenCode:              provider options.headers
+#   * OpenAI / Anthropic SDK: extra / default headers
+#   * Claude Code:           limited (can't easily send two distinct auth values)
+#                            -- may need a wrapper/gateway unless one key serves both.
+#
+# Rollout order (IMPORTANT -- avoid 401s):
+#   1. Deploy this build first with the route still on its current policy
+#      (`configured_endpoint` default, or `caller_override`) -- no behavior change.
+#   2. Update clients to send `x-switchyard-api-key` (harmless under those policies).
+#   3. Only after clients are confirmed sending it, switch to `caller_required`.
+#
+# Run:
+#   uv run switchyard serve \
+#     --routing-profiles examples/latency_service_caller_required.yaml --port 4100
+#
+#   # Caller key present -> billed to that key:
+#   curl -s -X POST http://127.0.0.1:4100/v1/chat/completions \
+#     -H 'Content-Type: application/json' \
+#     -H "x-switchyard-api-key: $USER_UPSTREAM_API_KEY" \
+#     -d '{"model":"my-model","messages":[{"role":"user","content":"hi"}]}'
+#
+#   # Header omitted -> HTTP 401:
+#   #   "missing caller API key; supply it via the x-switchyard-api-key header"
+#   # (the service key is never used for caller inference).
+#
+# Substitute your own Latency Service URL, gateway base URL, and model IDs below.
+# =============================================================================
+
+routes:
+  my-model:
+    type: latency_service
+    latency_service_url: https://your-latency-service.example.com
+    # Require a caller key; 401 when missing; never fall back to a service key.
+    credential_policy: caller_required
+    poll_interval_s: 10.0
+    max_retries: 2
+    endpoints:
+      # No `api_key:` on the endpoints: `caller_required` forwards the caller's
+      # key and never falls back, so there is no service credential to leak.
+      - model: primary/my-model              # Latency Service endpoint_id
+        upstream_model: provider/my-model     # model name the upstream expects
+        base_url: https://your-inference-gateway.example.com/v1
+        # request_type: openai_responses      # set for Responses-only upstreams
+                                              # (e.g. gpt-5.1-codex-mini)
+      - model: backup/my-model
+        upstream_model: provider/my-model
+        base_url: https://your-inference-gateway.example.com/v1

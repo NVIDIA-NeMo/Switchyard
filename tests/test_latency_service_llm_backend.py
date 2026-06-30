@@ -1021,6 +1021,57 @@ class TestCallerApiKey:
         call_kwargs = backend._clients["model-A"].aresponses.call_args.kwargs
         assert call_kwargs["api_key"] is None
 
+    async def test_caller_required_policy_passes_caller_key_to_chat_sdk(self):
+        from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
+
+        backend = _make_backend(_config("model-A", credential_policy="caller_required"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+
+        ctx = ProxyContext()
+        ctx.metadata[CTX_CALLER_API_KEY] = "nvapi-caller-supplied"
+        await backend.call(ctx, _openai_request())
+
+        call_kwargs = backend._clients["model-A"].acompletion.call_args.kwargs
+        assert call_kwargs["api_key"] == "nvapi-caller-supplied"
+
+    async def test_caller_required_policy_rejects_missing_caller_key(self):
+        """No caller key under caller_required → 401 stashed, no upstream call."""
+        from switchyard.lib.proxy_context import CTX_UPSTREAM_HTTP_STATUS
+
+        backend = _make_backend(_config("model-A", credential_policy="caller_required"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+
+        ctx = ProxyContext()
+        with pytest.raises(PermissionError):
+            await backend.call(ctx, _openai_request())
+
+        assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
+        backend._clients["model-A"].acompletion.assert_not_called()
+
+    async def test_caller_required_policy_rejects_blank_caller_key(self):
+        """A blank caller key is unusable → 401, never the configured service key."""
+        from switchyard.lib.proxy_context import (
+            CTX_CALLER_API_KEY,
+            CTX_UPSTREAM_HTTP_STATUS,
+        )
+
+        backend = _make_backend(_config("model-A", credential_policy="caller_required"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+
+        ctx = ProxyContext()
+        ctx.metadata[CTX_CALLER_API_KEY] = "   "
+        with pytest.raises(PermissionError):
+            await backend.call(ctx, _openai_request())
+
+        assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
+        backend._clients["model-A"].acompletion.assert_not_called()
+
 
 @pytest.mark.parametrize(
     ("path", "body"),
@@ -1227,6 +1278,132 @@ class TestEndpointApiKeyReachesUpstream:
         await backend.call(ctx, _openai_request())
 
         assert captured["authorization"] == "Bearer ENDPOINT-CONFIGURED-KEY"
+
+    async def test_caller_required_policy_uses_caller_key(self):
+        """caller_required forwards the caller key to the upstream wire."""
+        from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
+
+        captured: dict[str, str | None] = {}
+        backend = self._backend_with_captured_auth(
+            captured,
+            credential_policy="caller_required",
+        )
+
+        ctx = ProxyContext()
+        ctx.metadata[CTX_CALLER_API_KEY] = "CALLER-BYO-KEY"
+        await backend.call(ctx, _openai_request())
+
+        assert captured["authorization"] == "Bearer CALLER-BYO-KEY"
+
+    async def test_caller_required_rejects_missing_key_without_upstream_call(self):
+        """caller_required with no caller key 401s before reaching the upstream.
+
+        The configured ``ENDPOINT-CONFIGURED-KEY`` must never authenticate the
+        call — the mock transport handler should not run at all.
+        """
+        from switchyard.lib.proxy_context import CTX_UPSTREAM_HTTP_STATUS
+
+        captured: dict[str, str | None] = {}
+        backend = self._backend_with_captured_auth(
+            captured,
+            credential_policy="caller_required",
+        )
+
+        ctx = ProxyContext()
+        with pytest.raises(PermissionError):
+            await backend.call(ctx, _openai_request())
+
+        assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
+        assert captured == {}
+
+
+# ---------------------------------------------------------------------------
+# Per-model upstream-attempt metrics
+# ---------------------------------------------------------------------------
+
+
+class TestPerModelUpstreamMetrics:
+    """``switchyard_latency_upstream_attempts_total`` breaks attempts out by
+    requested route model, selected upstream model, outcome, and HTTP code —
+    the per-model complement to the layer-aggregate counter."""
+
+    async def test_success_attempt_recorded_per_model(self):
+        backend = _make_backend(_config("model-A"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+        _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
+
+        # Request a configured endpoint id so ``requested_model`` is preserved.
+        await backend.call(ProxyContext(), _openai_request(model="model-A"))
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert (
+            'switchyard_latency_upstream_attempts_total{'
+            'requested_model="model-A",upstream_model="model-A",'
+            'outcome="success",code="200"} 1'
+        ) in out
+
+    async def test_error_attempt_recorded_per_model(self):
+        backend = _make_backend(_config("model-A", max_retries=0))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            side_effect=_api_status_error(500)
+        )
+        _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
+
+        with pytest.raises(openai.APIStatusError):
+            await backend.call(ProxyContext(), _openai_request(model="model-A"))
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert (
+            'switchyard_latency_upstream_attempts_total{'
+            'requested_model="model-A",upstream_model="model-A",'
+            'outcome="retryable_error",code="500"} 1'
+        ) in out
+
+    async def test_unknown_requested_model_normalized_to_sentinel(self):
+        # A client-supplied model that is not a configured endpoint id must not
+        # become a raw Prometheus label (unbounded cardinality); it collapses to
+        # the ``"other"`` sentinel.
+        backend = _make_backend(_config("model-A"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+        _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
+
+        await backend.call(ProxyContext(), _openai_request())  # model="incoming-model"
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert 'requested_model="other"' in out
+        assert 'requested_model="incoming-model"' not in out
+
+    async def test_upstream_model_override_labels_the_upstream_name(self):
+        config = LatencyServiceBackendConfig(
+            latency_service_url=LATENCY_SERVICE_URL,
+            endpoints=[LatencyServiceEndpoint(
+                model="model-A",
+                base_url="http://a.test",
+                api_key="k",
+                upstream_model="azure/openai/gpt-5.1-codex-mini",
+            )],
+        )
+        backend = _make_backend(config)
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+        _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
+
+        await backend.call(ProxyContext(), _openai_request())
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert 'upstream_model="azure/openai/gpt-5.1-codex-mini"' in out
+
+    async def test_metric_absent_until_traffic(self):
+        backend = _make_backend(_config("model-A"))
+
+        out = "\n".join(backend._render_prometheus_lines())
+
+        assert "switchyard_latency_upstream_attempts_total" not in out
 
 
 # ---------------------------------------------------------------------------

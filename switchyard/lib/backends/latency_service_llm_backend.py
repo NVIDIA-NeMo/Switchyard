@@ -140,6 +140,17 @@ class LatencyServiceLLMBackend(LLMBackend):
         self._affinity_hits = 0
         self._affinity_misses = 0
 
+        # Per-model upstream-attempt counts for the latency-service-scoped
+        # /metrics breakdown, keyed by (requested model, selected upstream model,
+        # outcome, HTTP code). Kept separate from the layer-aggregate
+        # ``switchyard_upstream_attempts_total`` so that counter stays model-free.
+        # Cardinality is bounded: ``upstream_model`` comes from config, and
+        # ``requested_model`` is normalized to a configured endpoint id or the
+        # ``"other"`` sentinel in ``_record_model_attempt`` so a caller-supplied
+        # model string can't grow the series set. Mutated and read only on the
+        # event loop (like the affinity counters), so no lock.
+        self._upstream_attempts_by_model: dict[tuple[str, str, str, str], int] = {}
+
         for ep_cfg in config.endpoints:
             model_id = ep_cfg.model
             if not model_id:
@@ -345,6 +356,12 @@ class LatencyServiceLLMBackend(LLMBackend):
         api_key_override = self._api_key_override_for_policy(
             ctx.metadata.get(CTX_CALLER_API_KEY)
         )
+        # ``caller_required`` never falls back to the configured endpoint key:
+        # reject before any upstream call so the service credential can't
+        # authenticate caller inference. ``api_key_override`` is ``None`` here
+        # only when no usable caller key was supplied.
+        if self._config.credential_policy == "caller_required" and api_key_override is None:
+            _reject_missing_caller_api_key(ctx)
 
         for attempt in range(1 + self._config.max_retries):
             # -- Route decision span: which endpoint, out of which candidates --
@@ -414,6 +431,12 @@ class LatencyServiceLLMBackend(LLMBackend):
                     if self._stats is not None:
                         await self._stats.record_error(model_id)
                     outcome_metrics.record_upstream_attempt(exc.status_code)
+                    self._record_model_attempt(
+                        incoming_model,
+                        upstream_model,
+                        outcome_metrics.classify(exc.status_code),
+                        outcome_metrics.code_label(exc.status_code),
+                    )
                     # Per-event structured log (Loki) — the timestamped complement
                     # to the aggregate outcome counter recorded above.
                     log_upstream_attempt_failure(
@@ -442,6 +465,12 @@ class LatencyServiceLLMBackend(LLMBackend):
                     # are exactly the faults a health-aware router should absorb
                     # by selecting a different endpoint on the next attempt.
                     outcome_metrics.record_upstream_attempt(None)
+                    self._record_model_attempt(
+                        incoming_model,
+                        upstream_model,
+                        "retryable_error",
+                        outcome_metrics.NO_STATUS_CODE,
+                    )
                     # status_code=None → logged as code="none" (no HTTP status).
                     log_upstream_attempt_failure(
                         model=model_id,
@@ -460,6 +489,9 @@ class LatencyServiceLLMBackend(LLMBackend):
                 if self._stats is not None:
                     await self._stats.record_success(model_id, backend_latency_ms)
                 outcome_metrics.record_upstream_attempt(200)
+                self._record_model_attempt(
+                    incoming_model, upstream_model, "success", "200",
+                )
                 # A successful attempt after at least one failure is direct
                 # evidence the steering logic rescued this request. Counted
                 # once per client request, not per recovered retry.
@@ -546,11 +578,39 @@ class LatencyServiceLLMBackend(LLMBackend):
         )
 
     def _api_key_override_for_policy(self, caller_api_key: object) -> str | None:
-        if self._config.credential_policy != "caller_override":
+        """Per-request key to forward upstream, or ``None`` to use the endpoint key.
+
+        ``configured_endpoint`` never forwards a caller key. ``caller_override``
+        and ``caller_required`` forward a usable caller key; they differ only in
+        the no-key case, which ``call`` handles before any upstream attempt
+        (``caller_override`` falls back to the endpoint key, ``caller_required``
+        returns 401).
+        """
+        if self._config.credential_policy == "configured_endpoint":
             return None
         if isinstance(caller_api_key, str) and caller_api_key.strip():
             return caller_api_key
         return None
+
+    def _record_model_attempt(
+        self,
+        requested_model: str | None,
+        upstream_model: str,
+        outcome: str,
+        code: str,
+    ) -> None:
+        """Count one upstream attempt for the per-model /metrics breakdown.
+
+        Event-loop only (no lock). ``requested_model`` is the client-supplied
+        model; it is bounded to a configured endpoint id (or the ``"other"``
+        sentinel) before becoming a Prometheus label, so caller-controlled input
+        can't create unbounded metric-series cardinality.
+        """
+        requested = requested_model if requested_model in self._clients else "other"
+        key = (requested, upstream_model, outcome, code)
+        self._upstream_attempts_by_model[key] = (
+            self._upstream_attempts_by_model.get(key, 0) + 1
+        )
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -673,6 +733,36 @@ class LatencyServiceLLMBackend(LLMBackend):
             )
             lines.append("# TYPE switchyard_affinity_misses_total counter")
             lines.append(f"switchyard_affinity_misses_total {self._affinity_misses}")
+
+        # Per-model upstream-attempt breakdown — the latency-service-scoped
+        # complement to the layer-aggregate ``switchyard_upstream_attempts_total``.
+        # Series are created lazily per (requested_model, upstream_model, outcome,
+        # code), so the surface stays empty until traffic flows. Snapshotted to a
+        # plain dict for a stable view across the emission loop.
+        attempts_by_model = dict(self._upstream_attempts_by_model)
+        if attempts_by_model:
+            lines.append(
+                "# HELP switchyard_latency_upstream_attempts_total "
+                "Upstream call attempts from the latency-service backend, labelled "
+                "by requested (route) model, selected upstream model, outcome, and "
+                "HTTP status code (code=\"none\" for non-HTTP failures). Per-model "
+                "complement to the layer-aggregate switchyard_upstream_attempts_total; "
+                "cardinality is bounded by the configured endpoint set."
+            )
+            lines.append("# TYPE switchyard_latency_upstream_attempts_total counter")
+            # Sorted for deterministic exposition order across scrapes.
+            for (requested_model, upstream_model, outcome, code), count in sorted(
+                attempts_by_model.items()
+            ):
+                labels = render_labels({
+                    "requested_model": requested_model,
+                    "upstream_model": upstream_model,
+                    "outcome": outcome,
+                    "code": code,
+                })
+                lines.append(
+                    f"switchyard_latency_upstream_attempts_total{labels} {count}"
+                )
         return lines
 
 
@@ -751,6 +841,27 @@ def _stash_invalid_request_error(ctx: ProxyContext, error: Exception) -> None:
             "code": "invalid_value",
         }
     }
+
+
+def _reject_missing_caller_api_key(ctx: ProxyContext) -> None:
+    """Reject a ``caller_required`` request that carries no caller API key.
+
+    Stashes an HTTP 401 and a provider-compatible error envelope on ``ctx`` the
+    same way upstream-status passthrough does, then raises so the chain errors
+    out before any upstream call. No upstream is contacted or counted;
+    ``upstream_response_from_ctx`` reads the stashed status to return a 401. This
+    is what keeps the configured endpoint key from ever authenticating caller
+    inference under the ``caller_required`` policy.
+    """
+    ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] = 401
+    ctx.metadata[CTX_UPSTREAM_HTTP_BODY] = {
+        "error": {
+            "message": "missing caller API key; supply it via the x-switchyard-api-key header",
+            "type": "invalid_request_error",
+            "code": "missing_caller_api_key",
+        }
+    }
+    raise PermissionError("caller_required policy: missing caller API key")
 
 
 def _extract_upstream_body(error: APIStatusError) -> object | None:
