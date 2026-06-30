@@ -22,9 +22,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
+use switchyard_components::otel_metrics;
 use switchyard_components_v2::{
-    parse_profile_config_path, profile_stats_accumulator, ProfileConfigPlan, ProfileInput,
-    ProfileResponse, RequestMetadata, RoutingMetadata,
+    parse_profile_config_path, ProfileConfigPlan, ProfileInput, ProfileResponse, RequestMetadata,
+    RoutingMetadata,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, SwitchyardError};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
@@ -125,11 +126,8 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/models", get(models))
-        // Keep the legacy routing stats aliases wired to the same handlers.
-        .route("/v1/stats", get(stats))
-        .route("/v1/stats/reset", post(reset_stats))
-        .route("/v1/routing/stats", get(stats))
-        .route("/v1/routing/stats/reset", post(reset_stats))
+        // Prometheus scrape surface, matching the Python app's `/metrics`.
+        .route("/metrics", get(metrics))
         .route("/health", get(health))
         .fallback(not_found)
         .with_state(state)
@@ -442,17 +440,22 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
     Json(model_list_payload(&entries))
 }
 
-async fn stats() -> Response {
-    match profile_stats_accumulator().snapshot() {
-        Ok(snapshot) => Json(json!(snapshot)).into_response(),
-        Err(error) => server_error(error.to_string()),
-    }
-}
+/// Prometheus exposition content type, matching the Python `/metrics` handler.
+const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-async fn reset_stats() -> Response {
-    match profile_stats_accumulator().reset() {
-        Ok(()) => Json(json!({"status": "reset"})).into_response(),
-        Err(error) => server_error(error.to_string()),
+/// Renders the OTel Prometheus registry as a scrape response.
+///
+/// `ensure_instruments` forces instrument creation so pull-only series (build
+/// info, running totals) appear even before any request has been served.
+async fn metrics() -> Response {
+    otel_metrics::ensure_instruments();
+    match otel_metrics::render_prometheus() {
+        Ok(body) => (
+            [(axum::http::header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
+            body,
+        )
+            .into_response(),
+        Err(error) => server_error(error),
     }
 }
 
@@ -533,8 +536,7 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
     push_line(&mut output, "    POST /v1/chat/completions");
     push_line(&mut output, "    POST /v1/messages");
     push_line(&mut output, "    POST /v1/responses");
-    push_line(&mut output, "    GET  /v1/routing/stats");
-    push_line(&mut output, "    POST /v1/routing/stats/reset");
+    push_line(&mut output, "    GET  /metrics");
     push_line(&mut output, "");
     push_line(&mut output, "  available models:");
     for entry in &entries {

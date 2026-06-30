@@ -1683,6 +1683,7 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "switchyard-components",
  "switchyard-components-v2",
  "switchyard-core",
  "switchyard-translation",

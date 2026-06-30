@@ -6,7 +6,7 @@
 use std::io::ErrorKind;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener as StdTcpListener, TcpStream};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use async_trait::async_trait;
@@ -15,8 +15,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use switchyard_components_v2::{
-    parse_profile_config_str, profile_stats_accumulator, Profile, ProfileConfigFormat,
-    ProfileInput, ProfileResponse, RoutingMetadata,
+    parse_profile_config_str, Profile, ProfileConfigFormat, ProfileInput, ProfileResponse,
+    RoutingMetadata,
 };
 use switchyard_core::{
     ChatRequestType, ChatResponse, ModelId, Result, StreamEvent, SwitchyardError,
@@ -26,8 +26,6 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn minimal_noop_config_boots_and_serves_core_routes() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
     let app = build_switchyard_router(state_from_yaml(
         r#"
 profiles:
@@ -74,8 +72,6 @@ profiles:
 
 #[tokio::test]
 async fn all_request_endpoints_route_through_selected_profile() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
     let app = build_switchyard_router(state_from_yaml(
         r#"
 profiles:
@@ -208,7 +204,6 @@ async fn translation_errors_do_not_emit_routing_metadata_headers() -> TestResult
 
 #[tokio::test]
 async fn target_id_and_target_model_aliases_are_advertised_and_routable() -> TestResult {
-    let _stats_guard = stats_guard().await;
     let Some(stub) = HttpStub::start(2)? else {
         log_loopback_bind_skip();
         return Ok(());
@@ -262,7 +257,6 @@ profiles:
 
 #[tokio::test]
 async fn target_with_same_id_and_model_is_registered_once() -> TestResult {
-    let _stats_guard = stats_guard().await;
     let Some(stub) = HttpStub::start(1)? else {
         log_loopback_bind_skip();
         return Ok(());
@@ -308,8 +302,6 @@ profiles:
 
 #[tokio::test]
 async fn random_routing_profile_reaches_selected_backend_path() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
     let Some(stub) = HttpStub::start(1)? else {
         log_loopback_bind_skip();
         return Ok(());
@@ -366,8 +358,6 @@ profiles:
 
 #[tokio::test]
 async fn latency_service_profile_reaches_configured_backend_path() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
     let Some(stub) = HttpStub::start(1)? else {
         log_loopback_bind_skip();
         return Ok(());
@@ -429,10 +419,7 @@ profiles:
 }
 
 #[tokio::test]
-async fn stats_endpoints_use_components_v2_global_accumulator() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
-    profile_stats_accumulator().record_success("served-model", Some(12.0), Some("strong"))?;
+async fn metrics_endpoint_serves_prometheus_exposition() -> TestResult {
     let app = build_switchyard_router(state_from_yaml(
         r#"
 profiles:
@@ -441,25 +428,15 @@ profiles:
 "#,
     )?);
 
-    let stats = app
-        .clone()
-        .oneshot(request("GET", "/v1/routing/stats", None)?)
-        .await?;
-    assert_eq!(stats.status(), StatusCode::OK);
-    assert_eq!(
-        json_body(stats).await?["models"]["served-model"]["calls"],
-        1
-    );
-
-    let reset = app
-        .clone()
-        .oneshot(request("POST", "/v1/routing/stats/reset", None)?)
-        .await?;
-    assert_eq!(reset.status(), StatusCode::OK);
-    assert_eq!(json_body(reset).await?, json!({"status": "reset"}));
-
-    let after = app.oneshot(request("GET", "/v1/stats", None)?).await?;
-    assert_eq!(json_body(after).await?["models"], json!({}));
+    let response = app.oneshot(request("GET", "/metrics", None)?).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = header(&response, "content-type")
+        .ok_or_else(|| SwitchyardError::Other("missing content-type".into()))?;
+    assert!(content_type.starts_with("text/plain"));
+    let body = response.into_body().collect().await?.to_bytes();
+    let text = String::from_utf8(body.to_vec())?;
+    // `ensure_instruments` lights up pull-only series even before any request.
+    assert!(text.contains("switchyard_build_info"));
     Ok(())
 }
 
@@ -893,21 +870,6 @@ fn header<'a>(response: &'a axum::response::Response, name: &str) -> Option<&'a 
         .headers()
         .get(name)
         .and_then(|value| value.to_str().ok())
-}
-
-fn reset_stats() -> Result<()> {
-    profile_stats_accumulator().reset()
-}
-
-/// Serializes tests that touch the global profile stats accumulator.
-///
-/// The lock is initialized once for the test process and held by each caller
-/// until the returned guard is dropped.
-async fn stats_guard() -> tokio::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await
 }
 
 fn log_loopback_bind_skip() {
