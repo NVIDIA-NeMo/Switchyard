@@ -1,7 +1,7 @@
 site_name: Switchyard
 site_description: Typed, composable LLM routing and format translation for Python
-repo_url: https://github.com/NVIDIA-dev/switchyard
-repo_name: NVIDIA-dev/switchyard
+repo_url: https://github.com/NVIDIA-NeMo/Switchyard
+repo_name: NVIDIA-NeMo/Switchyard
 edit_uri: edit/main/docs/
 extra:
   source_ref: !ENV [MKDOCS_SOURCE_REF, main]

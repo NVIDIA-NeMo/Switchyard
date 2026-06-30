@@ -129,9 +129,9 @@ managed = true
 switchyard = "switchyard.cli.switchyard_cli:main"
 
 [project.urls]
-Homepage = "https://github.com/NVIDIA-dev/switchyard"
-Repository = "https://github.com/NVIDIA-dev/switchyard"
-Issues = "https://github.com/NVIDIA-dev/switchyard/issues"
+Homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
+Repository = "https://github.com/NVIDIA-NeMo/Switchyard"
+Issues = "https://github.com/NVIDIA-NeMo/Switchyard/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -14,7 +14,7 @@ and dependencies. Install `uv` first if you don't have it
 (`curl -LsSf https://astral.sh/uv/install.sh | sh`), then:
 
 ```bash
-git clone https://github.com/NVIDIA-dev/switchyard.git
+git clone https://github.com/NVIDIA-NeMo/Switchyard.git
 cd switchyard
 
 uv sync                      # creates .venv, installs core + dev tooling

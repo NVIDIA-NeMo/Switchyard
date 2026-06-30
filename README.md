@@ -30,7 +30,7 @@ pip install "switchyard[cli,server]"
 ### Install from source for local use (requires uv)
 
 ```bash
-git clone git@github.com:NVIDIA-dev/switchyard.git
+git clone git@github.com:NVIDIA-NeMo/Switchyard.git
 cd switchyard
 uv tool install --editable '.[server,cli]'
 ```
@@ -38,7 +38,7 @@ uv tool install --editable '.[server,cli]'
 ### Install from source for contributors (requires uv)
 
 ```bash
-git clone git@github.com:NVIDIA-dev/switchyard.git
+git clone git@github.com:NVIDIA-NeMo/Switchyard.git
 cd switchyard
 uv sync
 uv run switchyard ...
@@ -226,7 +226,7 @@ See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds
 
 ## Community
 
-- **Issues**: [GitHub Issues](https://github.com/NVIDIA-dev/switchyard/issues)
+- **Issues**: [GitHub Issues](https://github.com/NVIDIA-NeMo/Switchyard/issues)
 - **Code of Conduct**: [Code of Conduct](CODE_OF_CONDUCT.md)
 - **Contributing**: [Contributing](CONTRIBUTING.md)
 

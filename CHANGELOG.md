@@ -55,4 +55,3 @@ traffic that sits between client applications and LLM backends.
   `claude` / `codex` / `openclaw` launchers.
 - Inference Hub integration docs are out of scope for this release.
 
-[0.1.0]: https://github.com/NVIDIA-dev/switchyard/releases/tag/v0.1.0

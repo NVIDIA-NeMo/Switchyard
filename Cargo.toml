@@ -17,5 +17,5 @@ members = [
 authors = ["NVIDIA Corporation"]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/NVIDIA-dev/switchyard"
+repository = "https://github.com/NVIDIA-NeMo/Switchyard"
 rust-version = "1.94"

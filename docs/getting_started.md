@@ -213,7 +213,7 @@ export SWITCHYARD_TELEMETRY_OPT_OUT=1
 **Development setup**
 
 ```bash
-git clone https://github.com/NVIDIA-dev/switchyard.git
+git clone https://github.com/NVIDIA-NeMo/Switchyard.git
 cd switchyard
 uv sync
 source .venv/bin/activate

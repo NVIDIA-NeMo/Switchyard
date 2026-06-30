@@ -9,7 +9,7 @@ See [Development](DEVELOPMENT.md) for full setup instructions.
 Quick start:
 
 ```bash
-git clone https://github.com/NVIDIA-dev/switchyard.git
+git clone https://github.com/NVIDIA-NeMo/Switchyard.git
 cd switchyard
 uv sync
 uvx pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg
@@ -162,7 +162,7 @@ When adding a new component:
 - **Setup issues?** See [Development](DEVELOPMENT.md)
 - **Architecture questions?** See [Agents](AGENTS.md)
 - **Design docs?** See [docs/](docs/)
-- **Report a bug?** [Open an issue](https://github.com/NVIDIA-dev/switchyard/issues)
+- **Report a bug?** [Open an issue](https://github.com/NVIDIA-NeMo/Switchyard/issues)
 
 ## Code of Conduct
 
