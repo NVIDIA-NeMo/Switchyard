@@ -10,6 +10,7 @@ extern crate self as switchyard_components_v2;
 
 mod backend;
 mod config;
+pub mod decision;
 mod profile;
 pub mod profiles;
 mod stats;
@@ -17,6 +18,13 @@ mod stats;
 pub use config::{
     parse_profile_config_path, parse_profile_config_str, parse_profile_config_str_with_env_lookup,
     ProfileConfig, ProfileConfigDocument, ProfileConfigFormat, ProfileConfigPlan,
+};
+pub use decision::{
+    decision_for_llm_routing, decision_for_random_routing, route_endpoint_for_format,
+    route_protocol_for_format, CurrentRequestMaterialization, DecisionAttempt, DecisionProfile,
+    DecisionProvider, IdentityQuality, RequestIdentity, RequestProtocol, RequestSummary,
+    RoutingDecision, RoutingRequest, RoutingTarget, ROUTING_DECISION_SCHEMA_VERSION,
+    ROUTING_REQUEST_SCHEMA_VERSION,
 };
 pub use profile::{
     Profile, ProfileHooks, ProfileInput, ProfileResponse, RequestMetadata, RoutingMetadata,

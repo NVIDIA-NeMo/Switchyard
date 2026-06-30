@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use switchyard_core::{ChatRequest, ChatRequestType, ChatResponse, RequestId, Result};
 
+use crate::decision::{RoutingDecision, RoutingRequest};
+
 /// Explicit per-request metadata passed to v2 profiles.
 ///
 /// Header keys are stored as lowercase ASCII names. Repeated header values are
@@ -115,13 +117,24 @@ impl From<ChatResponse> for ProfileResponse {
 /// Object-safe runtime surface for a complete profile.
 ///
 /// Servers and config-built profile maps use this trait when they need to run
-/// an entire profile and receive a final response. It intentionally exposes
-/// only `run()` so dynamic dispatch does not erase profile-specific processed
-/// state returned by hook-level APIs.
+/// an entire profile or request a decision without selected-backend dispatch.
+/// Hook-level processed state remains on [`ProfileHooks`] so dynamic dispatch
+/// does not erase profile-specific authoring APIs.
 #[async_trait]
 pub trait Profile: Send + Sync {
     /// Executes the complete profile flow and returns the final response.
     async fn run(&self, input: ProfileInput) -> Result<ProfileResponse>;
+
+    /// Returns a routing decision without dispatching the selected backend.
+    ///
+    /// Profiles that do not implement decision-only routing return a typed
+    /// unsupported-profile error by default.
+    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
+        request.validate()?;
+        Err(switchyard_core::SwitchyardError::DecisionUnsupported {
+            profile_id: request.decision_profile.profile_id,
+        })
+    }
 }
 
 /// Typed hook surface for profile authors and embedders.
