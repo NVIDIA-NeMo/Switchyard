@@ -68,7 +68,7 @@ def record_routing_event(
 
     try:
         recorded = ctx.record_routing_event(event)
-    except (TypeError, UnicodeError, ValueError):
+    except Exception:
         log.exception("Rejected invalid routing trace event")
         return None
     row = {
@@ -78,7 +78,7 @@ def record_routing_event(
     }
     try:
         _append_jsonl(Path(path_value).expanduser(), row)
-    except (OSError, TypeError, UnicodeError, ValueError):
+    except Exception:
         log.exception("Failed to append routing trace event to %s", path_value)
     return recorded
 

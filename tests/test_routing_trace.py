@@ -144,6 +144,18 @@ def test_export_failure_does_not_change_routing_behavior(
     assert "Failed to append routing trace event" in caplog.text
 
 
+def test_invalid_expanduser_path_does_not_change_routing_behavior(monkeypatch, caplog) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, "~__switchyard_missing_user__/trace.jsonl")
+    ctx = ProxyContext(request_id="request-1")
+
+    with caplog.at_level(logging.ERROR):
+        recorded = record_routing_event(ctx, _decision_event())
+
+    assert recorded is not None
+    assert ctx.routing_trace is not None
+    assert "Failed to append routing trace event" in caplog.text
+
+
 def test_invalid_event_does_not_change_routing_behavior(monkeypatch, tmp_path, caplog) -> None:
     monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "trace.jsonl"))
     ctx = ProxyContext(request_id="request-1")
