@@ -12,6 +12,7 @@ wheels separate from official tag-gated release builds.
 |---|---|---|---|---|
 | Dev wheel artifact | Manual `publish.yml` dispatch with `build_dev_artifact=true` | GitHub Actions | One-day GitHub artifact | `docs/internal/dev_wheel_artifacts.md` |
 | Dev PyPI prerelease | Manual `publish.yml` dispatch with `build_dev_artifact=true` and `publish_dev_to_pypi=true` | GitHub Actions | PyPI single Linux x86_64 dev wheel | `docs/internal/dev_wheel_artifacts.md` |
+| Dev PyPI matrix | Manual `publish.yml` dispatch with `build_dev_matrix=true` and `publish_dev_matrix_to_pypi=true` | GitHub Actions | PyPI sdist + full wheel matrix | `docs/internal/dev_wheel_artifacts.md` |
 | Official release build | Root `v*` tag | GitHub Actions `.github/workflows/publish.yml` | Full release artifact matrix + PyPI Trusted Publishing via `uv publish` | `.github/workflows/publish.yml` |
 
 GitHub-hosted runners cannot currently reach NVIDIA-internal Artifactory or Kitmaker Portal from
@@ -24,6 +25,7 @@ changes and the release process is explicitly approved.
 - Do not create tags unless the user explicitly asks for a tag-based release.
 - Do not create GitHub Releases for dev wheel artifacts.
 - Publish dev wheels only when `publish_dev_to_pypi=true` is explicitly requested.
+- Publish the dev matrix only when `publish_dev_matrix_to_pypi=true` is explicitly requested.
 - Keep `.dev` artifacts public-safe because GitHub Actions artifacts may be shared for review.
 - Full wheel matrices belong only on root `v*` tag releases.
 - Manual dev builds should build exactly one Linux x86_64 wheel artifact with one-day retention.
@@ -41,14 +43,17 @@ and `Version`.
 |---|---|---|
 | `build_dev_artifact` | `false` | Set to `true` to build one temporary wheel artifact |
 | `publish_dev_to_pypi` | `false` | Set to `true` only for an intentional public PyPI prerelease upload |
+| `build_dev_matrix` | `false` | Set to `true` to build the complete sdist and wheel matrix with `.dev` metadata |
+| `publish_dev_matrix_to_pypi` | `false` | Set to `true` only for an intentional full-matrix PyPI prerelease upload |
 | `dev_version` | `0.0.1.dev0` | PEP 440 `.dev` version for wheel metadata |
 
 ## Required Secrets
 
 The artifact-only dev build does not require release secrets.
 
-The dev PyPI prerelease path and official publish job use
-`uv publish --trusted-publishing always`; no PyPI token is required.
+The dev PyPI prerelease paths and official publish job use `uv publish --trusted-publishing always`;
+no PyPI token is required. The full dev matrix publish also uses `--check-url` so already-uploaded
+files for the same `.dev` version are skipped.
 
 Before publishing a dev prerelease or cutting the first tag, create the pending PyPI trusted
 publisher for:
