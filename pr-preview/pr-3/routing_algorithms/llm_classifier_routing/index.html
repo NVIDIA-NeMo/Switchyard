@@ -1182,20 +1182,22 @@ policies default to <code>strong</code>.</p>
 <tr>
 <td><code>general</code></td>
 <td>Mixed chat or API traffic</td>
-<td><code>simple</code> uses <code>weak</code>; all higher tiers use <code>strong</code>.</td>
+<td><code>simple</code> → <code>weak</code>; <code>medium</code>/<code>complex</code>/<code>reasoning</code> → <code>strong</code></td>
 </tr>
 <tr>
 <td><code>coding_agent</code></td>
 <td>Claude Code, Codex, Cursor-style agents</td>
-<td><code>simple</code> and <code>medium</code> use <code>weak</code>; <code>complex</code> and <code>reasoning</code> use <code>strong</code>. Tool-planning turns can escalate.</td>
+<td><code>simple</code>/<code>medium</code> → <code>weak</code>; <code>complex</code>/<code>reasoning</code> → <code>strong</code></td>
 </tr>
 <tr>
 <td><code>openclaw</code></td>
 <td>OpenClaw personal-assistant traffic</td>
-<td><code>simple</code> and <code>medium</code> use <code>weak</code>; <code>complex</code> and <code>reasoning</code> use <code>strong</code>. Tool orchestration and high-risk external actions can escalate.</td>
+<td><code>simple</code>/<code>medium</code> → <code>weak</code>; <code>complex</code>/<code>reasoning</code> → <code>strong</code></td>
 </tr>
 </tbody>
 </table>
+<p>Under <code>coding_agent</code>, tool-planning turns can escalate to <code>strong</code>. Under
+<code>openclaw</code>, tool orchestration and high-risk external actions can also escalate.</p>
 <p>For coding-agent traffic, start with <code>profile_name: coding_agent</code>.</p>
 <h2 id="configure-a-classifier-profile">Configure a classifier profile<a class="headerlink" href="#configure-a-classifier-profile" title="Permanent link">&para;</a></h2>
 <p>Define the strong, weak, and classifier models as targets, then reference those
