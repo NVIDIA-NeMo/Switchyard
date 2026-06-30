@@ -6,13 +6,13 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      devzone_stage_artifactory:
-        description: "Stage .dev wheels to Artifactory only; no Kitmaker or PyPI publish."
+      devzone_stage_artifacts:
+        description: "Build .dev wheel artifacts in GitHub only; no external publish."
         required: true
         type: boolean
         default: false
       devzone_version:
-        description: "PEP 440 .dev version for Artifactory-only staged wheels."
+        description: "PEP 440 .dev version for GitHub-artifact-only staged wheels."
         required: true
         type: string
         default: "0.0.1.dev0"
@@ -27,7 +27,7 @@ permissions:
 jobs:
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifacts }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -48,7 +48,7 @@ jobs:
 
   rust-release-checks:
     name: Release Rust checks
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifacts }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
 
   source-dist:
     name: Source distribution
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifacts }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ubuntu-latest
     steps:
@@ -83,7 +83,7 @@ jobs:
 
   wheels:
     name: Wheel (${{ matrix.label }})
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifactory }}
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.devzone_stage_artifacts }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -118,7 +118,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Stamp Devzone package metadata
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifacts }}
         shell: bash
         run: |
           python scripts/release/set_devzone_prerelease_version.py \
@@ -172,7 +172,7 @@ jobs:
             --out dist \
             --target "${{ matrix.rust_target }}"
       - name: Smoke install native wheel on Python 3.12
-        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory) }}
+        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifacts) }}
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -195,11 +195,11 @@ jobs:
           print("rust extension", _switchyard_rust.__name__)
           PY
       - uses: actions/setup-python@v5
-        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory) }}
+        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifacts) }}
         with:
           python-version: "3.14"
       - name: Smoke install native wheel on Python 3.14
-        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory) }}
+        if: ${{ matrix.smoke && !(github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifacts) }}
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -226,9 +226,9 @@ jobs:
           name: switchyard-wheel-${{ matrix.label }}
           path: dist/*
 
-  devzone-artifactory-wheel:
-    name: Devzone Artifactory probe wheel
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
+  devzone-artifact-wheel:
+    name: Devzone GitHub artifact probe wheel
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifacts }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -268,12 +268,13 @@ jobs:
         with:
           name: devzone-wheel-linux-x86_64
           path: dist/*.whl
+          retention-days: 1
 
-  stage-devzone-artifactory:
-    name: Stage Devzone wheels to Artifactory
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifactory }}
-    needs: [devzone-artifactory-wheel]
-    runs-on: prod-tester-amd-v1
+  verify-devzone-artifact:
+    name: Verify Devzone wheel artifact
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.devzone_stage_artifacts }}
+    needs: [devzone-artifact-wheel]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -328,70 +329,6 @@ jobs:
                   raise SystemExit(f"{filename}: Version={metadata['Version']!r}")
               print(f"{filename}: {metadata['Name']} {metadata['Version']}")
           PY
-      - name: Upload wheels to Artifactory
-        env:
-          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
-          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
-          ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_USER }}
-          PACKAGE_NAME: ${{ env.DEVZONE_PACKAGE_NAME }}
-          VERSION_INPUT: ${{ inputs.devzone_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "${ARTIFACTORY_URL}" ]; then
-            echo "::error::ARTIFACTORY_URL is required"
-            exit 1
-          fi
-          if [ -z "${ARTIFACTORY_USER}" ] || [ -z "${ARTIFACTORY_TOKEN}" ]; then
-            echo "::error::ARTIFACTORY_USER and ARTIFACTORY_TOKEN are required"
-            exit 1
-          fi
-
-          VERSION="$(python scripts/release/set_devzone_prerelease_version.py \
-            "${VERSION_INPUT}" \
-            --print-version)"
-          BASE_URL="${ARTIFACTORY_URL%/}/${PACKAGE_NAME}/dev/${VERSION}/${GITHUB_RUN_ID}-${GITHUB_SHA:0:12}"
-          mkdir -p release
-
-          export BASE_URL
-          python - <<'PY' > release/wheel-urls.json
-          import glob
-          import json
-          import os
-
-          base_url = os.environ["BASE_URL"]
-          urls = [f"{base_url}/{os.path.basename(path)}" for path in sorted(glob.glob("dist/*.whl"))]
-          print(json.dumps({"wheel_urls": urls}, indent=2))
-          PY
-
-          echo "## Artifactory Wheel Staging" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "| Wheel | URL |" >> "${GITHUB_STEP_SUMMARY}"
-          echo "|---|---|" >> "${GITHUB_STEP_SUMMARY}"
-
-          for wheel in dist/*.whl; do
-            filename="$(basename "${wheel}")"
-            target_url="${BASE_URL}/${filename}"
-            body_file="$(mktemp)"
-            http_code="$(curl -sSL -o "${body_file}" -w "%{http_code}" \
-              --connect-timeout 30 --max-time 300 \
-              --retry 3 --retry-delay 5 --retry-all-errors \
-              -u "${ARTIFACTORY_USER}:${ARTIFACTORY_TOKEN}" \
-              -T "${wheel}" \
-              "${target_url}")"
-            if [ "${http_code}" != "201" ]; then
-              echo "::error::Artifactory deploy failed: HTTP ${http_code} at ${target_url}"
-              cat "${body_file}" || true
-              exit 1
-            fi
-            rm -f "${body_file}"
-            echo "| \`${filename}\` | ${target_url} |" >> "${GITHUB_STEP_SUMMARY}"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: devzone-wheel-urls
-          path: release/wheel-urls.json
 
   list-distributions:
     name: List distributions
