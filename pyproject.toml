@@ -146,6 +146,10 @@ manifest-path = "crates/switchyard-py/Cargo.toml"
 module-name = "switchyard_rust._switchyard_rust"
 python-source = "."
 python-packages = ["switchyard", "switchyard_rust"]
+include = [
+    { path = "LICENSE", format = "sdist" },
+    { path = "NOTICE", format = "sdist" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
