@@ -42,10 +42,17 @@ artifact download verification.
 |---|---|---|
 | `version` | `0.0.1.dev0` | PEP 440 prerelease version for wheel metadata |
 | `target_sha` | current workflow SHA | Commit to build |
+| `kitmaker_dry_run` | `false` | Submit GitHub artifact URL(s) to Kitmaker with `upload=false` |
+
 ## Required Secrets
 
-The GitHub artifact build does not require release secrets. Kitmaker credentials are used only for a
-separate Portal/API submission after the short-lived wheel artifacts have been reviewed.
+The GitHub artifact build does not require release secrets. The optional Kitmaker dry-run job needs:
+
+| Secret | Purpose |
+|---|---|
+| `KITMAKER_API_TOKEN` | Kitmaker Portal API token |
+| `KITMAKER_PROJECT_ID` | Portal project id for `nemo-switchyard` |
+| `KITMAKER_PIC_EMAIL` | PIC email in Kitmaker release payloads |
 
 ## Local Preflight For Release-Infrastructure Changes
 
@@ -72,7 +79,7 @@ make publish
 | Symptom | Fix |
 |---|---|
 | GitHub artifact verifier cannot find wheels | Check the `devzone-wheel-*` artifact names and retention |
-| Kitmaker cannot fetch the wheel | GitHub artifacts are authenticated and short-lived; use the approved Kitmaker handoff for the downloaded wheel files |
+| Kitmaker dry run cannot fetch the wheel | GitHub artifact URLs may not be a supported Portal handoff; use the approved Kitmaker handoff for downloaded wheel files |
 | Kitmaker rejects project name | Portal project name and wheel metadata must both be `nemo-switchyard` |
 | Install imports checkout version | Verify from a temporary directory outside the repo |
 
