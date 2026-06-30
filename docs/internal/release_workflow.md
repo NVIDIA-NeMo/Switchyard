@@ -15,10 +15,8 @@ stay `switchyard`.
 
 ## Why Dev Builds Are Explicit Opt-In
 
-We tried the usual NVIDIA-internal handoff paths first. GitHub-hosted runners could not resolve
-`artifactory.nvidia.com` or `kitmaker-portal.nvidia.com`, and this repository does not currently
-have the Dynamo-style NVIDIA self-hosted release runner setup. GitHub Packages also does not provide
-a PyPI-compatible package index.
+GitHub dev builds are for validation and review. They should not publish from branch state, and
+GitHub Packages is not a PyPI-compatible package index.
 
 Because of those constraints, GitHub dev builds stay as short-lived artifacts. PyPI publishing is
 reserved for tag-driven releases because PyPI versions are effectively immutable once uploaded.

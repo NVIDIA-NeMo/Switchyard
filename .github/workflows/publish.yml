@@ -36,11 +36,8 @@ jobs:
   # - Manual dev builds create artifacts only. They are useful for branch validation but never
   #   publish to PyPI.
   #
-  # This deliberately avoids NVIDIA-internal release services from GitHub-hosted
-  # runners. The runner could not resolve artifactory.nvidia.com or
-  # kitmaker-portal.nvidia.com during probes, this repo does not currently have
-  # Dynamo-style NVIDIA self-hosted release runners, and GitHub Packages is not a
-  # PyPI-compatible package index.
+  # This deliberately keeps release publishing on the public GitHub/PyPI path. Manual
+  # branch builds only produce artifacts; tag builds publish through PyPI Trusted Publishing.
   validate-release-ref:
     name: Validate release ref
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}

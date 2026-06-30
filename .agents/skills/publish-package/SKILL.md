@@ -14,10 +14,8 @@ wheels separate from official tag-gated release builds.
 | Dev matrix artifact | Manual `publish.yml` dispatch with `build_dev_matrix=true` | GitHub Actions | Full matrix GitHub artifacts | `docs/internal/release_workflow.md` |
 | Official release build | Root `vMAJOR.MINOR.PATCH` tag | GitHub Actions `.github/workflows/publish.yml` | Full release artifact matrix + PyPI Trusted Publishing via `uv publish` | `.github/workflows/publish.yml` |
 
-GitHub-hosted runners cannot currently reach NVIDIA-internal Artifactory or Kitmaker Portal from
-this repo, and GitHub Packages is not a PyPI-compatible package index. Do not add Artifactory,
-Kitmaker, or Devzone upload calls back to the GitHub workflow unless the runner/network story
-changes and the release process is explicitly approved.
+Release publishing stays on the public GitHub/PyPI path. Manual branch builds only produce
+artifacts; root release tags publish through PyPI Trusted Publishing.
 
 ## Guardrails
 
