@@ -6,22 +6,23 @@ Switchyard currently follows the OSS-style NeMo path for GitHub builds:
 
 - regular CI runs tests, linting, type checks, Rust checks, and slim-install smoke checks;
 - manual dev builds create one Linux x86_64 wheel as a one-day GitHub Actions artifact;
+- manual dev builds can optionally publish that exact verified wheel to PyPI;
 - root `v*` tags run the complete release validation and wheel matrix;
 - public PyPI/GitHub publishing happens only from approved `v*` tag releases.
 
 Wheel metadata uses the public distribution name `nemo-switchyard`, while the Python import and CLI
 stay `switchyard`.
 
-## Why This Is Artifact-Only
+## Why Dev Builds Are Explicit Opt-In
 
 We tried the usual NVIDIA-internal handoff paths first. GitHub-hosted runners could not resolve
 `artifactory.nvidia.com` or `kitmaker-portal.nvidia.com`, and this repository does not currently
 have the Dynamo-style NVIDIA self-hosted release runner setup. GitHub Packages also does not provide
 a PyPI-compatible package index.
 
-Because of those constraints, GitHub dev builds are intentionally short-lived artifacts, not package
-index uploads. Download and inspect them manually, then use the official tag-gated release path when
-the project is ready for public publishing.
+Because of those constraints, GitHub dev builds default to short-lived artifacts. Publishing a dev
+wheel to PyPI is possible, but it is a separate explicit workflow input because PyPI versions are
+effectively immutable once uploaded.
 
 ## Manual Dev Artifact Build
 
@@ -36,6 +37,7 @@ Set:
 | Input | Value |
 |---|---|
 | `build_dev_artifact` | `true` |
+| `publish_dev_to_pypi` | `false` |
 | `dev_version` | `0.0.1.dev0` |
 
 The workflow:
@@ -44,6 +46,31 @@ The workflow:
 2. Builds one manylinux x86_64 wheel.
 3. Uploads `dev-wheel-linux-x86_64` with one-day retention.
 4. Downloads the artifact again and verifies the wheel `Name` and `Version` metadata.
+
+## Manual Dev PyPI Upload
+
+Use this only when a public prerelease upload is intended:
+
+| Input | Value |
+|---|---|
+| `build_dev_artifact` | `true` |
+| `publish_dev_to_pypi` | `true` |
+| `dev_version` | `0.0.1.dev0` |
+
+The publish job runs only after the wheel metadata verifier succeeds. It uses
+`uv publish --trusted-publishing always dist/*.whl`, so PyPI project creation and uploads require a
+matching pending trusted publisher:
+
+| Field | Value |
+|---|---|
+| Project | `nemo-switchyard` |
+| Owner | `NVIDIA-NeMo` |
+| Repository | `Switchyard` |
+| Workflow | `publish.yml` |
+| Environment | `pypi` |
+
+This publishes only the single Linux x86_64 dev wheel. Use a root `v*` tag for the complete release
+matrix.
 
 ## Official Release Build
 
@@ -55,8 +82,8 @@ Create a root `v*` tag only when a real release has been approved. Tag pushes ru
 - full abi3 wheel matrix for Linux x86_64, Linux aarch64, macOS x86_64, macOS arm64, and Windows x86_64;
 - native wheel smoke installs where the runner can execute the artifact.
 
-The `publish` job uses `uv publish --trusted-publishing always`, so PyPI project creation and
-uploads require a matching pending trusted publisher:
+The official `publish` job uses `uv publish --trusted-publishing always`, so PyPI project creation
+and uploads require the same pending trusted publisher:
 
 | Field | Value |
 |---|---|

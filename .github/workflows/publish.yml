@@ -7,12 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       build_dev_artifact:
-        description: "Build one short-lived Linux x86_64 dev wheel artifact; no external publish."
+        description: "Build one Linux x86_64 dev wheel artifact."
+        required: true
+        type: boolean
+        default: false
+      publish_dev_to_pypi:
+        description: "Publish the dev wheel artifact to PyPI with Trusted Publishing."
         required: true
         type: boolean
         default: false
       dev_version:
-        description: "PEP 440 .dev version for the GitHub-artifact-only wheel."
+        description: "PEP 440 .dev version for the dev wheel."
         required: true
         type: string
         default: "0.0.1.dev0"
@@ -27,14 +32,15 @@ permissions:
 jobs:
   # OSS-style split:
   # - Root v* tags run the complete release validation and wheel matrix.
-  # - Manual dev builds create exactly one short-lived GitHub artifact for testing.
+  # - Manual dev builds create exactly one Linux x86_64 artifact, with an explicit opt-in
+  #   to publish that dev wheel to PyPI for prerelease testing.
   #
   # This deliberately avoids NVIDIA-internal release services from GitHub-hosted
   # runners. The runner could not resolve artifactory.nvidia.com or
   # kitmaker-portal.nvidia.com during probes, this repo does not currently have
   # Dynamo-style NVIDIA self-hosted release runners, and GitHub Packages is not a
-  # PyPI-compatible package index. Until that changes, dev wheels stay as
-  # one-day GitHub Actions artifacts.
+  # PyPI-compatible package index. Until that changes, dev wheels either stay as
+  # one-day GitHub Actions artifacts or publish directly to PyPI through Trusted Publishing.
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
@@ -332,6 +338,27 @@ jobs:
                   raise SystemExit(f"{filename}: Version={metadata['Version']!r}")
               print(f"{filename}: {metadata['Name']} {metadata['Version']}")
           PY
+
+  publish-dev-artifact:
+    name: Publish dev wheel to PyPI
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_artifact && inputs.publish_dev_to_pypi }}
+    needs: [verify-dev-artifact]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dev-wheel-*
+          merge-multiple: true
+      - uses: astral-sh/setup-uv@v6
+      - name: List distributions
+        run: ls -l dist
+      - name: Publish dev wheel to PyPI
+        run: uv publish --trusted-publishing always dist/*.whl
 
   list-distributions:
     name: List distributions
