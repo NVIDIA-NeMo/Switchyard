@@ -214,7 +214,7 @@ export SWITCHYARD_TELEMETRY_OPT_OUT=1
 
 ```bash
 git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd switchyard
+cd Switchyard
 uv sync
 source .venv/bin/activate
 uv run pytest tests/ -v

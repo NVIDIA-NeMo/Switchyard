@@ -31,7 +31,7 @@ pip install "switchyard[cli,server]"
 
 ```bash
 git clone git@github.com:NVIDIA-NeMo/Switchyard.git
-cd switchyard
+cd Switchyard
 uv tool install --editable '.[server,cli]'
 ```
 
@@ -39,7 +39,7 @@ uv tool install --editable '.[server,cli]'
 
 ```bash
 git clone git@github.com:NVIDIA-NeMo/Switchyard.git
-cd switchyard
+cd Switchyard
 uv sync
 uv run switchyard ...
 ```

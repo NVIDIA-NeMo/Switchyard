@@ -15,7 +15,7 @@ and dependencies. Install `uv` first if you don't have it
 
 ```bash
 git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd switchyard
+cd Switchyard
 
 uv sync                      # creates .venv, installs core + dev tooling
 uvx pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg

@@ -247,31 +247,24 @@ and their transitives never appear in downstream vulnerability scans.
 export OPENAI_API_KEY="sk-..."       # or NVIDIA_API_KEY / ANTHROPIC_API_KEY where supported
 export OPENROUTER_API_KEY="sk-or-..." # pass with --api-key or save via configure
 
-# Passthrough — single OpenAI-compatible backend, all three inbound formats
-switchyard passthrough --port 4000
-switchyard passthrough --inbound anthropic --port 4000
-switchyard passthrough --inbound both --base-url https://... --api-key sk-...
-switchyard passthrough --base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"
+# Serve a profile config (passthrough, random-routing, llm-routing, cascade).
+# Endpoints, targets, and profiles live in the YAML; see docs/routing_algorithms/overview.md.
+switchyard serve --config profiles.yaml --port 4000
+switchyard serve --config profiles.yaml --inbound anthropic --port 4000
 
-# Random-routing — weighted strong/weak coin for benchmarks
-switchyard random-routing \
-    --strong-model openai/openai/gpt-5.2 \
-    --weak-model openai/nvidia/nemotron-3-super \
-    --strong-probability 0.3 --port 4000
-
-# One-command launchers
-switchyard launch claude --model nvidia/moonshotai/kimi-k2.5
-switchyard launch claude --preset opus_kimi --strong-probability 0.5
-switchyard launch codex --model nvidia/moonshotai/kimi-k2.5
-switchyard launch codex --model openai/gpt-5.2 \
+# One-command launchers — single-model passthrough via --model
+switchyard launch claude --model openai/gpt-4o-mini \
+    --base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"
+switchyard launch codex --model openai/gpt-4o-mini \
     --base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"
 
-# Built-in routing strategies (zero-config)
-switchyard launch codex --deterministic       # LLM-classifier strong/weak
-switchyard launch codex --plan-execute        # strong planner + weak executor
+# Launchers default to built-in LLM-classifier routing; tune the tiers:
+switchyard launch claude \
+    --weak-model openai/gpt-4o-mini --classifier-model openai/gpt-4o \
+    --classifier-min-confidence 0.6
 
-# Verification and status
-switchyard verify --model openai/openai/gpt-5.2
+# Verification and saved config
+switchyard verify --model openai/gpt-4o-mini
 switchyard configure --show
 ```
 

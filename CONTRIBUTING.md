@@ -10,7 +10,7 @@ Quick start:
 
 ```bash
 git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd switchyard
+cd Switchyard
 uv sync
 uvx pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg
 source .venv/bin/activate
