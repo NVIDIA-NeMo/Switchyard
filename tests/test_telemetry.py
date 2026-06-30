@@ -29,7 +29,7 @@ def _reset_telemetry_env(monkeypatch: pytest.MonkeyPatch) -> None:
     _get_version.cache_clear()
 
 
-def test_get_telemetry_headers_uses_switchyard_package_version(
+def test_get_telemetry_headers_uses_distribution_package_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_names: list[str] = []

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for version lookups after the package rename."""
+"""Regression tests for version lookups after the distribution rename."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _mock_version(name: str) -> str:
     raise PackageNotFoundError(name)
 
 
-def test_intake_payload_builder_version_uses_switchyard_package() -> None:
+def test_intake_payload_builder_version_uses_nemo_switchyard_package() -> None:
     from switchyard.lib.processors import intake_payload_builder
 
     intake_payload_builder._switchyard_version.cache_clear()

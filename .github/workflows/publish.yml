@@ -3,20 +3,74 @@ name: Build and publish release distributions
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      build_dev_artifact:
+        description: "Build one Linux x86_64 dev wheel artifact."
+        required: true
+        type: boolean
+        default: false
+      build_dev_matrix:
+        description: "Build the complete dev sdist and wheel matrix as artifacts."
+        required: true
+        type: boolean
+        default: false
+      dev_version:
+        description: "PEP 440 .dev version for the dev wheel."
+        required: true
+        type: string
+        default: "0.0.1.dev0"
 
 env:
+  DEV_PACKAGE_NAME: "nemo-switchyard"
   MATURIN_VERSION: "1.11.5"
-  # Delete this variable when public GitHub/PyPI publishing is officially enabled.
-  SWITCHYARD_GITHUB_PUBLISH_DISABLED: "1"
 
 permissions:
   contents: read
 
 jobs:
+  # OSS-style split:
+  # - Root vMAJOR.MINOR.PATCH tags run validation, build the complete matrix, publish to
+  #   PyPI, and create a GitHub Release.
+  # - Manual dev builds create artifacts only. They are useful for branch validation but never
+  #   publish to PyPI.
+  #
+  # This deliberately keeps release publishing on the public GitHub/PyPI path. Manual
+  # branch builds only produce artifacts; tag builds publish through PyPI Trusted Publishing.
+  validate-release-ref:
+    name: Validate release ref
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release tag
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(f"release tags must look like vMAJOR.MINOR.PATCH, got {tag!r}")
+
+          with open("pyproject.toml", "rb") as file:
+              pyproject = tomllib.load(file)
+          package_version = pyproject["project"]["version"]
+          expected = f"v{package_version}"
+          if tag != expected:
+              raise SystemExit(
+                  f"release tag {tag!r} does not match pyproject version {package_version!r}"
+              )
+          print(f"release tag {tag} matches pyproject version {package_version}")
+          PY
+
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
+    needs: [validate-release-ref]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -37,6 +91,8 @@ jobs:
 
   rust-release-checks:
     name: Release Rust checks
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
+    needs: [validate-release-ref]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,10 +103,11 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace -- --test-threads=1
 
   source-dist:
     name: Source distribution
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ubuntu-latest
     steps:
@@ -61,15 +118,43 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --locked
+      - name: Stamp dev source distribution metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix }}
+        run: |
+          python scripts/release/set_dev_wheel_version.py \
+            "${{ inputs.dev_version }}" \
+            --package-name "${DEV_PACKAGE_NAME}"
       - name: Build sdist
         run: uv run maturin sdist --out dist
+      - name: Verify sdist license files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+
+          archives = list(Path("dist").glob("*.tar.gz"))
+          if len(archives) != 1:
+              raise SystemExit(f"expected one sdist archive, found {archives}")
+
+          with tarfile.open(archives[0]) as archive:
+              archive_paths = set(archive.getnames())
+
+          expected_suffixes = {"LICENSE", "NOTICE"}
+          present_suffixes = {Path(path).name for path in archive_paths}
+          missing = sorted(expected_suffixes - present_suffixes)
+          if missing:
+              raise SystemExit(f"{archives[0]} is missing required license files: {missing}")
+
+          print(f"{archives[0]} contains {', '.join(sorted(expected_suffixes))}")
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: switchyard-sdist
+          name: nemo-switchyard-sdist
           path: dist/*
 
   wheels:
     name: Wheel (${{ matrix.label }})
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -82,7 +167,7 @@ jobs:
             manylinux_arch: x86_64
             smoke: true
           - label: linux-aarch64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             manylinux_arch: aarch64
             smoke: false
@@ -98,13 +183,24 @@ jobs:
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             smoke: true
+          - label: windows-arm64
+            os: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            smoke: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Stamp dev wheel metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix }}
+        shell: bash
+        run: |
+          python scripts/release/set_dev_wheel_version.py \
+            "${{ inputs.dev_version }}" \
+            --package-name "${DEV_PACKAGE_NAME}"
       - name: Setup QEMU for Linux cross builds
-        if: matrix.label == 'linux-aarch64'
+        if: runner.os == 'Linux' && runner.arch != 'ARM64' && matrix.manylinux_arch == 'aarch64'
         uses: docker/setup-qemu-action@v3
       - name: Install maturin
         if: runner.os != 'Linux'
@@ -151,7 +247,7 @@ jobs:
             --out dist \
             --target "${{ matrix.rust_target }}"
       - name: Smoke install native wheel on Python 3.12
-        if: matrix.smoke
+        if: ${{ matrix.smoke }}
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -174,11 +270,11 @@ jobs:
           print("rust extension", _switchyard_rust.__name__)
           PY
       - uses: actions/setup-python@v5
-        if: matrix.smoke
+        if: ${{ matrix.smoke }}
         with:
           python-version: "3.14"
       - name: Smoke install native wheel on Python 3.14
-        if: matrix.smoke
+        if: ${{ matrix.smoke }}
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -202,27 +298,133 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: switchyard-wheel-${{ matrix.label }}
+          name: nemo-switchyard-wheel-${{ matrix.label }}
           path: dist/*
+
+  dev-artifact-wheel:
+    name: Dev wheel artifact (linux-x86_64)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_artifact }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Stamp dev wheel metadata
+        shell: bash
+        run: |
+          python scripts/release/set_dev_wheel_version.py \
+            "${{ inputs.dev_version }}" \
+            --package-name "${DEV_PACKAGE_NAME}"
+      - name: Build manylinux x86_64 wheel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            -e MATURIN_VERSION="${MATURIN_VERSION}" \
+            -v "${GITHUB_WORKSPACE}:/io" \
+            -w /io \
+            "quay.io/pypa/manylinux2014_x86_64" \
+            /bin/bash -lc '
+              set -euxo pipefail
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              source "${HOME}/.cargo/env"
+              PYTHON=/opt/python/cp312-cp312/bin/python
+              "${PYTHON}" -m pip install --upgrade pip
+              "${PYTHON}" -m pip install "maturin==${MATURIN_VERSION}"
+              "${PYTHON}" -m maturin build \
+                --release \
+                --locked \
+                --compatibility pypi \
+                --out dist \
+                --interpreter "${PYTHON}"
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-wheel-linux-x86_64
+          path: dist/*.whl
+          retention-days: 1
+
+  verify-dev-artifact:
+    name: Verify dev wheel artifact
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_artifact }}
+    needs: [dev-artifact-wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dev-wheel-*
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify wheel metadata
+        env:
+          EXPECTED_NAME: ${{ env.DEV_PACKAGE_NAME }}
+          EXPECTED_VERSION_INPUT: ${{ inputs.dev_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_VERSION="$(python scripts/release/set_dev_wheel_version.py \
+            "${EXPECTED_VERSION_INPUT}" \
+            --print-version)"
+          EXPECTED_PREFIX="${EXPECTED_NAME//-/_}"
+          export EXPECTED_NAME EXPECTED_PREFIX EXPECTED_VERSION
+
+          python - <<'PY'
+          import email
+          import glob
+          import os
+          import zipfile
+
+          expected_name = os.environ["EXPECTED_NAME"]
+          expected_prefix = os.environ["EXPECTED_PREFIX"]
+          expected_version = os.environ["EXPECTED_VERSION"]
+          wheels = sorted(glob.glob("dist/*.whl"))
+          if not wheels:
+              raise SystemExit("no wheels downloaded")
+
+          for path in wheels:
+              filename = os.path.basename(path)
+              if not filename.startswith(f"{expected_prefix}-{expected_version}-"):
+                  raise SystemExit(
+                      f"{filename}: expected prefix {expected_prefix}-{expected_version}-"
+                  )
+              with zipfile.ZipFile(path) as wheel:
+                  metadata_name = next(
+                      name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+                  )
+                  metadata = email.message_from_bytes(wheel.read(metadata_name))
+              if metadata["Name"] != expected_name:
+                  raise SystemExit(f"{filename}: Name={metadata['Name']!r}")
+              if metadata["Version"] != expected_version:
+                  raise SystemExit(f"{filename}: Version={metadata['Version']!r}")
+              print(f"{filename}: {metadata['Name']} {metadata['Version']}")
+          PY
 
   list-distributions:
     name: List distributions
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: switchyard-*
+          pattern: nemo-switchyard-*
           merge-multiple: true
       - name: List distributions
         run: ls -l dist
 
   publish:
     name: Publish distributions
-    if: ${{ env.SWITCHYARD_GITHUB_PUBLISH_DISABLED == '' }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       contents: write
       id-token: write
@@ -230,21 +432,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: switchyard-*
+          pattern: nemo-switchyard-*
           merge-multiple: true
+      - uses: astral-sh/setup-uv@v6
       - name: List distributions
         run: ls -l dist
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
+        run: uv publish --trusted-publishing always dist/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          draft: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
