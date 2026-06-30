@@ -34,6 +34,10 @@ It builds the normal abi3 wheel matrix, stamps the wheel metadata as project
 `nemo-switchyard`, uploads wheels to an Artifactory direct-download path, and optionally submits
 those URLs to Kitmaker.
 
+The initial Artifactory probe intentionally skips full Python/Rust release checks and wheel smoke
+installs. It should only prove `.dev` metadata stamping, wheel builds, direct Artifactory upload,
+and generated wheel URLs.
+
 | Input | Default | Meaning |
 |---|---|---|
 | `version` | `0.0.1.dev0` | PEP 440 prerelease version for wheel metadata |

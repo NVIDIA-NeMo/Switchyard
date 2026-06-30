@@ -107,12 +107,15 @@ Use these inputs for the first Artifactory-only staging run:
 The workflow:
 
 1. Validates the `.dev` version and source SHA.
-2. Runs Python and Rust release checks.
-3. Builds the abi3 wheel matrix.
-4. Verifies every wheel has `Name: nemo-switchyard` and the requested version.
-5. Stages wheels to Artifactory.
-6. Uploads a `wheel-urls.json` artifact.
-7. Submits the Artifactory URLs to Kitmaker with `upload: false` only when dry-run is enabled.
+2. Builds the abi3 wheel matrix.
+3. Verifies every wheel has `Name: nemo-switchyard` and the requested version.
+4. Stages wheels to Artifactory.
+5. Uploads a `wheel-urls.json` artifact.
+6. Submits the Artifactory URLs to Kitmaker with `upload: false` only when dry-run is enabled.
+
+The first Artifactory-only staging run intentionally skips the full Python/Rust release checks and
+wheel smoke installs. It proves the staging URL, credentials, wheel metadata, and Artifactory upload
+path before adding Kitmaker or release validation back into the loop.
 
 For the first Kitmaker preflight after staging succeeds, rerun with `kitmaker_dry_run=true` and
 `kitmaker_upload=false`. To publish after review, rerun with `kitmaker_upload=true`. The publish

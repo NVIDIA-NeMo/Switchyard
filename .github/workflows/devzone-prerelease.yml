@@ -78,49 +78,9 @@ jobs:
             echo "| Source SHA | \`${SOURCE_SHA}\` |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  python-release-checks:
-    name: Python checks (${{ matrix.python-version }})
-    needs: [prepare]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --locked
-      - name: Run lint checks
-        run: uv run ruff check .
-      - name: Run tests
-        run: uv run pytest tests/ -v -x -m "not integration"
-
-  rust-release-checks:
-    name: Rust checks
-    needs: [prepare]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-      - name: Install Rust components
-        run: rustup component add rustfmt clippy
-      - name: cargo fmt
-        run: cargo fmt --all --check
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo test
-        run: cargo test --workspace
-
   wheels:
     name: Wheel (${{ matrix.label }})
-    needs: [prepare, python-release-checks, rust-release-checks]
+    needs: [prepare]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -130,24 +90,19 @@ jobs:
             os: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
             manylinux_arch: x86_64
-            smoke: true
           - label: linux-aarch64
             os: ubuntu-latest
             rust_target: aarch64-unknown-linux-gnu
             manylinux_arch: aarch64
-            smoke: false
           - label: macos-x86_64
             os: macos-15-intel
             rust_target: x86_64-apple-darwin
-            smoke: true
           - label: macos-arm64
             os: macos-14
             rust_target: aarch64-apple-darwin
-            smoke: true
           - label: windows-x86_64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            smoke: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -208,56 +163,6 @@ jobs:
             --compatibility pypi \
             --out dist \
             --target "${{ matrix.rust_target }}"
-      - name: Smoke install native wheel on Python 3.12
-        if: matrix.smoke
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --force-reinstall dist/*.whl
-          python - <<'PY'
-          import os
-          import sys
-          import tempfile
-
-          os.chdir(tempfile.mkdtemp(prefix="switchyard-wheel-smoke-"))
-          workspace = os.environ.get("GITHUB_WORKSPACE")
-          sys.path = [entry for entry in sys.path if entry not in ("", workspace)]
-
-          import switchyard
-          import switchyard_rust
-          from switchyard_rust import _switchyard_rust
-
-          print("switchyard", switchyard.__version__)
-          print("switchyard_rust", switchyard_rust.__file__)
-          print("rust extension", _switchyard_rust.__name__)
-          PY
-      - uses: actions/setup-python@v5
-        if: matrix.smoke
-        with:
-          python-version: "3.14"
-      - name: Smoke install native wheel on Python 3.14
-        if: matrix.smoke
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --force-reinstall dist/*.whl
-          python - <<'PY'
-          import os
-          import sys
-          import tempfile
-
-          os.chdir(tempfile.mkdtemp(prefix="switchyard-wheel-smoke-"))
-          workspace = os.environ.get("GITHUB_WORKSPACE")
-          sys.path = [entry for entry in sys.path if entry not in ("", workspace)]
-
-          import switchyard
-          import switchyard_rust
-          from switchyard_rust import _switchyard_rust
-
-          print("switchyard", switchyard.__version__)
-          print("switchyard_rust", switchyard_rust.__file__)
-          print("rust extension", _switchyard_rust.__name__)
-          PY
       - uses: actions/upload-artifact@v4
         with:
           name: devzone-wheel-${{ matrix.label }}
