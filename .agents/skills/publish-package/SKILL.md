@@ -1,6 +1,6 @@
 ---
 name: publish-package
-description: Build and publish Switchyard packages through the correct public or Devzone release channel. Use when asked to publish, release, ship, tag, cut a version, or prepare a Kitmaker/Artifactory wheel release.
+description: Build and publish Switchyard packages through the correct public or Devzone release channel. Use when asked to publish, release, ship, tag, cut a version, or prepare a Kitmaker wheel release.
 ---
 
 # Publish Switchyard
@@ -10,7 +10,7 @@ Switchyard has separate package release channels. Never mix their credentials or
 | Channel | Trigger | CI owner | Destination | Runbook |
 |---|---|---|---|---|
 | Public PyPI | Root `v*` tag or manual workflow | GitHub Actions `.github/workflows/publish.yml` | Public PyPI + GitHub Release after unblock | `.github/workflows/publish.yml` |
-| Devzone prerelease | Manual workflow with `.dev` version | GitHub Actions + Kitmaker Portal | `pypi.nvidia.com` | `docs/internal/kitmaker_prerelease_wheels.md` |
+| Devzone prerelease | Manual workflow with `.dev` version | GitHub Actions artifacts + Kitmaker Portal | `pypi.nvidia.com` | `docs/internal/kitmaker_prerelease_wheels.md` |
 
 For public-safe prerelease wheels on `pypi.nvidia.com`, read
 `docs/internal/kitmaker_prerelease_wheels.md`. Kitmaker owns Devzone uploads; do not direct-publish
@@ -20,46 +20,32 @@ with `uv publish`.
 
 - Do not create tags unless the user explicitly asks for a tag-based release.
 - Do not create GitHub Releases for Devzone prereleases.
-- Do not use `uv publish` for `pypi.nvidia.com`; submit staged wheel URLs to Kitmaker.
+- Do not use `uv publish` for `pypi.nvidia.com`; submit reviewed wheel artifacts through Kitmaker.
 - Keep `.dev` prereleases public-safe because `pypi.nvidia.com` is externally visible.
-- Stage `.dev` wheels to Artifactory first; treat Kitmaker `upload: false` as the first
-  publication preflight after staged URLs exist.
-- Require an explicit protected environment before any Kitmaker request uses `upload: true`.
+- Stage `.dev` wheels as short-lived GitHub Actions artifacts first; use Kitmaker only after the
+  artifact build has been inspected.
+- Require explicit release approval before any Kitmaker request uses `upload: true`.
 
 ## Devzone Prerelease Shape
 
 Use the workflow-dispatch path in `.github/workflows/devzone-prerelease.yml`.
 
 It builds the normal abi3 wheel matrix, stamps the wheel metadata as project
-`nemo-switchyard`, uploads wheels to an Artifactory direct-download path, and optionally submits
-those URLs to Kitmaker.
+`nemo-switchyard`, uploads wheels as GitHub Actions artifacts with one-day retention, then
+downloads those artifacts in a verifier job to prove the handoff works.
 
-The initial Artifactory probe intentionally skips full Python/Rust release checks and wheel smoke
-installs. It should only prove `.dev` metadata stamping, wheel builds, direct Artifactory upload,
-and generated wheel URLs.
-
-Artifactory upload jobs must run on NVIDIA self-hosted runners such as `prod-tester-amd-v1`;
-GitHub-hosted runners cannot resolve `artifactory.nvidia.com`.
+The initial artifact probe intentionally skips full Python/Rust release checks and wheel smoke
+installs. It should only prove `.dev` metadata stamping, wheel builds, GitHub artifact upload, and
+artifact download verification.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `version` | `0.0.1.dev0` | PEP 440 prerelease version for wheel metadata |
 | `target_sha` | current workflow SHA | Commit to build |
-| `kitmaker_dry_run` | `false` | Submit `upload: false` Kitmaker checks after Artifactory staging |
-| `kitmaker_upload` | `false` | Submit `upload: true` after environment approval |
-
 ## Required Secrets
 
-The Devzone workflow expects these GitHub secrets:
-
-| Secret | Purpose |
-|---|---|
-| `ARTIFACTORY_URL` | Direct Artifactory base URL for staged wheel files |
-| `ARTIFACTORY_USER` | Artifactory upload user |
-| `ARTIFACTORY_TOKEN` | Artifactory upload token |
-| `KITMAKER_API_TOKEN` | Kitmaker Portal API token |
-| `KITMAKER_PROJECT_ID` | Portal project id for `nemo-switchyard` |
-| `KITMAKER_PIC_EMAIL` | PIC email to include in Kitmaker release payload |
+The GitHub artifact build does not require release secrets. Kitmaker credentials are used only for a
+separate Portal/API submission after the short-lived wheel artifacts have been reviewed.
 
 ## Local Preflight For Release-Infrastructure Changes
 
@@ -85,8 +71,8 @@ make publish
 
 | Symptom | Fix |
 |---|---|
-| Artifactory upload gets 401/403 | Check `ARTIFACTORY_USER` and `ARTIFACTORY_TOKEN` |
-| Kitmaker cannot fetch the wheel | Use a direct `/artifactory/...` URL, not a PyPI simple/API URL |
+| GitHub artifact verifier cannot find wheels | Check the `devzone-wheel-*` artifact names and retention |
+| Kitmaker cannot fetch the wheel | GitHub artifacts are authenticated and short-lived; use the approved Kitmaker handoff for the downloaded wheel files |
 | Kitmaker rejects project name | Portal project name and wheel metadata must both be `nemo-switchyard` |
 | Install imports checkout version | Verify from a temporary directory outside the repo |
 
