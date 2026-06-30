@@ -18,7 +18,6 @@ from switchyard.lib.endpoints.responses_endpoint import ResponsesEndpoint
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
 from switchyard.lib.route_table import RouteTable
 from switchyard.lib.route_table_builders import build_passthrough_table
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.lib.switchyard import Switchyard
 from switchyard.server.switchyard_app import build_switchyard_app
 
@@ -198,7 +197,6 @@ def test_models_endpoint_lists_discovered_catalog_models() -> None:
                 base_url="https://primary.example/v1",
             ),
         ),
-        StatsAccumulator(),
         discovery_fn=discover,
     )
 
@@ -219,7 +217,7 @@ def test_models_endpoint_lists_discovered_catalog_models() -> None:
     ]
 
 
-def test_large_discovered_catalog_registers_stats_endpoint_once() -> None:
+def test_large_discovered_catalog_registers_metrics_endpoint_once() -> None:
     discovered_models = [f"catalog/model-{index}" for index in range(340)]
     table = build_passthrough_table(
         (
@@ -230,14 +228,15 @@ def test_large_discovered_catalog_registers_stats_endpoint_once() -> None:
                 base_url="https://primary.example/v1",
             ),
         ),
-        StatsAccumulator(),
         discovery_fn=lambda _base_url, _api_key: discovered_models,
     )
 
     app = build_switchyard_app(table)
 
-    for path in ("/v1/stats", "/v1/routing/stats", "/metrics"):
-        assert sum(route.path == path for route in app.routes) == 1
+    # The OTel /metrics scrape endpoint mounts exactly once regardless of how
+    # many models the catalog discovers. (/v1/stats was removed in the OTel
+    # migration.)
+    assert sum(route.path == "/metrics" for route in app.routes) == 1
     with TestClient(app, raise_server_exceptions=False) as client:
         assert client.get("/health").status_code == 200
 
@@ -255,7 +254,6 @@ def test_models_endpoint_returns_static_models_and_warning_when_discovery_fails(
                 base_url="https://primary.example/v1",
             ),
         ),
-        StatsAccumulator(),
         discovery_fn=discover,
     )
 

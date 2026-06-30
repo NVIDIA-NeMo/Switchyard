@@ -8,6 +8,8 @@ from __future__ import annotations
 import random
 from typing import Any
 
+from switchyard.lib import metrics, spans
+from switchyard.lib.proxy_context import CTX_ROUTER_NAME
 from switchyard_rust.components import RandomRoutingProcessorConfig
 
 
@@ -53,6 +55,22 @@ class RandomRoutingRequestProcessor:
         decision = self.select(request.model)
         request.set_model(decision["selected_model"])
         ctx.selected_target = decision["selected_target"]
+        ctx.selected_model = decision["selected_model"]
+        # Stamp tier + router so executor metrics and the routing-decision counter
+        # can label this request's coin-flip outcome.
+        ctx.metadata["_random_routing_tier"] = decision["tier"]
+        ctx.metadata[CTX_ROUTER_NAME] = "random"
+        with spans.route_decision_span(
+            router="random",
+            tier=decision["tier"],
+            selected_model=decision["selected_model"],
+            selected_target=decision["selected_target"],
+            original_model=decision["original_model"],
+            draw=decision["draw"],
+            strong_probability=decision["strong_probability"],
+        ):
+            pass
+        metrics.record_routing_decision(router="random", source="coin", tier=decision["tier"])
         return request
 
 __all__ = ["RandomRoutingRequestProcessor"]

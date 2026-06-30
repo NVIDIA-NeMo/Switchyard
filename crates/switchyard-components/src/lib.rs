@@ -10,6 +10,7 @@
 pub mod backends;
 pub mod dimension_collector;
 pub mod intake;
+pub mod otel_metrics;
 pub mod request_processors;
 pub mod response_processors;
 pub mod stats;
@@ -17,7 +18,7 @@ mod telemetry;
 
 pub use backends::{
     AnthropicNativeBackend, BackendSelection, BackendSelectionReason, LlmTargetBackend,
-    MultiLlmBackend, OpenAiNativeBackend, OpenAiPassthroughBackend, StatsLlmBackend,
+    MultiLlmBackend, OpenAiNativeBackend, OpenAiPassthroughBackend,
 };
 pub use dimension_collector::{
     extract_tool_signals, ContextSignals, DimensionScore, Keywords, ResponseFlag, ResponseSignals,
@@ -29,14 +30,10 @@ pub use intake::{
 };
 pub use request_processors::{
     DimensionCollector, IntakeRequestProcessor, RandomRoutingDecision, RandomRoutingEngine,
-    RandomRoutingProcessorConfig, RandomRoutingTier, StatsRequestProcessor,
+    RandomRoutingProcessorConfig, RandomRoutingTier,
 };
-pub use response_processors::{
-    IntakeResponseProcessor, ResponseSignalCollector, StatsResponseProcessor,
-};
+pub use response_processors::{IntakeResponseProcessor, ResponseSignalCollector};
 pub use stats::{
-    prefix_probe, tracking_enabled_from_env, ClassifierStatsSnapshot, CostBreakdown, CostEstimate,
-    LatencyHistogramSnapshot, ModelStatsSnapshot, PrefixProbe, StatsAccumulator,
-    StatsBackendLatency, StatsRequestStart, StatsRouteLabel, StatsSnapshot, TierStatsSnapshot,
-    TokenTotals, TokenUsage,
+    prefix_probe, tracking_enabled_from_env, CostBreakdown, PrefixProbe, StatsBackendLatency,
+    StatsRouteLabel, TokenUsage,
 };

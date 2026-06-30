@@ -10,12 +10,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PyTuple};
 use switchyard_components::{
     AnthropicNativeBackend, LlmTargetBackend, MultiLlmBackend, OpenAiNativeBackend,
-    OpenAiPassthroughBackend, StatsLlmBackend,
+    OpenAiPassthroughBackend,
 };
 use switchyard_core::{ChatRequestType, EndpointConfig, LlmBackend, LlmTargetId};
 
 use super::config::{endpoint_config_from_python, PyEndpointConfig, PyLlmTarget};
-use super::stats::PyStatsAccumulator;
 use crate::core_bindings::request::request_type_from_python;
 use crate::core_bindings::roles::PyLlmBackend;
 use crate::errors::py_core_error;
@@ -247,42 +246,6 @@ impl PyMultiLlmBackend {
     }
 }
 
-#[pyclass(
-    name = "StatsLlmBackend",
-    extends = PyLlmBackend,
-    skip_from_py_object
-)]
-#[derive(Clone, Debug)]
-pub(crate) struct PyStatsLlmBackend {
-    accumulator: PyStatsAccumulator,
-}
-
-#[pymethods]
-impl PyStatsLlmBackend {
-    #[new]
-    fn py_new(
-        inner: PyRef<'_, PyLlmBackend>,
-        accumulator: PyRef<'_, PyStatsAccumulator>,
-    ) -> PyResult<PyClassInitializer<Self>> {
-        let accumulator = PyStatsAccumulator::from_core(accumulator.clone_core());
-        let backend: Arc<dyn LlmBackend> = Arc::new(StatsLlmBackend::new(
-            native_backend(&inner, "StatsLlmBackend")?,
-            accumulator.clone_core(),
-        ));
-        Ok(PyClassInitializer::from(PyLlmBackend::from_native(backend))
-            .add_subclass(Self { accumulator }))
-    }
-
-    #[getter]
-    fn accumulator(&self) -> PyStatsAccumulator {
-        self.accumulator.clone()
-    }
-
-    fn __repr__(&self) -> &'static str {
-        "StatsLlmBackend()"
-    }
-}
-
 fn native_backend(backend: &PyRef<'_, PyLlmBackend>, owner: &str) -> PyResult<Arc<dyn LlmBackend>> {
     backend.native().ok_or_else(|| {
         PyTypeError::new_err(format!(
@@ -345,6 +308,5 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyOpenAiPassthroughBackend>()?;
     module.add_class::<PyAnthropicNativeBackend>()?;
     module.add_class::<PyMultiLlmBackend>()?;
-    module.add_class::<PyStatsLlmBackend>()?;
     Ok(())
 }

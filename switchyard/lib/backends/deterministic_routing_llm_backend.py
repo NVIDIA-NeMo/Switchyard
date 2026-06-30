@@ -14,7 +14,9 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from switchyard.lib import metrics, spans
 from switchyard.lib.backends.llm_target import LlmTarget
+from switchyard.lib.proxy_context import CTX_ROUTER_NAME
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.core import ChatRequestType
 
@@ -111,12 +113,19 @@ class DeterministicRoutingLLMBackend(LLMBackend):
         request.set_model(model)
         ctx.selected_target = tier
         ctx.selected_model = model
-        # Stamp the tier label so the inner StatsLlmBackend's
-        # ``selected_stats_tier`` returns ``"strong"`` / ``"weak"`` and
-        # the accumulator's snapshot populates the ``tiers`` block —
-        # without this, the launcher's LiveStatsFooter tier rows stay
-        # empty and ``GET /v1/routing/stats`` loses per-tier attribution.
+        # Stamp the tier label so ``selected_stats_tier`` returns
+        # ``"strong"`` / ``"weak"`` for the response-side OTel ``tier``
+        # attribution and the intake route label.
         set_stats_route_label(ctx, tier)
+        ctx.metadata[CTX_ROUTER_NAME] = "deterministic"
+        with spans.route_decision_span(
+            router="deterministic",
+            tier=tier,
+            selected_model=model,
+            selected_target=tier,
+        ):
+            pass
+        metrics.record_routing_decision(router="deterministic", source="classifier", tier=tier)
         return await self._backends[tier].call(ctx, request)
 
     def _pick_tier(self, ctx: ProxyContext, request: ChatRequest) -> str:  # noqa: ARG002

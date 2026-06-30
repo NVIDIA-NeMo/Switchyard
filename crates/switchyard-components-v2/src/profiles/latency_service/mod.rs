@@ -16,8 +16,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
+use switchyard_components::otel_metrics;
 use switchyard_components::stats::usage_from_body;
-use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, LlmTargetId, Result, SwitchyardError};
 
 pub use self::health::{EndpointHealth, EndpointHealthStatus};
@@ -25,7 +25,6 @@ use self::polling::{duration_from_secs, HealthPoller, HealthResponse};
 use self::selection::select_target;
 pub use self::selection::SelectedTarget;
 use crate::backend::{native_target_backend, TargetBackend};
-use crate::profile_stats_accumulator;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -97,7 +96,6 @@ impl ProfileConfig for LatencyServiceProfileConfig {
             poll_count: AtomicU64::new(0),
             initial_refresh_in_flight: AtomicBool::new(false),
             max_retries: self.max_retries,
-            stats: profile_stats_accumulator(),
         })
     }
 }
@@ -110,7 +108,6 @@ pub struct LatencyServiceProfile {
     poll_count: AtomicU64,
     initial_refresh_in_flight: AtomicBool,
     max_retries: usize,
-    stats: StatsAccumulator,
 }
 
 /// Processed latency-service request with the target selected for response processing.
@@ -324,21 +321,28 @@ impl Profile for LatencyServiceProfile {
             match selected_backend.call(&input.request).await {
                 Ok(response) => {
                     let backend_latency_ms = backend_started_at.elapsed().as_secs_f64() * 1000.0;
-                    self.stats.record_success(
-                        stats_model.clone(),
-                        Some(backend_latency_ms),
+                    otel_metrics::record_request(
+                        stats_model.as_str(),
                         None,
-                    )?;
+                        Some("latency_service"),
+                    );
                     let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
                     let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-                    let usage = response.body().map(usage_from_body).unwrap_or_default();
-                    self.stats.record_usage_after_success_attribution(
-                        stats_model,
-                        usage,
+                    otel_metrics::record_latencies(
+                        stats_model.as_str(),
+                        None,
+                        Some("latency_service"),
+                        Some(backend_latency_ms),
                         Some(total_latency_ms),
                         Some(routing_overhead_ms),
+                    );
+                    let usage = response.body().map(usage_from_body).unwrap_or_default();
+                    otel_metrics::record_usage_and_cost(
+                        stats_model.as_str(),
                         None,
-                    )?;
+                        "routed",
+                        usage,
+                    );
                     let processed = LatencyServiceProcessedRequest {
                         profile_input: input,
                         selected,
@@ -350,7 +354,7 @@ impl Profile for LatencyServiceProfile {
                     ));
                 }
                 Err(error) => {
-                    self.stats.record_error(stats_model, None)?;
+                    otel_metrics::record_error(stats_model.as_str(), None, None);
                     last_error = Some(error);
                 }
             }

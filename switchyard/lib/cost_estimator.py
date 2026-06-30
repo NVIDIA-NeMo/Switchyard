@@ -7,13 +7,13 @@ Pricing is per 1 million tokens, stored on :class:`ModelPriceData`
 so callers get attribute-level autocompletion and mypy-checked
 field names instead of stringly-typed dict lookups.
 
-Usage::
+Used by :mod:`switchyard.lib.otel_usage` to attach a per-call dollar cost to
+the ``switchyard.cost_usd`` metric. Usage::
 
-    from switchyard.lib.cost_estimator import estimate_cost, MODEL_PRICING
+    from switchyard.lib.cost_estimator import estimate_model_cost
 
-    stats = requests.get("http://localhost:4000/v1/routing/stats").json()
-    breakdown = estimate_cost(stats["models"])
-    print(f"Total: ${breakdown['total_cost']:.4f}")
+    costs = estimate_model_cost("openai/gpt-5.2", prompt_tokens=120, completion_tokens=30)
+    print(f"Total: ${costs['total_cost']:.4f}")
 
 See ``docs.anthropic.com/en/docs/about-claude/pricing`` for the
 up-to-date Anthropic multipliers that back the Claude entries below.

@@ -70,13 +70,12 @@ class DeterministicRoutingConfig(BaseModel):
             LLM calls when a target does not set its own
             ``timeout_secs``. ``None`` disables the default and leaves
             the provider client unbounded.
-        enable_stats: Wire stats request/response processors and per-
-            tier :class:`StatsLlmBackend` wrappers. Default ``True``.
+        enable_stats: Retained config key (accepted, no longer wires anything).
+            Per-request metrics are emitted via OpenTelemetry; see
+            :mod:`switchyard.lib.observability`. Default ``True``.
         preset: Optional name of the
             :class:`DeterministicRoutingPresets` preset builder that produced
-            this config — surfaced via ``GET /v1/routing/stats`` so
-            saved stats files self-document which shipping bundle was
-            used.
+            this config.
         affinity_warmup_turns: Initial conversation turns that remain
             non-sticky even when ``session_affinity`` is enabled. The first
             confident verdict after this warmup can pin the session.

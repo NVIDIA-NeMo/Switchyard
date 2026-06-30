@@ -3,7 +3,7 @@
 
 //! Typed context markers shared by stats components.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use switchyard_core::ProxyContext;
@@ -11,23 +11,11 @@ use switchyard_core::ProxyContext;
 use crate::backends::BackendSelection;
 use crate::request_processors::RandomRoutingDecision;
 
-/// Request start time captured by `StatsRequestProcessor`.
-#[derive(Clone, Copy, Debug)]
-pub struct StatsRequestStart(Instant);
-
-impl StatsRequestStart {
-    /// Captures the current monotonic clock instant.
-    pub fn now() -> Self {
-        Self(Instant::now())
-    }
-
-    /// Returns elapsed milliseconds since the captured start.
-    pub fn elapsed_ms(self) -> f64 {
-        self.0.elapsed().as_secs_f64() * 1000.0
-    }
-}
-
-/// Backend-call duration captured by `StatsLlmBackend`.
+/// Backend-call duration recorded on the proxy context.
+///
+/// Python backends that measure their own upstream latency write this slot via
+/// `ProxyContext.backend_call_latency_ms`; the response-side OTel usage recorder
+/// reads it to derive routing overhead.
 #[derive(Clone, Copy, Debug)]
 pub struct StatsBackendLatency(pub Duration);
 

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from openai import APIStatusError, AsyncStream
 
+from switchyard.lib import metrics, spans
 from switchyard.lib.backends.health_poller import (
     EndpointHealth,
     EndpointHealthStatus,
@@ -38,10 +39,8 @@ from switchyard.lib.chat_response.openai_responses import ResponsesApiStream
 from switchyard.lib.config.latency_service_backend_config import (
     LatencyServiceBackendConfig,
 )
-from switchyard.lib.endpoints import outcome_metrics, prometheus_emitter
 from switchyard.lib.endpoints.upstream_error_log import log_upstream_attempt_failure
 from switchyard.lib.llm_client import OpenAILLMClient
-from switchyard.lib.prometheus_exposition import format_number, render_labels
 from switchyard.lib.proxy_context import (
     CTX_CALLER_API_KEY,
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
@@ -51,8 +50,6 @@ from switchyard.lib.proxy_context import (
 )
 from switchyard.lib.roles import LLMBackend
 from switchyard.lib.session_affinity import SessionAffinity
-from switchyard.lib.stats_accumulator import StatsAccumulator
-from switchyard.lib.tracing import routing_span, set_tags
 from switchyard_rust.core import ChatRequest, ChatRequestType, ChatResponse, request_type_matches
 from switchyard_rust.translation import TranslationEngine
 
@@ -104,8 +101,6 @@ class LatencyServiceLLMBackend(LLMBackend):
     def __init__(
         self,
         config: LatencyServiceBackendConfig,
-        *,
-        stats_accumulator: StatsAccumulator | None = None,
     ) -> None:
         if not config.endpoints:
             raise ValueError("At least one endpoint must be configured")
@@ -117,12 +112,6 @@ class LatencyServiceLLMBackend(LLMBackend):
         self._request_types: dict[str, ChatRequestType] = {}
         self._health_cache: dict[str, EndpointHealth] = {}
         self._cache_lock = threading.Lock()
-        # When provided, the backend records success/error/latency directly
-        # into the accumulator on each attempt. This mirrors what the Rust
-        # ``StatsLlmBackend`` does for native backends; the Python-only
-        # latency-service backend can't be wrapped by it, so we record
-        # in-place to keep ``/metrics`` populated.
-        self._stats = stats_accumulator
 
         # Session affinity: pins a conversation to the endpoint that last served
         # it so its upstream prompt/KV cache stays warm. Shared coordinator with
@@ -187,11 +176,11 @@ class LatencyServiceLLMBackend(LLMBackend):
             poll_interval_s=config.poll_interval_s,
             poll_timeout_s=config.poll_timeout_s,
         )
-        # Publish LS verdicts + poll health on /metrics. Registering here
-        # (and unregistering in ``shutdown``) ties emitter lifetime to the
-        # backend's lifetime, so a re-built chain doesn't leak a closure
-        # over a torn-down cache.
-        prometheus_emitter.register(self._render_prometheus_lines)
+        # Publish LS verdicts + poll/affinity health on /metrics via OTel
+        # observable gauges/counters. Registering here (and clearing in
+        # ``shutdown``) ties the source's lifetime to the backend's, so a
+        # re-built chain doesn't leak a callable over a torn-down cache.
+        metrics.register_latency_service_source(self._metrics_snapshot)
         self._poller.start()
 
     @property
@@ -327,10 +316,11 @@ class LatencyServiceLLMBackend(LLMBackend):
     # -- Request processing (hot path — no Latency Service call) ------------
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
-        # This backend records its own per-attempt ``outcome_metrics`` counters
-        # below (one per failover attempt). Claim attempt accounting for this
-        # request so the endpoint-layer fallback in ``dispatch`` /
-        # ``handle_chain_exception`` does not double-count the retry fan-out.
+        # This backend records its own per-attempt upstream counters via
+        # ``metrics.record_upstream_attempt`` below (one per failover attempt).
+        # Claim attempt accounting for this request so the endpoint-layer
+        # fallback in ``dispatch`` / ``handle_chain_exception`` does not
+        # double-count the retry fan-out.
         ctx.metadata[CTX_UPSTREAM_ATTEMPTS_RECORDED] = True
         # Captured before the per-attempt ``body["model"]`` override so the span
         # records the model the client asked for, not the selected endpoint.
@@ -348,7 +338,7 @@ class LatencyServiceLLMBackend(LLMBackend):
 
         for attempt in range(1 + self._config.max_retries):
             # -- Route decision span: which endpoint, out of which candidates --
-            with routing_span("switchyard.route_decision") as route_span:
+            with spans.stage_span("switchyard.route_decision") as route_span:
                 decision = self._select_endpoint_decision(pinned_endpoint, frozenset(tried))
                 model_id = decision.selected
                 candidates = decision.candidates
@@ -367,14 +357,15 @@ class LatencyServiceLLMBackend(LLMBackend):
                         self._affinity_hits += 1
                     else:
                         self._affinity_misses += 1
-                set_tags(route_span, {
-                    "switchyard.model": incoming_model,
-                    "switchyard.candidate_endpoints": ",".join(candidates),
-                    "switchyard.selected_endpoint": model_id,
-                    "switchyard.was_fastest_selected": was_fastest,
-                    "switchyard.affinity_hit": decision.affinity,
-                    "switchyard.latency_service_poll_age_ms": self._poll_age_ms(),
-                })
+                if route_span is not None:
+                    spans._set_attrs(route_span, {
+                        "switchyard.model": incoming_model,
+                        "switchyard.candidate_endpoints": ",".join(candidates),
+                        "switchyard.selected_endpoint": model_id,
+                        "switchyard.was_fastest_selected": was_fastest,
+                        "switchyard.affinity_hit": decision.affinity,
+                        "switchyard.latency_service_poll_age_ms": self._poll_age_ms(),
+                    })
 
             upstream_model = self._upstream_models[model_id]
             target_request_type = self._request_types[model_id]
@@ -391,12 +382,13 @@ class LatencyServiceLLMBackend(LLMBackend):
             )
 
             # -- Upstream attempt span: outcome of this one upstream call -----
-            with routing_span("switchyard.upstream_attempt") as attempt_span:
-                set_tags(attempt_span, {
-                    "switchyard.model": incoming_model,
-                    "switchyard.selected_endpoint": model_id,
-                    "switchyard.retry_count": attempt,
-                })
+            with spans.stage_span("switchyard.upstream_attempt") as attempt_span:
+                if attempt_span is not None:
+                    spans._set_attrs(attempt_span, {
+                        "switchyard.model": incoming_model,
+                        "switchyard.selected_endpoint": model_id,
+                        "switchyard.retry_count": attempt,
+                    })
                 started_at = time.monotonic()
                 try:
                     result = await self._call_endpoint(
@@ -406,14 +398,13 @@ class LatencyServiceLLMBackend(LLMBackend):
                         body=body,
                     )
                 except APIStatusError as exc:
-                    set_tags(attempt_span, {
-                        "switchyard.outcome": outcome_metrics.classify(exc.status_code),
-                        "switchyard.upstream_status_code": exc.status_code,
-                        "switchyard.error_code": outcome_metrics.code_label(exc.status_code),
-                    })
-                    if self._stats is not None:
-                        await self._stats.record_error(model_id)
-                    outcome_metrics.record_upstream_attempt(exc.status_code)
+                    if attempt_span is not None:
+                        spans._set_attrs(attempt_span, {
+                            "switchyard.outcome": metrics.classify(exc.status_code),
+                            "switchyard.upstream_status_code": exc.status_code,
+                            "switchyard.error_code": metrics.code_label(exc.status_code),
+                        })
+                    _record_upstream_attempt(exc.status_code)
                     # Per-event structured log (Loki) — the timestamped complement
                     # to the aggregate outcome counter recorded above.
                     log_upstream_attempt_failure(
@@ -431,17 +422,16 @@ class LatencyServiceLLMBackend(LLMBackend):
                         break
                     continue
                 except Exception as exc:
-                    set_tags(attempt_span, {
-                        "switchyard.outcome": "retryable_error",
-                        "switchyard.error_code": outcome_metrics.NO_STATUS_CODE,
-                    })
-                    if self._stats is not None:
-                        await self._stats.record_error(model_id)
+                    if attempt_span is not None:
+                        spans._set_attrs(attempt_span, {
+                            "switchyard.outcome": "retryable_error",
+                            "switchyard.error_code": metrics.NO_STATUS_CODE,
+                        })
                     # Non-HTTP failure (network, pre-status timeout, SDK error) —
                     # treated as a retryable_error in the outcome ratio: those
                     # are exactly the faults a health-aware router should absorb
                     # by selecting a different endpoint on the next attempt.
-                    outcome_metrics.record_upstream_attempt(None)
+                    _record_upstream_attempt(None)
                     # status_code=None → logged as code="none" (no HTTP status).
                     log_upstream_attempt_failure(
                         model=model_id,
@@ -453,29 +443,26 @@ class LatencyServiceLLMBackend(LLMBackend):
                     continue
 
                 backend_latency_ms = (time.monotonic() - started_at) * 1000.0
-                set_tags(attempt_span, {
-                    "switchyard.outcome": "success",
-                    "switchyard.upstream_status_code": 200,
-                })
-                if self._stats is not None:
-                    await self._stats.record_success(model_id, backend_latency_ms)
-                outcome_metrics.record_upstream_attempt(200)
+                if attempt_span is not None:
+                    spans._set_attrs(attempt_span, {
+                        "switchyard.outcome": "success",
+                        "switchyard.upstream_status_code": 200,
+                    })
+                _record_upstream_attempt(200)
                 # A successful attempt after at least one failure is direct
                 # evidence the steering logic rescued this request. Counted
                 # once per client request, not per recovered retry.
                 if attempt > 0:
-                    outcome_metrics.record_retry_recovered()
+                    metrics.record_retry_recovered()
 
-                # ``ctx.selected_model`` is the cross-language hook the Rust
-                # ``StatsResponseProcessor`` reads to attribute token usage and
-                # end-to-end latency per endpoint. Without it, the response
-                # processor sees no ``BackendSelection`` and buckets every call
-                # to ``model="<unknown>"`` on /metrics.
+                # ``ctx.selected_model`` is the cross-language hook downstream
+                # token/cost attribution reads to bucket usage per endpoint.
+                # Without it, every call buckets to ``model="<unknown>"``.
                 ctx.selected_model = model_id
-                # ``backend_call_latency_ms`` lets the Rust ``StatsResponseProcessor``
-                # compute ``routing_overhead_ms = total_latency - backend_latency``
-                # for this Python-only backend, which can't be wrapped by the
-                # Rust ``StatsLlmBackend`` that normally publishes this signal.
+                # ``backend_call_latency_ms`` lets the chain executor record the
+                # upstream-only latency for this Python backend (which can't be
+                # measured by the executor's own backend-stage timer because the
+                # retry fan-out happens inside this method).
                 ctx.backend_call_latency_ms = backend_latency_ms
 
                 # Pin this conversation to the endpoint that served it so later
@@ -561,119 +548,51 @@ class LatencyServiceLLMBackend(LLMBackend):
         teardown hook (see ``server.py``'s lifespan context manager).
         Safe to call multiple times.
         """
-        prometheus_emitter.unregister(self._render_prometheus_lines)
+        metrics.register_latency_service_source(None)
         self._poller.stop()
 
     def is_ready(self) -> bool:
         """True once the background poller has completed at least one successful poll."""
         return self._poller.has_polled
 
-    # -- Metrics emitter ----------------------------------------------------
+    # -- Metrics source -----------------------------------------------------
 
-    def _render_prometheus_lines(self) -> list[str]:
-        """Emit per-endpoint health verdicts and poll-loop health gauges.
+    def _metrics_snapshot(self) -> dict[str, object]:
+        """Return a snapshot of poll/health/affinity state for the OTel gauges.
 
-        Snapshotted under ``self._cache_lock`` so a poll concurrent with a
-        scrape can't produce a mixed view across endpoints. Output is
-        Prometheus exposition lines without trailing newline — composed
-        by :mod:`switchyard.lib.endpoints.prometheus_emitter`.
+        Read by the observable-gauge/counter callbacks in
+        :mod:`switchyard.lib.metrics` on each scrape. Snapshotted under
+        ``self._cache_lock`` so a poll concurrent with a scrape can't produce a
+        mixed view across endpoints. Affinity counters are included only when
+        session affinity is enabled, keeping the surface clean for the common
+        per-turn-routing case.
         """
         with self._cache_lock:
-            snapshot = dict(self._health_cache)
+            health_snapshot = dict(self._health_cache)
 
-        lines: list[str] = []
-        lines.append(
-            "# HELP switchyard_endpoint_status "
-            "Latency-Service verdict per endpoint (1 = current status; "
-            "exactly one status row per model is non-zero)."
-        )
-        lines.append("# TYPE switchyard_endpoint_status gauge")
-        for model_id, health in sorted(snapshot.items()):
-            current = health.status.value
-            for status in EndpointHealthStatus:
-                value = 1 if status.value == current else 0
-                labels = render_labels({"model": model_id, "status": status.value})
-                lines.append(f"switchyard_endpoint_status{labels} {value}")
-
-        lines.append(
-            "# HELP switchyard_endpoint_last_latency_ms "
-            "Last latency sample (ms) reported by the Latency Service per endpoint. "
-            "Absent until the first poll publishes a non-null sample."
-        )
-        lines.append("# TYPE switchyard_endpoint_last_latency_ms gauge")
-        for model_id, health in sorted(snapshot.items()):
-            if health.last_latency_ms is None:
-                continue
-            labels = render_labels({"model": model_id})
-            lines.append(
-                f"switchyard_endpoint_last_latency_ms{labels} "
-                f"{format_number(health.last_latency_ms)}"
-            )
-
-        lines.append(
-            "# HELP switchyard_latency_service_poll_ok "
-            "1 when the last poll succeeded, 0 when it failed or has not yet run."
-        )
-        lines.append("# TYPE switchyard_latency_service_poll_ok gauge")
-        last_age = self._poller.seconds_since_last_success
-        # ``poll_ok`` reflects the latest poll attempt. Combined with
-        # ``poll_age_seconds``, scrapers can tell "never polled" (no age line)
-        # from "polled, but the latest attempt failed" (age present, ok=0).
-        poll_ok = 1 if self._poller.last_poll_ok else 0
-        lines.append(f"switchyard_latency_service_poll_ok {poll_ok}")
-
-        lines.append(
-            "# HELP switchyard_latency_service_poll_age_seconds "
-            "Monotonic seconds since the last successful poll. Absent before the "
-            "first success."
-        )
-        lines.append("# TYPE switchyard_latency_service_poll_age_seconds gauge")
-        if last_age is not None:
-            lines.append(
-                "switchyard_latency_service_poll_age_seconds "
-                f"{format_number(last_age)}"
-            )
-
-        lines.append(
-            "# HELP switchyard_latency_service_polls_total "
-            "Total successful health polls since the poller started."
-        )
-        lines.append("# TYPE switchyard_latency_service_polls_total counter")
-        lines.append(
-            f"switchyard_latency_service_polls_total {self._poller.poll_successes}"
-        )
-
-        lines.append(
-            "# HELP switchyard_latency_service_poll_failures_total "
-            "Total failed health polls; each failure resets every endpoint to "
-            "UNKNOWN."
-        )
-        lines.append("# TYPE switchyard_latency_service_poll_failures_total counter")
-        lines.append(
-            "switchyard_latency_service_poll_failures_total "
-            f"{self._poller.poll_failures}"
-        )
-
-        # Warm-reuse counters — only meaningful (and only emitted) when session
-        # affinity is enabled, so the metric surface stays clean for the common
-        # per-turn-routing case. Reuse rate = hits / (hits + misses).
+        snapshot: dict[str, object] = {
+            "endpoint_status": {
+                model_id: health.status.value
+                for model_id, health in health_snapshot.items()
+            },
+            "endpoint_last_latency_ms": {
+                model_id: health.last_latency_ms
+                for model_id, health in health_snapshot.items()
+            },
+            # ``poll_ok`` reflects the latest poll attempt; combined with
+            # ``poll_age_seconds`` scrapers can tell "never polled" (no age) from
+            # "polled, latest attempt failed" (age present, ok=0).
+            "poll_ok": self._poller.last_poll_ok,
+            "polls": self._poller.poll_successes,
+            "poll_failures": self._poller.poll_failures,
+        }
+        age = self._poller.seconds_since_last_success
+        if age is not None:
+            snapshot["poll_age_seconds"] = age
         if self._config.session_affinity:
-            lines.append(
-                "# HELP switchyard_affinity_hits_total "
-                "Conversation turns served by an existing session-affinity pin "
-                "(warm endpoint reuse)."
-            )
-            lines.append("# TYPE switchyard_affinity_hits_total counter")
-            lines.append(f"switchyard_affinity_hits_total {self._affinity_hits}")
-
-            lines.append(
-                "# HELP switchyard_affinity_misses_total "
-                "First or unpinnable turns routed by the latency-aware picker "
-                "while session affinity was enabled."
-            )
-            lines.append("# TYPE switchyard_affinity_misses_total counter")
-            lines.append(f"switchyard_affinity_misses_total {self._affinity_misses}")
-        return lines
+            snapshot["affinity_hits"] = self._affinity_hits
+            snapshot["affinity_misses"] = self._affinity_misses
+        return snapshot
 
 
 def _latency_endpoint_request_type(value: str) -> ChatRequestType:
@@ -695,13 +614,23 @@ def _chat_response_for_request_type(
     return ChatResponse.openai_completion(result)
 
 
+def _record_upstream_attempt(status_code: int | None) -> None:
+    """Record one upstream attempt outcome via OTel.
+
+    ``status_code=None`` (non-HTTP failure) is bucketed as ``retryable_error``
+    — exactly the fault a health-aware router should absorb by failing over.
+    """
+    outcome = "retryable_error" if status_code is None else metrics.classify(status_code)
+    metrics.record_upstream_attempt(outcome=outcome, code=metrics.code_label(status_code))
+
+
 def _is_retryable_status(status_code: int) -> bool:
     """Whether an upstream status warrants failing over to a different endpoint.
 
     Retries 5xx + 408 + 429 (transient/capacity/server-side); other 4xx are the
     client's payload, which every replica rejects identically, so fail fast.
-    Deliberately broader than ``outcome_metrics.RETRYABLE_STATUSES`` (metrics
-    bucketing) — e.g. 502/503 must fail over but aren't metrics-retryable.
+    Deliberately broader than ``metrics.RETRYABLE_STATUSES`` (metrics bucketing)
+    — e.g. 502/503 must fail over but aren't metrics-retryable.
     """
     return status_code >= 500 or status_code in (408, 429)
 

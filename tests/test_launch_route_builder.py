@@ -15,7 +15,6 @@ from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
 )
 from switchyard.lib.route_table_builders import build_passthrough_table
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 
 def _connectivity() -> LaunchTierConnectivity:
@@ -69,7 +68,6 @@ def test_passthrough_table_dedupes_endpoints_and_registers_discovered_models() -
 
     table = build_passthrough_table(
         (config.strong, config.weak),
-        StatsAccumulator(),
         discovery_fn=fake_discover_models,
     )
 
@@ -107,7 +105,6 @@ def test_passthrough_table_skips_discovery_when_fn_is_none() -> None:
 
     table = build_passthrough_table(
         (config.strong, config.weak),
-        StatsAccumulator(),
         # discovery_fn=None (default) — no discovery runs.
     )
 

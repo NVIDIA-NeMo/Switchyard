@@ -9,10 +9,8 @@ mod context_overflow;
 pub mod multi;
 pub mod openai;
 mod selection;
-pub mod stats;
 
 pub use anthropic::AnthropicNativeBackend;
 pub use multi::{LlmTargetBackend, MultiLlmBackend};
 pub use openai::{OpenAiNativeBackend, OpenAiPassthroughBackend};
 pub use selection::{BackendSelection, BackendSelectionReason};
-pub use stats::StatsLlmBackend;

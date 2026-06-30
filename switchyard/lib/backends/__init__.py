@@ -19,9 +19,6 @@ from switchyard.lib.backends.health_poller import (
 from switchyard.lib.backends.latency_service_llm_backend import (
     LatencyServiceLLMBackend,
 )
-from switchyard.lib.backends.stats_llm_backend import (
-    StatsLlmBackend,
-)
 from switchyard_rust.components import (
     AnthropicNativeBackend,
     OpenAiNativeBackend,
@@ -38,5 +35,4 @@ __all__ = [
     "LatencyServiceLLMBackend",
     "OpenAiPassthroughBackend",
     "OpenAiNativeBackend",
-    "StatsLlmBackend",
 ]

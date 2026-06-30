@@ -1234,14 +1234,17 @@ class TestCascadeRouteType:
         assert classifier._api_key == "sk-default"
         assert classifier._recent_turn_window == 3
 
-    async def test_classifier_usage_records_into_route_bundle_stats(self) -> None:
-        """Route-bundle cascade classifiers write usage into shared stats."""
+    async def test_classifier_usage_records_via_otel(self) -> None:
+        """Route-bundle cascade classifiers record usage via OTel (tier=classifier)."""
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
         from switchyard.cli.route_bundle import build_route_bundle_table
+        from switchyard.lib import metrics
         from switchyard.lib.processors.cascade_request_processor import (
             CascadeRequestProcessor,
         )
         from switchyard.lib.profiles.chain import ComponentChainProfile
-        from switchyard.lib.stats_accumulator import StatsAccumulator
         from switchyard_rust.profiles import ProfileInput
 
         class _ClassifierClient:
@@ -1267,7 +1270,10 @@ class TestCascadeRouteType:
                     ),
                 )
 
-        stats = StatsAccumulator()
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader])
+        metrics.reset_for_test(provider.get_meter("switchyard"))
+
         bundle = self._bundle()
         bundle["routes"]["myrouter/cascade"]["confidence_threshold"] = 1.0
         bundle["routes"]["myrouter/cascade"]["classifier"] = {
@@ -1275,7 +1281,7 @@ class TestCascadeRouteType:
             "api_key": "sk-classifier",
             "base_url": "https://classifier.invalid/v1",
         }
-        table = build_route_bundle_table(bundle, stats_accumulator=stats)
+        table = build_route_bundle_table(bundle)
         switchyard = table.lookup_switchyard("myrouter/cascade")
         assert isinstance(switchyard._profile, ComponentChainProfile)
         processor = next(
@@ -1293,15 +1299,19 @@ class TestCascadeRouteType:
             "max_tokens": 8,
         })))
 
-        snapshot = await stats.snapshot()
         assert client.calls == 1
         assert processed.selected_target == "strong"
-        assert snapshot["classifier"]["total_requests"] == 1
-        assert snapshot["classifier"]["models"]["classifier/model"]["calls"] == 1
-        assert snapshot["classifier"]["models"]["classifier/model"]["prompt_tokens"] == 13
-        assert snapshot["classifier"]["models"]["classifier/model"]["completion_tokens"] == 5
-        assert snapshot["classifier"]["models"]["classifier/model"]["cached_tokens"] == 2
-        assert snapshot["routing_decisions"]["cascade"]["llm-classifier"] == 1
+        counters: dict[str, int] = {}
+        for rm in reader.get_metrics_data().resource_metrics:
+            for sm in rm.scope_metrics:
+                for metric in sm.metrics:
+                    for point in metric.data.data_points:
+                        if point.attributes.get("tier") == "classifier":
+                            counters[metric.name] = counters.get(metric.name, 0) + point.value
+        assert counters["switchyard.prompt_tokens"] == 13
+        assert counters["switchyard.completion_tokens"] == 5
+        assert counters["switchyard.cached_tokens"] == 2
+        metrics.reset_for_test(None)
 
 
 class TestPlanExecuteRouteType:
@@ -1371,21 +1381,6 @@ class TestPlanExecuteRouteType:
         bundle["routes"]["myrouter/plan-execute"]["executor"] = "nvidia/nvidia/nemotron-3-super-v3"
         table = build_route_bundle_table(bundle)
         assert "myrouter/plan-execute" in table.registered_models()
-
-    def test_enable_stats_false_disables_stats_processors(self):
-        from switchyard.lib.processors.stats_request_processor import (
-            StatsRequestProcessor,
-        )
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        bundle = self._bundle()
-        bundle["routes"]["myrouter/plan-execute"]["enable_stats"] = False
-        table = build_route_bundle_table(bundle)
-        components = list(table.iter_components())
-        assert not any(isinstance(c, StatsRequestProcessor) for c in components)
-        assert not any(isinstance(c, StatsResponseProcessor) for c in components)
 
 
 def test_cascade_route_hydrates_tier_catalogs(

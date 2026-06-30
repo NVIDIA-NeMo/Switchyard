@@ -11,9 +11,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use switchyard_components::otel_metrics;
 use switchyard_components_v2::{
-    profile_stats_accumulator, LatencyServiceProfileConfig, Profile, ProfileConfig, ProfileInput,
-    RequestMetadata,
+    LatencyServiceProfileConfig, Profile, ProfileConfig, ProfileInput, RequestMetadata,
 };
 use switchyard_core::{
     BackendFormat, ChatRequest, ChatResponse, EndpointConfig, LlmTarget, LlmTargetId, ModelId,
@@ -306,7 +306,6 @@ fn profile_config_build_uses_existing_native_backend_stack() -> Result<()> {
 
 #[tokio::test]
 async fn profile_run_polls_and_routes_native_openai_call_to_healthy_target() -> Result<()> {
-    profile_stats_accumulator().reset()?;
     let mut server = MockLatencyOpenAiServer::spawn(2)?;
     let fast = openai_target(
         "fast",
@@ -379,14 +378,14 @@ async fn profile_run_polls_and_routes_native_openai_call_to_healthy_target() -> 
         Some("upstream-fast-native")
     );
 
-    let stats = profile_stats_accumulator().snapshot()?;
-    let model = stats
-        .models
-        .get("upstream-fast-native")
-        .ok_or_else(|| SwitchyardError::Other("global v2 stats should include model".into()))?;
-    assert!(model.calls >= 1);
-    assert!(model.prompt_tokens >= 2);
-    assert!(model.completion_tokens >= 1);
+    // The process meter is a singleton; assert the metric surface mentions the
+    // routed model and the latency_service router rather than exact counts.
+    let metrics = otel_metrics::render_prometheus().map_err(SwitchyardError::Other)?;
+    assert!(
+        metrics.contains("upstream-fast-native"),
+        "expected metrics for the routed model in:\n{metrics}"
+    );
+    assert!(metrics.contains("router=\"latency_service\""));
     Ok(())
 }
 

@@ -12,7 +12,6 @@ mod backend;
 mod config;
 mod profile;
 pub mod profiles;
-mod stats;
 
 pub use config::{
     parse_profile_config_path, parse_profile_config_str, parse_profile_config_str_with_env_lookup,
@@ -30,7 +29,6 @@ pub use profiles::{
     PassthroughProfile, PassthroughProfileConfig, RandomRoutingProcessedRequest,
     RandomRoutingProfile, RandomRoutingProfileConfig, SelectedTarget,
 };
-pub use stats::profile_stats_accumulator;
 pub use switchyard_components_v2_macros::profile_config;
 
 /// Implementation details used by generated profile-config code.

@@ -35,7 +35,6 @@ import httpx
 import pytest
 
 from switchyard import PassthroughProfileConfig, ProfileSwitchyard
-from switchyard.lib.endpoints import outcome_metrics
 from switchyard.server.switchyard_app import build_switchyard_app
 
 # ---------------------------------------------------------------------------
@@ -399,24 +398,60 @@ class TestPassthroughProfileBackendErrors:
 
 
 class TestPassthroughProfileUpstreamAttemptCounters:
-    """`switchyard_upstream_attempts_total` must populate for non-latency chains.
+    """`switchyard.upstream_attempts` must populate for non-latency chains.
 
     The endpoint-layer fallback records one upstream attempt per request for
     backends (here the Rust ``OpenAiPassthroughBackend``) that issue exactly
-    one upstream call and have no Python retry loop — they cannot, by
-    themselves, reach the Python-only ``outcome_metrics`` counters.
+    one upstream call and have no Python retry loop. The counters are emitted
+    via OpenTelemetry; the fixture binds an in-memory meter to read them.
     """
 
     @pytest.fixture(autouse=True)
-    def _reset_counters(self) -> Iterator[None]:
-        outcome_metrics._reset_for_tests()
-        yield
-        outcome_metrics._reset_for_tests()
+    def _meter(self) -> Iterator[Any]:
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+        from switchyard.lib import metrics
+
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader])
+        metrics.reset_for_test(provider.get_meter("switchyard"))
+        try:
+            yield reader
+        finally:
+            metrics.reset_for_test(None)
+
+    @staticmethod
+    def _attempt_count(reader: Any, *, outcome: str, code: str) -> int:
+        """Sum of ``switchyard.upstream_attempts`` points matching outcome/code."""
+        total = 0
+        data = reader.get_metrics_data()
+        for rm in data.resource_metrics:
+            for sm in rm.scope_metrics:
+                for metric in sm.metrics:
+                    if metric.name != "switchyard.upstream_attempts":
+                        continue
+                    for point in metric.data.data_points:
+                        attrs = point.attributes
+                        if attrs.get("outcome") == outcome and attrs.get("code") == code:
+                            total += point.value
+        return total
+
+    @staticmethod
+    def _retry_recovered(reader: Any) -> int:
+        data = reader.get_metrics_data()
+        for rm in data.resource_metrics:
+            for sm in rm.scope_metrics:
+                for metric in sm.metrics:
+                    if metric.name == "switchyard.retry_recovered":
+                        return sum(p.value for p in metric.data.data_points)
+        return 0
 
     async def test_success_records_one_200_attempt(
         self,
         passthrough_client: httpx.AsyncClient,
         passthrough_upstream: _OpenAICompatStub,
+        _meter: Any,
     ) -> None:
         passthrough_upstream.respond_json(200, _completion_payload(content="ok"))
 
@@ -429,14 +464,14 @@ class TestPassthroughProfileUpstreamAttemptCounters:
         )
         assert resp.status_code == 200, resp.text
 
-        out = "\n".join(outcome_metrics.render_lines())
-        assert 'switchyard_upstream_attempts_total{outcome="success",code="200"} 1' in out
-        assert "switchyard_router_retry_recovered_total 0" in out
+        assert self._attempt_count(_meter, outcome="success", code="200") == 1
+        assert self._retry_recovered(_meter) == 0
 
     async def test_upstream_500_records_one_retryable_attempt(
         self,
         passthrough_client: httpx.AsyncClient,
         passthrough_upstream: _OpenAICompatStub,
+        _meter: Any,
     ) -> None:
         passthrough_upstream.respond_json(500, {"error": {"message": "boom"}})
 
@@ -449,17 +484,14 @@ class TestPassthroughProfileUpstreamAttemptCounters:
         )
         assert resp.status_code >= 400
 
-        out = "\n".join(outcome_metrics.render_lines())
-        assert (
-            'switchyard_upstream_attempts_total{outcome="retryable_error",code="500"} 1'
-            in out
-        )
-        assert 'switchyard_upstream_attempts_total{outcome="success",code="200"} 0' in out
+        assert self._attempt_count(_meter, outcome="retryable_error", code="500") == 1
+        assert self._attempt_count(_meter, outcome="success", code="200") == 0
 
     async def test_upstream_401_records_one_other_error_attempt(
         self,
         passthrough_client: httpx.AsyncClient,
         passthrough_upstream: _OpenAICompatStub,
+        _meter: Any,
     ) -> None:
         passthrough_upstream.respond_json(
             401,
@@ -475,10 +507,6 @@ class TestPassthroughProfileUpstreamAttemptCounters:
         )
         assert resp.status_code >= 400
 
-        out = "\n".join(outcome_metrics.render_lines())
-        assert (
-            'switchyard_upstream_attempts_total{outcome="other_error",code="401"} 1'
-            in out
-        )
+        assert self._attempt_count(_meter, outcome="other_error", code="401") == 1
         # A 4xx client error is not retryable and never recovers.
-        assert "switchyard_router_retry_recovered_total 0" in out
+        assert self._retry_recovered(_meter) == 0

@@ -240,7 +240,6 @@ fn profile_with_backend_modes(
         poll_count: AtomicU64::new(0),
         initial_refresh_in_flight: AtomicBool::new(false),
         max_retries,
-        stats: StatsAccumulator::new(),
     };
     Ok((profile, calls))
 }
@@ -386,14 +385,15 @@ async fn healthy_endpoint_serves_request_and_records_stats() -> Result<()> {
         _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
     }
 
-    let snapshot = profile.stats.snapshot()?;
-    let model = snapshot
-        .models
-        .get("upstream-fast")
-        .ok_or_else(|| SwitchyardError::Other("selected model stats should exist".into()))?;
-    assert_eq!(model.calls, 1);
-    assert_eq!(snapshot.total_tokens.prompt, 13);
-    assert_eq!(snapshot.total_tokens.completion, 5);
+    // The process meter is a singleton; assert the metric surface mentions the
+    // selected model rather than exact counts another test may have moved.
+    let metrics =
+        switchyard_components::otel_metrics::render_prometheus().map_err(SwitchyardError::Other)?;
+    assert!(
+        metrics.contains("upstream-fast"),
+        "expected metrics for the selected model in:\n{metrics}"
+    );
+    assert!(metrics.contains("router=\"latency_service\""));
     Ok(())
 }
 

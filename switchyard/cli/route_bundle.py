@@ -25,7 +25,7 @@ argparse-driven and YAML-driven assembly share one builder.
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast, overload
@@ -56,7 +56,6 @@ from switchyard.lib.route_table_builders import (
     build_random_routing_table,
     build_tier_passthrough_switchyard,
 )
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 
 def _default_discovery_fn(base_url: str, api_key: str) -> list[str]:
@@ -94,11 +93,6 @@ class RouteBundle:
     inbound model id (the YAML route key) and each value is a ``dict``-shaped
     route description matching the YAML schema.
 
-    ``stats_accumulator`` lets callers thread their own accumulator into the
-    builder so a launcher that's merging a YAML table on top of its own
-    can share the same instance with downstream readers (live stats footer,
-    ``/v1/routing/stats``). ``None`` makes the builder create a fresh one.
-
     Per-chain processor injection (Intake telemetry, custom hooks) is
     call-site runtime state, not bundle data. ``serve`` and launchers may pass
     processors through the table builder, but route YAML never declares
@@ -107,7 +101,6 @@ class RouteBundle:
 
     defaults: Mapping[str, Any] = field(default_factory=dict)
     routes: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    stats_accumulator: StatsAccumulator | None = None
 
 
 def llm_target_to_route_dict(target: LlmTarget) -> dict[str, Any]:
@@ -409,17 +402,10 @@ def routing_profile_model_ids(
 
 def load_route_bundle_table(
     path: str | Path,
-    stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> RouteTable:
     """Load *path* and return a table keyed by route model id.
-
-    Pass ``stats_accumulator`` when a caller (typically a launcher) is merging
-    this YAML table on top of one it already built, so YAML-declared chains
-    record into the same accumulator surfaced at ``/v1/routing/stats`` and the
-    live stats footer. ``None`` (default) creates a fresh accumulator — what
-    standalone ``switchyard serve`` callers want.
 
     ``pre_routing_request_processors`` / ``extra_response_processors`` let
     callers attach process-level components such as Intake telemetry to every
@@ -427,7 +413,6 @@ def load_route_bundle_table(
     """
     return build_route_bundle_table(
         parse_routing_profiles_file(path),
-        stats_accumulator=stats_accumulator,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
     )
@@ -435,7 +420,6 @@ def load_route_bundle_table(
 
 def build_route_bundle_table(
     raw: object,
-    stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> RouteTable:
@@ -443,12 +427,9 @@ def build_route_bundle_table(
 
     Thin entrypoint that the YAML loader and any other dict-driven caller
     uses. Parses + env-expands + validates the dict into a :class:`RouteBundle`,
-    then delegates to :func:`build_table_from_bundle`. Optional
-    ``stats_accumulator`` overrides the parsed bundle's default ``None``.
+    then delegates to :func:`build_table_from_bundle`.
     """
     bundle = _parse_route_bundle_dict(raw)
-    if stats_accumulator is not None:
-        bundle = replace(bundle, stats_accumulator=stats_accumulator)
     return build_table_from_bundle(
         bundle,
         pre_routing_request_processors=pre_routing_request_processors,
@@ -487,17 +468,12 @@ def build_table_from_bundle(
 
     Single assembly path for both the YAML loader and the launchers.
 
-    If ``bundle.stats_accumulator`` is set, the same accumulator is shared
-    across every produced chain so the live stats footer and
-    ``/v1/routing/stats`` see consistent numbers.
-
     ``pre_routing_request_processors`` / ``extra_response_processors`` are
     call-time kwargs (not bundle data). ``serve`` and launchers pass
     process-level processors such as Intake here when CLI/env config enables
     them; YAML routes never declare those processors themselves.
     """
     table = RouteTable()
-    stats = bundle.stats_accumulator or StatsAccumulator()
     for model_id, route_raw in bundle.routes.items():
         if not isinstance(model_id, str) or not model_id:
             raise RouteBundleConfigError("routes keys must be non-empty strings")
@@ -516,7 +492,7 @@ def build_table_from_bundle(
         if route_type == "random_routing":
             _merge_random_routing_route(
                 table, model_id, route,
-                target_defaults=route_defaults, stats=stats,
+                target_defaults=route_defaults,
                 pre_routing_request_processors=pre_routing_request_processors,
                 extra_response_processors=extra_response_processors,
             )
@@ -532,7 +508,6 @@ def build_table_from_bundle(
                 route,
                 route_type=route_type,
                 target_defaults=route_defaults,
-                stats=stats,
                 pre_routing_request_processors=pre_routing_request_processors,
                 extra_response_processors=extra_response_processors,
             )
@@ -549,7 +524,6 @@ def build_table_from_bundle(
                 route,
                 route_type=route_type,
                 target_defaults=route_defaults,
-                stats=stats,
                 pre_routing_request_processors=pre_routing_request_processors,
                 extra_response_processors=extra_response_processors,
             )
@@ -560,7 +534,6 @@ def build_table_from_bundle(
             route,
             route_type=route_type,
             target_defaults=route_defaults,
-            stats=stats,
             pre_routing_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         )
@@ -577,7 +550,6 @@ def _merge_random_routing_route(
     model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> None:
@@ -602,10 +574,8 @@ def _merge_random_routing_route(
     )
     sub_table = build_random_routing_table(
         config=random_config,
-        stats=stats,
         random_routing_switchyard=build_random_routing_switchyard(
             random_config,
-            stats,
             pre_routing_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         ),
@@ -635,7 +605,6 @@ def _merge_discovered_single_tier(
     route: Mapping[str, object],
     route_type: str,
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> None:
@@ -654,8 +623,6 @@ def _merge_discovered_single_tier(
     tier = _passthrough_target(model_id, route, target_defaults, route_type)
     sub_table = build_passthrough_table(
         (tier,),
-        stats,
-        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
         discovery_fn=_default_discovery_fn,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
@@ -699,7 +666,6 @@ def _merge_multi_target_discovery(
     *,
     route_type: str,
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> None:
@@ -724,7 +690,6 @@ def _merge_multi_target_discovery(
         route,
         route_type=route_type,
         target_defaults=target_defaults,
-        stats=stats,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
     )
@@ -742,8 +707,6 @@ def _merge_multi_target_discovery(
     )
     sub_table = build_passthrough_table(
         (strong, weak),
-        stats,
-        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
         discovery_fn=_default_discovery_fn,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
@@ -764,7 +727,6 @@ def _build_switchyard_for_route(
     route: Mapping[str, object],
     route_type: str,
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -776,8 +738,6 @@ def _build_switchyard_for_route(
         target = _passthrough_target(model_id, route, target_defaults, route_type)
         return build_tier_passthrough_switchyard(
             target,
-            stats,
-            enable_stats=_optional_bool(route.get("enable_stats"), default=True),
             extra_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         )
@@ -790,8 +750,6 @@ def _build_switchyard_for_route(
             RouteLLMProfileConfig.from_config(routellm_config)
             .build()
             .with_runtime_components(
-                stats_accumulator=stats,
-                enable_stats=routellm_config.enable_stats,
                 pre_request_processors=pre_routing_request_processors,
                 response_processors=extra_response_processors,
             )
@@ -801,7 +759,6 @@ def _build_switchyard_for_route(
         return _latency_service_switchyard(
             route,
             target_defaults,
-            stats=stats,
             extra_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         )
@@ -813,7 +770,6 @@ def _build_switchyard_for_route(
             NoopProfileConfig()
             .build()
             .with_runtime_components(
-                stats_accumulator=stats,
                 pre_request_processors=pre_routing_request_processors,
                 response_processors=extra_response_processors,
             )
@@ -824,7 +780,6 @@ def _build_switchyard_for_route(
             model_id,
             route,
             target_defaults=target_defaults,
-            stats=stats,
             pre_routing_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         )
@@ -834,7 +789,6 @@ def _build_switchyard_for_route(
             model_id,
             route,
             target_defaults=target_defaults,
-            stats=stats,
             pre_routing_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         )
@@ -844,7 +798,6 @@ def _build_switchyard_for_route(
             model_id,
             route,
             target_defaults=target_defaults,
-            stats=stats,
             pre_routing_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
         )
@@ -856,7 +809,6 @@ def _deterministic_switchyard(
     model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any],
     extra_response_processors: Sequence[Any],
 ) -> ChainRuntime:
@@ -864,8 +816,7 @@ def _deterministic_switchyard(
 
     Wires the chain assembled from the LLM-classifier router primitives:
 
-        StatsRequestProcessor
-          → LLMClassifierRequestProcessor    (real LLM call → RouteSignals)
+        LLMClassifierRequestProcessor    (real LLM call → RouteSignals)
           → SignalTierSelectorRequestProcessor   (collapse to strong/weak)
           → DeterministicRoutingLLMBackend       (per-tier OpenAI backend)
           → DefaultResponseTranslator
@@ -993,8 +944,6 @@ def _deterministic_switchyard(
         DeterministicRoutingProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -1005,7 +954,6 @@ def _cascade_switchyard(
     model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -1052,8 +1000,6 @@ def _cascade_switchyard(
         CascadeProfileConfig.from_config(cascade_config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=cascade_config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -1065,7 +1011,6 @@ def _plan_execute_switchyard(
     route: Mapping[str, object],
     *,
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -1093,8 +1038,6 @@ def _plan_execute_switchyard(
         PlanExecuteProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -1128,7 +1071,6 @@ def _passthrough_target(
 def _latency_service_switchyard(
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
     extra_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -1163,8 +1105,6 @@ def _latency_service_switchyard(
         LatencyServiceProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
             pre_request_processors=extra_request_processors,
             response_processors=extra_response_processors,
         )

@@ -18,9 +18,9 @@ The dedicated ``switchyard.upstream_errors`` logger still propagates to the
 root handler, so the line also shows on the console.
 
 The ``code`` and ``outcome`` fields are computed with the same helpers as the
-metric labels (:func:`~switchyard.lib.endpoints.outcome_metrics.code_label`,
-:func:`~switchyard.lib.endpoints.outcome_metrics.classify`) so the event log
-joins cleanly to ``switchyard_upstream_attempts_total``.
+metric labels (:func:`~switchyard.lib.metrics.code_label`,
+:func:`~switchyard.lib.metrics.classify`) so the event log joins cleanly to
+``switchyard_upstream_attempts_total``.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from switchyard.lib.endpoints.outcome_metrics import classify, code_label
+from switchyard.lib.metrics import classify, code_label
 
 #: Dedicated logger so operators can route or level upstream-failure events
 #: independently of the (noisier) backend logger. Propagates to root.

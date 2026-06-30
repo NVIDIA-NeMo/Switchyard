@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
+from switchyard.lib import metrics
 from switchyard.lib.processors.cascade_request_processor import CascadeRequestProcessor
 from switchyard.lib.profiles.cascade import CascadeProfileConfig, _build_classifier
 from switchyard.lib.profiles.cascade_config import CascadeConfig, ClassifierConfig
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 from switchyard_rust.profiles import ProfileInput
 
@@ -71,12 +72,14 @@ def test_deepseek_classifier_keeps_reasoning_disabled() -> None:
         ("cascade_weak_default", "weak"),
     ],
 )
-async def test_runtime_stats_reach_profile_classifier(
+async def test_runtime_classifier_records_tokens_via_otel(
     picker: str,
     expected_target: str,
 ) -> None:
-    """Python cascade classifier overhead is visible in shared routing stats."""
-    stats = StatsAccumulator()
+    """Python cascade classifier overhead is recorded via OTel (tier=classifier)."""
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    metrics.reset_for_test(provider.get_meter("switchyard"))
     config = CascadeConfig.model_validate({
         "picker": picker,
         "confidence_threshold": 1.0,
@@ -102,7 +105,7 @@ async def test_runtime_stats_reach_profile_classifier(
     profile = (
         CascadeProfileConfig.from_config(config)
         .build()
-        .with_runtime_components(stats_accumulator=stats, enable_stats=True)
+        .with_runtime_components()
     )
     processor = next(
         component
@@ -116,19 +119,21 @@ async def test_runtime_stats_reach_profile_classifier(
 
     processed = await profile.process(ProfileInput(_chat_request()))
 
-    snapshot: dict[str, Any] = await stats.snapshot()
     assert client.calls == 1
     assert processed.selected_target == expected_target
-    assert classifier._stats is stats
-    assert snapshot["classifier"]["total_requests"] == 1
-    assert snapshot["classifier"]["total_errors"] == 0
-    model_stats = snapshot["classifier"]["models"]["classifier/model"]
-    assert model_stats["calls"] == 1
-    assert model_stats["prompt_tokens"] == 11
-    assert model_stats["completion_tokens"] == 7
-    assert model_stats["cached_tokens"] == 3
-    assert model_stats["model_call_latency"]["count"] == 1
-    assert snapshot["routing_decisions"]["cascade"]["llm-classifier"] == 1
+
+    # Classifier token spend is tagged tier="classifier" via OTel.
+    counters: dict[str, int] = {}
+    for rm in reader.get_metrics_data().resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                for point in metric.data.data_points:
+                    if point.attributes.get("tier") == "classifier":
+                        counters[metric.name] = counters.get(metric.name, 0) + point.value
+    assert counters["switchyard.prompt_tokens"] == 11
+    assert counters["switchyard.completion_tokens"] == 7
+    assert counters["switchyard.cached_tokens"] == 3
+    metrics.reset_for_test(None)
 
 
 def _chat_request() -> ChatRequest:

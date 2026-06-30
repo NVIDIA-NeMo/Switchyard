@@ -64,9 +64,8 @@ def maybe_wrap_anthropic_cache(backend: LLMBackend, target: Any) -> LLMBackend:
     a Claude tier still gets ``cache_control`` breakpoints injected.
 
     ``target`` must already be format-resolved (``BackendFormat.AUTO`` is gone
-    by this point). Apply **outermost** — :class:`AnthropicCacheBreakpointBackend`
-    is a Python-only backend, while a wrapping ``StatsLlmBackend`` requires a
-    Rust-native inner.
+    by this point). :class:`AnthropicCacheBreakpointBackend` is a Python-only
+    backend.
     """
     from switchyard.lib.backends.llm_target import BackendFormat
 

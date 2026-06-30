@@ -3,30 +3,7 @@
 
 //! Best-effort token cost estimation for stats snapshots.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
-
-use super::accumulator::ModelStatsSnapshot;
-
-/// Cost estimate for all recorded models.
-///
-/// `total_cost` is the grand total spend including overhead calls;
-/// `backend_cost` is the portion attributed to routed-backend traffic;
-/// `classifier_cost` is the LLM-classifier-overhead portion (zero unless
-/// `record_classifier_usage` has been called);
-/// `planner_cost` is the planner-overhead portion (zero unless
-/// `record_planner_usage` has been called). The split exists because the
-/// default TB-lite configs can use the same model id for multiple
-/// buckets and a single-row aggregation cannot distinguish them.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct CostEstimate {
-    pub models: BTreeMap<String, CostBreakdown>,
-    pub total_cost: f64,
-    pub backend_cost: f64,
-    pub classifier_cost: f64,
-    pub planner_cost: f64,
-}
 
 /// Per-model cost breakdown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -47,33 +24,7 @@ struct ModelPrice {
     cache_write: f64,
 }
 
-/// Estimates token cost from per-model stats.
-pub fn estimate_cost(models: &BTreeMap<String, ModelStatsSnapshot>) -> CostEstimate {
-    let mut estimated = BTreeMap::new();
-    let mut total_cost = 0.0;
-
-    for (model, stats) in models {
-        let breakdown = estimate_model_cost(
-            model,
-            stats.prompt_tokens,
-            stats.completion_tokens,
-            stats.cached_tokens,
-            stats.cache_creation_tokens,
-        );
-        total_cost += breakdown.total_cost;
-        estimated.insert(model.clone(), breakdown);
-    }
-
-    let total = round6(total_cost);
-    CostEstimate {
-        models: estimated,
-        total_cost: total,
-        backend_cost: total,
-        classifier_cost: 0.0,
-        planner_cost: 0.0,
-    }
-}
-
+/// Estimates the per-kind dollar cost for one model's token usage.
 pub fn estimate_model_cost(
     model: &str,
     prompt_tokens: u64,

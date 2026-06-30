@@ -67,12 +67,17 @@ gpu = [
     "transformers>=5.8.0",
 ]
 
-# Tracing — ddtrace for Datadog APM spans on the proxy routing path
-# Optional: ``switchyard.lib.tracing`` no-ops when ddtrace is not
-# importable, so the default install and non-Datadog deployments are unaffected
-# and pay no overhead.
-tracing = [
-    "ddtrace>=2.9,<4",
+# OpenTelemetry — traces + metrics for the proxy routing path.
+# Optional: ``switchyard.lib.observability`` no-ops when these packages are
+# not importable, so the default install pays no overhead. Traces export via
+# OTLP; metrics export via OTLP and a Prometheus ``/metrics`` scrape endpoint.
+# NOTE: ``opentelemetry-exporter-prometheus`` is pre-1.0 (beta) — pin and
+# revisit the floor on every routine dependency refresh.
+otel = [
+    "opentelemetry-api>=1.27,<2",
+    "opentelemetry-sdk>=1.27,<2",
+    "opentelemetry-exporter-otlp>=1.27,<2",
+    "opentelemetry-exporter-prometheus>=0.48b0,<1",
 ]
 
 # Intake — NeMo Platform SDK required by IntakeClient for telemetry capture.
@@ -84,7 +89,7 @@ intake = [
 
 # Everything — all optional dependencies for full-featured deployment.
 all = [
-    "switchyard[server,cli,gpu,tracing,intake]",
+    "switchyard[server,cli,gpu,otel,intake]",
 ]
 
 # Dev tooling lives in a PEP 735 dependency group rather than an optional
@@ -113,7 +118,7 @@ dev = [
     # Harbor is needed for local evaluation runs and supports the package floor.
     # Package users still do not see it in published metadata.
     "harbor @ git+https://github.com/harbor-framework/harbor.git@v0.6.4 ; python_version >= '3.12'",
-    "switchyard[server]",
+    "switchyard[server,otel]",
     "pytest-markdown-docs>=0.9.2",
 ]
 docs = [

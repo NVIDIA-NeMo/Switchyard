@@ -19,3 +19,14 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/NVIDIA-NeMo/Switchyard"
 rust-version = "1.94"
+
+[workspace.dependencies]
+# OpenTelemetry metrics stack shared by the Rust serving path. Pinned to the
+# 0.32 line so the metrics SDK, Prometheus exporter, and OTLP exporter agree on
+# the same opentelemetry API version (opentelemetry-prometheus 0.32 tracks
+# opentelemetry/opentelemetry_sdk 0.32).
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "rt-tokio"] }
+opentelemetry-prometheus = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["metrics", "grpc-tonic"] }
+prometheus = "0.14"

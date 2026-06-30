@@ -473,15 +473,15 @@ impl ProfileConfig for RandomRoutingProfileConfig {
             router,
             strong_backend: native_target_backend(self.strong.clone())?,
             weak_backend: native_target_backend(self.weak.clone())?,
-            stats: profile_stats_accumulator(),
         })
     }
 }
 ```
 
 This is deliberate. The macro handles the repetitive config surface. The profile author still owns
-the runtime decisions: validation, backend construction, poller construction, stats handles, and
-any profile-specific resources.
+the runtime decisions: validation, backend construction, poller construction, and any
+profile-specific resources. Metrics are not a profile field — `run()` records request / latency /
+token / cost / routing metrics via `switchyard_components::otel_metrics` free functions.
 
 The central config loader should own only generic work:
 
@@ -534,7 +534,6 @@ impl ProfileConfig for RandomRoutingProfileConfig {
             router: RandomRoutingEngine::from_config(self)?,
             strong_backend: native_target_backend(self.strong.clone())?,
             weak_backend: native_target_backend(self.weak.clone())?,
-            stats: profile_stats_accumulator(),
         })
     }
 }
@@ -543,7 +542,6 @@ pub struct RandomRoutingProfile {
     router: RandomRoutingEngine,
     strong_backend: TargetBackend,
     weak_backend: TargetBackend,
-    stats: StatsAccumulator,
 }
 
 pub struct RandomRoutingProcessedRequest {
@@ -636,7 +634,6 @@ class RandomRoutingProfileConfig:
             ),
             strong_backend=native_target_backend(self.strong),
             weak_backend=native_target_backend(self.weak),
-            stats=profile_stats_accumulator(),
         )
 
 
@@ -653,12 +650,10 @@ class RandomRoutingProfile(Profile[RandomRoutingProcessedRequest]):
         router: RandomRoutingEngine,
         strong_backend: TargetBackend,
         weak_backend: TargetBackend,
-        stats: StatsAccumulator,
     ) -> None:
         self.router = router
         self.strong_backend = strong_backend
         self.weak_backend = weak_backend
-        self.stats = stats
 
     async def process(self, request: ChatRequest) -> RandomRoutingProcessedRequest:
         request, decision = self._route_request(request)

@@ -5,16 +5,21 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib import metrics, otel_usage, spans
+from switchyard.lib.proxy_context import (
+    CTX_PROXY_ACTUAL_MODEL,
+    CTX_ROUTER_NAME,
+    ProxyContext,
+)
 from switchyard.lib.roles import LLMBackend
 from switchyard.lib.session_affinity import CTX_SESSION_KEY
 from switchyard.lib.session_cache import SessionCache
 from switchyard.lib.session_key import session_key_from_body
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import (
     ChatRequest,
     ChatResponse,
@@ -103,46 +108,28 @@ class ComponentChainProfile:
 
     def with_runtime_components(
         self,
-        stats_accumulator: StatsAccumulator | None = None,
+        stats_accumulator: object = None,
         enable_stats: bool = True,
         pre_request_processors: Sequence[Any] = (),
         post_request_processors: Sequence[Any] = (),
         response_processors: Sequence[Any] = (),
     ) -> ComponentChainProfile:
-        """Return a copy with serving-level stats and processor hooks applied.
+        """Return a copy with serving-level processor hooks applied.
 
-        Profile configs stay user-facing and parseable; shared serving resources
-        such as one route-table accumulator or Intake processors are attached by
-        the builder that hosts the profile.
+        Per-request metrics (latency, tokens, cost, routing decisions) are emitted
+        directly by the chain executor via OpenTelemetry, so no stats components are
+        attached here. ``stats_accumulator`` / ``enable_stats`` are accepted but
+        ignored for call-site compatibility during the OTel migration.
         """
-        from switchyard.lib.processors.stats_request_processor import (
-            StatsRequestProcessor,
-        )
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        request_chain: list[Any] = []
-        response_chain: list[Any] = list(self._response_processors)
-        backend = self._backend
-        stats: StatsAccumulator | None = None
-
-        if enable_stats:
-            stats = stats_accumulator or StatsAccumulator()
-            request_chain.append(StatsRequestProcessor())
-            backend = _attach_stats_to_backend(backend, stats)
-            response_chain.append(StatsResponseProcessor(stats))
-
-        request_chain.extend(pre_request_processors)
+        request_chain: list[Any] = list(pre_request_processors)
         request_chain.extend(self._request_processors)
         request_chain.extend(post_request_processors)
+        response_chain: list[Any] = list(self._response_processors)
         response_chain.extend(response_processors)
-        if stats is not None:
-            _attach_stats_to_request_processors(request_chain, stats)
 
         return ComponentChainProfile(
             request_processors=request_chain,
-            backend=backend,
+            backend=self._backend,
             response_processors=response_chain,
             fallback_target_on_evict=self._fallback_target_on_evict,
         )
@@ -158,16 +145,26 @@ class ComponentChainProfile:
     ) -> ChainProcessedRequest:
         """Run request-side components against the caller-supplied context."""
         current: Any = input.request
-        for processor in self._request_processors:
-            try:
-                current = await processor.process(ctx, current)
-            except Exception as error:
-                raise SwitchyardProcessorError(str(error)) from error
-            if not isinstance(current, ChatRequest):
-                actual = type(current).__name__
-                raise SwitchyardProcessorError(
-                    f"Request processor returned {actual}, expected ChatRequest"
-                )
+        # The request-processor loop IS the in-process routing overhead: time it
+        # and record it under the router strategy (classifier/planner LLM calls
+        # open their own child spans, so they stay bucketed separately).
+        started = time.monotonic()
+        with spans.stage_span("switchyard.request_processors"):
+            for processor in self._request_processors:
+                try:
+                    current = await processor.process(ctx, current)
+                except Exception as error:
+                    raise SwitchyardProcessorError(str(error)) from error
+                if not isinstance(current, ChatRequest):
+                    actual = type(current).__name__
+                    raise SwitchyardProcessorError(
+                        f"Request processor returned {actual}, expected ChatRequest"
+                    )
+        overhead_ms = (time.monotonic() - started) * 1000.0
+        _, _, router = _otel_labels(ctx, current)
+        metrics.record_latencies(
+            model="", tier=None, router=router, routing_overhead_ms=overhead_ms
+        )
         return ChainProcessedRequest.from_context(ctx, current)
 
     async def rprocess(
@@ -199,42 +196,76 @@ class ComponentChainProfile:
         ctx: ProxyContext,
     ) -> ChatResponse:
         """Execute the complete profile lifecycle with an existing context."""
-        processed = await self.process_with_context(input, ctx)
-        session_key: str | None = None
-        if self._session_evictions is not None:
-            session_key = _derive_session_key(ctx, input.request)
-            session_evicted: frozenset[str] = self._session_evictions.get(session_key) or frozenset()
-            if session_evicted:
-                merged = set(processed.evicted_targets) | session_evicted
-                processed.evicted_targets = tuple(sorted(merged))
-                processed.sync_to_context()
-                self._rewrite_evicted_pick(processed)
+        started = time.monotonic()
+        # Stamp request start so the usage recorder can compute TTFT on the first
+        # streamed chunk.
+        ctx.metadata[otel_usage.CTX_REQUEST_START] = started
         try:
-            return await self._call_backend_stage(processed)
-        except SwitchyardContextWindowExceededError as error:
-            if self._fallback_target_on_evict is None:
-                raise
-            return await self._retry_after_context_overflow(processed, error, session_key)
+            processed = await self.process_with_context(input, ctx)
+            session_key: str | None = None
+            if self._session_evictions is not None:
+                session_key = _derive_session_key(ctx, input.request)
+                session_evicted: frozenset[str] = (
+                    self._session_evictions.get(session_key) or frozenset()
+                )
+                if session_evicted:
+                    merged = set(processed.evicted_targets) | session_evicted
+                    processed.evicted_targets = tuple(sorted(merged))
+                    processed.sync_to_context()
+                    self._rewrite_evicted_pick(processed)
+            try:
+                return await self._call_backend_stage(processed)
+            except SwitchyardContextWindowExceededError as error:
+                if self._fallback_target_on_evict is None:
+                    raise
+                return await self._retry_after_context_overflow(processed, error, session_key)
+        finally:
+            # End-to-end latency + request count, recorded once per top-level call
+            # (backend-attempt latency and errors are recorded in the backend stage).
+            model, tier, router = _otel_labels(ctx, input.request)
+            total_ms = (time.monotonic() - started) * 1000.0
+            metrics.record_latencies(model=model, tier=tier, router=router, total_ms=total_ms)
+            metrics.record_request(model=model, tier=tier, router=router)
 
     async def _call_backend_stage(
         self,
         processed: ChainProcessedRequest,
     ) -> ChatResponse:
         """Call the backend and then response-side components."""
+        ctx = processed.ctx
+        model, tier, _ = _otel_labels(ctx, processed.request)
+        started = time.monotonic()
         try:
-            response: Any = await self._backend.call(processed.ctx, processed.request)
+            with spans.stage_span(
+                "switchyard.backend_call", {"model": model, "tier": tier}
+            ):
+                response: Any = await self._backend.call(ctx, processed.request)
         except SwitchyardContextWindowExceededError:
             raise
         except SwitchyardUpstreamError:
+            metrics.record_error(model=model, tier=tier)
             raise
         except Exception as error:
+            metrics.record_error(model=model, tier=tier)
             raise SwitchyardBackendError(str(error)) from error
+        # Prefer a backend-reported latency (e.g. the latency-service backend times
+        # only the upstream attempt); else use the measured wall time.
+        backend_ms = getattr(ctx, "backend_call_latency_ms", None) or (
+            (time.monotonic() - started) * 1000.0
+        )
+        # Re-read labels: routing/selection may have been finalized by the backend.
+        model, tier, _ = _otel_labels(ctx, processed.request)
+        metrics.record_latencies(model=model, tier=tier, router=None, model_call_ms=backend_ms)
         if not isinstance(response, ChatResponse):
             actual = type(response).__name__
             raise SwitchyardBackendError(
                 f"Profile backend returned {actual}, expected ChatResponse"
             )
-        return await self.rprocess(processed, response)
+        # Record token/cost (and install the TTFT/usage tap for streams) before the
+        # response flows on to the response-side components and out to the client.
+        otel_usage.record_response_usage(ctx, response, model, tier)
+        with spans.stage_span("switchyard.response_processors"):
+            return await self.rprocess(processed, response)
 
     async def _retry_after_context_overflow(
         self,
@@ -309,6 +340,23 @@ def _context_selected_target(ctx: ProxyContext) -> str | None:
     return selected if isinstance(selected, str) and selected else None
 
 
+def _otel_labels(ctx: ProxyContext, request: ChatRequest) -> tuple[str, str | None, str | None]:
+    """Return ``(model, tier, router)`` for OTel metric attributes.
+
+    Mirrors the tier resolution the stats response processor used: the
+    random-routing / RouteLLM tier metadata when present, else a ``strong``/
+    ``weak`` selected target. ``router`` is the strategy name when a routing
+    processor stamped one (``None`` for passthrough chains).
+    """
+    model = ctx.selected_model or ctx.metadata.get(CTX_PROXY_ACTUAL_MODEL) or request.model
+    tier = ctx.metadata.get("_random_routing_tier") or ctx.metadata.get("_routellm_tier")
+    if not tier:
+        selected = ctx.selected_target
+        tier = selected if selected in {"strong", "weak"} else None
+    router = ctx.metadata.get(CTX_ROUTER_NAME)
+    return str(model or "unknown"), tier, router
+
+
 def _overflow_target_id(
     processed: ChainProcessedRequest,
     error: BaseException,
@@ -318,76 +366,3 @@ def _overflow_target_id(
     if isinstance(target_id, str) and target_id:
         return target_id
     return processed.selected_target
-
-
-def _attach_stats_to_backend(
-    backend: LLMBackend,
-    stats: StatsAccumulator,
-) -> LLMBackend:
-    """Wrap native backends or wire existing Python stats hooks in place."""
-    from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-    try:
-        return StatsLlmBackend(backend, stats)
-    except TypeError:
-        # Python-only backends cannot be wrapped by the Rust stats binding.
-        # Fail loudly if the backend does not expose one of the known
-        # compatibility hooks; silent metrics loss is worse than a build error.
-        if not _attach_stats_to_python_backend(backend, stats):
-            backend_type = type(backend).__qualname__
-            raise TypeError(
-                f"{backend_type} cannot be wrapped for stats and exposes no "
-                "Python stats compatibility hook"
-            ) from None
-        return backend
-
-
-def _attach_stats_to_python_backend(
-    backend: LLMBackend,
-    stats: StatsAccumulator,
-) -> bool:
-    """Wire stats into Python-only backend shapes that already support it."""
-    attached = False
-    if hasattr(backend, "_stats"):
-        cast(Any, backend)._stats = stats
-        attached = True
-
-    inner = getattr(backend, "_inner", None)
-    if inner is not None:
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-        try:
-            cast(Any, backend)._inner = StatsLlmBackend(inner, stats)
-            attached = True
-        except TypeError:
-            attached = _attach_stats_to_python_backend(inner, stats) or attached
-
-    nested = getattr(backend, "_backends", None)
-    if not isinstance(nested, dict):
-        return attached
-
-    from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-    for label, child in list(nested.items()):
-        try:
-            nested[label] = StatsLlmBackend(child, stats)
-            attached = True
-        except TypeError:
-            attached = _attach_stats_to_python_backend(child, stats) or attached
-    return attached
-
-
-def _attach_stats_to_request_processors(
-    processors: Sequence[Any],
-    stats: StatsAccumulator,
-) -> None:
-    """Wire existing classifier/planner stats hooks without config fields."""
-    for processor in processors:
-        attach_stats = getattr(processor, "attach_stats_accumulator", None)
-        if callable(attach_stats):
-            attach_stats(stats)
-        if hasattr(processor, "_stats_accumulator"):
-            cast(Any, processor)._stats_accumulator = stats
-
-
-__all__ = ["ChainProcessedRequest", "ComponentChainProfile"]

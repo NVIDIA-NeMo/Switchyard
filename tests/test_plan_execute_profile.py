@@ -9,10 +9,6 @@ from typing import Any
 
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.processors.plan_execute import PlanningRequestProcessor
-from switchyard.lib.processors.stats_request_processor import StatsRequestProcessor
-from switchyard.lib.processors.stats_response_processor_accumulator import (
-    StatsResponseProcessor,
-)
 from switchyard.lib.profiles import (
     PlanExecuteConfig,
     PlanExecutePresets,
@@ -21,7 +17,6 @@ from switchyard.lib.profiles import (
 )
 from switchyard.lib.profiles.plan_execute import _ExecutorStatsTargetProcessor
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest, ChatResponse
 from switchyard_rust.translation import TranslationEngine
 
@@ -55,7 +50,6 @@ def _config(
 def _plan_execute_switchyard(
     config: PlanExecuteConfig,
     *,
-    stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: list[Any] | None = None,
     extra_request_processors: list[Any] | None = None,
     extra_response_processors: list[Any] | None = None,
@@ -65,8 +59,6 @@ def _plan_execute_switchyard(
         PlanExecuteProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats_accumulator,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors or (),
             post_request_processors=extra_request_processors or (),
             response_processors=extra_response_processors or (),
@@ -114,19 +106,6 @@ class TestProfileStructure:
         ]
         assert len(translators) == 1
 
-    def test_planner_runs_after_stats(self) -> None:
-        switchyard = _plan_execute_switchyard(_config())
-        components = list(switchyard.iter_components())
-        stats_idx = next(
-            idx for idx, c in enumerate(components)
-            if isinstance(c, StatsRequestProcessor)
-        )
-        planner_idx = next(
-            idx for idx, c in enumerate(components)
-            if isinstance(c, PlanningRequestProcessor)
-        )
-        assert stats_idx < planner_idx
-
     def test_executor_stats_marker_runs_before_planner(self) -> None:
         switchyard = _plan_execute_switchyard(_config())
         components = list(switchyard.iter_components())
@@ -139,22 +118,6 @@ class TestProfileStructure:
             if isinstance(c, PlanningRequestProcessor)
         )
         assert marker_idx < planner_idx
-
-    def test_stats_processors_wired_when_enabled(self) -> None:
-        switchyard = _plan_execute_switchyard(_config())
-        components = list(switchyard.iter_components())
-        assert any(isinstance(c, StatsRequestProcessor) for c in components)
-        assert any(isinstance(c, StatsResponseProcessor) for c in components)
-        assert any(isinstance(c, _ExecutorStatsTargetProcessor) for c in components)
-
-    def test_stats_processors_absent_when_disabled(self) -> None:
-        switchyard = _plan_execute_switchyard(
-            _config(enable_stats=False),
-        )
-        components = list(switchyard.iter_components())
-        assert not any(isinstance(c, StatsRequestProcessor) for c in components)
-        assert not any(isinstance(c, StatsResponseProcessor) for c in components)
-        assert not any(isinstance(c, _ExecutorStatsTargetProcessor) for c in components)
 
     def test_extra_processors_are_wired(self) -> None:
         request_processor = _NoopRequestProcessor()
@@ -184,8 +147,6 @@ class TestProfileStructure:
 
     async def test_executor_stats_marker_stamps_executor_tier(self) -> None:
         marker = _ExecutorStatsTargetProcessor("executor-target")
-        stats = StatsAccumulator()
-        response_processor = StatsResponseProcessor(stats)
         ctx = ProxyContext()
         request = ChatRequest.openai_chat({
             "model": "client-route",
@@ -193,20 +154,10 @@ class TestProfileStructure:
         })
 
         await marker.process(ctx, request)
-        ctx.selected_model = "moonshotai/kimi-k2.6"
-        await response_processor.process(
-            ctx,
-            ChatResponse.openai_completion({
-                "model": "moonshotai/kimi-k2.6",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 5},
-            }),
-        )
 
-        snapshot = await stats.snapshot()
+        # The marker stamps the executor target so downstream OTel tier
+        # resolution attributes the call to the executor tier.
         assert ctx.selected_target == "executor-target"
-        assert snapshot["tiers"]["executor"]["model"] == "moonshotai/kimi-k2.6"
-        assert snapshot["tiers"]["executor"]["prompt_tokens"] == 3
-        assert snapshot["tiers"]["executor"]["completion_tokens"] == 5
 
 
 class TestPlannerParamCompatibility:

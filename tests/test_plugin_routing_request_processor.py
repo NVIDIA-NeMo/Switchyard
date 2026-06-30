@@ -26,13 +26,8 @@ from switchyard.lib.processors.plugin_routing_request_processor import (
     CTX_OSS_ROUTER_TIER,
     PluginRoutingRequestProcessor,
 )
-from switchyard.lib.processors.stats_request_processor import StatsRequestProcessor
-from switchyard.lib.processors.stats_response_processor_accumulator import (
-    StatsResponseProcessor,
-)
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard_rust.components import StatsAccumulator
-from switchyard_rust.core import ChatRequest, ChatResponse
+from switchyard_rust.core import ChatRequest
 
 
 class _FakePluginClient:
@@ -105,34 +100,6 @@ async def test_decision_rewrites_model_and_stamps_metadata() -> None:
     # Verify the request summary the plugin received was sane.
     assert fake.calls[0].available_tiers == ("strong", "weak")
     assert fake.calls[0].summary.message_count == 1
-
-
-async def test_decision_route_label_feeds_rust_stats_rollup() -> None:
-    proc = _processor()
-    fake = _FakePluginClient([RouteDecision(tier="weak", metadata={"score": 0.4})])
-    _bind_fake(proc, fake)
-    stats = StatsAccumulator()
-    ctx = _ctx()
-    request = await StatsRequestProcessor().process(ctx, _request())
-
-    result = await proc.process(ctx, request)
-    assert result.body["model"] == "openai/gpt-5-mini"
-    selected_model = ctx.selected_model
-    assert selected_model == "openai/gpt-5-mini"
-    await stats.record_success(selected_model, tier="weak")
-    await StatsResponseProcessor(stats).process(
-        ctx,
-        ChatResponse.openai_completion({
-            "model": "openai/gpt-5-mini",
-            "usage": {"prompt_tokens": 5, "completion_tokens": 8},
-        }),
-    )
-
-    snapshot = stats.snapshot_sync()
-    assert snapshot["models"]["openai/gpt-5-mini"]["tier"] == "weak"
-    assert snapshot["tiers"]["weak"]["model"] == "openai/gpt-5-mini"
-    assert snapshot["tiers"]["weak"]["calls"] == 1
-    assert snapshot["tiers"]["weak"]["total_tokens"] == 13
 
 
 # ---------------------------------------------------------------------------

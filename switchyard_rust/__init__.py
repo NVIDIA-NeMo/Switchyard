@@ -30,10 +30,6 @@ if TYPE_CHECKING:
         RandomRoutingProcessorConfig as RandomRoutingProcessorConfig,
     )
     from switchyard_rust.components import RequestMetadata as RequestMetadata
-    from switchyard_rust.components import StatsAccumulator as StatsAccumulator
-    from switchyard_rust.components import StatsLlmBackend as StatsLlmBackend
-    from switchyard_rust.components import StatsRequestProcessor as StatsRequestProcessor
-    from switchyard_rust.components import StatsResponseProcessor as StatsResponseProcessor
     from switchyard_rust.core import ChatRequest as ChatRequest
     from switchyard_rust.core import ChatRequestType as ChatRequestType
     from switchyard_rust.core import ChatResponse as ChatResponse
@@ -74,10 +70,6 @@ def __getattr__(name: str) -> object:
         "OpenAiPassthroughBackend",
         "RandomRoutingProcessorConfig",
         "RequestMetadata",
-        "StatsAccumulator",
-        "StatsLlmBackend",
-        "StatsRequestProcessor",
-        "StatsResponseProcessor",
     }:
         from switchyard_rust import components
 
@@ -155,10 +147,6 @@ __all__ = [
     "ProxyContext",
     "RandomRoutingProcessorConfig",
     "RequestMetadata",
-    "StatsAccumulator",
-    "StatsLlmBackend",
-    "StatsRequestProcessor",
-    "StatsResponseProcessor",
     "SwitchyardBackendError",
     "SwitchyardConfigError",
     "SwitchyardDuplicateRegistrationError",

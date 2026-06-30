@@ -44,13 +44,11 @@ class PlanExecuteConfig(BaseModel):
         fail_open: When ``True`` (default), planner errors degrade
             gracefully — the request flows to the executor unchanged.
             When ``False``, planner errors surface as 5xx.
-        enable_stats: Wire stats request/response processors and a
-            :class:`StatsLlmBackend` wrapper around the executor.
-            Default ``True``.
+        enable_stats: Retained config key (accepted, no longer wires anything).
+            Per-request metrics are emitted via OpenTelemetry; see
+            :mod:`switchyard.lib.observability`. Default ``True``.
         preset: Optional name of the :class:`PlanExecutePresets` preset builder
-            that produced this config — surfaced via
-            ``GET /v1/routing/stats`` so saved stats files self-document
-            which shipping bundle was used.
+            that produced this config.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)

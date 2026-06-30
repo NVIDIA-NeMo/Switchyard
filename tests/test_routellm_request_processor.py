@@ -13,14 +13,9 @@ from switchyard.lib.processors.routellm_request_processor import (
     RouteLLMRequestProcessor,
     _extract_user_prompt,
 )
-from switchyard.lib.processors.stats_request_processor import StatsRequestProcessor
-from switchyard.lib.processors.stats_response_processor_accumulator import (
-    StatsResponseProcessor,
-)
 from switchyard.lib.profiles.routellm import RouteLLMConfig
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard_rust.components import StatsAccumulator
-from switchyard_rust.core import ChatRequest, ChatResponse
+from switchyard_rust.core import ChatRequest
 
 
 class FakeClassifier:
@@ -147,33 +142,6 @@ class TestRouteLLMRequestProcessor:
         req = _openai_request([{"role": "user", "content": "anything"}])
         await proc.process(ctx, req)
         assert ctx.metadata[CTX_ROUTELLM_TIER] == "strong"
-
-    async def test_selected_tier_feeds_rust_stats_rollup(self):
-        proc = RouteLLMRequestProcessor(_config(threshold=0.5), classifier=FakeClassifier(0.2))
-        stats = StatsAccumulator()
-        ctx = ProxyContext()
-        req = await StatsRequestProcessor().process(
-            ctx,
-            _openai_request([{"role": "user", "content": "trivial question"}]),
-        )
-
-        await proc.process(ctx, req)
-        selected_model = ctx.selected_model
-        assert selected_model == "weak-model"
-        await stats.record_success(selected_model, tier="weak")
-        await StatsResponseProcessor(stats).process(
-            ctx,
-            ChatResponse.openai_completion({
-                "model": "weak-model",
-                "usage": {"prompt_tokens": 3, "completion_tokens": 4},
-            }),
-        )
-
-        snapshot = stats.snapshot_sync()
-        assert snapshot["models"]["weak-model"]["tier"] == "weak"
-        assert snapshot["tiers"]["weak"]["model"] == "weak-model"
-        assert snapshot["tiers"]["weak"]["calls"] == 1
-        assert snapshot["tiers"]["weak"]["total_tokens"] == 7
 
     async def test_injected_classifier_skips_resource_cache(self):
         # Sanity: shutdown() is a no-op when the classifier was injected.

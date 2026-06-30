@@ -8,16 +8,12 @@ Hub, forces the weak target (a model with a known 131k context cap) to
 overflow with a ~840k-token prompt, and asserts that:
 
 * the inbound request still returns HTTP 200 (the compatibility chain's
-  fallback path served the response on the strong target),
-* the response model is the strong target's model id, and
-* the shared :class:`StatsAccumulator` records the failing target as
-  ``errors=1, calls=0`` and the fallback target as ``calls=1`` with the
-  full prompt-token attribution.
+  fallback path served the response on the strong target), and
+* the response model is the strong target's model id.
 
-This pins the four moving parts that must all line up for the feature
+This pins the three moving parts that must all line up for the feature
 to work end-to-end on a live backend — provider-shape 400 detection,
-the compatibility chain's retry, the Python ↔ Rust exception surface,
-and per-target stats attribution.
+the compatibility chain's retry, and the Python ↔ Rust exception surface.
 
 Prerequisites:
     - ``NVIDIA_API_KEY`` env var (set; tests skip otherwise).
@@ -36,7 +32,6 @@ import httpx
 import pytest
 
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.server.switchyard_app import build_switchyard_app
 
 _STRONG_MODEL = "aws/anthropic/bedrock-claude-opus-4-7"
@@ -89,23 +84,11 @@ async def _client_for(app) -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
-def _assert_eviction_stats(snapshot: dict) -> None:
-    """Pin the per-target attribution shape after a successful reroute."""
-    weak = snapshot["models"][_WEAK_MODEL]
-    strong = snapshot["models"][_STRONG_MODEL]
-    assert weak["errors"] == 1
-    assert weak["calls"] == 0
-    assert strong["calls"] == 1
-    assert strong["errors"] == 0
-    assert strong["prompt_tokens"] > 100_000
-
-
 @pytest.mark.timeout(120)
 async def test_cascade_evicts_weak_and_reroutes_to_strong(nvidia_api_key: str) -> None:
     """``type: cascade`` reroutes to ``strong`` when weak overflows."""
     from switchyard.lib.profiles import CascadeConfig, CascadeProfileConfig, ProfileSwitchyard
 
-    stats = StatsAccumulator()
     config = CascadeConfig(
         strong=_strong_target(nvidia_api_key),
         weak=_weak_target(nvidia_api_key),
@@ -116,10 +99,7 @@ async def test_cascade_evicts_weak_and_reroutes_to_strong(nvidia_api_key: str) -
     switchyard = ProfileSwitchyard(
         CascadeProfileConfig.from_config(config)
         .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-        )
+        .with_runtime_components()
     )
     app = build_switchyard_app(switchyard)
 
@@ -136,7 +116,6 @@ async def test_cascade_evicts_weak_and_reroutes_to_strong(nvidia_api_key: str) -
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["model"] == _STRONG_MODEL
-    _assert_eviction_stats(await stats.snapshot())
 
 
 @pytest.mark.timeout(120)
@@ -154,7 +133,6 @@ async def test_random_routing_evicts_weak_and_reroutes_to_strong(
         RandomRoutingProfileConfig,
     )
 
-    stats = StatsAccumulator()
     config = RandomRoutingConfig(
         strong=_strong_target(nvidia_api_key),
         weak=_weak_target(nvidia_api_key),
@@ -165,10 +143,7 @@ async def test_random_routing_evicts_weak_and_reroutes_to_strong(
     switchyard = ProfileSwitchyard(
         RandomRoutingProfileConfig.from_config(config)
         .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-        )
+        .with_runtime_components()
     )
     app = build_switchyard_app(switchyard)
 
@@ -184,7 +159,6 @@ async def test_random_routing_evicts_weak_and_reroutes_to_strong(
 
     assert response.status_code == 200, response.text
     assert response.json()["model"] == _STRONG_MODEL
-    _assert_eviction_stats(await stats.snapshot())
 
 
 @pytest.mark.timeout(180)
@@ -205,7 +179,6 @@ async def test_deterministic_evicts_weak_and_reroutes_to_strong(
         ProfileSwitchyard,
     )
 
-    stats = StatsAccumulator()
     classifier = LlmTarget(
         id="classifier",
         model="nvidia/deepseek-ai/deepseek-v4-flash",
@@ -225,10 +198,7 @@ async def test_deterministic_evicts_weak_and_reroutes_to_strong(
     switchyard = ProfileSwitchyard(
         DeterministicRoutingProfileConfig.from_config(config)
         .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-        )
+        .with_runtime_components()
     )
     app = build_switchyard_app(switchyard)
 
@@ -244,4 +214,3 @@ async def test_deterministic_evicts_weak_and_reroutes_to_strong(
 
     assert response.status_code == 200, response.text
     assert response.json()["model"] == _STRONG_MODEL
-    _assert_eviction_stats(await stats.snapshot())

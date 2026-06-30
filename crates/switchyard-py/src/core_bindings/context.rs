@@ -565,10 +565,8 @@ impl PyProxyContext {
 
     /// Records the measured backend-call latency in ms.
     ///
-    /// The Rust ``StatsLlmBackend`` wraps native backends and writes this
-    /// slot automatically. Python-only backends (e.g. ``LatencyServiceLLMBackend``)
-    /// that can't be wrapped record their measurement here so the
-    /// downstream ``StatsResponseProcessor`` can compute
+    /// Python backends (e.g. ``LatencyServiceLLMBackend``) record their
+    /// measurement here so the response-side OTel usage recorder can compute
     /// ``routing_overhead_ms = total_latency - backend_latency`` and emit
     /// it on ``/metrics``. Setting ``None`` clears the slot.
     #[setter]

@@ -22,8 +22,7 @@ from switchyard.lib.profiles import (
     RandomRoutingProfileConfig,
 )
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.stats_accumulator import StatsAccumulator
-from switchyard_rust.components import MultiLlmBackend, StatsLlmBackend
+from switchyard_rust.components import MultiLlmBackend
 from switchyard_rust.core import ChatRequest, ChatResponse
 from switchyard_rust.translation import TranslationEngine
 
@@ -137,7 +136,6 @@ def _openai_config(
 def _random_routing_switchyard(
     config: RandomRoutingConfig,
     *,
-    stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: list[Any] | None = None,
     extra_request_processors: list[Any] | None = None,
     extra_response_processors: list[Any] | None = None,
@@ -147,8 +145,6 @@ def _random_routing_switchyard(
         RandomRoutingProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
-            stats_accumulator=stats_accumulator,
-            enable_stats=config.enable_stats,
             pre_request_processors=pre_routing_request_processors or (),
             post_request_processors=extra_request_processors or (),
             response_processors=extra_response_processors or (),
@@ -158,8 +154,6 @@ def _random_routing_switchyard(
 
 def _llm_target_switchyard(
     target: LlmTarget,
-    *,
-    stats_accumulator: StatsAccumulator | None = None,
 ) -> ProfileSwitchyard:
     """Build the single-target passthrough profile used by parity tests."""
     return ProfileSwitchyard(
@@ -167,7 +161,7 @@ def _llm_target_switchyard(
             target=target,
         )
         .build()
-        .with_runtime_components(stats_accumulator=stats_accumulator)
+        .with_runtime_components()
     )
 
 
@@ -282,64 +276,7 @@ class TestProfileStructure:
         assert request_processor in components
         assert response_processor in components
 
-    def test_pre_routing_processors_run_before_router(self):
-        from switchyard.lib.processors.random_routing_request_processor import (
-            RandomRoutingRequestProcessor,
-        )
-        from switchyard.lib.processors.stats_request_processor import (
-            StatsRequestProcessor,
-        )
-
-        request_processor = _NoopRequestProcessor()
-        switchyard = _random_routing_switchyard(
-            _openai_config(),
-            pre_routing_request_processors=[request_processor],
-        )
-
-        components = list(switchyard.iter_components())
-        stats_index = next(
-            index
-            for index, component in enumerate(components)
-            if isinstance(component, StatsRequestProcessor)
-        )
-        pre_routing_index = components.index(request_processor)
-        router_index = next(
-            index
-            for index, component in enumerate(components)
-            if isinstance(component, RandomRoutingRequestProcessor)
-        )
-
-        assert stats_index < pre_routing_index < router_index
-
-    async def test_uses_supplied_stats_accumulator(self):
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        stats = StatsAccumulator()
-        switchyard = _random_routing_switchyard(
-            _openai_config(),
-            stats_accumulator=stats,
-        )
-
-        backend = next(
-            c for c in switchyard.iter_components()
-            if isinstance(c, StatsLlmBackend)
-        )
-        response_processor = next(
-            c for c in switchyard.iter_components()
-            if isinstance(c, StatsResponseProcessor)
-        )
-
-        await backend.accumulator.record_success("model-a")
-        assert response_processor.accumulator.snapshot_sync()["total_requests"] == 1
-
     async def test_llm_target_profile_builds_single_target_chain(self):
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        stats = StatsAccumulator()
         switchyard = _llm_target_switchyard(
             LlmTarget(
                 model="single-m",
@@ -347,21 +284,13 @@ class TestProfileStructure:
                 api_key="sk-test",
                 base_url="https://example.invalid/v1",
             ),
-            stats_accumulator=stats,
         )
 
         backend = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, StatsLlmBackend)
+            if hasattr(c, "supported_request_types")
         )
-        response_processor = next(
-            c for c in switchyard.iter_components()
-            if isinstance(c, StatsResponseProcessor)
-        )
-
         assert [item.value for item in backend.supported_request_types] == ["openai_chat"]
-        await backend.accumulator.record_success("single-m")
-        assert response_processor.accumulator.snapshot_sync()["total_requests"] == 1
 
 
 # ---------------------------------------------------------------------------

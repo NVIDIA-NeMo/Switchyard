@@ -33,10 +33,6 @@ _COMPONENT_EXPORTS = frozenset(
         "ResponseSignalCollector",
         "ResponseSignals",
         "ScoringConfig",
-        "StatsAccumulator",
-        "StatsLlmBackend",
-        "StatsRequestProcessor",
-        "StatsResponseProcessor",
         "ToolResultSignal",
         "extract_response_signals",
         "get_context_signals",
@@ -69,10 +65,6 @@ if TYPE_CHECKING:
     ResponseSignalCollector: type[Any]
     ResponseSignals: type[Any]
     ScoringConfig: type[Any]
-    StatsAccumulator: type[Any]
-    StatsLlmBackend: type[Any]
-    StatsRequestProcessor: type[Any]
-    StatsResponseProcessor: type[Any]
     ToolResultSignal: type[Any]
     extract_response_signals: Any
     get_context_signals: Any

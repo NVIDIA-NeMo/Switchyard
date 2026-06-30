@@ -8,20 +8,20 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from switchyard.lib import metrics
+from switchyard.lib.cost_estimator import estimate_model_cost
 from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.processors.plan_execute.plan import (
     CTX_PLANNER_DECISION,
     PlannerDecision,
 )
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest, ChatRequestType
 
 log = logging.getLogger(__name__)
@@ -490,7 +490,6 @@ class PlanningRequestProcessor:
         config: PlanningConfig,
         *,
         client: PlannerClient | None = None,
-        stats_accumulator: StatsAccumulator | None = None,
     ) -> None:
         self._config = config
         self._client = client or OpenAIChatPlannerClient(
@@ -504,12 +503,6 @@ class PlanningRequestProcessor:
             response_format=config.response_format,
             extra_headers=config.extra_headers,
         )
-        #: When set, planner success + failure counts roll into the
-        #: ``planner`` bucket on ``/v1/routing/stats``.  Without it the
-        #: planner only emits stderr audit lines and is invisible to the
-        #: stats endpoint.  Mirrors the classifier's optional
-        #: ``stats_accumulator`` pattern.
-        self._stats_accumulator = stats_accumulator
 
     async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
         if not self._should_plan():
@@ -569,7 +562,6 @@ class PlanningRequestProcessor:
                 f"Prior plan:\n{prior_plan}\n\n---\n\n{request_summary}"
             )
         completion: PlannerCompletion | None = None
-        started_at = time.perf_counter()
         try:
             completion = await self._client.plan(
                 model=self._config.model,
@@ -584,15 +576,6 @@ class PlanningRequestProcessor:
                 "PlanningRequestProcessor: planner failed; continuing without plan: %s",
                 exc,
             )
-            # Record the failure into the planner bucket on the stats
-            # accumulator (if wired) so ``/v1/routing/stats`` reports
-            # ``planner.total_errors`` and the per-model ``errors``
-            # counter — silent fail-opens otherwise hide the failure
-            # rate from the benchmark observer.  Mirrors the
-            # classifier's fail-open branch in
-            # :class:`LLMClassifierRequestProcessor`.
-            if self._stats_accumulator is not None:
-                await self._stats_accumulator.record_planner_error(self._config.model)
             # Emit a failure-shaped audit line so the same grep that
             # tallies plan_needed counts also surfaces fail-open
             # invocations.  Differentiates ``call`` failures (upstream
@@ -618,18 +601,10 @@ class PlanningRequestProcessor:
         # the planner declined to plan when ``plan_needed=False``.
         ctx.metadata[CTX_PLANNER_DECISION] = decision
 
-        # Record planner-side spend into the stats accumulator's
-        # ``planner`` bucket (if wired).  Mirrors the classifier's
-        # ``record_classifier_usage`` call.  Latency captures the full
-        # planner call: HTTP roundtrip + JSON parse + decision
-        # validation.  When the accumulator isn't wired (e.g. unit
-        # tests with a fake client), this branch is a no-op and the
-        # audit line below remains the only observability path.
-        if self._stats_accumulator is not None:
-            await self._record_planner_call(
-                usage=completion.usage,
-                latency_ms=(time.perf_counter() - started_at) * 1000,
-            )
+        # Record planner-side token + cost spend via OTel under
+        # ``role=planner`` so it stays out of the routed-traffic buckets
+        # even when planner + executor share a model id.
+        self._record_planner_call(usage=completion.usage)
 
         # One-line audit dump of the planner decision + per-call usage,
         # written to stderr directly (not via the logging module) so it
@@ -670,23 +645,14 @@ class PlanningRequestProcessor:
     def _should_plan(self) -> bool:
         return self._config.trigger_mode is PlanningTriggerMode.ALWAYS
 
-    async def _record_planner_call(
-        self,
-        *,
-        usage: Any,
-        latency_ms: float,
-    ) -> None:
-        """Extract token counts from the SDK ``usage`` object and record them.
+    def _record_planner_call(self, *, usage: Any) -> None:
+        """Record planner token + cost spend via OTel under ``role=planner``.
 
-        Records into the planner bucket on :class:`StatsAccumulator` so
-        the planner model's token spend doesn't merge with the
-        same-named executor backend (e.g. when running V4-Pro-as-planner
-        + V4-Pro-as-executor for self-planning sweeps).  Latency is
-        recorded too so the planner-side latency histogram shows up on
-        the snapshot's ``planner.models`` block.  Mirrors
-        :meth:`switchyard.lib.processors.llm_classifier.LLMClassifierRequestProcessor._record_classifier_call`.
+        Tagging the spend with ``role="planner"`` keeps the planner model's
+        token/cost out of the routed-traffic buckets even when the planner and
+        executor share a model id (e.g. V4-Pro-as-planner + V4-Pro-as-executor
+        for self-planning sweeps).
         """
-        assert self._stats_accumulator is not None
         prompt = 0
         completion_tokens = 0
         cached = 0
@@ -696,13 +662,23 @@ class PlanningRequestProcessor:
             ptd = getattr(usage, "prompt_tokens_details", None)
             if ptd is not None:
                 cached = getattr(ptd, "cached_tokens", 0) or 0
-        await self._stats_accumulator.record_planner_usage(
-            model=self._config.model,
-            prompt_tokens=prompt,
-            completion_tokens=completion_tokens,
-            cached_tokens=cached,
-            latency_ms=latency_ms,
+        model = self._config.model
+        metrics.record_tokens(
+            model=model, tier="planner",
+            prompt=prompt, completion=completion_tokens, cached=cached,
         )
+        costs = estimate_model_cost(model, prompt, completion_tokens, cached)
+        for kind, key in (
+            ("input", "base_input_cost"),
+            ("cached", "cached_input_cost"),
+            ("output", "output_cost"),
+        ):
+            value = costs.get(key, 0.0)
+            if value:
+                metrics.record_cost(
+                    model=model, tier="planner", role="planner",
+                    kind=kind, cost_usd=value,
+                )
 
 
 def _build_audit_payload(

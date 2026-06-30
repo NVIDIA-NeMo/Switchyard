@@ -22,6 +22,12 @@ CTX_PROXY_ACTUAL_MODEL = "_proxy_actual_model"
 #: Routing metadata dict produced by RouteLLMRequestProcessor.
 CTX_ROUTING = "_routing"
 
+#: Router strategy name (``random`` / ``routellm`` / ``cascade`` /
+#: ``plan_execute`` / ``deterministic``) stamped by routing processors so
+#: executor-level OTel metrics can label routing overhead and decisions by
+#: strategy. Absent for passthrough chains.
+CTX_ROUTER_NAME = "_router"
+
 #: Original inbound format stored by translation layers.
 CTX_ORIGINAL_FORMAT = "_original_format"
 
@@ -56,7 +62,7 @@ CTX_UPSTREAM_HTTP_STATUS = "_upstream_http_status"
 CTX_UPSTREAM_HTTP_BODY = "_upstream_http_body"
 
 #: Set truthy by a backend that records its own per-attempt
-#: ``switchyard.lib.endpoints.outcome_metrics`` upstream-attempt counters
+#: ``switchyard.lib.metrics`` upstream-attempt counters
 #: (e.g. :class:`LatencyServiceLLMBackend`, which retries across endpoints and
 #: must count each attempt). When present, the endpoint layer skips its
 #: single-attempt fallback recording for this request so retry fan-out is not
@@ -72,6 +78,7 @@ __all__ = [
     "CTX_ORIGINAL_MODEL",
     "CTX_ORIGINAL_REQUEST",
     "CTX_PROXY_ACTUAL_MODEL",
+    "CTX_ROUTER_NAME",
     "CTX_ROUTING",
     "CTX_TARGET_FORMAT",
     "CTX_UPSTREAM_ATTEMPTS_RECORDED",

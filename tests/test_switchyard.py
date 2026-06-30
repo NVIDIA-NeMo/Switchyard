@@ -15,7 +15,7 @@ from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.roles import LLMBackend
 from switchyard.lib.switchyard import Switchyard
 from switchyard_rust.components import (
-    StatsRequestProcessor,
+    IntakeRequestProcessor,
 )
 from switchyard_rust.core import (
     ChatRequest,
@@ -398,7 +398,7 @@ class TestSwitchyard:
         chain = self._make_chain(
             request_processors=[
                 MetadataTagProcessor("before_native"),
-                StatsRequestProcessor(),
+                IntakeRequestProcessor(),
                 MetadataTagProcessor("after_native"),
             ],
             response_processors=[

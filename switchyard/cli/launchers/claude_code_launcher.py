@@ -36,7 +36,7 @@ import os
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -63,9 +63,6 @@ from switchyard.cli.launchers.launcher_runtime import (
     suppress_uvicorn_stream_handlers,
     wait_for_proxy_ready,
 )
-from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
-from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
-from switchyard.cli.launchers.session_summary import print_session_summary
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
 )
@@ -84,7 +81,6 @@ from switchyard.lib.route_table_builders import (
     build_single_model_table,
     build_tier_passthrough_switchyard,
 )
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.server.shell_tui import ShellTUI
 
 logger = logging.getLogger(__name__)
@@ -133,7 +129,6 @@ def _build_claude_switchyard(
     api_key: str,
     base_url: str,
     timeout: float | None,
-    stats: StatsAccumulator,
     extra_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
@@ -147,8 +142,6 @@ def _build_claude_switchyard(
             base_url=base_url,
             timeout_secs=timeout,
         ),
-        stats=stats,
-        enable_stats=True,
         extra_request_processors=extra_request_processors,
         extra_response_processors=extra_response_processors,
     )
@@ -230,15 +223,6 @@ def _print_ready_banner(port: int, display_model: str) -> None:
 
 
 
-def _make_footer_fn(
-    stats: StatsAccumulator,
-    model: str,
-    health: ProxyHealthMonitor,
-) -> Callable[[int], list[tuple[str, int]]]:
-    """Return the unified live-stats footer renderer."""
-    return LiveStatsFooter(stats, model, health).as_footer_fn()
-
-
 def _with_claude_aliases(src: SwitchyardApp) -> SwitchyardApp:
     """Expose every registered id under its ``claude-`` aliased AND raw form.
 
@@ -289,7 +273,6 @@ def _run_claude_with_switchyard(
     display_model: str,
     port: int | None,
     claude_args: list[str],
-    stats: StatsAccumulator,
     intake: LaunchIntakeConfig | None = None,
     strategy_summary: str | None = None,
 ) -> int:
@@ -308,9 +291,8 @@ def _run_claude_with_switchyard(
     this is a virtual model registered in Switchyard's local model
     table.
 
-    When stdin is a TTY, ``claude`` runs inside a ``ShellTUI`` that
-    draws a live token-usage footer at the bottom of the terminal.
-    When stdin is not a TTY (CI, piped input), falls back to a plain
+    When stdin is a TTY, ``claude`` runs inside a ``ShellTUI``; when
+    stdin is not a TTY (CI, piped input), falls back to a plain
     ``subprocess.run`` so headless use is unaffected.
 
     Returns the ``claude`` process's exit code (or ``127`` if the
@@ -372,7 +354,6 @@ def _run_claude_with_switchyard(
         if stdin_is_tty():
             banner_pause()
 
-        health = ProxyHealthMonitor(resolved_port)
         env_overrides = _claude_env(
             resolved_port,
             display_model,
@@ -387,14 +368,8 @@ def _run_claude_with_switchyard(
             env_overrides.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"),
         )
         if stdin_is_tty():
-            footer = LiveStatsFooter(
-                stats, display_model, health, table=table,
-                strategy_label=strategy_summary.split(":")[0].strip() if strategy_summary else None,
-            )
             tui = ShellTUI(
                 command=[claude_bin, *claude_args],
-                footer_fn=footer.as_footer_fn(),
-                footer_height=lambda: footer.height,
                 env=env_overrides,
             )
             return tui.run()
@@ -403,7 +378,6 @@ def _run_claude_with_switchyard(
             intake=intake,
         )
     finally:
-        print_session_summary(stats)
         server.should_exit = True
         thread.join(timeout=_SHUTDOWN_JOIN_S)
 
@@ -437,14 +411,12 @@ def launch_claude(
     binary wasn't found, ``130`` on Ctrl-C).
     """
     _quiet_launch_loggers()
-    stats = StatsAccumulator()
     intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
     switchyard = _build_claude_switchyard(
         model=model,
         api_key=api_key,
         base_url=base_url,
         timeout=timeout,
-        stats=stats,
         extra_request_processors=intake_request,
         extra_response_processors=intake_response,
     )
@@ -458,7 +430,6 @@ def launch_claude(
         assert isinstance(table, RouteTable)
         yaml_table = load_route_bundle_table(
             routing_profiles,
-            stats_accumulator=stats,
             pre_routing_request_processors=intake_request,
             extra_response_processors=intake_response,
         )
@@ -477,7 +448,6 @@ def launch_claude(
         display_model=model,
         port=port,
         claude_args=claude_args,
-        stats=stats,
         intake=intake,
         strategy_summary=strategy_summary,
     )
@@ -512,11 +482,9 @@ def launch_claude_deterministic_routing(
         return fetch_model_ids(base_url, api_key)
 
     _quiet_launch_loggers()
-    stats = StatsAccumulator()
     intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
     switchyard = build_deterministic_routing_switchyard(
         config,
-        stats,
         pre_routing_request_processors=intake_request,
         extra_response_processors=intake_response,
     )
@@ -524,7 +492,6 @@ def launch_claude_deterministic_routing(
     discovery_fn = None if discovery_disabled else _discovery_fn
     model_table = build_deterministic_routing_table(
         config,
-        stats,
         deterministic_routing_switchyard=switchyard,
         routing_model=routing_model,
         discovery_fn=discovery_fn,
@@ -536,7 +503,6 @@ def launch_claude_deterministic_routing(
         display_model=routing_model,
         port=port,
         claude_args=claude_args,
-        stats=stats,
         intake=intake,
         strategy_summary=deterministic_strategy_summary(config),
     )

@@ -56,13 +56,13 @@ after.
    for a one-off launch, or save provider defaults with `switchyard configure`.
    Do not assume launcher subcommands accept `--provider`; provider ids are a
    configure/defaults concern.
-3. Build a `StatsAccumulator` once for the launcher process.
-4. Build the single-target profile-backed app with
+3. Build the single-target profile-backed app with
    `build_tier_passthrough_switchyard(...)`, or load route YAML with
-   `load_route_bundle_table(...)`.
-5. If both a launcher model and YAML table are present, wrap the single model
+   `load_route_bundle_table(...)`. Metrics are emitted by the chain executor via
+   OpenTelemetry — launchers no longer thread a `StatsAccumulator`.
+4. If both a launcher model and YAML table are present, wrap the single model
    in a `RouteTable` with `build_single_model_table(...)` and merge YAML entries.
-6. Call `build_switchyard_app(...)`, start uvicorn in a daemon thread, wait for
+5. Call `build_switchyard_app(...)`, start uvicorn in a daemon thread, wait for
    `/health`, then spawn the external CLI.
 
 Claude, Codex, and OpenClaw differ only in how they configure the external
@@ -102,7 +102,7 @@ route YAML does not declare arbitrary Python processors.
 | Adding a launcher flag for a routing policy. | Add a route field in `switchyard/cli/route_bundle.py`. | Routing policies are composable YAML/profile concerns; launcher flags should stay small. |
 | Building `Switchyard(...)` manually in launcher code. | Use `build_tier_passthrough_switchyard(...)` or `load_route_bundle_table(...)`. | Launchers should not own chain internals or stats ordering. |
 | Reintroducing recipes, factories, middleware bundles, or pipeline wrappers. | Put construction in profile configs and dispatch with `RouteTable`. | Those abstractions were removed to keep construction flat and profile-owned. |
-| Writing a new stats collector in launcher code. | Pass one `StatsAccumulator` into the profile/route-table builder. | Live stats and `/v1/routing/stats` must read the same accumulator. |
+| Writing a live-stats footer / session summary / stats collector in launcher code. | Rely on the OpenTelemetry metrics the chain executor already emits; scrape `/metrics`. | The bespoke launcher footer and `StatsAccumulator` were removed in the OTel migration. |
 | Implementing routing backends inside `switchyard/cli/launchers/`. | Add backend/profile logic under `switchyard/lib/` or Rust components, then expose it through route YAML. | CLI-only routing drifts from `switchyard serve`. |
 | Importing heavy packages at launcher module top level. | Lazy-import inside the function that needs them. | Slim installs must still run `switchyard launch <agent> --help`. |
 

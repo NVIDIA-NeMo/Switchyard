@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from typing import Any, Self
 
+from switchyard.lib import metrics, spans
 from switchyard.lib.profiles.chain import ComponentChainProfile
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.table import profile_config
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.proxy_context import CTX_ROUTER_NAME, ProxyContext
 from switchyard_rust.components import set_stats_route_label
 from switchyard_rust.core import ChatRequest
 
@@ -27,6 +28,18 @@ class _ExecutorStatsTargetProcessor:
         """Record the executor as the selected stats target before planning."""
         ctx.selected_target = self._target_id
         set_stats_route_label(ctx, _EXECUTOR_STATS_TARGET)
+        # Plan-execute always serves the executor tier; the planner's own LLM call
+        # is timed under its own span so it stays out of the in-process overhead.
+        ctx.metadata[CTX_ROUTER_NAME] = "plan_execute"
+        with spans.route_decision_span(
+            router="plan_execute",
+            tier=_EXECUTOR_STATS_TARGET,
+            selected_target=self._target_id,
+        ):
+            pass
+        metrics.record_routing_decision(
+            router="plan_execute", source="planner", tier=_EXECUTOR_STATS_TARGET
+        )
         return request
 
 

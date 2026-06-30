@@ -13,15 +13,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use switchyard_components_v2::{
-    parse_profile_config_str, profile_stats_accumulator, ProfileConfigFormat,
-};
+use switchyard_components_v2::{parse_profile_config_str, ProfileConfigFormat};
 use switchyard_server::{build_switchyard_router, ServerState};
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn noop_profile_serves_all_inbound_formats_without_upstream() -> TestResult {
-    reset_stats()?;
     let app = build_switchyard_router(state_from_yaml(
         r#"
 profiles:
@@ -83,7 +80,6 @@ profiles:
 
 #[tokio::test]
 async fn passthrough_profile_routes_all_inbound_formats_to_configured_target() -> TestResult {
-    reset_stats()?;
     let Some(stub) = HttpStub::start(vec![
         StubResponse::ok(),
         StubResponse::ok(),
@@ -160,7 +156,6 @@ profiles:
 
 #[tokio::test]
 async fn random_routing_profile_covers_strong_and_weak_selection() -> TestResult {
-    reset_stats()?;
     let cases = [(1.0, "provider/strong"), (0.0, "provider/weak")];
     for (strong_probability, expected_model) in cases {
         let Some(stub) = HttpStub::start(vec![StubResponse::ok()])? else {
@@ -207,7 +202,6 @@ profiles:
 
 #[tokio::test]
 async fn cascade_profile_threshold_zero_uses_dimensions_signal_path() -> TestResult {
-    reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::ok()])? else {
         log_loopback_bind_skip();
         return Ok(());
@@ -249,17 +243,17 @@ profiles:
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0]["body"]["model"], "provider/weak");
 
-    let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
-    let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["cascade"]["dimensions"], 1);
-    assert_eq!(stats["classifier"]["total_requests"], 0);
-    assert_eq!(stats["models"]["provider/weak"]["tier"], "weak");
+    // The process meter is a singleton; assert the Prometheus surface mentions the
+    // dimensions routing decision and the weak-tier model rather than exact counts.
+    let metrics = metrics_text(app).await?;
+    assert!(metrics.contains("router=\"cascade\""));
+    assert!(metrics.contains("source=\"dimensions\""));
+    assert!(metrics.contains("provider/weak"));
     Ok(())
 }
 
 #[tokio::test]
 async fn cascade_profile_threshold_one_uses_llm_classifier_path() -> TestResult {
-    reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::classifier("strong"), StubResponse::ok()])?
     else {
         log_loopback_bind_skip();
@@ -308,17 +302,17 @@ profiles:
     assert_eq!(seen[0]["body"]["model"], "classifier/model");
     assert_eq!(seen[1]["body"]["model"], "provider/strong");
 
-    let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
-    let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["cascade"]["llm-classifier"], 1);
-    assert_eq!(stats["classifier"]["total_requests"], 1);
-    assert_eq!(stats["models"]["provider/strong"]["tier"], "strong");
+    // The process meter is a singleton; assert the Prometheus surface mentions the
+    // llm-classifier routing decision, classifier-tagged spend, and strong tier.
+    let metrics = metrics_text(app).await?;
+    assert!(metrics.contains("source=\"llm-classifier\""));
+    assert!(metrics.contains("tier=\"classifier\""));
+    assert!(metrics.contains("tier=\"strong\""));
     Ok(())
 }
 
 #[tokio::test]
 async fn cascade_profile_retries_fallback_after_context_overflow() -> TestResult {
-    reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::context_overflow(), StubResponse::ok()])?
     else {
         log_loopback_bind_skip();
@@ -362,16 +356,16 @@ profiles:
     assert_eq!(seen[0]["body"]["model"], "provider/weak");
     assert_eq!(seen[1]["body"]["model"], "provider/strong");
 
-    let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
-    let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["cascade"]["fall_open"], 1);
-    assert_eq!(stats["models"]["provider/strong"]["tier"], "strong");
+    // The process meter is a singleton; assert the Prometheus surface mentions the
+    // fall_open routing decision and the strong-tier model.
+    let metrics = metrics_text(app).await?;
+    assert!(metrics.contains("source=\"fall_open\""));
+    assert!(metrics.contains("tier=\"strong\""));
     Ok(())
 }
 
 #[tokio::test]
 async fn latency_service_profile_uses_health_selection_and_retries_failed_target() -> TestResult {
-    reset_stats()?;
     let Some(stub) = HttpStub::start(vec![
         StubResponse::latency_health(),
         StubResponse::error(503, json!({"error": {"message": "fast unavailable"}})),
@@ -420,7 +414,6 @@ async fn latency_service_profile_uses_health_selection_and_retries_failed_target
 
 #[tokio::test]
 async fn latency_service_profile_propagates_last_upstream_error_after_retries() -> TestResult {
-    reset_stats()?;
     let Some(stub) = HttpStub::start(vec![
         StubResponse::latency_health(),
         StubResponse::error(503, json!({"error": {"message": "fast unavailable"}})),
@@ -809,8 +802,12 @@ async fn json_body(response: axum::response::Response) -> TestResult<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn reset_stats() -> switchyard_core::Result<()> {
-    profile_stats_accumulator().reset()
+/// Fetches `GET /metrics` and returns the Prometheus exposition text.
+async fn metrics_text(app: axum::Router) -> TestResult<String> {
+    let response = app.oneshot(request("GET", "/metrics", None)?).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok(String::from_utf8(bytes.to_vec())?)
 }
 
 fn log_loopback_bind_skip() {
