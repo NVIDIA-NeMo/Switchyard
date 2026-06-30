@@ -16,6 +16,16 @@ on:
         required: true
         type: boolean
         default: false
+      build_dev_matrix:
+        description: "Build the complete dev sdist and wheel matrix."
+        required: true
+        type: boolean
+        default: false
+      publish_dev_matrix_to_pypi:
+        description: "Publish the complete dev matrix to PyPI with Trusted Publishing."
+        required: true
+        type: boolean
+        default: false
       dev_version:
         description: "PEP 440 .dev version for the dev wheel."
         required: true
@@ -25,6 +35,7 @@ on:
 env:
   DEV_PACKAGE_NAME: "nemo-switchyard"
   MATURIN_VERSION: "1.11.5"
+  PYPI_CHECK_URL: "https://pypi.org/simple/nemo-switchyard/"
 
 permissions:
   contents: read
@@ -34,6 +45,7 @@ jobs:
   # - Root v* tags run the complete release validation and wheel matrix.
   # - Manual dev builds create exactly one Linux x86_64 artifact, with an explicit opt-in
   #   to publish that dev wheel to PyPI for prerelease testing.
+  # - Manual dev matrix builds reuse the complete release matrix with stamped .dev metadata.
   #
   # This deliberately avoids NVIDIA-internal release services from GitHub-hosted
   # runners. The runner could not resolve artifactory.nvidia.com or
@@ -43,7 +55,7 @@ jobs:
   # one-day GitHub Actions artifacts or publish directly to PyPI through Trusted Publishing.
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -64,7 +76,7 @@ jobs:
 
   rust-release-checks:
     name: Release Rust checks
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +91,7 @@ jobs:
 
   source-dist:
     name: Source distribution
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ubuntu-latest
     steps:
@@ -90,6 +102,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --locked
+      - name: Stamp dev source distribution metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix }}
+        run: |
+          python scripts/release/set_dev_wheel_version.py \
+            "${{ inputs.dev_version }}" \
+            --package-name "${DEV_PACKAGE_NAME}"
       - name: Build sdist
         run: uv run maturin sdist --out dist
       - uses: actions/upload-artifact@v4
@@ -99,7 +117,7 @@ jobs:
 
   wheels:
     name: Wheel (${{ matrix.label }})
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     needs: [python-release-checks, rust-release-checks]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -133,6 +151,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Stamp dev wheel metadata
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix }}
+        shell: bash
+        run: |
+          python scripts/release/set_dev_wheel_version.py \
+            "${{ inputs.dev_version }}" \
+            --package-name "${DEV_PACKAGE_NAME}"
       - name: Setup QEMU for Linux cross builds
         if: matrix.label == 'linux-aarch64'
         uses: docker/setup-qemu-action@v3
@@ -362,7 +387,7 @@ jobs:
 
   list-distributions:
     name: List distributions
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
     needs: [source-dist, wheels]
     runs-on: ubuntu-latest
     steps:
@@ -373,6 +398,27 @@ jobs:
           merge-multiple: true
       - name: List distributions
         run: ls -l dist
+
+  publish-dev-matrix:
+    name: Publish dev matrix to PyPI
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix && inputs.publish_dev_matrix_to_pypi }}
+    needs: [source-dist, wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: nemo-switchyard-*
+          merge-multiple: true
+      - uses: astral-sh/setup-uv@v6
+      - name: List distributions
+        run: ls -l dist
+      - name: Publish dev matrix to PyPI
+        run: uv publish --trusted-publishing always --check-url "${PYPI_CHECK_URL}" dist/*
 
   publish:
     name: Publish distributions

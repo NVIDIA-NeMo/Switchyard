@@ -7,6 +7,7 @@ Switchyard currently follows the OSS-style NeMo path for GitHub builds:
 - regular CI runs tests, linting, type checks, Rust checks, and slim-install smoke checks;
 - manual dev builds create one Linux x86_64 wheel as a one-day GitHub Actions artifact;
 - manual dev builds can optionally publish that exact verified wheel to PyPI;
+- manual dev matrix builds can publish the full sdist and wheel set to PyPI;
 - root `v*` tags run the complete release validation and wheel matrix;
 - public PyPI/GitHub publishing happens only from approved `v*` tag releases.
 
@@ -71,6 +72,28 @@ matching pending trusted publisher:
 
 This publishes only the single Linux x86_64 dev wheel. Use a root `v*` tag for the complete release
 matrix.
+
+## Manual Dev Matrix PyPI Upload
+
+Use this to prove the complete release matrix can publish before cutting an official tag:
+
+| Input | Value |
+|---|---|
+| `build_dev_artifact` | `false` |
+| `publish_dev_to_pypi` | `false` |
+| `build_dev_matrix` | `true` |
+| `publish_dev_matrix_to_pypi` | `true` |
+| `dev_version` | `0.0.1.dev0` |
+
+This path stamps the requested `.dev` version, runs the release checks, builds the sdist, builds the
+full abi3 wheel matrix, and publishes the combined distributions with:
+
+```bash
+uv publish --trusted-publishing always --check-url https://pypi.org/simple/nemo-switchyard/ dist/*
+```
+
+`--check-url` lets the job skip files that were already uploaded for the same version. That matters
+when a single-wheel dev upload already published the Linux x86_64 wheel.
 
 ## Official Release Build
 
