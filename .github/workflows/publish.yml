@@ -31,8 +31,8 @@ permissions:
 
 jobs:
   # OSS-style split:
-  # - Root v0.1.0-style tags run validation, build the complete matrix, publish to PyPI, and create a
-  #   GitHub Release.
+  # - Root vMAJOR.MINOR.PATCH tags run validation, build the complete matrix, publish to
+  #   PyPI, and create a GitHub Release.
   # - Manual dev builds create artifacts only. They are useful for branch validation but never
   #   publish to PyPI.
   #
@@ -57,7 +57,7 @@ jobs:
 
           tag = os.environ["GITHUB_REF_NAME"]
           if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
-              raise SystemExit(f"release tags must look like v0.1.0, got {tag!r}")
+              raise SystemExit(f"release tags must look like vMAJOR.MINOR.PATCH, got {tag!r}")
 
           with open("pyproject.toml", "rb") as file:
               pyproject = tomllib.load(file)
