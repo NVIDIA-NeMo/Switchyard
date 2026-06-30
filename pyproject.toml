@@ -91,7 +91,7 @@ all = [
 # extra so it is not advertised in the published wheel's METADATA. This
 # keeps pytest / ruff / mypy / pygments-via-pytest out of downstream
 # vulnerability scans, since they're never installed by `pip install
-# switchyard` or any of the user-facing extras above.
+# nemo-switchyard` or any of the user-facing extras above.
 #
 # Install dev tooling with `uv sync` (the `dev` group is uv's default and
 # is installed automatically) or `uv sync --group dev` to be explicit.

@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests that CLI constants and runtime strings use the renamed 'switchyard' package name.
+"""Tests that CLI constants and runtime strings use the `switchyard` command name.
 
-These tests fail when the code still references the old 'nemo-switchyard' name.
+The PyPI distribution is `nemo-switchyard`, but user-facing CLI names,
+configuration directories, and runtime model descriptions stay `switchyard`.
 """
 
 from __future__ import annotations

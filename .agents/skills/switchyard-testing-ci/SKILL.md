@@ -288,8 +288,8 @@ explicit user intent; after changing dependencies run `uv lock`, `uv sync`, and 
 
 ### Stale package names
 
-The package and CLI are `switchyard`. Do not reintroduce `nemo_switchyard` imports or public docs
-unless a test explicitly preserves legacy context. Check:
+The distribution package is `nemo-switchyard`; imports and the CLI are `switchyard`. Do not
+introduce `nemo_switchyard` imports or publish docs that imply `pip install switchyard`. Check:
 
 ```bash
 uv run pytest tests/test_cli_stale_names.py tests/test_no_stale_module_paths.py tests/test_version_package_name.py -v -o addopts=
