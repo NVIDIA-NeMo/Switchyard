@@ -233,13 +233,23 @@ impl ProxyContext {
     ) -> Result<&RoutingEvent, RoutingTraceError> {
         let request_id = self.request_id.clone();
         if self.get::<RoutingTrace>().is_none() {
-            self.insert(RoutingTrace::new(request_id.clone()));
+            let mut trace = RoutingTrace::new(request_id);
+            trace.record(data)?;
+            self.insert(trace);
+            return self
+                .get::<RoutingTrace>()
+                .and_then(|trace| trace.events.last())
+                .ok_or(RoutingTraceError::StorageUnavailable);
         }
         let trace = self
             .get_mut::<RoutingTrace>()
             .ok_or(RoutingTraceError::StorageUnavailable)?;
+        trace.record(data)?;
         trace.request_id = request_id;
-        trace.record(data)
+        trace
+            .events
+            .last()
+            .ok_or(RoutingTraceError::StorageUnavailable)
     }
 
     /// Returns the routing audit recorded for this request, when present.
@@ -490,5 +500,18 @@ mod tests {
         assert!(ctx.take_routing_trace().is_some());
         assert!(ctx.routing_trace().is_none());
         Ok(())
+    }
+
+    #[test]
+    fn invalid_first_event_does_not_create_an_empty_trace() {
+        let mut ctx = ProxyContext::new();
+        let mut decision = event(RoutingEventKind::Decision, "select");
+        decision.source = Some("policy".to_string());
+
+        assert_eq!(
+            ctx.record_routing_event(decision),
+            Err(RoutingTraceError::MissingDecisionSelection),
+        );
+        assert!(ctx.routing_trace().is_none());
     }
 }
