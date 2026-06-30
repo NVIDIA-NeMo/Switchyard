@@ -3,7 +3,7 @@ name: Build and publish release distributions
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       build_dev_artifact:
@@ -11,18 +11,8 @@ on:
         required: true
         type: boolean
         default: false
-      publish_dev_to_pypi:
-        description: "Publish the dev wheel artifact to PyPI with Trusted Publishing."
-        required: true
-        type: boolean
-        default: false
       build_dev_matrix:
-        description: "Build the complete dev sdist and wheel matrix."
-        required: true
-        type: boolean
-        default: false
-      publish_dev_matrix_to_pypi:
-        description: "Publish the complete dev matrix to PyPI with Trusted Publishing."
+        description: "Build the complete dev sdist and wheel matrix as artifacts."
         required: true
         type: boolean
         default: false
@@ -35,27 +25,55 @@ on:
 env:
   DEV_PACKAGE_NAME: "nemo-switchyard"
   MATURIN_VERSION: "1.11.5"
-  PYPI_CHECK_URL: "https://pypi.org/simple/nemo-switchyard/"
 
 permissions:
   contents: read
 
 jobs:
   # OSS-style split:
-  # - Root v* tags run the complete release validation and wheel matrix.
-  # - Manual dev builds create exactly one Linux x86_64 artifact, with an explicit opt-in
-  #   to publish that dev wheel to PyPI for prerelease testing.
-  # - Manual dev matrix builds reuse the complete release matrix with stamped .dev metadata.
+  # - Root v0.1.0-style tags run validation, build the complete matrix, publish to PyPI, and create a
+  #   GitHub Release.
+  # - Manual dev builds create artifacts only. They are useful for branch validation but never
+  #   publish to PyPI.
   #
   # This deliberately avoids NVIDIA-internal release services from GitHub-hosted
   # runners. The runner could not resolve artifactory.nvidia.com or
   # kitmaker-portal.nvidia.com during probes, this repo does not currently have
   # Dynamo-style NVIDIA self-hosted release runners, and GitHub Packages is not a
-  # PyPI-compatible package index. Until that changes, dev wheels either stay as
-  # one-day GitHub Actions artifacts or publish directly to PyPI through Trusted Publishing.
+  # PyPI-compatible package index.
+  validate-release-ref:
+    name: Validate release ref
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release tag
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(f"release tags must look like v0.1.0, got {tag!r}")
+
+          with open("pyproject.toml", "rb") as file:
+              pyproject = tomllib.load(file)
+          package_version = pyproject["project"]["version"]
+          expected = f"v{package_version}"
+          if tag != expected:
+              raise SystemExit(
+                  f"release tag {tag!r} does not match pyproject version {package_version!r}"
+              )
+          print(f"release tag {tag} matches pyproject version {package_version}")
+          PY
+
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
+    needs: [validate-release-ref]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -77,6 +95,7 @@ jobs:
   rust-release-checks:
     name: Release Rust checks
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
+    needs: [validate-release-ref]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -389,27 +408,6 @@ jobs:
               print(f"{filename}: {metadata['Name']} {metadata['Version']}")
           PY
 
-  publish-dev-artifact:
-    name: Publish dev wheel to PyPI
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_artifact && inputs.publish_dev_to_pypi }}
-    needs: [verify-dev-artifact]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: dev-wheel-*
-          merge-multiple: true
-      - uses: astral-sh/setup-uv@v6
-      - name: List distributions
-        run: ls -l dist
-      - name: Publish dev wheel to PyPI
-        run: uv publish --trusted-publishing always dist/*.whl
-
   list-distributions:
     name: List distributions
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix) }}
@@ -423,27 +421,6 @@ jobs:
           merge-multiple: true
       - name: List distributions
         run: ls -l dist
-
-  publish-dev-matrix:
-    name: Publish dev matrix to PyPI
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix && inputs.publish_dev_matrix_to_pypi }}
-    needs: [source-dist, wheels]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: nemo-switchyard-*
-          merge-multiple: true
-      - uses: astral-sh/setup-uv@v6
-      - name: List distributions
-        run: ls -l dist
-      - name: Publish dev matrix to PyPI
-        run: uv publish --trusted-publishing always --check-url "${PYPI_CHECK_URL}" dist/*
 
   publish:
     name: Publish distributions
