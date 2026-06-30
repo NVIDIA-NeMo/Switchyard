@@ -151,7 +151,7 @@ jobs:
             manylinux_arch: x86_64
             smoke: true
           - label: linux-aarch64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             manylinux_arch: aarch64
             smoke: false
@@ -167,6 +167,10 @@ jobs:
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
             smoke: true
+          - label: windows-arm64
+            os: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            smoke: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -180,7 +184,7 @@ jobs:
             "${{ inputs.dev_version }}" \
             --package-name "${DEV_PACKAGE_NAME}"
       - name: Setup QEMU for Linux cross builds
-        if: matrix.label == 'linux-aarch64'
+        if: runner.os == 'Linux' && runner.arch != 'ARM64' && matrix.manylinux_arch == 'aarch64'
         uses: docker/setup-qemu-action@v3
       - name: Install maturin
         if: runner.os != 'Linux'

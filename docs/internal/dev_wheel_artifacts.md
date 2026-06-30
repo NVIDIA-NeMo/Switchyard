@@ -102,7 +102,8 @@ Create a root `v*` tag only when a real release has been approved. Tag pushes ru
 - Python release checks on Python 3.12, 3.13, and 3.14;
 - Rust fmt, clippy, and workspace tests;
 - source distribution build;
-- full abi3 wheel matrix for Linux x86_64, Linux aarch64, macOS x86_64, macOS arm64, and Windows x86_64;
+- full abi3 wheel matrix for Linux x86_64, Linux aarch64, macOS x86_64, macOS arm64,
+  Windows x86_64, and Windows arm64;
 - native wheel smoke installs where the runner can execute the artifact.
 
 The official `publish` job uses `uv publish --trusted-publishing always`, so PyPI project creation
