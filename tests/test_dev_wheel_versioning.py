@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts/release/set_devzone_prerelease_version.py"
-_SPEC = importlib.util.spec_from_file_location("set_devzone_prerelease_version", _MODULE_PATH)
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts/release/set_dev_wheel_version.py"
+_SPEC = importlib.util.spec_from_file_location("set_dev_wheel_version", _MODULE_PATH)
 assert _SPEC is not None
 assert _SPEC.loader is not None
-set_devzone_prerelease_version = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = set_devzone_prerelease_version
-_SPEC.loader.exec_module(set_devzone_prerelease_version)
+set_dev_wheel_version = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = set_dev_wheel_version
+_SPEC.loader.exec_module(set_dev_wheel_version)
 
 
 @pytest.mark.parametrize(
@@ -26,8 +26,8 @@ _SPEC.loader.exec_module(set_devzone_prerelease_version)
         ("1.2.3.dev42", "1.2.3.dev42"),
     ],
 )
-def test_parse_devzone_prerelease_version(raw_version: str, normalized: str) -> None:
-    version = set_devzone_prerelease_version.parse_devzone_prerelease_version(raw_version)
+def test_parse_dev_wheel_version(raw_version: str, normalized: str) -> None:
+    version = set_dev_wheel_version.parse_dev_wheel_version(raw_version)
 
     assert version.version == normalized
 
@@ -42,9 +42,9 @@ def test_parse_devzone_prerelease_version(raw_version: str, normalized: str) -> 
         "v0.0.1.dev0",
     ],
 )
-def test_parse_devzone_prerelease_version_rejects_non_dev_versions(raw_version: str) -> None:
+def test_parse_dev_wheel_version_rejects_non_dev_versions(raw_version: str) -> None:
     with pytest.raises(ValueError):
-        set_devzone_prerelease_version.parse_devzone_prerelease_version(raw_version)
+        set_dev_wheel_version.parse_dev_wheel_version(raw_version)
 
 
 def test_metadata_file_updates(tmp_path: Path) -> None:
@@ -55,12 +55,12 @@ def test_metadata_file_updates(tmp_path: Path) -> None:
     init = tmp_path / "__init__.py"
     init.write_text('__all__ = []\n\n__version__ = "0.1.0"\n')
 
-    assert set_devzone_prerelease_version.update_pyproject(
+    assert set_dev_wheel_version.update_pyproject(
         pyproject,
         package_name="nemo-switchyard",
         version="0.0.1.dev0",
     )
-    assert set_devzone_prerelease_version.update_python_init(init, "0.0.1.dev0")
+    assert set_dev_wheel_version.update_python_init(init, "0.0.1.dev0")
 
     assert 'name = "nemo-switchyard"' in pyproject.read_text()
     assert 'version = "0.0.1.dev0"' in pyproject.read_text()

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stamp Devzone prerelease Python package metadata for CI wheel builds."""
+"""Stamp temporary Python package metadata for dev wheel artifact builds."""
 
 from __future__ import annotations
 
@@ -19,21 +19,21 @@ PYTHON_VERSION_RE = re.compile(r'^(__version__\s*=\s*")([^"]+)(".*)$', re.MULTIL
 
 
 @dataclasses.dataclass(frozen=True)
-class DevzonePrereleaseVersion:
-    """Normalized metadata used for a Devzone prerelease wheel build."""
+class DevWheelVersion:
+    """Normalized metadata used for a short-lived dev wheel artifact build."""
 
     version: str
 
 
-def parse_devzone_prerelease_version(version: str) -> DevzonePrereleaseVersion:
+def parse_dev_wheel_version(version: str) -> DevWheelVersion:
     """Return the normalized PEP 440 `.dev` version or raise `ValueError`."""
 
     match = DEV_VERSION_RE.fullmatch(version)
     if match is None:
-        raise ValueError("Devzone prerelease versions must look like 0.0.1.dev0")
+        raise ValueError("dev wheel versions must look like 0.0.1.dev0")
 
     number = match.group("number") or "0"
-    return DevzonePrereleaseVersion(version=f"{match.group('release')}.dev{number}")
+    return DevWheelVersion(version=f"{match.group('release')}.dev{number}")
 
 
 def update_pyproject(path: Path, *, package_name: str, version: str) -> bool:
@@ -73,7 +73,7 @@ def update_pyproject(path: Path, *, package_name: str, version: str) -> bool:
 
 
 def update_python_init(path: Path, version: str) -> bool:
-    """Set `switchyard.__version__` for the prerelease wheel."""
+    """Set `switchyard.__version__` for the dev wheel artifact."""
 
     text = path.read_text()
     updated, count = PYTHON_VERSION_RE.subn(rf"\g<1>{version}\g<3>", text, count=1)
@@ -85,7 +85,7 @@ def update_python_init(path: Path, version: str) -> bool:
     return False
 
 
-def apply_version(version: DevzonePrereleaseVersion, *, package_name: str) -> None:
+def apply_version(version: DevWheelVersion, *, package_name: str) -> None:
     """Update package metadata files used by maturin wheel builds."""
 
     changes = [
@@ -102,13 +102,13 @@ def apply_version(version: DevzonePrereleaseVersion, *, package_name: str) -> No
 
     changed = [path for path, did_change in changes if did_change]
     if changed:
-        print("Set Devzone prerelease metadata:")
+        print("Set dev wheel metadata:")
         print(f"  Package: {package_name}")
         print(f"  Version: {version.version}")
         for path in changed:
             print(f"  updated {path}")
     else:
-        print(f"Devzone prerelease metadata already set for {package_name} {version.version}")
+        print(f"dev wheel metadata already set for {package_name} {version.version}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        version = parse_devzone_prerelease_version(args.version)
+        version = parse_dev_wheel_version(args.version)
         if args.print_version:
             print(version.version)
             return 0
