@@ -87,7 +87,7 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace -- --test-threads=1
 
   source-dist:
     name: Source distribution
