@@ -3,9 +3,11 @@
 
 //! Random-routing profile implemented as a single profile-owned runtime.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use serde_json::Value;
 use switchyard_components::request_processors::{
     RandomRoutingDecision, RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier,
 };
@@ -14,10 +16,12 @@ use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result, SwitchyardError};
 
 use crate::backend::{native_target_backend, TargetBackend};
+use crate::decision::{routing_target, summary_profile_input};
+use crate::decision::{DecisionProvider, ROUTING_DECISION_SCHEMA_VERSION};
 use crate::profile_stats_accumulator;
 use crate::{
-    decision_for_random_routing, profile_config, Profile, ProfileConfig, ProfileHooks,
-    ProfileInput, ProfileResponse, RoutingDecision, RoutingMetadata, RoutingRequest,
+    profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
+    RoutingDecision, RoutingMetadata, RoutingRequest,
 };
 
 /// Config for the flatter random-routing profile.
@@ -196,6 +200,41 @@ impl Profile for RandomRoutingProfile {
     async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
         decision_for_random_routing(self, request).await
     }
+}
+
+/// Produces a decision-only Random routing response without backend dispatch.
+pub async fn decision_for_random_routing(
+    profile: &RandomRoutingProfile,
+    request: RoutingRequest,
+) -> Result<RoutingDecision> {
+    request.validate()?;
+    let input = summary_profile_input(&request)?;
+    let processed = profile.process(input).await?;
+    let target = profile.target_for_decision(&processed.decision)?;
+    Ok(RoutingDecision {
+        schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
+        decision_id: format!(
+            "{}:{}:{}",
+            request.identity.request_id,
+            processed.decision.selected_target,
+            processed.decision.draw
+        ),
+        router: DecisionProvider {
+            name: "random-routing".to_string(),
+            version: "v1".to_string(),
+        },
+        route: routing_target(target, processed.decision.tier.as_str().to_string())?,
+        confidence: None,
+        reason_code: Some("random_weighted".to_string()),
+        reason_summary: Some("selected by weighted random routing".to_string()),
+        metadata: BTreeMap::from([
+            (
+                "strong_probability".to_string(),
+                Value::from(processed.decision.strong_probability),
+            ),
+            ("draw".to_string(), Value::from(processed.decision.draw)),
+        ]),
+    })
 }
 
 /// Default probability matches the existing random-routing config.
