@@ -97,6 +97,10 @@ pub(crate) fn py_core_error(error: SwitchyardError) -> PyErr {
             SwitchyardDuplicateRegistrationError::new_err(message)
         }
         SwitchyardError::ModelNotFound { .. } => SwitchyardModelNotFoundError::new_err(message),
+        SwitchyardError::DecisionProfileNotFound { .. }
+        | SwitchyardError::DecisionUnsupported { .. } => {
+            SwitchyardInvalidRequestError::new_err(message)
+        }
         SwitchyardError::UnsupportedRequestType { .. } => {
             SwitchyardUnsupportedRequestTypeError::new_err(message)
         }
