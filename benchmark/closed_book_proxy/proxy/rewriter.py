@@ -82,7 +82,6 @@ class ClosedBookProxy:
             )
         )
         self._request_map_lock = threading.Lock()
-        self._request_ordinal = 0
         self.allowed_hosts = self._load_allowed_hosts()
 
     def _load_allowed_hosts(self) -> set[str]:
@@ -164,18 +163,9 @@ class ClosedBookProxy:
         flow.request.headers["x-request-id"] = request_id
 
         with self._request_map_lock:
-            self._request_ordinal += 1
-            record = {
-                "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "ordinal": self._request_ordinal,
-                "method": flow.request.method.upper(),
-                "host": _normalized_host(flow.request.pretty_host or flow.request.host),
-                "path": _normalized_path(flow.request.path),
-                "request_id": request_id,
-            }
             try:
                 with self.request_map.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(record, sort_keys=True) + "\n")
+                    fh.write(json.dumps({"request_id": request_id}) + "\n")
             except OSError:
                 log.exception("Failed to append proxy request map to %s", self.request_map)
 
