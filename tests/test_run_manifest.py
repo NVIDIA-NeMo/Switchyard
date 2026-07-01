@@ -102,16 +102,6 @@ def test_cli_write_applies_extra_fields(tmp_path: Path) -> None:
             str(run_dir / "harbor_result.json"),
             "--routing-stats-json",
             str(run_dir / "routing_stats_final.json"),
-            "--routing-trace-jsonl",
-            str(run_dir / "routing-traces" / "routing_trace.jsonl"),
-            "--routing-trace-joined-jsonl",
-            str(run_dir / "routing-traces" / "routing_trace_joined.jsonl"),
-            "--routing-trace-report-json",
-            str(run_dir / "routing-traces" / "routing_trace_completeness.json"),
-            "--routing-trace-status",
-            "predicted",
-            "--routing-trace-capture-content",
-            "1",
             "--extra",
             'server.note="external"',
         ]
@@ -122,9 +112,6 @@ def test_cli_write_applies_extra_fields(tmp_path: Path) -> None:
     assert manifest["run"]["harbor_command"] == [str(harbor_bin)]
     assert manifest["run"]["harbor_version"] == "harbor test 9.9"
     assert manifest["server"]["note"] == "external"
-    assert manifest["routing_trace"]["status"] == "predicted"
-    assert manifest["routing_trace"]["capture_content"] is True
-    assert manifest["routing_trace"]["raw_jsonl_status"] == "predicted"
     assert "benchmark" not in manifest["harbor"]
     assert manifest["harbor"]["path"] == str(dataset)
     assert manifest["harbor"]["dataset_fingerprint"].startswith("sha256:")
@@ -285,7 +272,6 @@ def test_cli_write_records_direct_upstream_mode_without_routing_stats(tmp_path: 
     assert manifest["server"]["upstream_api_key_env"] == "NVIDIA_API_KEY"
     assert manifest["server"]["routing_profiles"] is None
     assert manifest["outcomes"]["routing_stats_json_status"] == "not-requested"
-    assert manifest["routing_trace"]["status"] == "not-requested"
 
     rc = module.finalize_manifest(out, harbor_rc=0, harbor_job_dir=run_dir / "jobs" / "job")
 
@@ -449,45 +435,6 @@ def test_finalize_copies_harbor_result_and_marks_stats(tmp_path: Path) -> None:
     assert manifest["outcomes"]["harbor_result_json_status"] == "present"
     assert manifest["outcomes"]["routing_stats_json_status"] == "present"
     assert (run_dir / "harbor_result.json").is_file()
-
-
-def test_finalize_records_routing_trace_artifacts_and_completeness(tmp_path: Path) -> None:
-    module = _load_manifest_module()
-    out = tmp_path / "run_manifest.json"
-    trace_dir = tmp_path / "run" / "routing-traces"
-    trace_dir.mkdir(parents=True)
-    raw = trace_dir / "routing_trace.jsonl"
-    joined = trace_dir / "routing_trace_joined.jsonl"
-    report = trace_dir / "routing_trace_completeness.json"
-    raw.write_text('{"request_id":"r1"}\n')
-    joined.write_text('{"request_id":"r1","outcome":{"status":"pass"}}\n')
-    report.write_text(json.dumps({
-        "status": "complete",
-        "counts": {"joined_requests": 1, "outcome_pass": 1},
-    }))
-
-    module.write_manifest(
-        out,
-        routing_trace={
-            "status": "predicted",
-            "capture_content": True,
-            "raw_jsonl": str(raw),
-            "joined_jsonl": str(joined),
-            "report_json": str(report),
-        },
-        outcomes={"harbor_rc": None},
-    )
-
-    rc = module.finalize_manifest(out, harbor_rc=0)
-
-    assert rc == 0
-    trace = json.loads(out.read_text())["routing_trace"]
-    assert trace["status"] == "complete"
-    assert trace["completeness_status"] == "complete"
-    assert trace["counts"] == {"joined_requests": 1, "outcome_pass": 1}
-    for key in ("raw_jsonl", "joined_jsonl", "report_json"):
-        assert trace[f"{key}_status"] == "present"
-        assert trace[f"{key}_digest"].startswith("sha256:")
 
 
 def test_finalize_copies_proxy_strip_log_artifact(tmp_path: Path) -> None:

@@ -266,8 +266,6 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
         "OPENCODE_VERSION": "1.14.31",
     }
     assert manifest["closed_book"]["proxy_asset_digest"].startswith("sha256:")
-    assert manifest["closed_book"]["proxy_strip_log_path"] == "/etc/proxy-public/strip.jsonl"
-    assert manifest["closed_book"]["proxy_strip_artifact_path"] == "/etc/proxy-ca/strip.jsonl"
     assert manifest["closed_book"]["proxy_request_map_path"] == (
         "/etc/proxy-public/request_map.jsonl"
     )

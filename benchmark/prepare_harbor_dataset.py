@@ -505,7 +505,6 @@ def prepare_dataset(
             "proxy_asset_digest": proxy_digest,
             "proxy_allowlist_hosts": list(proxy_allowlist_hosts),
             "proxy_strip_log_path": "/etc/proxy-public/strip.jsonl",
-            "proxy_strip_artifact_path": "/etc/proxy-ca/strip.jsonl",
             "proxy_request_map_path": "/etc/proxy-public/request_map.jsonl",
             "proxy_request_map_artifact_path": "/etc/proxy-ca/request_map.jsonl",
             "agent_internal_network": "agent-internal",

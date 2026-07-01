@@ -223,43 +223,6 @@ def _copy_if_present(source: Path | None, dest: Path | None) -> str:
     return "present"
 
 
-def _finalize_routing_trace(manifest: dict[str, Any]) -> None:
-    trace = manifest.get("routing_trace")
-    if not isinstance(trace, dict) or trace.get("status") == "not-requested":
-        return
-
-    statuses: list[str] = []
-    for key in ("raw_jsonl", "joined_jsonl", "report_json"):
-        raw_path = trace.get(key)
-        artifact = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
-        status = "present" if artifact is not None and artifact.is_file() else "missing"
-        trace[f"{key}_status"] = status
-        statuses.append(status)
-        trace[f"{key}_digest"] = path_digest(artifact) if artifact is not None else None
-
-    report_status = "missing"
-    report_path = trace.get("report_json")
-    if isinstance(report_path, str) and Path(report_path).is_file():
-        try:
-            report = json.loads(Path(report_path).read_text())
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            report_status = "invalid"
-        else:
-            if isinstance(report, dict) and report.get("status") in {"complete", "incomplete"}:
-                report_status = str(report["status"])
-                counts = report.get("counts")
-                trace["counts"] = counts if isinstance(counts, dict) else None
-            else:
-                report_status = "invalid"
-
-    trace["status"] = (
-        "complete"
-        if report_status == "complete" and all(status == "present" for status in statuses)
-        else "incomplete"
-    )
-    trace["completeness_status"] = report_status
-
-
 def finalize_manifest(
     path: Path,
     *,
@@ -300,8 +263,6 @@ def finalize_manifest(
             if strip_source is not None:
                 break
         closed_book["proxy_strip_log_status"] = _copy_if_present(strip_source, strip_dest)
-
-    _finalize_routing_trace(manifest)
 
     outcomes["harbor_rc"] = harbor_rc
     outcomes["completed_at"] = _iso_timestamp()
@@ -373,11 +334,6 @@ def _cli_main(argv: list[str] | None = None) -> int:
     write.add_argument("--harbor-result-json", type=Path, required=True)
     write.add_argument("--routing-stats-json", type=Path, required=True)
     write.add_argument("--routing-stats-status", default="predicted")
-    write.add_argument("--routing-trace-jsonl", type=Path, default=None)
-    write.add_argument("--routing-trace-joined-jsonl", type=Path, default=None)
-    write.add_argument("--routing-trace-report-json", type=Path, default=None)
-    write.add_argument("--routing-trace-status", default="not-requested")
-    write.add_argument("--routing-trace-capture-content", default="0")
     write.add_argument("--extra", action="append", default=[])
 
     finalize = sub.add_parser("finalize")
@@ -462,22 +418,6 @@ def _cli_main(argv: list[str] | None = None) -> int:
             path_digest(dataset_manifest_snapshot) if dataset_manifest_snapshot else None
         ),
     }
-    routing_trace_status = ns.routing_trace_status
-    routing_trace: dict[str, Any] = {
-        "status": routing_trace_status,
-        "capture_content": _bool_arg(ns.routing_trace_capture_content),
-    }
-    for key, value in (
-        ("raw_jsonl", ns.routing_trace_jsonl),
-        ("joined_jsonl", ns.routing_trace_joined_jsonl),
-        ("report_json", ns.routing_trace_report_json),
-    ):
-        resolved = value.resolve() if value is not None else None
-        routing_trace[key] = str(resolved) if resolved is not None else None
-        routing_trace[f"{key}_status"] = (
-            "predicted" if resolved is not None and routing_trace_status != "not-requested"
-            else "not-requested"
-        )
     body: dict[str, Any] = {
         "server": {
             "preset": ns.server_preset,
@@ -506,7 +446,6 @@ def _cli_main(argv: list[str] | None = None) -> int:
         "harbor": harbor,
         "harbor_patch": _json_arg(ns.harbor_patch_json, {}),
         "closed_book": closed_book,
-        "routing_trace": routing_trace,
         "determinism": {
             "PYTHONHASHSEED": "0",
             "LC_ALL": "C.UTF-8",

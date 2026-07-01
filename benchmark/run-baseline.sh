@@ -44,7 +44,7 @@ HARBOR_BIN="${HARBOR_BIN:-}"
 HARBOR_PYTHON="${HARBOR_PYTHON:-}"
 HARBOR_SOURCE=""
 BOOK_MODE="closed"
-PROXY_STRIP_ARTIFACT="/etc/proxy-ca/strip.jsonl"
+PROXY_STRIP_ARTIFACT="/etc/proxy-public/strip.jsonl"
 PROXY_REQUEST_MAP_ARTIFACT="/etc/proxy-ca/request_map.jsonl"
 ROUTING_TRACE_CONTAINER_DIR="/var/lib/switchyard-traces"
 VERIFIER_PROXY_TEMPLATE='${SWITCHYARD_VERIFIER_HTTP_PROXY}'
@@ -500,10 +500,8 @@ JOB_NAME="baseline-${SERVER_PRESET}-${MODE}-${TS}"
 OUTPUT_DIR="$(mkdir -p "${OUTPUT_DIR}" && cd "${OUTPUT_DIR}" && pwd)"
 RUN_DIR="${OUTPUT_DIR}/${JOB_NAME}"
 ROUTING_TRACE_DIR="${RUN_DIR}/routing-traces"
-ROUTING_TRACE_JSONL="${ROUTING_TRACE_DIR}/routing_trace.jsonl"
-ROUTING_TRACE_JOINED_JSONL="${ROUTING_TRACE_DIR}/routing_trace_joined.jsonl"
-ROUTING_TRACE_REPORT_JSON="${ROUTING_TRACE_DIR}/routing_trace_completeness.json"
-ROUTING_TRACE_CONTAINER_JSONL="${ROUTING_TRACE_CONTAINER_DIR}/routing_trace.jsonl"
+ROUTING_TRACE_JSONL="${ROUTING_TRACE_DIR}/events.jsonl"
+ROUTING_TRACE_CONTAINER_JSONL="${ROUTING_TRACE_CONTAINER_DIR}/events.jsonl"
 MANIFEST_PATH="${RUN_DIR}/run_manifest.json"
 LOG_PATH="${RUN_DIR}/${JOB_NAME}.log"
 SERVER_LOG="${RUN_DIR}/server.log"
@@ -799,12 +797,7 @@ MANIFEST_CMD=(python3 "${MANIFEST_HELPER}" write
     --log-path "${LOG_PATH}"
     --harbor-result-json "${HARBOR_RESULT_JSON}"
     --routing-stats-json "${ROUTING_STATS_JSON}"
-    --routing-stats-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)"
-    --routing-trace-jsonl "${ROUTING_TRACE_JSONL}"
-    --routing-trace-joined-jsonl "${ROUTING_TRACE_JOINED_JSONL}"
-    --routing-trace-report-json "${ROUTING_TRACE_REPORT_JSON}"
-    --routing-trace-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)"
-    --routing-trace-capture-content "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo 1 || echo 0)")
+    --routing-stats-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)")
 if [[ -n "${HARBOR_PATH}" ]]; then
     MANIFEST_CMD+=(--harbor-path "${HARBOR_PATH}")
 fi
@@ -843,8 +836,6 @@ HARBOR_LOG=$(q "${HARBOR_LOG}")
 ROUTING_STATS_JSON=$(q "${ROUTING_STATS_JSON}")
 ROUTING_TRACE_DIR=$(q "${ROUTING_TRACE_DIR}")
 ROUTING_TRACE_JSONL=$(q "${ROUTING_TRACE_JSONL}")
-ROUTING_TRACE_JOINED_JSONL=$(q "${ROUTING_TRACE_JOINED_JSONL}")
-ROUTING_TRACE_REPORT_JSON=$(q "${ROUTING_TRACE_REPORT_JSON}")
 ROUTING_TRACE_CONTAINER_DIR=$(q "${ROUTING_TRACE_CONTAINER_DIR}")
 ROUTING_TRACE_CONTAINER_JSONL=$(q "${ROUTING_TRACE_CONTAINER_JSONL}")
 HARBOR_JOB_DIR=$(q "${HARBOR_JOB_DIR}")
@@ -918,6 +909,7 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
         --env LC_ALL=C.UTF-8 \\
         --env OPENAI_API_KEY \\
         --env OPENROUTER_API_KEY \\
+        --env NVIDIA_API_KEY \\
         --env UPSTREAM_API_KEY \\
         --env ANTHROPIC_API_KEY \\
         --env ANTHROPIC_AUTH_TOKEN \\
@@ -1054,9 +1046,7 @@ echo "\${HARBOR_RC}" > "\${RUN_DIR}/harbor_exit"
 if [[ "\${SERVER_ENABLED}" == "1" && -d "\${HARBOR_JOB_DIR}" ]]; then
     python3 benchmark/routing_trace_joiner.py \\
         --job-dir "\${HARBOR_JOB_DIR}" \\
-        --routing-trace "\${ROUTING_TRACE_JSONL}" \\
-        --output "\${ROUTING_TRACE_JOINED_JSONL}" \\
-        --report "\${ROUTING_TRACE_REPORT_JSON}" || true
+        --routing-trace "\${ROUTING_TRACE_JSONL}" || true
 fi
 
 FINALIZE_CMD=(python3 benchmark/run_manifest.py finalize \\
