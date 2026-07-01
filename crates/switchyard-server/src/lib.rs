@@ -363,8 +363,10 @@ async fn atof_events(State(state): State<ServerState>, request: Request) -> Resp
 
     Json(json!({
         "status": "ok",
-        // Keep the original prototype names while exposing the complete report.
-        "accepted_events": report.received_events,
+        // `accepted_events` counts events that actually mutated the snapshot;
+        // the complete parsed/drop breakdown remains available in `batch`.
+        "accepted_events": report.ingested_events,
+        "received_events": report.received_events,
         "accumulator_ingests": report.ingested_events,
         "batch": report,
         "cumulative": counters,

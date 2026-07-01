@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use serde::Serialize;
 use serde_json::{json, Value};
 use switchyard_core::{Result, SwitchyardError};
@@ -16,12 +16,18 @@ pub const DEFAULT_MAX_RELAY_IDENTITIES: usize = 10_000;
 pub const DEFAULT_MAX_RELAY_HISTORY_PER_IDENTITY: usize = 256;
 /// Default maximum number of event idempotency keys retained in memory.
 pub const DEFAULT_MAX_RELAY_DEDUPE_ENTRIES: usize = 100_000;
-/// Default maximum encoded/string bytes retained across all Relay state.
+/// Default maximum conservative retained-memory budget across all Relay state.
 pub const DEFAULT_MAX_RELAY_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 /// Default maximum encoded size accepted for one ATOF event.
 pub const DEFAULT_MAX_ATOF_EVENT_BYTES: usize = 256 * 1024;
 /// Default maximum encoded size accepted for one ATOF request batch.
 pub const DEFAULT_MAX_ATOF_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+// JSON values retain both serialized content and heap-backed container
+// allocations. Reserve a conservative second payload-sized copy plus a small
+// node allowance so the configured cap bounds retained heap growth, not only
+// wire bytes.
+const RETAINED_VALUE_OVERHEAD_BYTES: usize = 128;
 
 /// Exact identity key used for Relay snapshot accumulation and lookup.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -60,7 +66,7 @@ pub struct RelaySnapshotLimits {
     pub max_history_per_identity: usize,
     /// Maximum global event idempotency keys retained at once.
     pub max_dedupe_entries: usize,
-    /// Maximum encoded/string bytes retained across identities, history, and dedupe keys.
+    /// Conservative retained-memory budget across identities, history, and dedupe keys.
     pub max_retained_bytes: usize,
     /// Maximum serialized size of one event.
     pub max_event_bytes: usize,
@@ -142,9 +148,9 @@ pub struct RelayIngestReport {
     pub pruned_history_entries: u64,
     /// Old idempotency keys pruned because the dedupe cap was reached.
     pub pruned_dedupe_entries: u64,
-    /// Encoded/string bytes removed while pruning retained state.
+    /// Accounted retained bytes removed while pruning retained state.
     pub pruned_state_bytes: u64,
-    /// Encoded/string bytes retained after this batch.
+    /// Accounted retained bytes retained after this batch.
     pub retained_state_bytes: u64,
 }
 
@@ -187,9 +193,9 @@ pub struct RelayAccumulatorCounters {
     pub pruned_history_entries: u64,
     /// Idempotency keys pruned by the configured cap.
     pub pruned_dedupe_entries: u64,
-    /// Encoded/string bytes removed while pruning retained state.
+    /// Accounted retained bytes removed while pruning retained state.
     pub pruned_state_bytes: u64,
-    /// Current encoded/string bytes retained by the accumulator.
+    /// Current accounted retained bytes held by the accumulator.
     pub retained_state_bytes: u64,
 }
 
@@ -228,7 +234,7 @@ impl RelayAccumulatorCounters {
 #[derive(Debug)]
 pub struct RelaySnapshotAccumulator {
     limits: RelaySnapshotLimits,
-    inner: Mutex<RelayAccumulatorState>,
+    inner: RwLock<RelayAccumulatorState>,
 }
 
 impl RelaySnapshotAccumulator {
@@ -236,7 +242,7 @@ impl RelaySnapshotAccumulator {
     pub fn with_limits(limits: RelaySnapshotLimits) -> Result<Self> {
         Ok(Self {
             limits: limits.validate()?,
-            inner: Mutex::new(RelayAccumulatorState::default()),
+            inner: RwLock::new(RelayAccumulatorState::default()),
         })
     }
 
@@ -277,7 +283,7 @@ impl RelaySnapshotAccumulator {
             received_events: prepared.len() as u64,
             ..RelayIngestReport::default()
         };
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.write();
         for event in prepared {
             match event {
                 PreparedRelayEvent::Drop(reason) => report.record_drop(reason),
@@ -293,7 +299,7 @@ impl RelaySnapshotAccumulator {
 
     /// Returns a snapshot only for the exact `(session_id, owner_id)` key.
     pub fn snapshot(&self, key: &RelayIdentityKey) -> Option<RelaySnapshot> {
-        let inner = self.inner.lock();
+        let inner = self.inner.read();
         inner.identities.get(key).map(|state| RelaySnapshot {
             identity: key.clone(),
             messages: state
@@ -308,17 +314,17 @@ impl RelaySnapshotAccumulator {
 
     /// Returns lifetime ingestion and pruning counters.
     pub fn counters(&self) -> RelayAccumulatorCounters {
-        self.inner.lock().counters
+        self.inner.read().counters
     }
 
     /// Returns the number of retained exact identities.
     pub fn identity_count(&self) -> usize {
-        self.inner.lock().identities.len()
+        self.inner.read().identities.len()
     }
 
     /// Returns exact encoded/string bytes counted against the retained-state cap.
     pub fn retained_state_bytes(&self) -> usize {
-        self.inner.lock().retained_state_bytes
+        self.inner.read().retained_state_bytes
     }
 
     fn prepare_event(
@@ -379,7 +385,7 @@ impl Default for RelaySnapshotAccumulator {
     fn default() -> Self {
         Self {
             limits: RelaySnapshotLimits::default(),
-            inner: Mutex::new(RelayAccumulatorState::default()),
+            inner: RwLock::new(RelayAccumulatorState::default()),
         }
     }
 }
@@ -497,7 +503,7 @@ impl RelayAccumulatorState {
             RelayUpdate::Message(message) => {
                 self.retained_state_bytes = self
                     .retained_state_bytes
-                    .saturating_add(message.encoded_bytes);
+                    .saturating_add(message.retained_bytes);
                 state.messages.push_back(message);
             }
         }
@@ -522,8 +528,8 @@ impl RelayAccumulatorState {
             };
             self.retained_state_bytes = self
                 .retained_state_bytes
-                .saturating_sub(message.encoded_bytes);
-            record_pruned_bytes(report, message.encoded_bytes);
+                .saturating_sub(message.retained_bytes);
+            record_pruned_bytes(report, message.retained_bytes);
             report.pruned_history_entries = report.pruned_history_entries.saturating_add(1);
         }
     }
@@ -552,7 +558,7 @@ impl RelayAccumulatorState {
         let message_bytes = removed
             .messages
             .iter()
-            .map(|message| message.encoded_bytes)
+            .map(|message| message.retained_bytes)
             .sum::<usize>();
         let removed_bytes = removed.retained_key_bytes.saturating_add(message_bytes);
         self.retained_state_bytes = self.retained_state_bytes.saturating_sub(removed_bytes);
@@ -605,7 +611,7 @@ impl RelayUpdate {
     fn retained_bytes(&self) -> usize {
         match self {
             Self::TurnStart | Self::TurnEnd => 0,
-            Self::Message(message) => message.encoded_bytes,
+            Self::Message(message) => message.retained_bytes,
         }
     }
 }
@@ -613,7 +619,7 @@ impl RelayUpdate {
 #[derive(Debug)]
 struct RetainedMessage {
     value: Value,
-    encoded_bytes: usize,
+    retained_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -697,9 +703,17 @@ fn retained_message(value: Value) -> Result<RetainedMessage> {
     let encoded_bytes = serde_json::to_vec(&value)
         .map_err(|error| SwitchyardError::InvalidRequest(error.to_string()))?
         .len();
+    let retained_bytes = encoded_bytes
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(RETAINED_VALUE_OVERHEAD_BYTES))
+        .ok_or_else(|| {
+            SwitchyardError::InvalidRequest(
+                "Relay message retained-state footprint overflowed usize".to_string(),
+            )
+        })?;
     Ok(RetainedMessage {
         value,
-        encoded_bytes,
+        retained_bytes,
     })
 }
 
