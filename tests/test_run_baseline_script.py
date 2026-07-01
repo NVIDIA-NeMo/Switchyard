@@ -664,8 +664,16 @@ def test_foreground_switchyard_mounts_run_local_routing_trace(tmp_path: Path) ->
     )
     assert "SWITCHYARD_ROUTING_TRACE_CAPTURE_CONTENT=1" in server_env
     assert trace_jsonl.is_file()
+    assert (trace_dir / "routing_trace_joined.jsonl").is_file()
+    assert (trace_dir / "routing_trace_completeness.json").is_file()
     assert trace_dir.stat().st_mode & 0o777 == 0o700
     assert trace_jsonl.stat().st_mode & 0o777 == 0o600
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["routing_trace"]["status"] == "incomplete"
+    assert manifest["routing_trace"]["capture_content"] is True
+    assert manifest["routing_trace"]["raw_jsonl_status"] == "present"
+    assert manifest["routing_trace"]["joined_jsonl_status"] == "present"
+    assert manifest["routing_trace"]["report_json_status"] == "present"
 
 
 def test_dry_run_claude_closed_book_merges_disallowed_tools(tmp_path: Path) -> None:
