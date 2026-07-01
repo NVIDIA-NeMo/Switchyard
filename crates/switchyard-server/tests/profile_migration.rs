@@ -6,7 +6,7 @@
 use std::io::ErrorKind;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener as StdTcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use axum::body::Body;
@@ -21,6 +21,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn noop_profile_serves_all_inbound_formats_without_upstream() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let app = build_switchyard_router(state_from_yaml(
         r#"
@@ -83,6 +84,7 @@ profiles:
 
 #[tokio::test]
 async fn passthrough_profile_routes_all_inbound_formats_to_configured_target() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![
         StubResponse::ok(),
@@ -160,6 +162,7 @@ profiles:
 
 #[tokio::test]
 async fn random_routing_profile_covers_strong_and_weak_selection() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let cases = [(1.0, "provider/strong"), (0.0, "provider/weak")];
     for (strong_probability, expected_model) in cases {
@@ -207,6 +210,7 @@ profiles:
 
 #[tokio::test]
 async fn cascade_profile_threshold_zero_uses_dimensions_signal_path() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::ok()])? else {
         log_loopback_bind_skip();
@@ -259,6 +263,7 @@ profiles:
 
 #[tokio::test]
 async fn cascade_profile_threshold_one_uses_llm_classifier_path() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::classifier("strong"), StubResponse::ok()])?
     else {
@@ -318,6 +323,7 @@ profiles:
 
 #[tokio::test]
 async fn cascade_profile_retries_fallback_after_context_overflow() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::context_overflow(), StubResponse::ok()])?
     else {
@@ -371,6 +377,7 @@ profiles:
 
 #[tokio::test]
 async fn latency_service_profile_uses_health_selection_and_retries_failed_target() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![
         StubResponse::latency_health(),
@@ -420,6 +427,7 @@ async fn latency_service_profile_uses_health_selection_and_retries_failed_target
 
 #[tokio::test]
 async fn latency_service_profile_propagates_last_upstream_error_after_retries() -> TestResult {
+    let _stats_guard = stats_guard().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![
         StubResponse::latency_health(),
@@ -811,6 +819,13 @@ async fn json_body(response: axum::response::Response) -> TestResult<Value> {
 
 fn reset_stats() -> switchyard_core::Result<()> {
     profile_stats_accumulator().reset()
+}
+
+async fn stats_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
 }
 
 fn log_loopback_bind_skip() {
