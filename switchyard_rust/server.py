@@ -27,7 +27,7 @@ def run_profile_server(
     atof_max_event_bytes: int = DEFAULT_MAX_ATOF_EVENT_BYTES,
     atof_max_batch_bytes: int = DEFAULT_MAX_ATOF_BATCH_BYTES,
 ) -> None:
-    """Run the bounded Rust profile server and optional Relay ATOF receiver."""
+    """Run the bounded Rust profile server and optional authenticated Relay endpoints."""
     _load_native().run_profile_server(
         config_path,
         host,
