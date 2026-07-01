@@ -5,7 +5,7 @@
 
 use thiserror::Error;
 
-use crate::ids::{InvalidId, ModelId};
+use crate::ids::{InvalidId, ModelId, ProfileId};
 use crate::types::ChatRequestType;
 
 /// Result alias for core Switchyard operations.
@@ -25,6 +25,12 @@ pub enum SwitchyardError {
 
     #[error("no model registered for {model}")]
     ModelNotFound { model: ModelId },
+
+    #[error("no Decision API profile registered for {profile_id}")]
+    DecisionProfileNotFound { profile_id: ProfileId },
+
+    #[error("profile {profile_id} does not support the Decision API")]
+    DecisionUnsupported { profile_id: ProfileId },
 
     #[error("{component} does not support request type {request_type:?}")]
     UnsupportedRequestType {

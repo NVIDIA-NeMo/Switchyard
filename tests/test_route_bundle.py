@@ -479,12 +479,26 @@ def test_serve_config_delegates_to_rust_profile_server(
         port: int = 4000,
         backlog: int = 65_535,
         dry_run: bool = False,
+        atof_bearer_token: str | None = None,
+        atof_max_identities: int = 10_000,
+        atof_max_history_per_identity: int = 256,
+        atof_max_dedupe_entries: int = 100_000,
+        atof_max_retained_bytes: int = 64 * 1024 * 1024,
+        atof_max_event_bytes: int = 256 * 1024,
+        atof_max_batch_bytes: int = 4 * 1024 * 1024,
     ) -> None:
         captured["config_path"] = config_path
         captured["host"] = host
         captured["port"] = port
         captured["backlog"] = backlog
         captured["dry_run"] = dry_run
+        captured["atof_bearer_token"] = atof_bearer_token
+        captured["atof_max_identities"] = atof_max_identities
+        captured["atof_max_history_per_identity"] = atof_max_history_per_identity
+        captured["atof_max_dedupe_entries"] = atof_max_dedupe_entries
+        captured["atof_max_retained_bytes"] = atof_max_retained_bytes
+        captured["atof_max_event_bytes"] = atof_max_event_bytes
+        captured["atof_max_batch_bytes"] = atof_max_batch_bytes
 
     mocker.patch.object(
         rust_server,
@@ -517,6 +531,20 @@ def test_serve_config_delegates_to_rust_profile_server(
         "127.0.0.1",
         "--port",
         "4555",
+        "--atof-bearer-token",
+        "relay-secret",
+        "--atof-max-identities",
+        "17",
+        "--atof-max-history-per-identity",
+        "18",
+        "--atof-max-dedupe-entries",
+        "19",
+        "--atof-max-event-bytes",
+        "1024",
+        "--atof-max-retained-bytes",
+        "2000",
+        "--atof-max-batch-bytes",
+        "2048",
     ])
     args.func(args)
 
@@ -526,6 +554,13 @@ def test_serve_config_delegates_to_rust_profile_server(
         "port": 4555,
         "backlog": 65_535,
         "dry_run": False,
+        "atof_bearer_token": "relay-secret",
+        "atof_max_identities": 17,
+        "atof_max_history_per_identity": 18,
+        "atof_max_dedupe_entries": 19,
+        "atof_max_retained_bytes": 2000,
+        "atof_max_event_bytes": 1024,
+        "atof_max_batch_bytes": 2048,
     }
 
 

@@ -386,6 +386,89 @@ def test_profile_request_metadata_normalizes_headers() -> None:
         "x-request-id": ["req-123"],
         "x-switchyard-trace": ["trace-a", "trace-b"],
     }
+    assert metadata.session_id is None
+
+
+def test_profile_request_metadata_reconciles_explicit_and_header_session_id() -> None:
+    metadata = ProfileRequestMetadata(
+        request_id="req-session",
+        headers={
+            "Proxy_X_Session_Id": [" session-1 ", "session-1"],
+            "X-Nemo-Relay-Session-Id": "session-1",
+        },
+        session_id=" session-1 ",
+    )
+
+    assert metadata.session_id == "session-1"
+    assert metadata.to_dict() == {
+        "request_id": "req-session",
+        "inbound_format": None,
+        "headers": {
+            "proxy_x_session_id": [" session-1 ", "session-1"],
+            "x-nemo-relay-session-id": ["session-1"],
+        },
+        "session_id": "session-1",
+    }
+    assert repr(metadata) == (
+        'ProfileRequestMetadata(request_id=Some("req-session"), session_id=Some("session-1"))'
+    )
+
+
+def test_profile_request_metadata_from_headers_accepts_equal_session_aliases() -> None:
+    metadata = ProfileRequestMetadata.from_headers(
+        {
+            "Proxy_X_Session_Id": [" session-1 ", "session-1"],
+            "X-Nemo-Relay-Session-Id": "session-1",
+        }
+    )
+
+    assert metadata.session_id == "session-1"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"proxy_x_session_id": ["session-1", "session-2"]},
+        {
+            "proxy_x_session_id": "session-1",
+            "x-nemo-relay-session-id": "session-2",
+        },
+    ],
+)
+def test_profile_request_metadata_rejects_conflicting_session_headers(
+    headers: dict[str, str | list[str]],
+) -> None:
+    with pytest.raises(ValueError, match="conflicting session IDs"):
+        ProfileRequestMetadata.from_headers(headers)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"proxy_x_session_id": ""},
+        {"x-nemo-relay-session-id": "   "},
+        {"proxy_x_session_id": ["session-1", ""]},
+        {"x-nemo-relay-session-id": []},
+    ],
+)
+def test_profile_request_metadata_rejects_empty_session_headers(
+    headers: dict[str, str | list[str]],
+) -> None:
+    with pytest.raises(ValueError, match="non-empty session ID"):
+        ProfileRequestMetadata.from_headers(headers)
+
+
+def test_profile_request_metadata_rejects_explicit_header_session_conflict() -> None:
+    with pytest.raises(ValueError, match="conflicting session IDs"):
+        ProfileRequestMetadata(
+            headers={"x-nemo-relay-session-id": "session-from-header"},
+            session_id="session-explicit",
+        )
+
+
+def test_profile_request_metadata_rejects_empty_explicit_session_id() -> None:
+    with pytest.raises(ValueError, match="non-empty session ID"):
+        ProfileRequestMetadata(session_id="   ")
 
 
 def test_profile_input_binding_wraps_request_and_metadata() -> None:
@@ -393,12 +476,14 @@ def test_profile_input_binding_wraps_request_and_metadata() -> None:
         request_id="req-profile-input",
         inbound_format=ChatRequestType.OPENAI_CHAT,
         headers={"X-Switchyard-Trace": "trace-profile-input"},
+        session_id="session-profile-input",
     )
 
     input = ProfileInput(_request("client/profile-input"), metadata=metadata)
 
     assert input.request.model == "client/profile-input"
     assert input.metadata.request_id == "req-profile-input"
+    assert input.metadata.session_id == "session-profile-input"
     assert input.metadata.inbound_format == ChatRequestType.OPENAI_CHAT
     assert input.metadata.headers == {"x-switchyard-trace": ["trace-profile-input"]}
 

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
-use switchyard_components_v2::{ProfileInput, RequestMetadata};
+use switchyard_components_v2::{reconcile_session_id, ProfileInput, RequestMetadata};
 use switchyard_core::RequestId;
 
 use crate::core_bindings::request::{request_type_from_python, request_type_object, PyChatRequest};
@@ -39,28 +39,32 @@ impl PyProfileRequestMetadata {
 #[pymethods]
 impl PyProfileRequestMetadata {
     #[new]
-    #[pyo3(signature = (request_id=None, inbound_format=None, headers=None))]
+    #[pyo3(signature = (request_id=None, inbound_format=None, headers=None, session_id=None))]
     fn new(
         request_id: Option<String>,
         inbound_format: Option<&Bound<'_, PyAny>>,
         headers: Option<&Bound<'_, PyAny>>,
+        session_id: Option<String>,
     ) -> PyResult<Self> {
+        let headers = match headers {
+            Some(headers) if !headers.is_none() => metadata_headers_from_python(headers)?,
+            _ => BTreeMap::new(),
+        };
+        let session_id = reconcile_profile_session_id(session_id.as_deref(), &headers)?;
         Ok(Self {
             inner: RequestMetadata {
+                session_id,
                 request_id: parse_request_id(request_id)?,
                 inbound_format: inbound_format
                     .filter(|value| !value.is_none())
                     .map(request_type_from_python)
                     .transpose()?,
-                headers: match headers {
-                    Some(headers) if !headers.is_none() => metadata_headers_from_python(headers)?,
-                    _ => BTreeMap::new(),
-                },
+                headers,
             },
         })
     }
 
-    /// Build metadata from headers, inferring `request_id` from `x-request-id`.
+    /// Build metadata from headers, inferring request and session IDs.
     #[classmethod]
     #[pyo3(signature = (headers, inbound_format=None))]
     fn from_headers(
@@ -73,8 +77,10 @@ impl PyProfileRequestMetadata {
             .get("x-request-id")
             .and_then(|values| values.first())
             .cloned();
+        let session_id = reconcile_profile_session_id(None, &headers)?;
         Ok(Self {
             inner: RequestMetadata {
+                session_id,
                 request_id: parse_request_id(request_id)?,
                 inbound_format: inbound_format
                     .filter(|value| !value.is_none())
@@ -83,6 +89,11 @@ impl PyProfileRequestMetadata {
                 headers,
             },
         })
+    }
+
+    #[getter]
+    fn session_id(&self) -> Option<String> {
+        self.inner.session_id.clone()
     }
 
     #[getter]
@@ -121,11 +132,16 @@ impl PyProfileRequestMetadata {
                 .map(crate::core_bindings::request::request_type_name),
         )?;
         dict.set_item("headers", self.headers(py)?)?;
+        dict.set_item("session_id", self.session_id())?;
         Ok(dict.unbind().into_any())
     }
 
     fn __repr__(&self) -> String {
-        format!("ProfileRequestMetadata(request_id={:?})", self.request_id())
+        format!(
+            "ProfileRequestMetadata(request_id={:?}, session_id={:?})",
+            self.request_id(),
+            self.session_id()
+        )
     }
 }
 
@@ -188,6 +204,14 @@ fn parse_request_id(request_id: Option<String>) -> PyResult<Option<RequestId>> {
         .map(RequestId::new)
         .transpose()
         .map_err(|error| PyValueError::new_err(format!("invalid request_id: {error}")))
+}
+
+fn reconcile_profile_session_id(
+    session_id: Option<&str>,
+    headers: &BTreeMap<String, Vec<String>>,
+) -> PyResult<Option<String>> {
+    reconcile_session_id(session_id, headers)
+        .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 fn metadata_headers_from_python(

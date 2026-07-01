@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use switchyard_components_v2::{
-    PassthroughProfileConfig, Profile, ProfileConfig, ProfileConfigPlan,
+    DecisionContext, PassthroughProfileConfig, Profile, ProfileConfig, ProfileConfigPlan,
+    RoutingDecision,
 };
-use switchyard_core::{ModelId, Result, SwitchyardError};
+use switchyard_core::{ModelId, ProfileId, Result, SwitchyardError};
 
 /// Public model entry advertised by `/v1/models`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -26,10 +27,20 @@ struct RegistryEntry {
     profile: Arc<dyn Profile>,
 }
 
-/// Exact-match registry from inbound `model` values to components-v2 profiles.
+#[derive(Clone)]
+struct DecisionProfileEntry {
+    id: ProfileId,
+    profile: Arc<dyn Profile>,
+}
+
+/// Shared registry for model dispatch and profile-ID decision lookup.
+///
+/// Configured profile runtimes are built once and the same [`Arc`] is used by
+/// both paths so stateful routing policy cannot diverge between endpoints.
 #[derive(Clone, Default)]
 pub struct ProfileRegistry {
     entries: Vec<RegistryEntry>,
+    decision_profiles: Vec<DecisionProfileEntry>,
 }
 
 impl ProfileRegistry {
@@ -39,6 +50,10 @@ impl ProfileRegistry {
     ) -> Result<Self> {
         let mut registry = Self::default();
         for (model_id, profile, display_name) in entries {
+            registry.insert_decision_profile(
+                ProfileId::new(model_id.as_str())?,
+                Arc::clone(&profile),
+            )?;
             registry.insert(model_id, profile, display_name)?;
         }
         Ok(registry)
@@ -52,6 +67,7 @@ impl ProfileRegistry {
             let model_id = ModelId::new(profile_id.as_str())?;
             let profile: Arc<dyn Profile> = Arc::from(plan.build_profile(profile_id)?);
             let display_name = plan.profile_type(profile_id).unwrap_or("profile");
+            registry.insert_decision_profile(profile_id.clone(), Arc::clone(&profile))?;
             registry.insert(model_id, profile, display_name)?;
         }
 
@@ -94,6 +110,19 @@ impl ProfileRegistry {
             .ok_or(SwitchyardError::ModelNotFound { model })
     }
 
+    /// Produces a decision through the configured profile runtime with the requested ID.
+    pub async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        context.request().validate()?;
+        let profile_id = context.request().decision_profile.profile_id.clone();
+        let profile = self
+            .decision_profiles
+            .iter()
+            .find(|entry| entry.id == profile_id)
+            .map(|entry| Arc::clone(&entry.profile))
+            .ok_or(SwitchyardError::DecisionProfileNotFound { profile_id })?;
+        profile.decide(context).await
+    }
+
     /// Returns model entries in deterministic registration order.
     pub fn served_models(&self) -> Vec<ServedModel> {
         self.entries
@@ -119,6 +148,28 @@ impl ProfileRegistry {
                 id: model_id,
                 display_name: display_name.into(),
             },
+            profile,
+        });
+        Ok(())
+    }
+
+    fn insert_decision_profile(
+        &mut self,
+        profile_id: ProfileId,
+        profile: Arc<dyn Profile>,
+    ) -> Result<()> {
+        if self
+            .decision_profiles
+            .iter()
+            .any(|entry| entry.id == profile_id)
+        {
+            return Err(SwitchyardError::DuplicateRegistration {
+                kind: "profile",
+                id: profile_id.to_string(),
+            });
+        }
+        self.decision_profiles.push(DecisionProfileEntry {
+            id: profile_id,
             profile,
         });
         Ok(())

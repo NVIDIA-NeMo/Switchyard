@@ -16,15 +16,19 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{rejection::JsonRejection, State};
+use axum::body::to_bytes;
+use axum::extract::{rejection::JsonRejection, Request, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use switchyard_components_v2::{
-    parse_profile_config_path, profile_stats_accumulator, ProfileConfigPlan, ProfileInput,
-    ProfileResponse, RequestMetadata, RoutingMetadata,
+    parse_profile_config_path, profile_stats_accumulator, session_id_from_normalized_headers,
+    DecisionContext, ProfileConfigPlan, ProfileInput, ProfileResponse, RelayIdentityKey,
+    RelaySnapshotAccumulator, RelaySnapshotLimits, RequestMetadata, RoutingMetadata,
+    RoutingRequest, PROXY_SESSION_ID_HEADER, RELAY_SESSION_ID_HEADER,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, SwitchyardError};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
@@ -51,6 +55,8 @@ pub struct ServerState {
     registry: Arc<ProfileRegistry>,
     translation: Arc<TranslationEngine>,
     translation_policy: TranslationPolicy,
+    relay_snapshots: Arc<RelaySnapshotAccumulator>,
+    atof_bearer_token: Arc<Option<String>>,
 }
 
 impl ServerState {
@@ -60,6 +66,8 @@ impl ServerState {
             registry: Arc::new(registry),
             translation: Arc::new(TranslationEngine::default()),
             translation_policy: TranslationPolicy::default(),
+            relay_snapshots: Arc::new(RelaySnapshotAccumulator::default()),
+            atof_bearer_token: Arc::new(None),
         }
     }
 
@@ -68,15 +76,75 @@ impl ServerState {
         Ok(Self::new(ProfileRegistry::from_plan(plan)?))
     }
 
+    /// Returns a copy with optional bearer auth for Relay decision and ATOF routes;
+    /// explicit blank tokens are invalid config.
+    pub fn with_atof_bearer_token(mut self, token: Option<String>) -> Result<Self> {
+        self.atof_bearer_token = Arc::new(validate_optional_bearer_token(token)?);
+        Ok(self)
+    }
+
+    /// Returns a copy of this state with an empty accumulator using explicit limits.
+    pub fn with_relay_snapshot_limits(mut self, limits: RelaySnapshotLimits) -> Result<Self> {
+        self.relay_snapshots = Arc::new(RelaySnapshotAccumulator::with_limits(limits)?);
+        Ok(self)
+    }
+
     /// Returns the profile registry used by this server.
     pub fn registry(&self) -> &ProfileRegistry {
         self.registry.as_ref()
+    }
+
+    /// Returns the server-owned Relay snapshot accumulator.
+    pub fn relay_snapshots(&self) -> &RelaySnapshotAccumulator {
+        self.relay_snapshots.as_ref()
     }
 
     /// Dispatches one request to the profile selected by its `model` field.
     async fn run_profile(&self, input: ProfileInput) -> Result<ProfileResponse> {
         let profile = self.registry.lookup(input.request.model())?;
         profile.run(input).await
+    }
+
+    /// Produces one routing decision through the configured profile registry.
+    async fn decide_route(
+        &self,
+        request: RoutingRequest,
+    ) -> Result<switchyard_components_v2::RoutingDecision> {
+        request.validate()?;
+        let owner_id = request
+            .identity
+            .owner_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|owner_id| !owner_id.is_empty())
+            .map(ToOwned::to_owned);
+        let key = RelayIdentityKey::new(request.identity.session_id.trim(), owner_id);
+        let snapshot = self.relay_snapshots.snapshot(&key);
+        self.registry
+            .decide(DecisionContext::new(request, snapshot))
+            .await
+    }
+
+    /// Authorizes Relay routes when a bearer token is configured.
+    fn authorize_relay_request(
+        &self,
+        headers: &HeaderMap,
+    ) -> std::result::Result<(), Box<Response>> {
+        let Some(expected) = self.atof_bearer_token.as_ref() else {
+            return Ok(());
+        };
+        let authorized = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_bearer_token)
+            .is_some_and(|actual| actual == expected);
+        if authorized {
+            Ok(())
+        } else {
+            Err(Box::new(unauthorized_error(
+                "Relay request authorization failed",
+            )))
+        }
     }
 }
 
@@ -91,6 +159,10 @@ pub struct ServerRunOptions {
     pub backlog: u32,
     /// Validate and print public model IDs without binding a socket.
     pub dry_run: bool,
+    /// Optional bearer token required by the Relay Decision and ATOF endpoints.
+    pub atof_bearer_token: Option<String>,
+    /// Fixed memory and request-size bounds for Relay snapshot accumulation.
+    pub relay_snapshot_limits: RelaySnapshotLimits,
 }
 
 /// Builds a server state by loading and resolving a profile config path.
@@ -102,7 +174,9 @@ pub fn state_from_config_path(path: impl AsRef<Path>) -> Result<ServerState> {
 
 /// Loads config, optionally validates it, then starts the Rust server.
 pub async fn run_server(options: ServerRunOptions) -> Result<()> {
-    let state = state_from_config_path(&options.config)?;
+    let state = state_from_config_path(&options.config)?
+        .with_relay_snapshot_limits(options.relay_snapshot_limits)?
+        .with_atof_bearer_token(options.atof_bearer_token.clone())?;
     if options.dry_run {
         println!("{}", dry_run_summary(&options.config, state.registry()));
         return Ok(());
@@ -124,6 +198,8 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
+        .route("/v1/routing/decision", post(routing_decision))
+        .route("/v1/atof/events", post(atof_events))
         .route("/v1/models", get(models))
         // Keep the legacy routing stats aliases wired to the same handlers.
         .route("/v1/stats", get(stats))
@@ -194,11 +270,15 @@ async fn openai_chat_completions(
         Ok(body) => body,
         Err(response) => return *response,
     };
+    let metadata = match metadata_from_headers(&headers, ChatRequestType::OpenAiChat) {
+        Ok(metadata) => metadata,
+        Err(error) => return llm_error(error),
+    };
     handle_llm_request(
         state,
         ChatRequest::openai_chat(body),
         WireFormat::OpenAiChat,
-        metadata_from_headers(&headers, ChatRequestType::OpenAiChat),
+        metadata,
     )
     .await
 }
@@ -212,11 +292,15 @@ async fn anthropic_messages(
         Ok(body) => body,
         Err(response) => return *response,
     };
+    let metadata = match metadata_from_headers(&headers, ChatRequestType::Anthropic) {
+        Ok(metadata) => metadata,
+        Err(error) => return llm_error(error),
+    };
     handle_llm_request(
         state,
         ChatRequest::anthropic(body),
         WireFormat::AnthropicMessages,
-        metadata_from_headers(&headers, ChatRequestType::Anthropic),
+        metadata,
     )
     .await
 }
@@ -230,13 +314,191 @@ async fn openai_responses(
         Ok(body) => body,
         Err(response) => return *response,
     };
+    let metadata = match metadata_from_headers(&headers, ChatRequestType::OpenAiResponses) {
+        Ok(metadata) => metadata,
+        Err(error) => return llm_error(error),
+    };
     handle_llm_request(
         state,
         ChatRequest::openai_responses(body),
         WireFormat::OpenAiResponses,
-        metadata_from_headers(&headers, ChatRequestType::OpenAiResponses),
+        metadata,
     )
     .await
+}
+
+async fn routing_decision(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<RoutingRequest>, JsonRejection>,
+) -> Response {
+    if let Err(response) = state.authorize_relay_request(&headers) {
+        return *response;
+    }
+    let request = match routing_json_body(body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    let normalized_headers = match normalized_headers(&headers) {
+        Ok(headers) => headers,
+        Err(error) => return llm_error(error),
+    };
+    let header_session_id = match session_id_from_normalized_headers(&normalized_headers) {
+        Ok(session_id) => session_id,
+        Err(error) => return llm_error(error),
+    };
+    if let Some(header_session_id) = header_session_id {
+        if header_session_id != request.identity.session_id.trim() {
+            return llm_error(SwitchyardError::InvalidRequest(format!(
+                "Decision session header {header_session_id:?} does not match identity.session_id {:?}",
+                request.identity.session_id
+            )));
+        }
+    }
+    match state.decide_route(request).await {
+        Ok(decision) => Json(decision).into_response(),
+        Err(error) => llm_error(error),
+    }
+}
+
+fn routing_json_body(
+    body: std::result::Result<Json<RoutingRequest>, JsonRejection>,
+) -> std::result::Result<RoutingRequest, Box<Response>> {
+    match body {
+        Ok(Json(value)) => Ok(value),
+        Err(error) => Err(Box::new(invalid_body_error(format!(
+            "Routing decision request body must match the JSON contract: {error}"
+        )))),
+    }
+}
+
+/// Accepts bounded Relay `http_post` batches encoded as one JSON object per line.
+async fn atof_events(State(state): State<ServerState>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    if let Err(response) = state.authorize_relay_request(&parts.headers) {
+        return *response;
+    }
+    if !is_ndjson_content_type(&parts.headers) {
+        return unsupported_media_type_error(
+            "ATOF ingestion requires content-type application/x-ndjson",
+        );
+    }
+
+    let limits = state.relay_snapshots().limits();
+    if content_length(&parts.headers).is_some_and(|length| length > limits.max_batch_bytes) {
+        return payload_too_large_error(format!(
+            "ATOF batch exceeds the {} byte maximum",
+            limits.max_batch_bytes
+        ));
+    }
+    let body = match to_bytes(body, limits.max_batch_bytes).await {
+        Ok(body) => body,
+        Err(error) => {
+            return payload_too_large_error(format!(
+                "ATOF batch exceeds the {} byte maximum: {error}",
+                limits.max_batch_bytes
+            ));
+        }
+    };
+    let events = match parse_atof_ndjson(&body, limits.max_event_bytes) {
+        Ok(events) => events,
+        Err(response) => return *response,
+    };
+    let report = match state.relay_snapshots().ingest_batch(&events) {
+        Ok(report) => report,
+        Err(error) => return llm_error(error),
+    };
+    let counters = state.relay_snapshots().counters();
+
+    Json(json!({
+        "status": "ok",
+        // `accepted_events` counts events that actually mutated the snapshot;
+        // the complete parsed/drop breakdown remains available in `batch`.
+        "accepted_events": report.ingested_events,
+        "received_events": report.received_events,
+        "accumulator_ingests": report.ingested_events,
+        "batch": report,
+        "cumulative": counters,
+    }))
+    .into_response()
+}
+
+fn parse_atof_ndjson(
+    body: &[u8],
+    max_event_bytes: usize,
+) -> std::result::Result<Vec<Value>, Box<Response>> {
+    // Parse every non-empty line before calling the accumulator so malformed
+    // batches cannot partially mutate retained state.
+    let mut events = Vec::new();
+    for (index, raw_line) in body.split(|byte| *byte == b'\n').enumerate() {
+        let line = trim_ascii_whitespace(raw_line);
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() > max_event_bytes {
+            return Err(Box::new(payload_too_large_error(format!(
+                "ATOF NDJSON line {} is {} bytes; maximum is {max_event_bytes} bytes",
+                index + 1,
+                line.len()
+            ))));
+        }
+        match serde_json::from_slice::<Value>(line) {
+            Ok(event) => events.push(event),
+            Err(error) => {
+                return Err(Box::new(invalid_body_error(format!(
+                    "ATOF NDJSON line {} must be valid JSON: {error}",
+                    index + 1
+                ))));
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn trim_ascii_whitespace(mut value: &[u8]) -> &[u8] {
+    while value.first().is_some_and(u8::is_ascii_whitespace) {
+        value = &value[1..];
+    }
+    while value.last().is_some_and(u8::is_ascii_whitespace) {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
+/// Accepts the canonical NDJSON media type with optional MIME parameters.
+fn is_ndjson_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/x-ndjson"))
+}
+
+fn content_length(headers: &HeaderMap) -> Option<usize> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+}
+
+/// Distinguishes disabled auth (`None`) from unsafe explicit blank configuration.
+fn validate_optional_bearer_token(token: Option<String>) -> Result<Option<String>> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(SwitchyardError::InvalidConfig(
+            "Relay bearer token cannot be blank; omit it to disable authentication".to_string(),
+        ));
+    }
+    Ok(Some(token.to_string()))
+}
+
+/// Parses exactly one non-empty case-insensitive Bearer scheme and token.
+fn parse_bearer_token(value: &str) -> Option<&str> {
+    let (scheme, token) = value.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
 fn llm_json_body(
@@ -325,12 +587,17 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.chars().take(MAX_ROUTING_HEADER_VALUE_LEN).collect())
 }
 
-fn metadata_from_headers(headers: &HeaderMap, inbound_format: ChatRequestType) -> RequestMetadata {
-    RequestMetadata {
+fn metadata_from_headers(
+    headers: &HeaderMap,
+    inbound_format: ChatRequestType,
+) -> Result<RequestMetadata> {
+    let normalized = normalized_headers(headers)?;
+    Ok(RequestMetadata {
+        session_id: session_id_from_normalized_headers(&normalized)?,
         request_id: request_id_from_headers(headers),
         inbound_format: Some(inbound_format),
-        headers: normalized_headers(headers),
-    }
+        headers: normalized,
+    })
 }
 
 fn request_id_from_headers(headers: &HeaderMap) -> Option<RequestId> {
@@ -340,18 +607,32 @@ fn request_id_from_headers(headers: &HeaderMap) -> Option<RequestId> {
         .and_then(|value| RequestId::new(value.to_string()).ok())
 }
 
-fn normalized_headers(headers: &HeaderMap) -> BTreeMap<String, Vec<String>> {
+fn normalized_headers(headers: &HeaderMap) -> Result<BTreeMap<String, Vec<String>>> {
     let mut normalized = BTreeMap::<String, Vec<String>>::new();
-    for (name, value) in headers {
-        let Ok(value) = value.to_str() else {
-            continue;
-        };
-        normalized
-            .entry(name.as_str().to_ascii_lowercase())
-            .or_default()
-            .push(value.to_string());
+    for name in headers.keys() {
+        let name = name.as_str().to_ascii_lowercase();
+        for value in headers.get_all(name.as_str()) {
+            let value = match value.to_str() {
+                Ok(value) => value,
+                Err(_)
+                    if matches!(
+                        name.as_str(),
+                        PROXY_SESSION_ID_HEADER | RELAY_SESSION_ID_HEADER
+                    ) =>
+                {
+                    return Err(SwitchyardError::InvalidRequest(format!(
+                        "session header {name} must contain valid UTF-8"
+                    )));
+                }
+                Err(_) => continue,
+            };
+            normalized
+                .entry(name.clone())
+                .or_default()
+                .push(value.to_string());
+        }
     }
-    normalized
+    Ok(normalized)
 }
 
 fn llm_error(error: SwitchyardError) -> Response {
@@ -363,6 +644,28 @@ fn llm_error(error: SwitchyardError) -> Response {
                     "message": format!("No route registered for model {}", model.as_str()),
                     "type": "model_not_found",
                     "code": "model_not_found",
+                }
+            })),
+        )
+            .into_response(),
+        SwitchyardError::DecisionProfileNotFound { profile_id } => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": {
+                    "message": format!("No Decision API profile registered for {profile_id}"),
+                    "type": "decision_profile_not_found",
+                    "code": "decision_profile_not_found",
+                }
+            })),
+        )
+            .into_response(),
+        SwitchyardError::DecisionUnsupported { profile_id } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": {
+                    "message": format!("Profile {profile_id} does not support the Decision API"),
+                    "type": "unsupported_profile_error",
+                    "code": "decision_not_supported",
                 }
             })),
         )
@@ -431,6 +734,52 @@ fn invalid_body_error(message: impl Into<String>) -> Response {
                 "message": message.into(),
                 "type": "invalid_request_error",
                 "code": "invalid_body",
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn unauthorized_error(message: impl Into<String>) -> Response {
+    let mut response = (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": "authentication_error",
+                "code": "unauthorized",
+            }
+        })),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    response
+}
+
+fn unsupported_media_type_error(message: impl Into<String>) -> Response {
+    (
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": "invalid_request_error",
+                "code": "unsupported_media_type",
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn payload_too_large_error(message: impl Into<String>) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": "invalid_request_error",
+                "code": "payload_too_large",
             }
         })),
     )
@@ -533,6 +882,8 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
     push_line(&mut output, "    POST /v1/chat/completions");
     push_line(&mut output, "    POST /v1/messages");
     push_line(&mut output, "    POST /v1/responses");
+    push_line(&mut output, "    POST /v1/routing/decision");
+    push_line(&mut output, "    POST /v1/atof/events");
     push_line(&mut output, "    GET  /v1/routing/stats");
     push_line(&mut output, "    POST /v1/routing/stats/reset");
     push_line(&mut output, "");
