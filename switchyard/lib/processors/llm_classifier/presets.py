@@ -290,6 +290,8 @@ class LLMClassifierProfile:
     def make_tier_selector_config(
         self,
         *,
+        tier_mapping: Mapping[RouteTier, str] | None = None,
+        default_tier: str | None = None,
         min_confidence: float | None = None,
         escalate_on_tool_planning: bool | None = None,
         align_with_llm_recommendation: bool | None = None,
@@ -297,8 +299,8 @@ class LLMClassifierProfile:
     ) -> SignalTierSelectorConfig:
         """Return a :class:`SignalTierSelectorConfig` with this profile's mapping."""
         return SignalTierSelectorConfig(
-            tier_mapping=self.tier_mapping,
-            default_tier=self.default_tier,
+            tier_mapping=self.tier_mapping if tier_mapping is None else tier_mapping,
+            default_tier=self.default_tier if default_tier is None else default_tier,
             min_confidence=self.min_confidence if min_confidence is None else min_confidence,
             escalate_on_tool_planning=(
                 self.escalate_on_tool_planning
