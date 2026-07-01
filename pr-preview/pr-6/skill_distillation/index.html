@@ -602,6 +602,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rust-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1189,6 +1200,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rust-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1214,10 +1236,10 @@
 kind of work. The model is not retrained. Switchyard saves the session history,
 uses it to update a <code>SKILL.md</code>, and makes the active skill available to later
 agent launches for the same namespace.</p>
-<p>The current release adds the saved configuration only. It does not yet save
-session files, run distillation, update skills, import external runs, validate
-results, or mount skills into launched agents. The namespace saved here is the
-public config shape those later pieces will use.</p>
+<p>The current release adds the saved configuration and the Rust contracts that
+later implementations will share. It does not yet save session files, run
+distillation, update skills, import external runs, validate results, or mount
+skills into launched agents.</p>
 <h2 id="configure-it">Configure It<a class="headerlink" href="#configure-it" title="Permanent link">&para;</a></h2>
 <p>Choose a short namespace for the task or workflow you want the skill to learn:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--skill-distillation<span class="w"> </span>tooluniverse-trialqa
@@ -1304,6 +1326,23 @@ is trusted.</p>
 <p>The ledger should track which saved sessions have already contributed to a
 skill update. That lets distillation use new sessions by default instead of
 depending on a long-lived lookback-count setting.</p>
+<h2 id="rust-contracts">Rust Contracts<a class="headerlink" href="#rust-contracts" title="Permanent link">&para;</a></h2>
+<p>The <code>switchyard-skill-distillation</code> crate defines the source-neutral records
+and extension points shared by future implementations and adapters. It does not
+choose a provider, storage format, agent runtime, or model implementation.</p>
+<p>The public contract includes:</p>
+<ul>
+<li>safe <code>SkillNamespace</code>, <code>TrajectoryId</code>, and <code>SkillVersionId</code> identifiers;</li>
+<li>versioned trajectories with task, execution, source, event, and outcome data;</li>
+<li>versioned skill candidates with required source-trajectory provenance and
+  optional validation reports; and</li>
+<li>async <code>TrajectorySource</code>, <code>SkillDistiller</code>, <code>SkillValidator</code>, and <code>SkillStore</code>
+  traits.</li>
+</ul>
+<p>Provider-specific event data stays inside JSON payload and metadata fields.
+The crate validates record invariants but does not redact source data, run a
+model, write files, or activate a candidate by itself. Adapters and runtime
+implementations own those operations.</p>
 
 
 
