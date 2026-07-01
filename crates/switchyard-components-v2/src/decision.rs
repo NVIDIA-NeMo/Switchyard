@@ -579,6 +579,41 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn routing_request_validation_requires_identity_protocol_and_materialization_shape(
+    ) -> TestResult {
+        let mut request = routing_request()?;
+        request.identity.request_id = "  ".to_string();
+        let error = request
+            .validate()
+            .expect_err("blank request ID must be rejected");
+        assert!(error.to_string().contains("identity.request_id"));
+
+        let mut request = routing_request()?;
+        request.protocol.inbound_endpoint = "\t".to_string();
+        let error = request
+            .validate()
+            .expect_err("blank inbound endpoint must be rejected");
+        assert!(error.to_string().contains("protocol.inbound_endpoint"));
+
+        let mut request = routing_request()?;
+        request.current_request = Some(json!({"body": {}}));
+        let error = request
+            .validate()
+            .expect_err("summary-only requests must not carry a body");
+        assert!(error
+            .to_string()
+            .contains("must not include current_request"));
+
+        let mut request = routing_request()?;
+        request.decision_profile.request_materialization = CurrentRequestMaterialization::FullBody;
+        let error = request
+            .validate()
+            .expect_err("materialized requests must carry a body");
+        assert!(error.to_string().contains("requires current_request.body"));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn random_decision_uses_summary_without_dispatching_selected_backend() -> TestResult {
         let profile = RandomRoutingProfileConfig {
