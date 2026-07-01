@@ -11,7 +11,6 @@ from typing import Any, cast
 
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.roles import LLMBackend
-from switchyard.lib.routing_trace import record_routing_event
 from switchyard.lib.session_affinity import CTX_SESSION_KEY
 from switchyard.lib.session_cache import SessionCache
 from switchyard.lib.session_key import session_key_from_body
@@ -209,17 +208,7 @@ class ComponentChainProfile:
                 merged = set(processed.evicted_targets) | session_evicted
                 processed.evicted_targets = tuple(sorted(merged))
                 processed.sync_to_context()
-                selected_before_rewrite = processed.selected_target
                 self._rewrite_evicted_pick(processed)
-                if (
-                    processed.selected_target is not None
-                    and processed.selected_target != selected_before_rewrite
-                ):
-                    _record_fallback_decision(
-                        processed,
-                        source="session_eviction_cache",
-                        evicted_target=selected_before_rewrite,
-                    )
         try:
             return await self._call_backend_stage(processed)
         except SwitchyardContextWindowExceededError as error:
@@ -266,15 +255,8 @@ class ComponentChainProfile:
                 prior: frozenset[str] = self._session_evictions.get(session_key) or frozenset()
                 self._session_evictions.put(session_key, prior | {target_id})
 
-        overflow_target = _overflow_target_id(processed, error)
-        record_eviction(overflow_target)
+        record_eviction(_overflow_target_id(processed, error))
         self._rewrite_evicted_pick(processed)
-        if processed.selected_target is not None:
-            _record_fallback_decision(
-                processed,
-                source="context_window_overflow",
-                evicted_target=overflow_target,
-            )
         try:
             return await self._call_backend_stage(processed)
         except SwitchyardContextWindowExceededError as second:
@@ -282,21 +264,6 @@ class ComponentChainProfile:
             record_eviction(second_target)
             last_target = second_target or "unknown"
             reason = "all attempted targets returned context-window overflow"
-            record_routing_event(processed.ctx, {
-                "kind": "outcome",
-                "producer": "component_chain",
-                "name": "routing_pool_exhausted",
-                "schema": "component_chain.routing_pool_exhausted/v1",
-                "phase": "fallback",
-                "selection": {"target": last_target},
-                "source": "context_window_overflow",
-                "reason": reason,
-                "status": "error",
-                "error": "ContextPoolExhausted",
-                "details": {
-                    "evicted_targets": list(processed.evicted_targets),
-                },
-            })
             pool_error = SwitchyardContextPoolExhaustedError(
                 f"context pool exhausted after target {last_target}: {reason}"
             )
@@ -311,32 +278,6 @@ class ComponentChainProfile:
         if (selected is not None and selected in evicted) or (not selected and evicted):
             processed.selected_target = self._fallback_target_on_evict
             processed.sync_to_context()
-
-
-def _record_fallback_decision(
-    processed: ChainProcessedRequest,
-    *,
-    source: str,
-    evicted_target: str | None,
-) -> None:
-    """Record why the chain rewrote an evicted target to its fallback."""
-    target = processed.selected_target
-    if target is None:
-        return
-    record_routing_event(processed.ctx, {
-        "kind": "decision",
-        "producer": "component_chain",
-        "name": "context_fallback",
-        "schema": "component_chain.context_fallback/v1",
-        "phase": "fallback",
-        "selection": {"target": target},
-        "source": source,
-        "reason": "selected target was previously rejected for context capacity",
-        "details": {
-            "evicted_target": evicted_target,
-            "evicted_targets": list(processed.evicted_targets),
-        },
-    })
 
 
 def _derive_session_key(ctx: ProxyContext, request: ChatRequest) -> str:

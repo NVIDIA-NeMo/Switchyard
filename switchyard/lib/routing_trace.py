@@ -53,29 +53,26 @@ def capture_routing_text(value: str) -> dict[str, Any]:
 
 def record_routing_event(
     ctx: ProxyContext,
-    event: Mapping[str, Any],
+    name: str,
+    payload: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    """Validate, append, and immediately export one routing event.
+    """Append and export an algorithm-owned routing event.
 
     Routing remains independent of observability: when capture is disabled the
     function is a no-op, and a trace failure never changes the selected route.
-    Producers must use :func:`routing_trace_content_enabled` before adding raw
-    request, prompt, response, or other potentially sensitive content.
+    The framework assigns request correlation, sequence, and timestamp only;
+    the producer owns the payload and must gate sensitive content explicitly.
     """
     path_value = os.environ.get(ROUTING_TRACE_JSONL_ENV, "").strip()
     if not path_value:
         return None
 
     try:
-        recorded = ctx.record_routing_event(event)
+        recorded = ctx.record_routing_event(name, payload)
     except Exception:
-        log.exception("Rejected invalid routing trace event")
+        log.exception("Failed to record routing trace event %s", name)
         return None
-    row = {
-        "schema_version": 1,
-        "request_id": ctx.request_id,
-        "event": recorded,
-    }
+    row = {"request_id": ctx.request_id, **recorded}
     try:
         _append_jsonl(Path(path_value).expanduser(), row)
     except Exception:

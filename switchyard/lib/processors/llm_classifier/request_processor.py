@@ -18,8 +18,7 @@ from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.processors._structured_output import build_response_format
 from switchyard.lib.processors.llm_classifier.signals import (
     CTX_DETERMINISTIC_ROUTE_SIGNALS,
-    CodingAgentRouteDecision,
-    OpenClawRouteDecision,
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
     RouteDecision,
     RouteSignals,
     RouteTier,
@@ -27,7 +26,6 @@ from switchyard.lib.processors.llm_classifier.signals import (
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.routing_trace import (
     capture_routing_text,
-    record_routing_event,
     routing_trace_enabled,
 )
 from switchyard.lib.session_affinity import SessionAffinity
@@ -351,14 +349,6 @@ class LLMClassifierRequestProcessor:
         if self._affinity is not None and self._affinity.pinned(ctx, request) is not None:
             # Already pinned: the selector reuses the pin and ignores any
             # verdict, so skip the LLM call — classify once per task, not per turn.
-            record_routing_event(ctx, {
-                "kind": "evaluation",
-                "producer": "llm_classifier",
-                "name": "classifier_call",
-                "phase": "initial",
-                "status": "skipped",
-                "reason": "session tier is already pinned",
-            })
             return request
 
         request_summary = _summarize_request(
@@ -366,31 +356,21 @@ class LLMClassifierRequestProcessor:
             max_chars=self._config.max_request_chars,
             recent_turn_window=self._config.recent_turn_window,
         )
-        classifier_input: dict[str, Any] | None = None
+        trace_payload: dict[str, Any] | None = None
         if routing_trace_enabled():
-            classifier_input = record_routing_event(ctx, {
-                "kind": "input",
-                "producer": "llm_classifier",
-                "name": "classifier_input",
-                "schema": "llm_classifier.classifier_input/v1",
-                "phase": "initial",
+            trace_payload = {
                 "input": {
                     "model": self._config.model,
                     "system_prompt": capture_routing_text(self._config.system_prompt),
                     "request_summary": capture_routing_text(request_summary),
                     "structured_output_mode": self._config.structured_output_mode,
                     "signal_schema": self._signal_schema.__name__,
-                    "max_request_chars": self._config.max_request_chars,
-                    "recent_turn_window": self._config.recent_turn_window,
-                    "max_completion_tokens": self._config.max_completion_tokens,
-                    "disable_reasoning": self._config.disable_reasoning,
-                },
-            })
+                }
+            }
 
         started_at = time.perf_counter()
         completion: ClassifierCompletion | None = None
         failure: Exception | None = None
-        failure_event: dict[str, Any] | None = None
         try:
             completion = await self._client.classify(
                 model=self._config.model,
@@ -400,66 +380,25 @@ class LLMClassifierRequestProcessor:
         except Exception as exc:
             classifier_latency_ms = (time.perf_counter() - started_at) * 1000
             failure = exc
-            failure_event = record_routing_event(ctx, {
-                "kind": "evaluation",
-                "producer": "llm_classifier",
-                "name": "classifier_call",
-                "schema": "llm_classifier.classifier_call/v1",
-                "phase": "initial",
-                "based_on": _event_reference(classifier_input),
-                "input": {"model": self._config.model},
-                "duration_ms": classifier_latency_ms,
-                "status": "error",
-                "error": type(exc).__name__,
-            })
+            if trace_payload is not None:
+                trace_payload["error"] = {
+                    "error_type": type(exc).__name__,
+                    "duration_ms": classifier_latency_ms,
+                }
         else:
             classifier_latency_ms = (time.perf_counter() - started_at) * 1000
-            classifier_call = None
-            if routing_trace_enabled():
-                classifier_call = record_routing_event(ctx, {
-                    "kind": "evaluation",
-                    "producer": "llm_classifier",
-                    "name": "classifier_call",
-                    "schema": "llm_classifier.classifier_call/v1",
-                    "phase": "initial",
-                    "based_on": _event_reference(classifier_input),
-                    "input": {"model": self._config.model},
-                    "output": {
-                        "content": capture_routing_text(completion.content),
-                        "usage": _classifier_usage(completion.usage),
-                    },
+            if trace_payload is not None:
+                trace_payload["output"] = {
+                    "content": capture_routing_text(completion.content),
+                    "usage": _classifier_usage(completion.usage),
                     "duration_ms": classifier_latency_ms,
-                    "status": "success",
-                })
-            parse_started_at = time.perf_counter()
+                }
             try:
                 signals = parse_route_decision(completion.content, self._signal_schema)
             except Exception as exc:
                 failure = exc
-                failure_event = record_routing_event(ctx, {
-                    "kind": "transform",
-                    "producer": "llm_classifier",
-                    "name": "parse_signals",
-                    "schema": "llm_classifier.parse_signals/v1",
-                    "phase": "initial",
-                    "based_on": _event_reference(classifier_call),
-                    "duration_ms": (time.perf_counter() - parse_started_at) * 1000,
-                    "status": "error",
-                    "error": type(exc).__name__,
-                })
-            else:
-                if routing_trace_enabled():
-                    record_routing_event(ctx, {
-                        "kind": "transform",
-                        "producer": "llm_classifier",
-                        "name": "parse_signals",
-                        "schema": "llm_classifier.parse_signals/v1",
-                        "phase": "initial",
-                        "based_on": _event_reference(classifier_call),
-                        "output": _trace_signal_payload(signals),
-                        "duration_ms": (time.perf_counter() - parse_started_at) * 1000,
-                        "status": "success",
-                    })
+                if trace_payload is not None:
+                    trace_payload["error"] = {"error_type": type(exc).__name__}
 
         if failure is not None:
             if not self._config.fail_open:
@@ -482,20 +421,6 @@ class LLMClassifierRequestProcessor:
             signals = self._signal_schema.make_abstain(
                 self._config.fallback_recommended_tier,
             )
-            if routing_trace_enabled():
-                record_routing_event(ctx, {
-                    "kind": "transform",
-                    "producer": "llm_classifier",
-                    "name": "fail_open_signals",
-                    "schema": "llm_classifier.fail_open_signals/v1",
-                    "phase": "fallback",
-                    "based_on": _event_reference(failure_event),
-                    "output": _trace_signal_payload(signals),
-                    "source": "classifier_error",
-                    "reason": "using configured abstain signals after classifier failure",
-                    "status": "success",
-                    "details": {"error_type": type(failure).__name__},
-                })
             _fail_open_exc: Exception | None = failure
         else:
             _fail_open_exc = None
@@ -507,6 +432,9 @@ class LLMClassifierRequestProcessor:
                 )
 
         ctx.metadata[CTX_DETERMINISTIC_ROUTE_SIGNALS] = signals
+        if trace_payload is not None:
+            trace_payload["signals"] = signals.model_dump(mode="json")
+            ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD] = trace_payload
         # One-line dump of the extracted signals + the deterministic
         # policy_tier the selector will route on. Written to stderr
         # directly (not via the logging module) so it lands in the
@@ -573,30 +501,6 @@ def _classifier_usage(usage: Any) -> dict[str, int]:
         "completion_tokens": completion,
         "cached_tokens": cached,
     }
-
-
-def _trace_signal_payload(signals: RouteDecision) -> dict[str, Any]:
-    """Serialize built-in categorical signals without exposing custom content."""
-    if type(signals) in {  # noqa: E721 - exact types exclude contentful subclasses
-        RouteSignals,
-        CodingAgentRouteDecision,
-        OpenClawRouteDecision,
-    }:
-        return signals.model_dump(mode="json")
-    return {
-        "schema_name": type(signals).__name__,
-        "recommended_tier": signals.recommended_tier.value,
-        "confidence": signals.confidence,
-        "abstain": signals.abstain,
-    }
-
-
-def _event_reference(event: dict[str, Any] | None) -> list[int]:
-    """Return a valid causal reference for a previously recorded event."""
-    if event is None:
-        return []
-    sequence = event.get("sequence")
-    return [sequence] if isinstance(sequence, int) else []
 
 
 def parse_route_decision(

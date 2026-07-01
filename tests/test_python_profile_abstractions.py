@@ -25,7 +25,6 @@ from switchyard.lib.profiles.table import (
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.roles import LLMBackend
-from switchyard.lib.routing_trace import ROUTING_TRACE_JSONL_ENV
 from switchyard_rust.core import (
     ChatRequest,
     ChatRequestType,
@@ -203,12 +202,8 @@ async def test_component_chain_profile_preserves_input_headers_in_context() -> N
     assert processor.metadata["x-request-id"] == ["request-1"]
 
 
-async def test_component_chain_raises_pool_exhausted_when_fallback_overflows(
-    monkeypatch,
-    tmp_path,
-) -> None:
+async def test_component_chain_raises_pool_exhausted_when_fallback_overflows() -> None:
     """A second context-window overflow reports the final attempted target."""
-    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
     backend = _AlwaysOverflowBackend()
     profile = ComponentChainProfile(
         request_processors=[_PickWeakProcessor()],
@@ -216,31 +211,16 @@ async def test_component_chain_raises_pool_exhausted_when_fallback_overflows(
         fallback_target_on_evict="strong",
     )
 
-    ctx = ProxyContext(request_id="request-1")
     with pytest.raises(SwitchyardContextPoolExhaustedError) as excinfo:
-        await profile.run_with_context(ProfileInput(_request()), ctx)
+        await profile.run(ProfileInput(_request()))
 
     assert backend.calls == ["weak", "strong"]
     assert excinfo.value.last_target_id == "strong"
     assert excinfo.value.reason == "all attempted targets returned context-window overflow"
-    trace = cast(dict[str, object], ctx.routing_trace)
-    events = cast(list[dict[str, object]], trace["events"])
-    assert [event["name"] for event in events] == [
-        "context_fallback",
-        "routing_pool_exhausted",
-    ]
-    assert events[0]["selection"] == {"target": "strong"}
-    assert events[0]["source"] == "context_window_overflow"
-    assert events[1]["selection"] == {"target": "strong"}
-    assert events[1]["status"] == "error"
 
 
-async def test_session_eviction_skips_evicted_target_on_subsequent_turn(
-    monkeypatch,
-    tmp_path,
-) -> None:
+async def test_session_eviction_skips_evicted_target_on_subsequent_turn() -> None:
     """After weak overflows in turn 1, turn 2 of the same session skips weak entirely."""
-    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
     backend = _OverflowWeakBackend()
     profile = ComponentChainProfile(
         request_processors=[_PickWeakProcessor()],
@@ -250,26 +230,14 @@ async def test_session_eviction_skips_evicted_target_on_subsequent_turn(
     request = _request(msg="hi")
 
     # Turn 1: weak overflows → fallback to strong.
-    first_ctx = ProxyContext(request_id="request-1")
-    await profile.run_with_context(ProfileInput(request), first_ctx)
+    await profile.run(ProfileInput(request))
     assert backend.calls == ["weak", "strong"]
-    first_trace = cast(dict[str, object], first_ctx.routing_trace)
-    first_events = cast(list[dict[str, object]], first_trace["events"])
-    assert len(first_events) == 1
-    assert first_events[0]["source"] == "context_window_overflow"
-    assert first_events[0]["selection"] == {"target": "strong"}
 
     backend.calls.clear()
 
     # Turn 2: same session → weak is pre-empted, strong called directly.
-    second_ctx = ProxyContext(request_id="request-2")
-    await profile.run_with_context(ProfileInput(request), second_ctx)
+    await profile.run(ProfileInput(request))
     assert backend.calls == ["strong"]
-    second_trace = cast(dict[str, object], second_ctx.routing_trace)
-    second_events = cast(list[dict[str, object]], second_trace["events"])
-    assert len(second_events) == 1
-    assert second_events[0]["source"] == "session_eviction_cache"
-    assert second_events[0]["selection"] == {"target": "strong"}
 
 
 async def test_session_eviction_records_fallback_target_after_pool_exhaustion() -> None:

@@ -16,12 +16,12 @@ from switchyard.lib.backends.deterministic_routing_llm_backend import (
 )
 from switchyard.lib.processors.llm_classifier.signals import (
     CTX_DETERMINISTIC_ROUTE_SIGNALS,
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
     RouteDecision,
     RouteSignals,
     RouteTier,
 )
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.routing_trace import record_routing_event
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard_rust.core import ChatRequest
 
@@ -29,8 +29,6 @@ log = logging.getLogger(__name__)
 
 #: ``ProxyContext.metadata`` key for the deterministic tier selector decision.
 CTX_DETERMINISTIC_TIER_DECISION = "_deterministic_tier_decision"
-
-_TIER_SELECTION_TRACE_SCHEMA = "llm_classifier.tier_selection/v1"
 
 DecisionSource = Literal[
     "policy_tier",
@@ -209,41 +207,20 @@ class SignalTierSelectorRequestProcessor:
         ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = decision.tier
         ctx.metadata[CTX_DETERMINISTIC_TIER_DECISION] = decision
 
-        record_routing_event(
-            ctx,
-            {
-                "kind": "decision",
-                "producer": "llm_classifier",
-                "name": "tier_selection",
-                "schema": _TIER_SELECTION_TRACE_SCHEMA,
-                "phase": "initial",
-                "selection": {"tier": decision.tier},
+        trace_payload = ctx.metadata.get(CTX_LLM_CLASSIFIER_TRACE_PAYLOAD)
+        if isinstance(trace_payload, dict):
+            trace_payload["decision"] = {
+                "tier": decision.tier,
                 "source": decision.source,
                 "reason": decision.reason,
                 "confidence": decision.confidence,
-                "details": {
-                    "policy_tier": (decision.policy_tier.value if decision.policy_tier else None),
-                    "llm_recommended_tier": (
-                        decision.llm_recommended_tier.value
-                        if decision.llm_recommended_tier
-                        else None
-                    ),
-                    "selector": {
-                        "tier_mapping": {
-                            tier.value: label for tier, label in self._config.tier_mapping.items()
-                        },
-                        "default_tier": self._config.default_tier,
-                        "min_confidence": self._config.min_confidence,
-                        "escalate_on_tool_planning": self._config.escalate_on_tool_planning,
-                        "escalate_target_tier": self._config.effective_escalate_target_tier,
-                        "align_with_llm_recommendation": (
-                            self._config.align_with_llm_recommendation
-                        ),
-                        "alignment_min_confidence": self._config.alignment_min_confidence,
-                    },
-                },
-            },
-        )
+                "policy_tier": decision.policy_tier.value if decision.policy_tier else None,
+                "llm_recommended_tier": (
+                    decision.llm_recommended_tier.value
+                    if decision.llm_recommended_tier
+                    else None
+                ),
+            }
 
         log.debug(
             "SignalTierSelectorRequestProcessor: tier=%s source=%s "

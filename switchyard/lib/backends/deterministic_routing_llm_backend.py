@@ -11,14 +11,16 @@ tier and write it to ``ProxyContext.metadata``.
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from switchyard.lib.backends.llm_target import LlmTarget
+from switchyard.lib.processors.llm_classifier.signals import (
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
+)
 from switchyard.lib.roles import LLMBackend
-from switchyard.lib.routing_trace import record_routing_event, routing_trace_enabled
-from switchyard_rust.core import ChatRequestType, response_is_streaming
+from switchyard.lib.routing_trace import record_routing_event
+from switchyard_rust.core import ChatRequestType
 
 if TYPE_CHECKING:
     from switchyard.lib.proxy_context import ProxyContext
@@ -29,7 +31,6 @@ log = logging.getLogger(__name__)
 #: ``ProxyContext.metadata`` key under which the upstream processor stamps the
 #: chosen tier label. Read by :meth:`DeterministicRoutingLLMBackend._pick_tier`.
 CTX_DETERMINISTIC_ROUTING_TIER = "_deterministic_routing_tier"
-_CTX_DETERMINISTIC_ATTEMPT_COUNT = "_deterministic_routing_attempt_count"
 
 
 class DeterministicRoutingLLMBackend(LLMBackend):
@@ -109,7 +110,7 @@ class DeterministicRoutingLLMBackend(LLMBackend):
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
         from switchyard_rust.components import set_stats_route_label
 
-        tier, source = self._pick_tier(ctx, request)
+        tier = self._pick_tier(ctx, request)
         model = self._models[tier]
         request.set_model(model)
         ctx.selected_target = tier
@@ -120,39 +121,28 @@ class DeterministicRoutingLLMBackend(LLMBackend):
         # without this, the launcher's LiveStatsFooter tier rows stay
         # empty and ``GET /v1/routing/stats`` loses per-tier attribution.
         set_stats_route_label(ctx, tier)
-        started_at = time.perf_counter()
-        try:
-            response = await self._backends[tier].call(ctx, request)
-        except Exception as error:
-            self._record_attempt(
+        trace_payload = ctx.metadata.get(CTX_LLM_CLASSIFIER_TRACE_PAYLOAD)
+        if isinstance(trace_payload, dict):
+            decision = trace_payload.get("decision")
+            if isinstance(decision, dict):
+                decision["tier"] = tier
+                decision["model"] = model
+            record_routing_event(ctx, "llm_classifier.route", trace_payload)
+            del ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD]
+        else:
+            record_routing_event(
                 ctx,
-                tier=tier,
-                model=model,
-                source=source,
-                status="error",
-                duration_ms=(time.perf_counter() - started_at) * 1000.0,
-                error=type(error).__name__,
-                response_mode="unavailable",
+                "deterministic_routing.selection",
+                {"tier": tier, "model": model},
             )
-            raise
-        streaming = response_is_streaming(response)
-        self._record_attempt(
-            ctx,
-            tier=tier,
-            model=model,
-            source=source,
-            status="success",
-            duration_ms=(time.perf_counter() - started_at) * 1000.0,
-            response_mode="stream" if streaming else "buffered",
-        )
-        return response
+        return await self._backends[tier].call(ctx, request)
 
     def _pick_tier(
         self,
         ctx: ProxyContext,
         request: ChatRequest,  # noqa: ARG002
-    ) -> tuple[str, str]:
-        """Read the stamped tier and return it with its routing provenance.
+    ) -> str:
+        """Read the tier label stamped upstream; fall back defensively.
 
         ``ctx.selected_target`` is the routing runtime's source of truth — it
         gets rewritten to the configured ``fallback_target_on_evict`` after a
@@ -162,11 +152,11 @@ class DeterministicRoutingLLMBackend(LLMBackend):
         """
         rerouted = ctx.selected_target
         if isinstance(rerouted, str) and rerouted in self._backends:
-            return rerouted, "context_selected_target"
+            return rerouted
 
         picked = ctx.metadata.get(CTX_DETERMINISTIC_ROUTING_TIER)
         if isinstance(picked, str) and picked in self._backends:
-            return picked, "routing_tier_metadata"
+            return picked
 
         log.warning(
             "DeterministicRoutingLLMBackend: no valid tier on ctx "
@@ -174,45 +164,7 @@ class DeterministicRoutingLLMBackend(LLMBackend):
             picked,
             self._default_tier,
         )
-        return self._default_tier, "backend_default"
-
-    @staticmethod
-    def _record_attempt(
-        ctx: ProxyContext,
-        *,
-        tier: str,
-        model: str,
-        source: str,
-        status: Literal["success", "error"],
-        duration_ms: float,
-        response_mode: Literal["buffered", "stream", "unavailable"],
-        error: str | None = None,
-    ) -> None:
-        """Append a buffered attempt result or successful stream-open event."""
-        if not routing_trace_enabled():
-            return
-        prior_count = ctx.metadata.get(_CTX_DETERMINISTIC_ATTEMPT_COUNT, 0)
-        attempt_number = prior_count if isinstance(prior_count, int) and prior_count >= 0 else 0
-        ctx.metadata[_CTX_DETERMINISTIC_ATTEMPT_COUNT] = attempt_number + 1
-        phase: Literal["initial", "retry"] = "initial" if attempt_number == 0 else "retry"
-        event: dict[str, object] = {
-            "kind": "attempt",
-            "producer": "deterministic_routing",
-            "name": "backend_stream_opened" if response_mode == "stream" else "backend_attempt",
-            "schema": "deterministic_routing.backend_attempt/v1",
-            "phase": phase,
-            "selection": {"tier": tier, "model": model},
-            "source": source,
-            "status": status,
-            "duration_ms": duration_ms,
-            "details": {
-                "attempt_number": attempt_number,
-                "response_mode": response_mode,
-            },
-        }
-        if error is not None:
-            event["error"] = error
-        record_routing_event(ctx, event)
+        return self._default_tier
 
 
 __all__ = [
