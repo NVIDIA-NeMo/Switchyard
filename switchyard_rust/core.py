@@ -130,6 +130,13 @@ class _ProxyContext(Protocol):
     selected_target: str | None
     backend_call_latency_ms: float | None
     evicted_targets: list[str] | None
+    routing_trace: dict[str, JsonValue] | None
+
+    def record_routing_event(
+        self,
+        name: str,
+        payload: Mapping[str, JsonValue],
+    ) -> dict[str, JsonValue]: ...
 
 
 class _LLMBackend(Protocol):
@@ -551,12 +558,18 @@ if TYPE_CHECKING:
         selected_target: str | None
         backend_call_latency_ms: float | None
         evicted_targets: list[str] | None
+        routing_trace: dict[str, JsonValue] | None
 
         def __init__(
             self,
             metadata: Mapping[str, Any] | None = None,
             request_id: str | None = None,
         ) -> None: ...
+        def record_routing_event(
+            self,
+            name: str,
+            payload: Mapping[str, JsonValue],
+        ) -> dict[str, JsonValue]: ...
 
     class LLMBackend:
         """Static view of the Rust-owned LLMBackend role class."""

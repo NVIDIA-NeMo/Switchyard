@@ -408,6 +408,7 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
             "CLOSED_BOOK_MODE=${CLOSED_BOOK_MODE:-1}",
             "OPENAI_BASE_URL=${OPENAI_BASE_URL:-}",
             "SWITCHYARD_BASE_URL=${SWITCHYARD_BASE_URL:-}",
+            "SWITCHYARD_PROXY_REQUEST_MAP=/etc/proxy-public/request_map.jsonl",
             "VERIFIER_PROXY_TOKEN=${SWITCHYARD_VERIFIER_PROXY_TOKEN:-}",
         ],
         "healthcheck": {
@@ -504,6 +505,8 @@ def prepare_dataset(
             "proxy_asset_digest": proxy_digest,
             "proxy_allowlist_hosts": list(proxy_allowlist_hosts),
             "proxy_strip_log_path": "/etc/proxy-public/strip.jsonl",
+            "proxy_request_map_path": "/etc/proxy-public/request_map.jsonl",
+            "proxy_request_map_artifact_path": "/etc/proxy-ca/request_map.jsonl",
             "agent_internal_network": "agent-internal",
             "proxy_egress_network": "proxy-egress",
         },

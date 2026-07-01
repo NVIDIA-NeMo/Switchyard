@@ -35,8 +35,12 @@ from switchyard.lib.processors.llm_classifier import (
     SignalTierSelectorRequestProcessor,
     TierSelectionDecision,
 )
+from switchyard.lib.processors.llm_classifier.signals import (
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
+)
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.roles import LLMBackend
+from switchyard.lib.routing_trace import ROUTING_TRACE_JSONL_ENV
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard_rust.core import ChatRequest, ChatRequestType, ChatResponse
 
@@ -322,7 +326,10 @@ def test_openclaw_policy_tier_handles_chat_vs_orchestration() -> None:
     assert irreversible_action.policy_tier() is RouteTier.COMPLEX
 
 
-async def test_selector_to_backend_handoff_dispatches_selected_tier() -> None:
+async def test_selector_to_backend_handoff_dispatches_selected_tier(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "events.jsonl"))
     strong_backend = _RecordingBackend()
     weak_backend = _RecordingBackend()
     selector = SignalTierSelectorRequestProcessor(
@@ -345,6 +352,11 @@ async def test_selector_to_backend_handoff_dispatches_selected_tier() -> None:
     )
     ctx = ProxyContext(metadata={
         CTX_DETERMINISTIC_ROUTE_SIGNALS: _signals(),
+        CTX_LLM_CLASSIFIER_TRACE_PAYLOAD: {
+            "input": {"model": "classifier-model"},
+            "output": {"content": "classifier-output"},
+            "signals": {"recommended_tier": "complex"},
+        },
     })
     req = _request()
 
@@ -354,6 +366,12 @@ async def test_selector_to_backend_handoff_dispatches_selected_tier() -> None:
     assert strong_backend.models == ["strong-model"]
     assert weak_backend.models == []
     assert req.body["model"] == "strong-model"
+    trace = ctx.routing_trace
+    assert trace is not None
+    assert [event["name"] for event in trace["events"]] == ["llm_classifier.route"]
+    payload = trace["events"][0]["payload"]
+    assert payload["decision"]["tier"] == "strong"
+    assert payload["decision"]["model"] == "strong-model"
 
 
 # --- Tool-planning escalation ----------------------------------------------
@@ -892,4 +910,3 @@ async def test_session_affinity_distinct_conversations_independent() -> None:
     })
     await processor.process(ctx_b, _request("question B"))
     assert ctx_b.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
-

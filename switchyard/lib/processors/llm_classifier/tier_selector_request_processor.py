@@ -16,6 +16,7 @@ from switchyard.lib.backends.deterministic_routing_llm_backend import (
 )
 from switchyard.lib.processors.llm_classifier.signals import (
     CTX_DETERMINISTIC_ROUTE_SIGNALS,
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
     RouteDecision,
     RouteSignals,
     RouteTier,
@@ -205,6 +206,21 @@ class SignalTierSelectorRequestProcessor:
 
         ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = decision.tier
         ctx.metadata[CTX_DETERMINISTIC_TIER_DECISION] = decision
+
+        trace_payload = ctx.metadata.get(CTX_LLM_CLASSIFIER_TRACE_PAYLOAD)
+        if isinstance(trace_payload, dict):
+            trace_payload["decision"] = {
+                "tier": decision.tier,
+                "source": decision.source,
+                "reason": decision.reason,
+                "confidence": decision.confidence,
+                "policy_tier": decision.policy_tier.value if decision.policy_tier else None,
+                "llm_recommended_tier": (
+                    decision.llm_recommended_tier.value
+                    if decision.llm_recommended_tier
+                    else None
+                ),
+            }
 
         log.debug(
             "SignalTierSelectorRequestProcessor: tier=%s source=%s "

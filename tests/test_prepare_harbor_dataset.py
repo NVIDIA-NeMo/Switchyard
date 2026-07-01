@@ -236,6 +236,7 @@ def test_generated_compose_contains_closed_book_proxy_topology(tmp_path: Path) -
     assert "OPENAI_BASE_URL=" in proxy_env
     assert "ANTHROPIC_BASE_URL=" in proxy_env
     assert "ALLOWED_HOSTS=" in proxy_env
+    assert "SWITCHYARD_PROXY_REQUEST_MAP=/etc/proxy-public/request_map.jsonl" in proxy_env
     assert "VERIFIER_PROXY_TOKEN=${SWITCHYARD_VERIFIER_PROXY_TOKEN:-}" in proxy_env
     assert "SWITCHYARD_HOST_SOCKET" not in proxy_env
     proxy_assets = output / "compose-task" / "environment" / "proxy"
@@ -265,6 +266,12 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
         "OPENCODE_VERSION": "1.14.31",
     }
     assert manifest["closed_book"]["proxy_asset_digest"].startswith("sha256:")
+    assert manifest["closed_book"]["proxy_request_map_path"] == (
+        "/etc/proxy-public/request_map.jsonl"
+    )
+    assert manifest["closed_book"]["proxy_request_map_artifact_path"] == (
+        "/etc/proxy-ca/request_map.jsonl"
+    )
     assert manifest["closed_book"]["verifier_egress"] == "open-via-authenticated-proxy"
     assert {task["name"] for task in manifest["tasks"]} == {"task-a", "task-b"}
     assert all(task["dockerfile_digest"].startswith("sha256:") for task in manifest["tasks"])
