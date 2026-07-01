@@ -46,7 +46,7 @@ pub(crate) struct ServerArgs {
     #[arg(long)]
     pub(crate) dry_run: bool,
 
-    /// Optional bearer token required by POST /v1/atof/events.
+    /// Optional bearer token required by the Relay Decision and ATOF endpoints.
     #[arg(long, env = "SWITCHYARD_ATOF_BEARER_TOKEN", value_name = "TOKEN")]
     pub(crate) atof_bearer_token: Option<String>,
 
