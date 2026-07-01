@@ -12,6 +12,7 @@ the same paths.
 import argparse
 import json
 import threading
+import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,49 @@ def test_dry_run_validates_rust_profiles_and_direct_targets(tmp_path: Path) -> N
     run_profile_server(str(path), dry_run=True)
 
 
+def test_python_server_wrapper_forwards_atof_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: tuple[object, ...] | None = None
+
+    class _Native:
+        def run_profile_server(self, *args: object) -> None:
+            nonlocal captured
+            captured = args
+
+    monkeypatch.setattr("switchyard_rust.server._load_native", lambda: _Native())
+
+    run_profile_server(
+        "profiles.yaml",
+        "127.0.0.2",
+        4555,
+        123,
+        True,
+        "relay-secret",
+        17,
+        18,
+        19,
+        2000,
+        1024,
+        2048,
+    )
+
+    assert captured == (
+        "profiles.yaml",
+        "127.0.0.2",
+        4555,
+        123,
+        True,
+        "relay-secret",
+        17,
+        18,
+        19,
+        2000,
+        1024,
+        2048,
+    )
+
+
 def test_dry_run_rejects_invalid_config(tmp_path: Path) -> None:
     path = _write(tmp_path, "profiles:\n  bad:\n    type: passthrough\n    target: ghost\n")
     with pytest.raises(SwitchyardConfigError):
@@ -174,6 +218,18 @@ def test_shipped_example_config_is_servable(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-key")
     example = Path(__file__).resolve().parents[1] / "examples" / "profiles.yaml"
     run_profile_server(str(example), dry_run=True)
+
+
+def test_relay_atof_fixture_pins_http_post_preserve_and_bearer() -> None:
+    fixture = Path(__file__).resolve().parents[1] / "examples" / "relay_atof_switchyard.toml"
+    config = tomllib.loads(fixture.read_text(encoding="utf-8"))
+    endpoint = config["components"][0]["config"]["atof"]["endpoints"][0]
+
+    assert endpoint["transport"] == "http_post"
+    assert endpoint["field_name_policy"] == "preserve"
+    assert endpoint["headers"]["Authorization"] == (
+        "Bearer replace-with-shared-token"
+    )
 
 
 def test_python_profile_ids_classifies_config(tmp_path: Path) -> None:
