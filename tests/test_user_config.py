@@ -254,18 +254,62 @@ def test_configure_disable_skill_distillation_clears_config(
 
 
 def test_configure_disable_skill_distillation_rejects_conflicting_flags():
+    from switchyard.cli.switchyard_cli import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "configure",
+            "--disable-skill-distillation",
+            "--skill-distillation",
+            "tooluniverse-trialqa",
+        ])
+
+
+@pytest.mark.parametrize("mode", ["--show", "--reset", "--list-models"])
+@pytest.mark.parametrize(
+    "skill_args",
+    [
+        ["--skill-distillation", "tooluniverse-trialqa"],
+        ["--disable-skill-distillation"],
+    ],
+)
+def test_configure_skill_distillation_rejects_read_or_reset_modes(
+    mode,
+    skill_args,
+):
+    from switchyard.cli.switchyard_cli import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "configure",
+            mode,
+            *skill_args,
+        ])
+
+
+def test_configure_empty_skill_namespace_does_not_keep_existing_value(
+    monkeypatch,
+    tmp_path,
+):
     from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    existing = SkillDistillationConfig(namespace="existing")
+    save_user_config(UserConfig(skill_distillation=existing), config_dir=tmp_path)
 
     parser = _build_parser()
     args = parser.parse_args([
         "configure",
-        "--disable-skill-distillation",
         "--skill-distillation",
-        "tooluniverse-trialqa",
+        "",
     ])
 
-    with pytest.raises(UserConfigError, match="cannot be combined"):
+    with pytest.raises(UserConfigError, match="letters, numbers"):
         _cmd_configure(args)
+
+    assert load_user_config(tmp_path).skill_distillation == existing
 
 
 def test_configure_invalid_skill_namespace_reports_user_error(

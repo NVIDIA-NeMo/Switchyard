@@ -5,10 +5,10 @@ kind of work. The model is not retrained. Switchyard saves the session history,
 uses it to update a `SKILL.md`, and makes the active skill available to later
 agent launches for the same namespace.
 
-The current release adds the saved configuration only. It does not yet save
-session files, run distillation, update skills, import external runs, validate
-results, or mount skills into launched agents. The namespace saved here is the
-public config shape those later pieces will use.
+The current release adds the saved configuration and the Rust contracts that
+later implementations will share. It does not yet save session files, run
+distillation, update skills, import external runs, validate results, or mount
+skills into launched agents.
 
 ## Configure It
 
@@ -112,3 +112,23 @@ Future work should use inspectable local files:
 The ledger should track which saved sessions have already contributed to a
 skill update. That lets distillation use new sessions by default instead of
 depending on a long-lived lookback-count setting.
+
+## Rust Contracts
+
+The `switchyard-skill-distillation` crate defines the source-neutral records
+and extension points shared by future implementations and adapters. It does not
+choose a provider, storage format, agent runtime, or model implementation.
+
+The public contract includes:
+
+- safe `SkillNamespace`, `TrajectoryId`, and `SkillVersionId` identifiers;
+- versioned trajectories with task, execution, source, event, and outcome data;
+- versioned skill candidates with required source-trajectory provenance and
+  optional validation reports; and
+- async `TrajectorySource`, `SkillDistiller`, `SkillValidator`, and `SkillStore`
+  traits.
+
+Provider-specific event data stays inside JSON payload and metadata fields.
+The crate validates record invariants but does not redact source data, run a
+model, write files, or activate a candidate by itself. Adapters and runtime
+implementations own those operations.

@@ -99,7 +99,11 @@ def _apply_skill_distillation_args(
         return SkillDistillationConfig()
 
     return SkillDistillationConfig(
-        namespace=args.skill_distillation or existing.namespace,
+        namespace=(
+            args.skill_distillation
+            if args.skill_distillation is not None
+            else existing.namespace
+        ),
     )
 
 

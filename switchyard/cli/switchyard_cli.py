@@ -1031,7 +1031,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--openclaw-api-key", type=str, default=None,
         help="OpenClaw model API-key override. Omit to use the default API key.",
     )
-    cfg.add_argument(
+    cfg_mode.add_argument(
         "--skill-distillation",
         metavar="NAMESPACE",
         default=None,
@@ -1040,7 +1040,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "component (for example: tooluniverse-trialqa)."
         ),
     )
-    cfg.add_argument(
+    cfg_mode.add_argument(
         "--disable-skill-distillation",
         action="store_true",
         help="Remove saved skill distillation config.",
