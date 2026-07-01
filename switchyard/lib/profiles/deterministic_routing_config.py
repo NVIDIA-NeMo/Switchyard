@@ -18,6 +18,7 @@ from pydantic import (
 
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
+from switchyard.lib.processors.llm_classifier.signals import RouteTier
 
 ProfileName = Literal["general", "coding_agent", "openclaw"]
 DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S = 600.0
@@ -84,8 +85,11 @@ class DeterministicRoutingConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    strong: LlmTarget
-    weak: LlmTarget
+    strong: LlmTarget | None = None
+    weak: LlmTarget | None = None
+    tiers: dict[str, LlmTarget] | None = None
+    tier_mapping: dict[RouteTier, str] | None = None
+    default_tier: str | None = None
     classifier: LlmTarget
     #: Target id the chain executor reroutes to when the picked target is
     #: evicted (e.g. context-window overflow). Must match either
@@ -117,12 +121,36 @@ class DeterministicRoutingConfig(BaseModel):
     def _coerce_target(cls, value: object, info: ValidationInfo) -> LlmTarget:
         return coerce_llm_target(value, default_id=info.field_name or "target")
 
+    @field_validator("tiers", mode="before")
+    @classmethod
+    def _coerce_tiers(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, dict) or not value:
+            raise ValueError("tiers must be a non-empty mapping")
+        return {
+            str(label): coerce_llm_target(target, default_id=str(label))
+            for label, target in value.items()
+        }
+
     @field_validator("strong", "weak", "classifier")
     @classmethod
-    def _target_model_non_empty(cls, tier: LlmTarget) -> LlmTarget:
+    def _target_model_non_empty(cls, tier: LlmTarget | None) -> LlmTarget | None:
+        if tier is None:
+            return None
         if not tier.model:
             raise ValueError("target.model must be a non-empty string")
         return tier
+
+    @field_validator("tiers")
+    @classmethod
+    def _tier_models_non_empty(cls, tiers: dict[str, LlmTarget] | None) -> dict[str, LlmTarget] | None:
+        if tiers is None:
+            return None
+        empty = [label for label, target in tiers.items() if not label or not target.model]
+        if empty:
+            raise ValueError(f"tiers must have non-empty labels and models: {empty}")
+        return tiers
 
     @field_validator("classifier_system_prompt", mode="before")
     @classmethod
@@ -134,24 +162,57 @@ class DeterministicRoutingConfig(BaseModel):
     @field_validator("fallback_target_on_evict")
     @classmethod
     def _fallback_matches_existing_target(cls, value: str, info: ValidationInfo) -> str:
-        valid_ids = {info.data[key].id for key in ("strong", "weak") if key in info.data}
+        valid_ids: set[str] = set()
+        tiers = info.data.get("tiers")
+        if isinstance(tiers, dict):
+            valid_ids.update(tier.id for tier in tiers.values())
+        valid_ids.update(
+            tier.id
+            for key in ("strong", "weak")
+            if (tier := info.data.get(key)) is not None
+        )
         if value not in valid_ids:
             raise ValueError(
                 f"fallback_target_on_evict={value!r} must match one of "
-                f"{sorted(valid_ids)} (the configured strong/weak target ids; "
+                f"{sorted(valid_ids)} (the configured routing target ids; "
                 f"the classifier target is not a routing candidate)"
             )
         return value
 
     @model_validator(mode="after")
-    def _affinity_capacity_nonzero_when_enabled(self) -> DeterministicRoutingConfig:
+    def _validate_routing_tiers(self) -> DeterministicRoutingConfig:
         # A zero-capacity affinity store retains nothing, which would silently
         # disable stickiness while still paying the per-request key cost.
         if self.session_affinity and self.affinity_max_sessions == 0:
             raise ValueError(
                 "affinity_max_sessions must be > 0 when session_affinity is enabled"
             )
+        if self.tiers is None:
+            if self.strong is None or self.weak is None:
+                raise ValueError("deterministic routing requires either tiers or both strong and weak")
+            tiers = {"strong": self.strong, "weak": self.weak}
+        else:
+            tiers = self.tiers
+        labels = set(tiers)
+        if not labels:
+            raise ValueError("deterministic routing requires at least one tier")
+        if self.default_tier is not None and self.default_tier not in labels:
+            raise ValueError(
+                f"default_tier {self.default_tier!r} must match one of {sorted(labels)}"
+            )
+        if self.tier_mapping is not None:
+            unknown = sorted(set(self.tier_mapping.values()) - labels)
+            if unknown:
+                raise ValueError(
+                    f"tier_mapping target labels {unknown} must match one of {sorted(labels)}"
+                )
         return self
+
+    def resolved_tiers(self) -> dict[str, LlmTarget]:
+        if self.tiers is not None:
+            return dict(self.tiers)
+        assert self.strong is not None and self.weak is not None
+        return {"strong": self.strong, "weak": self.weak}
 
 
 __all__ = [

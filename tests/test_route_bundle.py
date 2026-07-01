@@ -813,6 +813,78 @@ class TestDeterministicRouteType:
             "nvidia/nemotron-3-super",
         ]
 
+    def test_deterministic_route_accepts_custom_tiers_and_mapping(self):
+        from switchyard.cli.route_bundle import build_route_bundle_table
+        from switchyard.lib.backends.deterministic_routing_llm_backend import (
+            DeterministicRoutingLLMBackend,
+        )
+        from switchyard.lib.processors.llm_classifier.signals import RouteTier
+        from switchyard.lib.processors.llm_classifier.tier_selector_request_processor import (
+            SignalTierSelectorRequestProcessor,
+        )
+
+        bundle = self._bundle()
+        route = bundle["routes"]["myrouter/llm-classifier"]
+        route.pop("strong")
+        route.pop("weak")
+        route["fallback_target_on_evict"] = "frontier"
+        route["default_tier"] = "spark"
+        route["tiers"] = {
+            "gpu": {
+                "model": "local-qwen",
+                "api_key": "sk-gpu",
+                "base_url": "https://gpu.invalid/v1",
+            },
+            "spark": {
+                "model": "spark-qwen",
+                "api_key": "sk-spark",
+                "base_url": "https://spark.invalid/v1",
+            },
+            "nim": {
+                "model": "nim-qwen",
+                "api_key": "sk-nim",
+                "base_url": "https://nim.invalid/v1",
+            },
+            "frontier": {
+                "model": "frontier-qwen",
+                "api_key": "sk-frontier",
+                "base_url": "https://frontier.invalid/v1",
+            },
+        }
+        route["tier_mapping"] = {
+            "simple": "gpu",
+            "medium": "spark",
+            "complex": "nim",
+            "reasoning": "frontier",
+        }
+
+        table = build_route_bundle_table(bundle)
+        assert table.registered_models() == [
+            "myrouter/llm-classifier",
+            "local-qwen",
+            "spark-qwen",
+            "nim-qwen",
+            "frontier-qwen",
+        ]
+
+        switchyard = table.lookup_switchyard("myrouter/llm-classifier")
+        backend = next(
+            c for c in switchyard.iter_components()
+            if isinstance(c, DeterministicRoutingLLMBackend)
+        )
+        selector = next(
+            c for c in switchyard.iter_components()
+            if isinstance(c, SignalTierSelectorRequestProcessor)
+        )
+
+        assert set(backend._backends) == {"gpu", "spark", "nim", "frontier"}
+        assert backend._default_tier == "spark"
+        assert selector._config.default_tier == "spark"
+        assert selector._config.tier_mapping[RouteTier.SIMPLE] == "gpu"
+        assert selector._config.tier_mapping[RouteTier.MEDIUM] == "spark"
+        assert selector._config.tier_mapping[RouteTier.COMPLEX] == "nim"
+        assert selector._config.tier_mapping[RouteTier.REASONING] == "frontier"
+
     def test_anthropic_tier_is_cache_wrapped(self):
         """An Anthropic-format tier is wrapped for prompt caching via the YAML
         serve path, so an OpenAI-origin harness (Codex) routed onto a Claude

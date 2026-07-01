@@ -12,6 +12,7 @@ from switchyard.lib.processors.llm_classifier.presets import (
     PROFILE_FACTORIES,
     resolve_classifier_prompt,
 )
+from switchyard.lib.processors.llm_classifier.signals import RouteTier
 from switchyard.lib.profiles.chain import ComponentChainProfile
 from switchyard.lib.profiles.deterministic_routing_config import (
     DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,
@@ -56,9 +57,19 @@ class DeterministicRoutingProfileConfig:
         from switchyard.lib.session_affinity import SessionAffinity
 
         config = self.config
+        tier_targets = config.resolved_tiers()
+        default_tier = (
+            config.default_tier
+            or (_TIER_STRONG if _TIER_STRONG in tier_targets else next(iter(tier_targets)))
+        )
+        weak_label = _TIER_WEAK
+        strong_label = default_tier
+        if config.tier_mapping:
+            weak_label = config.tier_mapping.get(RouteTier.SIMPLE, _TIER_WEAK)
+            strong_label = config.tier_mapping.get(RouteTier.REASONING, default_tier)
         profile = PROFILE_FACTORIES[config.profile_name](
-            weak=_TIER_WEAK,
-            strong=_TIER_STRONG,
+            weak=weak_label,
+            strong=strong_label,
         )
 
         request_processors: list[Any] = [ReasoningEffortNormalizer()]
@@ -95,6 +106,8 @@ class DeterministicRoutingProfileConfig:
         request_processors.append(
             SignalTierSelectorRequestProcessor(
                 profile.make_tier_selector_config(
+                    tier_mapping=config.tier_mapping,
+                    default_tier=default_tier,
                     min_confidence=config.classifier_min_confidence,
                 ),
                 affinity=affinity,
@@ -104,37 +117,27 @@ class DeterministicRoutingProfileConfig:
         # Resolve format='auto' once after deterministic tier defaults are
         # applied so backend selection and Anthropic cache wrapping see the
         # same concrete target.
-        strong_target = resolve_llm_target(
-            _apply_deepseek_overrides(
-                _apply_default_tier_timeout(
-                    config.strong,
-                    config.tier_timeout_s,
+        resolved_targets = {
+            label: resolve_llm_target(
+                _apply_deepseek_overrides(
+                    _apply_default_tier_timeout(target, config.tier_timeout_s),
                 ),
-            ),
-        )
-        weak_target = resolve_llm_target(
-            _apply_deepseek_overrides(
-                _apply_default_tier_timeout(
-                    config.weak,
-                    config.tier_timeout_s,
-                ),
-            ),
-        )
-        strong_backend = maybe_wrap_anthropic_cache(
-            build_native_backend(strong_target),
-            strong_target,
-        )
-        weak_backend = maybe_wrap_anthropic_cache(
-            build_native_backend(weak_target),
-            weak_target,
-        )
+            )
+            for label, target in tier_targets.items()
+        }
 
         backend = DeterministicRoutingLLMBackend(
             tiers={
-                _TIER_STRONG: (strong_backend, strong_target.model),
-                _TIER_WEAK: (weak_backend, weak_target.model),
+                label: (
+                    maybe_wrap_anthropic_cache(
+                        build_native_backend(target),
+                        target,
+                    ),
+                    target.model,
+                )
+                for label, target in resolved_targets.items()
             },
-            default_tier=_TIER_STRONG,
+            default_tier=default_tier,
         )
         return ComponentChainProfile(
             request_processors=request_processors,

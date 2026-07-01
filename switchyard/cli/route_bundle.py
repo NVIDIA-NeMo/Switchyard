@@ -35,6 +35,7 @@ from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEndpoint
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
+from switchyard.lib.processors.llm_classifier.signals import RouteTier
 from switchyard.lib.profiles import (
     CascadeProfileConfig,
     DeterministicRoutingProfileConfig,
@@ -222,6 +223,9 @@ _DETERMINISTIC_ROUTE_KEYS = (
         "classifier",
         "strong",
         "weak",
+        "tiers",
+        "tier_mapping",
+        "default_tier",
         "profile",
         "enable_stats",
         "fallback_target_on_evict",
@@ -398,6 +402,13 @@ def routing_profile_model_ids(
         _add(route_id)
         if not isinstance(route, Mapping):
             continue
+        tiers = route.get("tiers")
+        if isinstance(tiers, Mapping):
+            for tier in tiers.values():
+                if isinstance(tier, Mapping):
+                    _add(tier.get("model"))
+                elif isinstance(tier, str):
+                    _add(tier)
         for tier_field in _USER_FACING_TIER_FIELDS:
             tier = route.get(tier_field)
             if isinstance(tier, Mapping):
@@ -734,14 +745,19 @@ def _merge_multi_target_discovery(
         metadata=_route_metadata(model_id, route, route_type),
     )
 
-    strong = _target_value(
-        route.get("strong"), target_defaults, default_id="strong", where="strong",
-    )
-    weak = _target_value(
-        route.get("weak"), target_defaults, default_id="weak", where="weak",
-    )
+    if route_type == "deterministic":
+        passthrough_targets = tuple(_deterministic_tiers(model_id, route, target_defaults).values())
+    else:
+        passthrough_targets = (
+            _target_value(
+                route.get("strong"), target_defaults, default_id="strong", where="strong",
+            ),
+            _target_value(
+                route.get("weak"), target_defaults, default_id="weak", where="weak",
+            ),
+        )
     sub_table = build_passthrough_table(
-        (strong, weak),
+        passthrough_targets,
         stats,
         enable_stats=_optional_bool(route.get("enable_stats"), default=True),
         discovery_fn=_default_discovery_fn,
@@ -904,23 +920,22 @@ def _deterministic_switchyard(
         where=f"{model_id}.classifier",
     )
 
-    strong = _target_value(
-        route.get("strong"), target_defaults, default_id="strong", where="strong",
-    )
-    weak = _target_value(
-        route.get("weak"), target_defaults, default_id="weak", where="weak",
-    )
+    tiers = _deterministic_tiers(model_id, route, target_defaults)
+    tier_mapping = _deterministic_tier_mapping(model_id, route)
+    default_tier = _optional_str(route.get("default_tier"))
+    if default_tier is None and tiers:
+        default_tier = "strong" if "strong" in tiers else next(iter(tiers))
 
-    fallback_target_on_evict = _required_str(
-        route.get("fallback_target_on_evict"),
-        f"{model_id}.fallback_target_on_evict",
+    fallback_target_on_evict = (
+        _optional_str(route.get("fallback_target_on_evict"))
+        or default_tier
     )
-    valid_ids = {strong.id, weak.id}
+    valid_ids = {target.id for target in tiers.values()}
     if fallback_target_on_evict not in valid_ids:
         raise RouteBundleConfigError(
             f"route {model_id!r}: fallback_target_on_evict="
             f"{fallback_target_on_evict!r} must match one of {sorted(valid_ids)} "
-            f"(the configured strong/weak target ids)",
+            f"(the configured deterministic target ids)",
         )
 
     profile_name = _optional_str(route.get("profile")) or "general"
@@ -931,8 +946,7 @@ def _deterministic_switchyard(
         )
 
     config_data: dict[str, object] = {
-        "strong": strong,
-        "weak": weak,
+        "tiers": tiers,
         "classifier": {
             "id": "classifier",
             "model": _required_str(
@@ -970,6 +984,10 @@ def _deterministic_switchyard(
         ),
         "enable_stats": _optional_bool(route.get("enable_stats"), default=True),
     }
+    if tier_mapping is not None:
+        config_data["tier_mapping"] = tier_mapping
+    if default_tier is not None:
+        config_data["default_tier"] = default_tier
     if "tier_timeout_s" in route:
         config_data["tier_timeout_s"] = _optional_float(
             route.get("tier_timeout_s"),
@@ -999,6 +1017,66 @@ def _deterministic_switchyard(
             response_processors=extra_response_processors,
         )
     )
+
+
+def _deterministic_tiers(
+    model_id: str,
+    route: Mapping[str, object],
+    target_defaults: Mapping[str, object],
+) -> dict[str, LlmTarget]:
+    raw_tiers = route.get("tiers")
+    if raw_tiers is not None:
+        tiers_mapping = _require_mapping(raw_tiers, f"{model_id}.tiers")
+        if not tiers_mapping:
+            raise RouteBundleConfigError(f"route {model_id!r}: tiers must not be empty")
+        return {
+            str(label): _target_value(
+                raw_target,
+                target_defaults,
+                default_id=str(label),
+                where=f"{model_id}.tiers.{label}",
+            )
+            for label, raw_target in tiers_mapping.items()
+        }
+
+    return {
+        "strong": _target_value(
+            route.get("strong"),
+            target_defaults,
+            default_id="strong",
+            where="strong",
+        ),
+        "weak": _target_value(
+            route.get("weak"),
+            target_defaults,
+            default_id="weak",
+            where="weak",
+        ),
+    }
+
+
+def _deterministic_tier_mapping(
+    model_id: str,
+    route: Mapping[str, object],
+) -> dict[RouteTier, str] | None:
+    raw_mapping = route.get("tier_mapping")
+    if raw_mapping is None:
+        return None
+    mapping = _require_mapping(raw_mapping, f"{model_id}.tier_mapping")
+    if not mapping:
+        raise RouteBundleConfigError(f"route {model_id!r}: tier_mapping must not be empty")
+    parsed: dict[RouteTier, str] = {}
+    for raw_tier, raw_target in mapping.items():
+        try:
+            tier = RouteTier(str(raw_tier))
+        except ValueError as exc:
+            raise RouteBundleConfigError(
+                f"route {model_id!r}: tier_mapping key {raw_tier!r} must be one of "
+                f"{[tier.value for tier in RouteTier]}"
+            ) from exc
+        target = _required_str(raw_target, f"{model_id}.tier_mapping.{raw_tier}")
+        parsed[tier] = target
+    return parsed
 
 
 def _cascade_switchyard(
