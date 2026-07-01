@@ -13,9 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict};
 use std::time::Duration;
 use switchyard_components::{BackendSelection, BackendSelectionReason, StatsBackendLatency};
-use switchyard_core::{
-    EvictedTargets, LlmTargetId, ModelId, ProxyContext, RequestId, RoutingEventData,
-};
+use switchyard_core::{EvictedTargets, LlmTargetId, ModelId, ProxyContext, RequestId};
 
 use crate::component_bindings::intake::request_metadata_from_mapping;
 use crate::py_serde::{value_from_python, value_to_python};
@@ -461,18 +459,18 @@ impl PyProxyContext {
         Ok(())
     }
 
-    /// Validates and appends one routing audit event.
+    /// Appends one algorithm-authored routing event.
     fn record_routing_event(
         &self,
         py: Python<'_>,
-        event: &Bound<'_, PyAny>,
+        name: String,
+        payload: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        let event: RoutingEventData = serde_json::from_value(value_from_python(event)?)
-            .map_err(|error| PyValueError::new_err(format!("invalid routing event: {error}")))?;
+        let payload = value_from_python(payload)?;
         let value = {
             let mut context = self.lock()?;
             let recorded = context
-                .record_routing_event(event)
+                .record_routing_event(name, payload)
                 .map_err(|error| PyValueError::new_err(error.to_string()))?;
             serde_json::to_value(recorded)
                 .map_err(|error| PyValueError::new_err(error.to_string()))?

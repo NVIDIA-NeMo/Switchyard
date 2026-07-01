@@ -134,7 +134,8 @@ class _ProxyContext(Protocol):
 
     def record_routing_event(
         self,
-        event: Mapping[str, JsonValue],
+        name: str,
+        payload: Mapping[str, JsonValue],
     ) -> dict[str, JsonValue]: ...
 
 
@@ -566,7 +567,8 @@ if TYPE_CHECKING:
         ) -> None: ...
         def record_routing_event(
             self,
-            event: Mapping[str, JsonValue],
+            name: str,
+            payload: Mapping[str, JsonValue],
         ) -> dict[str, JsonValue]: ...
 
     class LLMBackend:
