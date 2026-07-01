@@ -62,6 +62,25 @@ exit 2
     return harbor
 
 
+def _write_fake_docker(bin_dir: Path) -> Path:
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """
+#!/usr/bin/env bash
+set -euo pipefail
+{
+    printf '%q ' "$@"
+    printf '\n'
+} >> "${FAKE_DOCKER_LOG:?}"
+if [[ "${1:-}" == "run" ]]; then
+    echo "fake-container"
+fi
+""".lstrip()
+    )
+    docker.chmod(0o755)
+    return docker
+
+
 def _write_fake_harbor_patch(tmp_path: Path) -> Path:
     patch_file = tmp_path / "fake-harbor-agent-patches.diff"
     patch_file.write_text(
@@ -549,7 +568,10 @@ def test_dry_run_harbor_path_uses_local_dataset_and_closed_book_artifact(
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert "--dataset" not in harbor
     assert _option_value(harbor, "--path") == str(dataset)
-    assert _option_value(harbor, "--artifact") == "/etc/proxy-public/strip.jsonl"
+    assert _option_values(harbor, "--artifact") == [
+        "/etc/proxy-ca/strip.jsonl",
+        "/etc/proxy-ca/request_map.jsonl",
+    ]
     assert "version=0.125.0" in _option_values(harbor, "--ak")
     assert "CODEX_DISABLE_WEB_SEARCH=1" in _option_values(harbor, "--ae")
     catalog_env = next(
@@ -593,13 +615,57 @@ def test_dry_run_open_book_uses_proxy_topology_without_tool_disables(tmp_path: P
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert _option_value(harbor, "--path") == str(dataset)
-    assert _option_value(harbor, "--artifact") == "/etc/proxy-public/strip.jsonl"
+    assert _option_values(harbor, "--artifact") == [
+        "/etc/proxy-ca/strip.jsonl",
+        "/etc/proxy-ca/request_map.jsonl",
+    ]
     assert "CODEX_DISABLE_WEB_SEARCH=1" not in _option_values(harbor, "--ae")
     assert not _option_values(harbor, "--ve")
     assert "book_mode:     open" in result.stdout
     assert "harbor_server: http://switchyard:4000" in result.stdout
     assert "proxy_mode:    open" in result.stdout
     assert "verifier_net: authenticated proxy egress" not in result.stdout
+
+
+def test_foreground_switchyard_mounts_run_local_routing_trace(tmp_path: Path) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    _write_fake_docker(tools)
+    docker_log = tmp_path / "docker.log"
+    profile = _write_route_profile(tmp_path / "routes.yaml")
+
+    result = _run_baseline(
+        tmp_path,
+        "--routing-profiles",
+        str(profile),
+        "--route-model",
+        "tb-lite-random-routing",
+        "--foreground",
+        "--skip-health-check",
+        env={
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_DOCKER_LOG": str(docker_log),
+            "SWITCHYARD_CLOSED_BOOK_PREFLIGHT": "0",
+            "SWITCHYARD_DOCKER_BUILD": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = [shlex.split(line) for line in docker_log.read_text().splitlines()]
+    server_run = next(call for call in calls if call[0] == "run" and "--name" in call)
+    run_dir = next((tmp_path / "out").iterdir())
+    trace_dir = run_dir / "routing-traces"
+    trace_jsonl = trace_dir / "routing_trace.jsonl"
+    assert f"{trace_dir}:/var/lib/switchyard-traces" in _option_values(server_run, "-v")
+    server_env = _option_values(server_run, "--env")
+    assert (
+        "SWITCHYARD_ROUTING_TRACE_JSONL=/var/lib/switchyard-traces/routing_trace.jsonl"
+        in server_env
+    )
+    assert "SWITCHYARD_ROUTING_TRACE_CAPTURE_CONTENT=1" in server_env
+    assert trace_jsonl.is_file()
+    assert trace_dir.stat().st_mode & 0o777 == 0o700
+    assert trace_jsonl.stat().st_mode & 0o777 == 0o600
 
 
 def test_dry_run_claude_closed_book_merges_disallowed_tools(tmp_path: Path) -> None:

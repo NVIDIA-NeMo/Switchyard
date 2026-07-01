@@ -44,7 +44,9 @@ HARBOR_BIN="${HARBOR_BIN:-}"
 HARBOR_PYTHON="${HARBOR_PYTHON:-}"
 HARBOR_SOURCE=""
 BOOK_MODE="closed"
-PROXY_STRIP_ARTIFACT="/etc/proxy-public/strip.jsonl"
+PROXY_STRIP_ARTIFACT="/etc/proxy-ca/strip.jsonl"
+PROXY_REQUEST_MAP_ARTIFACT="/etc/proxy-ca/request_map.jsonl"
+ROUTING_TRACE_CONTAINER_DIR="/var/lib/switchyard-traces"
 VERIFIER_PROXY_TEMPLATE='${SWITCHYARD_VERIFIER_HTTP_PROXY}'
 SWITCHYARD_DOCKER_IMAGE="${SWITCHYARD_DOCKER_IMAGE:-switchyard-baseline:local}"
 SWITCHYARD_DOCKERFILE="${SWITCHYARD_DOCKERFILE:-benchmark/switchyard-server.Dockerfile}"
@@ -497,6 +499,9 @@ TS="$(date -u +%Y-%m-%d_%H-%M-%S)"
 JOB_NAME="baseline-${SERVER_PRESET}-${MODE}-${TS}"
 OUTPUT_DIR="$(mkdir -p "${OUTPUT_DIR}" && cd "${OUTPUT_DIR}" && pwd)"
 RUN_DIR="${OUTPUT_DIR}/${JOB_NAME}"
+ROUTING_TRACE_DIR="${RUN_DIR}/routing-traces"
+ROUTING_TRACE_JSONL="${ROUTING_TRACE_DIR}/routing_trace.jsonl"
+ROUTING_TRACE_CONTAINER_JSONL="${ROUTING_TRACE_CONTAINER_DIR}/routing_trace.jsonl"
 MANIFEST_PATH="${RUN_DIR}/run_manifest.json"
 LOG_PATH="${RUN_DIR}/${JOB_NAME}.log"
 SERVER_LOG="${RUN_DIR}/server.log"
@@ -555,6 +560,7 @@ if [[ -n "${CODEX_MODEL_CATALOG_HOST}" ]]; then
 fi
 
 HARBOR_CMD+=(--artifact "${PROXY_STRIP_ARTIFACT}")
+HARBOR_CMD+=(--artifact "${PROXY_REQUEST_MAP_ARTIFACT}")
 if [[ "${BOOK_MODE}" == "closed" ]]; then
     HARBOR_CMD+=(--ve "HTTP_PROXY=${VERIFIER_PROXY_TEMPLATE}")
     HARBOR_CMD+=(--ve "HTTPS_PROXY=${VERIFIER_PROXY_TEMPLATE}")
@@ -734,6 +740,12 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
 fi
 
 mkdir -p "${RUN_DIR}"
+if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
+    mkdir -p "${ROUTING_TRACE_DIR}"
+    chmod 700 "${ROUTING_TRACE_DIR}"
+    : > "${ROUTING_TRACE_JSONL}"
+    chmod 600 "${ROUTING_TRACE_JSONL}"
+fi
 
 if [[ -n "${CODEX_MODEL_CATALOG_HOST}" ]]; then
     uv run --no-sync python benchmark/codex_model_catalog.py \
@@ -822,6 +834,9 @@ REPO_ROOT=$(q "${REPO_ROOT}")
 SERVER_LOG=$(q "${SERVER_LOG}")
 HARBOR_LOG=$(q "${HARBOR_LOG}")
 ROUTING_STATS_JSON=$(q "${ROUTING_STATS_JSON}")
+ROUTING_TRACE_DIR=$(q "${ROUTING_TRACE_DIR}")
+ROUTING_TRACE_CONTAINER_DIR=$(q "${ROUTING_TRACE_CONTAINER_DIR}")
+ROUTING_TRACE_CONTAINER_JSONL=$(q "${ROUTING_TRACE_CONTAINER_JSONL}")
 HARBOR_JOB_DIR=$(q "${HARBOR_JOB_DIR}")
 SKIP_HEALTH_CHECK=$(q "${SKIP_HEALTH_CHECK}")
 BOOK_MODE=$(q "${BOOK_MODE}")
@@ -877,6 +892,9 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
         --network-alias "\${SWITCHYARD_DOCKER_SERVICE_NAME}"
         -p "127.0.0.1:$(q "${PORT}"):$(q "${PORT}")"
         -v "\${REPO_ROOT}:\${REPO_ROOT}:ro"
+        -v "\${ROUTING_TRACE_DIR}:\${ROUTING_TRACE_CONTAINER_DIR}"
+        --env "SWITCHYARD_ROUTING_TRACE_JSONL=\${ROUTING_TRACE_CONTAINER_JSONL}"
+        --env SWITCHYARD_ROUTING_TRACE_CAPTURE_CONTENT=1
     )
     if [[ -n "\${ROUTING_PROFILES_DIR}" && "\${ROUTING_PROFILES_DIR}" != "\${REPO_ROOT}"* ]]; then
         DOCKER_RUN_ARGS+=(-v "\${ROUTING_PROFILES_DIR}:\${ROUTING_PROFILES_DIR}:ro")
