@@ -159,7 +159,7 @@ pub struct ServerRunOptions {
     pub backlog: u32,
     /// Validate and print public model IDs without binding a socket.
     pub dry_run: bool,
-    /// Optional bearer token required by `POST /v1/atof/events`.
+    /// Optional bearer token required by the Relay Decision and ATOF endpoints.
     pub atof_bearer_token: Option<String>,
     /// Fixed memory and request-size bounds for Relay snapshot accumulation.
     pub relay_snapshot_limits: RelaySnapshotLimits,
@@ -489,7 +489,7 @@ fn validate_optional_bearer_token(token: Option<String>) -> Result<Option<String
     let token = token.trim();
     if token.is_empty() {
         return Err(SwitchyardError::InvalidConfig(
-            "ATOF bearer token cannot be blank; omit it to disable authentication".to_string(),
+            "Relay bearer token cannot be blank; omit it to disable authentication".to_string(),
         ));
     }
     Ok(Some(token.to_string()))
