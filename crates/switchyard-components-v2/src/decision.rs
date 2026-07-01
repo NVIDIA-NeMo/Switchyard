@@ -8,15 +8,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use switchyard_core::{
-    BackendFormat, ChatRequest, ChatRequestType, LlmTarget, ProfileId, RequestId, Result,
-    SwitchyardError,
+    BackendFormat, ChatRequest, ChatRequestType, ProfileId, RequestId, Result, SwitchyardError,
 };
 
 use crate::profiles::{
-    CascadeProcessedRequest, CascadeProfile, LlmRoutingProcessedRequest, LlmRoutingProfile,
-    RandomRoutingProcessedRequest, RandomRoutingProfile,
+    CascadeProcessedRequest, CascadeProfile,
 };
-use crate::{FeatureFreshness, ProfileHooks, ProfileInput, RelaySnapshot, RequestMetadata};
+use crate::{FeatureFreshness, ProfileInput, RelaySnapshot, RequestMetadata};
+use crate::{ProfileInput, RequestMetadata};
 
 /// Schema identifier for routing requests.
 pub const ROUTING_REQUEST_SCHEMA_VERSION: &str = "switchyard.routing_request.v1";
@@ -70,6 +69,28 @@ impl RoutingRequest {
                 "identity.session_id must be a non-empty string".to_string(),
             ));
         }
+        require_non_blank(
+            "decision_profile.profile_id",
+            self.decision_profile.profile_id.as_str(),
+        )?;
+        require_non_blank("identity.session_id", &self.identity.session_id)?;
+        require_non_blank("identity.request_id", &self.identity.request_id)?;
+        require_non_blank("identity.harness", &self.identity.harness)?;
+        require_non_blank("identity.source", &self.identity.source)?;
+        for (field, value) in [
+            ("protocol.inbound_profile", &self.protocol.inbound_profile),
+            ("protocol.inbound_endpoint", &self.protocol.inbound_endpoint),
+            (
+                "protocol.desired_response_profile",
+                &self.protocol.desired_response_profile,
+            ),
+        ] {
+            require_non_blank(field, value)?;
+        }
+        if let Some(owner_id) = self.identity.owner_id.as_deref() {
+            require_non_blank("identity.owner_id", owner_id)?;
+        }
+        validate_current_request_materialization(self)?;
         parse_inbound_profile(&self.protocol.inbound_profile).map(|_| ())
     }
 }
@@ -290,30 +311,6 @@ pub fn route_endpoint_for_format(format: BackendFormat) -> Result<&'static str> 
     }
 }
 
-/// Produces a decision-only Random routing response without backend dispatch.
-pub async fn decision_for_random_routing(
-    profile: &RandomRoutingProfile,
-    context: DecisionContext,
-) -> Result<RoutingDecision> {
-    let (request, _relay_snapshot) = context.into_parts();
-    request.validate()?;
-    let input = summary_profile_input(&request)?;
-    let processed = profile.process(input).await?;
-    random_processed_to_decision(profile, &request, processed)
-}
-
-/// Produces a decision-only LLM-routing response without selected-backend dispatch.
-pub async fn decision_for_llm_routing(
-    profile: &LlmRoutingProfile,
-    context: DecisionContext,
-) -> Result<RoutingDecision> {
-    let (request, _relay_snapshot) = context.into_parts();
-    request.validate()?;
-    let input = materialized_profile_input(&request)?;
-    let processed = profile.process(input).await?;
-    llm_routing_processed_to_decision(profile, &request, processed)
-}
-
 /// Produces a decision-only Cascade response from an exact Relay snapshot.
 pub async fn decision_for_cascade_routing(
     profile: &CascadeProfile,
@@ -327,9 +324,8 @@ pub async fn decision_for_cascade_routing(
         .await?;
     cascade_processed_to_decision(profile, &request, processed, freshness)
 }
-
 // Builds the request-only state needed by policies that can route from summaries.
-fn summary_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
+pub(crate) fn summary_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
     let mut body = serde_json::Map::new();
     if let Some(model) = &request.request_summary.client_requested_model {
         body.insert("model".to_string(), Value::String(model.clone()));
@@ -338,7 +334,8 @@ fn summary_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
 }
 
 // Requires concrete prompt content before a classifier can spend an upstream call.
-fn materialized_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
+pub(crate) fn materialized_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
+    validate_current_request_materialization(request)?;
     if matches!(
         request.decision_profile.request_materialization,
         CurrentRequestMaterialization::None | CurrentRequestMaterialization::SummaryOnly
@@ -514,80 +511,6 @@ fn has_non_whitespace(value: &str) -> bool {
     !value.trim().is_empty()
 }
 
-fn random_processed_to_decision(
-    profile: &RandomRoutingProfile,
-    request: &RoutingRequest,
-    processed: RandomRoutingProcessedRequest,
-) -> Result<RoutingDecision> {
-    let target = profile.target_for_decision(&processed.decision)?;
-    Ok(RoutingDecision {
-        schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
-        decision_id: format!(
-            "{}:{}:{}",
-            request.identity.request_id,
-            processed.decision.selected_target,
-            processed.decision.draw
-        ),
-        router: DecisionProvider {
-            name: "random-routing".to_string(),
-            version: "v1".to_string(),
-        },
-        route: routing_target(target, processed.decision.tier.as_str().to_string())?,
-        confidence: None,
-        reason_code: Some("random_weighted".to_string()),
-        reason_summary: Some("selected by weighted random routing".to_string()),
-        metadata: BTreeMap::from([
-            (
-                "strong_probability".to_string(),
-                Value::from(processed.decision.strong_probability),
-            ),
-            ("draw".to_string(), Value::from(processed.decision.draw)),
-        ]),
-    })
-}
-
-fn llm_routing_processed_to_decision(
-    profile: &LlmRoutingProfile,
-    request: &RoutingRequest,
-    processed: LlmRoutingProcessedRequest,
-) -> Result<RoutingDecision> {
-    let target = profile.target_for_decision(&processed.decision)?;
-    let mut metadata = BTreeMap::from([(
-        "source".to_string(),
-        Value::from(processed.decision.source.clone()),
-    )]);
-    if let Some(policy_tier) = &processed.decision.policy_tier {
-        metadata.insert("policy_tier".to_string(), Value::from(policy_tier.clone()));
-    }
-    if let Some(recommended_tier) = &processed.decision.llm_recommended_tier {
-        metadata.insert(
-            "llm_recommended_tier".to_string(),
-            Value::from(recommended_tier.clone()),
-        );
-    }
-    if let Some(signals) = &processed.decision.signals {
-        metadata.insert("signals".to_string(), signals.clone());
-    }
-    Ok(RoutingDecision {
-        schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
-        decision_id: format!(
-            "{}:{}:{}",
-            request.identity.request_id,
-            processed.decision.selected_target,
-            processed.decision.source
-        ),
-        router: DecisionProvider {
-            name: "llm-routing".to_string(),
-            version: profile.decision_router_version(),
-        },
-        route: routing_target(target, processed.decision.tier.clone())?,
-        confidence: processed.decision.confidence,
-        reason_code: Some(processed.decision.source),
-        reason_summary: Some(processed.decision.reason),
-        metadata,
-    })
-}
-
 fn cascade_processed_to_decision(
     profile: &CascadeProfile,
     request: &RoutingRequest,
@@ -638,7 +561,10 @@ fn cascade_processed_to_decision(
     })
 }
 
-fn routing_target(target: &LlmTarget, tier: String) -> Result<RoutingTarget> {
+pub(crate) fn routing_target(
+    target: &switchyard_core::LlmTarget,
+    tier: String,
+) -> Result<RoutingTarget> {
     Ok(RoutingTarget {
         tier,
         target_model: target.model.as_str().to_string(),
@@ -648,10 +574,52 @@ fn routing_target(target: &LlmTarget, tier: String) -> Result<RoutingTarget> {
     })
 }
 
+fn require_non_blank(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(SwitchyardError::InvalidRequest(format!(
+            "{field} must be a non-empty string"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_current_request_materialization(request: &RoutingRequest) -> Result<()> {
+    let mode = request.decision_profile.request_materialization;
+    match mode {
+        CurrentRequestMaterialization::None | CurrentRequestMaterialization::SummaryOnly => {
+            if request.current_request.is_some() {
+                return Err(SwitchyardError::InvalidRequest(format!(
+                    "request_materialization {mode:?} must not include current_request"
+                )));
+            }
+        }
+        CurrentRequestMaterialization::LatestUserPrompt
+        | CurrentRequestMaterialization::RecentMessageWindow
+        | CurrentRequestMaterialization::AnnotatedRequest
+        | CurrentRequestMaterialization::FullBody => {
+            let body = request
+                .current_request
+                .as_ref()
+                .and_then(|current| current.get("body"))
+                .ok_or_else(|| {
+                    SwitchyardError::InvalidRequest(format!(
+                        "request_materialization {mode:?} requires current_request.body"
+                    ))
+                })?;
+            if !body.is_object() {
+                return Err(SwitchyardError::InvalidRequest(
+                    "current_request.body must be a JSON object".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use switchyard_core::{BackendFormat, LlmTargetId, ModelId};
+    use switchyard_core::{BackendFormat, LlmTarget, LlmTargetId, ModelId};
 
     use crate::{NoopProfileConfig, Profile, ProfileConfig, RandomRoutingProfileConfig};
 

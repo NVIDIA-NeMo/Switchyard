@@ -3,7 +3,7 @@
 
 //! LLM classifier routing as a profile-owned runtime.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -16,10 +16,12 @@ use switchyard_core::{
 };
 
 use crate::backend::{native_target_backend, TargetBackend};
+use crate::decision::{materialized_profile_input, routing_target};
+use crate::decision::{DecisionProvider, ROUTING_DECISION_SCHEMA_VERSION};
 use crate::profile_stats_accumulator;
 use crate::{
-    decision_for_llm_routing, profile_config, DecisionContext, Profile, ProfileConfig,
-    ProfileHooks, ProfileInput, ProfileResponse, RoutingDecision, RoutingMetadata,
+    profile_config, DecisionContext, Profile, ProfileConfig, ProfileHooks, ProfileInput,
+    ProfileResponse, RoutingDecision, RoutingMetadata,
 };
 
 const TIER_STRONG: &str = "strong";
@@ -556,6 +558,52 @@ impl Profile for LlmRoutingProfile {
     async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
         decision_for_llm_routing(self, context).await
     }
+}
+
+/// Produces a decision-only LLM-routing response without selected-backend dispatch.
+pub async fn decision_for_llm_routing(
+    profile: &LlmRoutingProfile,
+    context: DecisionContext,
+) -> Result<RoutingDecision> {
+    let (request, _relay_snapshot) = context.into_parts();
+    request.validate()?;
+    let input = materialized_profile_input(&request)?;
+    let processed = profile.process(input).await?;
+    let target = profile.target_for_decision(&processed.decision)?;
+    let mut metadata = BTreeMap::from([(
+        "source".to_string(),
+        Value::from(processed.decision.source.clone()),
+    )]);
+    if let Some(policy_tier) = &processed.decision.policy_tier {
+        metadata.insert("policy_tier".to_string(), Value::from(policy_tier.clone()));
+    }
+    if let Some(recommended_tier) = &processed.decision.llm_recommended_tier {
+        metadata.insert(
+            "llm_recommended_tier".to_string(),
+            Value::from(recommended_tier.clone()),
+        );
+    }
+    if let Some(signals) = &processed.decision.signals {
+        metadata.insert("signals".to_string(), signals.clone());
+    }
+    Ok(RoutingDecision {
+        schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
+        decision_id: format!(
+            "{}:{}:{}",
+            request.identity.request_id,
+            processed.decision.selected_target,
+            processed.decision.source
+        ),
+        router: DecisionProvider {
+            name: "llm-routing".to_string(),
+            version: profile.decision_router_version(),
+        },
+        route: routing_target(target, processed.decision.tier.clone())?,
+        confidence: processed.decision.confidence,
+        reason_code: Some(processed.decision.source),
+        reason_summary: Some(processed.decision.reason),
+        metadata,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
