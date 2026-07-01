@@ -263,7 +263,11 @@ run_manifest.json
 server.log
 harbor.log
 routing_stats_final.json
+routing-traces/routing_trace.jsonl
+routing-traces/routing_trace_joined.jsonl
+routing-traces/routing_trace_completeness.json
 jobs/<job-name>/result.json
+jobs/<job-name>/<trial-id>/artifacts/request_map.jsonl
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
 
@@ -273,6 +277,23 @@ settings, agent version pins, log paths, and final Harbor status. When the routi
 deterministic LLM-classifier routes, `server.classifier_prompts` records each route's effective
 prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` for reproducibility. Direct
 runs mark routing stats as `not-requested`.
+
+Switchyard-routing runs also enable per-request routing traces. The task proxy assigns an opaque
+`x-request-id` to each LLM request and writes only request metadata to the per-trial
+`request_map.jsonl`; no task-specific header is sent to Switchyard. After Harbor finishes, the
+runner joins those IDs to the routing events and the trial's verifier outcome from `result.json`.
+Each row in `routing_trace_joined.jsonl` therefore contains the task/trial identity, pass/fail/error
+status and reward, request metadata, and ordered routing events. For the LLM classifier those events
+include its effective prompt and summarized request, raw output, parsed signals, normalized tier
+decision, concrete model attempt, and any context fallback.
+
+Benchmark runs explicitly capture routing content so prompts and classifier output can be analyzed;
+the raw, joined, and completeness files are written under a `0700` directory with `0600` file
+permissions. `routing_trace_completeness.json` reports missing maps/traces, malformed rows,
+duplicates, sequence gaps, and orphan trace IDs, and the run manifest records its counts and status.
+Harbor currently discards artifacts from failed retry attempts, so traces from those attempts appear
+as orphans; use `--max-retries 0` when strict all-attempt correlation is required. Direct-upstream
+runs record routing traces as `not-requested`.
 
 ## Docker Image Notes
 
