@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from pydantic import field_serializer
 
 from switchyard.lib.processors.llm_classifier import (
     CTX_DETERMINISTIC_ROUTE_SIGNALS,
@@ -17,12 +19,17 @@ from switchyard.lib.processors.llm_classifier import (
     LLMClassifierError,
     LLMClassifierRequestProcessor,
     ReasonCode,
+    RouteDecision,
     RouteSignals,
     RouteTier,
     TaskType,
     parse_route_signals,
 )
 from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.routing_trace import (
+    ROUTING_TRACE_CAPTURE_CONTENT_ENV,
+    ROUTING_TRACE_JSONL_ENV,
+)
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard_rust.core import ChatRequest
 
@@ -69,6 +76,16 @@ class _FakeClassifierClient:
         return ClassifierCompletion(content=self.response, usage=self.usage)
 
 
+class _CustomContentDecision(RouteDecision):
+    """Custom schema whose free-text field must not be serialized implicitly."""
+
+    evidence: str = ""
+
+    @field_serializer("evidence")
+    def _reject_evidence_serialization(self, value: str) -> str:  # noqa: ARG002
+        raise RuntimeError("custom evidence serializer must not run")
+
+
 def _messages_with_prior_assistant_turns(n: int) -> list[dict[str, str]]:
     messages = [{"role": "user", "content": "debug this traceback"}]
     for i in range(n):
@@ -103,6 +120,10 @@ def _signals_json(**overrides: Any) -> str:
     return json.dumps(payload)
 
 
+def _trace_events(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line)["event"] for line in path.read_text().splitlines()]
+
+
 async def test_request_processor_stamps_classifier_signals() -> None:
     fake = _FakeClassifierClient(_signals_json())
     processor = LLMClassifierRequestProcessor(
@@ -123,6 +144,97 @@ async def test_request_processor_stamps_classifier_signals() -> None:
     assert fake.calls[0]["model"] == "router-model"
     assert '"request_type": "openai_chat"' in fake.calls[0]["request_summary"]
     assert "debug this traceback" in fake.calls[0]["request_summary"]
+
+
+async def test_request_processor_traces_classifier_input_output_and_parse(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "routing-trace.jsonl"
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(trace_path))
+    monkeypatch.setenv(ROUTING_TRACE_CAPTURE_CONTENT_ENV, "true")
+    raw_signals = _signals_json()
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(
+            model="router-model",
+            system_prompt="classify this request",
+            dump_signals_to_stderr=False,
+        ),
+        client=_FakeClassifierClient(raw_signals),
+    )
+
+    await processor.process(ProxyContext(request_id="request-1"), _request())
+
+    events = _trace_events(trace_path)
+    assert [event["name"] for event in events] == [
+        "classifier_input",
+        "classifier_call",
+        "parse_signals",
+    ]
+    assert events[0]["input"]["model"] == "router-model"
+    assert events[0]["input"]["system_prompt"]["content"] == "classify this request"
+    assert "debug this traceback" in events[0]["input"]["request_summary"]["content"]
+    assert events[1]["based_on"] == [0]
+    assert events[1]["output"]["content"]["content"] == raw_signals
+    assert events[1]["output"]["usage"] == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+    }
+    assert events[2]["based_on"] == [1]
+    assert events[2]["output"]["recommended_tier"] == "complex"
+    assert events[2]["output"]["confidence"] == 0.86
+
+
+async def test_custom_signal_serializer_cannot_change_routing_when_trace_is_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(ROUTING_TRACE_JSONL_ENV, raising=False)
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-model", dump_signals_to_stderr=False),
+        client=_FakeClassifierClient(json.dumps({
+            "recommended_tier": "complex",
+            "confidence": 0.75,
+            "abstain": False,
+            "evidence": "sensitive task detail",
+        })),
+        signal_schema=_CustomContentDecision,
+    )
+    ctx = ProxyContext()
+
+    await processor.process(ctx, _request())
+
+    signals = ctx.metadata[CTX_DETERMINISTIC_ROUTE_SIGNALS]
+    assert isinstance(signals, _CustomContentDecision)
+    assert signals.evidence == "sensitive task detail"
+
+
+async def test_metadata_trace_redacts_custom_signal_fields(monkeypatch, tmp_path: Path) -> None:
+    trace_path = tmp_path / "routing-trace.jsonl"
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(trace_path))
+    monkeypatch.delenv(ROUTING_TRACE_CAPTURE_CONTENT_ENV, raising=False)
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-model", dump_signals_to_stderr=False),
+        client=_FakeClassifierClient(json.dumps({
+            "recommended_tier": "complex",
+            "confidence": 0.75,
+            "abstain": False,
+            "evidence": "sensitive task detail",
+        })),
+        signal_schema=_CustomContentDecision,
+    )
+
+    await processor.process(ProxyContext(request_id="request-1"), _request())
+
+    events = _trace_events(trace_path)
+    parse_output = events[2]["output"]
+    assert parse_output == {
+        "schema_name": "_CustomContentDecision",
+        "recommended_tier": "complex",
+        "confidence": 0.75,
+        "abstain": False,
+    }
+    assert "sensitive task detail" not in trace_path.read_text()
 
 
 async def test_classifier_skips_llm_call_when_session_pinned() -> None:
@@ -149,6 +261,26 @@ async def test_classifier_skips_llm_call_when_session_pinned() -> None:
     assert returned is req
     assert len(fake.calls) == 1  # unchanged — classified exactly once
     assert CTX_DETERMINISTIC_ROUTE_SIGNALS not in ctx2.metadata
+
+
+async def test_classifier_traces_pinned_session_skip(monkeypatch, tmp_path: Path) -> None:
+    trace_path = tmp_path / "routing-trace.jsonl"
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(trace_path))
+    affinity = SessionAffinity(enabled=True)
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-model", dump_signals_to_stderr=False),
+        client=_FakeClassifierClient(_signals_json()),
+        affinity=affinity,
+    )
+    request = _request()
+    affinity.pin(ProxyContext(), request, "weak")
+
+    await processor.process(ProxyContext(request_id="request-1"), request)
+
+    events = _trace_events(trace_path)
+    assert len(events) == 1
+    assert events[0]["name"] == "classifier_call"
+    assert events[0]["status"] == "skipped"
 
 
 async def test_classifier_runs_until_warmup_pin_exists() -> None:
@@ -222,6 +354,58 @@ async def test_request_processor_fail_open_stamps_abstain_signals() -> None:
     assert signals.abstain is True
     assert signals.confidence == 0.0
     assert signals.reason_code is ReasonCode.AMBIGUOUS
+
+
+async def test_request_processor_traces_parse_failure_and_fail_open(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "routing-trace.jsonl"
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(trace_path))
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-model", dump_signals_to_stderr=False),
+        client=_FakeClassifierClient("not json"),
+    )
+
+    await processor.process(ProxyContext(request_id="request-1"), _request())
+
+    events = _trace_events(trace_path)
+    assert [event["name"] for event in events] == [
+        "classifier_input",
+        "classifier_call",
+        "parse_signals",
+        "fail_open_signals",
+    ]
+    assert events[2]["status"] == "error"
+    assert events[2]["error"] == "LLMClassifierError"
+    assert events[3]["based_on"] == [2]
+    assert events[3]["output"]["abstain"] is True
+    assert events[3]["details"]["error_type"] == "LLMClassifierError"
+
+
+async def test_request_processor_traces_classifier_transport_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "routing-trace.jsonl"
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(trace_path))
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-model", dump_signals_to_stderr=False),
+        client=_FakeClassifierClient(RuntimeError("secret upstream body")),
+    )
+
+    await processor.process(ProxyContext(request_id="request-1"), _request())
+
+    events = _trace_events(trace_path)
+    assert [event["name"] for event in events] == [
+        "classifier_input",
+        "classifier_call",
+        "fail_open_signals",
+    ]
+    assert events[1]["status"] == "error"
+    assert events[1]["error"] == "RuntimeError"
+    assert "secret upstream body" not in trace_path.read_text()
+    assert events[2]["based_on"] == [1]
 
 
 async def test_fail_open_annotates_signals_dump(capsys: pytest.CaptureFixture[str]) -> None:
