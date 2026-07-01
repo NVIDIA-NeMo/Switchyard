@@ -37,6 +37,7 @@ from switchyard.lib.processors.llm_classifier import (
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.roles import LLMBackend
+from switchyard.lib.routing_trace import ROUTING_TRACE_JSONL_ENV
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard_rust.core import ChatRequest, ChatRequestType, ChatResponse
 
@@ -60,6 +61,27 @@ class _RecordingBackend(LLMBackend):
     async def call(self, ctx: ProxyContext, request: Any) -> ChatResponse:
         self.models.append(request.body["model"])
         return _stub_response()
+
+
+class BackendFailure(RuntimeError):
+    """Test-only backend failure with a potentially sensitive message."""
+
+
+class _FailingBackend(_RecordingBackend):
+    async def call(self, ctx: ProxyContext, request: Any) -> ChatResponse:
+        self.models.append(request.body["model"])
+        raise BackendFailure("sensitive upstream detail")
+
+
+class _StreamingBackend(_RecordingBackend):
+    async def call(self, ctx: ProxyContext, request: Any) -> ChatResponse:
+        self.models.append(request.body["model"])
+
+        async def chunks():
+            if False:
+                yield None
+
+        return ChatResponse.openai_stream(chunks())
 
 
 def _request(content: str = "hello", *, prior_assistant_turns: int = 0) -> ChatRequest:
@@ -107,7 +129,32 @@ def _signals(
     )
 
 
-async def test_signal_tier_selector_maps_signals_to_llm_target() -> None:
+def _single_routing_event(ctx: ProxyContext) -> dict[str, Any]:
+    trace = cast(dict[str, Any] | None, ctx.routing_trace)
+    assert trace is not None
+    assert len(trace["events"]) == 1
+    return cast(dict[str, Any], trace["events"][0])
+
+
+def _router(
+    *,
+    strong_backend: LLMBackend | None = None,
+    weak_backend: LLMBackend | None = None,
+) -> DeterministicRoutingLLMBackend:
+    return DeterministicRoutingLLMBackend(
+        tiers={
+            "strong": (strong_backend or _RecordingBackend(), "strong-model"),
+            "weak": (weak_backend or _RecordingBackend(), "weak-model"),
+        },
+        default_tier="weak",
+    )
+
+
+async def test_signal_tier_selector_maps_signals_to_llm_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
     processor = SignalTierSelectorRequestProcessor(
         SignalTierSelectorConfig(
             tier_mapping={
@@ -137,8 +184,40 @@ async def test_signal_tier_selector_maps_signals_to_llm_target() -> None:
     assert decision.policy_tier is RouteTier.COMPLEX
     assert decision.llm_recommended_tier is RouteTier.COMPLEX
 
+    event = _single_routing_event(ctx)
+    assert event["producer"] == "llm_classifier"
+    assert event["name"] == "tier_selection"
+    assert event["schema"] == "llm_classifier.tier_selection/v1"
+    assert event["phase"] == "initial"
+    assert event["selection"] == {"tier": "strong"}
+    assert event["source"] == decision.source
+    assert event["reason"] == decision.reason
+    assert event["confidence"] == 0.9
+    assert event["details"] == {
+        "policy_tier": "complex",
+        "llm_recommended_tier": "complex",
+        "selector": {
+            "tier_mapping": {
+                "simple": "weak",
+                "medium": "weak",
+                "complex": "strong",
+                "reasoning": "strong",
+            },
+            "default_tier": "weak",
+            "min_confidence": 0.5,
+            "escalate_on_tool_planning": False,
+            "escalate_target_tier": "weak",
+            "align_with_llm_recommendation": False,
+            "alignment_min_confidence": 0.7,
+        },
+    }
 
-async def test_signal_tier_selector_defaults_on_low_confidence() -> None:
+
+async def test_signal_tier_selector_defaults_on_low_confidence(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
     processor = SignalTierSelectorRequestProcessor(
         SignalTierSelectorConfig(
             tier_mapping={
@@ -161,9 +240,17 @@ async def test_signal_tier_selector_defaults_on_low_confidence() -> None:
     decision = ctx.metadata[CTX_DETERMINISTIC_TIER_DECISION]
     assert isinstance(decision, TierSelectionDecision)
     assert decision.source == "low_confidence"
+    event = _single_routing_event(ctx)
+    assert event["selection"] == {"tier": "weak"}
+    assert event["source"] == "low_confidence"
+    assert event["confidence"] == 0.2
 
 
-async def test_signal_tier_selector_defaults_on_abstain() -> None:
+async def test_signal_tier_selector_defaults_on_abstain(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
     processor = SignalTierSelectorRequestProcessor(
         SignalTierSelectorConfig(
             tier_mapping={
@@ -185,6 +272,27 @@ async def test_signal_tier_selector_defaults_on_abstain() -> None:
     decision = ctx.metadata[CTX_DETERMINISTIC_TIER_DECISION]
     assert isinstance(decision, TierSelectionDecision)
     assert decision.source == "abstain"
+    event = _single_routing_event(ctx)
+    assert event["selection"] == {"tier": "weak"}
+    assert event["source"] == "abstain"
+    assert event["confidence"] == 0.9
+
+
+async def test_signal_tier_selector_traces_missing_signals(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext()
+
+    await SignalTierSelectorRequestProcessor(_two_tier_config()).process(ctx, _request())
+
+    event = _single_routing_event(ctx)
+    assert event["selection"] == {"tier": "weak"}
+    assert event["source"] == "missing_signals"
+    assert "confidence" not in event
+    assert event["details"]["policy_tier"] is None
+    assert event["details"]["llm_recommended_tier"] is None
 
 
 async def test_signal_tier_selector_accepts_dict_signals() -> None:
@@ -354,6 +462,113 @@ async def test_selector_to_backend_handoff_dispatches_selected_tier() -> None:
     assert strong_backend.models == ["strong-model"]
     assert weak_backend.models == []
     assert req.body["model"] == "strong-model"
+
+
+async def test_backend_attempt_trace_records_metadata_selection(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext(metadata={CTX_DETERMINISTIC_ROUTING_TIER: "strong"})
+
+    await _router().call(ctx, _request())
+
+    event = _single_routing_event(ctx)
+    assert event["kind"] == "attempt"
+    assert event["producer"] == "deterministic_routing"
+    assert event["name"] == "backend_attempt"
+    assert event["phase"] == "initial"
+    assert event["selection"] == {"tier": "strong", "model": "strong-model"}
+    assert event["source"] == "routing_tier_metadata"
+    assert event["status"] == "success"
+    assert event["duration_ms"] >= 0.0
+    assert event["details"] == {"attempt_number": 0, "response_mode": "buffered"}
+    assert "error" not in event
+
+
+async def test_backend_attempt_trace_marks_cached_context_fallback_as_initial(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext(metadata={CTX_DETERMINISTIC_ROUTING_TIER: "weak"})
+    ctx.selected_target = "strong"
+    ctx.evicted_targets = ["weak"]
+
+    await _router().call(ctx, _request())
+
+    event = _single_routing_event(ctx)
+    assert event["phase"] == "initial"
+    assert event["selection"] == {"tier": "strong", "model": "strong-model"}
+    assert event["source"] == "context_selected_target"
+    assert event["status"] == "success"
+    assert event["details"]["attempt_number"] == 0
+
+
+async def test_backend_attempt_trace_numbers_calls_on_one_request(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext(metadata={CTX_DETERMINISTIC_ROUTING_TIER: "weak"})
+    router = _router()
+
+    await router.call(ctx, _request())
+    await router.call(ctx, _request())
+
+    trace = cast(dict[str, Any], ctx.routing_trace)
+    assert [event["phase"] for event in trace["events"]] == ["initial", "retry"]
+    assert [event["details"]["attempt_number"] for event in trace["events"]] == [0, 1]
+
+
+async def test_backend_attempt_trace_records_defensive_default(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext(metadata={CTX_DETERMINISTIC_ROUTING_TIER: "unknown"})
+
+    await _router().call(ctx, _request())
+
+    event = _single_routing_event(ctx)
+    assert event["phase"] == "initial"
+    assert event["selection"] == {"tier": "weak", "model": "weak-model"}
+    assert event["source"] == "backend_default"
+    assert event["status"] == "success"
+
+
+async def test_backend_attempt_trace_sanitizes_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext(metadata={CTX_DETERMINISTIC_ROUTING_TIER: "weak"})
+
+    with pytest.raises(BackendFailure, match="sensitive upstream detail"):
+        await _router(weak_backend=_FailingBackend()).call(ctx, _request())
+
+    event = _single_routing_event(ctx)
+    assert event["selection"] == {"tier": "weak", "model": "weak-model"}
+    assert event["source"] == "routing_tier_metadata"
+    assert event["status"] == "error"
+    assert event["error"] == "BackendFailure"
+    assert "sensitive upstream detail" not in str(event)
+    assert event["duration_ms"] >= 0.0
+
+
+async def test_backend_attempt_trace_distinguishes_open_stream(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
+    ctx = ProxyContext(metadata={CTX_DETERMINISTIC_ROUTING_TIER: "weak"})
+
+    await _router(weak_backend=_StreamingBackend()).call(ctx, _request())
+
+    event = _single_routing_event(ctx)
+    assert event["name"] == "backend_stream_opened"
+    assert event["status"] == "success"
+    assert event["details"] == {"attempt_number": 0, "response_mode": "stream"}
 
 
 # --- Tool-planning escalation ----------------------------------------------
@@ -739,8 +954,9 @@ async def test_coding_agent_preset_enables_alignment_bump() -> None:
     assert general.align_with_llm_recommendation is False
 
 
-async def test_session_affinity_pins_confident_verdict() -> None:
+async def test_session_affinity_pins_confident_verdict(monkeypatch, tmp_path) -> None:
     """A confident verdict is pinned and holds even when later signals flip."""
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(tmp_path / "routing-trace.jsonl"))
     processor = SignalTierSelectorRequestProcessor(
         _two_tier_config(),
         affinity=SessionAffinity(enabled=True),
@@ -761,6 +977,10 @@ async def test_session_affinity_pins_confident_verdict() -> None:
     await processor.process(ctx2, req)
     assert ctx2.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "strong"
     assert ctx2.metadata[CTX_DETERMINISTIC_TIER_DECISION].source == "sticky"
+    event = _single_routing_event(ctx2)
+    assert event["selection"] == {"tier": "strong"}
+    assert event["source"] == "sticky"
+    assert "confidence" not in event
 
 
 async def test_session_affinity_warmup_delays_pinning_until_after_threshold() -> None:
@@ -892,4 +1112,3 @@ async def test_session_affinity_distinct_conversations_independent() -> None:
     })
     await processor.process(ctx_b, _request("question B"))
     assert ctx_b.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
-
