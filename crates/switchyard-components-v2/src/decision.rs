@@ -78,9 +78,6 @@ impl RoutingRequest {
         ] {
             require_non_blank(field, value)?;
         }
-        if let Some(owner_id) = self.identity.owner_id.as_deref() {
-            require_non_blank("identity.owner_id", owner_id)?;
-        }
         validate_current_request_materialization(self)?;
         parse_inbound_profile(&self.protocol.inbound_profile).map(|_| ())
     }
