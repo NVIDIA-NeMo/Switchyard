@@ -18,8 +18,8 @@ use switchyard_core::{
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
 use crate::{
-    decision_for_llm_routing, profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput,
-    ProfileResponse, RoutingDecision, RoutingMetadata, RoutingRequest,
+    decision_for_llm_routing, profile_config, DecisionContext, Profile, ProfileConfig,
+    ProfileHooks, ProfileInput, ProfileResponse, RoutingDecision, RoutingMetadata,
 };
 
 const TIER_STRONG: &str = "strong";
@@ -553,8 +553,8 @@ impl Profile for LlmRoutingProfile {
     }
 
     /// Classifies a materialized request without dispatching the selected target.
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
-        decision_for_llm_routing(self, request).await
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        decision_for_llm_routing(self, context).await
     }
 }
 

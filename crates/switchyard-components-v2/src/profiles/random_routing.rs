@@ -16,8 +16,8 @@ use switchyard_core::{ChatResponse, LlmTarget, Result, SwitchyardError};
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
 use crate::{
-    decision_for_random_routing, profile_config, Profile, ProfileConfig, ProfileHooks,
-    ProfileInput, ProfileResponse, RoutingDecision, RoutingMetadata, RoutingRequest,
+    decision_for_random_routing, profile_config, DecisionContext, Profile, ProfileConfig,
+    ProfileHooks, ProfileInput, ProfileResponse, RoutingDecision, RoutingMetadata,
 };
 
 /// Config for the flatter random-routing profile.
@@ -193,8 +193,8 @@ impl Profile for RandomRoutingProfile {
     }
 
     /// Selects a configured target without dispatching it.
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
-        decision_for_random_routing(self, request).await
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        decision_for_random_routing(self, context).await
     }
 }
 

@@ -18,7 +18,8 @@ use switchyard_core::{ChatRequest, ChatResponse, LlmTarget, LlmTargetId, Result,
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
 use crate::{
-    profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
+    decision_for_cascade_routing, profile_config, DecisionContext, FeatureFreshness, Profile,
+    ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse, RelaySnapshot, RoutingDecision,
     RoutingMetadata,
 };
 
@@ -312,6 +313,55 @@ impl CascadeProfile {
         })
     }
 
+    /// Routes an immutable Decision snapshot without dispatching the selected target.
+    pub(crate) async fn process_decision_snapshot(
+        &self,
+        mut input: ProfileInput,
+        snapshot: Option<&RelaySnapshot>,
+    ) -> Result<(CascadeProcessedRequest, Option<FeatureFreshness>)> {
+        let original_model = input.request.model().map(std::borrow::ToOwned::to_owned);
+        let (decision, freshness) = match self.signal_from_relay_snapshot(snapshot) {
+            Some(signal) => (
+                self.pick(&input.request, &signal, original_model).await?,
+                Some(FeatureFreshness::Fresh),
+            ),
+            None => (
+                self.decision_for_tier(
+                    self.picker.default_tier(),
+                    original_model,
+                    CascadeDecisionSource::FallOpen,
+                    0.0,
+                    None,
+                )?,
+                None,
+            ),
+        };
+        input.request.set_model(decision.selected_model.as_str());
+        self.record_decision_source(decision.source)?;
+        Ok((
+            CascadeProcessedRequest {
+                profile_input: input,
+                decision,
+            },
+            freshness,
+        ))
+    }
+
+    // Projects router-neutral Relay history into Cascade's existing feature model.
+    fn signal_from_relay_snapshot(
+        &self,
+        snapshot: Option<&RelaySnapshot>,
+    ) -> Option<ToolResultSignal> {
+        let snapshot = snapshot.filter(|snapshot| !snapshot.messages.is_empty())?;
+        let request = ChatRequest::openai_chat(json!({
+            "model": "cascade-relay-snapshot",
+            "messages": snapshot.messages,
+        }));
+        let mut signal = extract_tool_signals_with_window(&request, self.signal_recent_window);
+        signal.turn_depth = u32::try_from(snapshot.turn_depth).unwrap_or(u32::MAX);
+        Some(signal)
+    }
+
     // Routing decision flow:
     // 1. Hard overrides choose strong for critical failures or weak for clean tests.
     // 2. Dimensions scoring chooses by score sign when confidence clears the threshold.
@@ -440,6 +490,12 @@ impl CascadeProfile {
                 "cascade selected target {target_id} that is not configured for this profile"
             )))
         }
+    }
+
+    /// Returns selected target metadata for a decision-only integration.
+    pub(crate) fn target_for_decision(&self, decision: &CascadeDecision) -> Result<&LlmTarget> {
+        self.backend_for_target(&decision.selected_target)
+            .map(TargetBackend::target)
     }
 
     fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<CascadeTier> {
@@ -610,6 +666,11 @@ impl Profile for CascadeProfile {
                 return Err(error);
             }
         }
+    }
+
+    /// Routes from an exact Relay snapshot without dispatching the selected target.
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        decision_for_cascade_routing(self, context).await
     }
 }
 
@@ -1020,7 +1081,7 @@ mod tests {
     use switchyard_core::{BackendFormat, ModelId};
 
     use crate::backend::ProfileBackend;
-    use crate::RequestMetadata;
+    use crate::{RelayIdentityKey, RequestMetadata};
 
     use super::*;
 
@@ -1142,6 +1203,233 @@ mod tests {
             enable_stats: true,
         };
         Ok((profile, calls))
+    }
+
+    fn relay_snapshot(messages: Vec<Value>, turn_depth: u64) -> RelaySnapshot {
+        RelaySnapshot {
+            identity: RelayIdentityKey::session_only("session-1"),
+            event_count: messages.len() as u64,
+            messages,
+            turn_depth,
+        }
+    }
+
+    #[tokio::test]
+    async fn cascade_decision_cold_state_uses_configured_default_without_classifier_or_target_call(
+    ) -> Result<()> {
+        for (picker, expected_tier, expected_model) in [
+            (
+                CascadePickerMode::CascadeStrongDefault,
+                CascadeTier::Strong,
+                "frontier/model",
+            ),
+            (
+                CascadePickerMode::CascadeWeakDefault,
+                CascadeTier::Weak,
+                "cheap/model",
+            ),
+        ] {
+            let (mut profile, calls) = profile(
+                target("strong", "frontier/model")?,
+                target("weak", "cheap/model")?,
+                picker,
+                1.0,
+                vec![BackendAction::Ok],
+                vec![BackendAction::Ok],
+            )?;
+            profile.classifier = Some(CascadeTierClassifier::new(&CascadeClassifierConfig {
+                model: "unreachable-classifier".to_string(),
+                api_key: "test-key".to_string(),
+                base_url: Some("http://127.0.0.1:1/v1".to_string()),
+                timeout_secs: 0.01,
+                recent_turn_window: 1,
+                max_tokens: CLASSIFIER_MAX_TOKENS,
+                system_prompt: None,
+            })?);
+
+            let (processed, freshness) = profile
+                .process_decision_snapshot(
+                    profile_input(ChatRequest::openai_chat(json!({
+                        "model": "smart-cascade",
+                    }))),
+                    None,
+                )
+                .await?;
+
+            assert_eq!(freshness, None);
+            assert_eq!(processed.decision.tier, expected_tier);
+            assert_eq!(processed.decision.source, CascadeDecisionSource::FallOpen);
+            assert_eq!(processed.decision.confidence, None);
+            assert_eq!(processed.decision.score, 0.0);
+            assert_eq!(
+                processed.profile_input.request.model(),
+                Some(expected_model)
+            );
+            assert!(observed(&calls)?.is_empty());
+            assert_eq!(
+                profile
+                    .stats
+                    .snapshot()?
+                    .routing_decisions
+                    .get("cascade")
+                    .and_then(|sources| sources.get("fall_open")),
+                Some(&1)
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cascade_decision_turn_only_snapshot_remains_cold() -> Result<()> {
+        let (profile, calls) = profile(
+            target("strong", "frontier/model")?,
+            target("weak", "cheap/model")?,
+            CascadePickerMode::CascadeWeakDefault,
+            0.0,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        let snapshot = relay_snapshot(Vec::new(), 42);
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-cascade",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, None);
+        assert_eq!(processed.decision.tier, CascadeTier::Weak);
+        assert_eq!(processed.decision.source, CascadeDecisionSource::FallOpen);
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cascade_decision_projects_fresh_relay_history_without_target_dispatch() -> Result<()> {
+        let (profile, calls) = profile(
+            target("strong", "frontier/model")?,
+            target("weak", "cheap/model")?,
+            CascadePickerMode::CascadeWeakDefault,
+            0.7,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        let snapshot = relay_snapshot(
+            vec![json!({
+                "role": "tool",
+                "tool_call_id": "call-oom",
+                "content": "process failed: out of memory",
+            })],
+            3,
+        );
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-cascade",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, Some(FeatureFreshness::Fresh));
+        assert_eq!(processed.decision.tier, CascadeTier::Strong);
+        assert_eq!(processed.decision.source, CascadeDecisionSource::Override);
+        assert_eq!(processed.decision.confidence, Some(1.0));
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cascade_decision_fresh_clean_signal_uses_dimensions() -> Result<()> {
+        let (profile, calls) = profile(
+            target("strong", "frontier/model")?,
+            target("weak", "cheap/model")?,
+            CascadePickerMode::CascadeStrongDefault,
+            0.0,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        let snapshot = relay_snapshot(
+            vec![json!({
+                "role": "tool",
+                "tool_call_id": "call-tests",
+                "content": "all tests passed",
+            })],
+            1,
+        );
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-cascade",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, Some(FeatureFreshness::Fresh));
+        assert_eq!(processed.decision.tier, CascadeTier::Weak);
+        assert_eq!(processed.decision.source, CascadeDecisionSource::Dimensions);
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn cascade_decision_snapshot_turn_depth_saturates_to_u32() -> Result<()> {
+        let (profile, _calls) = profile(
+            target("strong", "frontier/model")?,
+            target("weak", "cheap/model")?,
+            CascadePickerMode::CascadeWeakDefault,
+            0.7,
+            Vec::new(),
+            Vec::new(),
+        )?;
+        let snapshot = relay_snapshot(
+            vec![json!({"role": "user", "content": "continue"})],
+            u64::MAX,
+        );
+
+        let signal = profile
+            .signal_from_relay_snapshot(Some(&snapshot))
+            .ok_or_else(|| SwitchyardError::Other("expected fresh signal".to_string()))?;
+
+        assert_eq!(signal.turn_depth, u32::MAX);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cascade_normal_run_still_extracts_request_signals_and_dispatches() -> Result<()> {
+        let (profile, calls) = profile(
+            target("strong", "frontier/model")?,
+            target("weak", "cheap/model")?,
+            CascadePickerMode::CascadeWeakDefault,
+            0.7,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "smart-cascade",
+                "messages": [{"role": "user", "content": "continue"}],
+            }))))
+            .await?;
+
+        assert_eq!(
+            response
+                .routing_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.selected_tier.as_deref()),
+            Some("weak")
+        );
+        let calls = observed(&calls)?;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].backend, "weak-backend");
+        Ok(())
     }
 
     #[tokio::test]

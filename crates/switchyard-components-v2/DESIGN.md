@@ -86,9 +86,9 @@ In Rust, that target shape is:
 pub trait Profile: Send + Sync {
     async fn run(&self, input: ProfileInput) -> Result<ChatResponse>;
 
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
         Err(SwitchyardError::DecisionUnsupported {
-            profile_id: request.decision_profile.profile_id,
+            profile_id: context.request().decision_profile.profile_id.clone(),
         })
     }
 }
@@ -112,7 +112,7 @@ Conceptually:
 ```text
 process(request)              -> profile-specific processed request
 run(request)                  -> final response
-decide(routing_request)       -> routing decision without selected-backend dispatch
+decide(decision_context)      -> routing decision without selected-backend dispatch
 rprocess(processed, response) -> processed response
 ```
 
@@ -139,6 +139,20 @@ hidden pipeline:
 - `rprocess()` is the response-side library hook. It receives the processed request state and the
   backend response so the profile can perform cleanup, normalization, or accounting without a
   side-channel.
+
+`DecisionContext` owns the typed `RoutingRequest` and any immutable, request-scoped resources
+resolved by the server. For Relay integration, `ServerState` owns one bounded snapshot accumulator,
+looks up only the exact `(session_id, owner_id)` identity, and passes the resulting optional
+snapshot through the existing registry to the same configured profile instance. Profiles do not
+own an accumulator, rebuild another runtime, or perform broader identity fallback. An absent or
+non-routing-ready snapshot remains explicit cold state; routing-ready state is represented by the
+typed `FeatureFreshness::Fresh` value when the concrete profile projects the snapshot into its own
+feature model.
+
+`RequestMetadata.session_id` is the typed session identity for normal profile execution. HTTP
+endpoints reconcile the legacy `proxy_x_session_id` and canonical
+`x-nemo-relay-session-id` aliases before entering a profile, while Decision inputs copy the
+validated body identity into the same field.
 
 `run()` should normally call `process()` and `rprocess()` when those hooks express the same
 lifecycle cleanly. If `process()` seems unable to carry the state that `run()` needs, the first fix

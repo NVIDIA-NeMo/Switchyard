@@ -25,9 +25,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use switchyard_components_v2::{
-    parse_profile_config_path, profile_stats_accumulator, ProfileConfigPlan, ProfileInput,
-    ProfileResponse, RelaySnapshotAccumulator, RelaySnapshotLimits, RequestMetadata,
-    RoutingMetadata, RoutingRequest,
+    parse_profile_config_path, profile_stats_accumulator, session_id_from_normalized_headers,
+    DecisionContext, ProfileConfigPlan, ProfileInput, ProfileResponse, RelayIdentityKey,
+    RelaySnapshotAccumulator, RelaySnapshotLimits, RequestMetadata, RoutingMetadata,
+    RoutingRequest, PROXY_SESSION_ID_HEADER, RELAY_SESSION_ID_HEADER,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, SwitchyardError};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
@@ -108,7 +109,19 @@ impl ServerState {
         &self,
         request: RoutingRequest,
     ) -> Result<switchyard_components_v2::RoutingDecision> {
-        self.registry.decide(request).await
+        request.validate()?;
+        let owner_id = request
+            .identity
+            .owner_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|owner_id| !owner_id.is_empty())
+            .map(ToOwned::to_owned);
+        let key = RelayIdentityKey::new(request.identity.session_id.trim(), owner_id);
+        let snapshot = self.relay_snapshots.snapshot(&key);
+        self.registry
+            .decide(DecisionContext::new(request, snapshot))
+            .await
     }
 
     /// Allows unauthenticated ingestion only when no bearer token was configured.
@@ -253,11 +266,15 @@ async fn openai_chat_completions(
         Ok(body) => body,
         Err(response) => return *response,
     };
+    let metadata = match metadata_from_headers(&headers, ChatRequestType::OpenAiChat) {
+        Ok(metadata) => metadata,
+        Err(error) => return llm_error(error),
+    };
     handle_llm_request(
         state,
         ChatRequest::openai_chat(body),
         WireFormat::OpenAiChat,
-        metadata_from_headers(&headers, ChatRequestType::OpenAiChat),
+        metadata,
     )
     .await
 }
@@ -271,11 +288,15 @@ async fn anthropic_messages(
         Ok(body) => body,
         Err(response) => return *response,
     };
+    let metadata = match metadata_from_headers(&headers, ChatRequestType::Anthropic) {
+        Ok(metadata) => metadata,
+        Err(error) => return llm_error(error),
+    };
     handle_llm_request(
         state,
         ChatRequest::anthropic(body),
         WireFormat::AnthropicMessages,
-        metadata_from_headers(&headers, ChatRequestType::Anthropic),
+        metadata,
     )
     .await
 }
@@ -289,23 +310,44 @@ async fn openai_responses(
         Ok(body) => body,
         Err(response) => return *response,
     };
+    let metadata = match metadata_from_headers(&headers, ChatRequestType::OpenAiResponses) {
+        Ok(metadata) => metadata,
+        Err(error) => return llm_error(error),
+    };
     handle_llm_request(
         state,
         ChatRequest::openai_responses(body),
         WireFormat::OpenAiResponses,
-        metadata_from_headers(&headers, ChatRequestType::OpenAiResponses),
+        metadata,
     )
     .await
 }
 
 async fn routing_decision(
     State(state): State<ServerState>,
+    headers: HeaderMap,
     body: std::result::Result<Json<RoutingRequest>, JsonRejection>,
 ) -> Response {
     let request = match routing_json_body(body) {
         Ok(request) => request,
         Err(response) => return *response,
     };
+    let normalized_headers = match normalized_headers(&headers) {
+        Ok(headers) => headers,
+        Err(error) => return llm_error(error),
+    };
+    let header_session_id = match session_id_from_normalized_headers(&normalized_headers) {
+        Ok(session_id) => session_id,
+        Err(error) => return llm_error(error),
+    };
+    if let Some(header_session_id) = header_session_id {
+        if header_session_id != request.identity.session_id.trim() {
+            return llm_error(SwitchyardError::InvalidRequest(format!(
+                "Decision session header {header_session_id:?} does not match identity.session_id {:?}",
+                request.identity.session_id
+            )));
+        }
+    }
     match state.decide_route(request).await {
         Ok(decision) => Json(decision).into_response(),
         Err(error) => llm_error(error),
@@ -536,12 +578,17 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.chars().take(MAX_ROUTING_HEADER_VALUE_LEN).collect())
 }
 
-fn metadata_from_headers(headers: &HeaderMap, inbound_format: ChatRequestType) -> RequestMetadata {
-    RequestMetadata {
+fn metadata_from_headers(
+    headers: &HeaderMap,
+    inbound_format: ChatRequestType,
+) -> Result<RequestMetadata> {
+    let normalized = normalized_headers(headers)?;
+    Ok(RequestMetadata {
+        session_id: session_id_from_normalized_headers(&normalized)?,
         request_id: request_id_from_headers(headers),
         inbound_format: Some(inbound_format),
-        headers: normalized_headers(headers),
-    }
+        headers: normalized,
+    })
 }
 
 fn request_id_from_headers(headers: &HeaderMap) -> Option<RequestId> {
@@ -551,18 +598,32 @@ fn request_id_from_headers(headers: &HeaderMap) -> Option<RequestId> {
         .and_then(|value| RequestId::new(value.to_string()).ok())
 }
 
-fn normalized_headers(headers: &HeaderMap) -> BTreeMap<String, Vec<String>> {
+fn normalized_headers(headers: &HeaderMap) -> Result<BTreeMap<String, Vec<String>>> {
     let mut normalized = BTreeMap::<String, Vec<String>>::new();
-    for (name, value) in headers {
-        let Ok(value) = value.to_str() else {
-            continue;
-        };
-        normalized
-            .entry(name.as_str().to_ascii_lowercase())
-            .or_default()
-            .push(value.to_string());
+    for name in headers.keys() {
+        let name = name.as_str().to_ascii_lowercase();
+        for value in headers.get_all(name.as_str()) {
+            let value = match value.to_str() {
+                Ok(value) => value,
+                Err(_)
+                    if matches!(
+                        name.as_str(),
+                        PROXY_SESSION_ID_HEADER | RELAY_SESSION_ID_HEADER
+                    ) =>
+                {
+                    return Err(SwitchyardError::InvalidRequest(format!(
+                        "session header {name} must contain valid UTF-8"
+                    )));
+                }
+                Err(_) => continue,
+            };
+            normalized
+                .entry(name.clone())
+                .or_default()
+                .push(value.to_string());
+        }
     }
-    normalized
+    Ok(normalized)
 }
 
 fn llm_error(error: SwitchyardError) -> Response {

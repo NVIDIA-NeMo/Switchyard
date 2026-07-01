@@ -11,13 +11,14 @@ use std::thread;
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use switchyard_components_v2::{
     parse_profile_config_str, profile_stats_accumulator, Profile, ProfileConfigFormat,
     ProfileInput, ProfileResponse, RelayIdentityKey, RelaySnapshotLimits, RoutingMetadata,
-    ROUTING_DECISION_SCHEMA_VERSION, ROUTING_REQUEST_SCHEMA_VERSION,
+    PROXY_SESSION_ID_HEADER, RELAY_SESSION_ID_HEADER, ROUTING_DECISION_SCHEMA_VERSION,
+    ROUTING_REQUEST_SCHEMA_VERSION,
 };
 use switchyard_core::{
     ChatRequestType, ChatResponse, ModelId, Result, StreamEvent, SwitchyardError,
@@ -111,6 +112,222 @@ profiles:
     assert_eq!(decision["route"]["backend_id"], "strong");
     assert_eq!(decision["route"]["target_model"], "upstream-strong");
     assert_eq!(decision["route"]["target_protocol_profile"], "openai_chat");
+    Ok(())
+}
+
+#[tokio::test]
+async fn cascade_decision_warms_from_one_relay_record_without_target_dispatch() -> TestResult {
+    let state = state_from_yaml(cascade_decision_yaml())?;
+    let app = build_switchyard_router(state);
+    let event = tool_event(
+        "decision-oom",
+        "end",
+        Some("session-1"),
+        None,
+        json!({"output": "process failed: out of memory"}),
+    );
+
+    let ingest = app
+        .clone()
+        .oneshot(ndjson_request(&format!("{event}\n"), None)?)
+        .await?;
+    assert_eq!(ingest.status(), StatusCode::OK);
+    assert_eq!(json_body(ingest).await?["accepted_events"], 1);
+
+    // The legacy Relay fixture includes decision_profile.router and intentionally
+    // sends no session header. Both selected targets are unreachable; a 200 proves
+    // the decision-only path did not dispatch either target.
+    let warm = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json("remote-cascade", "summary_only", None)),
+        )?)
+        .await?;
+    assert_eq!(warm.status(), StatusCode::OK);
+    let warm = json_body(warm).await?;
+    assert_eq!(warm["router"]["name"], "cascade");
+    assert_eq!(warm["route"]["backend_id"], "strong");
+    assert_eq!(warm["route"]["target_model"], "provider/strong");
+    assert_eq!(warm["reason_code"], "override");
+    assert_eq!(warm["confidence"], 1.0);
+    assert_eq!(warm["metadata"]["feature_state"], "fresh");
+    assert_eq!(warm["metadata"]["source"], "override");
+
+    let mut cold_request = routing_request_json("remote-cascade", "summary_only", None);
+    cold_request["identity"]["session_id"] = json!("different-session");
+    let cold = app
+        .oneshot(request("POST", "/v1/routing/decision", Some(cold_request))?)
+        .await?;
+    assert_eq!(cold.status(), StatusCode::OK);
+    let cold = json_body(cold).await?;
+    assert_eq!(cold["route"]["backend_id"], "weak");
+    assert_eq!(cold["reason_code"], "cascade_feature_cold_default");
+    assert!(cold["confidence"].is_null());
+    assert_eq!(cold["metadata"]["feature_state"], "cold");
+    assert_eq!(cold["metadata"]["source"], "fall_open");
+    Ok(())
+}
+
+#[tokio::test]
+async fn cascade_decision_uses_exact_owner_identity_and_keeps_turn_only_state_cold() -> TestResult {
+    let state = state_from_yaml(cascade_decision_yaml())?;
+    let app = build_switchyard_router(state);
+    let owner_event = tool_event(
+        "owner-oom",
+        "end",
+        Some("owner-session"),
+        Some("owner-a"),
+        json!({"output": "CUDA out of memory"}),
+    );
+    let session_only_event = tool_event(
+        "session-oom",
+        "end",
+        Some("owner-session"),
+        None,
+        json!({"output": "CUDA out of memory"}),
+    );
+    let turn_only = turn_event("turn-only-start", "turn-session", None);
+    for event in [owner_event, session_only_event, turn_only] {
+        let response = app
+            .clone()
+            .oneshot(ndjson_request(&format!("{event}\n"), None)?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let mut exact = routing_request_json("remote-cascade", "summary_only", None);
+    exact["identity"]["session_id"] = json!("owner-session");
+    exact["identity"]["owner_id"] = json!("owner-a");
+    let exact = app
+        .clone()
+        .oneshot(request("POST", "/v1/routing/decision", Some(exact))?)
+        .await?;
+    assert_eq!(
+        json_body(exact).await?["metadata"]["feature_state"],
+        "fresh"
+    );
+
+    let mut padded_owner = routing_request_json("remote-cascade", "summary_only", None);
+    padded_owner["identity"]["session_id"] = json!("owner-session");
+    padded_owner["identity"]["owner_id"] = json!(" owner-a ");
+
+    let mut session_only = routing_request_json("remote-cascade", "summary_only", None);
+    session_only["identity"]["session_id"] = json!("owner-session");
+
+    let mut blank_owner = session_only.clone();
+    blank_owner["identity"]["owner_id"] = json!("   ");
+
+    for canonical_match in [padded_owner, session_only, blank_owner] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/v1/routing/decision",
+                Some(canonical_match),
+            )?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(response).await?["metadata"]["feature_state"],
+            "fresh"
+        );
+    }
+
+    let mut owner_mismatch = routing_request_json("remote-cascade", "summary_only", None);
+    owner_mismatch["identity"]["session_id"] = json!("owner-session");
+    owner_mismatch["identity"]["owner_id"] = json!("owner-b");
+    owner_mismatch["identity"]["parent_scope_id"] = json!("owner-a");
+    owner_mismatch["identity"]["root_scope_id"] = json!("owner-a");
+
+    let mut turn_only = routing_request_json("remote-cascade", "summary_only", None);
+    turn_only["identity"]["session_id"] = json!("turn-session");
+
+    for cold_request in [owner_mismatch, turn_only] {
+        let response = app
+            .clone()
+            .oneshot(request("POST", "/v1/routing/decision", Some(cold_request))?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let decision = json_body(response).await?;
+        assert_eq!(decision["route"]["backend_id"], "weak");
+        assert_eq!(decision["reason_code"], "cascade_feature_cold_default");
+        assert_eq!(decision["metadata"]["feature_state"], "cold");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_reconciles_all_session_header_aliases() -> TestResult {
+    let app = build_switchyard_router(state_from_yaml(random_decision_yaml())?);
+    let accepted: Vec<Vec<(&'static str, &'static [u8])>> = vec![
+        vec![(PROXY_SESSION_ID_HEADER, b"session-1")],
+        vec![(RELAY_SESSION_ID_HEADER, b"session-1")],
+        vec![
+            (PROXY_SESSION_ID_HEADER, b"session-1"),
+            (RELAY_SESSION_ID_HEADER, b"session-1"),
+        ],
+        vec![
+            (PROXY_SESSION_ID_HEADER, b"session-1"),
+            (PROXY_SESSION_ID_HEADER, b"session-1"),
+        ],
+        vec![(RELAY_SESSION_ID_HEADER, b" session-1 ")],
+    ];
+
+    for headers in accepted {
+        let response = app
+            .clone()
+            .oneshot(request_with_headers(
+                "POST",
+                "/v1/routing/decision",
+                Some(routing_request_json("remote-random", "none", None)),
+                &headers,
+            )?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK, "headers={headers:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn decision_endpoint_rejects_invalid_or_conflicting_session_headers() -> TestResult {
+    let app = build_switchyard_router(state_from_yaml(random_decision_yaml())?);
+    let rejected: Vec<Vec<(&'static str, &'static [u8])>> = vec![
+        vec![
+            (PROXY_SESSION_ID_HEADER, b"session-1"),
+            (RELAY_SESSION_ID_HEADER, b"session-2"),
+        ],
+        vec![
+            (PROXY_SESSION_ID_HEADER, b"session-1"),
+            (PROXY_SESSION_ID_HEADER, b"session-2"),
+        ],
+        vec![(PROXY_SESSION_ID_HEADER, b"")],
+        vec![(RELAY_SESSION_ID_HEADER, b"   ")],
+        vec![(PROXY_SESSION_ID_HEADER, b"different-session")],
+        vec![(RELAY_SESSION_ID_HEADER, b"\xff")],
+    ];
+
+    for headers in rejected {
+        let response = app
+            .clone()
+            .oneshot(request_with_headers(
+                "POST",
+                "/v1/routing/decision",
+                Some(routing_request_json("remote-random", "none", None)),
+                &headers,
+            )?)
+            .await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "headers={headers:?}"
+        );
+        assert_eq!(
+            json_body(response).await?["error"]["code"],
+            "invalid_request_error"
+        );
+    }
     Ok(())
 }
 
@@ -1127,22 +1344,22 @@ async fn endpoint_metadata_is_passed_to_profiles() -> TestResult {
     )?);
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("X-Request-ID", "req-123")
-                .header("X-Switchyard-Trace", "trace-a")
-                .body(Body::from(
-                    json!({
-                        "model": "capture",
-                        "max_tokens": 16,
-                        "messages": [{"role": "user", "content": "hi"}],
-                    })
-                    .to_string(),
-                ))?,
-        )
+        .oneshot(request_with_headers(
+            "POST",
+            "/v1/messages",
+            Some(json!({
+                "model": "capture",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            })),
+            &[
+                ("x-request-id", b"req-123"),
+                ("x-switchyard-trace", b"trace-a"),
+                (PROXY_SESSION_ID_HEADER, b" session-normal "),
+                (PROXY_SESSION_ID_HEADER, b"session-normal"),
+                (RELAY_SESSION_ID_HEADER, b"session-normal"),
+            ],
+        )?)
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -1160,6 +1377,15 @@ async fn endpoint_metadata_is_passed_to_profiles() -> TestResult {
         input.metadata.inbound_format,
         Some(ChatRequestType::Anthropic)
     );
+    assert_eq!(input.metadata.session_id.as_deref(), Some("session-normal"));
+    assert_eq!(
+        input
+            .metadata
+            .headers
+            .get(PROXY_SESSION_ID_HEADER)
+            .map(Vec::as_slice),
+        Some(&[" session-normal ".to_string(), "session-normal".to_string()][..])
+    );
     assert_eq!(
         input
             .metadata
@@ -1168,6 +1394,50 @@ async fn endpoint_metadata_is_passed_to_profiles() -> TestResult {
             .map(Vec::as_slice),
         Some(&["trace-a".to_string()][..])
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inference_endpoint_rejects_invalid_or_conflicting_session_headers() -> TestResult {
+    let app = build_switchyard_router(state_from_yaml(
+        r#"
+profiles:
+  bench:
+    type: noop
+"#,
+    )?);
+    let rejected: Vec<Vec<(&'static str, &'static [u8])>> = vec![
+        vec![
+            (PROXY_SESSION_ID_HEADER, b"session-1"),
+            (RELAY_SESSION_ID_HEADER, b"session-2"),
+        ],
+        vec![
+            (RELAY_SESSION_ID_HEADER, b"session-1"),
+            (RELAY_SESSION_ID_HEADER, b"session-2"),
+        ],
+        vec![(PROXY_SESSION_ID_HEADER, b"")],
+        vec![(RELAY_SESSION_ID_HEADER, b"\xff")],
+    ];
+
+    for headers in rejected {
+        let response = app
+            .clone()
+            .oneshot(request_with_headers(
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "bench",
+                    "messages": [{"role": "user", "content": "hi"}],
+                })),
+                &headers,
+            )?)
+            .await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "headers={headers:?}"
+        );
+    }
     Ok(())
 }
 
@@ -1474,6 +1744,67 @@ fn tool_event(
     })
 }
 
+fn turn_event(uuid: &str, session_id: &str, owner_id: Option<&str>) -> Value {
+    let mut metadata = serde_json::Map::from_iter([
+        ("hermes_session_id".to_string(), json!(session_id)),
+        ("nemo_relay_scope_role".to_string(), json!("turn")),
+    ]);
+    if let Some(owner_id) = owner_id {
+        metadata.insert("switchyard_owner_id".to_string(), json!(owner_id));
+    }
+    json!({
+        "kind": "scope",
+        "uuid": uuid,
+        "scope_category": "start",
+        "name": "turn",
+        "category": "agent",
+        "metadata": metadata,
+    })
+}
+
+fn cascade_decision_yaml() -> &'static str {
+    r#"
+targets:
+  strong:
+    model: provider/strong
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+  weak:
+    model: provider/weak
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+profiles:
+  remote-cascade:
+    type: cascade
+    strong: strong
+    weak: weak
+    fallback_target_on_evict: strong
+    picker: cascade_weak_default
+    confidence_threshold: 0.7
+"#
+}
+
+fn random_decision_yaml() -> &'static str {
+    r#"
+targets:
+  strong:
+    model: provider/strong
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+  weak:
+    model: provider/weak
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+profiles:
+  remote-random:
+    type: random-routing
+    strong: strong
+    weak: weak
+    strong_probability: 1.0
+    rng_seed: 7
+"#
+}
+
 fn state_from_yaml(input: &str) -> TestResult<ServerState> {
     let plan = parse_profile_config_str(input, ProfileConfigFormat::Yaml)?.resolve()?;
     Ok(ServerState::from_plan(&plan)?)
@@ -1495,6 +1826,22 @@ fn request(method: &str, uri: &str, body: Option<Value>) -> TestResult<Request<B
         .header("content-type", "application/json");
     let body = body.map_or_else(Body::empty, |body| Body::from(body.to_string()));
     Ok(builder.body(body)?)
+}
+
+fn request_with_headers(
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&'static str, &[u8])],
+) -> TestResult<Request<Body>> {
+    let mut request = request(method, uri, body)?;
+    for (name, value) in headers {
+        request.headers_mut().append(
+            HeaderName::from_static(name),
+            HeaderValue::from_bytes(value)?,
+        );
+    }
+    Ok(request)
 }
 
 fn raw_request(method: &str, uri: &str, body: &str) -> TestResult<Request<Body>> {
