@@ -780,6 +780,63 @@ profiles:
     Ok(())
 }
 
+#[tokio::test]
+async fn decision_endpoint_enforces_relay_bearer_token_end_to_end() -> TestResult {
+    let state = state_from_yaml(
+        r#"
+targets:
+  strong:
+    model: upstream-strong
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+  weak:
+    model: upstream-weak
+    format: openai
+    base_url: http://127.0.0.1:1/v1
+profiles:
+  remote-random:
+    type: random-routing
+    strong: strong
+    weak: weak
+    strong_probability: 1.0
+    rng_seed: 7
+"#,
+    )?
+    .with_atof_bearer_token(Some("expected-token".to_string()))?;
+    let app = build_switchyard_router(state);
+    let body = routing_request_json("remote-random", "none", None);
+
+    let missing = app
+        .clone()
+        .oneshot(request("POST", "/v1/routing/decision", Some(body.clone()))?)
+        .await?;
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(header(&missing, "www-authenticate"), Some("Bearer"));
+
+    let wrong = app
+        .clone()
+        .oneshot(request_with_headers(
+            "POST",
+            "/v1/routing/decision",
+            Some(body.clone()),
+            &[("authorization", b"Bearer wrong")],
+        )?)
+        .await?;
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    let accepted = app
+        .oneshot(request_with_headers(
+            "POST",
+            "/v1/routing/decision",
+            Some(body),
+            &[("authorization", b"bearer expected-token")],
+        )?)
+        .await?;
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(json_body(accepted).await?["route"]["backend_id"], "strong");
+    Ok(())
+}
+
 #[test]
 fn explicit_blank_atof_bearer_token_is_invalid_config() -> TestResult {
     for token in ["", "   ", "\t\n"] {

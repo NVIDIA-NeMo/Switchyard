@@ -76,7 +76,8 @@ impl ServerState {
         Ok(Self::new(ProfileRegistry::from_plan(plan)?))
     }
 
-    /// Returns a copy with optional auth; explicit blank tokens are invalid config.
+    /// Returns a copy with optional bearer auth for Relay decision and ATOF routes;
+    /// explicit blank tokens are invalid config.
     pub fn with_atof_bearer_token(mut self, token: Option<String>) -> Result<Self> {
         self.atof_bearer_token = Arc::new(validate_optional_bearer_token(token)?);
         Ok(self)
@@ -124,8 +125,11 @@ impl ServerState {
             .await
     }
 
-    /// Allows unauthenticated ingestion only when no bearer token was configured.
-    fn authorize_atof_ingest(&self, headers: &HeaderMap) -> std::result::Result<(), Box<Response>> {
+    /// Authorizes Relay routes when a bearer token is configured.
+    fn authorize_relay_request(
+        &self,
+        headers: &HeaderMap,
+    ) -> std::result::Result<(), Box<Response>> {
         let Some(expected) = self.atof_bearer_token.as_ref() else {
             return Ok(());
         };
@@ -138,7 +142,7 @@ impl ServerState {
             Ok(())
         } else {
             Err(Box::new(unauthorized_error(
-                "ATOF ingestion authorization failed",
+                "Relay request authorization failed",
             )))
         }
     }
@@ -328,6 +332,9 @@ async fn routing_decision(
     headers: HeaderMap,
     body: std::result::Result<Json<RoutingRequest>, JsonRejection>,
 ) -> Response {
+    if let Err(response) = state.authorize_relay_request(&headers) {
+        return *response;
+    }
     let request = match routing_json_body(body) {
         Ok(request) => request,
         Err(response) => return *response,
@@ -368,7 +375,7 @@ fn routing_json_body(
 /// Accepts bounded Relay `http_post` batches encoded as one JSON object per line.
 async fn atof_events(State(state): State<ServerState>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    if let Err(response) = state.authorize_atof_ingest(&parts.headers) {
+    if let Err(response) = state.authorize_relay_request(&parts.headers) {
         return *response;
     }
     if !is_ndjson_content_type(&parts.headers) {
