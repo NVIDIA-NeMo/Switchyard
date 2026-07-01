@@ -39,7 +39,7 @@ nav:
 exclude_docs: |
   internal/**
   research/**
-  local_models.md
+  vllm-serve-hidden-state.md
 
 theme:
   name: material
