@@ -742,6 +742,8 @@ profiles:
     let body = json_body(response).await?;
     assert_eq!(body["batch"]["received_events"], 4);
     assert_eq!(body["batch"]["ingested_events"], 1);
+    assert_eq!(body["accepted_events"], 1);
+    assert_eq!(body["received_events"], 4);
     assert_eq!(body["batch"]["duplicate_events"], 1);
     assert_eq!(body["batch"]["dropped_events"], 3);
     assert_eq!(body["batch"]["dropped_missing_identity_events"], 1);
