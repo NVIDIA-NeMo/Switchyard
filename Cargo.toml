@@ -16,6 +16,8 @@ members = [
 [workspace.package]
 authors = ["NVIDIA Corporation"]
 edition = "2021"
+homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
+keywords = ["switchyard", "llm", "routing"]
 license = "Apache-2.0"
 repository = "https://github.com/NVIDIA-NeMo/Switchyard"
 rust-version = "1.94"
