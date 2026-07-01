@@ -100,6 +100,14 @@ from switchyard.server.server_util import (
     resolve_port,
     resolve_rl_log_dir,
 )
+from switchyard_rust.server import (
+    DEFAULT_MAX_ATOF_BATCH_BYTES,
+    DEFAULT_MAX_ATOF_DEDUPE_ENTRIES,
+    DEFAULT_MAX_ATOF_EVENT_BYTES,
+    DEFAULT_MAX_ATOF_HISTORY_PER_IDENTITY,
+    DEFAULT_MAX_ATOF_IDENTITIES,
+    DEFAULT_MAX_ATOF_RETAINED_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +288,78 @@ def _add_common_intake_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_atof_ingest_args(parser: argparse.ArgumentParser) -> None:
+    """Attach bounded Relay ATOF `http_post` ingestion options."""
+    parser.add_argument(
+        "--atof-bearer-token",
+        default=os.environ.get("SWITCHYARD_ATOF_BEARER_TOKEN"),
+        metavar="TOKEN",
+        help=(
+            "Require this bearer token on POST /v1/atof/events "
+            "(or SWITCHYARD_ATOF_BEARER_TOKEN)."
+        ),
+    )
+    parser.add_argument(
+        "--atof-max-identities",
+        type=int,
+        default=int(os.environ.get(
+            "SWITCHYARD_ATOF_MAX_IDENTITIES", DEFAULT_MAX_ATOF_IDENTITIES,
+        )),
+        metavar="COUNT",
+        help="Maximum exact Relay identities retained in memory.",
+    )
+    parser.add_argument(
+        "--atof-max-history-per-identity",
+        type=int,
+        default=int(os.environ.get(
+            "SWITCHYARD_ATOF_MAX_HISTORY_PER_IDENTITY",
+            DEFAULT_MAX_ATOF_HISTORY_PER_IDENTITY,
+        )),
+        metavar="COUNT",
+        help="Maximum reconstructed messages retained per Relay identity.",
+    )
+    parser.add_argument(
+        "--atof-max-dedupe-entries",
+        type=int,
+        default=int(os.environ.get(
+            "SWITCHYARD_ATOF_MAX_DEDUPE_ENTRIES",
+            DEFAULT_MAX_ATOF_DEDUPE_ENTRIES,
+        )),
+        metavar="COUNT",
+        help="Maximum ATOF event idempotency keys retained in memory.",
+    )
+    parser.add_argument(
+        "--atof-max-event-bytes",
+        type=int,
+        default=int(os.environ.get(
+            "SWITCHYARD_ATOF_MAX_EVENT_BYTES", DEFAULT_MAX_ATOF_EVENT_BYTES,
+        )),
+        metavar="BYTES",
+        help="Maximum encoded size accepted for one ATOF event.",
+    )
+    parser.add_argument(
+        "--atof-max-retained-bytes",
+        type=int,
+        default=int(os.environ.get(
+            "SWITCHYARD_ATOF_MAX_RETAINED_BYTES", DEFAULT_MAX_ATOF_RETAINED_BYTES,
+        )),
+        metavar="BYTES",
+        help="Maximum encoded/string bytes retained across all Relay state.",
+    )
+    parser.add_argument(
+        "--atof-max-batch-bytes",
+        type=int,
+        default=int(os.environ.get(
+            "SWITCHYARD_ATOF_MAX_BATCH_BYTES", DEFAULT_MAX_ATOF_BATCH_BYTES,
+        )),
+        metavar="BYTES",
+        help=(
+            "Maximum encoded size accepted for one Relay http_post ATOF batch; "
+            "long-lived ndjson uploads are not supported."
+        ),
+    )
+
+
 _DETERMINISTIC_PROFILE_CHOICES = ("general", "coding_agent", "openclaw")
 
 
@@ -411,6 +491,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     if args.config:
         _cmd_serve_profile_config(args)
         return
+    if _atof_options_requested(args):
+        raise SystemExit("ATOF ingestion options require `serve --config PATH`.")
 
     # Intake sink + local RL trace logging both attach as chain processors;
     # combine them so a single serve invocation can run either or both.
@@ -506,6 +588,11 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
             f"Python-defined profiles: {exc}"
         ) from exc
     if python_profiles:
+        if _atof_options_requested(args):
+            raise SystemExit(
+                "ATOF ingestion options require a config containing only "
+                "Rust-defined profiles."
+            )
         _cmd_serve_mixed_profile_config(args, python_profiles)
         return
 
@@ -516,7 +603,61 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         "Switchyard components-v2 profile config loaded from %s",
         args.config,
     )
-    run_profile_server(args.config, args.host, port)
+    run_profile_server(
+        args.config,
+        args.host,
+        port,
+        atof_bearer_token=getattr(args, "atof_bearer_token", None),
+        atof_max_identities=getattr(
+            args, "atof_max_identities", DEFAULT_MAX_ATOF_IDENTITIES,
+        ),
+        atof_max_history_per_identity=getattr(
+            args,
+            "atof_max_history_per_identity",
+            DEFAULT_MAX_ATOF_HISTORY_PER_IDENTITY,
+        ),
+        atof_max_dedupe_entries=getattr(
+            args,
+            "atof_max_dedupe_entries",
+            DEFAULT_MAX_ATOF_DEDUPE_ENTRIES,
+        ),
+        atof_max_retained_bytes=getattr(
+            args, "atof_max_retained_bytes", DEFAULT_MAX_ATOF_RETAINED_BYTES,
+        ),
+        atof_max_event_bytes=getattr(
+            args, "atof_max_event_bytes", DEFAULT_MAX_ATOF_EVENT_BYTES,
+        ),
+        atof_max_batch_bytes=getattr(
+            args, "atof_max_batch_bytes", DEFAULT_MAX_ATOF_BATCH_BYTES,
+        ),
+    )
+
+
+def _atof_options_requested(args: argparse.Namespace) -> bool:
+    """Return whether a non-default Rust ATOF option was selected."""
+    return any((
+        getattr(args, "atof_bearer_token", None),
+        getattr(args, "atof_max_identities", DEFAULT_MAX_ATOF_IDENTITIES)
+        != DEFAULT_MAX_ATOF_IDENTITIES,
+        getattr(
+            args,
+            "atof_max_history_per_identity",
+            DEFAULT_MAX_ATOF_HISTORY_PER_IDENTITY,
+        )
+        != DEFAULT_MAX_ATOF_HISTORY_PER_IDENTITY,
+        getattr(
+            args,
+            "atof_max_dedupe_entries",
+            DEFAULT_MAX_ATOF_DEDUPE_ENTRIES,
+        )
+        != DEFAULT_MAX_ATOF_DEDUPE_ENTRIES,
+        getattr(args, "atof_max_event_bytes", DEFAULT_MAX_ATOF_EVENT_BYTES)
+        != DEFAULT_MAX_ATOF_EVENT_BYTES,
+        getattr(args, "atof_max_retained_bytes", DEFAULT_MAX_ATOF_RETAINED_BYTES)
+        != DEFAULT_MAX_ATOF_RETAINED_BYTES,
+        getattr(args, "atof_max_batch_bytes", DEFAULT_MAX_ATOF_BATCH_BYTES)
+        != DEFAULT_MAX_ATOF_BATCH_BYTES,
+    ))
 
 
 def _cmd_serve_mixed_profile_config(
@@ -929,6 +1070,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "adapter."
         ),
     )
+    _add_atof_ingest_args(serve)
     serve.add_argument(
         "--workers", "-w", type=int,
         default=int(os.environ.get("SWITCHYARD_WORKERS", "1")),

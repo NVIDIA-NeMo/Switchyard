@@ -11,6 +11,7 @@ extern crate self as switchyard_components_v2;
 mod backend;
 mod config;
 pub mod decision;
+mod features;
 mod profile;
 pub mod profiles;
 mod stats;
@@ -25,6 +26,14 @@ pub use decision::{
     DecisionProvider, IdentityQuality, RequestIdentity, RequestProtocol, RequestSummary,
     RoutingDecision, RoutingRequest, RoutingTarget, ROUTING_DECISION_SCHEMA_VERSION,
     ROUTING_REQUEST_SCHEMA_VERSION,
+};
+pub use features::{
+    atof_event_dedupe_key, json_string_at, relay_identity_key_from_atof_event,
+    RelayAccumulatorCounters, RelayIdentityKey, RelayIngestReport, RelaySnapshot,
+    RelaySnapshotAccumulator, RelaySnapshotLimits, DEFAULT_MAX_ATOF_BATCH_BYTES,
+    DEFAULT_MAX_ATOF_EVENT_BYTES, DEFAULT_MAX_RELAY_DEDUPE_ENTRIES,
+    DEFAULT_MAX_RELAY_HISTORY_PER_IDENTITY, DEFAULT_MAX_RELAY_IDENTITIES,
+    DEFAULT_MAX_RELAY_RETAINED_BYTES,
 };
 pub use profile::{
     Profile, ProfileHooks, ProfileInput, ProfileResponse, RequestMetadata, RoutingMetadata,

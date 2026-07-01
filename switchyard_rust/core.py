@@ -248,6 +248,13 @@ class _NativeModule(Protocol):
         port: int,
         backlog: int,
         dry_run: bool,
+        atof_bearer_token: str | None,
+        atof_max_identities: int,
+        atof_max_history_per_identity: int,
+        atof_max_dedupe_entries: int,
+        atof_max_retained_bytes: int,
+        atof_max_event_bytes: int,
+        atof_max_batch_bytes: int,
     ) -> None: ...
 
 

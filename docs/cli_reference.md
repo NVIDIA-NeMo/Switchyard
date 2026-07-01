@@ -210,6 +210,13 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
                  [--host HOST] [--port PORT] [--workers N]
                  [--reload] [--inbound FORMAT]
                  [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
+                 [--atof-bearer-token TOKEN]
+                 [--atof-max-identities COUNT]
+                 [--atof-max-history-per-identity COUNT]
+                 [--atof-max-dedupe-entries COUNT]
+                 [--atof-max-retained-bytes BYTES]
+                 [--atof-max-event-bytes BYTES]
+                 [--atof-max-batch-bytes BYTES]
 ```
 
 **Flags**
@@ -222,10 +229,14 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 | `--inbound FORMAT` | Valid only for legacy route-bundle serve (`--routing-profiles`); `serve --config` actively rejects it with an error. For legacy serve, the flag is a no-op — all request APIs are always registered regardless of the value (accepted for backwards compat only). |
 | `--workers` / `-w` | uvicorn worker count. |
 | `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-nvdataflow-project` | [Intake sink](#intake-sink-serve-and-launchers). |
+| `--atof-bearer-token TOKEN` | Optional bearer token required by `POST /v1/atof/events`. Defaults to `SWITCHYARD_ATOF_BEARER_TOKEN` when set. Rust-only profile configs only. |
+| `--atof-max-identities`, `--atof-max-history-per-identity`, `--atof-max-dedupe-entries` | Fixed in-memory caps for exact Relay identities, reconstructed messages per identity, and event idempotency keys. The matching `SWITCHYARD_ATOF_MAX_*` environment variables are also accepted. |
+| `--atof-max-retained-bytes` | Hard cap on exact encoded message bytes plus retained identity and dedupe string bytes (default: 64 MiB). Defaults to `SWITCHYARD_ATOF_MAX_RETAINED_BYTES` when set. |
+| `--atof-max-event-bytes`, `--atof-max-batch-bytes` | Fixed request limits for one event and one finite HTTP batch. The event limit cannot exceed the batch limit. The matching `SWITCHYARD_ATOF_MAX_*` environment variables are also accepted. |
 
 **Notes**
 
-- `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health`. There is no flag to expose just one request API.
+- `serve --config` with Rust-only profiles also registers `POST /v1/atof/events`; all serve paths register `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health`. There is no flag to expose just one request API.
 - `GET /v1/stats` and `GET /v1/routing/stats` are available on both serve paths.
 - The deprecated route-bundle path accepts `--inbound` for compatibility but ignores it; all supported request APIs are always registered.
 - `serve --config` does not support `--reload`, `--workers > 1`, Intake options, `--enable-rl-logging`, or any explicit `--inbound` value.
@@ -258,6 +269,39 @@ switchyard serve --port 4000
 
 # Multi-worker uvicorn (route-bundle path)
 SWITCHYARD_WORKERS=4 switchyard --routing-profiles routes.yaml -- serve
+```
+
+### Relay ATOF ingestion
+
+The Rust profile server accepts finite `application/x-ndjson` batches at
+`POST /v1/atof/events`. Configure Relay with `transport: http_post`; its selected
+integration sends one canonical ATOF JSON object per POST. A request may contain
+more than one non-empty JSON line, but Switchyard parses and validates the whole
+request before applying the batch, so a malformed or oversized line applies none
+of it. Relay's long-lived `transport: ndjson` upload is not supported by this
+atomic batch endpoint.
+
+Recognized turn and tool scopes accumulate into router-neutral snapshots keyed by
+the exact `(session_id, owner_id)` pair. Snapshots contain reconstructed tool-call
+and tool-result messages, turn depth, and a unique-event count. Unknown events,
+events without a session identity, and duplicates are reported as separate drop
+counters in the response. Identity, history, and dedupe state use deterministic
+fixed-size pruning rather than unbounded retention.
+
+Use [the shipped Relay plugin fixture](../examples/relay_atof_switchyard.toml),
+which pins `transport = "http_post"`, `field_name_policy = "preserve"`, and
+the bearer header. Replace `replace-with-shared-token` in that file and pass the
+identical value to Switchyard; Relay does not expand environment variables in
+arbitrary endpoint-header values.
+
+```bash
+switchyard serve --config examples/profiles.yaml \
+  --atof-bearer-token "$RELAY_TO_SWITCHYARD_TOKEN"
+
+curl localhost:4000/v1/atof/events \
+  -H 'Content-Type: application/x-ndjson' \
+  -H "Authorization: Bearer $RELAY_TO_SWITCHYARD_TOKEN" \
+  --data-binary '{"kind":"scope","uuid":"tool-1","scope_category":"start","category":"tool","name":"Bash","category_profile":{"tool_call_id":"tool-1"},"metadata":{"hermes_session_id":"session-1"},"data":{"command":"cargo test"}}'
 ```
 
 ## `switchyard launch claude`
