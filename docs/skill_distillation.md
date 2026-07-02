@@ -5,10 +5,12 @@ kind of work. The model is not retrained. Switchyard saves the session history,
 uses it to update a `SKILL.md`, and makes the active skill available to later
 agent launches for the same namespace.
 
-The current release adds the saved configuration and the Rust contracts that
-later implementations will share. It does not yet save session files, run
-distillation, update skills, import external runs, validate results, or mount
-skills into launched agents.
+The current release saves the namespace, defines the shared Rust contracts,
+and automatically captures completed `switchyard launch` turns under the
+current project. It does not yet run distillation, update skills, import
+external runs, validate results, or mount skills into launched agents. Saved
+sessions and the local ledger are the input that later distillation commands
+will use.
 
 ## Configure It
 
@@ -28,15 +30,15 @@ switchyard configure --disable-skill-distillation
 
 ## Intended Workflow
 
-Once launcher support lands, the flow should be automatic:
+The initial launcher flow is automatic after configuration:
 
 ```text
 configure a namespace
 run an agent through switchyard launch
 save the session under that namespace
-distill when the session ends
+mark completed sessions as ready for distillation
 create or update the namespace's active SKILL.md
-load that active skill in the next launch for the same namespace
+load that active skill in a later launch for the same namespace
 ```
 
 If no skill exists yet, the first distilled session creates one. Later sessions
@@ -61,7 +63,9 @@ the top-level `skill_distillation` key:
 }
 ```
 
-The config is intentionally small:
+The config is intentionally small. There is no separate session-store knob:
+the store is always project-local at
+`.switchyard/skill-distillation/<namespace>/`.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -91,9 +95,9 @@ rollback, and produce review output. Later checks should flag answer leakage,
 source IDs, URLs, benchmark shortcuts, and task-specific details before a skill
 is trusted.
 
-## Planned Store Layout
+## Store Layout
 
-Future work should use inspectable local files:
+Session capture writes inspectable local files:
 
 ```text
 <project>/.switchyard/skill-distillation/<namespace>/
@@ -102,16 +106,21 @@ Future work should use inspectable local files:
     turns.jsonl
     stats.json
   distillation-ledger.jsonl
-  candidates/<version-id>/
-    skill/SKILL.md
-    report.md
+  candidates/
+  reports/
   active/SKILL.md
-  history.jsonl
+  history/
 ```
 
-The ledger should track which saved sessions have already contributed to a
-skill update. That lets distillation use new sessions by default instead of
-depending on a long-lived lookback-count setting.
+`session.json` records the launch target, display model, strategy summary,
+status, active skill path, and distillation handoff status. `turns.jsonl`
+records normalized request and response turns, including messages, usage, and
+routing metadata when available. `stats.json` records the final session stats.
+
+The ledger tracks whether each saved session is pending future distillation or
+was skipped because no completed turns were captured. That lets a later
+distiller use new sessions by default instead of depending on a long-lived
+lookback-count setting.
 
 ## Rust Contracts
 

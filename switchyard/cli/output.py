@@ -11,6 +11,7 @@ from switchyard.cli.config.user_config import (
     WEAK_TIER,
     LaunchRouteConfig,
 )
+from switchyard.lib.skill_distillation_store import summarize_skill_distillation_store
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -116,7 +117,12 @@ def format_config_snapshot(snapshot: Mapping[str, object]) -> str:
         lines.append(f"  configured: {bool(namespace)}")
         lines.append(f"  namespace: {namespace or '<not configured>'}")
         if namespace:
-            lines.append("  session learning: namespace saved")
+            summary = summarize_skill_distillation_store(namespace)
+            active = "present" if summary.active_skill_exists else "missing"
+            lines.append("  session capture: on")
+            lines.append(f"  store: {summary.path}")
+            lines.append(f"  sessions: {summary.session_count}")
+            lines.append(f"  active skill: {active}")
 
     launch = _mapping(snapshot.get("launch"))
     if launch:

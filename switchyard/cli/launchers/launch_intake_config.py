@@ -19,8 +19,6 @@ env vars through both seams. CLI parsing lives in
 ``switchyard.cli.launch_command``.
 """
 
-from __future__ import annotations
-
 import re
 import secrets
 import sys
@@ -32,6 +30,7 @@ from typing import IO, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from switchyard.lib.config import IntakeSinkConfig
+    from switchyard.lib.skill_distillation_store import SkillDistillationSessionCapture
 
 
 _INTAKE_WARNING_LINES = (
@@ -89,7 +88,7 @@ class LaunchIntakeConfig:
         user_id: str | None = None,
         nvdataflow_project: str | None = None,
         target: str,
-    ) -> LaunchIntakeConfig:
+    ) -> "LaunchIntakeConfig":
         """Resolve any blank fields and return the immutable config.
 
         ``session_id`` defaults to ``<target>-<unix-ms>-<uuid4-short>`` so each
@@ -126,7 +125,7 @@ class LaunchIntakeConfig:
             "proxy_x_session_id": self.session_id,
         }
 
-    def to_sink_config(self) -> IntakeSinkConfig:
+    def to_sink_config(self) -> "IntakeSinkConfig":
         """Build the server-side intake sink config for this launch."""
         from switchyard.lib.config import IntakeSinkConfig
 
@@ -156,20 +155,27 @@ def build_intake_processors(
 def build_launch_capture_processors(
     intake: LaunchIntakeConfig | None,
     rl_log_dir: Path | None,
+    skill_session: "SkillDistillationSessionCapture | None" = None,
 ) -> tuple[list[Any], list[Any]]:
-    """Combine intake + RL-logging request/response processor lists for launchers.
+    """Combine intake, RL logging, and skill-session capture for launchers.
 
-    The intake sink (``intake``) and the local RL trace logger (``rl_log_dir``)
-    are independent: either, both, or neither may be active. Returns
-    ``([], [])`` when neither is.
+    The intake sink, local RL trace logger, and skill-distillation session
+    capture are independent. Returns ``([], [])`` when all are disabled.
     """
     from switchyard.lib.processors.rl_logging_response_processor import (
         build_rl_logging_processors,
     )
+    from switchyard.lib.processors.skill_distillation_session_processor import (
+        build_skill_distillation_processors,
+    )
 
     intake_request, intake_response = build_intake_processors(intake)
     rl_request, rl_response = build_rl_logging_processors(rl_log_dir)
-    return [*intake_request, *rl_request], [*intake_response, *rl_response]
+    skill_request, skill_response = build_skill_distillation_processors(skill_session)
+    return (
+        [*intake_request, *rl_request, *skill_request],
+        [*intake_response, *rl_response, *skill_response],
+    )
 
 
 def _default_session_id(target: str) -> str:

@@ -27,6 +27,7 @@ from switchyard.cli.model_catalog.model_discovery import (
     fetch_model_ids,
 )
 from switchyard.cli.output import format_route_config
+from switchyard.lib.skill_distillation_store import summarize_skill_distillation_store
 
 _API_KEY_ENV_VARS = (
     "OPENROUTER_API_KEY",
@@ -149,9 +150,15 @@ def _format_launch_target(target: LaunchTarget) -> list[str]:
 def _format_skill_distillation(config: SkillDistillationConfig) -> str:
     if not config.configured:
         return "skill distillation: not configured"
+    assert config.namespace is not None
+    summary = summarize_skill_distillation_store(config.namespace)
+    active = "present" if summary.active_skill_exists else "missing"
     return (
         f"skill distillation: configured; namespace: {config.namespace}; "
-        "session learning: namespace saved"
+        "session capture: on; "
+        f"store: {summary.path}; "
+        f"sessions: {summary.session_count}; "
+        f"active skill: {active}"
     )
 
 

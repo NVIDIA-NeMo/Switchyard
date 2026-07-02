@@ -91,7 +91,7 @@ Benchmark runs started through `benchmark/run-baseline.sh --routing-profiles` re
 
 `serve` and launchers share the same Intake sink connection flags. `serve` wires intake processors into every route in the loaded bundle; requests still opt in with `store=true` or `x-switchyard-intake-enabled=true`. Launchers also inject those opt-in headers into the spawned client.
 
-> **Note:** Switchyard has two independent ways to capture training data. The **Intake sink** (this section) posts live captures to nemo-platform. **`--enable-rl-logging`** (a [global flag](#global-flags)) writes local `message_history` JSON traces for `launch` and `serve` route-bundle sessions. See [RL trace logging](#rl-trace-logging). Either, both, or neither may be enabled.
+> **Note:** Switchyard has independent ways to capture training data. The **Intake sink** (this section) posts live captures to nemo-platform. **`--enable-rl-logging`** (a [global flag](#global-flags)) writes local `message_history` JSON traces for `launch` and `serve` route-bundle sessions. **Skill distillation** captures project-local launcher sessions when a namespace is configured. See [RL trace logging](#rl-trace-logging) and [`switchyard configure`](#switchyard-configure). These capture modes can be combined.
 
 | Flag | Purpose |
 |---|---|
@@ -438,7 +438,7 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 | `--provider`, `--base-url`, `--api-key` | Provider-level defaults applied to every launcher. Also act as one-off overrides for `--show` (changes the row that's used to resolve "base URL source" and "API key source") and for the `--list-models` discovery call. |
 | `--claude-*` / `--codex-*` / `--openclaw-*` | Per-launcher overrides on top of the provider defaults. |
 | `--routing-profiles PATH` | Global flag; pass before `configure`. Parses the YAML at `PATH` and stores the parsed bundle inline in `~/.config/switchyard/config.json`. Subsequent `serve` and `launch` runs use this when no `--routing-profiles` is on the CLI. Pass an empty string to clear. |
-| `--skill-distillation NAMESPACE` | Save the namespace that will group skill-distillation sessions and generated skills. This stores the namespace only; session saving, distillation, and launch-time skill loading are separate implementation work. |
+| `--skill-distillation NAMESPACE` | Save the namespace that groups skill-distillation sessions and generated skills. Subsequent `switchyard launch` sessions write local session files under `.switchyard/skill-distillation/<namespace>/` automatically. |
 | `--disable-skill-distillation` | Remove the saved skill distillation config. Cannot be combined with `--skill-distillation`. |
 | `--query` / `-q SUBSTRING` | With `--list-models`, case-insensitive substring filter. |
 | `--limit N` | With `--list-models`, cap on the number of models printed (default: 50; pass `0` for unlimited). |
@@ -458,6 +458,11 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 
 Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
 The top-level key is omitted when skill distillation is not configured. `namespace` is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.
+
+When configured, `switchyard configure --show` reports the resolved project-local store path,
+session count, and whether `active/SKILL.md` is present. With a saved namespace,
+`switchyard launch claude`, `switchyard launch codex`, and `switchyard launch openclaw`
+write session files. Distillation and launch-time skill loading are not implemented yet.
 
 **Examples**
 
