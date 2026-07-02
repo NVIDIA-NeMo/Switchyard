@@ -59,8 +59,8 @@ For source installs, non-interactive configuration, and a curl sanity check, use
 
 - **Prepare skill distillation**
 
-    Save a namespace for the intended automatic skill learning flow without
-    changing request routing.
+    Save a namespace and capture local launch sessions for the
+    skill-distillation workflow without changing request routing.
 
     [Skill Distillation](skill_distillation.md)
 

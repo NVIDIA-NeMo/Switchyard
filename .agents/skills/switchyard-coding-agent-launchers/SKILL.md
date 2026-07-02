@@ -40,6 +40,7 @@ after.
 | Standalone proxy server | `switchyard --routing-profiles routes.yaml serve --port 4000` |
 | Build one launcher chain | `build_tier_passthrough_switchyard(...)` in `switchyard/lib/route_table_builders.py` |
 | Build/merge YAML routes | `load_route_bundle_table(...)` / `build_route_bundle_table(...)` in `switchyard/cli/route_bundle.py` |
+| Compose launch capture processors | `build_launch_capture_processors(...)` in `switchyard/cli/launchers/launch_intake_config.py` combines Intake, RL trace logging, and skill-distillation session capture. |
 | Look up upstream model catalogs | `fetch_model_ids(...)` in `switchyard/cli/model_catalog/model_discovery.py` |
 | Add a plan-execute route | Add `type: plan_execute` in route YAML; `_plan_execute_switchyard` in `route_bundle.py` maps it to `PlanExecuteProfileConfig`. |
 | Add a deterministic route | Add `type: deterministic` in route YAML; `_deterministic_switchyard` maps it to `DeterministicRoutingProfileConfig`. |
@@ -57,12 +58,15 @@ after.
    Do not assume launcher subcommands accept `--provider`; provider ids are a
    configure/defaults concern.
 3. Build a `StatsAccumulator` once for the launcher process.
-4. Build the single-target profile-backed app with
+4. Compose runtime capture processors with `build_launch_capture_processors(...)`.
+   Intake, RL logging, and skill-distillation session capture are independent
+   processors and should stay behind that shared launcher helper.
+5. Build the single-target profile-backed app with
    `build_tier_passthrough_switchyard(...)`, or load route YAML with
    `load_route_bundle_table(...)`.
-5. If both a launcher model and YAML table are present, wrap the single model
+6. If both a launcher model and YAML table are present, wrap the single model
    in a `RouteTable` with `build_single_model_table(...)` and merge YAML entries.
-6. Call `build_switchyard_app(...)`, start uvicorn in a daemon thread, wait for
+7. Call `build_switchyard_app(...)`, start uvicorn in a daemon thread, wait for
    `/health`, then spawn the external CLI.
 
 Claude, Codex, and OpenClaw differ only in how they configure the external
@@ -92,8 +96,9 @@ Route YAML and launchers share this model-dispatch path:
 - `type: routellm`, `type: latency_service`, and `type: noop` register the
   route key.
 
-Runtime-only hooks such as intake are passed to route-table builders as kwargs;
-route YAML does not declare arbitrary Python processors.
+Runtime-only processors such as intake, RL trace logging, and
+skill-distillation session capture are passed to route-table builders as named
+arguments; route YAML does not declare arbitrary Python processors.
 
 ## Anti-Patterns
 

@@ -66,6 +66,9 @@ from switchyard.cli.launchers.launcher_runtime import (
 from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.launchers.session_summary import print_session_summary
+from switchyard.cli.launchers.skill_distillation import (
+    launch_skill_distillation_session,
+)
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
 )
@@ -438,49 +441,59 @@ def launch_claude(
     """
     _quiet_launch_loggers()
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
-    switchyard = _build_claude_switchyard(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        timeout=timeout,
-        stats=stats,
-        extra_request_processors=intake_request,
-        extra_response_processors=intake_response,
-    )
-    app: SwitchyardApp = build_single_model_table(model, switchyard)
-    if routing_profiles is not None:
-        # Wrap the single chain in a RouteTable so YAML routes can
-        # merge on top. The launcher's chain registers under `model`; YAML
-        # entries land alongside (and override on id conflict).
-        from switchyard.lib.route_table import RouteTable
-        table = app
-        assert isinstance(table, RouteTable)
-        yaml_table = load_route_bundle_table(
-            routing_profiles,
-            stats_accumulator=stats,
-            pre_routing_request_processors=intake_request,
-            extra_response_processors=intake_response,
-        )
-        for sub_model, sub_chain, sub_metadata in yaml_table.items():
-            table.register(sub_model, sub_chain, metadata=sub_metadata)
-        for warning in yaml_table.model_listing_warnings():
-            table.add_model_listing_warning(warning)
-        app = table
     strategy_summary = (
         routing_profiles_strategy_summary(routing_profiles, model)
         if routing_profiles is not None
         else passthrough_strategy_summary(model)
     )
-    return _run_claude_with_switchyard(
-        app,
+    with launch_skill_distillation_session(
+        target="claude",
         display_model=model,
-        port=port,
-        claude_args=claude_args,
-        stats=stats,
-        intake=intake,
         strategy_summary=strategy_summary,
-    )
+        stats=stats,
+    ) as skill_session:
+        intake_request, intake_response = build_launch_capture_processors(
+            intake, rl_log_dir, skill_session.capture,
+        )
+        switchyard = _build_claude_switchyard(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            stats=stats,
+            extra_request_processors=intake_request,
+            extra_response_processors=intake_response,
+        )
+        app: SwitchyardApp = build_single_model_table(model, switchyard)
+        if routing_profiles is not None:
+            # Wrap the single chain in a RouteTable so YAML routes can
+            # merge on top. The launcher's chain registers under `model`; YAML
+            # entries land alongside (and override on id conflict).
+            from switchyard.lib.route_table import RouteTable
+            table = app
+            assert isinstance(table, RouteTable)
+            yaml_table = load_route_bundle_table(
+                routing_profiles,
+                stats_accumulator=stats,
+                pre_routing_request_processors=intake_request,
+                extra_response_processors=intake_response,
+            )
+            for sub_model, sub_chain, sub_metadata in yaml_table.items():
+                table.register(sub_model, sub_chain, metadata=sub_metadata)
+            for warning in yaml_table.model_listing_warnings():
+                table.add_model_listing_warning(warning)
+            app = table
+        exit_code = _run_claude_with_switchyard(
+            app,
+            display_model=model,
+            port=port,
+            claude_args=claude_args,
+            stats=stats,
+            intake=intake,
+            strategy_summary=strategy_summary,
+        )
+        skill_session.exit_code = exit_code
+        return exit_code
 
 
 
@@ -513,30 +526,41 @@ def launch_claude_deterministic_routing(
 
     _quiet_launch_loggers()
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
-    switchyard = build_deterministic_routing_switchyard(
-        config,
-        stats,
-        pre_routing_request_processors=intake_request,
-        extra_response_processors=intake_response,
-    )
     routing_model = deterministic_routing_virtual_model_id(config)
-    discovery_fn = None if discovery_disabled else _discovery_fn
-    model_table = build_deterministic_routing_table(
-        config,
-        stats,
-        deterministic_routing_switchyard=switchyard,
-        routing_model=routing_model,
-        discovery_fn=discovery_fn,
-        pre_routing_request_processors=intake_request,
-        extra_response_processors=intake_response,
-    )
-    return _run_claude_with_switchyard(
-        model_table,
+    strategy_summary = deterministic_strategy_summary(config)
+    with launch_skill_distillation_session(
+        target="claude",
         display_model=routing_model,
-        port=port,
-        claude_args=claude_args,
+        strategy_summary=strategy_summary,
         stats=stats,
-        intake=intake,
-        strategy_summary=deterministic_strategy_summary(config),
-    )
+    ) as skill_session:
+        intake_request, intake_response = build_launch_capture_processors(
+            intake, rl_log_dir, skill_session.capture,
+        )
+        switchyard = build_deterministic_routing_switchyard(
+            config,
+            stats,
+            pre_routing_request_processors=intake_request,
+            extra_response_processors=intake_response,
+        )
+        discovery_fn = None if discovery_disabled else _discovery_fn
+        model_table = build_deterministic_routing_table(
+            config,
+            stats,
+            deterministic_routing_switchyard=switchyard,
+            routing_model=routing_model,
+            discovery_fn=discovery_fn,
+            pre_routing_request_processors=intake_request,
+            extra_response_processors=intake_response,
+        )
+        exit_code = _run_claude_with_switchyard(
+            model_table,
+            display_model=routing_model,
+            port=port,
+            claude_args=claude_args,
+            stats=stats,
+            intake=intake,
+            strategy_summary=strategy_summary,
+        )
+        skill_session.exit_code = exit_code
+        return exit_code

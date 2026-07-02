@@ -158,7 +158,8 @@ def test_skill_distillation_config_round_trips_and_surfaces(
     monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
     status = render_status(StatusRequest())
     assert "skill distillation: configured; namespace: tooluniverse-trialqa" in status
-    assert "session learning: namespace saved" in status
+    assert "session capture: on" in status
+    assert "store:" in status
 
 
 @pytest.mark.parametrize(
