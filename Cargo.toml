@@ -4,6 +4,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/libsy",
+    "crates/libsy-examples",
     "crates/switchyard-components",
     "crates/switchyard-components-v2",
     "crates/switchyard-components-v2-macros",
