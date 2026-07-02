@@ -23,7 +23,9 @@ from switchyard.cli.config.user_config import (
     LaunchRouteConfig,
     LaunchTierEndpointConfig,
     ProviderConfig,
+    SkillDistillationConfig,
     UserConfig,
+    UserConfigError,
     UserCredentials,
     _default_base_url_for_provider,
     build_redacted_snapshot,
@@ -52,6 +54,57 @@ from switchyard.cli.tui.launch_config_wizard import LaunchConfigWizard
 from switchyard.server.server_util import load_secrets
 
 logger = logging.getLogger(__name__)
+
+
+def _skill_distillation_args_present(args: argparse.Namespace) -> bool:
+    return bool(args.disable_skill_distillation) or args.skill_distillation is not None
+
+
+def _provider_or_launcher_args_present(args: argparse.Namespace) -> bool:
+    return any(
+        value
+        for value in (
+            args.api_key,
+            args.base_url,
+            args.claude_model,
+            args.claude_base_url,
+            args.claude_api_key,
+            args.codex_model,
+            args.codex_base_url,
+            args.codex_api_key,
+            args.openclaw_model,
+            args.openclaw_base_url,
+            args.openclaw_api_key,
+        )
+    ) or args.routing_profiles is not None
+
+
+def _skill_only_config_update(args: argparse.Namespace) -> bool:
+    return (
+        _skill_distillation_args_present(args)
+        and not _provider_or_launcher_args_present(args)
+    )
+
+
+def _apply_skill_distillation_args(
+    existing: SkillDistillationConfig,
+    args: argparse.Namespace,
+) -> SkillDistillationConfig:
+    if args.disable_skill_distillation:
+        if args.skill_distillation is not None:
+            raise UserConfigError(
+                "--disable-skill-distillation cannot be combined with "
+                "--skill-distillation"
+            )
+        return SkillDistillationConfig()
+
+    return SkillDistillationConfig(
+        namespace=(
+            args.skill_distillation
+            if args.skill_distillation is not None
+            else existing.namespace
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -321,6 +374,23 @@ def cmd_configure(args: argparse.Namespace) -> None:
     configure_openclaw = target_scope in ("all", "openclaw")
     existing_config = load_user_config()
     existing_credentials = load_user_credentials()
+    skill_distillation = _apply_skill_distillation_args(
+        existing_config.skill_distillation,
+        args,
+    )
+    if _skill_only_config_update(args):
+        save_user_config(
+            UserConfig(
+                default_provider=existing_config.default_provider,
+                providers=existing_config.providers,
+                launch=existing_config.launch,
+                routing_profiles=existing_config.routing_profiles,
+                skill_distillation=skill_distillation,
+            ),
+        )
+        print(f"Saved Switchyard config to {get_config_path()}")
+        return
+
     existing_provider = existing_config.provider(provider)
     existing_claude = existing_config.launch_target("claude")
     existing_codex = existing_config.launch_target("codex")
@@ -585,6 +655,7 @@ def cmd_configure(args: argparse.Namespace) -> None:
             providers=providers,
             launch=launch,
             routing_profiles=routing_profiles,
+            skill_distillation=skill_distillation,
         ),
     )
 

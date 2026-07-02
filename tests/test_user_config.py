@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
+import json
 import stat
+import sys
 
 import pytest
 
@@ -15,7 +15,9 @@ from switchyard.cli.config.user_config import (
     LaunchRouteConfig,
     LaunchTierEndpointConfig,
     ProviderConfig,
+    SkillDistillationConfig,
     UserConfig,
+    UserConfigError,
     UserCredentials,
     build_redacted_snapshot,
     load_user_config,
@@ -24,6 +26,8 @@ from switchyard.cli.config.user_config import (
     save_user_config,
     save_user_credentials,
 )
+from switchyard.cli.output import format_config_snapshot
+from switchyard.cli.status import StatusRequest, render_status
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +121,216 @@ def test_top_level_routing_profiles_clears_when_none(tmp_path):
     )
     save_user_config(UserConfig(routing_profiles=None), config_dir=tmp_path)
     assert load_user_config(tmp_path).routing_profiles is None
+
+
+def test_default_skill_distillation_config_is_not_persisted(tmp_path):
+    save_user_config(UserConfig(), config_dir=tmp_path)
+
+    raw = json.loads((tmp_path / "config.json").read_text())
+    assert "skill_distillation" not in raw
+    assert load_user_config(tmp_path).skill_distillation == SkillDistillationConfig()
+
+
+def test_skill_distillation_config_round_trips_and_surfaces(
+    monkeypatch,
+    tmp_path,
+):
+    skill_config = SkillDistillationConfig(
+        namespace="tooluniverse-trialqa",
+    )
+    save_user_config(
+        UserConfig(skill_distillation=skill_config),
+        config_dir=tmp_path,
+    )
+
+    raw = json.loads((tmp_path / "config.json").read_text())
+    assert raw["skill_distillation"] == {
+        "namespace": "tooluniverse-trialqa",
+    }
+    assert load_user_config(tmp_path).skill_distillation == skill_config
+
+    snapshot = build_redacted_snapshot(tmp_path)
+    assert snapshot["skill_distillation"] == raw["skill_distillation"]
+    rendered = format_config_snapshot(snapshot)
+    assert "Skill distillation" in rendered
+    assert "namespace: tooluniverse-trialqa" in rendered
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    status = render_status(StatusRequest())
+    assert "skill distillation: configured; namespace: tooluniverse-trialqa" in status
+    assert "session learning: namespace saved" in status
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({}, "namespace is required"),
+        ({"namespace": "ok", "enabled": False}, "supports only namespace"),
+        ({"namespace": "ok", "save_sessions": False}, "supports only namespace"),
+        ({"namespace": 7}, "must be a non-empty string"),
+        ({"namespace": "bad/name"}, "letters, numbers"),
+        ({"namespace": " bad"}, "leading or trailing whitespace"),
+        ({"namespace": "ok", "session_store": "remote"}, "supports only namespace"),
+        ({"namespace": "ok", "trigger": "instant"}, "supports only namespace"),
+        ({"namespace": "ok", "mount": "global"}, "supports only namespace"),
+        ({"namespace": "ok", "lookback_sessions": 0}, "supports only namespace"),
+    ],
+)
+def test_skill_distillation_config_validates(
+    tmp_path,
+    body,
+    message,
+):
+    (tmp_path / "config.json").write_text(json.dumps({
+        "skill_distillation": body,
+    }))
+
+    with pytest.raises(UserConfigError, match=message):
+        load_user_config(tmp_path)
+
+
+def test_configure_skill_only_update_does_not_require_api_key(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "switchyard.cli.command_utils.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal",
+        lambda: False,
+    )
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--skill-distillation", "tooluniverse-trialqa",
+    ])
+
+    _cmd_configure(args)
+
+    config = load_user_config(tmp_path)
+    assert config.skill_distillation.configured is True
+    assert config.skill_distillation.namespace == "tooluniverse-trialqa"
+    assert not (tmp_path / "credentials.json").exists()
+    assert "Saved Switchyard config" in capsys.readouterr().out
+
+
+def test_configure_disable_skill_distillation_clears_config(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    save_user_config(
+        UserConfig(
+            skill_distillation=SkillDistillationConfig(
+                namespace="tooluniverse-trialqa",
+            ),
+        ),
+        config_dir=tmp_path,
+    )
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--disable-skill-distillation",
+    ])
+
+    _cmd_configure(args)
+
+    assert load_user_config(tmp_path).skill_distillation == SkillDistillationConfig()
+    raw = json.loads((tmp_path / "config.json").read_text())
+    assert "skill_distillation" not in raw
+    assert not (tmp_path / "credentials.json").exists()
+    assert "Saved Switchyard config" in capsys.readouterr().out
+
+
+def test_configure_disable_skill_distillation_rejects_conflicting_flags():
+    from switchyard.cli.switchyard_cli import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "configure",
+            "--disable-skill-distillation",
+            "--skill-distillation",
+            "tooluniverse-trialqa",
+        ])
+
+
+@pytest.mark.parametrize("mode", ["--show", "--reset", "--list-models"])
+@pytest.mark.parametrize(
+    "skill_args",
+    [
+        ["--skill-distillation", "tooluniverse-trialqa"],
+        ["--disable-skill-distillation"],
+    ],
+)
+def test_configure_skill_distillation_rejects_read_or_reset_modes(
+    mode,
+    skill_args,
+):
+    from switchyard.cli.switchyard_cli import _build_parser
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "configure",
+            mode,
+            *skill_args,
+        ])
+
+
+def test_configure_empty_skill_namespace_does_not_keep_existing_value(
+    monkeypatch,
+    tmp_path,
+):
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    existing = SkillDistillationConfig(namespace="existing")
+    save_user_config(UserConfig(skill_distillation=existing), config_dir=tmp_path)
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--skill-distillation",
+        "",
+    ])
+
+    with pytest.raises(UserConfigError, match="letters, numbers"):
+        _cmd_configure(args)
+
+    assert load_user_config(tmp_path).skill_distillation == existing
+
+
+def test_configure_invalid_skill_namespace_reports_user_error(
+    monkeypatch,
+    tmp_path,
+):
+    from switchyard.cli import switchyard_cli
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", [
+        "switchyard",
+        "configure",
+        "--skill-distillation", "bad/name",
+    ])
+
+    with pytest.raises(SystemExit) as excinfo:
+        switchyard_cli.main()
+
+    message = str(excinfo.value)
+    assert "error: invalid user config" in message
+    assert "letters, numbers, dot, underscore, and hyphen" in message
 
 
 def test_redacted_snapshot_surfaces_only_route_ids(tmp_path):

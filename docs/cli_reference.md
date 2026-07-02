@@ -404,6 +404,7 @@ switchyard launch openclaw --model openai/gpt-4o-mini -- --message "Hello"
 ## `switchyard configure`
 
 Persist user-level Switchyard defaults under `~/.config/switchyard/`. Credentials are stored separately from non-secret config, with owner-only file permissions.
+Skill distillation config also lives in `~/.config/switchyard/config.json` under `skill_distillation` and can be updated without configuring provider credentials.
 
 **Synopsis**
 
@@ -416,6 +417,7 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
                      [--claude-model ID]   [--claude-base-url URL]   [--claude-api-key VALUE]
                      [--codex-model ID]    [--codex-base-url URL]    [--codex-api-key VALUE]
                      [--openclaw-model ID] [--openclaw-base-url URL] [--openclaw-api-key VALUE]
+                     [--skill-distillation NAMESPACE] [--disable-skill-distillation]
                      [--no-model-discovery] [--no-tui]
 ```
 
@@ -436,11 +438,26 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 | `--provider`, `--base-url`, `--api-key` | Provider-level defaults applied to every launcher. Also act as one-off overrides for `--show` (changes the row that's used to resolve "base URL source" and "API key source") and for the `--list-models` discovery call. |
 | `--claude-*` / `--codex-*` / `--openclaw-*` | Per-launcher overrides on top of the provider defaults. |
 | `--routing-profiles PATH` | Global flag; pass before `configure`. Parses the YAML at `PATH` and stores the parsed bundle inline in `~/.config/switchyard/config.json`. Subsequent `serve` and `launch` runs use this when no `--routing-profiles` is on the CLI. Pass an empty string to clear. |
+| `--skill-distillation NAMESPACE` | Save the namespace that will group skill-distillation sessions and generated skills. This stores the namespace only; session saving, distillation, and launch-time skill loading are separate implementation work. |
+| `--disable-skill-distillation` | Remove the saved skill distillation config. Cannot be combined with `--skill-distillation`. |
 | `--query` / `-q SUBSTRING` | With `--list-models`, case-insensitive substring filter. |
 | `--limit N` | With `--list-models`, cap on the number of models printed (default: 50; pass `0` for unlimited). |
 | `--no-model-discovery` | Skip `GET /models` and rely on explicit or existing model values during interactive setup. |
 | `--no-tui` | Use plain text prompts instead of the TUI selector. |
 | `--check` | With `--show`, call `GET /models` against the resolved provider and report pass/fail in the output. |
+
+**Skill distillation config**
+
+```json
+{
+  "skill_distillation": {
+    "namespace": "tooluniverse-trialqa"
+  }
+}
+```
+
+Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
+The top-level key is omitted when skill distillation is not configured. `namespace` is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.
 
 **Examples**
 
@@ -474,6 +491,12 @@ switchyard configure --target claude --claude-model openai/gpt-4o-mini --no-tui
 switchyard configure --target provider --provider openrouter \
   --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.ai/api/v1 \
   --no-tui --no-model-discovery
+
+# Save a skill distillation namespace without provider credentials
+switchyard configure --skill-distillation tooluniverse-trialqa
+
+# Remove the skill distillation namespace without touching provider credentials
+switchyard configure --disable-skill-distillation
 
 # Wipe everything
 switchyard configure --reset

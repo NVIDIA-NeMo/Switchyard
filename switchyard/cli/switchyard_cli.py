@@ -73,6 +73,7 @@ from switchyard.cli.config.user_config import (
     DEFAULT_OPENROUTER_BASE_URL,
     DEFAULT_PROVIDER,
     DEFAULT_SECRETS_SECTION_PRIORITY,
+    UserConfigError,
     resolve_provider_connectivity,
 )
 from switchyard.cli.configure_command import (
@@ -1030,6 +1031,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--openclaw-api-key", type=str, default=None,
         help="OpenClaw model API-key override. Omit to use the default API key.",
     )
+    cfg_mode.add_argument(
+        "--skill-distillation",
+        metavar="NAMESPACE",
+        default=None,
+        help=(
+            "Save the skill distillation namespace, stored as one safe local path "
+            "component (for example: tooluniverse-trialqa)."
+        ),
+    )
+    cfg_mode.add_argument(
+        "--disable-skill-distillation",
+        action="store_true",
+        help="Remove saved skill distillation config.",
+    )
     cfg.add_argument(
         "--no-model-discovery", action="store_true",
         help="Skip GET /models and rely on explicit or existing model values",
@@ -1447,6 +1462,8 @@ def main() -> None:
         # surface the dedicated message as a one-line CLI diagnostic with a
         # non-zero exit instead of letting it propagate as a raw traceback.
         raise SystemExit(f"error: invalid route bundle: {exc}") from exc
+    except UserConfigError as exc:
+        raise SystemExit(f"error: invalid user config: {exc}") from exc
 
 
 if __name__ == "__main__":

@@ -9,12 +9,10 @@ intentionally independent of argparse so tests and future non-CLI entry
 points can reuse the same read/write and resolution behavior.
 """
 
-from __future__ import annotations
-
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -34,6 +32,8 @@ LaunchTarget = Literal["claude", "codex", "openclaw"]
 LaunchRouteType = Literal["single", "random", "deterministic", "plan_execute"]
 PRIMARY_TIER = "primary"
 WEAK_TIER = "weak"
+
+_SKILL_DISTILLATION_KEYS = frozenset({"namespace"})
 
 
 class UserConfigError(RuntimeError):
@@ -100,6 +100,28 @@ class LaunchConfig:
 
 
 @dataclass(frozen=True)
+class SkillDistillationConfig:
+    """User-level skill distillation defaults."""
+
+    namespace: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.namespace is not None:
+            _validate_skill_namespace(self.namespace)
+
+    @property
+    def configured(self) -> bool:
+        """Return whether skill distillation has a namespace to operate on."""
+
+        return self.namespace is not None
+
+    def is_default(self) -> bool:
+        """Return whether this matches an unconfigured skill distillation config."""
+
+        return self == SkillDistillationConfig()
+
+
+@dataclass(frozen=True)
 class UserConfig:
     """Non-secret Switchyard defaults stored under the user config dir.
 
@@ -116,6 +138,9 @@ class UserConfig:
     providers: dict[str, ProviderConfig] | None = None
     launch: dict[LaunchTarget, LaunchConfig] | None = None
     routing_profiles: dict[str, object] | None = None
+    skill_distillation: SkillDistillationConfig = field(
+        default_factory=SkillDistillationConfig,
+    )
 
     def provider(self, name: str | None = None) -> ProviderConfig:
         providers = self.providers or {}
@@ -124,6 +149,16 @@ class UserConfig:
     def launch_target(self, target: LaunchTarget) -> LaunchConfig:
         launch = self.launch or {}
         return launch.get(target, LaunchConfig())
+
+
+@dataclass(frozen=True)
+class LaunchCredentials:
+    """Secret per-launcher tier credentials."""
+
+    api_keys: dict[str, str] | None = None
+
+    def api_key(self, tier: str = PRIMARY_TIER) -> str | None:
+        return (self.api_keys or {}).get(tier)
 
 
 @dataclass(frozen=True)
@@ -139,16 +174,6 @@ class UserCredentials:
     def launch_target(self, target: LaunchTarget) -> LaunchCredentials:
         launch = self.launch or {}
         return launch.get(target, LaunchCredentials())
-
-
-@dataclass(frozen=True)
-class LaunchCredentials:
-    """Secret per-launcher tier credentials."""
-
-    api_keys: dict[str, str] | None = None
-
-    def api_key(self, tier: str = PRIMARY_TIER) -> str | None:
-        return (self.api_keys or {}).get(tier)
 
 
 @dataclass(frozen=True)
@@ -205,6 +230,24 @@ def _mapping_value(data: Mapping[str, object], key: str) -> dict[str, object]:
 def _str_value(data: Mapping[str, object], key: str) -> str | None:
     value = data.get(key)
     return value if isinstance(value, str) and value else None
+
+
+def _validate_skill_namespace(namespace: str) -> None:
+    if namespace != namespace.strip():
+        raise UserConfigError(
+            "skill_distillation.namespace must not have leading or trailing "
+            "whitespace"
+        )
+    if namespace in {".", ".."}:
+        raise UserConfigError(
+            "skill_distillation.namespace must be a safe local path component"
+        )
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if not namespace or any(ch not in allowed for ch in namespace):
+        raise UserConfigError(
+            "skill_distillation.namespace may contain only letters, numbers, "
+            "dot, underscore, and hyphen"
+        )
 
 
 def _float_value(
@@ -309,6 +352,40 @@ def _launch_config_to_json(target_config: LaunchConfig) -> dict[str, object]:
     return body
 
 
+def _parse_skill_distillation_config(raw_config: object) -> SkillDistillationConfig:
+    if raw_config is None:
+        return SkillDistillationConfig()
+    if not isinstance(raw_config, dict):
+        raise UserConfigError("skill_distillation must contain a JSON object")
+    config_data = cast(dict[str, object], raw_config)
+    unsupported_keys = sorted(set(config_data) - _SKILL_DISTILLATION_KEYS)
+    if unsupported_keys:
+        raise UserConfigError(
+            "skill_distillation supports only namespace; unsupported key(s): "
+            f"{', '.join(unsupported_keys)}"
+        )
+    raw_namespace = config_data.get("namespace")
+    if raw_namespace is None or raw_namespace == "":
+        raise UserConfigError(
+            "skill_distillation.namespace is required when skill distillation "
+            "is configured"
+        )
+    if not isinstance(raw_namespace, str):
+        raise UserConfigError(
+            "skill_distillation.namespace must be a non-empty string"
+        )
+    return SkillDistillationConfig(namespace=raw_namespace)
+
+
+def _skill_distillation_to_json(
+    config: SkillDistillationConfig,
+) -> dict[str, object]:
+    body: dict[str, object] = {}
+    if config.namespace:
+        body["namespace"] = config.namespace
+    return body
+
+
 def load_user_config(config_dir: Path | None = None) -> UserConfig:
     """Load non-secret user config, returning defaults when absent."""
 
@@ -344,6 +421,9 @@ def load_user_config(config_dir: Path | None = None) -> UserConfig:
         providers=providers,
         launch=launch,
         routing_profiles=routing_profiles,
+        skill_distillation=_parse_skill_distillation_config(
+            data.get("skill_distillation"),
+        ),
     )
 
 
@@ -398,6 +478,10 @@ def _config_to_json(config: UserConfig) -> dict[str, object]:
     }
     if config.routing_profiles:
         top["routing_profiles"] = config.routing_profiles
+    if not config.skill_distillation.is_default():
+        top["skill_distillation"] = _skill_distillation_to_json(
+            config.skill_distillation,
+        )
     return top
 
 
@@ -515,6 +599,9 @@ def build_redacted_snapshot(config_dir: Path | None = None) -> dict[str, object]
         "default_provider": config.default_provider,
         "providers": providers,
         "launch": launch,
+        "skill_distillation": _skill_distillation_to_json(
+            config.skill_distillation,
+        ),
     }
     if config.routing_profiles:
         # Surface only route ids — the saved bundle can carry env-var
