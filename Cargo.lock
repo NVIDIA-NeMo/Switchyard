@@ -680,6 +680,8 @@ name = "libsy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "rand 0.8.6",
+ "tokio",
 ]
 
 [[package]]
