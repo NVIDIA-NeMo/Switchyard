@@ -21,6 +21,21 @@ on:
         required: true
         type: string
         default: "0.0.1.dev0"
+      trigger_internal_scan:
+        description: "Trigger the internal GitLab security scan pipeline for explicit wheel URLs."
+        required: true
+        type: boolean
+        default: false
+      internal_scan_wheel_urls:
+        description: "Comma-separated wheel URLs for nSpect/wheeltamer. Required when trigger_internal_scan=true."
+        required: false
+        type: string
+        default: ""
+      internal_scan_wheel_version:
+        description: "Wheel version label sent to the scan pipeline. Defaults to dev_version."
+        required: false
+        type: string
+        default: ""
 
 env:
   DEV_PACKAGE_NAME: "nemo-switchyard"
@@ -418,6 +433,83 @@ jobs:
           merge-multiple: true
       - name: List distributions
         run: ls -l dist
+
+  trigger-internal-scan:
+    name: Trigger internal security scan
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.trigger_internal_scan }}
+    needs: [validate-release-ref]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger GitLab scan pipeline
+        id: trigger
+        env:
+          GITLAB_TRIGGER_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          WHEEL_URLS: ${{ inputs.internal_scan_wheel_urls }}
+          INPUT_WHEEL_VERSION: ${{ inputs.internal_scan_wheel_version }}
+          DEV_VERSION: ${{ inputs.dev_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITLAB_TRIGGER_URL}" ]; then
+            echo "::error::GITLAB_PIPELINE_URL secret is required"
+            exit 1
+          fi
+          if [ -z "${GITLAB_TRIGGER_TOKEN}" ]; then
+            echo "::error::GITLAB_TRIGGER_TOKEN secret is required"
+            exit 1
+          fi
+          if [ -z "${WHEEL_URLS}" ]; then
+            echo "::error::internal_scan_wheel_urls is required when trigger_internal_scan=true"
+            exit 1
+          fi
+
+          WHEEL_VERSION="${INPUT_WHEEL_VERSION:-${DEV_VERSION}}"
+          if [ -z "${WHEEL_VERSION}" ]; then
+            echo "::error::internal_scan_wheel_version or dev_version is required"
+            exit 1
+          fi
+
+          TOKEN_FILE="$(mktemp)"
+          trap 'rm -f "${TOKEN_FILE}"' EXIT
+          chmod 600 "${TOKEN_FILE}"
+          printf '%s' "${GITLAB_TRIGGER_TOKEN}" > "${TOKEN_FILE}"
+
+          RESPONSE="$(curl -fsSL \
+            --request POST \
+            --form "token=<${TOKEN_FILE}" \
+            --form "ref=main" \
+            --form "variables[PROJECT]=switchyard" \
+            --form "variables[PIPELINE_TYPE]=security" \
+            --form "variables[RELEASE_TYPE]=ondemand" \
+            --form "variables[ARTIFACTS]=wheel" \
+            --form "variables[ENABLE_WHEEL_SCAN]=true" \
+            --form "variables[NSPECT_REGISTERED]=false" \
+            --form "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
+            --form "variables[COMMIT_SHA]=${GITHUB_SHA}" \
+            --form "variables[GITHUB_RUN_ID]=${GITHUB_RUN_ID}" \
+            --form "variables[NSPECT_WHEEL_URLS]=${WHEEL_URLS}" \
+            "${GITLAB_TRIGGER_URL}")"
+
+          PIPELINE_ID="$(python -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' <<< "${RESPONSE}")"
+          PIPELINE_URL="$(python -c 'import json, sys; print(json.load(sys.stdin).get("web_url", ""))' <<< "${RESPONSE}")"
+          if [ -z "${PIPELINE_ID}" ]; then
+            ERROR="$(python -c 'import json, sys; data=json.load(sys.stdin); print(data.get("message") or data.get("error_description") or data.get("error") or "unparseable response")' <<< "${RESPONSE}" 2>/dev/null || echo "unparseable response")"
+            echo "::error::Failed to trigger GitLab scan pipeline: ${ERROR}"
+            exit 1
+          fi
+
+          echo "pipeline_id=${PIPELINE_ID}" >> "${GITHUB_OUTPUT}"
+          echo "pipeline_url=${PIPELINE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "Triggered GitLab scan pipeline ${PIPELINE_ID}"
+
+          {
+            echo "## Internal GitLab Security Scan"
+            echo "- Pipeline: ${PIPELINE_URL}"
+            echo "- Wheel version: ${WHEEL_VERSION}"
+            echo "- Source commit: ${GITHUB_SHA}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   publish:
     name: Publish distributions
