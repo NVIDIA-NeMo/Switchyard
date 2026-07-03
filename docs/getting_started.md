@@ -50,6 +50,8 @@ switchyard --routing-profiles routes.yaml -- configure
 
 > **Format default and caching.** Omitting `format:` from a tier silently defaults to `OPENAI` (Chat Completions) — not `AUTO`. For Claude/Anthropic/Bedrock tiers this is wrong: set `format: anthropic` explicitly. The native `/v1/messages` path preserves `cache_control`, which is what enables prompt caching. `format: openai` routes Claude through OpenAI-format translation that strips `cache_control`: the request still succeeds, but caching silently never engages and you pay full input price. Always use `format: openai` for NIM/non-Claude models and `format: anthropic` for Claude and Bedrock models. Use `format: auto` only when the upstream is genuinely unknown.
 
+> **Type names differ between the two config formats.** The `routes.yaml` bundle above uses snake_case route types (`random_routing`). The v2 profile config used by `switchyard serve --config profiles.yaml` uses hyphenated profile types instead (`random-routing`, `llm-routing`). Copying a route type from this quickstart into a profile config fails with `unknown profile type` — see [Core Concepts](core_concepts.md) for the v2 format.
+
 Inspect what was saved:
 
 ```bash
