@@ -200,7 +200,9 @@ _LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
     "timeout",
     "timeout_secs",
 })
-_LATENCY_ENDPOINT_KEYS = _LATENCY_ENDPOINT_DEFAULT_KEYS | frozenset({"model", "upstream_model"})
+_LATENCY_ENDPOINT_KEYS = _LATENCY_ENDPOINT_DEFAULT_KEYS | frozenset(
+    {"model", "upstream_model", "request_type"}
+)
 _LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
     "defaults",
     "endpoints",
@@ -1272,7 +1274,7 @@ def _latency_endpoint(
 
     endpoint_data = {
         key: data[key]
-        for key in ("model", "upstream_model", "api_key", "base_url", "timeout")
+        for key in ("model", "upstream_model", "api_key", "base_url", "timeout", "request_type")
         if key in data
     }
     return LatencyServiceEndpoint.model_validate(endpoint_data)

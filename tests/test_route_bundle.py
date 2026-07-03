@@ -1606,6 +1606,33 @@ def test_latency_service_invalid_credential_policy_rejected_via_bundle() -> None
         })
 
 
+def test_latency_endpoint_request_type_reaches_backend_config() -> None:
+    """Endpoint-level request_type in YAML selects the upstream API surface."""
+    table = build_route_bundle_table({
+        "routes": {
+            "r": {
+                "type": "latency_service",
+                "latency_service_url": "http://ls.test:8080",
+                "endpoints": [
+                    {
+                        "model": "codex-mini",
+                        "api_key": "k",
+                        "base_url": "https://ls.test/v1",
+                        "request_type": "openai_responses",
+                    },
+                    {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
+                ],
+            },
+        },
+    })
+
+    backend = _latency_backend(table.lookup_switchyard("r"))
+
+    by_model = {endpoint.model: endpoint for endpoint in backend._config.endpoints}
+    assert by_model["codex-mini"].request_type == "openai_responses"
+    assert by_model["w"].request_type == "openai_chat"
+
+
 def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
     """affinity_warmup_turns is a deterministic-route knob."""
     table = build_route_bundle_table({
