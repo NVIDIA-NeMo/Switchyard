@@ -149,9 +149,12 @@ class AgentApiOptAlgorithm(abc.ABC):
     def optimizer(self) -> AgentApiOptimizer: ...
 ```
 
-`feed` has a no-op default (matching the Rust default trait method); `optimize` is
-abstract. The `D` generic is dropped — Python attaches `decision_info` as a plain
-object.
+`feed` has a no-op default (matching the Rust default trait method). `optimize` is
+made **abstract** in Python — a deliberate tightening of the Rust trait, which
+ships a default `optimize` returning an empty `ModelInference`. Both concrete
+algorithms override it, so requiring the override surfaces an incomplete
+optimizer at construction time rather than silently no-op'ing. The `D` generic is
+dropped — Python attaches `decision_info` as a plain object.
 
 ### Algorithm: `rand.py` — `RandomRouter`
 
@@ -187,7 +190,10 @@ machine.
   `AwaitingRequest`.
 - Phases: `AwaitingRequest → Classify → AwaitingScore → Route → AwaitingResponse
   → Done` (mirrors the Rust `Phase` enum exactly).
-- `CLASSIFIER_PROMPT_PREAMBLE` constant matches the Rust text verbatim.
+- `CLASSIFIER_PROMPT_PREAMBLE` matches the Rust literal's **resolved** value (the
+  Rust source uses a `\`-newline continuation with leading indentation that
+  collapses to single spaces), i.e. the exact string:
+  `"Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1]:\n"`.
 - Behavior mirrors `llm_class.rs`:
   - `feed(RequestInput)` → buffer request, phase `Classify`.
   - `feed(ResponseInput)` in `AwaitingScore` → parse score
