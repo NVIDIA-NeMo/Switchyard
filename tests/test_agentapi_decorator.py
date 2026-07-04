@@ -87,6 +87,57 @@ async def test_custom_adapters_drive_non_litellm_shape():
     assert result == "target/model:hi"
 
 
+async def test_default_adapters_drive_prompt_shaped_fn():
+    # Exercises the non-`messages` fallbacks: get_prompt reads `prompt`,
+    # apply_request writes `prompt`, get_completion passes a str through.
+    calls: list[dict] = []
+
+    @route(RandomRouter([WeightedModel("target/model", 1.0)], rng_seed=1))
+    async def chat(model: str, prompt: str) -> str:
+        calls.append({"model": model, "prompt": prompt})
+        return f"reply to {prompt}"
+
+    result = await chat(model="auto", prompt="hello")
+
+    assert calls == [{"model": "target/model", "prompt": "hello"}]
+    assert result == "reply to hello"
+
+
+async def test_default_apply_request_preserves_system_message():
+    # A system message must survive both rounds; only the last user message's
+    # content is rewritten (classifier preamble, then the restored prompt).
+    calls: list[list[dict]] = []
+
+    @route(
+        LlmClassifier(
+            classifier_model="router/clf",
+            strong_model="big/model",
+            weak_model="small/model",
+            threshold=0.5,
+        )
+    )
+    async def chat(model: str, messages: list[dict]) -> _FakeResponse:
+        calls.append(messages)
+        return _FakeResponse("0.9" if model == "router/clf" else "answer")
+
+    await chat(
+        model="auto",
+        messages=[
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "prove it"},
+        ],
+    )
+
+    assert len(calls) == 2
+    for sent in calls:
+        assert sent[0] == {"role": "system", "content": "be terse"}
+    # Classifier round rewrote the last user message to the preamble prompt.
+    assert "prove it" in calls[0][1]["content"]
+    assert "frontier model" in calls[0][1]["content"]
+    # Routed round restored the original user prompt.
+    assert calls[1][1] == {"role": "user", "content": "prove it"}
+
+
 def test_decorating_sync_function_raises():
     with pytest.raises(TypeError):
 
