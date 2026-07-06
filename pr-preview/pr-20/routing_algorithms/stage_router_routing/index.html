@@ -1401,9 +1401,26 @@ into a confidence score for "this turn needs the capable tier", then routes:</p>
 <li>the <strong>efficient</strong> tier for settled, mechanical turns.</li>
 </ul>
 <p><code>confidence_threshold</code> sets how sure that estimate must be before the router acts
-on the signal alone. Below it, the router consults the optional LLM classifier
-(if configured) or falls back to the picker's default tier. No tool-result
-history yet means no stage to estimate, so those turns take the default tier.</p>
+on the signal alone. Below it, the turn stays on the picker's default tier (or,
+if you added the optional classifier, goes to it first). A turn with no
+tool-result history yet has no stage to estimate, so it takes the default tier.</p>
+<p>The whole decision, for the default <code>capable_first</code> picker:</p>
+<pre class="mermaid"><code>flowchart TD
+    call(["New turn"]) --&gt; score["Score the tool signals&lt;br/&gt;confidence 0 → 1"]
+    score --&gt; gate{"confidence ≥&lt;br/&gt;confidence_threshold?"}
+    gate --&gt;|"no · not sure enough"| cap
+    gate --&gt;|"yes · signals decisive"| pick{"which tier do the&lt;br/&gt;signals favor?"}
+    pick --&gt;|capable| cap["Capable model&lt;br/&gt;&lt;small&gt;default tier&lt;/small&gt;"]
+    pick --&gt;|efficient| eff["Efficient model&lt;br/&gt;&lt;small&gt;cheaper tier&lt;/small&gt;"]
+
+    classDef capable fill:#eef1ff,stroke:#5b6cff,stroke-width:2px,color:#1b2559;
+    classDef efficient fill:#e6faf5,stroke:#12a594,stroke-width:2px,color:#0a3d36;
+    classDef decision fill:#fff6e6,stroke:#f0a202,stroke-width:2px,color:#5c4300;
+    class cap capable
+    class eff efficient
+    class gate,pick decision</code></pre>
+<p>Only a confident "efficient" signal reaches the cheaper tier; everything else
+stays capable. Raising the threshold shrinks that path, lowering it widens it.</p>
 <h2 id="pickers">Pickers<a class="headerlink" href="#pickers" title="Permanent link">&para;</a></h2>
 <p>The picker name says which tier is the <strong>default</strong>: the tier used when the
 signals are ambiguous and no classifier verdict is available.</p>
@@ -1415,10 +1432,25 @@ signals are ambiguous and no classifier verdict is available.</p>
 </ul>
 <p>Both pickers read the same signals; only the default tier differs.</p>
 <h2 id="tuning-confidence_threshold">Tuning <code>confidence_threshold</code><a class="headerlink" href="#tuning-confidence_threshold" title="Permanent link">&para;</a></h2>
-<p>The threshold is the <strong>only</strong> dial most users touch, and it behaves predictably:
-the higher you set it, the more turns go to the LLM classifier instead of being
-decided by the signals alone. With no classifier configured, those turns fall
-straight to the default tier instead.</p>
+<p>The scorer rates each turn from <code>0</code> (signals are neutral) to <code>1</code> (signals point
+hard at one tier). <code>confidence_threshold</code> is the bar that rating has to clear
+before the router will switch off the picker's default tier. Clear it and the
+router routes to the tier the signals indicate; fall short and the turn stays on
+the default.</p>
+<p>With the default <code>capable_first</code> picker, every turn starts on the capable tier
+and only drops to the efficient tier when the signals say "efficient" and clear
+the threshold. So the threshold sets how much evidence it takes to switch to the
+cheaper tier:</p>
+<ul>
+<li>Raise it and only strong, decisive signals drop a turn to efficient, so the
+  router stays on capable longer (more quality, more cost).</li>
+<li>Lower it and weaker signals are enough to drop to efficient, so more turns go
+  cheap (more savings, more risk).</li>
+</ul>
+<p><code>efficient_first</code> is the mirror: turns start on efficient and need a signal that
+clears the threshold to escalate to capable.</p>
+<p>(If you add the optional classifier, sub-threshold turns go to it instead of
+staying on the default tier.)</p>
 <p><strong>Set <code>0.5</code> explicitly.</strong> It's the recommended starting point and is what the
 example below uses. The default when you omit the field depends on which config
 path you take:</p>
