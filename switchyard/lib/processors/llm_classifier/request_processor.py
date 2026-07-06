@@ -378,15 +378,17 @@ class LLMClassifierRequestProcessor:
                 request_summary=request_summary,
             )
         except Exception as exc:
-            classifier_latency_ms = (time.perf_counter() - started_at) * 1000
             failure = exc
+        classifier_latency_ms = (time.perf_counter() - started_at) * 1000
+
+        if failure is not None:
             if trace_payload is not None:
                 trace_payload["error"] = {
-                    "error_type": type(exc).__name__,
+                    "error_type": type(failure).__name__,
                     "duration_ms": classifier_latency_ms,
                 }
         else:
-            classifier_latency_ms = (time.perf_counter() - started_at) * 1000
+            assert completion is not None
             if trace_payload is not None:
                 trace_payload["output"] = {
                     "content": capture_routing_text(completion.content),
@@ -421,9 +423,7 @@ class LLMClassifierRequestProcessor:
             signals = self._signal_schema.make_abstain(
                 self._config.fallback_recommended_tier,
             )
-            _fail_open_exc: Exception | None = failure
         else:
-            _fail_open_exc = None
             assert completion is not None
             if self._stats_accumulator is not None:
                 await self._record_classifier_call(
@@ -450,9 +450,9 @@ class LLMClassifierRequestProcessor:
             except Exception:
                 signals_payload = {"abstain": True}
             signals_payload["policy_tier"] = signals.policy_tier().value
-            if _fail_open_exc is not None:
+            if failure is not None:
                 signals_payload["fail_open"] = True
-                signals_payload["error"] = str(_fail_open_exc)[:200]
+                signals_payload["error"] = str(failure)[:200]
             sys.stderr.write(
                 f"classifier_signals={json.dumps(signals_payload, sort_keys=True)}\n"
             )

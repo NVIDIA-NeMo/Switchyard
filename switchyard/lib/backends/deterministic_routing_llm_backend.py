@@ -19,7 +19,7 @@ from switchyard.lib.processors.llm_classifier.signals import (
     CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
 )
 from switchyard.lib.roles import LLMBackend
-from switchyard.lib.routing_trace import record_routing_event
+from switchyard.lib.routing_trace import record_routing_event, routing_trace_enabled
 from switchyard_rust.core import ChatRequestType
 
 if TYPE_CHECKING:
@@ -121,20 +121,21 @@ class DeterministicRoutingLLMBackend(LLMBackend):
         # without this, the launcher's LiveStatsFooter tier rows stay
         # empty and ``GET /v1/routing/stats`` loses per-tier attribution.
         set_stats_route_label(ctx, tier)
-        trace_payload = ctx.metadata.get(CTX_LLM_CLASSIFIER_TRACE_PAYLOAD)
-        if isinstance(trace_payload, dict):
-            decision = trace_payload.get("decision")
-            if isinstance(decision, dict):
-                decision["tier"] = tier
-                decision["model"] = model
-            record_routing_event(ctx, "llm_classifier.route", trace_payload)
-            del ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD]
-        else:
-            record_routing_event(
-                ctx,
-                "deterministic_routing.selection",
-                {"tier": tier, "model": model},
-            )
+        if routing_trace_enabled():
+            trace_payload = ctx.metadata.get(CTX_LLM_CLASSIFIER_TRACE_PAYLOAD)
+            if isinstance(trace_payload, dict):
+                decision = trace_payload.get("decision")
+                if isinstance(decision, dict):
+                    decision["tier"] = tier
+                    decision["model"] = model
+                record_routing_event(ctx, "llm_classifier.route", trace_payload)
+                del ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD]
+            else:
+                record_routing_event(
+                    ctx,
+                    "deterministic_routing.selection",
+                    {"tier": tier, "model": model},
+                )
         return await self._backends[tier].call(ctx, request)
 
     def _pick_tier(
