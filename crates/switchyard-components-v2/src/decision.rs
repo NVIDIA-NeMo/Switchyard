@@ -11,7 +11,8 @@ use switchyard_core::{
     BackendFormat, ChatRequest, ChatRequestType, ProfileId, RequestId, Result, SwitchyardError,
 };
 
-use crate::{ProfileInput, RequestMetadata};
+use crate::profiles::{StageRouterProcessedRequest, StageRouterProfile};
+use crate::{FeatureFreshness, ProfileInput, RelaySnapshot, RequestMetadata};
 
 /// Schema identifier for routing requests.
 pub const ROUTING_REQUEST_SCHEMA_VERSION: &str = "switchyard.routing_request.v1";
@@ -60,6 +61,11 @@ impl RoutingRequest {
                 "routing_attempt must not exceed a non-zero max_routing_attempts".to_string(),
             ));
         }
+        if self.identity.session_id.trim().is_empty() {
+            return Err(SwitchyardError::InvalidRequest(
+                "identity.session_id must be a non-empty string".to_string(),
+            ));
+        }
         require_non_blank(
             "decision_profile.profile_id",
             self.decision_profile.profile_id.as_str(),
@@ -80,6 +86,44 @@ impl RoutingRequest {
         }
         validate_current_request_materialization(self)?;
         parse_inbound_profile(&self.protocol.inbound_profile).map(|_| ())
+    }
+}
+
+/// Owned request-scoped inputs available to object-safe decision routing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionContext {
+    request: RoutingRequest,
+    relay_snapshot: Option<RelaySnapshot>,
+}
+
+impl DecisionContext {
+    /// Creates a decision context from the wire request and exact Relay snapshot lookup.
+    pub fn new(request: RoutingRequest, relay_snapshot: Option<RelaySnapshot>) -> Self {
+        Self {
+            request,
+            relay_snapshot,
+        }
+    }
+
+    /// Returns the Decision API request.
+    pub fn request(&self) -> &RoutingRequest {
+        &self.request
+    }
+
+    /// Returns the exact request-scoped Relay snapshot, when one was found.
+    pub fn relay_snapshot(&self) -> Option<&RelaySnapshot> {
+        self.relay_snapshot.as_ref()
+    }
+
+    /// Splits the owned request from its optional snapshot.
+    pub fn into_parts(self) -> (RoutingRequest, Option<RelaySnapshot>) {
+        (self.request, self.relay_snapshot)
+    }
+}
+
+impl From<RoutingRequest> for DecisionContext {
+    fn from(request: RoutingRequest) -> Self {
+        Self::new(request, None)
     }
 }
 
@@ -225,7 +269,7 @@ pub struct DecisionProvider {
 /// Selected Switchyard route.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RoutingTarget {
-    /// Tier label such as `strong` or `weak`.
+    /// Tier label such as `capable` or `efficient`.
     pub tier: String,
     /// Target model to send upstream.
     pub target_model: String,
@@ -261,6 +305,19 @@ pub fn route_endpoint_for_format(format: BackendFormat) -> Result<&'static str> 
     }
 }
 
+/// Produces a decision-only StageRouter response from an exact Relay snapshot.
+pub async fn decision_for_stage_router_routing(
+    profile: &StageRouterProfile,
+    context: DecisionContext,
+) -> Result<RoutingDecision> {
+    let (request, relay_snapshot) = context.into_parts();
+    request.validate()?;
+    let input = summary_profile_input(&request)?;
+    let (processed, freshness) = profile
+        .process_decision_snapshot(input, relay_snapshot.as_ref())
+        .await?;
+    stage_router_processed_to_decision(profile, &request, processed, freshness)
+}
 // Builds the request-only state needed by policies that can route from summaries.
 pub(crate) fn summary_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
     let mut body = serde_json::Map::new();
@@ -312,6 +369,7 @@ fn profile_input(request: &RoutingRequest, body: Value) -> Result<ProfileInput> 
     Ok(ProfileInput {
         request: chat_request,
         metadata: RequestMetadata {
+            session_id: Some(request.identity.session_id.trim().to_string()),
             request_id: Some(RequestId::new(request.identity.request_id.clone())?),
             inbound_format: Some(request_type),
             ..RequestMetadata::default()
@@ -445,6 +503,56 @@ fn reference_has_prompt_material(reference: &Value) -> bool {
 
 fn has_non_whitespace(value: &str) -> bool {
     !value.trim().is_empty()
+}
+
+fn stage_router_processed_to_decision(
+    profile: &StageRouterProfile,
+    request: &RoutingRequest,
+    processed: StageRouterProcessedRequest,
+    freshness: Option<FeatureFreshness>,
+) -> Result<RoutingDecision> {
+    let target = profile.target_for_decision(&processed.decision)?;
+    let (reason_code, reason_summary, feature_state) = match freshness {
+        None => (
+            "stage_router_feature_cold_default".to_string(),
+            "selected the configured StageRouter picker default because Relay feature state is cold"
+                .to_string(),
+            "cold",
+        ),
+        Some(FeatureFreshness::Fresh) => (
+            processed.decision.source.as_str().to_string(),
+            format!(
+                "selected by the fresh StageRouter {} path",
+                processed.decision.source.as_str()
+            ),
+            "fresh",
+        ),
+    };
+    Ok(RoutingDecision {
+        schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
+        decision_id: format!(
+            "{}:{}:{}",
+            request.identity.request_id,
+            processed.decision.selected_target,
+            processed.decision.source.as_str()
+        ),
+        router: DecisionProvider {
+            name: "stage_router".to_string(),
+            version: "v1".to_string(),
+        },
+        route: routing_target(target, processed.decision.tier.as_str().to_string())?,
+        confidence: processed.decision.confidence,
+        reason_code: Some(reason_code),
+        reason_summary: Some(reason_summary),
+        metadata: BTreeMap::from([
+            (
+                "source".to_string(),
+                Value::from(processed.decision.source.as_str()),
+            ),
+            ("score".to_string(), Value::from(processed.decision.score)),
+            ("feature_state".to_string(), Value::from(feature_state)),
+        ]),
+    })
 }
 
 pub(crate) fn routing_target(
@@ -617,16 +725,16 @@ mod tests {
     #[tokio::test]
     async fn random_decision_uses_summary_without_dispatching_selected_backend() -> TestResult {
         let profile = RandomRoutingProfileConfig {
-            strong: target("strong-target", "frontier/model", BackendFormat::OpenAi)?,
-            weak: target("weak-target", "cheap/model", BackendFormat::Responses)?,
+            strong: target("capable-target", "frontier/model", BackendFormat::OpenAi)?,
+            weak: target("efficient-target", "cheap/model", BackendFormat::Responses)?,
             strong_probability: 1.0,
             rng_seed: Some(7),
         }
         .build()?;
 
-        let decision = profile.decide(routing_request()?).await?;
+        let decision = profile.decide(routing_request()?.into()).await?;
 
-        assert_eq!(decision.route.backend_id, "strong-target");
+        assert_eq!(decision.route.backend_id, "capable-target");
         assert_eq!(decision.route.target_model, "frontier/model");
         assert_eq!(decision.route.target_protocol_profile, "openai_chat");
         assert_eq!(decision.router.name, "random-routing");
@@ -636,8 +744,8 @@ mod tests {
     #[tokio::test]
     async fn decision_rejects_unknown_inbound_profile_without_fallback() -> TestResult {
         let profile = RandomRoutingProfileConfig {
-            strong: target("strong-target", "frontier/model", BackendFormat::OpenAi)?,
-            weak: target("weak-target", "cheap/model", BackendFormat::OpenAi)?,
+            strong: target("capable-target", "frontier/model", BackendFormat::OpenAi)?,
+            weak: target("efficient-target", "cheap/model", BackendFormat::OpenAi)?,
             strong_probability: 1.0,
             rng_seed: Some(7),
         }
@@ -645,7 +753,7 @@ mod tests {
         let mut request = routing_request()?;
         request.protocol.inbound_profile = "future_protocol".to_string();
 
-        let error = profile.decide(request).await;
+        let error = profile.decide(request.into()).await;
 
         assert!(
             matches!(error, Err(SwitchyardError::InvalidRequest(message)) if message.contains("unsupported inbound_profile"))
@@ -779,7 +887,7 @@ mod tests {
         let request = routing_request()?;
         let profile_id = request.decision_profile.profile_id.clone();
 
-        let error = profile.decide(request).await;
+        let error = profile.decide(request.into()).await;
 
         assert!(
             matches!(error, Err(SwitchyardError::DecisionUnsupported { profile_id: rejected }) if rejected == profile_id)
@@ -801,6 +909,33 @@ mod tests {
         }
         assert!(parse_inbound_profile("openai").is_err());
         assert!(parse_inbound_profile("chat").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn decision_profile_input_carries_body_session_identity() -> TestResult {
+        let request = routing_request()?;
+
+        let input = summary_profile_input(&request)?;
+
+        assert_eq!(input.metadata.session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            input.metadata.request_id.as_ref().map(RequestId::as_str),
+            Some("request-1")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn routing_request_rejects_blank_session_identity() -> TestResult {
+        let mut request = routing_request()?;
+        request.identity.session_id = " \t\n ".to_string();
+
+        let error = request.validate();
+
+        assert!(
+            matches!(error, Err(SwitchyardError::InvalidRequest(message)) if message.contains("identity.session_id"))
+        );
         Ok(())
     }
 

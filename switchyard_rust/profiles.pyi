@@ -47,6 +47,7 @@ class ProfileInput:
     ) -> None: ...
 
 class ProfileRequestMetadata:
+    session_id: str | None
     request_id: str | None
     inbound_format: ChatRequestType | None
     headers: dict[str, list[str]]
@@ -56,6 +57,7 @@ class ProfileRequestMetadata:
         request_id: str | None = None,
         inbound_format: ChatRequestType | str | None = None,
         headers: dict[str, str | list[str]] | None = None,
+        session_id: str | None = None,
     ) -> None: ...
     @classmethod
     def from_headers(

@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use switchyard_components_v2::{
-    PassthroughProfileConfig, Profile, ProfileConfig, ProfileConfigPlan, RoutingDecision,
-    RoutingRequest,
+    DecisionContext, PassthroughProfileConfig, Profile, ProfileConfig, ProfileConfigPlan,
+    RoutingDecision,
 };
 use switchyard_core::{ModelId, ProfileId, Result, SwitchyardError};
 
@@ -111,16 +111,16 @@ impl ProfileRegistry {
     }
 
     /// Produces a decision through the configured profile runtime with the requested ID.
-    pub async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
-        request.validate()?;
-        let profile_id = request.decision_profile.profile_id.clone();
+    pub async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        context.request().validate()?;
+        let profile_id = context.request().decision_profile.profile_id.clone();
         let profile = self
             .decision_profiles
             .iter()
             .find(|entry| entry.id == profile_id)
             .map(|entry| Arc::clone(&entry.profile))
             .ok_or(SwitchyardError::DecisionProfileNotFound { profile_id })?;
-        profile.decide(request).await
+        profile.decide(context).await
     }
 
     /// Returns model entries in deterministic registration order.

@@ -144,15 +144,15 @@ targets:
     format: openai
     base_url: "{base_url}/direct/v1"
     api_key: test-key
-  strong:
-    model: provider/strong
+  capable:
+    model: provider/capable
     format: openai
-    base_url: "{base_url}/strong/v1"
+    base_url: "{base_url}/capable/v1"
     api_key: test-key
-  weak:
-    model: provider/weak
+  efficient:
+    model: provider/efficient
     format: openai
-    base_url: "{base_url}/weak/v1"
+    base_url: "{base_url}/efficient/v1"
     api_key: test-key
   latency:
     model: provider/latency
@@ -171,9 +171,9 @@ profiles:
     target: direct
   random:
     type: random-routing
-    strong: strong
-    weak: weak
-    strong_probability: 1.0
+    capable: capable
+    efficient: efficient
+    capable_probability: 1.0
     rng_seed: 7
   latency:
     type: latency-service
@@ -182,15 +182,15 @@ profiles:
     max_retries: 0
   llm:
     type: llm-routing
-    strong: strong
-    weak: weak
+    capable: capable
+    efficient: efficient
     classifier: classifier
     profile_name: coding_agent
   stage_router:
     type: stage_router
-    capable: strong
-    efficient: weak
-    fallback_target_on_evict: strong
+    capable: capable
+    efficient: efficient
+    fallback_target_on_evict: capable
     picker: capable_first
     confidence_threshold: 0.7
     classifier:
@@ -234,9 +234,9 @@ def test_profile_config_plan_is_inspectable() -> None:
     ]
     assert document.profile_type("direct") == "passthrough"
     assert document.profile_body("random") == {
-        "strong": "strong",
-        "weak": "weak",
-        "strong_probability": 1.0,
+        "capable": "capable",
+        "efficient": "efficient",
+        "capable_probability": 1.0,
         "rng_seed": 7,
     }
     rust_document = document.without_profiles(["random"])
@@ -253,7 +253,7 @@ def test_profile_config_plan_is_inspectable() -> None:
         "random",
         "stage_router",
     ]
-    assert plan.target_ids() == ["classifier", "direct", "latency", "strong", "weak"]
+    assert plan.target_ids() == ["classifier", "direct", "latency", "capable", "efficient"]
     assert plan.profile_type("direct") == "passthrough"
     assert plan.profile_type("random") == "random-routing"
     assert plan.profile_type("latency") == "latency-service"
@@ -327,22 +327,22 @@ async def test_native_profiles_run_against_local_openai_mock(
 
     assert direct_response.body["model"] == "provider/direct"
     assert direct_response.body["mock_path"] == "/direct/v1/chat/completions"
-    assert random_response.body["model"] == "provider/strong"
-    assert random_response.body["mock_path"] == "/strong/v1/chat/completions"
+    assert random_response.body["model"] == "provider/capable"
+    assert random_response.body["mock_path"] == "/capable/v1/chat/completions"
     assert latency_response.body["model"] == "provider/latency"
     assert latency_response.body["mock_path"] == "/latency/v1/chat/completions"
-    assert llm_response.body["model"] == "provider/weak"
-    assert llm_response.body["mock_path"] == "/weak/v1/chat/completions"
-    assert stage_router_response.body["model"] == "provider/weak"
-    assert stage_router_response.body["mock_path"] == "/weak/v1/chat/completions"
+    assert llm_response.body["model"] == "provider/efficient"
+    assert llm_response.body["mock_path"] == "/efficient/v1/chat/completions"
+    assert stage_router_response.body["model"] == "provider/efficient"
+    assert stage_router_response.body["mock_path"] == "/efficient/v1/chat/completions"
     assert [call["body"]["model"] for call in mock_openai_server.calls] == [
         "provider/direct",
-        "provider/strong",
+        "provider/capable",
         "provider/latency",
         "provider/classifier",
-        "provider/weak",
+        "provider/efficient",
         "provider/classifier",
-        "provider/weak",
+        "provider/efficient",
     ]
     llm_classifier_body = mock_openai_server.calls[3]["body"]
     assert llm_classifier_body["tools"][0]["function"]["strict"] is True
@@ -386,6 +386,89 @@ def test_profile_request_metadata_normalizes_headers() -> None:
         "x-request-id": ["req-123"],
         "x-switchyard-trace": ["trace-a", "trace-b"],
     }
+    assert metadata.session_id is None
+
+
+def test_profile_request_metadata_reconciles_explicit_and_header_session_id() -> None:
+    metadata = ProfileRequestMetadata(
+        request_id="req-session",
+        headers={
+            "Proxy_X_Session_Id": [" session-1 ", "session-1"],
+            "X-Nemo-Relay-Session-Id": "session-1",
+        },
+        session_id=" session-1 ",
+    )
+
+    assert metadata.session_id == "session-1"
+    assert metadata.to_dict() == {
+        "request_id": "req-session",
+        "inbound_format": None,
+        "headers": {
+            "proxy_x_session_id": [" session-1 ", "session-1"],
+            "x-nemo-relay-session-id": ["session-1"],
+        },
+        "session_id": "session-1",
+    }
+    assert repr(metadata) == (
+        'ProfileRequestMetadata(request_id=Some("req-session"), session_id=Some("session-1"))'
+    )
+
+
+def test_profile_request_metadata_from_headers_accepts_equal_session_aliases() -> None:
+    metadata = ProfileRequestMetadata.from_headers(
+        {
+            "Proxy_X_Session_Id": [" session-1 ", "session-1"],
+            "X-Nemo-Relay-Session-Id": "session-1",
+        }
+    )
+
+    assert metadata.session_id == "session-1"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"proxy_x_session_id": ["session-1", "session-2"]},
+        {
+            "proxy_x_session_id": "session-1",
+            "x-nemo-relay-session-id": "session-2",
+        },
+    ],
+)
+def test_profile_request_metadata_rejects_conflicting_session_headers(
+    headers: dict[str, str | list[str]],
+) -> None:
+    with pytest.raises(ValueError, match="conflicting session IDs"):
+        ProfileRequestMetadata.from_headers(headers)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"proxy_x_session_id": ""},
+        {"x-nemo-relay-session-id": "   "},
+        {"proxy_x_session_id": ["session-1", ""]},
+        {"x-nemo-relay-session-id": []},
+    ],
+)
+def test_profile_request_metadata_rejects_empty_session_headers(
+    headers: dict[str, str | list[str]],
+) -> None:
+    with pytest.raises(ValueError, match="non-empty session ID"):
+        ProfileRequestMetadata.from_headers(headers)
+
+
+def test_profile_request_metadata_rejects_explicit_header_session_conflict() -> None:
+    with pytest.raises(ValueError, match="conflicting session IDs"):
+        ProfileRequestMetadata(
+            headers={"x-nemo-relay-session-id": "session-from-header"},
+            session_id="session-explicit",
+        )
+
+
+def test_profile_request_metadata_rejects_empty_explicit_session_id() -> None:
+    with pytest.raises(ValueError, match="non-empty session ID"):
+        ProfileRequestMetadata(session_id="   ")
 
 
 def test_profile_input_binding_wraps_request_and_metadata() -> None:
@@ -393,12 +476,14 @@ def test_profile_input_binding_wraps_request_and_metadata() -> None:
         request_id="req-profile-input",
         inbound_format=ChatRequestType.OPENAI_CHAT,
         headers={"X-Switchyard-Trace": "trace-profile-input"},
+        session_id="session-profile-input",
     )
 
     input = ProfileInput(_request("client/profile-input"), metadata=metadata)
 
     assert input.request.model == "client/profile-input"
     assert input.metadata.request_id == "req-profile-input"
+    assert input.metadata.session_id == "session-profile-input"
     assert input.metadata.inbound_format == ChatRequestType.OPENAI_CHAT
     assert input.metadata.headers == {"x-switchyard-trace": ["trace-profile-input"]}
 

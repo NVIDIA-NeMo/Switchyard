@@ -20,8 +20,8 @@ use crate::decision::{materialized_profile_input, routing_target};
 use crate::decision::{DecisionProvider, ROUTING_DECISION_SCHEMA_VERSION};
 use crate::profile_stats_accumulator;
 use crate::{
-    profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
-    RoutingDecision, RoutingMetadata, RoutingRequest,
+    profile_config, DecisionContext, Profile, ProfileConfig, ProfileHooks, ProfileInput,
+    ProfileResponse, RoutingDecision, RoutingMetadata,
 };
 
 const TIER_STRONG: &str = "strong";
@@ -555,16 +555,17 @@ impl Profile for LlmRoutingProfile {
     }
 
     /// Classifies a materialized request without dispatching the selected target.
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
-        decision_for_llm_routing(self, request).await
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        decision_for_llm_routing(self, context).await
     }
 }
 
 /// Produces a decision-only LLM-routing response without selected-backend dispatch.
 pub async fn decision_for_llm_routing(
     profile: &LlmRoutingProfile,
-    request: RoutingRequest,
+    context: DecisionContext,
 ) -> Result<RoutingDecision> {
+    let (request, _relay_snapshot) = context.into_parts();
     request.validate()?;
     let input = materialized_profile_input(&request)?;
     let processed = profile.process(input).await?;
