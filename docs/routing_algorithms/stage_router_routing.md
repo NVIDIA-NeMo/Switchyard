@@ -1,49 +1,18 @@
 # Stage-Router Routing
 
-StageRouter routing picks one of two tiers (`efficient` / `capable`) per request based on
-tool-result history stamped onto the conversation. The capable tier handles
-exploration and error recovery; the efficient tier handles the mechanical
-implementation phase.
+Stage-router routing picks one of two tiers — `capable` or `efficient` — per
+request, based on tool-result history stamped onto the conversation. The
+capable tier handles exploration and error recovery; the efficient tier handles
+the mechanical implementation phase.
 
-The picker composes three layers in order:
+Routing is driven by a signal-derived confidence score, with an optional LLM
+classifier consulted only when that score is ambiguous and falling open to the
+picker's default tier on any classifier error. The YAML exposes one knob —
+`confidence_threshold` — plus an optional classifier sub-block.
 
-1. **Hard overrides**: high-confidence signal-derived shortcuts that bypass
-   the scorer (critical severity, clean tests passed).
-2. **Weighted scorer**: a linear combination of normalised
-   `ToolResultSignal` dimensions; produces a score in `[-1, +1]` (positive ⇒
-   CAPABLE, negative ⇒ EFFICIENT) and a confidence `= |score|`. Returned as the
-   dimensions verdict when `confidence ≥ confidence_threshold`.
-3. **Optional LLM classifier**: consulted only when the scorer is
-   ambiguous (`confidence < confidence_threshold`). Fails open to the
-   picker's default tier on any error.
-
-The YAML exposes one knob (`confidence_threshold`) plus an optional
-classifier sub-block. Scorer weights and hard-override thresholds live in
-code as calibrated defaults. Research engineers override them by passing
-`weights=...` to `score()` directly.
-
----
-
-## How it fits the profile path
-
-```
-StageRouterProfile
-  -> extract ToolResultSignal from the request
-  -> pick efficient or capable
-  -> rewrite request.model to the selected target model
-  -> call the selected native target backend
-```
-
-`StageRouterProfile` uses the Rust `ToolResultSignal` extractor for severity,
-write/edit/read counts, recent-window slices, pure-bash streak, tests-passed,
-and turn depth. The profile keeps the routing decision as typed per-call state,
-records the decision source in
-`/v1/stats.routing_decisions.stage_router`, and buckets model/tier usage through the
-standard stats accumulator.
-
-If the selected backend returns a context-window overflow, the profile retries
-once against `fallback_target_on_evict`. A second overflow returns
-`ContextPoolExhausted`.
+If the selected backend hits a context-window overflow, the router retries once
+against `fallback_target_on_evict`; a second overflow surfaces a
+context-pool-exhausted error (see [Context-Window Handling](../operations/context_window.md)).
 
 ---
 
@@ -57,38 +26,7 @@ is ambiguous and no classifier verdict is available.
 - **`efficient_first`**: EFFICIENT is the default. CAPABLE only when the
   scorer is confidently positive or the classifier says CAPABLE. Cost-first.
 
-Both share the same override path and scorer math; only the default tier
-differs.
-
-### Hard overrides
-
-Applied *before* the scorer, in this order. Any match short-circuits.
-
-| Override | Condition | Verdict |
-|---|---|---|
-| Critical severity | `signal.severity ≥ SEVERITY_CRITICAL` (1.0) | CAPABLE |
-| Clean completion | `signal.tests_passed AND signal.turn_depth ≥ CLEAN_TESTS_MIN_TURN_DEPTH (10) AND signal.write_count ≤ CLEAN_TESTS_MAX_WRITES (1)` | EFFICIENT |
-
-Thresholds are module-level constants in the Rust stage-router profile; retune in
-one place.
-
-### Scorer
-
-Weighted linear sum over `CodingAgentDimensions` (a normalised view of
-`ToolResultSignal`). Weights are calibrated defaults in
-`switchyard/lib/processors/stage_router/scorer.py::DEFAULT_WEIGHTS`; override
-via `weights=...` for research. The raw sum is clipped to `[-1, +1]` and
-confidence is `abs(clipped)`. Magnitudes are sized so a single high-impact
-axis at maximum value (`stuck_exploring = 1.0`, `tests_passed = 1.0`, ...)
-clears the recommended threshold of `0.5` on its own.
-
-### Classifier (optional)
-
-When `confidence < confidence_threshold` and the YAML includes a
-`classifier:` sub-block, the picker calls the configured model with a
-short JSON-output prompt and asks for `{"tier": "capable" | "efficient"}`. On
-timeout, malformed JSON, network failure, or any other classifier error,
-the picker falls back to its default tier (recorded as `fall_open`).
+Both pickers use the same signal scoring; only the default tier differs.
 
 ---
 
@@ -104,8 +42,8 @@ raising it shifts work from the dimensions scorer to the classifier
 
     | Configuration path | Default when omitted |
     |---|---|
-    | Profile config (`switchyard serve --config`) using the Rust `stage_router` profile | **`0.7`** |
-    | Deprecated route bundle (`--routing-profiles`) using the Python stage-router profile | **`0.5`** |
+    | Profile config (`switchyard serve --config`) | **`0.7`** |
+    | Deprecated route bundle (`--routing-profiles`) | **`0.5`** |
 
     Set `confidence_threshold: 0.5` explicitly rather than relying on either
     schema default.
@@ -166,7 +104,7 @@ Three scripts in `benchmark/calibration/stage_router/` form the pipeline:
 
 | Script | Input | Output | What it does |
 |---|---|---|---|
-| `signal_extractor.py` | Harbor task dir (JSONL trajectory) | `ToolResultSignal` per turn | Replays a claude-code session, emitting the same signal the stage-router picker would have seen at each turn (write/edit/read counts, severity, tests passed, etc.) |
+| `signal_extractor.py` | Harbor task dir (JSONL trajectory) | one signal per turn | Replays a claude-code session, emitting the same signal the stage-router picker would have seen at each turn (write/edit/read counts, severity, tests passed, etc.) |
 | `calibrate.py` | Harbor run dirs (one per arm) | `per_task.jsonl`, `per_turn.jsonl` | Reads `result.json` + trajectory JSONL for each task in each arm. Calls `signal_extractor` to build per-turn signals, then writes one record per task (outcome + features) and one record per turn (signal snapshot). Also prints RESCUE/LOSS/SAFE/HARD quadrant counts. |
 | `sweep.py` | `per_task.jsonl`, `per_turn.jsonl` | Console table | Replays the per-turn signals through a set of escalation policies and scores each: pass%, escalation rate. The best-scoring policy that keeps escalation rate reasonable is your calibrated threshold. |
 
@@ -275,9 +213,8 @@ exception types and error envelopes.
 curl http://localhost:4000/v1/stats
 ```
 
-Returns the `StatsAccumulator` snapshot: per-model calls, tokens,
-latency, cost. Bucketed by `ctx.selected_model`; the `tier` field comes
-from `ctx.selected_target`. The same shape lands in
+Returns the stats snapshot: per-model calls, tokens, latency, and cost,
+bucketed by served model with a `tier` field. The same shape lands in
 `routing_stats_final.json` for batch runs.
 
 ### Decision-source metadata (stage-router-specific)
@@ -308,7 +245,7 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
   [Random Routing](random_routing.md) (`type: random-routing` in profile configs).
   The stage-router's signals are wasted on a fixed traffic ratio.
 - **No tool-result history.** StageRouter needs meaningful tool-call traffic to
-  populate `ToolResultSignal`. For pure chat-completion workloads every
+  populate the tool-result signal. For pure chat-completion workloads every
   ambiguous request lands on the picker's default tier.
 
 ---
