@@ -11,28 +11,28 @@
       
       
       
-        <link rel="prev" href="../overview/">
+        <link rel="prev" href="../guides/agent_launchers/">
       
       
-        <link rel="next" href="../llm_classifier_routing/">
+        <link rel="next" href="../core_concepts/">
       
       
         
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>Random Routing - Switchyard</title>
+        <title>Skill Distillation - Switchyard</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,9 +51,9 @@
       
     
     
-      <link rel="stylesheet" href="../../stylesheets/nvidia.css">
+      <link rel="stylesheet" href="../stylesheets/nvidia.css">
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#random-routing" class="md-skip">
+        <a href="#skill-distillation" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +94,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Switchyard" class="md-header__button md-logo" aria-label="Switchyard" data-md-component="logo">
+    <a href=".." title="Switchyard" class="md-header__button md-logo" aria-label="Switchyard" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Random Routing
+              Skill Distillation
             
           </span>
         </div>
@@ -232,7 +232,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Switchyard" class="md-nav__button md-logo" aria-label="Switchyard" data-md-component="logo">
+    <a href=".." title="Switchyard" class="md-nav__button md-logo" aria-label="Switchyard" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -262,7 +262,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -341,7 +341,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting_started/" class="md-nav__link">
+      <a href="../getting_started/" class="md-nav__link">
         
   
   
@@ -369,7 +369,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../known_issues/" class="md-nav__link">
+      <a href="../known_issues/" class="md-nav__link">
         
   
   
@@ -401,8 +401,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -413,11 +415,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -438,7 +440,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -456,7 +458,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guides/agent_launchers/" class="md-nav__link">
+      <a href="../guides/agent_launchers/" class="md-nav__link">
         
   
   
@@ -481,10 +483,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../skill_distillation/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Distillation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -500,6 +529,105 @@
   
 
       </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#configure-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configure It
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#intended-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intended Workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#session-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session Ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decisions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#planned-store-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Planned Store Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -571,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../core_concepts/" class="md-nav__link">
+      <a href="../core_concepts/" class="md-nav__link">
         
   
   
@@ -599,7 +727,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../architecture/" class="md-nav__link">
+      <a href="../architecture/" class="md-nav__link">
         
   
   
@@ -631,8 +759,6 @@
       
   
   
-    
-  
   
   
     
@@ -645,11 +771,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -670,7 +796,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -688,7 +814,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../overview/" class="md-nav__link">
+      <a href="../routing_algorithms/overview/" class="md-nav__link">
         
   
   
@@ -713,37 +839,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Random Routing
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/random_routing/" class="md-nav__link">
         
   
   
@@ -759,61 +858,6 @@
   
 
       </a>
-      
-        
-
-  
-
-<nav class="md-nav md-nav--secondary" aria-label="On this page">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#algorithm" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Algorithm
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Behavior
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#enable-it" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Enable It
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -826,7 +870,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../llm_classifier_routing/" class="md-nav__link">
+      <a href="../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
         
   
   
@@ -854,7 +898,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../sticky_routing/" class="md-nav__link">
+      <a href="../routing_algorithms/sticky_routing/" class="md-nav__link">
         
   
   
@@ -882,7 +926,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cascade_routing/" class="md-nav__link">
+      <a href="../routing_algorithms/cascade_routing/" class="md-nav__link">
         
   
   
@@ -969,7 +1013,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operations/context_window/" class="md-nav__link">
+      <a href="../operations/context_window/" class="md-nav__link">
         
   
   
@@ -1056,7 +1100,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../cli_reference/" class="md-nav__link">
+      <a href="../cli_reference/" class="md-nav__link">
         
   
   
@@ -1113,10 +1157,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#algorithm" class="md-nav__link">
+  <a href="#configure-it" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Algorithm
+        Configure It
       
     </span>
   </a>
@@ -1124,10 +1168,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#behavior" class="md-nav__link">
+  <a href="#intended-workflow" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Behavior
+        Intended Workflow
       
     </span>
   </a>
@@ -1135,10 +1179,54 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#enable-it" class="md-nav__link">
+  <a href="#session-ownership" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Enable It
+        Session Ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decisions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#planned-store-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Planned Store Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust Contracts
       
     </span>
   </a>
@@ -1165,73 +1253,149 @@
   
 
 
-<h1 id="random-routing">Random Routing<a class="headerlink" href="#random-routing" title="Permanent link">&para;</a></h1>
-<p>Random routing sends a fixed percentage of traffic to a <code>strong</code> model and the
-rest to a <code>weak</code> model. It does not inspect the prompt.</p>
-<p>Use it for A/B tests, benchmark baselines, and gradual traffic ramps. If routing
-should depend on task difficulty, use
-<a href="../llm_classifier_routing/">LLM Classifier Routing</a> or
-<a href="../cascade_routing/">Cascade Routing</a>.</p>
-<h2 id="algorithm">Algorithm<a class="headerlink" href="#algorithm" title="Permanent link">&para;</a></h2>
-<p>For each request, Switchyard flips a weighted coin:</p>
+<h1 id="skill-distillation">Skill Distillation<a class="headerlink" href="#skill-distillation" title="Permanent link">&para;</a></h1>
+<p>Skill distillation turns agent sessions into a reusable skill for the same
+kind of work. The model is not retrained. Switchyard saves the session history,
+uses it to update a <code>SKILL.md</code>, and makes the active skill available to later
+agent launches for the same namespace.</p>
+<p>The current release adds the saved configuration and the Rust contracts that
+later implementations will share. It does not yet save session files, run
+distillation, update skills, import external runs, validate results, or mount
+skills into launched agents.</p>
+<h2 id="configure-it">Configure It<a class="headerlink" href="#configure-it" title="Permanent link">&para;</a></h2>
+<p>Choose a short namespace for the task or workflow you want the skill to learn:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--skill-distillation<span class="w"> </span>tooluniverse-trialqa
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show
+</span></code></pre></div>
+<p>One namespace identifies one skill that improves over time. Keep using the same
+namespace when more sessions or trajectories should contribute to that skill;
+choose a different namespace when you want a separate skill. A namespace is not
+a session ID. In the automatic workflow, Switchyard will generate a separate
+internal session ID for each launcher run.</p>
+<p>The namespace is stored in the user config and can be updated without provider
+credentials. To remove it:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--disable-skill-distillation
+</span></code></pre></div>
+<h2 id="intended-workflow">Intended Workflow<a class="headerlink" href="#intended-workflow" title="Permanent link">&para;</a></h2>
+<p>Once launcher support lands, the flow should be automatic:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>configure a namespace
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>run an agent through switchyard launch
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>save the session under that namespace
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>distill when the session ends
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>create or update the namespace&#39;s active SKILL.md
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>load that active skill in the next launch for the same namespace
+</span></code></pre></div>
+<p>If no skill exists yet, the first distilled session creates one. Later sessions
+update the existing skill and keep enough history to inspect or roll back the
+change.</p>
+<p>Skill distillation is namespace-based. The namespace is saved user
+configuration, not a per-request header. A future request may be recorded as
+part of a saved session, but a single HTTP request should not change which skill
+is being learned or used.</p>
+<h2 id="session-ownership">Session Ownership<a class="headerlink" href="#session-ownership" title="Permanent link">&para;</a></h2>
+<p>The user configures only the namespace. In the automatic workflow, Switchyard
+will own session capture and the session lifecycle. Each <code>switchyard launch</code>
+will generate a separate session ID, record completed model turns as they pass
+through the local proxy, and finalize the project-local session record when the
+launched agent exits. The user will not provide a session ID, choose a storage
+path, or run a separate recorder.</p>
+<p>The capture backend is an internal implementation detail. The initial
+implementation will use a Switchyard-managed project-local store; a later
+trajectory source or storage backend can replace or supplement it without
+changing the configuration or launcher workflow.</p>
+<h2 id="config">Config<a class="headerlink" href="#config" title="Permanent link">&para;</a></h2>
+<p>Skill distillation config is stored in <code>~/.config/switchyard/config.json</code> under
+the top-level <code>skill_distillation</code> key:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;skill_distillation&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">&quot;namespace&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tooluniverse-trialqa&quot;</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The config is intentionally small:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>namespace</code></td>
+<td>unset</td>
+<td>Stable name for one skill that improves over time. Many sessions or trajectories can contribute to it; it is not a session ID.</td>
+</tr>
+</tbody>
+</table>
+<p>Namespaces must be safe local path components: letters, numbers, dot,
+underscore, and hyphen only. They cannot be <code>.</code> or <code>..</code>.</p>
+<p>The top-level <code>skill_distillation</code> key is omitted when skill distillation is
+not configured. <code>namespace</code> is the only supported key today. Extra manually
+edited keys are rejected instead of being treated as inactive future options.</p>
+<h2 id="decisions">Decisions<a class="headerlink" href="#decisions" title="Permanent link">&para;</a></h2>
+<p>Generated output should stay portable and easy to review. Switchyard should
+write <code>SKILL.md</code> and human-readable reports, not generated Python or other
+executable files.</p>
+<p>Skill generation should happen after sessions finish, not during normal model
+request handling. Switchyard owns the session-to-skill lifecycle, including
+capture, distillation, validation, history, and launch-time skill loading. It
+should not turn every request into a memory update.</p>
+<p>The automatic workflow still needs guardrails. Every skill update should record
+which sessions supported it, keep the previous active skill available for
+rollback, and produce review output. Later checks should flag answer leakage,
+source IDs, URLs, benchmark shortcuts, and task-specific details before a skill
+is trusted.</p>
+<h2 id="planned-store-layout">Planned Store Layout<a class="headerlink" href="#planned-store-layout" title="Permanent link">&para;</a></h2>
+<p>Future work should use inspectable local files:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>&lt;project&gt;/.switchyard/skill-distillation/&lt;namespace&gt;/
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  sessions/&lt;session-id&gt;/
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    session.json
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    turns.jsonl
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    stats.json
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  distillation-ledger.jsonl
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>  candidates/&lt;version-id&gt;/
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    skill/SKILL.md
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    report.md
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>  active/SKILL.md
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>  history.jsonl
+</span></code></pre></div>
+<p>The ledger should track which saved sessions have already contributed to a
+skill update. That lets distillation use new sessions by default instead of
+depending on a long-lived lookback-count setting.</p>
+<h2 id="rust-contracts">Rust Contracts<a class="headerlink" href="#rust-contracts" title="Permanent link">&para;</a></h2>
+<p>The <code>switchyard-skill-distillation</code> crate defines the source-neutral records
+and extension points shared by future implementations and adapters. It does not
+choose a provider, storage format, agent runtime, or model implementation.</p>
+<p>The public contract includes:</p>
 <ul>
-<li><code>strong_probability: 0.0</code> sends all traffic to <code>weak</code>.</li>
-<li><code>strong_probability: 0.3</code> sends about 30% to <code>strong</code>.</li>
-<li><code>strong_probability: 0.5</code> is an even split.</li>
-<li><code>strong_probability: 1.0</code> sends all traffic to <code>strong</code>.</li>
+<li>safe <code>SkillNamespace</code>, <code>SkillEvidenceId</code>, and <code>SkillVersionId</code> identifiers;</li>
+<li>versioned trajectories with task, execution, source, event, and outcome data;</li>
+<li>versioned skill candidates with required source-evidence provenance and
+  optional validation reports; and</li>
+<li>async <code>TrajectorySource</code>, <code>SkillDistiller</code>, <code>SkillValidator</code>, and <code>SkillStore</code>
+  traits.</li>
 </ul>
-<p>Each request is independent, so short runs may not match the configured
-percentage exactly. <code>rng_seed</code> is optional and only useful when you need a
-repeatable sequence for tests or benchmarks.</p>
-<h2 id="behavior">Behavior<a class="headerlink" href="#behavior" title="Permanent link">&para;</a></h2>
-<p>Random routing is per request. A multi-turn conversation can move between
-models from turn to turn. If you need conversation-level stickiness, use
-<a href="../sticky_routing/">Sticky Routing</a> where it is supported, or select a direct
-tier model instead of the routing model.</p>
-<h2 id="enable-it">Enable It<a class="headerlink" href="#enable-it" title="Permanent link">&para;</a></h2>
-<p>Use <code>serve --config</code> with a profile config:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">targets</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="nt">profiles</span><span class="p">:</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span><span class="nt">ab-test</span><span class="p">:</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random-routing</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
-</span></code></pre></div>
-<p>Run it with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>routes.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span></code></pre></div>
-<p>The profile id (<code>ab-test</code>) is the model id clients select when they want the
-weighted split.</p>
-<p>For routing-profile YAML used by launchers, use <code>type: random_routing</code> under
-<code>routes:</code>:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="nt">ab-test</span><span class="p">:</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random_routing</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">rng_seed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">42</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
-</span></code></pre></div>
+<p>The traits define workflow steps, but they do not run by themselves. No
+production Switchyard code uses them today. A Switchyard runtime must load
+saved trajectories and the active skill, build a distillation request, create
+and check a candidate, then save it and decide whether to make it active. This
+crate does not choose the code that implements each trait or decide when those
+steps run.</p>
+<p><code>SkillEvidenceId</code> is not a second session tracker. A session ID groups requests
+and turns while an agent is running. A <code>SkillEvidenceId</code> identifies the
+completed run after Switchyard saves it for distillation. The initial workflow
+will create one evidence record for each completed launcher session. Switchyard
+keeps this ID stable within the namespace. The Rust contract uses it to reject
+duplicate inputs in one distillation request and to record which evidence a
+skill candidate used. The code that creates an evidence record reuses a safe
+session ID or derives the evidence ID from it in a repeatable way. It can keep
+the original run or session ID in <code>TrajectorySourceInfo.id</code>.</p>
+<p>Provider-specific event data stays inside JSON payload and metadata fields.
+The crate validates record invariants but does not redact source data, run a
+model, write files, or activate a candidate by itself. Adapters and runtime
+implementations own those operations.</p>
 
 
 
@@ -1291,10 +1455,10 @@ weighted split.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
