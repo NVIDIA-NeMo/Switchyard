@@ -40,10 +40,10 @@ The routing decision for one turn:
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
 flowchart LR
     t["turn"] --> g{"confidence >= threshold?"}
-    g -->|yes| s["signals' tier"]
-    g -->|no| c{"classifier?"}
-    c -->|yes| k["classifier's tier"]
-    c -->|no| d["default tier"]
+    g -->|yes| s["signals pick capable/efficient"]
+    g -->|no| c{"classifier set?"}
+    c -->|yes| k["classifier picks capable/efficient"]
+    c -->|no| d["use picker default tier"]
 
     classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
     class t,s,k,d,g,c box;
