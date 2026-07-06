@@ -34,27 +34,24 @@ on the signal alone. Below it, the turn stays on the picker's default tier (or,
 if you added the optional classifier, goes to it first). A turn with no
 tool-result history yet has no stage to estimate, so it takes the default tier.
 
-The whole decision, for the default `capable_first` picker:
+The routing decision for one turn:
 
 ```mermaid
 flowchart TD
-    call(["New turn"]) --> score["Score the tool signals<br/>confidence 0 → 1"]
-    score --> gate{"confidence ≥<br/>confidence_threshold?"}
-    gate -->|"no · not sure enough"| cap
-    gate -->|"yes · signals decisive"| pick{"which tier do the<br/>signals favor?"}
-    pick -->|capable| cap["Capable model<br/><small>default tier</small>"]
-    pick -->|efficient| eff["Efficient model<br/><small>cheaper tier</small>"]
+    turn["turn"] --> score["score(signals) -> confidence"]
+    score --> gate{"confidence >= threshold?"}
+    gate -->|yes| a["route: tier the signals favor"]
+    gate -->|no| clf{"classifier set?"}
+    clf -->|yes| b["route: tier the classifier picks"]
+    clf -->|no| c["route: default tier"]
 
-    classDef capable fill:#eef1ff,stroke:#5b6cff,stroke-width:2px,color:#1b2559;
-    classDef efficient fill:#e6faf5,stroke:#12a594,stroke-width:2px,color:#0a3d36;
-    classDef decision fill:#fff6e6,stroke:#f0a202,stroke-width:2px,color:#5c4300;
-    class cap capable
-    class eff efficient
-    class gate,pick decision
+    classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
+    class turn,score,a,b,c,gate,clf box;
 ```
 
-Only a confident "efficient" signal reaches the cheaper tier; everything else
-stays capable. Raising the threshold shrinks that path, lowering it widens it.
+With `capable_first`, the default is capable, so a turn only reaches the cheaper
+efficient model on a confident efficient signal (or an efficient verdict from
+the classifier). Raising the threshold shrinks that path; lowering it widens it.
 
 ## Pickers
 
