@@ -36,19 +36,19 @@ from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEnd
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
 from switchyard.lib.profiles import (
-    CascadeProfileConfig,
     DeterministicRoutingProfileConfig,
     LatencyServiceProfileConfig,
     PlanExecuteProfileConfig,
     ProfileSwitchyard,
     RouteLLMProfileConfig,
+    StageRouterProfileConfig,
 )
-from switchyard.lib.profiles.cascade_config import CascadeConfig
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.profiles.routellm import RouteLLMConfig
+from switchyard.lib.profiles.stage_router_config import StageRouterConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
 from switchyard.lib.route_table_builders import (
     build_passthrough_table,
@@ -231,7 +231,7 @@ _DETERMINISTIC_ROUTE_KEYS = (
         "affinity_warmup_turns",
     })
 )
-_CASCADE_ROUTE_KEYS = (
+_STAGE_ROUTER_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
     | _TARGET_DEFAULT_ROUTE_KEYS
     | frozenset({
@@ -270,7 +270,7 @@ _DETERMINISTIC_CLASSIFIER_KEYS = frozenset({
     "prompt",
     "max_request_chars",
 })
-_CASCADE_CLASSIFIER_KEYS = frozenset({
+_STAGE_ROUTER_CLASSIFIER_KEYS = frozenset({
     "model",
     "api_key",
     "base_url",
@@ -292,7 +292,7 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "noop": _NOOP_ROUTE_KEYS,
     "passthrough": _PASSTHROUGH_ROUTE_KEYS,
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
-    "cascade": _CASCADE_ROUTE_KEYS,
+    "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
     "plan_execute": _PLAN_EXECUTE_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
@@ -303,7 +303,7 @@ _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "passthrough": _PASSTHROUGH_SETTING_KEYS,
     "noop": frozenset(),
     "deterministic": _TARGET_DEFAULT_KEYS,
-    "cascade": _TARGET_DEFAULT_KEYS,
+    "stage_router": _TARGET_DEFAULT_KEYS,
     "plan_execute": _TARGET_DEFAULT_KEYS,
 }
 
@@ -372,7 +372,7 @@ def routing_profile_model_ids(
     """User-callable model ids from a parsed routing-profiles bundle.
 
     Returns each route's YAML key followed by its tier ``model`` fields
-    (``strong`` / ``weak`` for cascade/deterministic/routellm/random_routing,
+    (``strong`` / ``weak`` for stage_router/deterministic/routellm/random_routing,
     ``planner`` / ``executor`` for plan_execute, ``target`` for
     ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
@@ -538,11 +538,11 @@ def build_table_from_bundle(
             )
             continue
 
-        # `cascade` and `deterministic` routes register the routing-policy chain
+        # `stage_router` and `deterministic` routes register the routing-policy chain
         # at the route key AND hydrate each tier's catalog (`strong` + `weak`)
         # into the table as direct passthroughs — same client-facing
         # model-picker experience as random_routing's discovery path.
-        if route_type in ("cascade", "deterministic"):
+        if route_type in ("stage_router", "deterministic"):
             _merge_multi_target_discovery(
                 table,
                 model_id,
@@ -703,13 +703,13 @@ def _merge_multi_target_discovery(
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> None:
-    """Expand a ``cascade``/``deterministic`` route with catalog discovery.
+    """Expand a ``stage_router``/``deterministic`` route with catalog discovery.
 
     Registers two layers, route key first so ``registered_models()[0]`` is the
     user-declared YAML key:
 
     1. The route's primary routing-policy chain at the route key (the regular
-       cascade/deterministic switchyard).
+       stage_router/deterministic switchyard).
     2. Each tier (``strong`` + ``weak``) registered as a direct passthrough with
        its catalog hydrated via :func:`_default_discovery_fn` — same shape the
        launcher's per-tier registration produces, so client model pickers see
@@ -829,8 +829,8 @@ def _build_switchyard_for_route(
             extra_response_processors=extra_response_processors,
         )
 
-    if route_type == "cascade":
-        return _cascade_switchyard(
+    if route_type == "stage_router":
+        return _stage_router_switchyard(
             model_id,
             route,
             target_defaults=target_defaults,
@@ -1001,7 +1001,7 @@ def _deterministic_switchyard(
     )
 
 
-def _cascade_switchyard(
+def _stage_router_switchyard(
     model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
@@ -1009,13 +1009,13 @@ def _cascade_switchyard(
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
-    """Build a cascade-routing Switchyard from a YAML ``type: cascade`` route.
+    """Build a stage-router-routing Switchyard from a YAML ``type: stage_router`` route.
 
-    Schema (mapped onto :class:`CascadeConfig`)::
+    Schema (mapped onto :class:`StageRouterConfig`)::
 
         route:
-          type: cascade
-          picker: cascade_strong_default       # or cascade_weak_default
+          type: stage_router
+          picker: stage_router_strong_default       # or stage_router_weak_default
           confidence_threshold: 0.7            # default; range [0.0, 1.0]
           signal_recent_window: 3              # Rust sliding-window size
           strong: <target spec>                # e.g. { id: strong, model: ..., api_key: ..., format: anthropic }
@@ -1034,7 +1034,7 @@ def _cascade_switchyard(
     """
     if route.get("strong") is None or route.get("weak") is None:
         raise RouteBundleConfigError(
-            f"route {model_id!r}: cascade route requires both 'strong' and "
+            f"route {model_id!r}: stage_router route requires both 'strong' and "
             f"'weak' target specs",
         )
     if route.get("classifier") is not None:
@@ -1042,18 +1042,18 @@ def _cascade_switchyard(
         route["classifier"] = _classifier_mapping(
             route["classifier"],
             target_defaults,
-            allowed_keys=_CASCADE_CLASSIFIER_KEYS,
+            allowed_keys=_STAGE_ROUTER_CLASSIFIER_KEYS,
             where=f"{model_id}.classifier",
         )
-    cascade_config = CascadeConfig.model_validate(
+    stage_router_config = StageRouterConfig.model_validate(
         _route_config(route, target_defaults, ("strong", "weak"))
     )
     return ProfileSwitchyard(
-        CascadeProfileConfig.from_config(cascade_config)
+        StageRouterProfileConfig.from_config(stage_router_config)
         .build()
         .with_runtime_components(
             stats_accumulator=stats,
-            enable_stats=cascade_config.enable_stats,
+            enable_stats=stage_router_config.enable_stats,
             pre_request_processors=pre_routing_request_processors,
             response_processors=extra_response_processors,
         )
@@ -1071,7 +1071,7 @@ def _plan_execute_switchyard(
 ) -> ChainRuntime:
     """Build a strong-planner / weak-executor chain from a ``type: plan_execute`` route.
 
-    Mirrors :func:`_cascade_switchyard`: tiers and scalar fields go through the
+    Mirrors :func:`_stage_router_switchyard`: tiers and scalar fields go through the
     shared ``_route_config`` → :meth:`PlanExecuteConfig.model_validate` path. An
     omitted ``planner`` / ``executor`` defaults to the shipping preset model so a
     minimal route reproduces the retired ``--plan-execute`` flag; every other
@@ -1334,8 +1334,8 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "deterministic": "deterministic",
         "llm_classifier": "deterministic",
         "llm_classifier_routing": "deterministic",
-        "cascade": "cascade",
-        "cascade_routing": "cascade",
+        "stage_router": "stage_router",
+        "stage_router_routing": "stage_router",
         "plan": "plan_execute",
         "plan_execute": "plan_execute",
     }

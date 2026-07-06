@@ -65,7 +65,7 @@ pub fn selected_stats_tier(ctx: &ProxyContext) -> Option<String> {
     if let Some(decision) = ctx.get::<RandomRoutingDecision>() {
         return Some(decision.tier.as_str().to_string());
     }
-    // Fallback: Python-based pickers (e.g. cascade) stamp selected_target but
+    // Fallback: Python-based pickers (e.g. stage_router) stamp selected_target but
     // don't write a typed marker — use it as the tier label so /v1/routing/stats
     // populates the `tiers` field for those routes too.
     ctx.selected_target().map(|t| t.as_str().to_string())

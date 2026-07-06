@@ -248,7 +248,7 @@ and their transitives never appear in downstream vulnerability scans.
 export OPENAI_API_KEY="sk-..."       # or NVIDIA_API_KEY / ANTHROPIC_API_KEY where supported
 export OPENROUTER_API_KEY="sk-or-..." # pass with --api-key or save via configure
 
-# Serve a profile config (passthrough, random-routing, llm-routing, cascade).
+# Serve a profile config (passthrough, random-routing, llm-routing, stage_router).
 # Endpoints, targets, and profiles live in the YAML; see docs/routing_algorithms/overview.md.
 switchyard serve --config profiles.yaml --port 4000
 switchyard serve --config profiles.yaml --inbound anthropic --port 4000

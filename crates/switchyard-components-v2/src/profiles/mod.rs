@@ -3,7 +3,7 @@
 
 //! Profile implementations in the flatter components-v2 design.
 
-mod cascade;
+mod stage_router;
 mod latency_service;
 mod llm_routing;
 mod macros;
@@ -12,9 +12,9 @@ mod passthrough;
 mod profile_types;
 mod random_routing;
 
-pub use cascade::{
-    CascadeClassifierConfig, CascadeDecision, CascadeDecisionSource, CascadePickerMode,
-    CascadeProcessedRequest, CascadeProfile, CascadeProfileConfig, CascadeTier,
+pub use stage_router::{
+    StageRouterClassifierConfig, StageRouterDecision, StageRouterDecisionSource, StageRouterPickerMode,
+    StageRouterProcessedRequest, StageRouterProfile, StageRouterProfileConfig, StageRouterTier,
 };
 pub use latency_service::{
     EndpointHealth, EndpointHealthStatus, LatencyServiceProcessedRequest, LatencyServiceProfile,

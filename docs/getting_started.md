@@ -129,7 +129,7 @@ another route type when the routing decision needs different inputs:
 |---|---|---|
 | [Random Routing](routing_algorithms/random_routing.md) | You need a fixed strong/weak split for A/B tests or baselines. | `random_routing` |
 | [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use `weak` or `strong`. | `deterministic` |
-| [Cascade Routing](routing_algorithms/cascade_routing.md) | Tool-result and progress signals should route most turns without an extra classifier call. | `cascade` |
+| [Stage-Router Routing](routing_algorithms/stage_router_routing.md) | Tool-result and progress signals should route most turns without an extra classifier call. | `stage_router` |
 
 LLM classifier routes can also enable
 [Session Affinity (Sticky Routing)](routing_algorithms/sticky_routing.md) to pin
@@ -232,5 +232,5 @@ uv run mypy switchyard
 - [Routing Overview](routing_algorithms/overview.md): choose the right routing strategy
 - [Random Routing](routing_algorithms/random_routing.md): fixed strong/weak split routing
 - [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md): classifier-driven strong/weak routing
-- [Cascade Routing](routing_algorithms/cascade_routing.md): picker layers, signal dimensions, calibration
+- [Stage-Router Routing](routing_algorithms/stage_router_routing.md): picker layers, signal dimensions, calibration
 - [Sticky Routing](routing_algorithms/sticky_routing.md): conversation-level route affinity

@@ -316,7 +316,7 @@ impl PyResponseSignals {
         Ok(PyList::new(py, items)?.unbind())
     }
 
-    /// True when at least one check failed; cascade routers use this as
+    /// True when at least one check failed; stage_router routers use this as
     /// the per-attempt acceptability gate.
     fn has_failures(&self) -> bool {
         self.inner.has_failures()
@@ -403,7 +403,7 @@ fn get_response_signals(ctx: PyRef<'_, PyProxyContext>) -> PyResult<Option<PyRes
 
 /// Runs the response-side checks against an inline response body dict.
 ///
-/// Intended for the cascade router, which needs to evaluate
+/// Intended for the stage-router, which needs to evaluate
 /// `ResponseSignals` between attempts without going through a full
 /// response-side pass. Accepts the response's `.body` Python
 /// dict directly; works for any wire shape because the checks are

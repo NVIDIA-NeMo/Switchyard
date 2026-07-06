@@ -120,5 +120,5 @@ profile loaded by `switchyard serve --config` does not yet expose them. See
 the interaction with routing decisions.
 
 If the per-request classifier cost is too high, use
-[Cascade Routing](cascade_routing.md), which can route many turns from tool and
+[Stage-Router Routing](stage_router_routing.md), which can route many turns from tool and
 agent-progress signals without an extra classifier call.

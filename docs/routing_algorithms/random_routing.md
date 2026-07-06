@@ -6,7 +6,7 @@ rest to a `weak` model. It does not inspect the prompt.
 Use it for A/B tests, benchmark baselines, and gradual traffic ramps. If routing
 should depend on task difficulty, use
 [LLM Classifier Routing](llm_classifier_routing.md) or
-[Cascade Routing](cascade_routing.md).
+[Stage-Router Routing](stage_router_routing.md).
 
 ## Algorithm
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Public API tests for the components-v2 cascade profile config.
+//! Public API tests for the components-v2 stage_router profile config.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use switchyard_components_v2::{
-    profile_stats_accumulator, CascadeClassifierConfig, CascadeDecisionSource, CascadePickerMode,
-    CascadeProfileConfig, CascadeTier, Profile, ProfileConfig, ProfileHooks, ProfileInput,
+    profile_stats_accumulator, StageRouterClassifierConfig, StageRouterDecisionSource, StageRouterPickerMode,
+    StageRouterProfileConfig, StageRouterTier, Profile, ProfileConfig, ProfileHooks, ProfileInput,
     RequestMetadata,
 };
 use switchyard_core::{
@@ -181,7 +181,7 @@ fn response_for(
         return MockResponse::Json(
             200,
             json!({
-                "id": "chatcmpl-cascade-classifier",
+                "id": "chatcmpl-stage_router-classifier",
                 "object": "chat.completion",
                 "model": request.body["model"],
                 "choices": [{
@@ -206,7 +206,7 @@ fn response_for(
     MockResponse::Json(
         200,
         json!({
-            "id": "chatcmpl-cascade-backend",
+            "id": "chatcmpl-stage_router-backend",
             "object": "chat.completion",
             "model": request.body["model"],
             "choices": [{"message": {"role": "assistant", "content": "ok"}}],
@@ -252,15 +252,15 @@ fn target(id: &str, model: &str, base_url: &str) -> Result<LlmTarget> {
     Ok(target)
 }
 
-fn config(base_url: &str) -> Result<CascadeProfileConfig> {
-    Ok(CascadeProfileConfig {
+fn config(base_url: &str) -> Result<StageRouterProfileConfig> {
+    Ok(StageRouterProfileConfig {
         strong: target("strong", "frontier/model", &format!("{base_url}/strong/v1"))?,
         weak: target("weak", "cheap/model", &format!("{base_url}/weak/v1"))?,
         fallback_target_on_evict: LlmTargetId::new("strong")?,
-        picker: CascadePickerMode::CascadeStrongDefault,
+        picker: StageRouterPickerMode::StageRouterStrongDefault,
         confidence_threshold: 0.7,
         signal_recent_window: 3,
-        classifier: Some(CascadeClassifierConfig {
+        classifier: Some(StageRouterClassifierConfig {
             model: "classifier/model".to_string(),
             api_key: "test-key".to_string(),
             base_url: Some(format!("{base_url}/classifier/v1")),
@@ -282,14 +282,14 @@ fn profile_input(request: ChatRequest) -> ProfileInput {
 
 fn request() -> ProfileInput {
     profile_input(ChatRequest::openai_chat(json!({
-        "model": "client/cascade",
+        "model": "client/stage_router",
         "messages": [{"role": "user", "content": "hello"}],
     })))
 }
 
 fn request_with_tool_result(tool_name: &str, content: &str) -> ProfileInput {
     profile_input(ChatRequest::openai_chat(json!({
-        "model": "client/cascade",
+        "model": "client/stage_router",
         "messages": [
             {"role": "user", "content": "work on this"},
             {"role": "assistant", "tool_calls": [{"function": {"name": tool_name}}]},
@@ -322,8 +322,8 @@ async fn critical_severity_overrides_to_strong_without_classifier() -> Result<()
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
-    assert_eq!(processed.decision.tier, CascadeTier::Strong);
-    assert_eq!(processed.decision.source, CascadeDecisionSource::Override);
+    assert_eq!(processed.decision.tier, StageRouterTier::Strong);
+    assert_eq!(processed.decision.source, StageRouterDecisionSource::Override);
     assert!(server.requests()?.is_empty());
     Ok(())
 }
@@ -341,8 +341,8 @@ async fn negative_score_routes_to_weak_without_classifier() -> Result<()> {
         .await?;
 
     assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
-    assert_eq!(processed.decision.tier, CascadeTier::Weak);
-    assert_eq!(processed.decision.source, CascadeDecisionSource::Dimensions);
+    assert_eq!(processed.decision.tier, StageRouterTier::Weak);
+    assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
     Ok(())
 }
 
@@ -356,10 +356,10 @@ async fn low_confidence_uses_classifier_when_configured() -> Result<()> {
     let processed = profile.process(request()).await?;
 
     assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
-    assert_eq!(processed.decision.tier, CascadeTier::Weak);
+    assert_eq!(processed.decision.tier, StageRouterTier::Weak);
     assert_eq!(
         processed.decision.source,
-        CascadeDecisionSource::LlmClassifier
+        StageRouterDecisionSource::LlmClassifier
     );
     let requests = server.requests()?;
     assert_eq!(requests.len(), 1);
@@ -368,7 +368,7 @@ async fn low_confidence_uses_classifier_when_configured() -> Result<()> {
     assert!(classifier_body["messages"][0]["content"]
         .as_str()
         .is_some_and(
-            |content| content.contains("routing classifier inside an agentic coding cascade")
+            |content| content.contains("routing classifier inside an agentic coding stage_router")
         ));
     assert_eq!(classifier_body["response_format"]["type"], "json_object");
     Ok(())
@@ -385,7 +385,7 @@ async fn yaml_overrides_classifier_prompt_and_max_tokens() -> Result<()> {
         .as_mut()
         .ok_or_else(|| SwitchyardError::Other("classifier config missing".to_string()))?;
     classifier.max_tokens = 64;
-    classifier.system_prompt = Some("Pick a cascade tier.".to_string());
+    classifier.system_prompt = Some("Pick a stage_router tier.".to_string());
     let profile = config.build()?;
 
     let processed = profile.process(request()).await?;
@@ -396,7 +396,7 @@ async fn yaml_overrides_classifier_prompt_and_max_tokens() -> Result<()> {
     assert_eq!(classifier_body["max_tokens"], 64);
     assert_eq!(
         classifier_body["messages"][0]["content"],
-        "Pick a cascade tier."
+        "Pick a stage_router tier."
     );
     Ok(())
 }
@@ -442,7 +442,7 @@ async fn malformed_classifier_falls_open_to_default() -> Result<()> {
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
-    assert_eq!(processed.decision.source, CascadeDecisionSource::FallOpen);
+    assert_eq!(processed.decision.source, StageRouterDecisionSource::FallOpen);
     let stats = profile_stats_accumulator().snapshot()?;
     assert_eq!(stats.classifier.total_errors, 1);
     Ok(())
@@ -461,7 +461,7 @@ async fn non_json_classifier_falls_open_and_records_error() -> Result<()> {
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
-    assert_eq!(processed.decision.source, CascadeDecisionSource::FallOpen);
+    assert_eq!(processed.decision.source, StageRouterDecisionSource::FallOpen);
     let stats = profile_stats_accumulator().snapshot()?;
     assert_eq!(stats.classifier.total_errors, 1);
     Ok(())

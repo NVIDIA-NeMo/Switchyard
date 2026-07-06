@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from switchyard.lib.processors.cascade.classifier import (
+from switchyard.lib.processors.stage_router.classifier import (
     RECENT_MESSAGES_KEY,
     STRONG_TIER,
     WEAK_TIER,

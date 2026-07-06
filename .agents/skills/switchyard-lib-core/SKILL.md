@@ -61,7 +61,7 @@ Profile-owned construction keeps the full behavior in one reviewable module:
    existing Python endpoint contract.
 
 Random routing, deterministic routing, plan-execute, passthrough, no-op,
-cascade, latency-service, RouteLLM, and OSS-router profiles are the reference
+stage-router, latency-service, RouteLLM, and OSS-router profiles are the reference
 set under `switchyard/lib/profiles/`.
 
 ## Anti-Patterns

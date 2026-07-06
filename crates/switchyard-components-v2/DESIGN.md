@@ -21,7 +21,7 @@ Profile
 ```
 
 A profile owns the behavior for one addressable Switchyard mode. That can be passthrough,
-random routing, latency-aware routing, a classifier cascade, observability-only middleware, or a
+random routing, latency-aware routing, a classifier stage-router, observability-only middleware, or a
 future agent-facing policy. The profile decides how a request is prepared, which backend is called,
 what response cleanup is needed, and where observability is recorded.
 
@@ -400,12 +400,12 @@ profiles:
     type: passthrough
     target: weak
 
-  smart-cascade:
-    type: cascade
+  smart-stage-router:
+    type: stage_router
     strong: strong
     weak: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: stage_router_strong_default
     confidence_threshold: 0.7
 ```
 

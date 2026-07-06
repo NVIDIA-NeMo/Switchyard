@@ -277,7 +277,7 @@ impl StatsAccumulator {
 
     /// Records one routing decision source for a profile family.
     ///
-    /// This is intentionally separate from model/tier accounting: a cascade can
+    /// This is intentionally separate from model/tier accounting: a stage-router can
     /// choose `weak` because of an override, a dimensions score, an LLM-classifier
     /// verdict, or a fail-open default, and those explanations are useful even
     /// when they all land on the same backend model.

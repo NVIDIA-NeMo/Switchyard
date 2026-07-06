@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Thread-safe per-source decision counter for the cascade picker."""
+"""Thread-safe per-source decision counter for the stage_router picker."""
 
 from dataclasses import dataclass, field
 from threading import Lock
@@ -16,12 +16,12 @@ DecisionSource = Literal[
 ]
 
 #: ``ctx.metadata`` key the picker writes its decision source to.
-CONTEXT_KEY: str = "cascade_decision_source"
+CONTEXT_KEY: str = "stage_router_decision_source"
 
 
 @dataclass
-class CascadeDecisionLog:
-    """Thread-safe counter for cascade decision sources."""
+class StageRouterDecisionLog:
+    """Thread-safe counter for stage_router decision sources."""
 
     counts: dict[str, int] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
@@ -40,4 +40,4 @@ class CascadeDecisionLog:
             return sum(self.counts.values())
 
 
-__all__ = ["CONTEXT_KEY", "CascadeDecisionLog", "DecisionSource"]
+__all__ = ["CONTEXT_KEY", "StageRouterDecisionLog", "DecisionSource"]

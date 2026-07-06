@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for cascade profile classifier construction."""
+"""Unit tests for stage_router profile classifier construction."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from typing import Any
 
 import pytest
 
-from switchyard.lib.processors.cascade_request_processor import CascadeRequestProcessor
-from switchyard.lib.profiles.cascade import CascadeProfileConfig, _build_classifier
-from switchyard.lib.profiles.cascade_config import CascadeConfig, ClassifierConfig
+from switchyard.lib.processors.stage_router_request_processor import StageRouterRequestProcessor
+from switchyard.lib.profiles.stage_router import StageRouterProfileConfig, _build_classifier
+from switchyard.lib.profiles.stage_router_config import ClassifierConfig, StageRouterConfig
 from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 from switchyard_rust.profiles import ProfileInput
@@ -67,17 +67,17 @@ def test_deepseek_classifier_keeps_reasoning_disabled() -> None:
 @pytest.mark.parametrize(
     ("picker", "expected_target"),
     [
-        ("cascade_strong_default", "weak"),
-        ("cascade_weak_default", "weak"),
+        ("stage_router_strong_default", "weak"),
+        ("stage_router_weak_default", "weak"),
     ],
 )
 async def test_runtime_stats_reach_profile_classifier(
     picker: str,
     expected_target: str,
 ) -> None:
-    """Python cascade classifier overhead is visible in shared routing stats."""
+    """Python stage_router classifier overhead is visible in shared routing stats."""
     stats = StatsAccumulator()
-    config = CascadeConfig.model_validate({
+    config = StageRouterConfig.model_validate({
         "picker": picker,
         "confidence_threshold": 1.0,
         "fallback_target_on_evict": "strong",
@@ -100,14 +100,14 @@ async def test_runtime_stats_reach_profile_classifier(
         },
     })
     profile = (
-        CascadeProfileConfig.from_config(config)
+        StageRouterProfileConfig.from_config(config)
         .build()
         .with_runtime_components(stats_accumulator=stats, enable_stats=True)
     )
     processor = next(
         component
         for component in profile.iter_components()
-        if isinstance(component, CascadeRequestProcessor)
+        if isinstance(component, StageRouterRequestProcessor)
     )
     classifier = processor._classifier
     assert classifier is not None
@@ -128,13 +128,13 @@ async def test_runtime_stats_reach_profile_classifier(
     assert model_stats["completion_tokens"] == 7
     assert model_stats["cached_tokens"] == 3
     assert model_stats["model_call_latency"]["count"] == 1
-    assert snapshot["routing_decisions"]["cascade"]["llm-classifier"] == 1
+    assert snapshot["routing_decisions"]["stage_router"]["llm-classifier"] == 1
 
 
 def _chat_request() -> ChatRequest:
-    """Build the OpenAI request shape passed through the cascade profile."""
+    """Build the OpenAI request shape passed through the stage_router profile."""
     return ChatRequest.openai_chat({
-        "model": "cascade-route",
+        "model": "stage_router-route",
         "messages": [
             {
                 "role": "user",

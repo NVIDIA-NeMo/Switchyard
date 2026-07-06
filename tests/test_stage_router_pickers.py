@@ -1,21 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behavioural tests for the cascade pickers."""
+"""Behavioural tests for the stage_router pickers."""
 
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from switchyard.lib.processors.cascade import (
+from switchyard.lib.processors.stage_router import (
     STRONG,
     WEAK,
-    CascadeDecisionLog,
+    StageRouterDecisionLog,
     TierClassifier,
 )
-from switchyard.lib.processors.cascade.decision_log import CONTEXT_KEY
-from switchyard.lib.processors.cascade.picker import (
+from switchyard.lib.processors.stage_router.decision_log import CONTEXT_KEY
+from switchyard.lib.processors.stage_router.picker import (
     pick_strong_default,
     pick_weak_default,
 )
@@ -154,7 +154,7 @@ async def test_dimensions_branch_routes_by_scorer_sign():
     so ``_pick`` takes the dimensions branch and returns WEAK by sign
     without consulting the classifier.
     """
-    log = CascadeDecisionLog()
+    log = StageRouterDecisionLog()
     classifier = _stub_classifier(tier="strong")  # would push STRONG if reached
     ctx = await _ctx([
         _msg_tool_call("TodoWrite"),
@@ -173,7 +173,7 @@ async def test_dimensions_branch_routes_by_scorer_sign():
 @pytest.mark.asyncio
 async def test_decision_log_counts_sources():
     """Each decision path increments exactly one bucket in the shared log."""
-    log = CascadeDecisionLog()
+    log = StageRouterDecisionLog()
     # override path: critical severity → STRONG, source=override
     ctx_critical = await _ctx([
         _msg_tool_result("Out of memory: cannot allocate memory"),

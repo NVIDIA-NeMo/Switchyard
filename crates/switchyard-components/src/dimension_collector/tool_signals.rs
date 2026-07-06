@@ -7,7 +7,7 @@
 //! alongside the 15 prompt-text scorers: it walks the `messages[]` /
 //! `input[]` array of the incoming request, finds tool-execution results,
 //! pattern-matches their text against a curated error table, and aggregates
-//! conversation-history metrics that the cascade pickers need.
+//! conversation-history metrics that the stage_router pickers need.
 //!
 //! All logic is pure and deterministic — no I/O, no shared state.
 
@@ -178,7 +178,7 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
 // ─── output type ─────────────────────────────────────────────────────────────
 
-/// Tool-execution signals stamped on `ProxyContext`. Read by cascade pickers
+/// Tool-execution signals stamped on `ProxyContext`. Read by stage_router pickers
 /// via [`crate::get_tool_result_signal`].
 #[derive(Clone, Debug, Default)]
 pub struct ToolResultSignal {
@@ -193,7 +193,7 @@ pub struct ToolResultSignal {
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
     /// TodoWrite tool calls. Strong fail predictor for Opus; used by the
-    /// `cascade_strong_default` drop-to-weak gate.
+    /// `stage_router_strong_default` drop-to-weak gate.
     pub todowrite_count: u32,
     /// Edit-type calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_edit_count: u32,

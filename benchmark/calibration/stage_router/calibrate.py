@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Calibrate cascade confidence threshold from Harbor run outputs.
+"""Calibrate stage_router confidence threshold from Harbor run outputs.
 
 Pass the Harbor run output directories for the pure-strong and pure-weak arms:
 
@@ -25,7 +25,7 @@ _RANK = {"pass": 2, "fail": 1, "err": 0}
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Calibrate cascade confidence threshold from Harbor run outputs."
+        description="Calibrate stage_router confidence threshold from Harbor run outputs."
     )
     parser.add_argument(
         "--strong-run-dir",

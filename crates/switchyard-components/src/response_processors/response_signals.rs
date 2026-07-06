@@ -6,7 +6,7 @@
 //! Thin adapter around
 //! [`crate::dimension_collector::response::extract_response_signals`]. Stamps
 //! the resulting [`ResponseSignals`] into `ProxyContext` so downstream
-//! cascade / escalation logic can read structured response-quality
+//! stage_router / escalation logic can read structured response-quality
 //! flags without re-parsing the wire body.
 
 use switchyard_core::{ChatResponse, ProxyContext, Result};

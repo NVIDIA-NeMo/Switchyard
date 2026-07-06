@@ -85,7 +85,7 @@ Route YAML and launchers share this model-dispatch path:
 - `type: passthrough` registers the YAML key and discovered direct models.
 - `type: random_routing` registers the YAML key as the routing profile plus
   direct strong/weak passthrough entries.
-- `type: deterministic` and `type: cascade` register the route key plus direct
+- `type: deterministic` and `type: stage_router` register the route key plus direct
   strong/weak passthrough entries.
 - `type: plan_execute` registers the route key plus the executor as a direct
   passthrough; the planner is internal routing logic.

@@ -22,8 +22,8 @@ pub use profile::{
     Profile, ProfileHooks, ProfileInput, ProfileResponse, RequestMetadata, RoutingMetadata,
 };
 pub use profiles::{
-    CascadeClassifierConfig, CascadeDecision, CascadeDecisionSource, CascadePickerMode,
-    CascadeProcessedRequest, CascadeProfile, CascadeProfileConfig, CascadeTier, EndpointHealth,
+    StageRouterClassifierConfig, StageRouterDecision, StageRouterDecisionSource, StageRouterPickerMode,
+    StageRouterProcessedRequest, StageRouterProfile, StageRouterProfileConfig, StageRouterTier, EndpointHealth,
     EndpointHealthStatus, LatencyServiceProcessedRequest, LatencyServiceProfile,
     LatencyServiceProfileConfig, LlmRoutingDecision, LlmRoutingProcessedRequest, LlmRoutingProfile,
     LlmRoutingProfileConfig, LlmRoutingTierMapping, NoopProfile, NoopProfileConfig,

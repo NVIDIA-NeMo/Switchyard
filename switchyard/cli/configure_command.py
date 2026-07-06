@@ -452,7 +452,7 @@ def cmd_configure(args: argparse.Namespace) -> None:
     # Resolve routing-profiles up front (CLI > existing config > interactive
     # prompt) so the model picker can surface route ids + their tier models
     # alongside the upstream catalog. Without this the wizard offers only the
-    # raw `/v1/models` response and the user can't pick e.g. `opus-ds-cascade`
+    # raw `/v1/models` response and the user can't pick e.g. `opus-ds-stage_router`
     # even when their YAML declares it.
     routing_profiles = existing_config.routing_profiles
     if args.routing_profiles is not None:

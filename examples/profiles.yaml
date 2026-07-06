@@ -5,7 +5,7 @@
 # Each profile id and each target id is exposed as a model on GET /v1/models, so
 # a client (or `switchyard launch claude --model <id>`) selects a profile by id:
 #   fast            passthrough to the weak target
-#   smart-cascade   signal-based cascade routing between weak and strong
+#   smart-stage-router   signal-based stage_router routing between weak and strong
 #   weak / strong   the targets, addressable directly
 #
 # All profile types here are Rust-defined, so this file is served by the Rust
@@ -32,12 +32,12 @@ profiles:
     type: passthrough
     target: weak
 
-  smart-cascade:
-    type: cascade
+  smart-stage-router:
+    type: stage_router
     strong: strong
     weak: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: stage_router_strong_default
     confidence_threshold: 0.7
     signal_recent_window: 3
     classifier:

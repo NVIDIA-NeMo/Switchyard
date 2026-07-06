@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Declarative config for cascade profiles. See ``docs/cascade_routing.md``."""
+"""Declarative config for stage_router profiles. See ``docs/stage_router_routing.md``."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 #: Picker mode accepted in YAML. The profile resolves it to a :class:`TierPicker`.
 #: The name describes the *default tier* — what the picker returns when the
 #: scorer is ambiguous and no classifier is configured.
-CascadePickerMode = Literal["cascade_strong_default", "cascade_weak_default"]
+StageRouterPickerMode = Literal["stage_router_strong_default", "stage_router_weak_default"]
 
 
 class ClassifierConfig(BaseModel):
@@ -34,8 +34,8 @@ class ClassifierConfig(BaseModel):
     recent_turn_window: int = Field(default=3, ge=0)
 
 
-class CascadeConfig(BaseModel):
-    """Configuration for the cascade-routing profile."""
+class StageRouterConfig(BaseModel):
+    """Configuration for the stage-router-routing profile."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
@@ -45,7 +45,7 @@ class CascadeConfig(BaseModel):
     #: target has been evicted from the pool (e.g. after a context-window
     #: overflow). Must match either ``strong.id`` or ``weak.id``.
     fallback_target_on_evict: str
-    picker: CascadePickerMode = "cascade_strong_default"
+    picker: StageRouterPickerMode = "stage_router_strong_default"
     #: Scorer confidence in ``[0, 1]`` below which the picker consults the
     #: classifier (if configured) or returns its default tier. ``0.0`` forces
     #: pure-deterministic routing; ``1.0`` forces every turn through the

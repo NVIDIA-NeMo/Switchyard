@@ -5,12 +5,12 @@
 
 use super::macros::profile_types;
 use super::{
-    CascadeProfileConfig, LatencyServiceProfileConfig, LlmRoutingProfileConfig, NoopProfileConfig,
+    StageRouterProfileConfig, LatencyServiceProfileConfig, LlmRoutingProfileConfig, NoopProfileConfig,
     PassthroughProfileConfig, RandomRoutingProfileConfig,
 };
 
 profile_types! {
-    CascadeProfileConfig,
+    StageRouterProfileConfig,
     PassthroughProfileConfig,
     RandomRoutingProfileConfig,
     LatencyServiceProfileConfig,

@@ -1,17 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the cascade dimensions + scorer."""
+"""Unit tests for the stage-router dimensions + scorer."""
 
 from __future__ import annotations
 
 import pytest
 
-from switchyard.lib.processors.cascade.dimensions import (
+from switchyard.lib.processors.stage_router.dimensions import (
     CodingAgentDimensions,
     from_signal,
 )
-from switchyard.lib.processors.cascade.scorer import DEFAULT_WEIGHTS, score
+from switchyard.lib.processors.stage_router.scorer import DEFAULT_WEIGHTS, score
 from switchyard_rust.components import DimensionCollector
 from switchyard_rust.core import ChatRequest, ProxyContext
 

@@ -1,6 +1,6 @@
-# Cascade Routing
+# Stage-Router Routing
 
-Cascade routing picks one of two tiers (`weak` / `strong`) per request based on
+StageRouter routing picks one of two tiers (`weak` / `strong`) per request based on
 tool-result history stamped onto the conversation. The strong tier handles
 exploration and error recovery; the weak tier handles the mechanical
 implementation phase.
@@ -27,18 +27,18 @@ code as calibrated defaults. Research engineers override them by passing
 ## How it fits the profile path
 
 ```
-CascadeProfile
+StageRouterProfile
   -> extract ToolResultSignal from the request
   -> pick weak or strong
   -> rewrite request.model to the selected target model
   -> call the selected native target backend
 ```
 
-`CascadeProfile` uses the Rust `ToolResultSignal` extractor for severity,
+`StageRouterProfile` uses the Rust `ToolResultSignal` extractor for severity,
 write/edit/read counts, recent-window slices, pure-bash streak, tests-passed,
 and turn depth. The profile keeps the routing decision as typed per-call state,
 records the decision source in
-`/v1/stats.routing_decisions.cascade`, and buckets model/tier usage through the
+`/v1/stats.routing_decisions.stage_router`, and buckets model/tier usage through the
 standard stats accumulator.
 
 If the selected backend returns a context-window overflow, the profile retries
@@ -52,9 +52,9 @@ once against `fallback_target_on_evict`. A second overflow returns
 Names describe **the default tier**: the verdict returned when the scorer
 is ambiguous and no classifier verdict is available.
 
-- **`cascade_strong_default`**: STRONG is the default. WEAK only when the
+- **`stage_router_strong_default`**: STRONG is the default. WEAK only when the
   scorer is confidently negative or the classifier says WEAK. Quality-first.
-- **`cascade_weak_default`**: WEAK is the default. STRONG only when the
+- **`stage_router_weak_default`**: WEAK is the default. STRONG only when the
   scorer is confidently positive or the classifier says STRONG. Cost-first.
 
 Both share the same override path and scorer math; only the default tier
@@ -69,14 +69,14 @@ Applied *before* the scorer, in this order. Any match short-circuits.
 | Critical severity | `signal.severity ≥ SEVERITY_CRITICAL` (1.0) | STRONG |
 | Clean completion | `signal.tests_passed AND signal.turn_depth ≥ CLEAN_TESTS_MIN_TURN_DEPTH (10) AND signal.write_count ≤ CLEAN_TESTS_MAX_WRITES (1)` | WEAK |
 
-Thresholds are module-level constants in the Rust cascade profile; retune in
+Thresholds are module-level constants in the Rust stage-router profile; retune in
 one place.
 
 ### Scorer
 
 Weighted linear sum over `CodingAgentDimensions` (a normalised view of
 `ToolResultSignal`). Weights are calibrated defaults in
-`switchyard/lib/processors/cascade/scorer.py::DEFAULT_WEIGHTS`; override
+`switchyard/lib/processors/stage_router/scorer.py::DEFAULT_WEIGHTS`; override
 via `weights=...` for research. The raw sum is clipped to `[-1, +1]` and
 confidence is `abs(clipped)`. Magnitudes are sized so a single high-impact
 axis at maximum value (`stuck_exploring = 1.0`, `tests_passed = 1.0`, ...)
@@ -104,8 +104,8 @@ raising it shifts work from the dimensions scorer to the classifier
 
     | Configuration path | Default when omitted |
     |---|---|
-    | Profile config (`switchyard serve --config`) using the Rust `cascade` profile | **`0.7`** |
-    | Deprecated route bundle (`--routing-profiles`) using the Python cascade profile | **`0.5`** |
+    | Profile config (`switchyard serve --config`) using the Rust `stage_router` profile | **`0.7`** |
+    | Deprecated route bundle (`--routing-profiles`) using the Python stage-router profile | **`0.5`** |
 
     Set `confidence_threshold: 0.5` explicitly rather than relying on either
     schema default.
@@ -118,7 +118,7 @@ raising it shifts work from the dimensions scorer to the classifier
 | `1.0` | yes (required) | Classifier-driven. Equivalent to the legacy `coding_agent` profile. |
 
 The dimensions-vs-llm-classifier split is dataset-dependent. Measure it in
-production via `routing_decisions.cascade` on `/v1/stats` rather than relying on
+production via `routing_decisions.stage_router` on `/v1/stats` rather than relying on
 priors from this doc.
 
 ### Calibrating the threshold from run data
@@ -162,16 +162,16 @@ From the overlap tasks (those with both strong and weak results):
 
 **Running the sweep**
 
-Three scripts in `benchmark/calibration/cascade/` form the pipeline:
+Three scripts in `benchmark/calibration/stage_router/` form the pipeline:
 
 | Script | Input | Output | What it does |
 |---|---|---|---|
-| `signal_extractor.py` | Harbor task dir (JSONL trajectory) | `ToolResultSignal` per turn | Replays a claude-code session, emitting the same signal the cascade picker would have seen at each turn (write/edit/read counts, severity, tests passed, etc.) |
+| `signal_extractor.py` | Harbor task dir (JSONL trajectory) | `ToolResultSignal` per turn | Replays a claude-code session, emitting the same signal the stage-router picker would have seen at each turn (write/edit/read counts, severity, tests passed, etc.) |
 | `calibrate.py` | Harbor run dirs (one per arm) | `per_task.jsonl`, `per_turn.jsonl` | Reads `result.json` + trajectory JSONL for each task in each arm. Calls `signal_extractor` to build per-turn signals, then writes one record per task (outcome + features) and one record per turn (signal snapshot). Also prints RESCUE/LOSS/SAFE/HARD quadrant counts. |
 | `sweep.py` | `per_task.jsonl`, `per_turn.jsonl` | Console table | Replays the per-turn signals through a set of escalation policies and scores each: pass%, escalation rate. The best-scoring policy that keeps escalation rate reasonable is your calibrated threshold. |
 
 ```bash
-cd benchmark/calibration/cascade
+cd benchmark/calibration/stage_router
 python calibrate.py \
   --strong-run-dir /tmp/runs/your_strong_run \
   --weak-run-dir /tmp/runs/your_weak_probe
@@ -184,18 +184,18 @@ prints the policy score table; pick the best row from that output.
 Pick the policy whose pass% beats `always_stay` with an acceptable
 escalation rate. Translate it to a `confidence_threshold` value. A policy
 that escalates ~20% of tasks maps roughly to `confidence_threshold: 0.5`
-with `cascade_strong_default`.
+with `stage_router_strong_default`.
 
 Even 15–20 probe tasks produce a stable result because signal features are
 extracted from the strong-arm trajectories, which are available for all
 tasks from the pure-strong run.
 
-**Caveat on weak outcomes in cascade vs. pure-weak**
+**Caveat on weak outcomes in stage-router vs. pure-weak**
 
-In cascade, the weak model may inherit partial context from the strong arm
+In stage-router, the weak model may inherit partial context from the strong arm
 (conversation history up to the escalation point). Pure-weak runs start
 fresh, so RESCUE is a conservative lower bound. Weak performs at least as
-well in cascade as it does alone.
+well in stage-router as it does alone.
 
 ### Rate-limit isolation (production caveat)
 
@@ -227,9 +227,9 @@ targets:
     format: openai
 
 profiles:
-  smart-cascade:
-    type: cascade
-    picker: cascade_strong_default        # or cascade_weak_default
+  smart-stage-router:
+    type: stage_router
+    picker: stage_router_strong_default        # or stage_router_weak_default
     confidence_threshold: 0.5              # recommended; range [0.0, 1.0]
     signal_recent_window: 3                # Rust sliding-window for recent_* counts
     fallback_target_on_evict: strong       # required; see Context-Window Handling
@@ -259,9 +259,9 @@ declared target ids. See [Context-Window Handling](../operations/context_window.
 exception types and error envelopes.
 
 !!! note "Launcher compatibility"
-    Launcher subcommands do not accept `--config`. A launcher-owned cascade
+    Launcher subcommands do not accept `--config`. A launcher-owned stage-router
     still requires the deprecated `--routing-profiles` compatibility path and
-    its legacy `routes:` schema. Use the same `type: cascade`, picker, target,
+    its legacy `routes:` schema. Use the same `type: stage_router`, picker, target,
     classifier, and explicit `confidence_threshold: 0.5` values there.
 
 ---
@@ -279,10 +279,10 @@ latency, cost. Bucketed by `ctx.selected_model`; the `tier` field comes
 from `ctx.selected_target`. The same shape lands in
 `routing_stats_final.json` for batch runs.
 
-### Decision-source metadata (cascade-specific)
+### Decision-source metadata (stage-router-specific)
 
 The profile records decision-source counts under
-`routing_decisions.cascade` in the stats JSON. The possible values are:
+`routing_decisions.stage_router` in the stats JSON. The possible values are:
 
 | Source | When |
 |---|---|
@@ -299,14 +299,14 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 
 ---
 
-## When *not* to use cascade
+## When *not* to use stage-router
 
 - **Single-model deployments.** Use
   `PassthroughProfileConfig(...).build()` wrapped by `ProfileSwitchyard`.
 - **Probabilistic A/B splits.** Use
   [Random Routing](random_routing.md) (`type: random-routing` in profile configs).
-  The cascade's signals are wasted on a fixed traffic ratio.
-- **No tool-result history.** Cascade needs meaningful tool-call traffic to
+  The stage-router's signals are wasted on a fixed traffic ratio.
+- **No tool-result history.** StageRouter needs meaningful tool-call traffic to
   populate `ToolResultSignal`. For pure chat-completion workloads every
   ambiguous request lands on the picker's default tier.
 

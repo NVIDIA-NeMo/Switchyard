@@ -77,7 +77,7 @@ class _MockOpenAIHandler(BaseHTTPRequestHandler):
             finish_reason = "tool_calls"
         elif body.get("response_format", {}).get("type") == "json_schema":
             schema_name = body["response_format"]["json_schema"]["name"]
-            if schema_name == "CascadeTierDecision":
+            if schema_name == "StageRouterTierDecision":
                 message = {"role": "assistant", "content": json.dumps({"tier": "weak"})}
         elif (
             body.get("response_format", {}).get("type") == "json_object"
@@ -186,12 +186,12 @@ profiles:
     weak: weak
     classifier: classifier
     profile_name: coding_agent
-  cascade:
-    type: cascade
+  stage_router:
+    type: stage_router
     strong: strong
     weak: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: stage_router_strong_default
     confidence_threshold: 0.7
     classifier:
       model: provider/classifier
@@ -226,11 +226,11 @@ def test_profile_config_plan_is_inspectable() -> None:
 
     assert document.profile_ids() == [
         "bench",
-        "cascade",
         "direct",
         "latency",
         "llm",
         "random",
+        "stage_router",
     ]
     assert document.profile_type("direct") == "passthrough"
     assert document.profile_body("random") == {
@@ -240,25 +240,25 @@ def test_profile_config_plan_is_inspectable() -> None:
         "rng_seed": 7,
     }
     rust_document = document.without_profiles(["random"])
-    assert rust_document.profile_ids() == ["bench", "cascade", "direct", "latency", "llm"]
+    assert rust_document.profile_ids() == ["bench", "direct", "latency", "llm", "stage_router"]
 
     plan = document.resolve()
 
     assert isinstance(plan, ProfileConfigPlan)
     assert plan.profile_ids() == [
         "bench",
-        "cascade",
         "direct",
         "latency",
         "llm",
         "random",
+        "stage_router",
     ]
     assert plan.target_ids() == ["classifier", "direct", "latency", "strong", "weak"]
     assert plan.profile_type("direct") == "passthrough"
     assert plan.profile_type("random") == "random-routing"
     assert plan.profile_type("latency") == "latency-service"
     assert plan.profile_type("llm") == "llm-routing"
-    assert plan.profile_type("cascade") == "cascade"
+    assert plan.profile_type("stage_router") == "stage_router"
     assert plan.profile_type("bench") == "noop"
     assert plan.profile_type("missing") is None
 
@@ -272,11 +272,11 @@ def test_profile_config_plan_is_inspectable() -> None:
     profiles = plan.build_profiles()
     assert sorted(profiles) == [
         "bench",
-        "cascade",
         "direct",
         "latency",
         "llm",
         "random",
+        "stage_router",
     ]
     assert all(isinstance(profile, Profile) for profile in profiles.values())
     assert profiles["direct"].profile_id == "direct"
@@ -294,11 +294,11 @@ def test_profile_config_can_be_loaded_from_path(
     plan = load_profile_config(path)
     assert plan.profile_ids() == [
         "bench",
-        "cascade",
         "direct",
         "latency",
         "llm",
         "random",
+        "stage_router",
     ]
 
 
@@ -323,7 +323,7 @@ async def test_native_profiles_run_against_local_openai_mock(
     random_response = await plan.build_profile("random").run(_request("client/random"))
     latency_response = await plan.build_profile("latency").run(_request("client/latency"))
     llm_response = await plan.build_profile("llm").run(_request("client/llm-routing"))
-    cascade_response = await plan.build_profile("cascade").run(_request("client/cascade"))
+    stage_router_response = await plan.build_profile("stage_router").run(_request("client/stage_router"))
 
     assert direct_response.body["model"] == "provider/direct"
     assert direct_response.body["mock_path"] == "/direct/v1/chat/completions"
@@ -333,8 +333,8 @@ async def test_native_profiles_run_against_local_openai_mock(
     assert latency_response.body["mock_path"] == "/latency/v1/chat/completions"
     assert llm_response.body["model"] == "provider/weak"
     assert llm_response.body["mock_path"] == "/weak/v1/chat/completions"
-    assert cascade_response.body["model"] == "provider/weak"
-    assert cascade_response.body["mock_path"] == "/weak/v1/chat/completions"
+    assert stage_router_response.body["model"] == "provider/weak"
+    assert stage_router_response.body["mock_path"] == "/weak/v1/chat/completions"
     assert [call["body"]["model"] for call in mock_openai_server.calls] == [
         "provider/direct",
         "provider/strong",
@@ -348,8 +348,8 @@ async def test_native_profiles_run_against_local_openai_mock(
     assert llm_classifier_body["tools"][0]["function"]["strict"] is True
     assert llm_classifier_body["tool_choice"]["function"]["name"] == "select_route"
     assert "response_format" not in llm_classifier_body
-    cascade_classifier_body = mock_openai_server.calls[5]["body"]
-    assert cascade_classifier_body["response_format"]["type"] == "json_object"
+    stage_router_classifier_body = mock_openai_server.calls[5]["body"]
+    assert stage_router_classifier_body["response_format"]["type"] == "json_object"
 
 
 def test_profile_binding_errors_map_to_switchyard_exceptions() -> None:
@@ -419,9 +419,9 @@ def test_concrete_profile_trios_are_not_reexported_from_rust_profiles() -> None:
         "LlmRoutingProfileConfig",
         "LlmRoutingProfile",
         "LlmRoutingProcessedRequest",
-        "CascadeProfileConfig",
-        "CascadeProfile",
-        "CascadeProcessedRequest",
+        "StageRouterProfileConfig",
+        "StageRouterProfile",
+        "StageRouterProcessedRequest",
         "NoopProfileConfig",
         "NoopProfile",
         "NoopProcessedRequest",

@@ -7,18 +7,18 @@ logic; differ only in their fallback tier on low-confidence turns."""
 import logging
 from typing import TYPE_CHECKING
 
-from switchyard.lib.processors.cascade.decision_log import (
+from switchyard.lib.processors.stage_router.decision_log import (
     CONTEXT_KEY,
-    CascadeDecisionLog,
     DecisionSource,
+    StageRouterDecisionLog,
 )
-from switchyard.lib.processors.cascade.dimensions import from_signal
-from switchyard.lib.processors.cascade.scorer import DEFAULT_WEIGHTS, score
+from switchyard.lib.processors.stage_router.dimensions import from_signal
+from switchyard.lib.processors.stage_router.scorer import DEFAULT_WEIGHTS, score
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from switchyard.lib.processors.cascade.classifier import TierClassifier
+    from switchyard.lib.processors.stage_router.classifier import TierClassifier
     from switchyard.lib.proxy_context import ProxyContext
     from switchyard_rust.components import ToolResultSignal
 
@@ -42,7 +42,7 @@ async def pick_strong_default(
     confidence_threshold: float,
     classifier: "TierClassifier | None" = None,
     weights: "Mapping[str, float]" = DEFAULT_WEIGHTS,
-    decision_log: CascadeDecisionLog | None = None,
+    decision_log: StageRouterDecisionLog | None = None,
 ) -> int:
     """STRONG default. WEAK only when the scorer is confidently negative."""
     return await _pick(
@@ -60,7 +60,7 @@ async def pick_weak_default(
     confidence_threshold: float,
     classifier: "TierClassifier | None" = None,
     weights: "Mapping[str, float]" = DEFAULT_WEIGHTS,
-    decision_log: CascadeDecisionLog | None = None,
+    decision_log: StageRouterDecisionLog | None = None,
 ) -> int:
     """WEAK default. STRONG only when the scorer is confidently positive."""
     return await _pick(
@@ -79,7 +79,7 @@ async def _pick(
     confidence_threshold: float,
     classifier: "TierClassifier | None",
     weights: "Mapping[str, float]",
-    decision_log: CascadeDecisionLog | None,
+    decision_log: StageRouterDecisionLog | None,
 ) -> int:
     from switchyard_rust.components import (
         get_tool_result_signal,  # local import: heavy native module
@@ -111,7 +111,7 @@ async def _pick(
 
 def _record(
     ctx: "ProxyContext",
-    decision_log: CascadeDecisionLog | None,
+    decision_log: StageRouterDecisionLog | None,
     source: DecisionSource,
     tier: int,
 ) -> int:

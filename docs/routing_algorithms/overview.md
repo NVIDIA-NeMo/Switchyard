@@ -17,7 +17,7 @@ for configuration and tuning.
 |---|---|---|
 | [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random-routing` |
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm-routing` |
-| [Cascade Routing](cascade_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `cascade` |
+| [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
 
 [Session Affinity (Sticky Routing)](sticky_routing.md) is an opt-in feature of
 LLM classifier routing, not a standalone routing strategy. The classifier
@@ -149,7 +149,7 @@ Pins use a bounded in-process LRU keyed from the stable conversation prefix.
 They are not shared across workers or restarts. See
 [Sticky Routing](sticky_routing.md) for configuration and key derivation.
 
-Random and cascade routing do not expose session-affinity settings; they
+Random and stage-router routing do not expose session-affinity settings; they
 continue to make a routing decision for each request.
 
 !!! note "CLI schema availability"

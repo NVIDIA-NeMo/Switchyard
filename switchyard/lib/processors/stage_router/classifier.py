@@ -24,7 +24,7 @@ STRONG_TIER: str = "strong"
 WEAK_TIER: str = "weak"
 
 #: ``ctx.metadata`` key for inbound conversation messages — read by the classifier.
-RECENT_MESSAGES_KEY: str = "cascade_recent_messages"
+RECENT_MESSAGES_KEY: str = "stage_router_recent_messages"
 
 #: Per-message char cap when rendering recent turns into the classifier prompt.
 _MAX_MESSAGE_CHARS: int = 400
@@ -33,7 +33,7 @@ _MAX_MESSAGE_CHARS: int = 400
 def _load_system_prompt() -> str:
     """Read the classifier system prompt from the prompts/ package-data file."""
     return (
-        files("switchyard.lib.processors.cascade.prompts")
+        files("switchyard.lib.processors.stage_router.prompts")
         .joinpath("tier_classifier.md")
         .read_text(encoding="utf-8")
         .strip()

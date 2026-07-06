@@ -22,10 +22,10 @@ from switchyard.cli.launchers.launcher_runtime import (
 )
 from switchyard.cli.launchers.openclaw_launcher import launch_openclaw
 
-_CASCADE_YAML = textwrap.dedent("""\
+_STAGE_ROUTER_YAML = textwrap.dedent("""\
     routes:
       my_route:
-        type: cascade
+        type: stage_router
         confidence_threshold: 0.7
         strong:
           model: strong-model/v1
@@ -48,12 +48,12 @@ class TestStrategyHelpers:
         """passthrough_strategy_summary returns 'passthrough → <model>'."""
         assert passthrough_strategy_summary("my/model") == "passthrough → my/model"
 
-    def test_routing_profiles_cascade(self, tmp_path):
-        """routing_profiles_strategy_summary describes the default cascade route."""
+    def test_routing_profiles_stage_router(self, tmp_path):
+        """routing_profiles_strategy_summary describes the default stage_router route."""
         p = tmp_path / "profiles.yaml"
-        p.write_text(_CASCADE_YAML)
+        p.write_text(_STAGE_ROUTER_YAML)
         result = routing_profiles_strategy_summary(str(p), "my_route")
-        assert result == "cascade: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert result == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
 
     def test_routing_profiles_passthrough_type(self, tmp_path):
         """routing_profiles_strategy_summary describes a passthrough-type route."""
@@ -153,7 +153,7 @@ class TestCodexRoutingBanner:
     def test_routing_profiles_banner(self, tmp_path):
         """launch_codex describes the default route type for routing-profiles launch."""
         profiles_path = tmp_path / "profiles.yaml"
-        profiles_path.write_text(_CASCADE_YAML)
+        profiles_path.write_text(_STAGE_ROUTER_YAML)
         captured: dict = {}
         with (
             _patch_codex_runner(captured),
@@ -171,7 +171,7 @@ class TestCodexRoutingBanner:
                 codex_args=[],
                 routing_profiles=str(profiles_path),
             )
-        assert _captured_strategy(captured) == "cascade: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert _captured_strategy(captured) == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
 
 
 class TestOpenclawRoutingBanner:
@@ -192,7 +192,7 @@ class TestOpenclawRoutingBanner:
     def test_routing_profiles_banner(self, tmp_path):
         """launch_openclaw describes the default route type for routing-profiles launch."""
         profiles_path = tmp_path / "profiles.yaml"
-        profiles_path.write_text(_CASCADE_YAML)
+        profiles_path.write_text(_STAGE_ROUTER_YAML)
         captured: dict = {}
         with (
             _patch_openclaw_runner(captured),
@@ -210,7 +210,7 @@ class TestOpenclawRoutingBanner:
                 openclaw_args=[],
                 routing_profiles=str(profiles_path),
             )
-        assert _captured_strategy(captured) == "cascade: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert _captured_strategy(captured) == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
 
 
 class TestClaudeRoutingBanner:
@@ -231,7 +231,7 @@ class TestClaudeRoutingBanner:
     def test_routing_profiles_banner(self, tmp_path):
         """launch_claude describes the default route type for routing-profiles launch."""
         profiles_path = tmp_path / "profiles.yaml"
-        profiles_path.write_text(_CASCADE_YAML)
+        profiles_path.write_text(_STAGE_ROUTER_YAML)
         captured: dict = {}
         with (
             _patch_claude_runner(captured),
@@ -249,4 +249,4 @@ class TestClaudeRoutingBanner:
                 claude_args=[],
                 routing_profiles=str(profiles_path),
             )
-        assert _captured_strategy(captured) == "cascade: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert _captured_strategy(captured) == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"

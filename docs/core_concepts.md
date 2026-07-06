@@ -63,7 +63,7 @@ another.
 
 A profile's `type` sets the strategy. `passthrough` sends everything to one
 target with no routing. `random-routing` splits traffic on a fixed probability.
-`llm-routing` asks a classifier model to pick a tier for each turn. `cascade`
+`llm-routing` asks a classifier model to pick a tier for each turn. `stage_router`
 escalates from weak to strong when request signals call for it. The
 [Routing Overview](routing_algorithms/overview.md) covers when to use each and
 how to tune it.
@@ -77,7 +77,7 @@ how to tune it.
 
 Session affinity, or sticky routing, pins a conversation to one tier so later
 turns reuse it instead of being classified again. It belongs to `llm-routing`
-and is not a strategy of its own; random and cascade routing decide every
+and is not a strategy of its own; random and stage-router routing decide every
 request on its own merits. [Sticky Routing](routing_algorithms/sticky_routing.md)
 covers it in full.
 

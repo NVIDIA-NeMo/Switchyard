@@ -59,7 +59,7 @@ Mixed Python + Rust: run Python modes here, dispatch `crates/*` hunks to
 
 Use the word labels consistently. Correctness outranks cleanup/altitude when a cap forces a
 cut. Tag the finding TYPE in parens, e.g. `Blocking (vacuous — the "clip" test never clips)`,
-`Blocking (project rule)`, `Important (reuse — duplicates CascadeFactory.validate)`.
+`Blocking (project rule)`, `Important (reuse — duplicates StageRouterFactory.validate)`.
 
 | Label | Meaning | Examples from past PRs |
 |---|---|---|
@@ -130,7 +130,7 @@ Rust mode reports **P0 / P1 / P2**; map P0→Blocking, P1→Important, P2→Mino
 ### Phase 4 — Design-coherence vs the ticket / stated intent
 **Goal:** does the implementation match what the PR/ticket CLAIMS, at the right altitude?
 **How:**
-- Compare impl to the ticket's scope and "Done when". Divergence is often *improvement* — say so — but isolate the one real gap (e.g. ticket promised "all multi-target routes" but impl is cascade-only).
+- Compare impl to the ticket's scope and "Done when". Divergence is often *improvement* — say so — but isolate the one real gap (e.g. ticket promised "all multi-target routes" but impl is stage-router-only).
 - Altitude: special cases on shared infra, wire-format parsing leaking into the policy layer, tuning-data-masquerading-as-config → recommend generalizing.
 - Defend **intentional** asymmetries instead of manufacturing a finding.
 - Scope creep / mixed concerns / gratuitous churn → call out per commit-discipline.

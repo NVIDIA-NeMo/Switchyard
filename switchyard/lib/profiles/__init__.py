@@ -3,8 +3,6 @@
 
 """Python profile abstractions matching the components-v2 design."""
 
-from switchyard.lib.profiles.cascade import CascadeProfileConfig
-from switchyard.lib.profiles.cascade_config import CascadeConfig, ClassifierConfig
 from switchyard.lib.profiles.deterministic_routing_config import (
     DeterministicRoutingConfig,
 )
@@ -46,6 +44,8 @@ from switchyard.lib.profiles.random_routing import (
 )
 from switchyard.lib.profiles.random_routing_presets import RandomRoutingPresets
 from switchyard.lib.profiles.routellm import RouteLLMConfig, RouteLLMProfileConfig
+from switchyard.lib.profiles.stage_router import StageRouterProfileConfig
+from switchyard.lib.profiles.stage_router_config import ClassifierConfig, StageRouterConfig
 from switchyard.lib.profiles.switchyard_adapter import ProfileSwitchyard
 from switchyard.lib.profiles.table import (
     ProfileConfigError,
@@ -56,8 +56,8 @@ from switchyard.lib.profiles.table import (
 from switchyard.lib.profiles.translate_profile_config import TranslateProfileConfig
 
 __all__ = [
-    "CascadeProfileConfig",
-    "CascadeConfig",
+    "StageRouterProfileConfig",
+    "StageRouterConfig",
     "ClassifierConfig",
     "DeterministicRoutingConfig",
     "DeterministicRoutingProfileConfig",

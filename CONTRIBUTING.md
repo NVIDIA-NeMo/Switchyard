@@ -58,7 +58,7 @@ Commit messages must follow
 This is enforced locally by the `commit-msg` hook and in GitHub Actions.
 
 - ✓ `fix: handle async context cleanup in ProxyContext`
-- ✓ `feat: add cascade routing backend`
+- ✓ `feat: add stage-router routing backend`
 - ✗ `Fixed stuff` / `Updated code`
 
 Use one of:
