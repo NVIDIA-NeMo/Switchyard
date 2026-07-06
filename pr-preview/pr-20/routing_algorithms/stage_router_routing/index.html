@@ -1379,10 +1379,13 @@
 
 <h1 id="stage-router-routing">Stage-Router Routing<a class="headerlink" href="#stage-router-routing" title="Permanent link">&para;</a></h1>
 <p>Stage-router routing sends each request to either a <strong>capable</strong> model or a
-cheaper <strong>efficient</strong> one, depending on where the agent is in its run. The
-capable tier handles exploration and error recovery; the efficient tier handles
-the settled, mechanical implementation phase. You configure it with a single
-knob, <code>confidence_threshold</code>, plus an optional LLM classifier.</p>
+cheaper <strong>efficient</strong> one, depending on where the agent is in its run. The goal
+is to spend the capable model on the turns that need it (exploration, error
+recovery, hard reasoning) and let the efficient model carry the routine,
+mechanical work. Which tier a turn defaults to depends on the picker you choose
+(<code>capable_first</code> or <code>efficient_first</code>); the signals then move individual turns
+off that default. You configure it with a single knob, <code>confidence_threshold</code>,
+plus an optional LLM classifier.</p>
 <p>If the selected backend hits a context-window overflow, the router retries once
 against <code>fallback_target_on_evict</code>; a second overflow surfaces a
 context-pool-exhausted error (see <a href="../../operations/context_window/">Context-Window Handling</a>).</p>
@@ -1404,23 +1407,20 @@ into a confidence score for "this turn needs the capable tier", then routes:</p>
 on the signal alone. Below it, the turn stays on the picker's default tier (or,
 if you added the optional classifier, goes to it first). A turn with no
 tool-result history yet has no stage to estimate, so it takes the default tier.</p>
-<p>The whole decision, for the default <code>capable_first</code> picker:</p>
-<pre class="mermaid"><code>flowchart TD
-    call(["New turn"]) --&gt; score["Score the tool signals&lt;br/&gt;confidence 0 → 1"]
-    score --&gt; gate{"confidence ≥&lt;br/&gt;confidence_threshold?"}
-    gate --&gt;|"no · not sure enough"| cap
-    gate --&gt;|"yes · signals decisive"| pick{"which tier do the&lt;br/&gt;signals favor?"}
-    pick --&gt;|capable| cap["Capable model&lt;br/&gt;&lt;small&gt;default tier&lt;/small&gt;"]
-    pick --&gt;|efficient| eff["Efficient model&lt;br/&gt;&lt;small&gt;cheaper tier&lt;/small&gt;"]
+<p>The routing decision for one turn:</p>
+<pre class="mermaid"><code>%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
+flowchart LR
+    t["turn"] --&gt; g{"confidence &gt;= threshold?"}
+    g --&gt;|yes| s["signals pick capable/efficient"]
+    g --&gt;|no| c{"classifier set?"}
+    c --&gt;|yes| k["classifier picks capable/efficient"]
+    c --&gt;|no| d["use picker default tier"]
 
-    classDef capable fill:#eef1ff,stroke:#5b6cff,stroke-width:2px,color:#1b2559;
-    classDef efficient fill:#e6faf5,stroke:#12a594,stroke-width:2px,color:#0a3d36;
-    classDef decision fill:#fff6e6,stroke:#f0a202,stroke-width:2px,color:#5c4300;
-    class cap capable
-    class eff efficient
-    class gate,pick decision</code></pre>
-<p>Only a confident "efficient" signal reaches the cheaper tier; everything else
-stays capable. Raising the threshold shrinks that path, lowering it widens it.</p>
+    classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
+    class t,s,k,d,g,c box;</code></pre>
+<p>With <code>capable_first</code>, the default is capable, so a turn only reaches the cheaper
+efficient model on a confident efficient signal (or an efficient verdict from
+the classifier). Raising the threshold shrinks that path; lowering it widens it.</p>
 <h2 id="pickers">Pickers<a class="headerlink" href="#pickers" title="Permanent link">&para;</a></h2>
 <p>The picker name says which tier is the <strong>default</strong>: the tier used when the
 signals are ambiguous and no classifier verdict is available.</p>
@@ -1695,12 +1695,13 @@ target, classifier, and explicit <code>confidence_threshold: 0.5</code> values t
 <h3 id="per-tier-token-cost-stats-standard">Per-tier token / cost stats (standard)<a class="headerlink" href="#per-tier-token-cost-stats-standard" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/stats
 </span></code></pre></div>
-<p>Returns the stats snapshot: per-model calls, tokens, latency, and cost,
-bucketed by served model with a <code>tier</code> field. The same shape lands in
-<code>routing_stats_final.json</code> for batch runs.</p>
+<p>Returns the stats snapshot: per-model calls, tokens, latency, and cost, bucketed
+by served model, each tagged with a <code>capable</code> or <code>efficient</code> <code>tier</code>. Batch
+harnesses usually capture this same snapshot to a file (see below).</p>
 <h3 id="decision-source-metadata-stage-router-specific">Decision-source metadata (stage-router-specific)<a class="headerlink" href="#decision-source-metadata-stage-router-specific" title="Permanent link">&para;</a></h3>
-<p>The profile records decision-source counts under
-<code>routing_decisions.stage_router</code> in the stats JSON. The possible values are:</p>
+<p>The profile counts why each turn was routed the way it was, under
+<code>routing_decisions.stage_router</code> in the stats JSON. For the <code>serve --config</code>
+profile the values are:</p>
 <table>
 <thead>
 <tr>
@@ -1711,23 +1712,30 @@ bucketed by served model with a <code>tier</code> field. The same shape lands in
 <tbody>
 <tr>
 <td><code>override</code></td>
-<td>Hard override fired (critical severity, clean tests).</td>
+<td>A hard override fired (for example a critical error severity, or a clean test pass).</td>
 </tr>
 <tr>
 <td><code>dimensions</code></td>
-<td>Scorer crossed <code>confidence_threshold</code>.</td>
+<td>The signals crossed <code>confidence_threshold</code> and picked the tier.</td>
 </tr>
 <tr>
 <td><code>llm-classifier</code></td>
-<td>Scorer was ambiguous and the classifier returned a verdict.</td>
+<td>The signals were ambiguous and the classifier returned a verdict.</td>
 </tr>
 <tr>
 <td><code>fall_open</code></td>
-<td>Scorer was ambiguous and the classifier failed or wasn't configured. Default tier used.</td>
+<td>The signals were ambiguous and the classifier failed or wasn't configured, so the default tier was used.</td>
+</tr>
+<tr>
+<td><code>context_overflow_fallback</code></td>
+<td>A context-window overflow rerouted the turn to <code>fallback_target_on_evict</code>.</td>
 </tr>
 </tbody>
 </table>
-<p>Harness writers snapshot stats with:</p>
+<p>The deprecated <code>--routing-profiles</code> path reports the same sources except
+<code>context_overflow_fallback</code>, plus <code>no_signal</code> for turns that arrive before any
+tool-result history exists.</p>
+<p>To capture a snapshot for a batch run, redirect the endpoint to a file:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats<span class="w"> </span>&gt;<span class="w"> </span>routing_stats_final.json
 </span></code></pre></div>
 <h2 id="when-not-to-use-stage-router">When <em>not</em> to use stage-router<a class="headerlink" href="#when-not-to-use-stage-router" title="Permanent link">&para;</a></h2>
