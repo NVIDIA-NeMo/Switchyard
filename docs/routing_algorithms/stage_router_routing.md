@@ -16,6 +16,30 @@ context-pool-exhausted error (see [Context-Window Handling](../operations/contex
 
 ---
 
+## How it works
+
+An agentic coding run is not uniform: it moves through **stages** — open-ended
+exploration and error recovery early on, then more mechanical implementation
+once the approach is settled. Those stages have very different capability needs,
+and they are what the router is named for.
+
+Stage-router estimates which stage the agent is in *for each LLM call*, from the
+**tool-result history** stamped on the conversation — signals such as file
+writes and edits landing, tests passing or failing, command/exec errors,
+stretches of read-only exploration, and how deep the run is. It combines those
+signals into a confidence score for "this turn needs the capable tier", then
+routes:
+
+- the **capable** tier for uncertain, exploratory, or error-recovery turns, and
+- the **efficient** tier for settled, mechanical turns.
+
+`confidence_threshold` sets how sure that estimate must be before the router acts
+on the signal alone. Below it, the router consults the optional LLM classifier
+(if configured) or falls back to the picker's default tier. No tool-result
+history yet means no stage to estimate, so those turns take the default tier.
+
+---
+
 ## Pickers
 
 Names describe **the default tier**: the verdict returned when the scorer
