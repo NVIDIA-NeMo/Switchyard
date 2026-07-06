@@ -19,6 +19,12 @@ switchyard configure --skill-distillation tooluniverse-trialqa
 switchyard configure --show
 ```
 
+One namespace identifies one skill that improves over time. Keep using the same
+namespace when more sessions or trajectories should contribute to that skill;
+choose a different namespace when you want a separate skill. A namespace is not
+a session ID. In the automatic workflow, Switchyard will generate a separate
+internal session ID for each launcher run.
+
 The namespace is stored in the user config and can be updated without provider
 credentials. To remove it:
 
@@ -48,6 +54,20 @@ configuration, not a per-request header. A future request may be recorded as
 part of a saved session, but a single HTTP request should not change which skill
 is being learned or used.
 
+## Session Ownership
+
+The user configures only the namespace. In the automatic workflow, Switchyard
+will own session capture and the session lifecycle. Each `switchyard launch`
+will generate a separate session ID, record completed model turns as they pass
+through the local proxy, and finalize the project-local session record when the
+launched agent exits. The user will not provide a session ID, choose a storage
+path, or run a separate recorder.
+
+The capture backend is an internal implementation detail. The initial
+implementation will use a Switchyard-managed project-local store; a later
+trajectory source or storage backend can replace or supplement it without
+changing the configuration or launcher workflow.
+
 ## Config
 
 Skill distillation config is stored in `~/.config/switchyard/config.json` under
@@ -65,7 +85,7 @@ The config is intentionally small:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `namespace` | unset | Name that groups saved sessions and generated skills for one workflow. |
+| `namespace` | unset | Stable name for one skill that improves over time. Many sessions or trajectories can contribute to it; it is not a session ID. |
 
 Namespaces must be safe local path components: letters, numbers, dot,
 underscore, and hyphen only. They cannot be `.` or `..`.
@@ -81,9 +101,9 @@ write `SKILL.md` and human-readable reports, not generated Python or other
 executable files.
 
 Skill generation should happen after sessions finish, not during normal model
-request handling. Switchyard owns the saved sessions, local files, distillation
-hooks, validation hooks, history, and launch-time skill loading. It should not
-turn every request into a memory update.
+request handling. Switchyard owns the session-to-skill lifecycle, including
+capture, distillation, validation, history, and launch-time skill loading. It
+should not turn every request into a memory update.
 
 The automatic workflow still needs guardrails. Every skill update should record
 which sessions supported it, keep the previous active skill available for

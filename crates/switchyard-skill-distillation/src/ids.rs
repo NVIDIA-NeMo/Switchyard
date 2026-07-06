@@ -106,12 +106,14 @@ macro_rules! path_component_id {
 path_component_id!(
     SkillNamespace,
     "skill namespace",
-    "Namespace that groups trajectories and generated skill versions."
+    "Namespace for one skill that improves over time. Many separately identified \
+     trajectories can contribute to it; it does not identify a session or trajectory."
 );
 path_component_id!(
     TrajectoryId,
     "trajectory id",
-    "Stable source-independent identifier for one normalized trajectory."
+    "Stable source-independent identifier for one normalized trajectory. It is \
+     separate from the skill namespace."
 );
 path_component_id!(
     SkillVersionId,

@@ -1036,8 +1036,10 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAMESPACE",
         default=None,
         help=(
-            "Save the skill distillation namespace, stored as one safe local path "
-            "component (for example: tooluniverse-trialqa)."
+            "Save a namespace for one skill that improves over time. Many "
+            "sessions or trajectories can contribute to it; the namespace is "
+            "not a session ID. Use a safe local path component (for example: "
+            "tooluniverse-trialqa)."
         ),
     )
     cfg_mode.add_argument(
