@@ -1,14 +1,10 @@
 # Stage-Router Routing
 
-Stage-router routing picks one of two tiers — `capable` or `efficient` — per
-request, based on tool-result history stamped onto the conversation. The
-capable tier handles exploration and error recovery; the efficient tier handles
-the mechanical implementation phase.
-
-Routing is driven by a signal-derived confidence score, with an optional LLM
-classifier consulted only when that score is ambiguous and falling open to the
-picker's default tier on any classifier error. The YAML exposes one knob —
-`confidence_threshold` — plus an optional classifier sub-block.
+Stage-router routing sends each request to one of two tiers — a **capable**
+model or a cheaper **efficient** model — based on where the agent is in its run.
+The capable tier handles exploration and error recovery; the efficient tier
+handles the settled, mechanical implementation phase. You configure it with a
+single knob, `confidence_threshold`, plus an optional LLM classifier.
 
 If the selected backend hits a context-window overflow, the router retries once
 against `fallback_target_on_evict`; a second overflow surfaces a
@@ -42,23 +38,24 @@ history yet means no stage to estimate, so those turns take the default tier.
 
 ## Pickers
 
-Names describe **the default tier**: the verdict returned when the scorer
-is ambiguous and no classifier verdict is available.
+The picker name says which tier is the **default** — the one used when the
+signals are ambiguous and no classifier verdict is available.
 
-- **`capable_first`**: CAPABLE is the default. EFFICIENT only when the
-  scorer is confidently negative or the classifier says EFFICIENT. Quality-first.
-- **`efficient_first`**: EFFICIENT is the default. CAPABLE only when the
-  scorer is confidently positive or the classifier says CAPABLE. Cost-first.
+- **`capable_first`** — capable is the default; drop to efficient only when the
+  signals (or the classifier) clearly say so. Quality-first.
+- **`efficient_first`** — efficient is the default; escalate to capable only when
+  the signals (or the classifier) clearly say so. Cost-first.
 
-Both pickers use the same signal scoring; only the default tier differs.
+Both pickers read the same signals; only the default tier differs.
 
 ---
 
 ## Tuning `confidence_threshold`
 
-The threshold is the **only** dial users touch. Its effect is monotone:
-raising it shifts work from the dimensions scorer to the classifier
-(or, if no classifier is configured, to the picker's default tier).
+The threshold is the **only** dial most users touch. Its effect is monotone:
+the higher you set it, the more turns go to the LLM classifier instead of being
+decided by the signals alone (and, with no classifier, straight to the default
+tier).
 
 !!! note "Set `0.5` explicitly"
     `0.5` is the recommended starting point and is set in the public example
@@ -74,12 +71,12 @@ raising it shifts work from the dimensions scorer to the classifier
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
-| `0.0` | no | Cost/latency-sensitive. Every scorer verdict is accepted; no per-turn LLM call. The hard-override path still catches critical errors. |
-| `0.5` | no | Recommended starting point. A single high-impact axis clears the threshold deterministically; derived from SWE-Bench Pro calibration. |
-| `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence scorer outputs go to the LLM classifier before falling back to the default tier. The Rust schema uses `0.7` when the field is omitted. |
+| `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
+| `0.5` | no | Recommended starting point. A single strong signal clears the threshold on its own; derived from SWE-Bench Pro calibration. |
+| `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. `0.7` is the profile-config default when the field is omitted. |
 | `1.0` | yes (required) | Classifier-driven. Equivalent to the legacy `coding_agent` profile. |
 
-The dimensions-vs-llm-classifier split is dataset-dependent. Measure it in
+The signal-vs-classifier split is dataset-dependent. Measure it in
 production via `routing_decisions.stage_router` on `/v1/stats` rather than relying on
 priors from this doc.
 
@@ -194,7 +191,7 @@ profiles:
     type: stage_router
     picker: capable_first        # or efficient_first
     confidence_threshold: 0.5              # recommended; range [0.0, 1.0]
-    signal_recent_window: 3                # Rust sliding-window for recent_* counts
+    signal_recent_window: 3                # sliding window for recent signal counts
     fallback_target_on_evict: openai/gpt-4o   # required; see Context-Window Handling
     capable: openai/gpt-4o                     # capable tier target id
     efficient: openai/gpt-4o-mini             # efficient tier target id
@@ -214,7 +211,7 @@ switchyard serve --config profiles.yaml --port 4000
 ```
 
 Omit the `classifier` block to use signals only. If `confidence_threshold` is
-also omitted, this Rust profile uses its schema default of `0.7`; the example
+also omitted, the profile-config default of `0.7` applies; the example
 sets the recommended `0.5` explicitly.
 
 `fallback_target_on_evict` is required and must reference one of the
@@ -263,12 +260,11 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 
 ## When *not* to use stage-router
 
-- **Single-model deployments.** Use
-  `PassthroughProfileConfig(...).build()` wrapped by `ProfileSwitchyard`.
+- **Single-model deployments.** Use a plain passthrough profile instead.
 - **Probabilistic A/B splits.** Use
   [Random Routing](random_routing.md) (`type: random-routing` in profile configs).
   The stage-router's signals are wasted on a fixed traffic ratio.
-- **No tool-result history.** StageRouter needs meaningful tool-call traffic to
+- **No tool-result history.** Stage-router needs meaningful tool-call traffic to
   populate the tool-result signal. For pure chat-completion workloads every
   ambiguous request lands on the picker's default tier.
 
