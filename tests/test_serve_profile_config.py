@@ -47,7 +47,7 @@ profiles:
     capable: strong
     efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_capable_first
+    picker: capable_first
     confidence_threshold: 0.7
 """
 

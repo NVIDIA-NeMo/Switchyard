@@ -34,7 +34,7 @@ def test_extracts_route_keys_and_tier_models() -> None:
         "routes": {
             "opus-ds-stage_router": {
                 "type": "stage_router",
-                "picker": "stage_router_capable_first",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {"model": "aws/anthropic/bedrock-claude-opus-4-7"},
                 "weak": {"model": "nvidia/deepseek-ai/evals-deepseek-v4-pro"},

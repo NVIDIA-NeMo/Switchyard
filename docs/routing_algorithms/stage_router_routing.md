@@ -52,9 +52,9 @@ once against `fallback_target_on_evict`. A second overflow returns
 Names describe **the default tier**: the verdict returned when the scorer
 is ambiguous and no classifier verdict is available.
 
-- **`stage_router_capable_first`**: CAPABLE is the default. EFFICIENT only when the
+- **`capable_first`**: CAPABLE is the default. EFFICIENT only when the
   scorer is confidently negative or the classifier says EFFICIENT. Quality-first.
-- **`stage_router_efficient_first`**: EFFICIENT is the default. CAPABLE only when the
+- **`efficient_first`**: EFFICIENT is the default. CAPABLE only when the
   scorer is confidently positive or the classifier says CAPABLE. Cost-first.
 
 Both share the same override path and scorer math; only the default tier
@@ -184,7 +184,7 @@ prints the policy score table; pick the best row from that output.
 Pick the policy whose pass% beats `always_stay` with an acceptable
 escalation rate. Translate it to a `confidence_threshold` value. A policy
 that escalates ~20% of tasks maps roughly to `confidence_threshold: 0.5`
-with `stage_router_capable_first`.
+with `capable_first`.
 
 Even 15–20 probe tasks produce a stable result because signal features are
 extracted from the capable-arm trajectories, which are available for all
@@ -216,12 +216,13 @@ endpoints:
     base_url: https://openrouter.ai/api/v1
     api_key: ${OPENROUTER_API_KEY}
 
+# Targets are named by the model id they serve.
 targets:
-  capable:
+  openai/gpt-4o:
     endpoint: openrouter
     model: openai/gpt-4o
     format: openai
-  efficient:
+  openai/gpt-4o-mini:
     endpoint: openrouter
     model: openai/gpt-4o-mini
     format: openai
@@ -229,12 +230,12 @@ targets:
 profiles:
   smart-stage-router:
     type: stage_router
-    picker: stage_router_capable_first        # or stage_router_efficient_first
+    picker: capable_first        # or efficient_first
     confidence_threshold: 0.5              # recommended; range [0.0, 1.0]
     signal_recent_window: 3                # Rust sliding-window for recent_* counts
-    fallback_target_on_evict: capable       # required; see Context-Window Handling
-    capable: capable                         # target id
-    efficient: efficient                             # target id
+    fallback_target_on_evict: openai/gpt-4o   # required; see Context-Window Handling
+    capable: openai/gpt-4o                     # capable tier target id
+    efficient: openai/gpt-4o-mini             # efficient tier target id
     classifier:                            # optional
       model: openai/gpt-4o-mini
       api_key: ${OPENROUTER_API_KEY}        # use a separate key/quota in production

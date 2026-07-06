@@ -33,8 +33,8 @@ TierPicker = Callable[["ProxyContext"], Awaitable[int]]
 
 #: YAML-resolvable picker names; mirrors :class:`StageRouterPickerMode`.
 BUILTIN_PICKERS: dict[str, Callable[..., Awaitable[int]]] = {
-    "stage_router_capable_first": pick_capable_first,
-    "stage_router_efficient_first": pick_efficient_first,
+    "capable_first": pick_capable_first,
+    "efficient_first": pick_efficient_first,
 }
 
 

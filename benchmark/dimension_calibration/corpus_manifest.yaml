@@ -37,13 +37,13 @@ runs:
     extractor: harbor
     source: stage_router-strong-default-deepseek
     path: "benchmark/tb_runs/tb-lite-stage_router-strong-default-deepseek/jobs/tb-lite-stage_router-strong-default-deepseek"
-    label: "StageRouter — stage_router_capable_first picker, Opus + DeepSeek"
+    label: "StageRouter — capable_first picker, Opus + DeepSeek"
 
   - id: stage_router-strong-default-nemotron
     extractor: harbor
     source: stage_router-strong-default-nemotron
     path: "benchmark/tb_runs/tb-lite-stage_router-strong-default-nemotron/jobs/tb-lite-stage_router-strong-default-nemotron"
-    label: "StageRouter — stage_router_capable_first picker, Opus + Nemotron"
+    label: "StageRouter — capable_first picker, Opus + Nemotron"
 
   - id: all-opus
     extractor: harbor

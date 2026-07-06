@@ -1015,7 +1015,7 @@ def _stage_router_switchyard(
 
         route:
           type: stage_router
-          picker: stage_router_capable_first       # or stage_router_efficient_first
+          picker: capable_first       # or efficient_first
           confidence_threshold: 0.7            # default; range [0.0, 1.0]
           signal_recent_window: 3              # Rust sliding-window size
           strong: <target spec>                # e.g. { id: strong, model: ..., api_key: ..., format: anthropic }

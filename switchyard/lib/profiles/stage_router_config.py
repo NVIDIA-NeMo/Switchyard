@@ -14,7 +14,7 @@ from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 #: Picker mode accepted in YAML. The profile resolves it to a :class:`TierPicker`.
 #: The name describes the *default tier* — what the picker returns when the
 #: scorer is ambiguous and no classifier is configured.
-StageRouterPickerMode = Literal["stage_router_capable_first", "stage_router_efficient_first"]
+StageRouterPickerMode = Literal["capable_first", "efficient_first"]
 
 
 class ClassifierConfig(BaseModel):
@@ -45,7 +45,7 @@ class StageRouterConfig(BaseModel):
     #: target has been evicted from the pool (e.g. after a context-window
     #: overflow). Must match either ``capable.id`` or ``efficient.id``.
     fallback_target_on_evict: str
-    picker: StageRouterPickerMode = "stage_router_capable_first"
+    picker: StageRouterPickerMode = "capable_first"
     #: Scorer confidence in ``[0, 1]`` below which the picker consults the
     #: classifier (if configured) or returns its default tier. ``0.0`` forces
     #: pure-deterministic routing; ``1.0`` forces every turn through the

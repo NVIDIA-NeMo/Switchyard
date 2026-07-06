@@ -1061,7 +1061,7 @@ class TestStageRouterRouteType:
             "routes": {
                 "myrouter/stage_router": {
                     "type": "stage_router",
-                    "picker": "stage_router_capable_first",
+                    "picker": "capable_first",
                     "strong": {
                         "id": "strong",
                         "model": "anthropic/claude-opus-4-7",
@@ -1163,7 +1163,7 @@ class TestStageRouterRouteType:
 
     def test_accepts_both_pickers(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
-        for picker in ("stage_router_capable_first", "stage_router_efficient_first"):
+        for picker in ("capable_first", "efficient_first"):
             bundle = self._bundle()
             bundle["routes"]["myrouter/stage_router"]["picker"] = picker
             table = build_route_bundle_table(bundle)
@@ -1215,7 +1215,7 @@ class TestStageRouterRouteType:
             "routes": {
                 "defaults/stage_router": {
                     "type": "stage_router",
-                    "picker": "stage_router_capable_first",
+                    "picker": "capable_first",
                     "fallback_target_on_evict": "strong",
                     "strong": {"id": "strong", "model": "strong/model"},
                     "weak": {"id": "weak", "model": "weak/model"},
@@ -1411,7 +1411,7 @@ def test_stage_router_route_hydrates_tier_catalogs(
         "routes": {
             "opus-ds-stage_router": {
                 "type": "stage_router",
-                "picker": "stage_router_capable_first",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {
                     "id": "strong",
@@ -1499,7 +1499,7 @@ def test_route_bundle_keeps_first_multi_target_route_as_default() -> None:
         "routes": {
             "first-stage_router": {
                 "type": "stage_router",
-                "picker": "stage_router_capable_first",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {
                     "id": "strong",
@@ -1516,7 +1516,7 @@ def test_route_bundle_keeps_first_multi_target_route_as_default() -> None:
             },
             "second-stage_router": {
                 "type": "stage_router",
-                "picker": "stage_router_capable_first",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {
                     "id": "strong",

@@ -384,13 +384,14 @@ endpoints:
     api_key: ${NVIDIA_API_KEY}
     timeout_secs: 120.0
 
+# Targets are named by the model id they serve.
 targets:
-  strong:
+  nvidia/frontier-model:
     endpoint: nvidia
     model: nvidia/frontier-model
     format: openai
 
-  weak:
+  nvidia/fast-model:
     endpoint: nvidia
     model: nvidia/fast-model
     format: openai
@@ -398,14 +399,14 @@ targets:
 profiles:
   direct:
     type: passthrough
-    target: weak
+    target: nvidia/fast-model
 
   smart-stage-router:
     type: stage_router
-    capable: strong
-    efficient: weak
-    fallback_target_on_evict: strong
-    picker: stage_router_capable_first
+    capable: nvidia/frontier-model
+    efficient: nvidia/fast-model
+    fallback_target_on_evict: nvidia/frontier-model
+    picker: capable_first
     confidence_threshold: 0.7
 ```
 
@@ -425,7 +426,7 @@ Box<dyn Profile>
 ```
 
 `ProfileConfigDocument` is the parsed file shape. It is allowed to contain config-facing
-references, such as `target: weak` or `endpoint: nvidia`. It is not runtime-ready.
+references, such as `target: nvidia/fast-model` or `endpoint: nvidia`. It is not runtime-ready.
 
 `ProfileConfigPlan` is the resolved plan. It has concrete `LlmTarget` values and typed profile
 configs. The design deliberately does not rebuild the old graph/table/factory system. The plan is

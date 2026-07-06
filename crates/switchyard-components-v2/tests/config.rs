@@ -44,7 +44,7 @@ profiles:
     capable: strong
     efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_capable_first
+    picker: capable_first
     confidence_threshold: 0.7
   health-aware:
     type: latency-service
@@ -61,7 +61,7 @@ profiles:
     capable: strong
     efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_capable_first
+    picker: capable_first
     classifier:
       model: nvidia/nvidia/nemotron-nano-9b-v2
       api_key: ${NVIDIA_API_KEY}

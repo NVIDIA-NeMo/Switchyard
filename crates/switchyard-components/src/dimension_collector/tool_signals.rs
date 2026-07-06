@@ -193,7 +193,7 @@ pub struct ToolResultSignal {
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
     /// TodoWrite tool calls. Strong fail predictor for Opus; used by the
-    /// `stage_router_capable_first` drop-to-weak gate.
+    /// `capable_first` drop-to-weak gate.
     pub todowrite_count: u32,
     /// Edit-type calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_edit_count: u32,

@@ -54,16 +54,16 @@ const DEFAULT_WEIGHTS: &[(&str, f64)] = &[
 #[serde(rename_all = "snake_case")]
 pub enum StageRouterPickerMode {
     /// Default to capable unless the scorer/classifier confidently picks efficient.
-    StageRouterCapableFirst,
+    CapableFirst,
     /// Default to efficient unless the scorer/classifier confidently picks capable.
-    StageRouterEfficientFirst,
+    EfficientFirst,
 }
 
 impl StageRouterPickerMode {
     fn default_tier(self) -> StageRouterTier {
         match self {
-            Self::StageRouterCapableFirst => StageRouterTier::Capable,
-            Self::StageRouterEfficientFirst => StageRouterTier::Efficient,
+            Self::CapableFirst => StageRouterTier::Capable,
+            Self::EfficientFirst => StageRouterTier::Efficient,
         }
     }
 }
@@ -984,7 +984,7 @@ fn model_accepts_reasoning_hint(model: &str) -> bool {
 }
 
 fn default_picker() -> StageRouterPickerMode {
-    StageRouterPickerMode::StageRouterCapableFirst
+    StageRouterPickerMode::CapableFirst
 }
 
 fn default_confidence_threshold() -> f64 {
@@ -1149,7 +1149,7 @@ mod tests {
         let (profile, calls) = profile(
             target("capable", "frontier/model")?,
             target("efficient", "cheap/model")?,
-            StageRouterPickerMode::StageRouterEfficientFirst,
+            StageRouterPickerMode::EfficientFirst,
             0.7,
             vec![BackendAction::Ok],
             vec![BackendAction::Ok],
@@ -1218,7 +1218,7 @@ mod tests {
         let (profile, calls) = profile(
             target("capable", "frontier/model")?,
             target("efficient", "cheap/model")?,
-            StageRouterPickerMode::StageRouterCapableFirst,
+            StageRouterPickerMode::CapableFirst,
             0.0,
             vec![BackendAction::Ok],
             vec![BackendAction::Ok],
@@ -1243,7 +1243,7 @@ mod tests {
         let (profile, calls) = profile(
             target("capable", "frontier/model")?,
             target("efficient", "cheap/model")?,
-            StageRouterPickerMode::StageRouterEfficientFirst,
+            StageRouterPickerMode::EfficientFirst,
             0.7,
             vec![BackendAction::ContextOverflow],
             vec![BackendAction::Ok],
@@ -1309,7 +1309,7 @@ mod tests {
             capable: target("capable", "frontier/model")?,
             efficient: target("efficient", "cheap/model")?,
             fallback_target_on_evict: LlmTargetId::new("ghost")?,
-            picker: StageRouterPickerMode::StageRouterCapableFirst,
+            picker: StageRouterPickerMode::CapableFirst,
             confidence_threshold: 0.7,
             signal_recent_window: DEFAULT_RECENT_WINDOW,
             classifier: None,

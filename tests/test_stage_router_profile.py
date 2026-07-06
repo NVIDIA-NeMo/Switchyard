@@ -67,8 +67,8 @@ def test_deepseek_classifier_keeps_reasoning_disabled() -> None:
 @pytest.mark.parametrize(
     ("picker", "expected_target"),
     [
-        ("stage_router_capable_first", "efficient"),
-        ("stage_router_efficient_first", "efficient"),
+        ("capable_first", "efficient"),
+        ("efficient_first", "efficient"),
     ],
 )
 async def test_runtime_stats_reach_profile_classifier(
