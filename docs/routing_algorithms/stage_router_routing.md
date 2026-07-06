@@ -1,10 +1,13 @@
 # Stage-Router Routing
 
 Stage-router routing sends each request to either a **capable** model or a
-cheaper **efficient** one, depending on where the agent is in its run. The
-capable tier handles exploration and error recovery; the efficient tier handles
-the settled, mechanical implementation phase. You configure it with a single
-knob, `confidence_threshold`, plus an optional LLM classifier.
+cheaper **efficient** one, depending on where the agent is in its run. The goal
+is to spend the capable model on the turns that need it (exploration, error
+recovery, hard reasoning) and let the efficient model carry the routine,
+mechanical work. Which tier a turn defaults to depends on the picker you choose
+(`capable_first` or `efficient_first`); the signals then move individual turns
+off that default. You configure it with a single knob, `confidence_threshold`,
+plus an optional LLM classifier.
 
 If the selected backend hits a context-window overflow, the router retries once
 against `fallback_target_on_evict`; a second overflow surfaces a
