@@ -2227,7 +2227,7 @@ Skill distillation config also lives in <code>~/.config/switchyard/config.json</
 </tr>
 <tr>
 <td><code>--skill-distillation NAMESPACE</code></td>
-<td>Save the namespace that will group skill-distillation sessions and generated skills. This stores the namespace only; session saving, distillation, and launch-time skill loading are separate implementation work.</td>
+<td>Save a namespace for one skill that improves over time. Many sessions or trajectories can contribute to it; the namespace is not a session ID. This release stores only the namespace; session saving, distillation, and launch-time skill loading are separate implementation work.</td>
 </tr>
 <tr>
 <td><code>--disable-skill-distillation</code></td>
@@ -2263,6 +2263,7 @@ Skill distillation config also lives in <code>~/.config/switchyard/config.json</
 </span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
+One namespace identifies one skill that improves over time, and many sessions or trajectories can contribute to it. Use a different namespace when you want a separate skill. A namespace is not a session ID; each future launcher run will receive its own internal session ID.
 The top-level key is omitted when skill distillation is not configured. <code>namespace</code> is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.</p>
 <p><strong>Examples</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># First-run interactive setup</span>
