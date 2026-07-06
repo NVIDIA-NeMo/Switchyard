@@ -27,9 +27,31 @@ into a confidence score for "this turn needs the capable tier", then routes:
 - the **efficient** tier for settled, mechanical turns.
 
 `confidence_threshold` sets how sure that estimate must be before the router acts
-on the signal alone. Below it, the router consults the optional LLM classifier
-(if configured) or falls back to the picker's default tier. No tool-result
-history yet means no stage to estimate, so those turns take the default tier.
+on the signal alone. Below it, the turn stays on the picker's default tier (or,
+if you added the optional classifier, goes to it first). A turn with no
+tool-result history yet has no stage to estimate, so it takes the default tier.
+
+The whole decision, for the default `capable_first` picker:
+
+```mermaid
+flowchart TD
+    call(["New turn"]) --> score["Score the tool signals<br/>confidence 0 → 1"]
+    score --> gate{"confidence ≥<br/>confidence_threshold?"}
+    gate -->|"no · not sure enough"| cap
+    gate -->|"yes · signals decisive"| pick{"which tier do the<br/>signals favor?"}
+    pick -->|capable| cap["Capable model<br/><small>default tier</small>"]
+    pick -->|efficient| eff["Efficient model<br/><small>cheaper tier</small>"]
+
+    classDef capable fill:#eef1ff,stroke:#5b6cff,stroke-width:2px,color:#1b2559;
+    classDef efficient fill:#e6faf5,stroke:#12a594,stroke-width:2px,color:#0a3d36;
+    classDef decision fill:#fff6e6,stroke:#f0a202,stroke-width:2px,color:#5c4300;
+    class cap capable
+    class eff efficient
+    class gate,pick decision
+```
+
+Only a confident "efficient" signal reaches the cheaper tier; everything else
+stays capable. Raising the threshold shrinks that path, lowering it widens it.
 
 ## Pickers
 
@@ -45,10 +67,27 @@ Both pickers read the same signals; only the default tier differs.
 
 ## Tuning `confidence_threshold`
 
-The threshold is the **only** dial most users touch, and it behaves predictably:
-the higher you set it, the more turns go to the LLM classifier instead of being
-decided by the signals alone. With no classifier configured, those turns fall
-straight to the default tier instead.
+The scorer rates each turn from `0` (signals are neutral) to `1` (signals point
+hard at one tier). `confidence_threshold` is the bar that rating has to clear
+before the router will switch off the picker's default tier. Clear it and the
+router routes to the tier the signals indicate; fall short and the turn stays on
+the default.
+
+With the default `capable_first` picker, every turn starts on the capable tier
+and only drops to the efficient tier when the signals say "efficient" and clear
+the threshold. So the threshold sets how much evidence it takes to switch to the
+cheaper tier:
+
+- Raise it and only strong, decisive signals drop a turn to efficient, so the
+  router stays on capable longer (more quality, more cost).
+- Lower it and weaker signals are enough to drop to efficient, so more turns go
+  cheap (more savings, more risk).
+
+`efficient_first` is the mirror: turns start on efficient and need a signal that
+clears the threshold to escalate to capable.
+
+(If you add the optional classifier, sub-threshold turns go to it instead of
+staying on the default tier.)
 
 **Set `0.5` explicitly.** It's the recommended starting point and is what the
 example below uses. The default when you omit the field depends on which config
