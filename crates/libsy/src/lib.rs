@@ -10,14 +10,18 @@ use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::error::Error;
 
-/// Represents a request to the chat model.
-pub struct ChatRequest {
+/// AgentApiRequest internal representation of an llm request.
+/// This structure is designed to be converted to a from provider specifiic structs without loosing
+/// information
+pub struct AgentApitRequest {
     pub prompt: String,
     pub model: String,
 }
 
-/// Represents a response from the chat model.
-pub struct ChatResponse {
+/// AgentApiRequest internal representation of an llm response.
+/// This structure is designed to be converted to a from provider specifiic structs without loosing
+/// information
+pub struct AgentApiResponse {
     pub completion: String,
 }
 
