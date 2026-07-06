@@ -38,6 +38,9 @@ from pydantic import BaseModel, ConfigDict, Field
 #: ``ProxyContext.metadata`` key for the latest semantic route decision record.
 CTX_DETERMINISTIC_ROUTE_SIGNALS = "_deterministic_route_signals"
 
+#: In-progress trace payload shared across the classifier, selector, and backend.
+CTX_LLM_CLASSIFIER_TRACE_PAYLOAD = "_llm_classifier_trace_payload"
+
 
 class TaskType(str, Enum):
     """Coarse task family inferred from the incoming LLM request."""

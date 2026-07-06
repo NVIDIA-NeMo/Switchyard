@@ -13,6 +13,7 @@ pub mod context;
 pub mod error;
 pub mod ids;
 pub mod roles;
+pub mod routing_trace;
 pub mod session;
 pub mod types;
 
@@ -21,5 +22,6 @@ pub use context::*;
 pub use error::*;
 pub use ids::*;
 pub use roles::*;
+pub use routing_trace::*;
 pub use session::*;
 pub use types::*;

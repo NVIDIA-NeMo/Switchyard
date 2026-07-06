@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -22,7 +23,14 @@ from switchyard.lib.processors.llm_classifier import (
     TaskType,
     parse_route_signals,
 )
+from switchyard.lib.processors.llm_classifier.signals import (
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
+)
 from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.routing_trace import (
+    ROUTING_TRACE_CAPTURE_CONTENT_ENV,
+    ROUTING_TRACE_JSONL_ENV,
+)
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard_rust.core import ChatRequest
 
@@ -123,6 +131,34 @@ async def test_request_processor_stamps_classifier_signals() -> None:
     assert fake.calls[0]["model"] == "router-model"
     assert '"request_type": "openai_chat"' in fake.calls[0]["request_summary"]
     assert "debug this traceback" in fake.calls[0]["request_summary"]
+
+
+async def test_request_processor_traces_classifier_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "routing-trace.jsonl"
+    monkeypatch.setenv(ROUTING_TRACE_JSONL_ENV, str(trace_path))
+    monkeypatch.setenv(ROUTING_TRACE_CAPTURE_CONTENT_ENV, "true")
+    raw_signals = _signals_json()
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(
+            model="router-model",
+            system_prompt="classify this request",
+            dump_signals_to_stderr=False,
+        ),
+        client=_FakeClassifierClient(raw_signals),
+    )
+
+    ctx = ProxyContext(request_id="request-1")
+    await processor.process(ctx, _request())
+
+    payload = ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD]
+    assert payload["input"]["model"] == "router-model"
+    assert payload["input"]["system_prompt"]["content"] == "classify this request"
+    assert payload["output"]["content"]["content"] == raw_signals
+    assert payload["signals"]["recommended_tier"] == "complex"
+    assert not trace_path.exists()
 
 
 async def test_classifier_skips_llm_call_when_session_pinned() -> None:

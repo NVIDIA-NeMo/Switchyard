@@ -263,7 +263,10 @@ run_manifest.json
 server.log
 harbor.log
 routing_stats_final.json
+routing-traces/events.jsonl
 jobs/<job-name>/result.json
+jobs/<job-name>/<trial-id>/artifacts/request_map.jsonl
+jobs/<job-name>/<trial-id>/artifacts/routing_trace.jsonl
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
 
@@ -273,6 +276,12 @@ settings, agent version pins, log paths, and final Harbor status. When the routi
 deterministic LLM-classifier routes, `server.classifier_prompts` records each route's effective
 prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` for reproducibility. Direct
 runs mark routing stats as `not-requested`.
+
+Switchyard-routing runs enable per-request routing traces. Each trial proxy assigns an opaque
+`x-request-id` and saves it in its local `request_map.jsonl`; no task information is sent to
+Switchyard. Switchyard writes interleaved events to `events.jsonl`, keyed by request ID. After Harbor
+finishes, the runner joins each ID to the trial's `result.json` and writes a task-local
+`artifacts/routing_trace.jsonl` with the task name, trial name, reward, and routing events.
 
 ## Docker Image Notes
 

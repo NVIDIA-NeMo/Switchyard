@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from switchyard.lib.request_metadata import extract_caller_api_key
+from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.request_metadata import attach_request_metadata, extract_caller_api_key
+from switchyard_rust.components import RequestMetadata
 
 
 class TestExtractCallerApiKey:
@@ -56,3 +58,11 @@ class TestExtractCallerApiKey:
     )
     def test_no_key_returned(self, headers: dict[str, str]) -> None:
         assert extract_caller_api_key(headers) is None
+
+
+def test_attach_request_metadata_reads_generic_request_id() -> None:
+    ctx = ProxyContext()
+
+    attach_request_metadata(ctx, RequestMetadata(), {"X-Request-ID": "request-1"})
+
+    assert ctx.request_id == "request-1"

@@ -6,13 +6,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from mitmproxy import http
+
+log = logging.getLogger(__name__)
 
 HOSTED_TOOL_TYPES = {
     "browser",
@@ -51,6 +56,15 @@ def _normalized_host(value: str | None) -> str:
     return (value or "").split(":", 1)[0].strip("[]").lower()
 
 
+def _normalized_path(value: str) -> str:
+    return value.split("?", 1)[0]
+
+
+def _is_llm_request_path(value: str) -> bool:
+    path = _normalized_path(value)
+    return any(path.endswith(suffix) for suffix in STRIP_PATH_SUFFIXES)
+
+
 class ClosedBookProxy:
     """Mitmproxy addon enforcing an explicit host allowlist."""
 
@@ -62,6 +76,12 @@ class ClosedBookProxy:
         self.strip_log = Path(
             os.environ.get("SWITCHYARD_PROXY_STRIP_LOG", "/etc/proxy-public/strip.jsonl")
         )
+        self.request_map = Path(
+            os.environ.get(
+                "SWITCHYARD_PROXY_REQUEST_MAP", "/etc/proxy-public/request_map.jsonl"
+            )
+        )
+        self._request_map_lock = threading.Lock()
         self.allowed_hosts = self._load_allowed_hosts()
 
     def _load_allowed_hosts(self) -> set[str]:
@@ -106,15 +126,21 @@ class ClosedBookProxy:
         return True
 
     def requestheaders(self, flow: http.HTTPFlow) -> None:
-        self._deny_if_needed(flow)
+        if self._deny_if_needed(flow):
+            return
+        if _is_llm_request_path(flow.request.path):
+            flow.request.headers["x-request-id"] = uuid.uuid4().hex
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
         self._deny_if_needed(flow)
 
     def request(self, flow: http.HTTPFlow) -> None:
-        if self._deny_if_needed(flow) or not self.closed_book:
+        if self._deny_if_needed(flow):
             return
-        if not any(flow.request.path.endswith(suffix) for suffix in STRIP_PATH_SUFFIXES):
+        is_llm_request = _is_llm_request_path(flow.request.path)
+        if is_llm_request:
+            self._record_request(flow)
+        if not self.closed_book or not is_llm_request:
             return
         if "application/json" not in flow.request.headers.get("content-type", ""):
             return
@@ -131,6 +157,17 @@ class ClosedBookProxy:
 
         flow.request.set_text(json.dumps(body, separators=(",", ":"), sort_keys=False))
         self._log_strip(flow, removed)
+
+    def _record_request(self, flow: http.HTTPFlow) -> None:
+        request_id = flow.request.headers.get("x-request-id") or uuid.uuid4().hex
+        flow.request.headers["x-request-id"] = request_id
+
+        with self._request_map_lock:
+            try:
+                with self.request_map.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"request_id": request_id}) + "\n")
+            except OSError:
+                log.exception("Failed to append proxy request map to %s", self.request_map)
 
     def _log_strip(self, flow: http.HTTPFlow, removed: list[str]) -> None:
         record = {

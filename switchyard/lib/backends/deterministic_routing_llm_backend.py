@@ -15,7 +15,11 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from switchyard.lib.backends.llm_target import LlmTarget
+from switchyard.lib.processors.llm_classifier.signals import (
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
+)
 from switchyard.lib.roles import LLMBackend
+from switchyard.lib.routing_trace import record_routing_event, routing_trace_enabled
 from switchyard_rust.core import ChatRequestType
 
 if TYPE_CHECKING:
@@ -117,9 +121,28 @@ class DeterministicRoutingLLMBackend(LLMBackend):
         # without this, the launcher's LiveStatsFooter tier rows stay
         # empty and ``GET /v1/routing/stats`` loses per-tier attribution.
         set_stats_route_label(ctx, tier)
+        if routing_trace_enabled():
+            trace_payload = ctx.metadata.get(CTX_LLM_CLASSIFIER_TRACE_PAYLOAD)
+            if isinstance(trace_payload, dict):
+                decision = trace_payload.get("decision")
+                if isinstance(decision, dict):
+                    decision["tier"] = tier
+                    decision["model"] = model
+                record_routing_event(ctx, "llm_classifier.route", trace_payload)
+                del ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD]
+            else:
+                record_routing_event(
+                    ctx,
+                    "deterministic_routing.selection",
+                    {"tier": tier, "model": model},
+                )
         return await self._backends[tier].call(ctx, request)
 
-    def _pick_tier(self, ctx: ProxyContext, request: ChatRequest) -> str:  # noqa: ARG002
+    def _pick_tier(
+        self,
+        ctx: ProxyContext,
+        request: ChatRequest,  # noqa: ARG002
+    ) -> str:
         """Read the tier label stamped upstream; fall back defensively.
 
         ``ctx.selected_target`` is the routing runtime's source of truth — it

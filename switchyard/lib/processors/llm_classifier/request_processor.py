@@ -18,11 +18,16 @@ from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.processors._structured_output import build_response_format
 from switchyard.lib.processors.llm_classifier.signals import (
     CTX_DETERMINISTIC_ROUTE_SIGNALS,
+    CTX_LLM_CLASSIFIER_TRACE_PAYLOAD,
     RouteDecision,
     RouteSignals,
     RouteTier,
 )
 from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.routing_trace import (
+    capture_routing_text,
+    routing_trace_enabled,
+)
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
@@ -351,23 +356,61 @@ class LLMClassifierRequestProcessor:
             max_chars=self._config.max_request_chars,
             recent_turn_window=self._config.recent_turn_window,
         )
+        trace_payload: dict[str, Any] | None = None
+        if routing_trace_enabled():
+            trace_payload = {
+                "input": {
+                    "model": self._config.model,
+                    "system_prompt": capture_routing_text(self._config.system_prompt),
+                    "request_summary": capture_routing_text(request_summary),
+                    "structured_output_mode": self._config.structured_output_mode,
+                    "signal_schema": self._signal_schema.__name__,
+                }
+            }
+
         started_at = time.perf_counter()
+        completion: ClassifierCompletion | None = None
+        failure: Exception | None = None
         try:
             completion = await self._client.classify(
                 model=self._config.model,
                 system_prompt=self._config.system_prompt,
                 request_summary=request_summary,
             )
-            signals = parse_route_decision(completion.content, self._signal_schema)
         except Exception as exc:
+            failure = exc
+        classifier_latency_ms = (time.perf_counter() - started_at) * 1000
+
+        if failure is not None:
+            if trace_payload is not None:
+                trace_payload["error"] = {
+                    "error_type": type(failure).__name__,
+                    "duration_ms": classifier_latency_ms,
+                }
+        else:
+            assert completion is not None
+            if trace_payload is not None:
+                trace_payload["output"] = {
+                    "content": capture_routing_text(completion.content),
+                    "usage": _classifier_usage(completion.usage),
+                    "duration_ms": classifier_latency_ms,
+                }
+            try:
+                signals = parse_route_decision(completion.content, self._signal_schema)
+            except Exception as exc:
+                failure = exc
+                if trace_payload is not None:
+                    trace_payload["error"] = {"error_type": type(exc).__name__}
+
+        if failure is not None:
             if not self._config.fail_open:
                 raise LLMClassifierError(
                     "LLM classifier failed to produce valid route signals",
-                ) from exc
+                ) from failure
             log.warning(
                 "LLMClassifierRequestProcessor: classifier failed; "
                 "stamping abstain signals: %s",
-                exc,
+                failure,
             )
             if self._stats_accumulator is not None:
                 # Record the failure into the classifier bucket so
@@ -380,9 +423,8 @@ class LLMClassifierRequestProcessor:
             signals = self._signal_schema.make_abstain(
                 self._config.fallback_recommended_tier,
             )
-            _fail_open_exc: Exception | None = exc
         else:
-            _fail_open_exc = None
+            assert completion is not None
             if self._stats_accumulator is not None:
                 await self._record_classifier_call(
                     usage=completion.usage,
@@ -390,6 +432,9 @@ class LLMClassifierRequestProcessor:
                 )
 
         ctx.metadata[CTX_DETERMINISTIC_ROUTE_SIGNALS] = signals
+        if trace_payload is not None:
+            trace_payload["signals"] = signals.model_dump(mode="json")
+            ctx.metadata[CTX_LLM_CLASSIFIER_TRACE_PAYLOAD] = trace_payload
         # One-line dump of the extracted signals + the deterministic
         # policy_tier the selector will route on. Written to stderr
         # directly (not via the logging module) so it lands in the
@@ -405,9 +450,9 @@ class LLMClassifierRequestProcessor:
             except Exception:
                 signals_payload = {"abstain": True}
             signals_payload["policy_tier"] = signals.policy_tier().value
-            if _fail_open_exc is not None:
+            if failure is not None:
                 signals_payload["fail_open"] = True
-                signals_payload["error"] = str(_fail_open_exc)[:200]
+                signals_payload["error"] = str(failure)[:200]
             sys.stderr.write(
                 f"classifier_signals={json.dumps(signals_payload, sort_keys=True)}\n"
             )
@@ -430,22 +475,32 @@ class LLMClassifierRequestProcessor:
         on the snapshot's classifier-models block.
         """
         assert self._stats_accumulator is not None
-        prompt = 0
-        completion = 0
-        cached = 0
-        if usage is not None:
-            prompt = getattr(usage, "prompt_tokens", 0) or 0
-            completion = getattr(usage, "completion_tokens", 0) or 0
-            ptd = getattr(usage, "prompt_tokens_details", None)
-            if ptd is not None:
-                cached = getattr(ptd, "cached_tokens", 0) or 0
+        counts = _classifier_usage(usage)
         await self._stats_accumulator.record_classifier_usage(
             model=self._config.model,
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            cached_tokens=cached,
+            prompt_tokens=counts["prompt_tokens"],
+            completion_tokens=counts["completion_tokens"],
+            cached_tokens=counts["cached_tokens"],
             latency_ms=latency_ms,
         )
+
+
+def _classifier_usage(usage: Any) -> dict[str, int]:
+    """Return the allowlisted classifier token counts used by stats and traces."""
+    prompt = 0
+    completion = 0
+    cached = 0
+    if usage is not None:
+        prompt = getattr(usage, "prompt_tokens", 0) or 0
+        completion = getattr(usage, "completion_tokens", 0) or 0
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        if prompt_details is not None:
+            cached = getattr(prompt_details, "cached_tokens", 0) or 0
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "cached_tokens": cached,
+    }
 
 
 def parse_route_decision(

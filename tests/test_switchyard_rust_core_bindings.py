@@ -220,6 +220,22 @@ def test_proxy_context_is_rust_owned_with_rust_metadata_mapping() -> None:
     assert ctx.backend_call_latency_ms is None
 
 
+def test_proxy_context_records_opaque_routing_trace_events() -> None:
+    ctx = ProxyContext(request_id="request-1")
+
+    evaluation = ctx.record_routing_event(
+        "llm_classifier.output", {"recommended_tier": "complex"}
+    )
+    decision = ctx.record_routing_event("llm_classifier.decision", {"tier": "strong"})
+
+    assert evaluation["sequence"] == 0
+    assert decision["sequence"] == 1
+    assert ctx.routing_trace == {
+        "request_id": "request-1",
+        "events": [evaluation, decision],
+    }
+
+
 def test_proxy_context_evicted_targets_are_mutable_from_python() -> None:
     ctx = ProxyContext()
 

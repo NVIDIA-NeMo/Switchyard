@@ -15,6 +15,7 @@ CTX_PROFILE_REQUEST_HEADERS = "_profile_request_headers"
 # Existing Switchyard session header. Do not add aliases here unless a
 # concrete client requires one; keeping one spelling avoids ambiguity.
 PROXY_SESSION_ID_HEADER = "proxy_x_session_id"
+REQUEST_ID_HEADER = "x-request-id"
 INTAKE_ENABLED_HEADER = "x-switchyard-intake-enabled"
 INTAKE_APP_HEADER = "x-switchyard-intake-app"
 INTAKE_TASK_HEADER = "x-switchyard-intake-task"
@@ -35,7 +36,21 @@ def attach_request_metadata(
     ctx.metadata[CTX_REQUEST_METADATA] = metadata
     if headers is not None:
         ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = dict(headers)
+        if ctx.request_id is None:
+            request_id = _case_insensitive_header(headers, REQUEST_ID_HEADER)
+            if request_id:
+                ctx.request_id = request_id
     metadata.apply_to_context(ctx)
+
+
+def _case_insensitive_header(headers: Mapping[str, str], name: str) -> str | None:
+    """Return one non-empty header value without assuming normalized names."""
+    expected = name.casefold()
+    for header_name, value in headers.items():
+        normalized = value.strip()
+        if header_name.casefold() == expected and normalized:
+            return normalized
+    return None
 
 
 def attach_caller_api_key(ctx: Any, headers: Mapping[str, str]) -> None:
@@ -75,6 +90,7 @@ __all__ = [
     "INTAKE_ENABLED_HEADER",
     "INTAKE_TASK_HEADER",
     "PROXY_SESSION_ID_HEADER",
+    "REQUEST_ID_HEADER",
     "IntakeRequestMetadata",
     "RequestMetadata",
     "attach_caller_api_key",

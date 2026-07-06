@@ -16,6 +16,7 @@ use switchyard_components::{BackendSelection, BackendSelectionReason, StatsBacke
 use switchyard_core::{EvictedTargets, LlmTargetId, ModelId, ProxyContext, RequestId};
 
 use crate::component_bindings::intake::request_metadata_from_mapping;
+use crate::py_serde::{value_from_python, value_to_python};
 
 use super::request::{request_type_from_python, request_type_object};
 
@@ -456,6 +457,37 @@ impl PyProxyContext {
             PyValueError::new_err(format!("invalid request_id for ProxyContext: {error}"))
         })?;
         Ok(())
+    }
+
+    /// Appends one algorithm-authored routing event.
+    fn record_routing_event(
+        &self,
+        py: Python<'_>,
+        name: String,
+        payload: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let payload = value_from_python(payload)?;
+        let value = {
+            let mut context = self.lock()?;
+            let recorded = context
+                .record_routing_event(name, payload)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            serde_json::to_value(recorded)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?
+        };
+        value_to_python(py, &value)
+    }
+
+    /// Returns the routing audit recorded on this context.
+    #[getter]
+    fn routing_trace(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let value = self
+            .lock()?
+            .routing_trace()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        value.map(|value| value_to_python(py, &value)).transpose()
     }
 
     /// Returns the inbound request format as a Python enum object.
