@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Signal cascade profile implemented as a profile-owned Rust runtime.
+//! Signal stage_router profile implemented as a profile-owned Rust runtime.
 
 use std::time::{Duration, Instant};
 
@@ -27,14 +27,14 @@ const DEFAULT_CLASSIFIER_TIMEOUT_SECS: f64 = 30.0;
 const DEFAULT_CLASSIFIER_RECENT_TURN_WINDOW: usize = 3;
 const CLASSIFIER_MAX_TOKENS: u32 = 4096;
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const CASCADE_PROFILE_TYPE: &str = "cascade";
+const STAGE_ROUTER_PROFILE_TYPE: &str = "stage_router";
 
 const SEVERITY_CRITICAL: f32 = 1.0;
 const CLEAN_TESTS_MIN_TURN_DEPTH: u32 = 10;
 const CLEAN_TESTS_MAX_WRITES: u32 = 1;
 const PURE_BASH_NORM: f64 = 8.0;
 
-const CLASSIFIER_SYSTEM_PROMPT: &str = include_str!("cascade/prompts/classifier.md");
+const CLASSIFIER_SYSTEM_PROMPT: &str = include_str!("stage_router/prompts/classifier.md");
 
 const DEFAULT_WEIGHTS: &[(&str, f64)] = &[
     ("severity", 0.80),
@@ -52,18 +52,18 @@ const DEFAULT_WEIGHTS: &[(&str, f64)] = &[
 /// Default picker mode names the tier used when the scorer is ambiguous.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CascadePickerMode {
-    /// Default to strong unless the scorer/classifier confidently picks weak.
-    CascadeStrongDefault,
-    /// Default to weak unless the scorer/classifier confidently picks strong.
-    CascadeWeakDefault,
+pub enum StageRouterPickerMode {
+    /// Default to capable unless the scorer/classifier confidently picks efficient.
+    CapableFirst,
+    /// Default to efficient unless the scorer/classifier confidently picks capable.
+    EfficientFirst,
 }
 
-impl CascadePickerMode {
-    fn default_tier(self) -> CascadeTier {
+impl StageRouterPickerMode {
+    fn default_tier(self) -> StageRouterTier {
         match self {
-            Self::CascadeStrongDefault => CascadeTier::Strong,
-            Self::CascadeWeakDefault => CascadeTier::Weak,
+            Self::CapableFirst => StageRouterTier::Capable,
+            Self::EfficientFirst => StageRouterTier::Efficient,
         }
     }
 }
@@ -71,7 +71,7 @@ impl CascadePickerMode {
 /// Optional LLM classifier invoked for low-confidence scorer outputs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CascadeClassifierConfig {
+pub struct StageRouterClassifierConfig {
     /// OpenAI-compatible classifier model.
     pub model: String,
     /// API key used for the classifier call.
@@ -93,20 +93,20 @@ pub struct CascadeClassifierConfig {
     pub system_prompt: Option<String>,
 }
 
-/// Config for a strong/weak signal cascade profile.
-#[profile_config("cascade")]
-pub struct CascadeProfileConfig {
-    /// Strong target served by this profile.
+/// Config for a capable/efficient signal stage_router profile.
+#[profile_config("stage_router")]
+pub struct StageRouterProfileConfig {
+    /// Capable target served by this profile.
     #[profile_target]
-    pub strong: LlmTarget,
-    /// Weak target served by this profile.
+    pub capable: LlmTarget,
+    /// Efficient target served by this profile.
     #[profile_target]
-    pub weak: LlmTarget,
+    pub efficient: LlmTarget,
     /// Target used for one retry after context-window overflow.
     pub fallback_target_on_evict: LlmTargetId,
     /// Picker mode controlling the low-confidence default tier.
     #[serde(default = "default_picker")]
-    pub picker: CascadePickerMode,
+    pub picker: StageRouterPickerMode,
     /// Scorer confidence threshold in `[0.0, 1.0]`.
     #[serde(default = "default_confidence_threshold")]
     pub confidence_threshold: f64,
@@ -115,21 +115,21 @@ pub struct CascadeProfileConfig {
     pub signal_recent_window: usize,
     /// Optional LLM classifier for ambiguous scorer outputs.
     #[serde(default)]
-    pub classifier: Option<CascadeClassifierConfig>,
+    pub classifier: Option<StageRouterClassifierConfig>,
     /// Whether to emit stats for this profile.
     #[serde(default = "default_enable_stats")]
     pub enable_stats: bool,
 }
 
-impl ProfileConfig for CascadeProfileConfig {
-    type Runtime = CascadeProfile;
+impl ProfileConfig for StageRouterProfileConfig {
+    type Runtime = StageRouterProfile;
 
     /// Builds the runtime profile using native target backends.
     fn build(&self) -> Result<Self::Runtime> {
         self.validate()?;
-        Ok(CascadeProfile {
-            strong_backend: native_target_backend(self.strong.clone())?,
-            weak_backend: native_target_backend(self.weak.clone())?,
+        Ok(StageRouterProfile {
+            capable_backend: native_target_backend(self.capable.clone())?,
+            efficient_backend: native_target_backend(self.efficient.clone())?,
             fallback_target_on_evict: self.fallback_target_on_evict.clone(),
             picker: self.picker,
             confidence_threshold: self.confidence_threshold,
@@ -137,7 +137,7 @@ impl ProfileConfig for CascadeProfileConfig {
             classifier: self
                 .classifier
                 .as_ref()
-                .map(CascadeTierClassifier::new)
+                .map(StageRouterTierClassifier::new)
                 .transpose()?,
             stats: profile_stats_accumulator(),
             enable_stats: self.enable_stats,
@@ -145,11 +145,12 @@ impl ProfileConfig for CascadeProfileConfig {
     }
 }
 
-impl CascadeProfileConfig {
+impl StageRouterProfileConfig {
     fn validate(&self) -> Result<()> {
-        if self.strong.id == self.weak.id {
+        if self.capable.id == self.efficient.id {
             return Err(SwitchyardError::InvalidConfig(
-                "cascade strong and weak targets must have distinct target ids".to_string(),
+                "stage_router capable and efficient targets must have distinct target ids"
+                    .to_string(),
             ));
         }
         if !self.confidence_threshold.is_finite()
@@ -165,12 +166,12 @@ impl CascadeProfileConfig {
                 "signal_recent_window must be at least 1".to_string(),
             ));
         }
-        if self.fallback_target_on_evict != self.strong.id
-            && self.fallback_target_on_evict != self.weak.id
+        if self.fallback_target_on_evict != self.capable.id
+            && self.fallback_target_on_evict != self.efficient.id
         {
             return Err(SwitchyardError::InvalidConfig(format!(
                 "fallback_target_on_evict={} must match one of [{}, {}]",
-                self.fallback_target_on_evict, self.weak.id, self.strong.id
+                self.fallback_target_on_evict, self.efficient.id, self.capable.id
             )));
         }
         if let Some(classifier) = &self.classifier {
@@ -180,7 +181,7 @@ impl CascadeProfileConfig {
     }
 }
 
-impl CascadeClassifierConfig {
+impl StageRouterClassifierConfig {
     fn validate(&self) -> Result<()> {
         if self.model.trim().is_empty() {
             return Err(SwitchyardError::InvalidConfig(
@@ -209,51 +210,51 @@ impl CascadeClassifierConfig {
     }
 }
 
-/// Strong/weak cascade profile runtime.
-pub struct CascadeProfile {
-    strong_backend: TargetBackend,
-    weak_backend: TargetBackend,
+/// Capable/efficient stage_router profile runtime.
+pub struct StageRouterProfile {
+    capable_backend: TargetBackend,
+    efficient_backend: TargetBackend,
     fallback_target_on_evict: LlmTargetId,
-    picker: CascadePickerMode,
+    picker: StageRouterPickerMode,
     confidence_threshold: f64,
     signal_recent_window: usize,
-    classifier: Option<CascadeTierClassifier>,
+    classifier: Option<StageRouterTierClassifier>,
     stats: StatsAccumulator,
     enable_stats: bool,
 }
 
-/// Processed cascade request with profile-owned decision state.
-pub struct CascadeProcessedRequest {
+/// Processed stage_router request with profile-owned decision state.
+pub struct StageRouterProcessedRequest {
     /// Routed input prepared for the selected backend.
     pub profile_input: ProfileInput,
     /// Selected routing decision for this request.
-    pub decision: CascadeDecision,
+    pub decision: StageRouterDecision,
 }
 
-/// Named side of a cascade decision.
+/// Named side of a stage_router decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CascadeTier {
-    /// Strong tier.
-    Strong,
-    /// Weak tier.
-    Weak,
+pub enum StageRouterTier {
+    /// Capable tier.
+    Capable,
+    /// Efficient tier.
+    Efficient,
 }
 
-impl CascadeTier {
+impl StageRouterTier {
     /// Stable lowercase label used by stats.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Strong => "strong",
-            Self::Weak => "weak",
+            Self::Capable => "capable",
+            Self::Efficient => "efficient",
         }
     }
 }
 
-/// Source that produced a cascade decision.
+/// Source that produced a stage_router decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CascadeDecisionSource {
+pub enum StageRouterDecisionSource {
     /// Hard override fired.
     Override,
     /// Dimension scorer crossed `confidence_threshold`.
@@ -267,7 +268,7 @@ pub enum CascadeDecisionSource {
     ContextOverflowFallback,
 }
 
-impl CascadeDecisionSource {
+impl StageRouterDecisionSource {
     /// Stable lowercase label used in stats JSON.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -280,11 +281,11 @@ impl CascadeDecisionSource {
     }
 }
 
-/// Cascade routing decision with the selected target and scorer metadata.
+/// StageRouter routing decision with the selected target and scorer metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CascadeDecision {
-    /// Selected strong/weak side.
-    pub tier: CascadeTier,
+pub struct StageRouterDecision {
+    /// Selected capable/efficient side.
+    pub tier: StageRouterTier,
     /// Selected target id.
     pub selected_target: LlmTargetId,
     /// Selected upstream model.
@@ -292,28 +293,28 @@ pub struct CascadeDecision {
     /// Client-provided model before routing.
     pub original_model: Option<String>,
     /// Decision source for observability.
-    pub source: CascadeDecisionSource,
+    pub source: StageRouterDecisionSource,
     /// Linear scorer value in `[-1.0, 1.0]`.
     pub score: f64,
     /// Router confidence when the decision source produced one.
     pub confidence: Option<f64>,
 }
 
-impl CascadeProfile {
-    async fn route_request(&self, mut input: ProfileInput) -> Result<CascadeProcessedRequest> {
+impl StageRouterProfile {
+    async fn route_request(&self, mut input: ProfileInput) -> Result<StageRouterProcessedRequest> {
         let signal = extract_tool_signals_with_window(&input.request, self.signal_recent_window);
         let original_model = input.request.model().map(std::borrow::ToOwned::to_owned);
         let decision = self.pick(&input.request, &signal, original_model).await?;
         input.request.set_model(decision.selected_model.as_str());
         self.record_decision_source(decision.source)?;
-        Ok(CascadeProcessedRequest {
+        Ok(StageRouterProcessedRequest {
             profile_input: input,
             decision,
         })
     }
 
     // Routing decision flow:
-    // 1. Hard overrides choose strong for critical failures or weak for clean tests.
+    // 1. Hard overrides choose capable for critical failures or efficient for clean tests.
     // 2. Dimensions scoring chooses by score sign when confidence clears the threshold.
     // 3. Low-confidence requests use the optional LLM classifier when configured.
     // 4. Missing or failed classifier output falls open to the picker default tier.
@@ -322,12 +323,12 @@ impl CascadeProfile {
         request: &ChatRequest,
         signal: &ToolResultSignal,
         original_model: Option<String>,
-    ) -> Result<CascadeDecision> {
+    ) -> Result<StageRouterDecision> {
         if let Some(tier) = apply_overrides(signal) {
             return self.decision_for_tier(
                 tier,
                 original_model,
-                CascadeDecisionSource::Override,
+                StageRouterDecisionSource::Override,
                 0.0,
                 Some(1.0),
             );
@@ -336,14 +337,14 @@ impl CascadeProfile {
         let score = score_signal(signal);
         if score.confidence >= self.confidence_threshold {
             let tier = if score.score > 0.0 {
-                CascadeTier::Strong
+                StageRouterTier::Capable
             } else {
-                CascadeTier::Weak
+                StageRouterTier::Efficient
             };
             return self.decision_for_tier(
                 tier,
                 original_model,
-                CascadeDecisionSource::Dimensions,
+                StageRouterDecisionSource::Dimensions,
                 score.score,
                 Some(score.confidence),
             );
@@ -357,7 +358,7 @@ impl CascadeProfile {
                 return self.decision_for_tier(
                     tier,
                     original_model,
-                    CascadeDecisionSource::LlmClassifier,
+                    StageRouterDecisionSource::LlmClassifier,
                     score.score,
                     None,
                 );
@@ -367,7 +368,7 @@ impl CascadeProfile {
         self.decision_for_tier(
             self.picker.default_tier(),
             original_model,
-            CascadeDecisionSource::FallOpen,
+            StageRouterDecisionSource::FallOpen,
             score.score,
             Some(score.confidence),
         )
@@ -375,15 +376,15 @@ impl CascadeProfile {
 
     fn decision_for_tier(
         &self,
-        tier: CascadeTier,
+        tier: StageRouterTier,
         original_model: Option<String>,
-        source: CascadeDecisionSource,
+        source: StageRouterDecisionSource,
         score: f64,
         confidence: Option<f64>,
-    ) -> Result<CascadeDecision> {
+    ) -> Result<StageRouterDecision> {
         let backend = self.backend_for_tier(tier);
         let target = backend.target();
-        Ok(CascadeDecision {
+        Ok(StageRouterDecision {
             tier,
             selected_target: target.id.clone(),
             selected_model: target.model.clone(),
@@ -394,15 +395,15 @@ impl CascadeProfile {
         })
     }
 
-    fn fallback_decision(&self, decision: &CascadeDecision) -> Result<CascadeDecision> {
+    fn fallback_decision(&self, decision: &StageRouterDecision) -> Result<StageRouterDecision> {
         let backend = self.backend_for_target(&self.fallback_target_on_evict)?;
         let target = backend.target();
-        Ok(CascadeDecision {
+        Ok(StageRouterDecision {
             tier: self.tier_for_target(&target.id)?,
             selected_target: target.id.clone(),
             selected_model: target.model.clone(),
             original_model: decision.original_model.clone(),
-            source: CascadeDecisionSource::ContextOverflowFallback,
+            source: StageRouterDecisionSource::ContextOverflowFallback,
             score: decision.score,
             confidence: decision.confidence,
         })
@@ -410,53 +411,53 @@ impl CascadeProfile {
 
     fn retry_processed_request(
         &self,
-        processed: &CascadeProcessedRequest,
-    ) -> Result<CascadeProcessedRequest> {
+        processed: &StageRouterProcessedRequest,
+    ) -> Result<StageRouterProcessedRequest> {
         let decision = self.fallback_decision(&processed.decision)?;
         let mut profile_input = processed.profile_input.clone();
         profile_input
             .request
             .set_model(decision.selected_model.as_str());
-        Ok(CascadeProcessedRequest {
+        Ok(StageRouterProcessedRequest {
             profile_input,
             decision,
         })
     }
 
-    fn backend_for_tier(&self, tier: CascadeTier) -> &TargetBackend {
+    fn backend_for_tier(&self, tier: StageRouterTier) -> &TargetBackend {
         match tier {
-            CascadeTier::Strong => &self.strong_backend,
-            CascadeTier::Weak => &self.weak_backend,
+            StageRouterTier::Capable => &self.capable_backend,
+            StageRouterTier::Efficient => &self.efficient_backend,
         }
     }
 
     fn backend_for_target(&self, target_id: &LlmTargetId) -> Result<&TargetBackend> {
-        if *target_id == self.strong_backend.target().id {
-            Ok(&self.strong_backend)
-        } else if *target_id == self.weak_backend.target().id {
-            Ok(&self.weak_backend)
+        if *target_id == self.capable_backend.target().id {
+            Ok(&self.capable_backend)
+        } else if *target_id == self.efficient_backend.target().id {
+            Ok(&self.efficient_backend)
         } else {
             Err(SwitchyardError::InvalidConfig(format!(
-                "cascade selected target {target_id} that is not configured for this profile"
+                "stage_router selected target {target_id} that is not configured for this profile"
             )))
         }
     }
 
-    fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<CascadeTier> {
-        if *target_id == self.strong_backend.target().id {
-            Ok(CascadeTier::Strong)
-        } else if *target_id == self.weak_backend.target().id {
-            Ok(CascadeTier::Weak)
+    fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<StageRouterTier> {
+        if *target_id == self.capable_backend.target().id {
+            Ok(StageRouterTier::Capable)
+        } else if *target_id == self.efficient_backend.target().id {
+            Ok(StageRouterTier::Efficient)
         } else {
             Err(SwitchyardError::InvalidConfig(format!(
-                "cascade target {target_id} is not configured for this profile"
+                "stage_router target {target_id} is not configured for this profile"
             )))
         }
     }
 
     async fn call_selected(
         &self,
-        processed: &CascadeProcessedRequest,
+        processed: &StageRouterProcessedRequest,
     ) -> (Result<ChatResponse>, f64) {
         let started_at = Instant::now();
         let backend = match self.backend_for_target(&processed.decision.selected_target) {
@@ -472,16 +473,16 @@ impl CascadeProfile {
         self.enable_stats.then_some(&self.stats)
     }
 
-    fn record_decision_source(&self, source: CascadeDecisionSource) -> Result<()> {
+    fn record_decision_source(&self, source: StageRouterDecisionSource) -> Result<()> {
         if let Some(stats) = self.stats_handle() {
-            stats.record_routing_decision(CASCADE_PROFILE_TYPE, source.as_str())?;
+            stats.record_routing_decision(STAGE_ROUTER_PROFILE_TYPE, source.as_str())?;
         }
         Ok(())
     }
 
     fn record_success(
         &self,
-        decision: &CascadeDecision,
+        decision: &StageRouterDecision,
         response: &ChatResponse,
         total_latency_ms: f64,
         backend_latency_ms: f64,
@@ -505,7 +506,7 @@ impl CascadeProfile {
         Ok(())
     }
 
-    fn record_error(&self, decision: &CascadeDecision) -> Result<()> {
+    fn record_error(&self, decision: &StageRouterDecision) -> Result<()> {
         if let Some(stats) = self.stats_handle() {
             stats.record_error(
                 decision.selected_model.as_str(),
@@ -515,15 +516,15 @@ impl CascadeProfile {
         Ok(())
     }
 
-    fn routing_metadata(&self, decision: &CascadeDecision) -> RoutingMetadata {
+    fn routing_metadata(&self, decision: &StageRouterDecision) -> RoutingMetadata {
         RoutingMetadata {
             selected_model: Some(decision.selected_model.to_string()),
             selected_tier: Some(decision.tier.as_str().to_string()),
             confidence: decision.confidence,
-            router_version: Some("cascade:v1".to_string()),
+            router_version: Some("stage_router:v1".to_string()),
             tolerance: Some(self.confidence_threshold),
             rationale: Some(format!(
-                "cascade source={}; score={}; selected {}",
+                "stage_router source={}; score={}; selected {}",
                 decision.source.as_str(),
                 decision.score,
                 decision.tier.as_str()
@@ -533,15 +534,15 @@ impl CascadeProfile {
 }
 
 #[async_trait]
-impl ProfileHooks for CascadeProfile {
-    type ProcessedRequest = CascadeProcessedRequest;
+impl ProfileHooks for StageRouterProfile {
+    type ProcessedRequest = StageRouterProcessedRequest;
 
     /// Extracts signals, picks a tier, and rewrites the request model.
     async fn process(&self, input: ProfileInput) -> Result<Self::ProcessedRequest> {
         self.route_request(input).await
     }
 
-    /// Leaves the backend response unchanged after cascade routing completes.
+    /// Leaves the backend response unchanged after stage_router routing completes.
     async fn rprocess(
         &self,
         _processed: &Self::ProcessedRequest,
@@ -552,8 +553,8 @@ impl ProfileHooks for CascadeProfile {
 }
 
 #[async_trait]
-impl Profile for CascadeProfile {
-    /// Executes cascade routing with one context-window fallback retry.
+impl Profile for StageRouterProfile {
+    /// Executes stage_router routing with one context-window fallback retry.
     async fn run(&self, input: ProfileInput) -> Result<ProfileResponse> {
         let profile_started_at = Instant::now();
         let processed = self.process(input).await?;
@@ -691,15 +692,15 @@ fn dimensions_from_signal(signal: &ToolResultSignal) -> CodingAgentDimensions {
     }
 }
 
-fn apply_overrides(signal: &ToolResultSignal) -> Option<CascadeTier> {
+fn apply_overrides(signal: &ToolResultSignal) -> Option<StageRouterTier> {
     if signal.severity >= SEVERITY_CRITICAL {
-        return Some(CascadeTier::Strong);
+        return Some(StageRouterTier::Capable);
     }
     if signal.tests_passed
         && signal.turn_depth >= CLEAN_TESTS_MIN_TURN_DEPTH
         && signal.write_count <= CLEAN_TESTS_MAX_WRITES
     {
-        return Some(CascadeTier::Weak);
+        return Some(StageRouterTier::Efficient);
     }
     None
 }
@@ -720,21 +721,21 @@ fn ratio(numerator: u32, denominator: u32) -> f64 {
     }
 }
 
-struct CascadeTierClassifier {
-    config: CascadeClassifierConfig,
+struct StageRouterTierClassifier {
+    config: StageRouterClassifierConfig,
     client: reqwest::Client,
     disable_reasoning: bool,
 }
 
-impl CascadeTierClassifier {
-    fn new(config: &CascadeClassifierConfig) -> Result<Self> {
+impl StageRouterTierClassifier {
+    fn new(config: &StageRouterClassifierConfig) -> Result<Self> {
         config.validate()?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs_f64(config.timeout_secs))
             .build()
             .map_err(|error| {
                 SwitchyardError::InvalidConfig(format!(
-                    "failed to build cascade classifier HTTP client: {error}"
+                    "failed to build stage_router classifier HTTP client: {error}"
                 ))
             })?;
         Ok(Self {
@@ -749,7 +750,7 @@ impl CascadeTierClassifier {
         request: &ChatRequest,
         signal: &ToolResultSignal,
         stats: Option<&StatsAccumulator>,
-    ) -> Option<CascadeTier> {
+    ) -> Option<StageRouterTier> {
         let started_at = Instant::now();
         let response = match self
             .client
@@ -761,7 +762,7 @@ impl CascadeTierClassifier {
         {
             Ok(response) => response,
             Err(error) => {
-                tracing::warn!(error = %error, "cascade classifier call failed; falling open");
+                tracing::warn!(error = %error, "stage_router classifier call failed; falling open");
                 record_classifier_error(stats, self.config.model.as_str());
                 return None;
             }
@@ -770,7 +771,7 @@ impl CascadeTierClassifier {
         if !response.status().is_success() {
             tracing::warn!(
                 status = %response.status(),
-                "cascade classifier returned error status; falling open"
+                "stage_router classifier returned error status; falling open"
             );
             record_classifier_error(stats, self.config.model.as_str());
             return None;
@@ -779,7 +780,7 @@ impl CascadeTierClassifier {
         let body = match response.json::<Value>().await {
             Ok(body) => body,
             Err(error) => {
-                tracing::warn!(error = %error, "cascade classifier returned invalid JSON; falling open");
+                tracing::warn!(error = %error, "stage_router classifier returned invalid JSON; falling open");
                 record_classifier_error(stats, self.config.model.as_str());
                 return None;
             }
@@ -828,7 +829,7 @@ fn record_classifier_usage(
 ) {
     if let Some(stats) = stats {
         if let Err(error) = stats.record_classifier_usage(model, usage, Some(latency_ms)) {
-            tracing::debug!(error = %error, "failed to record cascade classifier usage");
+            tracing::debug!(error = %error, "failed to record stage_router classifier usage");
         }
     }
 }
@@ -836,12 +837,12 @@ fn record_classifier_usage(
 fn record_classifier_error(stats: Option<&StatsAccumulator>, model: &str) {
     if let Some(stats) = stats {
         if let Err(error) = stats.record_classifier_error(model) {
-            tracing::debug!(error = %error, "failed to record cascade classifier error");
+            tracing::debug!(error = %error, "failed to record stage_router classifier error");
         }
     }
 }
 
-fn parse_classifier_tier(body: &Value) -> Option<CascadeTier> {
+fn parse_classifier_tier(body: &Value) -> Option<StageRouterTier> {
     let content = body
         .get("choices")?
         .as_array()?
@@ -851,8 +852,8 @@ fn parse_classifier_tier(body: &Value) -> Option<CascadeTier> {
         .as_str()?;
     let payload = serde_json::from_str::<Value>(content).ok()?;
     match payload.get("tier").and_then(Value::as_str) {
-        Some("strong") => Some(CascadeTier::Strong),
-        Some("weak") => Some(CascadeTier::Weak),
+        Some("capable") => Some(StageRouterTier::Capable),
+        Some("efficient") => Some(StageRouterTier::Efficient),
         _ => None,
     }
 }
@@ -879,11 +880,11 @@ fn summarise_signal(
     );
     let recent_messages = recent_messages(request, recent_window);
     if recent_messages.is_empty() {
-        return format!("Decide STRONG or WEAK for the next call. {state_line}");
+        return format!("Decide CAPABLE or EFFICIENT for the next call. {state_line}");
     }
 
     let mut lines = vec![
-        "Decide STRONG or WEAK for the next call.".to_string(),
+        "Decide CAPABLE or EFFICIENT for the next call.".to_string(),
         state_line,
         "Recent turns (most recent last):".to_string(),
     ];
@@ -983,8 +984,8 @@ fn model_accepts_reasoning_hint(model: &str) -> bool {
         .any(|tag| lowered.contains(tag))
 }
 
-fn default_picker() -> CascadePickerMode {
-    CascadePickerMode::CascadeStrongDefault
+fn default_picker() -> StageRouterPickerMode {
+    StageRouterPickerMode::CapableFirst
 }
 
 fn default_confidence_threshold() -> f64 {
@@ -1117,23 +1118,28 @@ mod tests {
     }
 
     fn profile(
-        strong: LlmTarget,
-        weak: LlmTarget,
-        picker: CascadePickerMode,
+        capable: LlmTarget,
+        efficient: LlmTarget,
+        picker: StageRouterPickerMode,
         confidence_threshold: f64,
-        weak_actions: Vec<BackendAction>,
-        strong_actions: Vec<BackendAction>,
-    ) -> Result<(CascadeProfile, Arc<Mutex<Vec<ObservedCall>>>)> {
+        efficient_actions: Vec<BackendAction>,
+        capable_actions: Vec<BackendAction>,
+    ) -> Result<(StageRouterProfile, Arc<Mutex<Vec<ObservedCall>>>)> {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let profile = CascadeProfile {
-            strong_backend: target_backend(
-                &strong,
-                "strong-backend",
+        let profile = StageRouterProfile {
+            capable_backend: target_backend(
+                &capable,
+                "capable-backend",
                 calls.clone(),
-                strong_actions,
+                capable_actions,
             ),
-            weak_backend: target_backend(&weak, "weak-backend", calls.clone(), weak_actions),
-            fallback_target_on_evict: strong.id.clone(),
+            efficient_backend: target_backend(
+                &efficient,
+                "efficient-backend",
+                calls.clone(),
+                efficient_actions,
+            ),
+            fallback_target_on_evict: capable.id.clone(),
             picker,
             confidence_threshold,
             signal_recent_window: DEFAULT_RECENT_WINDOW,
@@ -1145,11 +1151,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cascade_routes_critical_tool_errors_to_strong() -> Result<()> {
+    async fn stage_router_routes_critical_tool_errors_to_capable() -> Result<()> {
         let (profile, calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
-            CascadePickerMode::CascadeWeakDefault,
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
             0.7,
             vec![BackendAction::Ok],
             vec![BackendAction::Ok],
@@ -1157,7 +1163,7 @@ mod tests {
 
         let response = profile
             .run(profile_input(ChatRequest::openai_chat(json!({
-                "model": "smart-cascade",
+                "model": "smart-stage-router",
                 "messages": [
                     {"role": "assistant", "tool_calls": [{
                         "type": "function",
@@ -1176,21 +1182,21 @@ mod tests {
             routing_metadata.selected_model.as_deref(),
             Some("frontier/model")
         );
-        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
+        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("capable"));
         assert_eq!(routing_metadata.confidence, Some(1.0));
         assert_eq!(
             routing_metadata.router_version.as_deref(),
-            Some("cascade:v1")
+            Some("stage_router:v1")
         );
         let response = response.response;
 
         let calls = observed(&calls)?;
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].backend, "strong-backend");
+        assert_eq!(calls[0].backend, "capable-backend");
         assert_eq!(calls[0].body["model"], "frontier/model");
         match response {
             ChatResponse::OpenAiCompletion(body) => {
-                assert_eq!(body.body()["served_by"], "strong-backend");
+                assert_eq!(body.body()["served_by"], "capable-backend");
             }
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
@@ -1199,7 +1205,7 @@ mod tests {
         assert_eq!(
             snapshot
                 .routing_decisions
-                .get("cascade")
+                .get("stage_router")
                 .and_then(|sources| sources.get("override")),
             Some(&1)
         );
@@ -1208,17 +1214,17 @@ mod tests {
                 .models
                 .get("frontier/model")
                 .and_then(|model| model.tier.as_deref()),
-            Some("strong")
+            Some("capable")
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn cascade_threshold_zero_accepts_neutral_scorer_as_weak() -> Result<()> {
+    async fn stage_router_threshold_zero_accepts_neutral_scorer_as_efficient() -> Result<()> {
         let (profile, calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
-            CascadePickerMode::CascadeStrongDefault,
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::CapableFirst,
             0.0,
             vec![BackendAction::Ok],
             vec![BackendAction::Ok],
@@ -1226,24 +1232,27 @@ mod tests {
 
         let processed = profile
             .process(profile_input(ChatRequest::openai_chat(json!({
-                "model": "smart-cascade",
+                "model": "smart-stage-router",
                 "messages": [{"role": "user", "content": "continue"}],
             }))))
             .await?;
 
-        assert_eq!(processed.decision.tier, CascadeTier::Weak);
-        assert_eq!(processed.decision.source, CascadeDecisionSource::Dimensions);
+        assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Dimensions
+        );
         assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
         assert!(observed(&calls)?.is_empty());
         Ok(())
     }
 
     #[tokio::test]
-    async fn cascade_retries_configured_fallback_after_context_overflow() -> Result<()> {
+    async fn stage_router_retries_configured_fallback_after_context_overflow() -> Result<()> {
         let (profile, calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
-            CascadePickerMode::CascadeWeakDefault,
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
             0.7,
             vec![BackendAction::ContextOverflow],
             vec![BackendAction::Ok],
@@ -1251,7 +1260,7 @@ mod tests {
 
         let response = profile
             .run(profile_input(ChatRequest::openai_chat(json!({
-                "model": "smart-cascade",
+                "model": "smart-stage-router",
                 "messages": [{"role": "user", "content": "continue"}],
             }))))
             .await?;
@@ -1264,7 +1273,7 @@ mod tests {
             routing_metadata.selected_model.as_deref(),
             Some("frontier/model")
         );
-        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
+        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("capable"));
         assert!(routing_metadata
             .rationale
             .as_deref()
@@ -1273,13 +1282,13 @@ mod tests {
 
         let calls = observed(&calls)?;
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].backend, "weak-backend");
+        assert_eq!(calls[0].backend, "efficient-backend");
         assert_eq!(calls[0].body["model"], "cheap/model");
-        assert_eq!(calls[1].backend, "strong-backend");
+        assert_eq!(calls[1].backend, "capable-backend");
         assert_eq!(calls[1].body["model"], "frontier/model");
         match response {
             ChatResponse::OpenAiCompletion(body) => {
-                assert_eq!(body.body()["served_by"], "strong-backend");
+                assert_eq!(body.body()["served_by"], "capable-backend");
             }
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
@@ -1291,12 +1300,12 @@ mod tests {
                 .models
                 .get("frontier/model")
                 .and_then(|model| model.tier.as_deref()),
-            Some("strong")
+            Some("capable")
         );
         assert_eq!(
             snapshot
                 .routing_decisions
-                .get("cascade")
+                .get("stage_router")
                 .and_then(|sources| sources.get("fall_open")),
             Some(&1)
         );
@@ -1304,12 +1313,12 @@ mod tests {
     }
 
     #[test]
-    fn cascade_config_rejects_unknown_fallback_target() -> Result<()> {
-        let config = CascadeProfileConfig {
-            strong: target("strong", "frontier/model")?,
-            weak: target("weak", "cheap/model")?,
+    fn stage_router_config_rejects_unknown_fallback_target() -> Result<()> {
+        let config = StageRouterProfileConfig {
+            capable: target("capable", "frontier/model")?,
+            efficient: target("efficient", "cheap/model")?,
             fallback_target_on_evict: LlmTargetId::new("ghost")?,
-            picker: CascadePickerMode::CascadeStrongDefault,
+            picker: StageRouterPickerMode::CapableFirst,
             confidence_threshold: 0.7,
             signal_recent_window: DEFAULT_RECENT_WINDOW,
             classifier: None,
@@ -1327,7 +1336,7 @@ mod tests {
 
     #[test]
     fn classifier_request_uses_reasoning_hint_for_vllm_models() -> Result<()> {
-        let classifier = CascadeTierClassifier::new(&CascadeClassifierConfig {
+        let classifier = StageRouterTierClassifier::new(&StageRouterClassifierConfig {
             model: "nvidia/deepseek-ai/deepseek-v4-flash".to_string(),
             api_key: "test-key".to_string(),
             base_url: None,
@@ -1339,7 +1348,7 @@ mod tests {
 
         let body = classifier.request_body(
             &ChatRequest::openai_chat(json!({
-                "model": "smart-cascade",
+                "model": "smart-stage-router",
                 "messages": [{"role": "user", "content": "hi"}],
             })),
             &ToolResultSignal::default(),

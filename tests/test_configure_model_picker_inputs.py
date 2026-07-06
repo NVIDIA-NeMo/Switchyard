@@ -11,7 +11,7 @@ Pins the two helpers that feed `wizard.select_model(...)`:
   catalog in first-seen order.
 
 Without these in the picker pipeline the wizard offers only the upstream
-catalog and the user can't pick a route key like `opus-ds-cascade` even when
+catalog and the user can't pick a route key like `opus-ds-stage_router` even when
 their YAML declares it.
 """
 
@@ -28,13 +28,13 @@ def test_empty_or_none_bundle_returns_empty() -> None:
 
 
 def test_extracts_route_keys_and_tier_models() -> None:
-    """Cascade + deterministic routes contribute the route key plus
+    """StageRouter + deterministic routes contribute the route key plus
     strong/weak tier models. Classifier is intentionally skipped (internal)."""
     bundle = {
         "routes": {
-            "opus-ds-cascade": {
-                "type": "cascade",
-                "picker": "cascade_strong_default",
+            "opus-ds-stage_router": {
+                "type": "stage_router",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {"model": "aws/anthropic/bedrock-claude-opus-4-7"},
                 "weak": {"model": "nvidia/deepseek-ai/evals-deepseek-v4-pro"},
@@ -51,7 +51,7 @@ def test_extracts_route_keys_and_tier_models() -> None:
         },
     }
     assert _routing_profile_model_ids(bundle) == [
-        "opus-ds-cascade",
+        "opus-ds-stage_router",
         "aws/anthropic/bedrock-claude-opus-4-7",
         "nvidia/deepseek-ai/evals-deepseek-v4-pro",
         "opus-ds-classifier",
@@ -107,14 +107,14 @@ def test_plan_execute_planner_executor_extracted() -> None:
 def test_merge_candidate_ids_dedupes_preserves_first_seen_order() -> None:
     """Routing-profile entries first, then upstream catalog. Duplicates from
     later sources drop."""
-    routing = ["opus-ds-cascade", "aws/anthropic/bedrock-claude-opus-4-7"]
+    routing = ["opus-ds-stage_router", "aws/anthropic/bedrock-claude-opus-4-7"]
     upstream = [
         "openai/gpt-5.2",
         "aws/anthropic/bedrock-claude-opus-4-7",  # dup with routing[1]
         "nvidia/nvidia/nemotron-3-super-120b-long-ctx",
     ]
     assert _merge_candidate_ids(routing, upstream) == [
-        "opus-ds-cascade",
+        "opus-ds-stage_router",
         "aws/anthropic/bedrock-claude-opus-4-7",
         "openai/gpt-5.2",
         "nvidia/nvidia/nemotron-3-super-120b-long-ctx",

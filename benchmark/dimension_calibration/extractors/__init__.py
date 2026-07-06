@@ -28,7 +28,7 @@ class ScoredPrompt:
     """
 
     run_id: str
-    source: str         # label from the manifest entry (e.g. "cascade-settle-aware")
+    source: str         # label from the manifest entry (e.g. "stage_router-settle-aware")
     task: str           # task id (e.g. "book-portfolio-analysis")
     turn_idx: int       # 0-based turn within the trajectory
     full: str           # full prompt blob (system + history + latest user)

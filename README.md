@@ -14,7 +14,7 @@ open-source model. Switchyard translates between the OpenAI Chat, Anthropic
 Messages, and OpenAI Responses formats, so the agent keeps speaking its native
 API while the request is served by vLLM, NVIDIA NIM, Ollama, or any
 OpenAI-compatible endpoint. The same proxy can spread traffic across several
-models for A/B benchmarking, signal-driven cascade escalation, or a router you
+models for A/B benchmarking, signal-driven stage-router escalation, or a router you
 write yourself.
 
 **Launcher routing is explicit.** By default, launchers use the built-in
@@ -26,7 +26,7 @@ remains only for launcher-owned legacy bundles.
 ## Features
 
 - **Protocol Translation**: convert between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats
-- **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven cascade, or custom routers
+- **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or custom routers
 - **Strong Types**: typed request/response containers for OpenAI, Anthropic, and Responses APIs
 - **Profile-Owned Routing**: typed profiles own routing, backend calls, stats, and translation wiring
 - **One-Command Launchers**: `switchyard launch claude`, `switchyard launch codex`, and `switchyard launch openclaw` spin up a local proxy and drop you into the target CLI
@@ -149,7 +149,7 @@ strategy-specific page:
 
 - [Random Routing](docs/routing_algorithms/random_routing.md)
 - [LLM Classifier Routing](docs/routing_algorithms/llm_classifier_routing.md)
-- [Cascade Routing](docs/routing_algorithms/cascade_routing.md)
+- [Stage-Router Routing](docs/routing_algorithms/stage_router_routing.md)
 
 For multi-turn classifier sessions, see
 [Session Affinity (Sticky Routing)](docs/routing_algorithms/sticky_routing.md).
@@ -223,7 +223,7 @@ See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds
 - **[Agent Launchers](docs/guides/agent_launchers.md)**: Claude Code, Codex, and OpenClaw launcher behavior
 - **[Cli Reference](docs/cli_reference.md)**: canonical reference for every `switchyard` subcommand and flag
 - **[Architecture](docs/architecture.md)**: system context and end-to-end request flow
-- **[Routing Algorithms](docs/routing_algorithms/)**: signal-driven weak/strong cascade routing: picker layers, signal dimensions, and calibration data.
+- **[Routing Algorithms](docs/routing_algorithms/)**: signal-driven weak/strong stage-router routing: picker layers, signal dimensions, and calibration data.
 - **[Contributing](CONTRIBUTING.md)**: dev setup, testing, CI gates, PR process
 - **[Development](DEVELOPMENT.md)**: project structure, benchmarks, conventions
 - **[Agents](AGENTS.md)**: full design philosophy and architectural patterns

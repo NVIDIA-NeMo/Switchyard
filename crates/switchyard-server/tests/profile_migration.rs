@@ -212,7 +212,7 @@ profiles:
 }
 
 #[tokio::test]
-async fn cascade_profile_threshold_zero_uses_dimensions_signal_path() -> TestResult {
+async fn stage_router_profile_threshold_zero_uses_dimensions_signal_path() -> TestResult {
     let _stats_guard = STATS_TEST_LOCK.lock().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::ok()])? else {
@@ -231,12 +231,12 @@ targets:
     format: openai
     base_url: {base_url}
 profiles:
-  smart-cascade:
-    type: cascade
-    strong: strong
-    weak: weak
+  smart-stage_router:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: capable_first
     confidence_threshold: 0.0
 "#,
         base_url = stub.base_url
@@ -247,7 +247,7 @@ profiles:
         .oneshot(request(
             "POST",
             "/v1/chat/completions",
-            Some(chat_body("smart-cascade")),
+            Some(chat_body("smart-stage_router")),
         )?)
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
@@ -258,17 +258,20 @@ profiles:
 
     let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
     let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["cascade"]["dimensions"], 1);
+    assert_eq!(stats["routing_decisions"]["stage_router"]["dimensions"], 1);
     assert_eq!(stats["classifier"]["total_requests"], 0);
-    assert_eq!(stats["models"]["provider/weak"]["tier"], "weak");
+    assert_eq!(stats["models"]["provider/weak"]["tier"], "efficient");
     Ok(())
 }
 
 #[tokio::test]
-async fn cascade_profile_threshold_one_uses_llm_classifier_path() -> TestResult {
+async fn stage_router_profile_threshold_one_uses_llm_classifier_path() -> TestResult {
     let _stats_guard = STATS_TEST_LOCK.lock().await;
     reset_stats()?;
-    let Some(stub) = HttpStub::start(vec![StubResponse::classifier("strong"), StubResponse::ok()])?
+    let Some(stub) = HttpStub::start(vec![
+        StubResponse::classifier("capable"),
+        StubResponse::ok(),
+    ])?
     else {
         log_loopback_bind_skip();
         return Ok(());
@@ -285,12 +288,12 @@ targets:
     format: openai
     base_url: {base_url}
 profiles:
-  smart-cascade:
-    type: cascade
-    strong: strong
-    weak: weak
+  smart-stage_router:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: capable_first
     confidence_threshold: 1.0
     classifier:
       model: classifier/model
@@ -306,7 +309,7 @@ profiles:
         .oneshot(request(
             "POST",
             "/v1/chat/completions",
-            Some(chat_body("smart-cascade")),
+            Some(chat_body("smart-stage_router")),
         )?)
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
@@ -318,14 +321,17 @@ profiles:
 
     let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
     let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["cascade"]["llm-classifier"], 1);
+    assert_eq!(
+        stats["routing_decisions"]["stage_router"]["llm-classifier"],
+        1
+    );
     assert_eq!(stats["classifier"]["total_requests"], 1);
-    assert_eq!(stats["models"]["provider/strong"]["tier"], "strong");
+    assert_eq!(stats["models"]["provider/strong"]["tier"], "capable");
     Ok(())
 }
 
 #[tokio::test]
-async fn cascade_profile_retries_fallback_after_context_overflow() -> TestResult {
+async fn stage_router_profile_retries_fallback_after_context_overflow() -> TestResult {
     let _stats_guard = STATS_TEST_LOCK.lock().await;
     reset_stats()?;
     let Some(stub) = HttpStub::start(vec![StubResponse::context_overflow(), StubResponse::ok()])?
@@ -345,12 +351,12 @@ targets:
     format: openai
     base_url: {base_url}
 profiles:
-  smart-cascade:
-    type: cascade
-    strong: strong
-    weak: weak
+  smart-stage_router:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_weak_default
+    picker: efficient_first
     confidence_threshold: 0.7
 "#,
         base_url = stub.base_url
@@ -361,7 +367,7 @@ profiles:
         .oneshot(request(
             "POST",
             "/v1/chat/completions",
-            Some(chat_body("smart-cascade")),
+            Some(chat_body("smart-stage_router")),
         )?)
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
@@ -373,8 +379,8 @@ profiles:
 
     let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
     let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["cascade"]["fall_open"], 1);
-    assert_eq!(stats["models"]["provider/strong"]["tier"], "strong");
+    assert_eq!(stats["routing_decisions"]["stage_router"]["fall_open"], 1);
+    assert_eq!(stats["models"]["provider/strong"]["tier"], "capable");
     Ok(())
 }
 

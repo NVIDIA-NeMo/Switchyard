@@ -42,12 +42,12 @@ profiles:
   fast:
     type: passthrough
     target: weak
-  smart-cascade:
-    type: cascade
-    strong: strong
-    weak: weak
+  smart-stage-router:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: capable_first
     confidence_threshold: 0.7
 """
 
@@ -156,7 +156,7 @@ def _write(tmp_path: Path, text: str, name: str = "profiles.yaml") -> Path:
 
 
 def test_dry_run_validates_rust_profiles_and_direct_targets(tmp_path: Path) -> None:
-    # passthrough + cascade + the two targets (directly addressable).
+    # passthrough + stage_router + the two targets (directly addressable).
     path = _write(tmp_path, _RUST_CONFIG)
     # dry_run loads, resolves, and builds the registry, then returns without
     # binding a socket. No exception == a servable config.

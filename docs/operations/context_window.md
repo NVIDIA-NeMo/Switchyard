@@ -6,7 +6,7 @@ reroutes to the configured fallback target, and retries once. If the fallback
 also overflows, the request fails with a 400 in the client's inbound wire
 format.
 
-Any multi-target route (cascade, random_routing, or deterministic) supports
+Any multi-target route (stage-router, random_routing, or deterministic) supports
 this. Set `fallback_target_on_evict` on the route. Single-target routes
 (`type: passthrough`, `type: model`) have no alternative target, so the original
 overflow propagates unchanged.
@@ -18,9 +18,9 @@ match one of the route's declared target ids:
 
 ```yaml
 routes:
-  my-cascade:
-    type: cascade
-    picker: cascade_strong_default
+  my-stage-router:
+    type: stage_router
+    picker: capable_first
     fallback_target_on_evict: strong   # must match strong.id or weak.id
     strong:
       id: strong

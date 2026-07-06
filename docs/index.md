@@ -15,7 +15,7 @@ split across model tiers, or selected by routing policy.
 | Client ingress | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses compatible endpoints. |
 | Agent launchers | One-command local proxies for Claude Code, Codex, and OpenClaw. |
 | Format translation | Request and response translation between supported wire formats. |
-| Routing policies | Random splits, LLM classifier routing with optional session affinity, signal-driven cascade routing, and YAML route bundles. |
+| Routing policies | Random splits, LLM classifier routing with optional session affinity, signal-driven stage-router routing, and YAML route bundles. |
 | Operations | Request/token statistics and context-window fallback behavior. |
 | Deployment options | Local coding-agent proxy, shared HTTP service, or embedded Python runtime. |
 
@@ -52,7 +52,7 @@ For source installs, non-interactive configuration, and a curl sanity check, use
 
 - **Configure routing**
 
-    Pick between fixed splits, classifier routing, and cascade routing, with
+    Pick between fixed splits, classifier routing, and stage-router routing, with
     optional session affinity for classifier-driven conversations.
 
     [Routing Overview](routing_algorithms/overview.md)
@@ -132,7 +132,7 @@ covered in [Routing Overview](routing_algorithms/overview.md).
 |---|---|
 | Fixed strong/weak traffic split for baselines or A/B tests | [Random Routing](routing_algorithms/random_routing.md) |
 | Per-request strong/weak decisions from a classifier model | [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md) |
-| Signal-driven weak/strong escalation with optional classifier fallback | [Cascade Routing](routing_algorithms/cascade_routing.md) |
+| Signal-driven weak/strong escalation with optional classifier fallback | [Stage-Router Routing](routing_algorithms/stage_router_routing.md) |
 | Conversation-level affinity for cache reuse | [Sticky Routing](routing_algorithms/sticky_routing.md) |
 
 ## Operations and Reference

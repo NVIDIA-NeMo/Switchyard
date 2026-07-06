@@ -710,23 +710,23 @@ fn reset_clears_classifier_bucket() -> Result<()> {
 #[test]
 fn routing_decision_counts_are_grouped_by_profile_type() -> Result<()> {
     let accumulator = StatsAccumulator::new();
-    accumulator.record_routing_decision("cascade", "dimensions")?;
-    accumulator.record_routing_decision("cascade", "dimensions")?;
-    accumulator.record_routing_decision("cascade", "llm-classifier")?;
+    accumulator.record_routing_decision("stage_router", "dimensions")?;
+    accumulator.record_routing_decision("stage_router", "dimensions")?;
+    accumulator.record_routing_decision("stage_router", "llm-classifier")?;
     accumulator.record_routing_decision("latency-service", "health")?;
 
     let snapshot = accumulator.snapshot()?;
     assert_eq!(
         snapshot
             .routing_decisions
-            .get("cascade")
+            .get("stage_router")
             .and_then(|sources| sources.get("dimensions")),
         Some(&2)
     );
     assert_eq!(
         snapshot
             .routing_decisions
-            .get("cascade")
+            .get("stage_router")
             .and_then(|sources| sources.get("llm-classifier")),
         Some(&1)
     );

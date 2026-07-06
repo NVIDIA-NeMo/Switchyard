@@ -22,7 +22,7 @@ use switchyard_core::ChatResponse;
 ///
 /// Stamped into `ProxyContext.extensions` by the
 /// `ResponseSignalCollector` adapter. Empty `flags` means all checks
-/// passed — the response is considered acceptable from the cascade
+/// passed — the response is considered acceptable from the stage-router
 /// router's reactive-escalation viewpoint.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseSignals {
@@ -32,7 +32,7 @@ pub struct ResponseSignals {
 impl ResponseSignals {
     /// Returns `true` when at least one check flagged the response.
     ///
-    /// Cascade routers consume this as the per-attempt acceptability
+    /// StageRouter routers consume this as the per-attempt acceptability
     /// gate; a `true` here triggers escalation to the next tier.
     pub fn has_failures(&self) -> bool {
         !self.flags.is_empty()

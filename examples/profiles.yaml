@@ -4,9 +4,9 @@
 #
 # Each profile id and each target id is exposed as a model on GET /v1/models, so
 # a client (or `switchyard launch claude --model <id>`) selects a profile by id:
-#   fast            passthrough to the weak target
-#   smart-cascade   signal-based cascade routing between weak and strong
-#   weak / strong   the targets, addressable directly
+#   fast                 passthrough to the efficient model
+#   smart-stage-router   signal-based stage-router routing between the efficient and capable models
+#   the model ids        the targets, addressable directly
 #
 # All profile types here are Rust-defined, so this file is served by the Rust
 # profile server. Files that include Python-defined profiles (see
@@ -17,12 +17,14 @@ endpoints:
     base_url: https://openrouter.ai/api/v1
     api_key: ${OPENROUTER_API_KEY}
 
+# Targets are named by the model id they serve, so the profile below reads as
+# "capable = <this model>, efficient = <that model>".
 targets:
-  strong:
+  anthropic/claude-opus-4.7:
     endpoint: openrouter
     model: anthropic/claude-opus-4.7
     format: openai
-  weak:
+  moonshotai/kimi-k2.6:
     endpoint: openrouter
     model: moonshotai/kimi-k2.6
     format: openai
@@ -30,14 +32,14 @@ targets:
 profiles:
   fast:
     type: passthrough
-    target: weak
+    target: moonshotai/kimi-k2.6
 
-  smart-cascade:
-    type: cascade
-    strong: strong
-    weak: weak
-    fallback_target_on_evict: strong
-    picker: cascade_strong_default
+  smart-stage-router:
+    type: stage_router
+    capable: anthropic/claude-opus-4.7
+    efficient: moonshotai/kimi-k2.6
+    fallback_target_on_evict: anthropic/claude-opus-4.7
+    picker: capable_first
     confidence_threshold: 0.7
     signal_recent_window: 3
     classifier:

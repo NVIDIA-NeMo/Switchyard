@@ -1053,15 +1053,15 @@ class TestDeterministicRouteType:
         ) is True
 
 
-class TestCascadeRouteType:
-    """`type: cascade` wires the cascade-routing chain via YAML."""
+class TestStageRouterRouteType:
+    """`type: stage_router` wires the stage-router-routing chain via YAML."""
 
     def _bundle(self) -> dict:
         return {
             "routes": {
-                "myrouter/cascade": {
-                    "type": "cascade",
-                    "picker": "cascade_strong_default",
+                "myrouter/stage_router": {
+                    "type": "stage_router",
+                    "picker": "capable_first",
                     "strong": {
                         "id": "strong",
                         "model": "anthropic/claude-opus-4-7",
@@ -1085,10 +1085,10 @@ class TestCascadeRouteType:
     def test_registers_route_key_and_tier_passthroughs(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
         table = build_route_bundle_table(self._bundle())
-        # Unified ordering: route key first as the cascade virtual id,
+        # Unified ordering: route key first as the stage-router virtual id,
         # tier models registered as direct passthroughs after.
         assert table.registered_models() == [
-            "myrouter/cascade",
+            "myrouter/stage_router",
             "anthropic/claude-opus-4-7",
             "nvidia/nemotron-3-super",
         ]
@@ -1099,7 +1099,7 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        del bundle["routes"]["myrouter/cascade"]["strong"]
+        del bundle["routes"]["myrouter/stage_router"]["strong"]
         with pytest.raises(RouteBundleConfigError) as exc:
             build_route_bundle_table(bundle)
         assert "strong" in str(exc.value)
@@ -1110,7 +1110,7 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        del bundle["routes"]["myrouter/cascade"]["weak"]
+        del bundle["routes"]["myrouter/stage_router"]["weak"]
         with pytest.raises(RouteBundleConfigError) as exc:
             build_route_bundle_table(bundle)
         assert "weak" in str(exc.value)
@@ -1121,7 +1121,7 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["picker"] = "no-such-picker"
+        bundle["routes"]["myrouter/stage_router"]["picker"] = "no-such-picker"
         with pytest.raises((RouteBundleConfigError, ValueError)) as exc:
             build_route_bundle_table(bundle)
         assert "picker" in str(exc.value).lower()
@@ -1132,7 +1132,7 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        del bundle["routes"]["myrouter/cascade"]["fallback_target_on_evict"]
+        del bundle["routes"]["myrouter/stage_router"]["fallback_target_on_evict"]
         # Pydantic ValidationError extends ValueError; route_bundle does not
         # additionally wrap it for missing-field cases.
         with pytest.raises((RouteBundleConfigError, ValueError)) as exc:
@@ -1145,7 +1145,7 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["fallback_target_on_evict"] = "nope"
+        bundle["routes"]["myrouter/stage_router"]["fallback_target_on_evict"] = "nope"
         with pytest.raises((RouteBundleConfigError, ValueError)) as exc:
             build_route_bundle_table(bundle)
         assert "fallback_target_on_evict" in str(exc.value)
@@ -1156,18 +1156,18 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["bogus_field"] = 1
+        bundle["routes"]["myrouter/stage_router"]["bogus_field"] = 1
         with pytest.raises(RouteBundleConfigError) as exc:
             build_route_bundle_table(bundle)
         assert "bogus_field" in str(exc.value)
 
     def test_accepts_both_pickers(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
-        for picker in ("cascade_strong_default", "cascade_weak_default"):
+        for picker in ("capable_first", "efficient_first"):
             bundle = self._bundle()
-            bundle["routes"]["myrouter/cascade"]["picker"] = picker
+            bundle["routes"]["myrouter/stage_router"]["picker"] = picker
             table = build_route_bundle_table(bundle)
-            assert "myrouter/cascade" in table.registered_models()
+            assert "myrouter/stage_router" in table.registered_models()
 
     def test_rejects_removed_legacy_knobs(self):
         from switchyard.cli.route_bundle import (
@@ -1175,7 +1175,7 @@ class TestCascadeRouteType:
             build_route_bundle_table,
         )
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["escalate_at"] = 0.5
+        bundle["routes"]["myrouter/stage_router"]["escalate_at"] = 0.5
         with pytest.raises(RouteBundleConfigError) as exc:
             build_route_bundle_table(bundle)
         assert "escalate_at" in str(exc.value)
@@ -1183,26 +1183,26 @@ class TestCascadeRouteType:
     def test_classifier_block_is_optional(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["classifier"] = {
+        bundle["routes"]["myrouter/stage_router"]["classifier"] = {
             "model": "nvidia/deepseek-ai/deepseek-v4-flash",
             "api_key": "sk-classifier",
             "base_url": "https://classifier.invalid/v1",
         }
         table = build_route_bundle_table(bundle)
-        assert "myrouter/cascade" in table.registered_models()
+        assert "myrouter/stage_router" in table.registered_models()
 
     def test_signal_recent_window_accepted(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["signal_recent_window"] = 5
+        bundle["routes"]["myrouter/stage_router"]["signal_recent_window"] = 5
         table = build_route_bundle_table(bundle)
-        assert "myrouter/cascade" in table.registered_models()
+        assert "myrouter/stage_router" in table.registered_models()
 
     def test_classifier_inherits_route_defaults(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
-        from switchyard.lib.processors.cascade import TierClassifier
-        from switchyard.lib.processors.cascade_request_processor import (
-            CascadeRequestProcessor,
+        from switchyard.lib.processors.stage_router import TierClassifier
+        from switchyard.lib.processors.stage_router_request_processor import (
+            StageRouterRequestProcessor,
         )
 
         table = build_route_bundle_table({
@@ -1213,9 +1213,9 @@ class TestCascadeRouteType:
                 "timeout": 12.0,
             },
             "routes": {
-                "defaults/cascade": {
-                    "type": "cascade",
-                    "picker": "cascade_strong_default",
+                "defaults/stage_router": {
+                    "type": "stage_router",
+                    "picker": "capable_first",
                     "fallback_target_on_evict": "strong",
                     "strong": {"id": "strong", "model": "strong/model"},
                     "weak": {"id": "weak", "model": "weak/model"},
@@ -1223,10 +1223,10 @@ class TestCascadeRouteType:
                 },
             },
         })
-        switchyard = table.lookup_switchyard("defaults/cascade")
+        switchyard = table.lookup_switchyard("defaults/stage_router")
         processor = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, CascadeRequestProcessor)
+            if isinstance(c, StageRouterRequestProcessor)
         )
         classifier = processor._picker.keywords["classifier"]
 
@@ -1235,10 +1235,10 @@ class TestCascadeRouteType:
         assert classifier._recent_turn_window == 3
 
     async def test_classifier_usage_records_into_route_bundle_stats(self) -> None:
-        """Route-bundle cascade classifiers write usage into shared stats."""
+        """Route-bundle stage_router classifiers write usage into shared stats."""
         from switchyard.cli.route_bundle import build_route_bundle_table
-        from switchyard.lib.processors.cascade_request_processor import (
-            CascadeRequestProcessor,
+        from switchyard.lib.processors.stage_router_request_processor import (
+            StageRouterRequestProcessor,
         )
         from switchyard.lib.profiles.chain import ComponentChainProfile
         from switchyard.lib.stats_accumulator import StatsAccumulator
@@ -1256,7 +1256,7 @@ class TestCascadeRouteType:
                     choices=[
                         SimpleNamespace(
                             message=SimpleNamespace(
-                                content=json.dumps({"tier": "strong"}),
+                                content=json.dumps({"tier": "capable"}),
                             ),
                         )
                     ],
@@ -1269,26 +1269,26 @@ class TestCascadeRouteType:
 
         stats = StatsAccumulator()
         bundle = self._bundle()
-        bundle["routes"]["myrouter/cascade"]["confidence_threshold"] = 1.0
-        bundle["routes"]["myrouter/cascade"]["classifier"] = {
+        bundle["routes"]["myrouter/stage_router"]["confidence_threshold"] = 1.0
+        bundle["routes"]["myrouter/stage_router"]["classifier"] = {
             "model": "classifier/model",
             "api_key": "sk-classifier",
             "base_url": "https://classifier.invalid/v1",
         }
         table = build_route_bundle_table(bundle, stats_accumulator=stats)
-        switchyard = table.lookup_switchyard("myrouter/cascade")
+        switchyard = table.lookup_switchyard("myrouter/stage_router")
         assert isinstance(switchyard._profile, ComponentChainProfile)
         processor = next(
             component
             for component in switchyard.iter_components()
-            if isinstance(component, CascadeRequestProcessor)
+            if isinstance(component, StageRouterRequestProcessor)
         )
         assert processor._classifier is not None
         client = _ClassifierClient()
         processor._classifier._client = client  # type: ignore[assignment]
 
         processed = await switchyard._profile.process(ProfileInput(ChatRequest.openai_chat({
-            "model": "myrouter/cascade",
+            "model": "myrouter/stage_router",
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 8,
         })))
@@ -1301,7 +1301,7 @@ class TestCascadeRouteType:
         assert snapshot["classifier"]["models"]["classifier/model"]["prompt_tokens"] == 13
         assert snapshot["classifier"]["models"]["classifier/model"]["completion_tokens"] == 5
         assert snapshot["classifier"]["models"]["classifier/model"]["cached_tokens"] == 2
-        assert snapshot["routing_decisions"]["cascade"]["llm-classifier"] == 1
+        assert snapshot["routing_decisions"]["stage_router"]["llm-classifier"] == 1
 
 
 class TestPlanExecuteRouteType:
@@ -1388,12 +1388,12 @@ class TestPlanExecuteRouteType:
         assert not any(isinstance(c, StatsResponseProcessor) for c in components)
 
 
-def test_cascade_route_hydrates_tier_catalogs(
+def test_stage_router_route_hydrates_tier_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``type: cascade`` registers each tier's catalog alongside the
+    """``type: stage_router`` registers each tier's catalog alongside the
     routing-policy chain — strong/weak as direct passthroughs, plus the
-    route's YAML key as the cascade virtual id.
+    route's YAML key as the stage-router virtual id.
 
     The classifier tier (when present) is intentionally NOT discovered — it's
     an internal-only LLM call, not a user-facing target.
@@ -1409,9 +1409,9 @@ def test_cascade_route_hydrates_tier_catalogs(
 
     table = build_route_bundle_table({
         "routes": {
-            "opus-ds-cascade": {
-                "type": "cascade",
-                "picker": "cascade_strong_default",
+            "opus-ds-stage_router": {
+                "type": "stage_router",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {
                     "id": "strong",
@@ -1429,10 +1429,10 @@ def test_cascade_route_hydrates_tier_catalogs(
         },
     })
 
-    # Unified ordering: cascade virtual id first, then tier models + catalog.
+    # Unified ordering: stage_router virtual id first, then tier models + catalog.
     # The classifier tier is absent here AND would be skipped even if present.
     assert table.registered_models() == [
-        "opus-ds-cascade",
+        "opus-ds-stage_router",
         "strong/model",
         "weak/model",
         "catalog/strong-extra",
@@ -1443,7 +1443,7 @@ def test_cascade_route_hydrates_tier_catalogs(
 def test_deterministic_route_hydrates_tier_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``type: deterministic`` — same catalog-hydration shape as cascade,
+    """``type: deterministic`` — same catalog-hydration shape as stage_router,
     with the classifier tier intentionally skipped."""
     monkeypatch.setattr(
         "switchyard.cli.route_bundle.fetch_model_ids",
@@ -1494,12 +1494,12 @@ def test_deterministic_route_hydrates_tier_catalogs(
 
 
 def test_route_bundle_keeps_first_multi_target_route_as_default() -> None:
-    """Cascade/deterministic discovery merges preserve the first YAML route."""
+    """StageRouter/deterministic discovery merges preserve the first YAML route."""
     table = build_route_bundle_table({
         "routes": {
-            "first-cascade": {
-                "type": "cascade",
-                "picker": "cascade_strong_default",
+            "first-stage_router": {
+                "type": "stage_router",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {
                     "id": "strong",
@@ -1514,9 +1514,9 @@ def test_route_bundle_keeps_first_multi_target_route_as_default() -> None:
                     "base_url": "https://first-weak.example/v1",
                 },
             },
-            "second-cascade": {
-                "type": "cascade",
-                "picker": "cascade_strong_default",
+            "second-stage_router": {
+                "type": "stage_router",
+                "picker": "capable_first",
                 "fallback_target_on_evict": "strong",
                 "strong": {
                     "id": "strong",
@@ -1534,7 +1534,7 @@ def test_route_bundle_keeps_first_multi_target_route_as_default() -> None:
         },
     })
 
-    assert table.default_model() == "first-cascade"
+    assert table.default_model() == "first-stage_router"
 
 
 _AFFINITY_DET_ROUTE = {

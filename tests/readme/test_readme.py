@@ -8,7 +8,7 @@ Companion to ``tests/getting_started/``. Three guards:
 * the "Use as a Python library" snippet executes (via ``--markdown-docs`` +
   the passthrough→noop fixture in ``conftest.py``);
 * README route examples validate against the route-bundle schema;
-* canonical routing pages still build cascade and LLM-routing profile examples;
+* canonical routing pages still build stage_router and LLM-routing profile examples;
 * every CLI subcommand / flag the README names still exists.
 """
 
@@ -28,7 +28,7 @@ from switchyard_rust.profiles import parse_profile_config_str
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPO_ROOT / "README.md"
 ROUTING_DOC_PATHS = (
-    REPO_ROOT / "docs" / "routing_algorithms" / "cascade_routing.md",
+    REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.md",
     REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.md",
     REPO_ROOT / "docs" / "routing_algorithms" / "overview.md",
 )
@@ -101,7 +101,7 @@ def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
     assert validated_routes, "no README yaml block parsed as a route bundle"
 
 
-def test_cascade_and_llm_routing_yaml_blocks_in_canonical_docs_build(
+def test_stage_router_and_llm_routing_yaml_blocks_in_canonical_docs_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-readme")
@@ -119,7 +119,7 @@ def test_cascade_and_llm_routing_yaml_blocks_in_canonical_docs_build(
             relevant_profile_ids = [
                 profile_id
                 for profile_id, profile in payload["profiles"].items()
-                if profile.get("type") in {"cascade", "llm-routing"}
+                if profile.get("type") in {"stage_router", "llm-routing"}
             ]
             if not relevant_profile_ids:
                 continue

@@ -259,36 +259,36 @@ profiles:
 """
 
 
-def _cascade_profile_config(base_url: str) -> str:
+def _stage_router_profile_config(base_url: str) -> str:
     return f"""
 targets:
   strong:
     model: provider/strong
     format: openai
-    base_url: "{base_url}/v2-cascade/v1"
+    base_url: "{base_url}/v2-stage_router/v1"
     api_key: test-key
   weak:
     model: provider/weak
     format: openai
-    base_url: "{base_url}/v2-cascade/v1"
+    base_url: "{base_url}/v2-stage_router/v1"
     api_key: test-key
   classifier:
     model: provider/classifier
     format: openai
-    base_url: "{base_url}/v2-cascade-classifier/v1"
+    base_url: "{base_url}/v2-stage_router-classifier/v1"
     api_key: test-key
 profiles:
-  cascade-profile:
-    type: cascade
-    strong: strong
-    weak: weak
+  stage_router-profile:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: capable_first
     confidence_threshold: 0.7
     classifier:
       model: provider/classifier
       api_key: test-key
-      base_url: "{base_url}/v2-cascade-classifier/v1"
+      base_url: "{base_url}/v2-stage_router-classifier/v1"
 """
 
 
@@ -475,30 +475,30 @@ async def test_llm_routing_profile_routes_with_strict_classifier(
     assert "response_format" not in classifier_body
 
 
-async def test_cascade_profile_routes_with_classifier(
+async def test_stage_router_profile_routes_with_classifier(
     openai_stub: _OpenAICompatStub,
 ) -> None:
     openai_stub.respond_json(
         200,
         _completion_payload(
             "provider/classifier",
-            "/v2-cascade-classifier/v1/chat/completions",
-            json.dumps({"tier": "weak"}),
+            "/v2-stage_router-classifier/v1/chat/completions",
+            json.dumps({"tier": "efficient"}),
         ),
     )
     profile = _profile_runner(
-        _cascade_profile_config(openai_stub.base_url),
-        "cascade-profile",
+        _stage_router_profile_config(openai_stub.base_url),
+        "stage_router-profile",
     )
 
     response = await profile.run(
-        ChatRequest.openai_chat(_chat_payload("cascade-profile")),
+        ChatRequest.openai_chat(_chat_payload("stage_router-profile")),
     )
 
     assert response.body["model"] == "provider/weak"
     assert [call["path"] for call in openai_stub.requests] == [
-        "/v2-cascade-classifier/v1/chat/completions",
-        "/v2-cascade/v1/chat/completions",
+        "/v2-stage_router-classifier/v1/chat/completions",
+        "/v2-stage_router/v1/chat/completions",
     ]
     assert [call["body"]["model"] for call in openai_stub.requests] == [
         "provider/classifier",

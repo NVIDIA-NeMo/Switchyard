@@ -55,8 +55,6 @@ from switchyard.lib.processors.routellm_request_processor import (
     RouteLLMRequestProcessor,
 )
 from switchyard.lib.profiles import (
-    CascadeConfig,
-    CascadeProfileConfig,
     ClassifierConfig,
     ContextAwareProfile,
     DeterministicRoutingConfig,
@@ -85,6 +83,8 @@ from switchyard.lib.profiles import (
     RandomRoutingProfileConfig,
     RouteLLMConfig,
     RouteLLMProfileConfig,
+    StageRouterConfig,
+    StageRouterProfileConfig,
     TranslateProfileConfig,
     build_profile,
     load_profiles,
@@ -158,8 +158,8 @@ __all__ = [
     "LLMBackend",
     "NoopProfile",
     "NoopProfileConfig",
-    "CascadeConfig",
-    "CascadeProfileConfig",
+    "StageRouterConfig",
+    "StageRouterProfileConfig",
     "ClassifierConfig",
     "ContextAwareProfile",
     "DeterministicRoutingConfig",

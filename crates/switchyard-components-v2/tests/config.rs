@@ -39,12 +39,12 @@ profiles:
   direct:
     type: passthrough
     target: direct-weak
-  smart-cascade:
-    type: cascade
-    strong: strong
-    weak: weak
+  smart-stage-router:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: capable_first
     confidence_threshold: 0.7
   health-aware:
     type: latency-service
@@ -56,12 +56,12 @@ profiles:
     weak: weak
     classifier: classifier
     profile_name: coding_agent
-  cascade:
-    type: cascade
-    strong: strong
-    weak: weak
+  stage_router:
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: cascade_strong_default
+    picker: capable_first
     classifier:
       model: nvidia/nvidia/nemotron-nano-9b-v2
       api_key: ${NVIDIA_API_KEY}
@@ -110,8 +110,8 @@ fn yaml_config_resolves_endpoints_targets_and_profile_owned_configs() -> Result<
         Some("passthrough")
     );
     assert_eq!(
-        plan.profile_type(&ProfileId::new("smart-cascade")?),
-        Some("cascade")
+        plan.profile_type(&ProfileId::new("smart-stage-router")?),
+        Some("stage_router")
     );
     assert_eq!(
         plan.profile_type(&ProfileId::new("health-aware")?),
@@ -122,8 +122,8 @@ fn yaml_config_resolves_endpoints_targets_and_profile_owned_configs() -> Result<
         Some("llm-routing")
     );
     assert_eq!(
-        plan.profile_type(&ProfileId::new("cascade")?),
-        Some("cascade")
+        plan.profile_type(&ProfileId::new("stage_router")?),
+        Some("stage_router")
     );
 
     let profiles = plan.build_profiles()?;
@@ -483,18 +483,18 @@ fn profile_config_plan_builds_runtime_profiles() -> Result<()> {
     drop(direct);
     assert_eq!(profiles.len(), 6);
     assert!(profiles.contains_key(&ProfileId::new("direct")?));
-    assert!(profiles.contains_key(&ProfileId::new("smart-cascade")?));
+    assert!(profiles.contains_key(&ProfileId::new("smart-stage-router")?));
     assert!(profiles.contains_key(&ProfileId::new("health-aware")?));
     assert!(profiles.contains_key(&ProfileId::new("llm")?));
-    assert!(profiles.contains_key(&ProfileId::new("cascade")?));
+    assert!(profiles.contains_key(&ProfileId::new("stage_router")?));
     assert!(profiles.contains_key(&ProfileId::new("bench")?));
     Ok(())
 }
 
-// Components-v2 cascade config should reject route-era/top-level classifier
+// Components-v2 stage_router config should reject route-era/top-level classifier
 // knobs instead of carrying compatibility behavior forward.
 #[test]
-fn cascade_rejects_top_level_classifier_knobs() -> Result<()> {
+fn stage_router_rejects_top_level_classifier_knobs() -> Result<()> {
     let input = r#"
 targets:
   strong:
@@ -505,9 +505,9 @@ targets:
     format: openai
 profiles:
   stale:
-    type: cascade
-    strong: strong
-    weak: weak
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
     classifier_max_tokens: 64
 "#;
@@ -522,9 +522,9 @@ profiles:
     Ok(())
 }
 
-// Invalid cascade picker names fail during profile config resolution.
+// Invalid stage_router picker names fail during profile config resolution.
 #[test]
-fn cascade_resolve_rejects_unknown_picker() -> Result<()> {
+fn stage_router_resolve_rejects_unknown_picker() -> Result<()> {
     let input = r#"
 targets:
   strong:
@@ -535,9 +535,9 @@ targets:
     format: openai
 profiles:
   bad:
-    type: cascade
-    strong: strong
-    weak: weak
+    type: stage_router
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
     picker: not-a-picker
 "#;

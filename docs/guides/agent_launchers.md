@@ -149,7 +149,7 @@ want the route ids to match exactly what appears in `/model`:
 ```yaml
 routes:
   claude-opus-ds:
-    type: cascade
+    type: stage_router
     ...
   claude-opus-direct:
     type: model

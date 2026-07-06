@@ -16,10 +16,10 @@ from typing import Any
 
 import pytest
 
-from switchyard.lib.processors.cascade.classifier import (
+from switchyard.lib.processors.stage_router.classifier import (
+    CAPABLE_TIER,
+    EFFICIENT_TIER,
     RECENT_MESSAGES_KEY,
-    STRONG_TIER,
-    WEAK_TIER,
     TierClassifier,
 )
 from switchyard_rust.components import DimensionCollector, get_tool_result_signal
@@ -66,23 +66,23 @@ async def _build_signal() -> Any:
 
 
 @pytest.mark.asyncio
-async def test_returns_strong_on_valid_strong_response():
+async def test_returns_capable_on_valid_capable_response():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
         model="m", api_key="k",
-        client=_StubClient(_Resp(content=json.dumps({"tier": "strong"}))),
+        client=_StubClient(_Resp(content=json.dumps({"tier": "capable"}))),
     )
-    assert await classifier.classify(ctx, signal) == STRONG_TIER
+    assert await classifier.classify(ctx, signal) == CAPABLE_TIER
 
 
 @pytest.mark.asyncio
-async def test_returns_weak_on_valid_weak_response():
+async def test_returns_efficient_on_valid_efficient_response():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
         model="m", api_key="k",
-        client=_StubClient(_Resp(content=json.dumps({"tier": "weak"}))),
+        client=_StubClient(_Resp(content=json.dumps({"tier": "efficient"}))),
     )
-    assert await classifier.classify(ctx, signal) == WEAK_TIER
+    assert await classifier.classify(ctx, signal) == EFFICIENT_TIER
 
 
 @pytest.mark.asyncio
@@ -142,7 +142,7 @@ async def test_default_window_omits_recent_messages():
         async def acompletion(self, **kwargs: object) -> _Resp:
             self.calls += 1
             captured["messages"] = kwargs["messages"]
-            return _Resp(content=json.dumps({"tier": "strong"}))
+            return _Resp(content=json.dumps({"tier": "capable"}))
 
     classifier = TierClassifier(
         model="m", api_key="k", recent_turn_window=0, client=_Recorder(),
@@ -163,7 +163,7 @@ async def test_disable_reasoning_passes_enable_thinking_false_extra_body():
     class _Recorder:
         async def acompletion(self, **kwargs: object) -> _Resp:
             captured.update(kwargs)
-            return _Resp(content=json.dumps({"tier": "weak"}))
+            return _Resp(content=json.dumps({"tier": "efficient"}))
 
     classifier = TierClassifier(model="m", api_key="k", client=_Recorder())
     await classifier.classify(ctx, signal)
@@ -183,7 +183,7 @@ async def test_disable_reasoning_false_omits_extra_body():
     class _Recorder:
         async def acompletion(self, **kwargs: object) -> _Resp:
             captured.update(kwargs)
-            return _Resp(content=json.dumps({"tier": "strong"}))
+            return _Resp(content=json.dumps({"tier": "capable"}))
 
     classifier = TierClassifier(
         model="m", api_key="k", disable_reasoning=False, client=_Recorder(),
@@ -209,7 +209,7 @@ async def test_window_4_appends_last_four_messages():
     class _Recorder:
         async def acompletion(self, **kwargs: object) -> _Resp:
             captured["messages"] = kwargs["messages"]
-            return _Resp(content=json.dumps({"tier": "weak"}))
+            return _Resp(content=json.dumps({"tier": "efficient"}))
 
     classifier = TierClassifier(
         model="m", api_key="k", recent_turn_window=4, client=_Recorder(),

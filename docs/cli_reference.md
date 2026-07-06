@@ -68,7 +68,7 @@ launchers:
 | Flag | Purpose |
 |---|---|
 | `--model ID` | Single-model passthrough. Every request is rewritten to `model=ID` and forwarded to `--base-url`. |
-| `--routing-profiles PATH` | Deprecated path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `cascade`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
+| `--routing-profiles PATH` | Deprecated path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `stage_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
 
 On the launchers, the two flags are mutually exclusive: pass one or the other, not both.
 
@@ -240,7 +240,7 @@ switchyard serve --config examples/profiles.yaml --port 4000
 # select a profile by id (the `model` field):
 curl localhost:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model": "smart-cascade", "messages": [{"role": "user", "content": "hi"}]}'
+  -d '{"model": "smart-stage-router", "messages": [{"role": "user", "content": "hi"}]}'
 
 # mixed Rust/Python profile config on the same request APIs
 switchyard serve --config examples/python_profile.yaml --port 4000

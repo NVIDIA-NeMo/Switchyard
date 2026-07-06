@@ -4,7 +4,7 @@
 """Python port of crates/switchyard-components/src/dimension_collector/tool_signals.rs.
 
 Reads a claude-code session JSONL trajectory and reconstructs the per-turn
-ToolResultSignal that the cascade picker would have seen. Output is one record
+ToolResultSignal that the stage_router picker would have seen. Output is one record
 per assistant turn.
 """
 from __future__ import annotations

@@ -22,13 +22,13 @@ pub use profile::{
     Profile, ProfileHooks, ProfileInput, ProfileResponse, RequestMetadata, RoutingMetadata,
 };
 pub use profiles::{
-    CascadeClassifierConfig, CascadeDecision, CascadeDecisionSource, CascadePickerMode,
-    CascadeProcessedRequest, CascadeProfile, CascadeProfileConfig, CascadeTier, EndpointHealth,
-    EndpointHealthStatus, LatencyServiceProcessedRequest, LatencyServiceProfile,
+    EndpointHealth, EndpointHealthStatus, LatencyServiceProcessedRequest, LatencyServiceProfile,
     LatencyServiceProfileConfig, LlmRoutingDecision, LlmRoutingProcessedRequest, LlmRoutingProfile,
     LlmRoutingProfileConfig, LlmRoutingTierMapping, NoopProfile, NoopProfileConfig,
     PassthroughProfile, PassthroughProfileConfig, RandomRoutingProcessedRequest,
-    RandomRoutingProfile, RandomRoutingProfileConfig, SelectedTarget,
+    RandomRoutingProfile, RandomRoutingProfileConfig, SelectedTarget, StageRouterClassifierConfig,
+    StageRouterDecision, StageRouterDecisionSource, StageRouterPickerMode,
+    StageRouterProcessedRequest, StageRouterProfile, StageRouterProfileConfig, StageRouterTier,
 };
 pub use stats::profile_stats_accumulator;
 pub use switchyard_components_v2_macros::profile_config;

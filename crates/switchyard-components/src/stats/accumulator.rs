@@ -228,7 +228,7 @@ impl StatsAccumulator {
     ///
     /// The classifier's per-request call is not part of the routed-backend
     /// chain and must stay out of `by_model` — otherwise the default TB-lite
-    /// config (classifier model == weak-tier model) double-counts the spend.
+    /// config (classifier model == efficient-tier model) double-counts the spend.
     /// `record_classifier_usage` writes to a dedicated bucket; the snapshot
     /// exposes it under `classifier.models` with its own `cost_estimate`.
     pub fn record_classifier_usage(
@@ -277,8 +277,8 @@ impl StatsAccumulator {
 
     /// Records one routing decision source for a profile family.
     ///
-    /// This is intentionally separate from model/tier accounting: a cascade can
-    /// choose `weak` because of an override, a dimensions score, an LLM-classifier
+    /// This is intentionally separate from model/tier accounting: a stage-router can
+    /// choose `efficient` because of an override, a dimensions score, an LLM-classifier
     /// verdict, or a fail-open default, and those explanations are useful even
     /// when they all land on the same backend model.
     pub fn record_routing_decision(

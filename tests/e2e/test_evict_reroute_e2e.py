@@ -101,20 +101,24 @@ def _assert_eviction_stats(snapshot: dict) -> None:
 
 
 @pytest.mark.timeout(120)
-async def test_cascade_evicts_weak_and_reroutes_to_strong(nvidia_api_key: str) -> None:
-    """``type: cascade`` reroutes to ``strong`` when weak overflows."""
-    from switchyard.lib.profiles import CascadeConfig, CascadeProfileConfig, ProfileSwitchyard
+async def test_stage_router_evicts_weak_and_reroutes_to_strong(nvidia_api_key: str) -> None:
+    """``type: stage_router`` reroutes to ``strong`` when weak overflows."""
+    from switchyard.lib.profiles import (
+        ProfileSwitchyard,
+        StageRouterConfig,
+        StageRouterProfileConfig,
+    )
 
     stats = StatsAccumulator()
-    config = CascadeConfig(
-        strong=_strong_target(nvidia_api_key),
-        weak=_weak_target(nvidia_api_key),
-        picker="cascade_weak_default",
+    config = StageRouterConfig(
+        capable=_strong_target(nvidia_api_key),
+        efficient=_weak_target(nvidia_api_key),
+        picker="efficient_first",
         confidence_threshold=0.0,
         fallback_target_on_evict="strong",
     )
     switchyard = ProfileSwitchyard(
-        CascadeProfileConfig.from_config(config)
+        StageRouterProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
             stats_accumulator=stats,
@@ -127,7 +131,7 @@ async def test_cascade_evicts_weak_and_reroutes_to_strong(nvidia_api_key: str) -
         response = await client.post(
             "/v1/chat/completions",
             json={
-                "model": "cascade-test",
+                "model": "stage_router-test",
                 "messages": [{"role": "user", "content": _OVERFLOW_TEXT}],
                 "max_tokens": 16,
             },

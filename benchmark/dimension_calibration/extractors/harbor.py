@@ -18,7 +18,7 @@ directory to point the manifest at.
 
 The ``source`` field on emitted records comes from the manifest entry's
 ``source:`` key (defaults to ``"harbor"``). Use distinct source labels on
-different runs (e.g. ``cascade-settle-aware``, ``all-opus``) so the by-source slice in
+different runs (e.g. ``stage_router-settle-aware``, ``all-opus``) so the by-source slice in
 the report compares like-with-like.
 """
 

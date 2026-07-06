@@ -31,7 +31,7 @@ nav:
       - Random Routing: routing_algorithms/random_routing.md
       - LLM Classifier Routing: routing_algorithms/llm_classifier_routing.md
       - Sticky Routing: routing_algorithms/sticky_routing.md
-      - Cascade Routing: routing_algorithms/cascade_routing.md
+      - Stage-Router Routing: routing_algorithms/stage_router_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
   - Reference:

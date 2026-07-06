@@ -260,11 +260,11 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
         m = _model(clf)
         return f", llm-classifier={m}" if m else ""
 
-    if route_type == "cascade":
+    if route_type == "stage_router":
         clf = _classifier_part(r)
         threshold = r.get("confidence_threshold")
         threshold_part = f", confidence_threshold={threshold}" if threshold is not None else ""
-        return f"cascade: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{clf}{threshold_part}"
+        return f"stage_router: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{clf}{threshold_part}"
     if route_type in ("deterministic", "llm_classifier"):
         clf = _classifier_part(r)
         profile = r.get("profile")

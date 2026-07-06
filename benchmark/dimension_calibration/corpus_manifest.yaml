@@ -33,17 +33,17 @@ runs:
   # The runner skips entries whose path does not exist, so unused stubs are
   # harmless.
 
-  - id: cascade-strong-default-deepseek
+  - id: stage_router-strong-default-deepseek
     extractor: harbor
-    source: cascade-strong-default-deepseek
-    path: "benchmark/tb_runs/tb-lite-cascade-strong-default-deepseek/jobs/tb-lite-cascade-strong-default-deepseek"
-    label: "Cascade — cascade_strong_default picker, Opus + DeepSeek"
+    source: stage_router-strong-default-deepseek
+    path: "benchmark/tb_runs/tb-lite-stage_router-strong-default-deepseek/jobs/tb-lite-stage_router-strong-default-deepseek"
+    label: "StageRouter — capable_first picker, Opus + DeepSeek"
 
-  - id: cascade-strong-default-nemotron
+  - id: stage_router-strong-default-nemotron
     extractor: harbor
-    source: cascade-strong-default-nemotron
-    path: "benchmark/tb_runs/tb-lite-cascade-strong-default-nemotron/jobs/tb-lite-cascade-strong-default-nemotron"
-    label: "Cascade — cascade_strong_default picker, Opus + Nemotron"
+    source: stage_router-strong-default-nemotron
+    path: "benchmark/tb_runs/tb-lite-stage_router-strong-default-nemotron/jobs/tb-lite-stage_router-strong-default-nemotron"
+    label: "StageRouter — capable_first picker, Opus + Nemotron"
 
   - id: all-opus
     extractor: harbor

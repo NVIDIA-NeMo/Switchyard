@@ -19,10 +19,10 @@ traffic that sits between client applications and LLM backends.
   native API regardless of the upstream backend.
 - **YAML route bundles** (`switchyard serve --routing-profiles`) — one bundle,
   many named routes, each its own chain. Supported route `type`s: `model`,
-  `passthrough`, `random_routing`, `cascade`, `deterministic`
+  `passthrough`, `random_routing`, `stage_router`, `deterministic`
   (LLM-as-classifier), `latency_service`, and `noop`.
-- **Routing strategies** — weighted random split, signal-driven **cascade**
-  escalation (see [Cascade Routing](docs/cascade_routing.md)),
+- **Routing strategies** — weighted random split, signal-driven **stage-router**
+  escalation (see [Stage-Router Routing](docs/stage_router_routing.md)),
   LLM-as-classifier strong/weak routing, and latency-aware multi-endpoint
   failover.
 - **One-command launchers** — `switchyard launch claude`, `launch codex`, and
@@ -35,7 +35,7 @@ traffic that sits between client applications and LLM backends.
   (`/v1/routing/stats` alias), and per-request cost/token/latency stats. See
   [Metrics Reference](docs/METRICS_REFERENCE.md).
 - **Python library** — `SwitchyardRecipes` (`passthrough_recipe`,
-  `random_routing_recipe`, `cascade_recipe`, `deterministic_routing_recipe`,
+  `random_routing_recipe`, `stage_router_recipe`, `deterministic_routing_recipe`,
   …) and typed `ChatRequest` / `ChatResponse` containers for in-process use.
 - **Rust core** (PyO3) — chain execution, the latency-aware router, and the
   tool-result signal collector are implemented in Rust and re-exported to
