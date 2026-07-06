@@ -265,23 +265,29 @@ target, classifier, and explicit `confidence_threshold: 0.5` values there.
 curl http://localhost:4000/v1/stats
 ```
 
-Returns the stats snapshot: per-model calls, tokens, latency, and cost,
-bucketed by served model with a `tier` field. The same shape lands in
-`routing_stats_final.json` for batch runs.
+Returns the stats snapshot: per-model calls, tokens, latency, and cost, bucketed
+by served model, each tagged with a `capable` or `efficient` `tier`. Batch
+harnesses usually capture this same snapshot to a file (see below).
 
 ### Decision-source metadata (stage-router-specific)
 
-The profile records decision-source counts under
-`routing_decisions.stage_router` in the stats JSON. The possible values are:
+The profile counts why each turn was routed the way it was, under
+`routing_decisions.stage_router` in the stats JSON. For the `serve --config`
+profile the values are:
 
 | Source | When |
 |---|---|
-| `override` | Hard override fired (critical severity, clean tests). |
-| `dimensions` | Scorer crossed `confidence_threshold`. |
-| `llm-classifier` | Scorer was ambiguous and the classifier returned a verdict. |
-| `fall_open` | Scorer was ambiguous and the classifier failed or wasn't configured. Default tier used. |
+| `override` | A hard override fired (for example a critical error severity, or a clean test pass). |
+| `dimensions` | The signals crossed `confidence_threshold` and picked the tier. |
+| `llm-classifier` | The signals were ambiguous and the classifier returned a verdict. |
+| `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured, so the default tier was used. |
+| `context_overflow_fallback` | A context-window overflow rerouted the turn to `fallback_target_on_evict`. |
 
-Harness writers snapshot stats with:
+The deprecated `--routing-profiles` path reports the same sources except
+`context_overflow_fallback`, plus `no_signal` for turns that arrive before any
+tool-result history exists.
+
+To capture a snapshot for a batch run, redirect the endpoint to a file:
 
 ```bash
 curl -s http://localhost:4000/v1/stats > routing_stats_final.json
