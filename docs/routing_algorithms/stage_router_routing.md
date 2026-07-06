@@ -1,30 +1,27 @@
 # Stage-Router Routing
 
-Stage-router routing sends each request to one of two tiers — a **capable**
-model or a cheaper **efficient** model — based on where the agent is in its run.
-The capable tier handles exploration and error recovery; the efficient tier
-handles the settled, mechanical implementation phase. You configure it with a
-single knob, `confidence_threshold`, plus an optional LLM classifier.
+Stage-router routing sends each request to either a **capable** model or a
+cheaper **efficient** one, depending on where the agent is in its run. The
+capable tier handles exploration and error recovery; the efficient tier handles
+the settled, mechanical implementation phase. You configure it with a single
+knob, `confidence_threshold`, plus an optional LLM classifier.
 
 If the selected backend hits a context-window overflow, the router retries once
 against `fallback_target_on_evict`; a second overflow surfaces a
 context-pool-exhausted error (see [Context-Window Handling](../operations/context_window.md)).
 
----
-
 ## How it works
 
-An agentic coding run is not uniform: it moves through **stages** — open-ended
-exploration and error recovery early on, then more mechanical implementation
-once the approach is settled. Those stages have very different capability needs,
-and they are what the router is named for.
+A coding agent's run moves through stages: early on it explores the codebase and
+recovers from errors, and later it settles into more mechanical implementation.
+Those stages call for different amounts of model capability, which is what the
+router keys on.
 
-Stage-router estimates which stage the agent is in *for each LLM call*, from the
-**tool-result history** stamped on the conversation — signals such as file
-writes and edits landing, tests passing or failing, command/exec errors,
-stretches of read-only exploration, and how deep the run is. It combines those
-signals into a confidence score for "this turn needs the capable tier", then
-routes:
+For each LLM call, stage-router estimates which stage the agent is in from the
+**tool-result history** on the conversation: whether writes and edits are
+landing, whether tests pass, whether commands error out, how much read-only
+exploration is happening, and how far into the run it is. It turns those signals
+into a confidence score for "this turn needs the capable tier", then routes:
 
 - the **capable** tier for uncertain, exploratory, or error-recovery turns, and
 - the **efficient** tier for settled, mechanical turns.
@@ -34,40 +31,35 @@ on the signal alone. Below it, the router consults the optional LLM classifier
 (if configured) or falls back to the picker's default tier. No tool-result
 history yet means no stage to estimate, so those turns take the default tier.
 
----
-
 ## Pickers
 
-The picker name says which tier is the **default** — the one used when the
+The picker name says which tier is the **default**: the tier used when the
 signals are ambiguous and no classifier verdict is available.
 
-- **`capable_first`** — capable is the default; drop to efficient only when the
+- **`capable_first`**: capable is the default; drop to efficient only when the
   signals (or the classifier) clearly say so. Quality-first.
-- **`efficient_first`** — efficient is the default; escalate to capable only when
+- **`efficient_first`**: efficient is the default; escalate to capable only when
   the signals (or the classifier) clearly say so. Cost-first.
 
 Both pickers read the same signals; only the default tier differs.
 
----
-
 ## Tuning `confidence_threshold`
 
-The threshold is the **only** dial most users touch. Its effect is monotone:
+The threshold is the **only** dial most users touch, and it behaves predictably:
 the higher you set it, the more turns go to the LLM classifier instead of being
-decided by the signals alone (and, with no classifier, straight to the default
-tier).
+decided by the signals alone. With no classifier configured, those turns fall
+straight to the default tier instead.
 
-!!! note "Set `0.5` explicitly"
-    `0.5` is the recommended starting point and is set in the public example
-    below. The implementation default still differs by configuration path:
+**Set `0.5` explicitly.** It's the recommended starting point and is what the
+example below uses. The default when you omit the field depends on which config
+path you take:
 
-    | Configuration path | Default when omitted |
-    |---|---|
-    | Profile config (`switchyard serve --config`) | **`0.7`** |
-    | Deprecated route bundle (`--routing-profiles`) | **`0.5`** |
+| Configuration path | Default when omitted |
+|---|---|
+| Profile config (`switchyard serve --config`) | `0.7` |
+| Deprecated route bundle (`--routing-profiles`) | `0.5` |
 
-    Set `confidence_threshold: 0.5` explicitly rather than relying on either
-    schema default.
+Rather than rely on either default, set `confidence_threshold: 0.5` yourself.
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
@@ -156,17 +148,6 @@ In stage-router, the efficient model may inherit partial context from the capabl
 fresh, so RESCUE is a conservative lower bound. Efficient performs at least as
 well in stage-router as it does alone.
 
-### Rate-limit isolation (production caveat)
-
-The YAML below keeps the classifier on `${OPENROUTER_API_KEY}` for a compact
-example. If the classifier and efficient tier share a provider bucket, each classified
-turn adds one extra request to that bucket. Production deployments should use a
-separate classifier credential or quota bucket, or skip the classifier sub-block
-on quota-constrained deployments. Co-locating them on one bucket can produce
-sustained 429s at scale.
-
----
-
 ## Profile configuration
 
 ```yaml
@@ -195,12 +176,6 @@ profiles:
     fallback_target_on_evict: openai/gpt-4o   # required; see Context-Window Handling
     capable: openai/gpt-4o                     # capable tier target id
     efficient: openai/gpt-4o-mini             # efficient tier target id
-    classifier:                            # optional
-      model: openai/gpt-4o-mini
-      api_key: ${OPENROUTER_API_KEY}        # use a separate key/quota in production
-      base_url: https://openrouter.ai/api/v1
-      timeout_secs: 30.0
-      recent_turn_window: 3
     enable_stats: true                     # default true
 ```
 
@@ -210,21 +185,38 @@ Save the file as `profiles.yaml` and start it with:
 switchyard serve --config profiles.yaml --port 4000
 ```
 
-Omit the `classifier` block to use signals only. If `confidence_threshold` is
-also omitted, the profile-config default of `0.7` applies; the example
-sets the recommended `0.5` explicitly.
+This is the recommended default: routing on tool signals alone, no classifier.
+If you omit `confidence_threshold`, the profile-config default of `0.7` applies;
+the example sets `0.5` explicitly.
 
 `fallback_target_on_evict` is required and must reference one of the
 declared target ids. See [Context-Window Handling](../operations/context_window.md) for
 exception types and error envelopes.
 
-!!! note "Launcher compatibility"
-    Launcher subcommands do not accept `--config`. A launcher-owned stage-router
-    still requires the deprecated `--routing-profiles` compatibility path and
-    its legacy `routes:` schema. Use the same `type: stage_router`, picker, target,
-    classifier, and explicit `confidence_threshold: 0.5` values there.
+### Optional: add an LLM classifier
 
----
+By default the router uses tool signals only. If you want a model to break the
+tie on low-confidence turns, add a `classifier:` block and set
+`confidence_threshold` above `0.0`. The classifier is consulted only for turns
+that fall below the threshold:
+
+```yaml
+    classifier:
+      model: openai/gpt-4o-mini
+      api_key: ${OPENROUTER_API_KEY}   # prefer a separate key/quota in production
+      base_url: https://openrouter.ai/api/v1
+      timeout_secs: 30.0
+      recent_turn_window: 3
+```
+
+Give the classifier its own credential or quota bucket where you can. Sharing
+one provider bucket with the efficient tier adds a request per classified turn
+and can cause sustained 429s at scale.
+
+**Launcher compatibility.** Launcher subcommands don't accept `--config`. A
+launcher-owned stage-router still needs the deprecated `--routing-profiles` path
+and its legacy `routes:` schema. Use the same `type: stage_router`, picker,
+target, classifier, and explicit `confidence_threshold: 0.5` values there.
 
 ## Observability
 
@@ -256,8 +248,6 @@ Harness writers snapshot stats with:
 curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 ```
 
----
-
 ## When *not* to use stage-router
 
 - **Single-model deployments.** Use a plain passthrough profile instead.
@@ -267,8 +257,6 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 - **No tool-result history.** Stage-router needs meaningful tool-call traffic to
   populate the tool-result signal. For pure chat-completion workloads every
   ambiguous request lands on the picker's default tier.
-
----
 
 ## Related
 
