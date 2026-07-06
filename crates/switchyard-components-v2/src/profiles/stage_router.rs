@@ -149,7 +149,8 @@ impl StageRouterProfileConfig {
     fn validate(&self) -> Result<()> {
         if self.capable.id == self.efficient.id {
             return Err(SwitchyardError::InvalidConfig(
-                "stage_router capable and efficient targets must have distinct target ids".to_string(),
+                "stage_router capable and efficient targets must have distinct target ids"
+                    .to_string(),
             ));
         }
         if !self.confidence_threshold.is_finite()
@@ -1132,7 +1133,12 @@ mod tests {
                 calls.clone(),
                 capable_actions,
             ),
-            efficient_backend: target_backend(&efficient, "efficient-backend", calls.clone(), efficient_actions),
+            efficient_backend: target_backend(
+                &efficient,
+                "efficient-backend",
+                calls.clone(),
+                efficient_actions,
+            ),
             fallback_target_on_evict: capable.id.clone(),
             picker,
             confidence_threshold,
@@ -1232,7 +1238,10 @@ mod tests {
             .await?;
 
         assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
-        assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Dimensions
+        );
         assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
         assert!(observed(&calls)?.is_empty());
         Ok(())

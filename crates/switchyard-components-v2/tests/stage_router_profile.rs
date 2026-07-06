@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use switchyard_components_v2::{
-    profile_stats_accumulator, StageRouterClassifierConfig, StageRouterDecisionSource, StageRouterPickerMode,
-    StageRouterProfileConfig, StageRouterTier, Profile, ProfileConfig, ProfileHooks, ProfileInput,
-    RequestMetadata,
+    profile_stats_accumulator, Profile, ProfileConfig, ProfileHooks, ProfileInput, RequestMetadata,
+    StageRouterClassifierConfig, StageRouterDecisionSource, StageRouterPickerMode,
+    StageRouterProfileConfig, StageRouterTier,
 };
 use switchyard_core::{
     BackendFormat, ChatRequest, LlmTarget, LlmTargetId, ModelId, Result, SwitchyardError,
@@ -254,10 +254,18 @@ fn target(id: &str, model: &str, base_url: &str) -> Result<LlmTarget> {
 
 fn config(base_url: &str) -> Result<StageRouterProfileConfig> {
     Ok(StageRouterProfileConfig {
-        capable: target("capable", "frontier/model", &format!("{base_url}/capable/v1"))?,
-        efficient: target("efficient", "cheap/model", &format!("{base_url}/efficient/v1"))?,
+        capable: target(
+            "capable",
+            "frontier/model",
+            &format!("{base_url}/capable/v1"),
+        )?,
+        efficient: target(
+            "efficient",
+            "cheap/model",
+            &format!("{base_url}/efficient/v1"),
+        )?,
         fallback_target_on_evict: LlmTargetId::new("capable")?,
-        picker: StageRouterPickerMode::StageRouterCapableFirst,
+        picker: StageRouterPickerMode::CapableFirst,
         confidence_threshold: 0.7,
         signal_recent_window: 3,
         classifier: Some(StageRouterClassifierConfig {
@@ -323,7 +331,10 @@ async fn critical_severity_overrides_to_capable_without_classifier() -> Result<(
         Some("frontier/model")
     );
     assert_eq!(processed.decision.tier, StageRouterTier::Capable);
-    assert_eq!(processed.decision.source, StageRouterDecisionSource::Override);
+    assert_eq!(
+        processed.decision.source,
+        StageRouterDecisionSource::Override
+    );
     assert!(server.requests()?.is_empty());
     Ok(())
 }
@@ -342,7 +353,10 @@ async fn negative_score_routes_to_efficient_without_classifier() -> Result<()> {
 
     assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
     assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
-    assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
+    assert_eq!(
+        processed.decision.source,
+        StageRouterDecisionSource::Dimensions
+    );
     Ok(())
 }
 
@@ -368,7 +382,7 @@ async fn low_confidence_uses_classifier_when_configured() -> Result<()> {
     assert!(classifier_body["messages"][0]["content"]
         .as_str()
         .is_some_and(
-            |content| content.contains("routing classifier inside an agentic coding stage_router")
+            |content| content.contains("routing classifier inside an agentic coding stage-router")
         ));
     assert_eq!(classifier_body["response_format"]["type"], "json_object");
     Ok(())
@@ -442,7 +456,10 @@ async fn malformed_classifier_falls_open_to_default() -> Result<()> {
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
-    assert_eq!(processed.decision.source, StageRouterDecisionSource::FallOpen);
+    assert_eq!(
+        processed.decision.source,
+        StageRouterDecisionSource::FallOpen
+    );
     let stats = profile_stats_accumulator().snapshot()?;
     assert_eq!(stats.classifier.total_errors, 1);
     Ok(())
@@ -461,7 +478,10 @@ async fn non_json_classifier_falls_open_and_records_error() -> Result<()> {
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
-    assert_eq!(processed.decision.source, StageRouterDecisionSource::FallOpen);
+    assert_eq!(
+        processed.decision.source,
+        StageRouterDecisionSource::FallOpen
+    );
     let stats = profile_stats_accumulator().snapshot()?;
     assert_eq!(stats.classifier.total_errors, 1);
     Ok(())

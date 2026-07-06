@@ -268,7 +268,10 @@ profiles:
 async fn stage_router_profile_threshold_one_uses_llm_classifier_path() -> TestResult {
     let _stats_guard = STATS_TEST_LOCK.lock().await;
     reset_stats()?;
-    let Some(stub) = HttpStub::start(vec![StubResponse::classifier("capable"), StubResponse::ok()])?
+    let Some(stub) = HttpStub::start(vec![
+        StubResponse::classifier("capable"),
+        StubResponse::ok(),
+    ])?
     else {
         log_loopback_bind_skip();
         return Ok(());
@@ -318,7 +321,10 @@ profiles:
 
     let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
     let stats = json_body(stats).await?;
-    assert_eq!(stats["routing_decisions"]["stage_router"]["llm-classifier"], 1);
+    assert_eq!(
+        stats["routing_decisions"]["stage_router"]["llm-classifier"],
+        1
+    );
     assert_eq!(stats["classifier"]["total_requests"], 1);
     assert_eq!(stats["models"]["provider/strong"]["tier"], "capable");
     Ok(())

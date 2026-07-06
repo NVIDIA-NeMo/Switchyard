@@ -5,8 +5,8 @@
 
 use super::macros::profile_types;
 use super::{
-    StageRouterProfileConfig, LatencyServiceProfileConfig, LlmRoutingProfileConfig, NoopProfileConfig,
-    PassthroughProfileConfig, RandomRoutingProfileConfig,
+    LatencyServiceProfileConfig, LlmRoutingProfileConfig, NoopProfileConfig,
+    PassthroughProfileConfig, RandomRoutingProfileConfig, StageRouterProfileConfig,
 };
 
 profile_types! {
