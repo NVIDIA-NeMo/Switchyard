@@ -3,9 +3,9 @@
 
 """Calibrate stage_router confidence threshold from Harbor run outputs.
 
-Pass the Harbor run output directories for the pure-strong and pure-weak arms:
+Pass the Harbor run output directories for the pure-capable and pure-efficient arms:
 
-  python calibrate.py --strong-run-dir /tmp/runs/strong --weak-run-dir /tmp/runs/weak
+  python calibrate.py --capable-run-dir /tmp/runs/capable --efficient-run-dir /tmp/runs/efficient
   python sweep.py
 """
 from __future__ import annotations
@@ -28,16 +28,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Calibrate stage_router confidence threshold from Harbor run outputs."
     )
     parser.add_argument(
-        "--strong-run-dir",
+        "--capable-run-dir",
         type=Path,
         required=True,
-        help="Harbor output directory for the pure-strong run.",
+        help="Harbor output directory for the pure-capable run.",
     )
     parser.add_argument(
-        "--weak-run-dir",
+        "--efficient-run-dir",
         type=Path,
         required=True,
-        help="Harbor output directory for the pure-weak probe run.",
+        help="Harbor output directory for the pure-efficient probe run.",
     )
     return parser.parse_args(argv)
 
@@ -92,8 +92,8 @@ def read_arm(arm_dir: Path):
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
     arms = {
-        "strong": args.strong_run_dir,
-        "weak": args.weak_run_dir,
+        "capable": args.capable_run_dir,
+        "efficient": args.efficient_run_dir,
     }
     all_outcomes: dict[str, dict] = {}
     all_feats: dict[str, dict] = {}

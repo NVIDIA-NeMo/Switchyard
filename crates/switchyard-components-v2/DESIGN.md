@@ -402,10 +402,10 @@ profiles:
 
   smart-stage-router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     confidence_threshold: 0.7
 ```
 

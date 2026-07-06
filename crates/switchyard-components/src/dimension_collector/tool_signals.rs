@@ -133,7 +133,7 @@ static BASH_READ_PATTERNS: &[&str] = &[
 static READ_TOOL_NAMES: &[&str] = &["read", "view"];
 
 // Planning / scratchpad tool calls. Used by Opus as a struggle indicator
-// in the strong-default picker direction.
+// in the capable-first picker direction.
 // `update_plan` is codex's equivalent of `todowrite`.
 static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_plan"];
 
@@ -142,7 +142,7 @@ static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_p
 // are seen on some OpenAI-derived harnesses.
 static BASH_TOOL_NAMES: &[&str] = &["bash", "shell_command", "shell", "local_shell_call"];
 
-// Prefer false negatives: tests_passed routes the picker to WEAK, so a false
+// Prefer false negatives: tests_passed routes the picker to EFFICIENT, so a false
 // positive would drop tier on an unfinished task.
 static TEST_PASS_PHRASES: &[&str] = &[
     " passed",
@@ -193,7 +193,7 @@ pub struct ToolResultSignal {
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
     /// TodoWrite tool calls. Strong fail predictor for Opus; used by the
-    /// `stage_router_strong_default` drop-to-weak gate.
+    /// `stage_router_capable_first` drop-to-weak gate.
     pub todowrite_count: u32,
     /// Edit-type calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_edit_count: u32,

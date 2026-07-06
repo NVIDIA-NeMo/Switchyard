@@ -26,7 +26,7 @@ from switchyard.lib.roles import LLMBackend
 
 @profile_config("stage_router")
 class StageRouterProfileConfig:
-    """Profile config wrapper for signal-driven strong/weak stage_router profiles."""
+    """Profile config wrapper for signal-driven capable/efficient stage_router profiles."""
 
     config: StageRouterConfig
 
@@ -49,14 +49,14 @@ class StageRouterProfileConfig:
         classifier = _build_classifier(config.classifier)
         request_processors.append(
             StageRouterRequestProcessor(
-                targets=(config.weak, config.strong),
+                targets=(config.efficient, config.capable),
                 picker=_build_tier_picker(config, decision_log, classifier),
                 classifier=classifier,
                 decision_log=decision_log,
             )
         )
 
-        backend: LLMBackend = build_multi_llm_backend((config.weak, config.strong))
+        backend: LLMBackend = build_multi_llm_backend((config.efficient, config.capable))
 
         return ComponentChainProfile(
             request_processors=request_processors,

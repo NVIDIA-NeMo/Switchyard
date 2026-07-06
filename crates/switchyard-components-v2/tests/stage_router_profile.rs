@@ -254,10 +254,10 @@ fn target(id: &str, model: &str, base_url: &str) -> Result<LlmTarget> {
 
 fn config(base_url: &str) -> Result<StageRouterProfileConfig> {
     Ok(StageRouterProfileConfig {
-        strong: target("strong", "frontier/model", &format!("{base_url}/strong/v1"))?,
-        weak: target("weak", "cheap/model", &format!("{base_url}/weak/v1"))?,
-        fallback_target_on_evict: LlmTargetId::new("strong")?,
-        picker: StageRouterPickerMode::StageRouterStrongDefault,
+        capable: target("capable", "frontier/model", &format!("{base_url}/capable/v1"))?,
+        efficient: target("efficient", "cheap/model", &format!("{base_url}/efficient/v1"))?,
+        fallback_target_on_evict: LlmTargetId::new("capable")?,
+        picker: StageRouterPickerMode::StageRouterCapableFirst,
         confidence_threshold: 0.7,
         signal_recent_window: 3,
         classifier: Some(StageRouterClassifierConfig {
@@ -308,7 +308,7 @@ fn stats_test_lock() -> &'static AsyncMutex<()> {
 }
 
 #[tokio::test]
-async fn critical_severity_overrides_to_strong_without_classifier() -> Result<()> {
+async fn critical_severity_overrides_to_capable_without_classifier() -> Result<()> {
     let server = MockOpenAiServer::spawn(None, 200)?;
     let mut config = config(&server.base_url())?;
     config.classifier = None;
@@ -322,14 +322,14 @@ async fn critical_severity_overrides_to_strong_without_classifier() -> Result<()
         processed.profile_input.request.model(),
         Some("frontier/model")
     );
-    assert_eq!(processed.decision.tier, StageRouterTier::Strong);
+    assert_eq!(processed.decision.tier, StageRouterTier::Capable);
     assert_eq!(processed.decision.source, StageRouterDecisionSource::Override);
     assert!(server.requests()?.is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn negative_score_routes_to_weak_without_classifier() -> Result<()> {
+async fn negative_score_routes_to_efficient_without_classifier() -> Result<()> {
     let server = MockOpenAiServer::spawn(None, 200)?;
     let mut config = config(&server.base_url())?;
     config.classifier = None;
@@ -341,7 +341,7 @@ async fn negative_score_routes_to_weak_without_classifier() -> Result<()> {
         .await?;
 
     assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
-    assert_eq!(processed.decision.tier, StageRouterTier::Weak);
+    assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
     assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
     Ok(())
 }
@@ -350,13 +350,13 @@ async fn negative_score_routes_to_weak_without_classifier() -> Result<()> {
 async fn low_confidence_uses_classifier_when_configured() -> Result<()> {
     let _guard = stats_test_lock().lock().await;
     profile_stats_accumulator().reset()?;
-    let server = MockOpenAiServer::spawn(Some(tier_content("weak")), 200)?;
+    let server = MockOpenAiServer::spawn(Some(tier_content("efficient")), 200)?;
     let profile = config(&server.base_url())?.build()?;
 
     let processed = profile.process(request()).await?;
 
     assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
-    assert_eq!(processed.decision.tier, StageRouterTier::Weak);
+    assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
     assert_eq!(
         processed.decision.source,
         StageRouterDecisionSource::LlmClassifier
@@ -378,7 +378,7 @@ async fn low_confidence_uses_classifier_when_configured() -> Result<()> {
 async fn yaml_overrides_classifier_prompt_and_max_tokens() -> Result<()> {
     let _guard = stats_test_lock().lock().await;
     profile_stats_accumulator().reset()?;
-    let server = MockOpenAiServer::spawn(Some(tier_content("weak")), 200)?;
+    let server = MockOpenAiServer::spawn(Some(tier_content("efficient")), 200)?;
     let mut config = config(&server.base_url())?;
     let classifier = config
         .classifier
@@ -471,7 +471,7 @@ async fn non_json_classifier_falls_open_and_records_error() -> Result<()> {
 async fn run_records_backend_and_classifier_stats() -> Result<()> {
     let _guard = stats_test_lock().lock().await;
     profile_stats_accumulator().reset()?;
-    let server = MockOpenAiServer::spawn(Some(tier_content("strong")), 200)?;
+    let server = MockOpenAiServer::spawn(Some(tier_content("capable")), 200)?;
     let profile = config(&server.base_url())?.build()?;
 
     let response = profile.run(request()).await?;
@@ -484,7 +484,7 @@ async fn run_records_backend_and_classifier_stats() -> Result<()> {
         routing_metadata.selected_model.as_deref(),
         Some("frontier/model")
     );
-    assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
+    assert_eq!(routing_metadata.selected_tier.as_deref(), Some("capable"));
     assert_eq!(routing_metadata.confidence, None);
     assert!(routing_metadata
         .rationale
@@ -497,11 +497,11 @@ async fn run_records_backend_and_classifier_stats() -> Result<()> {
     let requests = server.requests()?;
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].path, "/classifier/v1/chat/completions");
-    assert_eq!(requests[1].path, "/strong/v1/chat/completions");
+    assert_eq!(requests[1].path, "/capable/v1/chat/completions");
     let stats = profile_stats_accumulator().snapshot()?;
     assert_eq!(stats.classifier.total_requests, 1);
     assert!(stats.models.contains_key("frontier/model"));
-    assert!(stats.tiers.contains_key("strong"));
+    assert!(stats.tiers.contains_key("capable"));
     Ok(())
 }
 
@@ -509,7 +509,7 @@ async fn run_records_backend_and_classifier_stats() -> Result<()> {
 async fn run_records_selected_backend_failure() -> Result<()> {
     let _guard = stats_test_lock().lock().await;
     profile_stats_accumulator().reset()?;
-    let server = MockOpenAiServer::spawn(Some(tier_content("strong")), 503)?;
+    let server = MockOpenAiServer::spawn(Some(tier_content("capable")), 503)?;
     let profile = config(&server.base_url())?.build()?;
 
     let error =

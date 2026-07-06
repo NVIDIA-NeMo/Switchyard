@@ -37,7 +37,7 @@ def test_zero_signal_scores_to_zero():
     assert result.confidence == 0.0
 
 
-def test_critical_severity_pushes_toward_strong():
+def test_critical_severity_pushes_toward_capable():
     dims = _zero_dimensions()
     dims = CodingAgentDimensions(**{**dims.__dict__, "severity": 1.0})
     result = score(dims)
@@ -45,7 +45,7 @@ def test_critical_severity_pushes_toward_strong():
     assert result.confidence == abs(result.score)
 
 
-def test_tests_passed_pushes_toward_weak():
+def test_tests_passed_pushes_toward_efficient():
     dims = _zero_dimensions()
     dims = CodingAgentDimensions(**{**dims.__dict__, "tests_passed": 1.0})
     result = score(dims)

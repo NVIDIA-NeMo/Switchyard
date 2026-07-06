@@ -14,7 +14,7 @@ from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 #: Picker mode accepted in YAML. The profile resolves it to a :class:`TierPicker`.
 #: The name describes the *default tier* — what the picker returns when the
 #: scorer is ambiguous and no classifier is configured.
-StageRouterPickerMode = Literal["stage_router_strong_default", "stage_router_weak_default"]
+StageRouterPickerMode = Literal["stage_router_capable_first", "stage_router_efficient_first"]
 
 
 class ClassifierConfig(BaseModel):
@@ -39,13 +39,13 @@ class StageRouterConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
-    strong: LlmTarget
-    weak: LlmTarget
+    capable: LlmTarget
+    efficient: LlmTarget
     #: Target ID the post-routing guard rewrites picks to when the picked
     #: target has been evicted from the pool (e.g. after a context-window
-    #: overflow). Must match either ``strong.id`` or ``weak.id``.
+    #: overflow). Must match either ``capable.id`` or ``efficient.id``.
     fallback_target_on_evict: str
-    picker: StageRouterPickerMode = "stage_router_strong_default"
+    picker: StageRouterPickerMode = "stage_router_capable_first"
     #: Scorer confidence in ``[0, 1]`` below which the picker consults the
     #: classifier (if configured) or returns its default tier. ``0.0`` forces
     #: pure-deterministic routing; ``1.0`` forces every turn through the
@@ -60,12 +60,12 @@ class StageRouterConfig(BaseModel):
     classifier: ClassifierConfig | None = None
     enable_stats: bool = True
 
-    @field_validator("strong", "weak", mode="before")
+    @field_validator("capable", "efficient", mode="before")
     @classmethod
     def _coerce_target(cls, value: object, info: ValidationInfo) -> LlmTarget:
         return coerce_llm_target(value, default_id=info.field_name or "target")
 
-    @field_validator("strong", "weak")
+    @field_validator("capable", "efficient")
     @classmethod
     def _target_model_non_empty(cls, tier: LlmTarget) -> LlmTarget:
         if not tier.model:
@@ -75,7 +75,7 @@ class StageRouterConfig(BaseModel):
     @field_validator("fallback_target_on_evict")
     @classmethod
     def _fallback_matches_existing_target(cls, value: str, info: ValidationInfo) -> str:
-        valid_ids = {info.data[key].id for key in ("strong", "weak") if key in info.data}
+        valid_ids = {info.data[key].id for key in ("capable", "efficient") if key in info.data}
         if value not in valid_ids:
             raise ValueError(
                 f"fallback_target_on_evict={value!r} must match one of "

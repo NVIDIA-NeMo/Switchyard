@@ -4,8 +4,8 @@
 """StageRouter — weighted scorer + selective LLM-classifier."""
 
 from switchyard.lib.processors.stage_router.classifier import (
-    STRONG_TIER,
-    WEAK_TIER,
+    CAPABLE_TIER,
+    EFFICIENT_TIER,
     TierClassifier,
 )
 from switchyard.lib.processors.stage_router.decision_log import (
@@ -18,10 +18,10 @@ from switchyard.lib.processors.stage_router.dimensions import (
     from_signal,
 )
 from switchyard.lib.processors.stage_router.picker import (
-    STRONG,
-    WEAK,
-    pick_strong_default,
-    pick_weak_default,
+    CAPABLE,
+    EFFICIENT,
+    pick_capable_first,
+    pick_efficient_first,
 )
 from switchyard.lib.processors.stage_router.scorer import (
     DEFAULT_WEIGHTS,
@@ -32,17 +32,17 @@ from switchyard.lib.processors.stage_router.scorer import (
 __all__ = [
     "CONTEXT_KEY",
     "DEFAULT_WEIGHTS",
-    "STRONG",
-    "STRONG_TIER",
+    "CAPABLE",
+    "CAPABLE_TIER",
     "StageRouterDecisionLog",
     "CodingAgentDimensions",
     "DecisionSource",
     "ScoreResult",
     "TierClassifier",
-    "WEAK",
-    "WEAK_TIER",
+    "EFFICIENT",
+    "EFFICIENT_TIER",
     "from_signal",
-    "pick_strong_default",
-    "pick_weak_default",
+    "pick_capable_first",
+    "pick_efficient_first",
     "score",
 ]

@@ -78,12 +78,12 @@ class _MockOpenAIHandler(BaseHTTPRequestHandler):
         elif body.get("response_format", {}).get("type") == "json_schema":
             schema_name = body["response_format"]["json_schema"]["name"]
             if schema_name == "StageRouterTierDecision":
-                message = {"role": "assistant", "content": json.dumps({"tier": "weak"})}
+                message = {"role": "assistant", "content": json.dumps({"tier": "efficient"})}
         elif (
             body.get("response_format", {}).get("type") == "json_object"
             and body.get("model") == "provider/classifier"
         ):
-            message = {"role": "assistant", "content": json.dumps({"tier": "weak"})}
+            message = {"role": "assistant", "content": json.dumps({"tier": "efficient"})}
 
         response = {
             "id": "chatcmpl-profile-bindings",
@@ -188,10 +188,10 @@ profiles:
     profile_name: coding_agent
   stage_router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     confidence_threshold: 0.7
     classifier:
       model: provider/classifier

@@ -1,8 +1,8 @@
 # Stage-Router Routing
 
-StageRouter routing picks one of two tiers (`weak` / `strong`) per request based on
-tool-result history stamped onto the conversation. The strong tier handles
-exploration and error recovery; the weak tier handles the mechanical
+StageRouter routing picks one of two tiers (`efficient` / `capable`) per request based on
+tool-result history stamped onto the conversation. The capable tier handles
+exploration and error recovery; the efficient tier handles the mechanical
 implementation phase.
 
 The picker composes three layers in order:
@@ -11,7 +11,7 @@ The picker composes three layers in order:
    the scorer (critical severity, clean tests passed).
 2. **Weighted scorer**: a linear combination of normalised
    `ToolResultSignal` dimensions; produces a score in `[-1, +1]` (positive ⇒
-   STRONG, negative ⇒ WEAK) and a confidence `= |score|`. Returned as the
+   CAPABLE, negative ⇒ EFFICIENT) and a confidence `= |score|`. Returned as the
    dimensions verdict when `confidence ≥ confidence_threshold`.
 3. **Optional LLM classifier**: consulted only when the scorer is
    ambiguous (`confidence < confidence_threshold`). Fails open to the
@@ -29,7 +29,7 @@ code as calibrated defaults. Research engineers override them by passing
 ```
 StageRouterProfile
   -> extract ToolResultSignal from the request
-  -> pick weak or strong
+  -> pick efficient or capable
   -> rewrite request.model to the selected target model
   -> call the selected native target backend
 ```
@@ -52,10 +52,10 @@ once against `fallback_target_on_evict`. A second overflow returns
 Names describe **the default tier**: the verdict returned when the scorer
 is ambiguous and no classifier verdict is available.
 
-- **`stage_router_strong_default`**: STRONG is the default. WEAK only when the
-  scorer is confidently negative or the classifier says WEAK. Quality-first.
-- **`stage_router_weak_default`**: WEAK is the default. STRONG only when the
-  scorer is confidently positive or the classifier says STRONG. Cost-first.
+- **`stage_router_capable_first`**: CAPABLE is the default. EFFICIENT only when the
+  scorer is confidently negative or the classifier says EFFICIENT. Quality-first.
+- **`stage_router_efficient_first`**: EFFICIENT is the default. CAPABLE only when the
+  scorer is confidently positive or the classifier says CAPABLE. Cost-first.
 
 Both share the same override path and scorer math; only the default tier
 differs.
@@ -66,8 +66,8 @@ Applied *before* the scorer, in this order. Any match short-circuits.
 
 | Override | Condition | Verdict |
 |---|---|---|
-| Critical severity | `signal.severity ≥ SEVERITY_CRITICAL` (1.0) | STRONG |
-| Clean completion | `signal.tests_passed AND signal.turn_depth ≥ CLEAN_TESTS_MIN_TURN_DEPTH (10) AND signal.write_count ≤ CLEAN_TESTS_MAX_WRITES (1)` | WEAK |
+| Critical severity | `signal.severity ≥ SEVERITY_CRITICAL` (1.0) | CAPABLE |
+| Clean completion | `signal.tests_passed AND signal.turn_depth ≥ CLEAN_TESTS_MIN_TURN_DEPTH (10) AND signal.write_count ≤ CLEAN_TESTS_MAX_WRITES (1)` | EFFICIENT |
 
 Thresholds are module-level constants in the Rust stage-router profile; retune in
 one place.
@@ -86,7 +86,7 @@ clears the recommended threshold of `0.5` on its own.
 
 When `confidence < confidence_threshold` and the YAML includes a
 `classifier:` sub-block, the picker calls the configured model with a
-short JSON-output prompt and asks for `{"tier": "strong" | "weak"}`. On
+short JSON-output prompt and asks for `{"tier": "capable" | "efficient"}`. On
 timeout, malformed JSON, network failure, or any other classifier error,
 the picker falls back to its default tier (recorded as `fall_open`).
 
@@ -131,32 +131,32 @@ minimum-data path.
 
 | Run | Coverage | Purpose |
 |---|---|---|
-| Pure-strong | ~40–75 representative tasks | Baseline outcomes + signal features |
-| Pure-weak | ~20 tasks (sampled from strong results) | Counterfactual outcomes |
+| Pure-capable | ~40–75 representative tasks | Baseline outcomes + signal features |
+| Pure-efficient | ~20 tasks (sampled from capable results) | Counterfactual outcomes |
 
-Neither run needs to cover the full task set. A few dozen strong tasks gives
-enough outcome diversity; the weak probe only needs to cover the interesting
-quadrant candidates identified from those strong results.
+Neither run needs to cover the full task set. A few dozen capable tasks gives
+enough outcome diversity; the efficient probe only needs to cover the interesting
+quadrant candidates identified from those capable results.
 
-**How to sample the weak probe set**
+**How to sample the efficient probe set**
 
-Stratify the pure-strong results across four quadrant candidates before running weak:
+Stratify the pure-capable results across four quadrant candidates before running efficient:
 
 | Category | Criterion | Count | Value |
 |---|---|---|---|
-| Easy + clean | Strong passes, small diff, clear spec | ~5 | Establishes SAFE floor |
-| Easy + tricky | Strong passes, subtle logic | ~5 | Catches LOSS false-positives |
-| Hard + structural | Strong fails, large multi-file diff | ~5 | HARD noise baseline |
-| Hard + localized | Strong fails, small targeted fix | ~5 | Best RESCUE signal |
+| Easy + clean | Capable passes, small diff, clear spec | ~5 | Establishes SAFE floor |
+| Easy + tricky | Capable passes, subtle logic | ~5 | Catches LOSS false-positives |
+| Hard + structural | Capable fails, large multi-file diff | ~5 | HARD noise baseline |
+| Hard + localized | Capable fails, small targeted fix | ~5 | Best RESCUE signal |
 
 Sample across repos and diff sizes. Don't over-represent one project.
 
 **Building RESCUE / LOSS quadrants**
 
-From the overlap tasks (those with both strong and weak results):
+From the overlap tasks (those with both capable and efficient results):
 
-- `RESCUE` = strong-fail ∩ weak-pass → escalation is beneficial here
-- `LOSS`   = strong-pass ∩ weak-fail → do NOT escalate here
+- `RESCUE` = capable-fail ∩ efficient-pass → escalation is beneficial here
+- `LOSS`   = capable-pass ∩ efficient-fail → do NOT escalate here
 - `SAFE`   = both pass
 - `HARD`   = both fail
 
@@ -173,8 +173,8 @@ Three scripts in `benchmark/calibration/stage_router/` form the pipeline:
 ```bash
 cd benchmark/calibration/stage_router
 python calibrate.py \
-  --strong-run-dir /tmp/runs/your_strong_run \
-  --weak-run-dir /tmp/runs/your_weak_probe
+  --capable-run-dir /tmp/runs/your_capable_run \
+  --efficient-run-dir /tmp/runs/your_efficient_probe
 python sweep.py
 ```
 
@@ -184,23 +184,23 @@ prints the policy score table; pick the best row from that output.
 Pick the policy whose pass% beats `always_stay` with an acceptable
 escalation rate. Translate it to a `confidence_threshold` value. A policy
 that escalates ~20% of tasks maps roughly to `confidence_threshold: 0.5`
-with `stage_router_strong_default`.
+with `stage_router_capable_first`.
 
 Even 15–20 probe tasks produce a stable result because signal features are
-extracted from the strong-arm trajectories, which are available for all
-tasks from the pure-strong run.
+extracted from the capable-arm trajectories, which are available for all
+tasks from the pure-capable run.
 
-**Caveat on weak outcomes in stage-router vs. pure-weak**
+**Caveat on efficient outcomes in stage-router vs. pure-efficient**
 
-In stage-router, the weak model may inherit partial context from the strong arm
-(conversation history up to the escalation point). Pure-weak runs start
-fresh, so RESCUE is a conservative lower bound. Weak performs at least as
+In stage-router, the efficient model may inherit partial context from the capable arm
+(conversation history up to the escalation point). Pure-efficient runs start
+fresh, so RESCUE is a conservative lower bound. Efficient performs at least as
 well in stage-router as it does alone.
 
 ### Rate-limit isolation (production caveat)
 
 The YAML below keeps the classifier on `${OPENROUTER_API_KEY}` for a compact
-example. If the classifier and weak tier share a provider bucket, each classified
+example. If the classifier and efficient tier share a provider bucket, each classified
 turn adds one extra request to that bucket. Production deployments should use a
 separate classifier credential or quota bucket, or skip the classifier sub-block
 on quota-constrained deployments. Co-locating them on one bucket can produce
@@ -217,11 +217,11 @@ endpoints:
     api_key: ${OPENROUTER_API_KEY}
 
 targets:
-  strong:
+  capable:
     endpoint: openrouter
     model: openai/gpt-4o
     format: openai
-  weak:
+  efficient:
     endpoint: openrouter
     model: openai/gpt-4o-mini
     format: openai
@@ -229,12 +229,12 @@ targets:
 profiles:
   smart-stage-router:
     type: stage_router
-    picker: stage_router_strong_default        # or stage_router_weak_default
+    picker: stage_router_capable_first        # or stage_router_efficient_first
     confidence_threshold: 0.5              # recommended; range [0.0, 1.0]
     signal_recent_window: 3                # Rust sliding-window for recent_* counts
-    fallback_target_on_evict: strong       # required; see Context-Window Handling
-    strong: strong                         # target id
-    weak: weak                             # target id
+    fallback_target_on_evict: capable       # required; see Context-Window Handling
+    capable: capable                         # target id
+    efficient: efficient                             # target id
     classifier:                            # optional
       model: openai/gpt-4o-mini
       api_key: ${OPENROUTER_API_KEY}        # use a separate key/quota in production

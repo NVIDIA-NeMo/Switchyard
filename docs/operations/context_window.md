@@ -20,7 +20,7 @@ match one of the route's declared target ids:
 routes:
   my-stage-router:
     type: stage_router
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     fallback_target_on_evict: strong   # must match strong.id or weak.id
     strong:
       id: strong

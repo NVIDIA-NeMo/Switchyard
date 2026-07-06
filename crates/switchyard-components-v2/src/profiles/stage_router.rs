@@ -53,17 +53,17 @@ const DEFAULT_WEIGHTS: &[(&str, f64)] = &[
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageRouterPickerMode {
-    /// Default to strong unless the scorer/classifier confidently picks weak.
-    StageRouterStrongDefault,
-    /// Default to weak unless the scorer/classifier confidently picks strong.
-    StageRouterWeakDefault,
+    /// Default to capable unless the scorer/classifier confidently picks efficient.
+    StageRouterCapableFirst,
+    /// Default to efficient unless the scorer/classifier confidently picks capable.
+    StageRouterEfficientFirst,
 }
 
 impl StageRouterPickerMode {
     fn default_tier(self) -> StageRouterTier {
         match self {
-            Self::StageRouterStrongDefault => StageRouterTier::Strong,
-            Self::StageRouterWeakDefault => StageRouterTier::Weak,
+            Self::StageRouterCapableFirst => StageRouterTier::Capable,
+            Self::StageRouterEfficientFirst => StageRouterTier::Efficient,
         }
     }
 }
@@ -93,15 +93,15 @@ pub struct StageRouterClassifierConfig {
     pub system_prompt: Option<String>,
 }
 
-/// Config for a strong/weak signal stage_router profile.
+/// Config for a capable/efficient signal stage_router profile.
 #[profile_config("stage_router")]
 pub struct StageRouterProfileConfig {
-    /// Strong target served by this profile.
+    /// Capable target served by this profile.
     #[profile_target]
-    pub strong: LlmTarget,
-    /// Weak target served by this profile.
+    pub capable: LlmTarget,
+    /// Efficient target served by this profile.
     #[profile_target]
-    pub weak: LlmTarget,
+    pub efficient: LlmTarget,
     /// Target used for one retry after context-window overflow.
     pub fallback_target_on_evict: LlmTargetId,
     /// Picker mode controlling the low-confidence default tier.
@@ -128,8 +128,8 @@ impl ProfileConfig for StageRouterProfileConfig {
     fn build(&self) -> Result<Self::Runtime> {
         self.validate()?;
         Ok(StageRouterProfile {
-            strong_backend: native_target_backend(self.strong.clone())?,
-            weak_backend: native_target_backend(self.weak.clone())?,
+            capable_backend: native_target_backend(self.capable.clone())?,
+            efficient_backend: native_target_backend(self.efficient.clone())?,
             fallback_target_on_evict: self.fallback_target_on_evict.clone(),
             picker: self.picker,
             confidence_threshold: self.confidence_threshold,
@@ -147,9 +147,9 @@ impl ProfileConfig for StageRouterProfileConfig {
 
 impl StageRouterProfileConfig {
     fn validate(&self) -> Result<()> {
-        if self.strong.id == self.weak.id {
+        if self.capable.id == self.efficient.id {
             return Err(SwitchyardError::InvalidConfig(
-                "stage_router strong and weak targets must have distinct target ids".to_string(),
+                "stage_router capable and efficient targets must have distinct target ids".to_string(),
             ));
         }
         if !self.confidence_threshold.is_finite()
@@ -165,12 +165,12 @@ impl StageRouterProfileConfig {
                 "signal_recent_window must be at least 1".to_string(),
             ));
         }
-        if self.fallback_target_on_evict != self.strong.id
-            && self.fallback_target_on_evict != self.weak.id
+        if self.fallback_target_on_evict != self.capable.id
+            && self.fallback_target_on_evict != self.efficient.id
         {
             return Err(SwitchyardError::InvalidConfig(format!(
                 "fallback_target_on_evict={} must match one of [{}, {}]",
-                self.fallback_target_on_evict, self.weak.id, self.strong.id
+                self.fallback_target_on_evict, self.efficient.id, self.capable.id
             )));
         }
         if let Some(classifier) = &self.classifier {
@@ -209,10 +209,10 @@ impl StageRouterClassifierConfig {
     }
 }
 
-/// Strong/weak stage_router profile runtime.
+/// Capable/efficient stage_router profile runtime.
 pub struct StageRouterProfile {
-    strong_backend: TargetBackend,
-    weak_backend: TargetBackend,
+    capable_backend: TargetBackend,
+    efficient_backend: TargetBackend,
     fallback_target_on_evict: LlmTargetId,
     picker: StageRouterPickerMode,
     confidence_threshold: f64,
@@ -234,18 +234,18 @@ pub struct StageRouterProcessedRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageRouterTier {
-    /// Strong tier.
-    Strong,
-    /// Weak tier.
-    Weak,
+    /// Capable tier.
+    Capable,
+    /// Efficient tier.
+    Efficient,
 }
 
 impl StageRouterTier {
     /// Stable lowercase label used by stats.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Strong => "strong",
-            Self::Weak => "weak",
+            Self::Capable => "capable",
+            Self::Efficient => "efficient",
         }
     }
 }
@@ -283,7 +283,7 @@ impl StageRouterDecisionSource {
 /// StageRouter routing decision with the selected target and scorer metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StageRouterDecision {
-    /// Selected strong/weak side.
+    /// Selected capable/efficient side.
     pub tier: StageRouterTier,
     /// Selected target id.
     pub selected_target: LlmTargetId,
@@ -313,7 +313,7 @@ impl StageRouterProfile {
     }
 
     // Routing decision flow:
-    // 1. Hard overrides choose strong for critical failures or weak for clean tests.
+    // 1. Hard overrides choose capable for critical failures or efficient for clean tests.
     // 2. Dimensions scoring chooses by score sign when confidence clears the threshold.
     // 3. Low-confidence requests use the optional LLM classifier when configured.
     // 4. Missing or failed classifier output falls open to the picker default tier.
@@ -336,9 +336,9 @@ impl StageRouterProfile {
         let score = score_signal(signal);
         if score.confidence >= self.confidence_threshold {
             let tier = if score.score > 0.0 {
-                StageRouterTier::Strong
+                StageRouterTier::Capable
             } else {
-                StageRouterTier::Weak
+                StageRouterTier::Efficient
             };
             return self.decision_for_tier(
                 tier,
@@ -425,16 +425,16 @@ impl StageRouterProfile {
 
     fn backend_for_tier(&self, tier: StageRouterTier) -> &TargetBackend {
         match tier {
-            StageRouterTier::Strong => &self.strong_backend,
-            StageRouterTier::Weak => &self.weak_backend,
+            StageRouterTier::Capable => &self.capable_backend,
+            StageRouterTier::Efficient => &self.efficient_backend,
         }
     }
 
     fn backend_for_target(&self, target_id: &LlmTargetId) -> Result<&TargetBackend> {
-        if *target_id == self.strong_backend.target().id {
-            Ok(&self.strong_backend)
-        } else if *target_id == self.weak_backend.target().id {
-            Ok(&self.weak_backend)
+        if *target_id == self.capable_backend.target().id {
+            Ok(&self.capable_backend)
+        } else if *target_id == self.efficient_backend.target().id {
+            Ok(&self.efficient_backend)
         } else {
             Err(SwitchyardError::InvalidConfig(format!(
                 "stage_router selected target {target_id} that is not configured for this profile"
@@ -443,10 +443,10 @@ impl StageRouterProfile {
     }
 
     fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<StageRouterTier> {
-        if *target_id == self.strong_backend.target().id {
-            Ok(StageRouterTier::Strong)
-        } else if *target_id == self.weak_backend.target().id {
-            Ok(StageRouterTier::Weak)
+        if *target_id == self.capable_backend.target().id {
+            Ok(StageRouterTier::Capable)
+        } else if *target_id == self.efficient_backend.target().id {
+            Ok(StageRouterTier::Efficient)
         } else {
             Err(SwitchyardError::InvalidConfig(format!(
                 "stage_router target {target_id} is not configured for this profile"
@@ -693,13 +693,13 @@ fn dimensions_from_signal(signal: &ToolResultSignal) -> CodingAgentDimensions {
 
 fn apply_overrides(signal: &ToolResultSignal) -> Option<StageRouterTier> {
     if signal.severity >= SEVERITY_CRITICAL {
-        return Some(StageRouterTier::Strong);
+        return Some(StageRouterTier::Capable);
     }
     if signal.tests_passed
         && signal.turn_depth >= CLEAN_TESTS_MIN_TURN_DEPTH
         && signal.write_count <= CLEAN_TESTS_MAX_WRITES
     {
-        return Some(StageRouterTier::Weak);
+        return Some(StageRouterTier::Efficient);
     }
     None
 }
@@ -851,8 +851,8 @@ fn parse_classifier_tier(body: &Value) -> Option<StageRouterTier> {
         .as_str()?;
     let payload = serde_json::from_str::<Value>(content).ok()?;
     match payload.get("tier").and_then(Value::as_str) {
-        Some("strong") => Some(StageRouterTier::Strong),
-        Some("weak") => Some(StageRouterTier::Weak),
+        Some("capable") => Some(StageRouterTier::Capable),
+        Some("efficient") => Some(StageRouterTier::Efficient),
         _ => None,
     }
 }
@@ -879,11 +879,11 @@ fn summarise_signal(
     );
     let recent_messages = recent_messages(request, recent_window);
     if recent_messages.is_empty() {
-        return format!("Decide STRONG or WEAK for the next call. {state_line}");
+        return format!("Decide CAPABLE or EFFICIENT for the next call. {state_line}");
     }
 
     let mut lines = vec![
-        "Decide STRONG or WEAK for the next call.".to_string(),
+        "Decide CAPABLE or EFFICIENT for the next call.".to_string(),
         state_line,
         "Recent turns (most recent last):".to_string(),
     ];
@@ -984,7 +984,7 @@ fn model_accepts_reasoning_hint(model: &str) -> bool {
 }
 
 fn default_picker() -> StageRouterPickerMode {
-    StageRouterPickerMode::StageRouterStrongDefault
+    StageRouterPickerMode::StageRouterCapableFirst
 }
 
 fn default_confidence_threshold() -> f64 {
@@ -1117,23 +1117,23 @@ mod tests {
     }
 
     fn profile(
-        strong: LlmTarget,
-        weak: LlmTarget,
+        capable: LlmTarget,
+        efficient: LlmTarget,
         picker: StageRouterPickerMode,
         confidence_threshold: f64,
-        weak_actions: Vec<BackendAction>,
-        strong_actions: Vec<BackendAction>,
+        efficient_actions: Vec<BackendAction>,
+        capable_actions: Vec<BackendAction>,
     ) -> Result<(StageRouterProfile, Arc<Mutex<Vec<ObservedCall>>>)> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let profile = StageRouterProfile {
-            strong_backend: target_backend(
-                &strong,
-                "strong-backend",
+            capable_backend: target_backend(
+                &capable,
+                "capable-backend",
                 calls.clone(),
-                strong_actions,
+                capable_actions,
             ),
-            weak_backend: target_backend(&weak, "weak-backend", calls.clone(), weak_actions),
-            fallback_target_on_evict: strong.id.clone(),
+            efficient_backend: target_backend(&efficient, "efficient-backend", calls.clone(), efficient_actions),
+            fallback_target_on_evict: capable.id.clone(),
             picker,
             confidence_threshold,
             signal_recent_window: DEFAULT_RECENT_WINDOW,
@@ -1145,11 +1145,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stage_router_routes_critical_tool_errors_to_strong() -> Result<()> {
+    async fn stage_router_routes_critical_tool_errors_to_capable() -> Result<()> {
         let (profile, calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
-            StageRouterPickerMode::StageRouterWeakDefault,
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::StageRouterEfficientFirst,
             0.7,
             vec![BackendAction::Ok],
             vec![BackendAction::Ok],
@@ -1176,7 +1176,7 @@ mod tests {
             routing_metadata.selected_model.as_deref(),
             Some("frontier/model")
         );
-        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
+        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("capable"));
         assert_eq!(routing_metadata.confidence, Some(1.0));
         assert_eq!(
             routing_metadata.router_version.as_deref(),
@@ -1186,11 +1186,11 @@ mod tests {
 
         let calls = observed(&calls)?;
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].backend, "strong-backend");
+        assert_eq!(calls[0].backend, "capable-backend");
         assert_eq!(calls[0].body["model"], "frontier/model");
         match response {
             ChatResponse::OpenAiCompletion(body) => {
-                assert_eq!(body.body()["served_by"], "strong-backend");
+                assert_eq!(body.body()["served_by"], "capable-backend");
             }
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
@@ -1208,17 +1208,17 @@ mod tests {
                 .models
                 .get("frontier/model")
                 .and_then(|model| model.tier.as_deref()),
-            Some("strong")
+            Some("capable")
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn stage_router_threshold_zero_accepts_neutral_scorer_as_weak() -> Result<()> {
+    async fn stage_router_threshold_zero_accepts_neutral_scorer_as_efficient() -> Result<()> {
         let (profile, calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
-            StageRouterPickerMode::StageRouterStrongDefault,
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::StageRouterCapableFirst,
             0.0,
             vec![BackendAction::Ok],
             vec![BackendAction::Ok],
@@ -1231,7 +1231,7 @@ mod tests {
             }))))
             .await?;
 
-        assert_eq!(processed.decision.tier, StageRouterTier::Weak);
+        assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
         assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
         assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
         assert!(observed(&calls)?.is_empty());
@@ -1241,9 +1241,9 @@ mod tests {
     #[tokio::test]
     async fn stage_router_retries_configured_fallback_after_context_overflow() -> Result<()> {
         let (profile, calls) = profile(
-            target("strong", "frontier/model")?,
-            target("weak", "cheap/model")?,
-            StageRouterPickerMode::StageRouterWeakDefault,
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::StageRouterEfficientFirst,
             0.7,
             vec![BackendAction::ContextOverflow],
             vec![BackendAction::Ok],
@@ -1264,7 +1264,7 @@ mod tests {
             routing_metadata.selected_model.as_deref(),
             Some("frontier/model")
         );
-        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
+        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("capable"));
         assert!(routing_metadata
             .rationale
             .as_deref()
@@ -1273,13 +1273,13 @@ mod tests {
 
         let calls = observed(&calls)?;
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].backend, "weak-backend");
+        assert_eq!(calls[0].backend, "efficient-backend");
         assert_eq!(calls[0].body["model"], "cheap/model");
-        assert_eq!(calls[1].backend, "strong-backend");
+        assert_eq!(calls[1].backend, "capable-backend");
         assert_eq!(calls[1].body["model"], "frontier/model");
         match response {
             ChatResponse::OpenAiCompletion(body) => {
-                assert_eq!(body.body()["served_by"], "strong-backend");
+                assert_eq!(body.body()["served_by"], "capable-backend");
             }
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
@@ -1291,7 +1291,7 @@ mod tests {
                 .models
                 .get("frontier/model")
                 .and_then(|model| model.tier.as_deref()),
-            Some("strong")
+            Some("capable")
         );
         assert_eq!(
             snapshot
@@ -1306,10 +1306,10 @@ mod tests {
     #[test]
     fn stage_router_config_rejects_unknown_fallback_target() -> Result<()> {
         let config = StageRouterProfileConfig {
-            strong: target("strong", "frontier/model")?,
-            weak: target("weak", "cheap/model")?,
+            capable: target("capable", "frontier/model")?,
+            efficient: target("efficient", "cheap/model")?,
             fallback_target_on_evict: LlmTargetId::new("ghost")?,
-            picker: StageRouterPickerMode::StageRouterStrongDefault,
+            picker: StageRouterPickerMode::StageRouterCapableFirst,
             confidence_threshold: 0.7,
             signal_recent_window: DEFAULT_RECENT_WINDOW,
             classifier: None,

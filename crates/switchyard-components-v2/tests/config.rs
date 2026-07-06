@@ -41,10 +41,10 @@ profiles:
     target: direct-weak
   smart-stage-router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     confidence_threshold: 0.7
   health-aware:
     type: latency-service
@@ -58,10 +58,10 @@ profiles:
     profile_name: coding_agent
   stage_router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     classifier:
       model: nvidia/nvidia/nemotron-nano-9b-v2
       api_key: ${NVIDIA_API_KEY}
@@ -506,8 +506,8 @@ targets:
 profiles:
   stale:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
     classifier_max_tokens: 64
 "#;
@@ -536,8 +536,8 @@ targets:
 profiles:
   bad:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
     picker: not-a-picker
 "#;

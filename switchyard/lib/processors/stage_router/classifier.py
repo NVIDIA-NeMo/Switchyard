@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 #: Tier values returned by :meth:`TierClassifier.classify`. Mirrors picker constants.
-STRONG_TIER: str = "strong"
-WEAK_TIER: str = "weak"
+CAPABLE_TIER: str = "capable"
+EFFICIENT_TIER: str = "efficient"
 
 #: ``ctx.metadata`` key for inbound conversation messages — read by the classifier.
 RECENT_MESSAGES_KEY: str = "stage_router_recent_messages"
@@ -65,13 +65,13 @@ def _summarise(
     ]
     state_line = "State: " + ", ".join(parts)
     if not recent_messages:
-        return "Decide STRONG or WEAK for the next call. " + state_line
+        return "Decide CAPABLE or EFFICIENT for the next call. " + state_line
 
     transcript_lines = ["Recent turns (most recent last):"]
     for msg in recent_messages:
         transcript_lines.append(_format_message(msg))
     return (
-        "Decide STRONG or WEAK for the next call.\n"
+        "Decide CAPABLE or EFFICIENT for the next call.\n"
         + state_line
         + "\n"
         + "\n".join(transcript_lines)
@@ -113,7 +113,7 @@ def _format_message(msg: Any) -> str:
 
 
 def _parse_tier(response: object) -> str | None:
-    """Extract ``"strong"`` / ``"weak"`` from a chat-completion response, or ``None``.
+    """Extract ``"capable"`` / ``"efficient"`` from a chat-completion response, or ``None``.
 
     Mirrors ``_completion_content`` in
     :mod:`switchyard.lib.processors.llm_classifier.request_processor` — only reads
@@ -135,7 +135,7 @@ def _parse_tier(response: object) -> str | None:
         log.warning("classifier response not valid JSON: %r", content[:120])
         return None
     tier = payload.get("tier") if isinstance(payload, dict) else None
-    if tier == STRONG_TIER or tier == WEAK_TIER:
+    if tier == CAPABLE_TIER or tier == EFFICIENT_TIER:
         return tier
     log.warning("classifier returned unexpected tier %r", tier)
     return None
@@ -188,7 +188,7 @@ class TierClassifier:
         self._stats = stats_accumulator
 
     async def classify(self, ctx: ProxyContext, signal: ToolResultSignal) -> str | None:
-        """Return ``"strong"``, ``"weak"``, or ``None`` (fall-open)."""
+        """Return ``"capable"``, ``"efficient"``, or ``None`` (fall-open)."""
         recent_messages: list[Any] = []
         if self._recent_turn_window > 0:
             stashed = ctx.metadata.get(RECENT_MESSAGES_KEY) if hasattr(ctx, "metadata") else None
@@ -246,4 +246,4 @@ class TierClassifier:
         return _parse_tier(response)
 
 
-__all__ = ["STRONG_TIER", "TierClassifier", "WEAK_TIER"]
+__all__ = ["CAPABLE_TIER", "TierClassifier", "EFFICIENT_TIER"]

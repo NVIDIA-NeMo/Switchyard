@@ -111,9 +111,9 @@ async def test_stage_router_evicts_weak_and_reroutes_to_strong(nvidia_api_key: s
 
     stats = StatsAccumulator()
     config = StageRouterConfig(
-        strong=_strong_target(nvidia_api_key),
-        weak=_weak_target(nvidia_api_key),
-        picker="stage_router_weak_default",
+        capable=_strong_target(nvidia_api_key),
+        efficient=_weak_target(nvidia_api_key),
+        picker="stage_router_efficient_first",
         confidence_threshold=0.0,
         fallback_target_on_evict="strong",
     )

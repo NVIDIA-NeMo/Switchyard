@@ -280,10 +280,10 @@ targets:
 profiles:
   stage_router-profile:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     confidence_threshold: 0.7
     classifier:
       model: provider/classifier
@@ -483,7 +483,7 @@ async def test_stage_router_profile_routes_with_classifier(
         _completion_payload(
             "provider/classifier",
             "/v2-stage_router-classifier/v1/chat/completions",
-            json.dumps({"tier": "weak"}),
+            json.dumps({"tier": "efficient"}),
         ),
     )
     profile = _profile_runner(

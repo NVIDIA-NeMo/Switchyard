@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tier picker component — stamps ``ctx.selected_target``/``selected_model``.
-Fails open to the weak tier on picker exceptions."""
+Fails open to the efficient tier on picker exceptions."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from switchyard.lib.processors.stage_router import (
+    CAPABLE,
     CONTEXT_KEY,
-    STRONG,
-    WEAK,
+    EFFICIENT,
     StageRouterDecisionLog,
-    pick_strong_default,
-    pick_weak_default,
+    pick_capable_first,
+    pick_efficient_first,
 )
 from switchyard.lib.processors.stage_router.classifier import RECENT_MESSAGES_KEY, TierClassifier
 
@@ -33,8 +33,8 @@ TierPicker = Callable[["ProxyContext"], Awaitable[int]]
 
 #: YAML-resolvable picker names; mirrors :class:`StageRouterPickerMode`.
 BUILTIN_PICKERS: dict[str, Callable[..., Awaitable[int]]] = {
-    "stage_router_strong_default": pick_strong_default,
-    "stage_router_weak_default": pick_weak_default,
+    "stage_router_capable_first": pick_capable_first,
+    "stage_router_efficient_first": pick_efficient_first,
 }
 
 
@@ -93,8 +93,8 @@ class StageRouterRequestProcessor:
         try:
             idx = await self._picker(ctx)
         except Exception:
-            log.exception("stage_router picker raised; falling back to index 0 (weak)")
-            return WEAK
+            log.exception("stage_router picker raised; falling back to index 0 (efficient)")
+            return EFFICIENT
         return max(0, min(idx, self._max_index))
 
     async def _record_decision_source(self, ctx: ProxyContext) -> None:
@@ -115,10 +115,10 @@ class StageRouterRequestProcessor:
 
 __all__ = [
     "BUILTIN_PICKERS",
-    "STRONG",
-    "WEAK",
+    "CAPABLE",
+    "EFFICIENT",
     "StageRouterRequestProcessor",
     "TierPicker",
-    "pick_strong_default",
-    "pick_weak_default",
+    "pick_capable_first",
+    "pick_efficient_first",
 ]

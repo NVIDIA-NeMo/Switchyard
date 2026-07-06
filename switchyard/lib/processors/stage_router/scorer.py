@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from switchyard.lib.processors.stage_router.dimensions import CodingAgentDimensions
 
-#: Default linear weights. Positive ⇒ STRONG; negative ⇒ WEAK. Calibrated so
+#: Default linear weights. Positive ⇒ CAPABLE; negative ⇒ EFFICIENT. Calibrated so
 #: a single high-impact axis lands past the 0.5 default confidence threshold.
 DEFAULT_WEIGHTS: Mapping[str, float] = {
     "severity":                    0.80,

@@ -34,12 +34,12 @@ def load():
     return by, outcomes
 
 
-def score(by, outcomes, picker_fn, strong="strong", weak="weak"):
+def score(by, outcomes, picker_fn, capable="capable", efficient="efficient"):
     P = F = E = esc = 0
     for task, arms in outcomes.items():
-        turns = by.get((task, strong), [])
+        turns = by.get((task, capable), [])
         escalate = picker_fn(turns) if turns else False
-        o = arms.get(weak if escalate else strong, "err")
+        o = arms.get(efficient if escalate else capable, "err")
         if escalate:
             esc += 1
         if o == "pass":

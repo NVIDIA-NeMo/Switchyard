@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
-from switchyard.lib.processors.stage_router import pick_strong_default, pick_weak_default
+from switchyard.lib.processors.stage_router import pick_capable_first, pick_efficient_first
 from switchyard.lib.processors.stage_router_request_processor import StageRouterRequestProcessor
 from switchyard_rust.components import DimensionCollector
 from switchyard_rust.core import ChatRequest, ProxyContext
@@ -30,8 +30,8 @@ def _target(label: str, model: str) -> LlmTarget:
     )
 
 
-WEAK = _target("weak", "vendor/weak-model")
-STRONG = _target("strong", "vendor/strong-model")
+EFFICIENT = _target("efficient", "vendor/efficient-model")
+CAPABLE = _target("capable", "vendor/capable-model")
 
 
 async def _populated_ctx(messages: list[dict]) -> tuple[ProxyContext, ChatRequest]:
@@ -42,44 +42,44 @@ async def _populated_ctx(messages: list[dict]) -> tuple[ProxyContext, ChatReques
     return ctx, request
 
 
-async def _strong_pick(ctx: ProxyContext) -> int:
-    return await pick_strong_default(ctx, confidence_threshold=0.7)
+async def _capable_pick(ctx: ProxyContext) -> int:
+    return await pick_capable_first(ctx, confidence_threshold=0.7)
 
 
-async def _weak_pick(ctx: ProxyContext) -> int:
-    return await pick_weak_default(ctx, confidence_threshold=0.7)
+async def _efficient_pick(ctx: ProxyContext) -> int:
+    return await pick_efficient_first(ctx, confidence_threshold=0.7)
 
 
 def test_requires_exactly_two_targets():
     with pytest.raises(ValueError, match="exactly 2 targets"):
-        StageRouterRequestProcessor(targets=(WEAK,), picker=_strong_pick)
+        StageRouterRequestProcessor(targets=(EFFICIENT,), picker=_capable_pick)
     with pytest.raises(ValueError, match="exactly 2 targets"):
-        StageRouterRequestProcessor(targets=(WEAK, STRONG, STRONG), picker=_strong_pick)
+        StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE, CAPABLE), picker=_capable_pick)
 
 
 @pytest.mark.asyncio
-async def test_strong_default_stamps_strong_on_first_turn_no_signal():
+async def test_capable_first_stamps_capable_on_first_turn_no_signal():
     """First turn: no ToolResultSignal yet → no_signal path → default tier."""
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=_strong_pick)
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=_capable_pick)
     ctx, request = await _populated_ctx([{"role": "user", "content": "hi"}])
     await processor.process(ctx, request)
-    assert ctx.selected_target == "strong"
-    assert ctx.selected_model == "vendor/strong-model"
+    assert ctx.selected_target == "capable"
+    assert ctx.selected_model == "vendor/capable-model"
 
 
 @pytest.mark.asyncio
-async def test_weak_default_stamps_weak_on_first_turn_no_signal():
+async def test_efficient_first_stamps_efficient_on_first_turn_no_signal():
     """First turn: no ToolResultSignal yet → no_signal path → default tier."""
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=_weak_pick)
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=_efficient_pick)
     ctx, request = await _populated_ctx([{"role": "user", "content": "hi"}])
     await processor.process(ctx, request)
-    assert ctx.selected_target == "weak"
+    assert ctx.selected_target == "efficient"
 
 
 @pytest.mark.asyncio
-async def test_strong_default_falls_open_to_strong_on_low_confidence():
+async def test_capable_first_falls_open_to_capable_on_low_confidence():
     """Signal present but scorer below threshold + no classifier → fall_open to default."""
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=_strong_pick)
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=_capable_pick)
     # One Read + one clean tool_result + a follow-up user message. This produces
     # a non-None ToolResultSignal (so the no_signal short-circuit is bypassed)
     # but the scorer only sees a small no_error_streak penalty — confidence
@@ -91,13 +91,13 @@ async def test_strong_default_falls_open_to_strong_on_low_confidence():
         {"role": "user", "content": "next"},
     ])
     await processor.process(ctx, request)
-    assert ctx.selected_target == "strong"
+    assert ctx.selected_target == "capable"
 
 
 @pytest.mark.asyncio
-async def test_weak_default_falls_open_to_weak_on_low_confidence():
-    """Sibling check on the weak-default picker, same low-confidence shape."""
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=_weak_pick)
+async def test_efficient_first_falls_open_to_efficient_on_low_confidence():
+    """Sibling check on the efficient-first picker, same low-confidence shape."""
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=_efficient_pick)
     ctx, request = await _populated_ctx([
         {"role": "assistant",
          "tool_calls": [{"function": {"name": "Read", "arguments": "{}"}}]},
@@ -105,7 +105,7 @@ async def test_weak_default_falls_open_to_weak_on_low_confidence():
         {"role": "user", "content": "next"},
     ])
     await processor.process(ctx, request)
-    assert ctx.selected_target == "weak"
+    assert ctx.selected_target == "efficient"
 
 
 @pytest.mark.asyncio
@@ -115,30 +115,30 @@ async def test_critical_severity_escalates_both_pickers():
          "content": "Out of memory: cannot allocate memory"},
         {"role": "user", "content": "try again"},
     ]
-    for picker in (_strong_pick, _weak_pick):
-        processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=picker)
+    for picker in (_capable_pick, _efficient_pick):
+        processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=picker)
         ctx, request = await _populated_ctx(fatal)
         await processor.process(ctx, request)
-        assert ctx.selected_target == "strong"
+        assert ctx.selected_target == "capable"
 
 
 @pytest.mark.asyncio
 async def test_request_is_not_mutated():
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=_strong_pick)
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=_capable_pick)
     ctx, request = await _populated_ctx([{"role": "user", "content": "hi"}])
     returned = await processor.process(ctx, request)
     assert returned is request
 
 
 @pytest.mark.asyncio
-async def test_buggy_picker_falls_back_to_weak():
+async def test_buggy_picker_falls_back_to_efficient():
     async def bad_picker(_ctx: ProxyContext) -> int:
         raise RuntimeError("boom")
 
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=bad_picker)
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=bad_picker)
     ctx, request = await _populated_ctx([{"role": "user", "content": "hi"}])
     await processor.process(ctx, request)
-    assert ctx.selected_target == "weak"
+    assert ctx.selected_target == "efficient"
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_picker_index_is_clamped():
     async def overshooting_picker(_ctx: ProxyContext) -> int:
         return 99
 
-    processor = StageRouterRequestProcessor(targets=(WEAK, STRONG), picker=overshooting_picker)
+    processor = StageRouterRequestProcessor(targets=(EFFICIENT, CAPABLE), picker=overshooting_picker)
     ctx, request = await _populated_ctx([{"role": "user", "content": "hi"}])
     await processor.process(ctx, request)
-    assert ctx.selected_target == "strong"
+    assert ctx.selected_target == "capable"

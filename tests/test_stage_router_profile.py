@@ -22,7 +22,7 @@ from switchyard_rust.profiles import ProfileInput
 class _ClassifierClient:
     """Fake async classifier client that returns one deterministic tier verdict."""
 
-    def __init__(self, tier: str = "weak") -> None:
+    def __init__(self, tier: str = "efficient") -> None:
         """Store the tier returned by later classifier calls."""
         self._tier = tier
         self.calls = 0
@@ -67,8 +67,8 @@ def test_deepseek_classifier_keeps_reasoning_disabled() -> None:
 @pytest.mark.parametrize(
     ("picker", "expected_target"),
     [
-        ("stage_router_strong_default", "weak"),
-        ("stage_router_weak_default", "weak"),
+        ("stage_router_capable_first", "efficient"),
+        ("stage_router_efficient_first", "efficient"),
     ],
 )
 async def test_runtime_stats_reach_profile_classifier(
@@ -80,18 +80,18 @@ async def test_runtime_stats_reach_profile_classifier(
     config = StageRouterConfig.model_validate({
         "picker": picker,
         "confidence_threshold": 1.0,
-        "fallback_target_on_evict": "strong",
-        "strong": {
-            "id": "strong",
-            "model": "strong/model",
-            "api_key": "strong-key",
-            "base_url": "http://127.0.0.1:9/strong/v1",
+        "fallback_target_on_evict": "capable",
+        "capable": {
+            "id": "capable",
+            "model": "capable/model",
+            "api_key": "capable-key",
+            "base_url": "http://127.0.0.1:9/capable/v1",
         },
-        "weak": {
-            "id": "weak",
-            "model": "weak/model",
-            "api_key": "weak-key",
-            "base_url": "http://127.0.0.1:9/weak/v1",
+        "efficient": {
+            "id": "efficient",
+            "model": "efficient/model",
+            "api_key": "efficient-key",
+            "base_url": "http://127.0.0.1:9/efficient/v1",
         },
         "classifier": {
             "model": "classifier/model",
@@ -111,7 +111,7 @@ async def test_runtime_stats_reach_profile_classifier(
     )
     classifier = processor._classifier
     assert classifier is not None
-    client = _ClassifierClient(tier="weak")
+    client = _ClassifierClient(tier="efficient")
     classifier._client = client  # type: ignore[assignment]
 
     processed = await profile.process(ProfileInput(_chat_request()))

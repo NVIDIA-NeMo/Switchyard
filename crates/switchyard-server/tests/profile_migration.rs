@@ -233,10 +233,10 @@ targets:
 profiles:
   smart-stage_router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     confidence_threshold: 0.0
 "#,
         base_url = stub.base_url
@@ -260,7 +260,7 @@ profiles:
     let stats = json_body(stats).await?;
     assert_eq!(stats["routing_decisions"]["stage_router"]["dimensions"], 1);
     assert_eq!(stats["classifier"]["total_requests"], 0);
-    assert_eq!(stats["models"]["provider/weak"]["tier"], "weak");
+    assert_eq!(stats["models"]["provider/weak"]["tier"], "efficient");
     Ok(())
 }
 
@@ -268,7 +268,7 @@ profiles:
 async fn stage_router_profile_threshold_one_uses_llm_classifier_path() -> TestResult {
     let _stats_guard = STATS_TEST_LOCK.lock().await;
     reset_stats()?;
-    let Some(stub) = HttpStub::start(vec![StubResponse::classifier("strong"), StubResponse::ok()])?
+    let Some(stub) = HttpStub::start(vec![StubResponse::classifier("capable"), StubResponse::ok()])?
     else {
         log_loopback_bind_skip();
         return Ok(());
@@ -287,10 +287,10 @@ targets:
 profiles:
   smart-stage_router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_strong_default
+    picker: stage_router_capable_first
     confidence_threshold: 1.0
     classifier:
       model: classifier/model
@@ -320,7 +320,7 @@ profiles:
     let stats = json_body(stats).await?;
     assert_eq!(stats["routing_decisions"]["stage_router"]["llm-classifier"], 1);
     assert_eq!(stats["classifier"]["total_requests"], 1);
-    assert_eq!(stats["models"]["provider/strong"]["tier"], "strong");
+    assert_eq!(stats["models"]["provider/strong"]["tier"], "capable");
     Ok(())
 }
 
@@ -347,10 +347,10 @@ targets:
 profiles:
   smart-stage_router:
     type: stage_router
-    strong: strong
-    weak: weak
+    capable: strong
+    efficient: weak
     fallback_target_on_evict: strong
-    picker: stage_router_weak_default
+    picker: stage_router_efficient_first
     confidence_threshold: 0.7
 "#,
         base_url = stub.base_url
@@ -374,7 +374,7 @@ profiles:
     let stats = app.oneshot(request("GET", "/v1/stats", None)?).await?;
     let stats = json_body(stats).await?;
     assert_eq!(stats["routing_decisions"]["stage_router"]["fall_open"], 1);
-    assert_eq!(stats["models"]["provider/strong"]["tier"], "strong");
+    assert_eq!(stats["models"]["provider/strong"]["tier"], "capable");
     Ok(())
 }
 

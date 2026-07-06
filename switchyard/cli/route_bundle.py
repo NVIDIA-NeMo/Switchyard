@@ -1015,7 +1015,7 @@ def _stage_router_switchyard(
 
         route:
           type: stage_router
-          picker: stage_router_strong_default       # or stage_router_weak_default
+          picker: stage_router_capable_first       # or stage_router_efficient_first
           confidence_threshold: 0.7            # default; range [0.0, 1.0]
           signal_recent_window: 3              # Rust sliding-window size
           strong: <target spec>                # e.g. { id: strong, model: ..., api_key: ..., format: anthropic }
@@ -1045,9 +1045,12 @@ def _stage_router_switchyard(
             allowed_keys=_STAGE_ROUTER_CLASSIFIER_KEYS,
             where=f"{model_id}.classifier",
         )
-    stage_router_config = StageRouterConfig.model_validate(
-        _route_config(route, target_defaults, ("strong", "weak"))
-    )
+    # The deprecated bundle keeps the shared strong/weak tier keys (also used by
+    # deterministic/routellm); map them onto StageRouterConfig's capable/efficient fields.
+    resolved = _route_config(route, target_defaults, ("strong", "weak"))
+    resolved["capable"] = resolved.pop("strong")
+    resolved["efficient"] = resolved.pop("weak")
+    stage_router_config = StageRouterConfig.model_validate(resolved)
     return ProfileSwitchyard(
         StageRouterProfileConfig.from_config(stage_router_config)
         .build()
