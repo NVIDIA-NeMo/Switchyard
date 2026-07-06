@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Result, SkillDistillationError};
-use crate::ids::{SkillNamespace, SkillVersionId, TrajectoryId};
+use crate::ids::{SkillEvidenceId, SkillNamespace, SkillVersionId};
 
 /// Current version of serialized skill-distillation records.
 pub const SCHEMA_VERSION: u16 = 1;
@@ -58,7 +58,7 @@ pub struct ExecutionMetadata {
 pub struct TrajectorySourceInfo {
     /// Source adapter name, such as a local runner or benchmark importer.
     pub kind: String,
-    /// Optional source-local run identifier.
+    /// Optional source-local run or session ID kept when this record is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Additional source fields.
@@ -121,14 +121,18 @@ pub struct TrajectoryOutcome {
     pub metrics: BTreeMap<String, f64>,
 }
 
-/// Normalized evidence from one agent run.
+/// One completed agent run saved as evidence for skill distillation.
+///
+/// This is not the live session ID carried through request metadata. Code that builds
+/// the record must reuse or deterministically derive its [`SkillEvidenceId`] from that
+/// session ID.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Trajectory {
     /// Serialized record schema version.
     pub schema_version: u16,
-    /// Stable source-independent trajectory identifier.
-    pub id: TrajectoryId,
+    /// Evidence ID used to reject duplicate inputs and record which runs a candidate used.
+    pub id: SkillEvidenceId,
     /// Task attempted by the agent.
     pub task: TaskDescriptor,
     /// Runner and model metadata.
@@ -202,7 +206,7 @@ impl DistillationRequest {
             if !ids.insert(&trajectory.id) {
                 return Err(invalid_record(
                     "distillation request",
-                    "trajectory ids must be unique",
+                    "skill evidence ids must be unique",
                 ));
             }
         }
@@ -237,13 +241,13 @@ impl DistillationRequest {
             .collect();
         if candidate
             .provenance
-            .source_trajectory_ids
+            .source_evidence_ids
             .iter()
             .any(|id| !request_ids.contains(id))
         {
             return Err(invalid_record(
                 "skill candidate",
-                "provenance references a trajectory outside the request",
+                "provenance references skill evidence outside the request",
             ));
         }
 
@@ -262,8 +266,8 @@ impl DistillationRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillProvenance {
-    /// Trajectories used as evidence for the candidate.
-    pub source_trajectory_ids: Vec<TrajectoryId>,
+    /// Completed runs used as evidence for the candidate.
+    pub source_evidence_ids: Vec<SkillEvidenceId>,
     /// Previously active skill version, when this is an update.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_version: Option<SkillVersionId>,
@@ -381,17 +385,17 @@ impl SkillCandidate {
             "provenance.generator",
             &self.provenance.generator,
         )?;
-        if self.provenance.source_trajectory_ids.is_empty() {
+        if self.provenance.source_evidence_ids.is_empty() {
             return Err(invalid_record(
                 "skill candidate",
-                "provenance must contain at least one source trajectory id",
+                "provenance must contain at least one source evidence id",
             ));
         }
-        let unique_ids: HashSet<_> = self.provenance.source_trajectory_ids.iter().collect();
-        if unique_ids.len() != self.provenance.source_trajectory_ids.len() {
+        let unique_ids: HashSet<_> = self.provenance.source_evidence_ids.iter().collect();
+        if unique_ids.len() != self.provenance.source_evidence_ids.len() {
             return Err(invalid_record(
                 "skill candidate",
-                "provenance source trajectory ids must be unique",
+                "provenance source evidence ids must be unique",
             ));
         }
         if self.provenance.parent_version.as_ref() == Some(&self.version) {
@@ -532,7 +536,7 @@ mod tests {
     fn trajectory() -> Result<Trajectory> {
         Ok(Trajectory {
             schema_version: SCHEMA_VERSION,
-            id: TrajectoryId::new("run-1")?,
+            id: SkillEvidenceId::new("run-1")?,
             task: TaskDescriptor {
                 description: "answer the task".to_string(),
                 ..TaskDescriptor::default()
@@ -561,7 +565,7 @@ mod tests {
             version: SkillVersionId::new("v1")?,
             skill_md: "# Skill".to_string(),
             provenance: SkillProvenance {
-                source_trajectory_ids: vec![TrajectoryId::new("run-1")?],
+                source_evidence_ids: vec![SkillEvidenceId::new("run-1")?],
                 parent_version: None,
                 generator: None,
                 generated_at: "2026-06-30T00:00:00Z".to_string(),
@@ -614,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn request_rejects_duplicate_trajectory_ids() -> Result<()> {
+    fn request_rejects_duplicate_skill_evidence_ids() -> Result<()> {
         let run = trajectory()?;
         let request = DistillationRequest {
             schema_version: SCHEMA_VERSION,
@@ -631,9 +635,9 @@ mod tests {
     }
 
     #[test]
-    fn candidate_requires_source_trajectory_provenance() -> Result<()> {
+    fn candidate_requires_source_evidence_provenance() -> Result<()> {
         let mut value = candidate()?;
-        value.provenance.source_trajectory_ids.clear();
+        value.provenance.source_evidence_ids.clear();
         assert!(matches!(
             value.validate(),
             Err(SkillDistillationError::InvalidRecord { .. })
@@ -673,7 +677,7 @@ mod tests {
             metadata: Metadata::default(),
         };
         let mut value = candidate()?;
-        value.provenance.source_trajectory_ids = vec![TrajectoryId::new("other-run")?];
+        value.provenance.source_evidence_ids = vec![SkillEvidenceId::new("other-run")?];
         assert!(matches!(
             request.validate_candidate(&value),
             Err(SkillDistillationError::InvalidRecord { .. })

@@ -141,12 +141,29 @@ choose a provider, storage format, agent runtime, or model implementation.
 
 The public contract includes:
 
-- safe `SkillNamespace`, `TrajectoryId`, and `SkillVersionId` identifiers;
+- safe `SkillNamespace`, `SkillEvidenceId`, and `SkillVersionId` identifiers;
 - versioned trajectories with task, execution, source, event, and outcome data;
-- versioned skill candidates with required source-trajectory provenance and
+- versioned skill candidates with required source-evidence provenance and
   optional validation reports; and
 - async `TrajectorySource`, `SkillDistiller`, `SkillValidator`, and `SkillStore`
   traits.
+
+The traits define workflow steps, but they do not run by themselves. No
+production Switchyard code uses them today. A Switchyard runtime must load
+saved trajectories and the active skill, build a distillation request, create
+and check a candidate, then save it and decide whether to make it active. This
+crate does not choose the code that implements each trait or decide when those
+steps run.
+
+`SkillEvidenceId` is not a second session tracker. A session ID groups requests
+and turns while an agent is running. A `SkillEvidenceId` identifies the
+completed run after Switchyard saves it for distillation. The initial workflow
+will create one evidence record for each completed launcher session. Switchyard
+keeps this ID stable within the namespace. The Rust contract uses it to reject
+duplicate inputs in one distillation request and to record which evidence a
+skill candidate used. The code that creates an evidence record reuses a safe
+session ID or derives the evidence ID from it in a repeatable way. It can keep
+the original run or session ID in `TrajectorySourceInfo.id`.
 
 Provider-specific event data stays inside JSON payload and metadata fields.
 The crate validates record invariants but does not redact source data, run a

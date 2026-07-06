@@ -110,10 +110,12 @@ path_component_id!(
      trajectories can contribute to it; it does not identify a session or trajectory."
 );
 path_component_id!(
-    TrajectoryId,
-    "trajectory id",
-    "Stable source-independent identifier for one normalized trajectory. It is \
-     separate from the skill namespace."
+    SkillEvidenceId,
+    "skill evidence id",
+    "Stable within a skill namespace for one completed run saved as distillation \
+     evidence. Code that converts a session into evidence must reuse a safe session ID \
+     or derive the same value each time. Requests use it to reject duplicate evidence, \
+     and candidates record which evidence they used. It does not track a live session."
 );
 path_component_id!(
     SkillVersionId,
@@ -129,7 +131,7 @@ mod tests {
     fn identifiers_accept_safe_path_components() {
         for value in ["tooluniverse-trialqa", "a.b_c-1", "..."] {
             assert!(SkillNamespace::new(value).is_ok(), "{value}");
-            assert!(TrajectoryId::new(value).is_ok(), "{value}");
+            assert!(SkillEvidenceId::new(value).is_ok(), "{value}");
             assert!(SkillVersionId::new(value).is_ok(), "{value}");
         }
     }
@@ -148,7 +150,7 @@ mod tests {
             "ümlaut",
         ] {
             assert!(SkillNamespace::new(value).is_err(), "{value}");
-            assert!(TrajectoryId::new(value).is_err(), "{value}");
+            assert!(SkillEvidenceId::new(value).is_err(), "{value}");
             assert!(SkillVersionId::new(value).is_err(), "{value}");
         }
     }

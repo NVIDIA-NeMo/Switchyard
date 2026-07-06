@@ -14,7 +14,7 @@ pub enum SkillDistillationError {
     /// An identifier is not a safe local path component.
     #[error("invalid {kind}: {reason}")]
     InvalidIdentifier {
-        /// Identifier category, such as `trajectory id`.
+        /// Identifier category, such as `skill evidence id`.
         kind: &'static str,
         /// Concrete validation failure.
         reason: String,

@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use switchyard_skill_distillation::{
     ActivationOperation, ActivationRecord, DistillationRequest, ExecutionMetadata, Metadata,
-    Result, SkillCandidate, SkillDistillationError, SkillDistiller, SkillNamespace,
-    SkillProvenance, SkillStore, SkillValidator, SkillVersionId, TaskDescriptor, Trajectory,
-    TrajectoryEvent, TrajectoryEventKind, TrajectoryId, TrajectoryOutcome, TrajectorySource,
+    Result, SkillCandidate, SkillDistillationError, SkillDistiller, SkillEvidenceId,
+    SkillNamespace, SkillProvenance, SkillStore, SkillValidator, SkillVersionId, TaskDescriptor,
+    Trajectory, TrajectoryEvent, TrajectoryEventKind, TrajectoryOutcome, TrajectorySource,
     TrajectorySourceInfo, ValidationCheck, ValidationReport, ValidationStatus, SCHEMA_VERSION,
 };
 use tokio::sync::Mutex;
@@ -24,7 +24,7 @@ fn namespace() -> Result<SkillNamespace> {
 fn trajectory() -> Result<Trajectory> {
     Ok(Trajectory {
         schema_version: SCHEMA_VERSION,
-        id: TrajectoryId::new("run-1")?,
+        id: SkillEvidenceId::new("run-1")?,
         task: TaskDescriptor {
             description: "answer the task".to_string(),
             ..TaskDescriptor::default()
@@ -92,7 +92,7 @@ fn candidate(namespace: SkillNamespace, version: &str) -> Result<SkillCandidate>
         version: SkillVersionId::new(version)?,
         skill_md: "---\nname: trialqa\n---\n\n# Skill\n".to_string(),
         provenance: SkillProvenance {
-            source_trajectory_ids: vec![TrajectoryId::new("run-1")?],
+            source_evidence_ids: vec![SkillEvidenceId::new("run-1")?],
             parent_version: None,
             generator: Some("stub-distiller".to_string()),
             generated_at: "2026-06-30T00:02:00Z".to_string(),

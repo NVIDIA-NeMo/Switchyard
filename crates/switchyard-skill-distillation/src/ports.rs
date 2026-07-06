@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Async extension points implemented by source adapters and runtimes.
+//!
+//! These traits describe separate workflow steps. They do not call one another or
+//! decide when distillation runs or when a candidate becomes the active skill.
 
 use async_trait::async_trait;
 
