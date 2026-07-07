@@ -1,0 +1,130 @@
+# Prometheus alert rules for a Switchyard deployment.
+#
+# Implements the operational and success-criterion alerts documented in
+# docs/METRICS_REFERENCE.md. Drop into Prometheus's rule_files: list and
+# validate with `promtool check rules switchyard.rules.yaml` before
+# reloading.
+#
+# Thresholds are conservative defaults. Review against your SLOs in
+# examples/prometheus/README.md before wiring to a pager.
+
+groups:
+  - name: switchyard.latency_service.health
+    rules:
+      - alert: LatencyServiceUnreachable
+        expr: switchyard_latency_service_poll_ok == 0
+        for: 60s
+        labels:
+          severity: warning
+          component: switchyard
+        annotations:
+          summary: "Switchyard cannot reach the Latency Service"
+          description: |
+            switchyard_latency_service_poll_ok has been 0 for at least
+            60s. Routing has fallen back to uniform random across all
+            endpoints (every verdict reset to unknown). Check the
+            Switchyard pod logs for "Health poller: failed to reach
+            Latency Service" and confirm DNS / network reachability to
+            the upstream LS.
+
+      - alert: LatencyServicePollStale
+        expr: switchyard_latency_service_poll_age_seconds > 60
+        for: 60s
+        labels:
+          severity: warning
+          component: switchyard
+        annotations:
+          summary: "Switchyard health verdicts are stale"
+          description: |
+            The most recent successful Latency Service poll was more
+            than 60 s ago. Routing decisions are still using cached
+            verdicts but they are increasingly out of date. Compare
+            switchyard_latency_service_poll_failures_total against
+            switchyard_latency_service_polls_total to see whether the
+            poller is failing intermittently or hanging entirely.
+
+      - alert: LatencyServiceEndpointFlapping
+        expr: |
+          sum by (model) (
+            changes(switchyard_endpoint_status{status="healthy"}[10m])
+          ) > 5
+        for: 0s
+        labels:
+          severity: info
+          component: switchyard
+        annotations:
+          summary: "Endpoint {{ $labels.model }} is flapping"
+          description: |
+            switchyard_endpoint_status{model="{{ $labels.model }}"} has
+            transitioned in or out of "healthy" more than 5 times in
+            the last 10 minutes. Likely a real upstream instability —
+            cross-check switchyard_endpoint_last_latency_ms for that
+            model and the LS upstream's own dashboards.
+
+  - name: switchyard.routing.evidence
+    rules:
+      - alert: RouterNotRescuing
+        # Upstream is throwing retryable errors but the router isn't
+        # absorbing them via retry. This fires only when there IS
+        # something to rescue — does not flap on a healthy chain.
+        expr: |
+          rate(switchyard_router_retry_recovered_total[5m]) == 0
+          and
+          rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: switchyard
+        annotations:
+          summary: "Switchyard observed upstream errors but no retry recoveries"
+          description: |
+            Upstream attempts are returning retryable errors (429 / 500
+            / 504) but no request has been rescued by retry in the same
+            5 m window. Likely cause: every configured endpoint is
+            degraded simultaneously, so the retry loop has nowhere to
+            steer. Check switchyard_endpoint_status by model.
+
+      - alert: RouterOverheadHigh
+        expr: switchyard_routing_overhead_ms{quantile="0.99"} > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          component: switchyard
+        annotations:
+          summary: "Switchyard router overhead p99 above 1 ms"
+          description: |
+            switchyard_routing_overhead_ms p99 has exceeded 1 ms for 5
+            minutes. Routing overhead bundles format translation,
+            endpoint selection, body mutation, and retry wall time —
+            retries are the most common cause of inflation. Cross-check
+            rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m]).
+
+      - alert: RouterErrorRateNotReducing
+        # Headline success criterion. The router should serve a lower
+        # rate of retryable errors than what raw upstream attempts
+        # would produce. If router_error_rate >= direct_error_rate the
+        # router is not adding the value it claims to.
+        expr: |
+          (
+            sum(rate(switchyard_client_responses_total{outcome="retryable_error"}[5m]))
+            / clamp_min(sum(rate(switchyard_client_responses_total[5m])), 1)
+          )
+          >=
+          (
+            sum(rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m]))
+            / clamp_min(sum(rate(switchyard_upstream_attempts_total[5m])), 1)
+          )
+        for: 10m
+        labels:
+          severity: warning
+          component: switchyard
+        annotations:
+          summary: "Switchyard router is not reducing client-visible error rate"
+          description: |
+            Over the last 5 m, the rate of retryable_error responses to
+            clients is at least as high as the per-attempt upstream
+            retryable_error rate. The router is not absorbing failures
+            via retry — either retries are exhausting or every
+            endpoint is producing the same failure mode. Look at
+            switchyard_endpoint_status and the per-model breakdown of
+            switchyard_errors_total{model}.

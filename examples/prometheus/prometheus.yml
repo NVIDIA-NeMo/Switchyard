@@ -1,0 +1,35 @@
+# Example Prometheus scrape configuration for Switchyard.
+#
+# Merge the `scrape_configs:` entry below into your existing
+# prometheus.yml. The `/metrics` endpoint is plain HTTP, no auth, and
+# uses the Prometheus text exposition format 0.0.4.
+#
+# See docs/METRICS_REFERENCE.md for the full metric catalog and
+# examples/prometheus/switchyard.rules.yaml for ready-to-load alert
+# rules.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: switchyard
+    metrics_path: /metrics
+    scheme: http
+    # Default scrape every 15s — the Latency Service poll cycle defaults
+    # to 10s, so finer scrape resolution captures no additional state.
+    scrape_interval: 15s
+    static_configs:
+      # Replace with your Switchyard host(s) and port(s). On Kubernetes
+      # with the manifest at examples/k8s/latency-aware-deployment.yaml
+      # the in-cluster DNS resolves to
+      # switchyard-latency.llm-routing.svc.cluster.local on port 80
+      # targeting container port 4100. Swap this static_configs block
+      # for kubernetes_sd_configs in a cluster-native deployment.
+      - targets:
+          - switchyard.example.internal:4100
+
+# Reference the alert rule file shipped alongside this scrape config.
+# Adjust the path to wherever your Prometheus loads rule files from.
+rule_files:
+  - switchyard.rules.yaml
