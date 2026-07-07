@@ -173,6 +173,7 @@ impl StatsAccumulator {
         {
             let stats = inner.model_stats_mut(model.clone());
             stats.prompt_tokens = stats.prompt_tokens.saturating_add(usage.prompt_tokens);
+            stats.max_prompt_tokens = stats.max_prompt_tokens.max(usage.prompt_tokens);
             stats.completion_tokens = stats
                 .completion_tokens
                 .saturating_add(usage.completion_tokens);
@@ -242,6 +243,7 @@ impl StatsAccumulator {
         let stats = inner.classifier_stats_mut(model.into());
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(usage.prompt_tokens);
+        stats.max_prompt_tokens = stats.max_prompt_tokens.max(usage.prompt_tokens);
         stats.completion_tokens = stats
             .completion_tokens
             .saturating_add(usage.completion_tokens);
@@ -316,6 +318,7 @@ impl StatsAccumulator {
         let stats = inner.planner_stats_mut(model.into());
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(usage.prompt_tokens);
+        stats.max_prompt_tokens = stats.max_prompt_tokens.max(usage.prompt_tokens);
         stats.completion_tokens = stats
             .completion_tokens
             .saturating_add(usage.completion_tokens);
@@ -554,6 +557,7 @@ fn build_model_snapshots(
                 errors: stats.errors,
                 request_pct,
                 prompt_tokens: stats.prompt_tokens,
+                max_prompt_tokens: stats.max_prompt_tokens,
                 completion_tokens: stats.completion_tokens,
                 total_tokens: token_total,
                 token_pct,
@@ -610,6 +614,7 @@ struct ModelStats {
     calls: u64,
     errors: u64,
     prompt_tokens: u64,
+    max_prompt_tokens: u64,
     completion_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
@@ -796,6 +801,8 @@ pub struct ModelStatsSnapshot {
     pub errors: u64,
     pub request_pct: f64,
     pub prompt_tokens: u64,
+    /// Largest prompt token count observed in one completed response.
+    pub max_prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub token_pct: f64,

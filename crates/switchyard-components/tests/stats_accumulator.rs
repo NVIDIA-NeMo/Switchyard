@@ -87,6 +87,7 @@ fn accumulator_matches_python_two_tier_snapshot_contract() -> Result<()> {
     assert_eq!(strong.tier.as_deref(), Some("strong"));
     assert_eq!(strong.request_pct, 50.0);
     assert_eq!(strong.token_pct, 73.53);
+    assert_eq!(strong.max_prompt_tokens, 100);
     assert_eq!(strong.avg_prompt_tokens, 100.0);
     assert_eq!(strong.avg_completion_tokens, 25.0);
     assert_eq!(strong.cache_hit_rate, 0.1);
@@ -107,6 +108,30 @@ fn accumulator_matches_python_two_tier_snapshot_contract() -> Result<()> {
     assert_eq!(weak_tier.model, "weak/model");
     assert_eq!(weak_tier.prompt_tokens, 40);
     assert_eq!(weak_tier.completion_tokens, 5);
+    Ok(())
+}
+
+#[test]
+fn accumulator_tracks_max_prompt_tokens_per_model() -> Result<()> {
+    let accumulator = StatsAccumulator::new();
+    for prompt_tokens in [100, 250, 175] {
+        accumulator.record_success("model-a", None, None)?;
+        accumulator.record_usage(
+            "model-a",
+            TokenUsage {
+                prompt_tokens,
+                ..TokenUsage::default()
+            },
+            None,
+            None,
+            None,
+        )?;
+    }
+
+    let snapshot = accumulator.snapshot()?;
+    let model = model_stats(&snapshot, "model-a")?;
+    assert_eq!(model.prompt_tokens, 525);
+    assert_eq!(model.max_prompt_tokens, 250);
     Ok(())
 }
 
@@ -653,6 +678,7 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
         .get(model)
         .ok_or_else(|| SwitchyardError::Other("backend row missing".to_string()))?;
     assert_eq!(backend.prompt_tokens, 1_000_000);
+    assert_eq!(backend.max_prompt_tokens, 1_000_000);
     assert_eq!(backend.calls, 1);
 
     // Classifier bucket: same model id, separate row, separate counts.
@@ -662,6 +688,7 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
         .get(model)
         .ok_or_else(|| SwitchyardError::Other("classifier row missing".to_string()))?;
     assert_eq!(classifier.prompt_tokens, 500_000);
+    assert_eq!(classifier.max_prompt_tokens, 500_000);
     assert_eq!(classifier.calls, 1);
     assert_eq!(snapshot.classifier.total_requests, 1);
 
@@ -670,6 +697,31 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
     assert_eq!(snapshot.cost_estimate.backend_cost, 3.0);
     assert_eq!(snapshot.cost_estimate.classifier_cost, 1.5);
     assert_eq!(snapshot.cost_estimate.total_cost, 4.5);
+    Ok(())
+}
+
+#[test]
+fn planner_bucket_tracks_max_prompt_tokens() -> Result<()> {
+    let accumulator = StatsAccumulator::new();
+    for prompt_tokens in [120, 300, 200] {
+        accumulator.record_planner_usage(
+            "planner/model",
+            TokenUsage {
+                prompt_tokens,
+                ..TokenUsage::default()
+            },
+            None,
+        )?;
+    }
+
+    let snapshot = accumulator.snapshot()?;
+    let planner = snapshot
+        .planner
+        .models
+        .get("planner/model")
+        .ok_or_else(|| SwitchyardError::Other("planner row missing".to_string()))?;
+    assert_eq!(planner.prompt_tokens, 620);
+    assert_eq!(planner.max_prompt_tokens, 300);
     Ok(())
 }
 
