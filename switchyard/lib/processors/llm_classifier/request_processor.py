@@ -341,7 +341,7 @@ class LLMClassifierRequestProcessor:
         )
 
     async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
-        if self._affinity is not None and self._affinity.pinned(ctx, request) is not None:
+        if self._affinity is not None and (await self._affinity.pinned(ctx, request)) is not None:
             # Already pinned: the selector reuses the pin and ignores any
             # verdict, so skip the LLM call — classify once per task, not per turn.
             return request

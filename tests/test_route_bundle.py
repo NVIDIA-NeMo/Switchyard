@@ -1673,6 +1673,37 @@ def test_zero_capacity_affinity_rejected_via_bundle(route: dict[str, Any]) -> No
         build_route_bundle_table({"routes": {"r": {**route, "affinity_max_sessions": 0}}})
 
 
+def test_latency_affinity_redis_reaches_backend_via_bundle() -> None:
+    """Redis L2 keys parse and construct a RedisPinStore on the latency backend."""
+    from switchyard.lib.redis_pin_store import RedisPinStore
+
+    table = build_route_bundle_table({
+        "routes": {
+            "r": {
+                **_AFFINITY_LAT_ROUTE,
+                "affinity_store": "redis",
+                "affinity_store_url": "redis://cache:6379/0",
+                "affinity_store_ttl_seconds": 120,
+                "affinity_key_prefix": "k:",
+            },
+        },
+    })
+    backend = _latency_backend(table.lookup_switchyard("r"))
+    assert backend._config.affinity_store == "redis"
+    assert backend._config.affinity_store_url == "redis://cache:6379/0"
+    assert isinstance(backend._affinity._l2, RedisPinStore)
+
+
+def test_latency_affinity_redis_requires_url_via_bundle() -> None:
+    """affinity_store=redis without a URL fails closed at config load."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        build_route_bundle_table({
+            "routes": {"r": {**_AFFINITY_LAT_ROUTE, "affinity_store": "redis"}},
+        })
+
+
 def test_negative_affinity_warmup_turns_rejected_via_bundle() -> None:
     """The deterministic config validates affinity_warmup_turns as non-negative."""
     from pydantic import ValidationError

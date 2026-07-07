@@ -108,6 +108,16 @@ class LatencyServiceBackendConfig(BaseModel):
             its endpoint degrades or the call fails. Per process. Default off.
         affinity_max_sessions: Bounded-LRU cap on pinned conversations; ignored
             when ``session_affinity`` is off.
+        affinity_store: Shared L2 pin store behind the in-process LRU. ``"memory"``
+            (default) keeps pins per process; ``"redis"`` shares them across
+            workers/pods and persists them across pod churn. The store is
+            best-effort — an L2 error never fails a request.
+        affinity_store_url: Connection URL for the shared store (e.g.
+            ``"redis://host:6379/0"``). Required when ``affinity_store`` is
+            ``"redis"``.
+        affinity_store_ttl_seconds: Expiry for a shared pin. The backend re-pins
+            on every successful turn, so an active conversation slides its TTL.
+        affinity_key_prefix: Namespace prefix for shared-store keys.
         enable_stats: When ``True`` (default), the factory wires a
             :class:`StatsRequestProcessor` + :class:`StatsResponseProcessor`
             pair sharing one :class:`StatsAccumulator` and wraps the
@@ -128,6 +138,10 @@ class LatencyServiceBackendConfig(BaseModel):
     credential_policy: LatencyServiceCredentialPolicy = "configured_endpoint"
     session_affinity: bool = False
     affinity_max_sessions: int = Field(default=10_000, ge=0)
+    affinity_store: Literal["memory", "redis"] = "memory"
+    affinity_store_url: str | None = None
+    affinity_store_ttl_seconds: int = Field(default=3_600, gt=0)
+    affinity_key_prefix: str = "swyd:pin:"
     enable_stats: bool = True
 
     @model_validator(mode="after")
@@ -137,4 +151,18 @@ class LatencyServiceBackendConfig(BaseModel):
             raise ValueError(
                 "affinity_max_sessions must be > 0 when session_affinity is enabled"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _redis_store_requires_url_and_affinity(self) -> Self:
+        # A shared store is dead config unless affinity is on and reachable.
+        if self.affinity_store == "redis":
+            if not self.session_affinity:
+                raise ValueError(
+                    'affinity_store="redis" requires session_affinity to be enabled'
+                )
+            if not self.affinity_store_url:
+                raise ValueError(
+                    'affinity_store="redis" requires affinity_store_url to be set'
+                )
         return self

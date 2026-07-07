@@ -596,8 +596,8 @@ class TestSessionAffinity:
 
         # Independent pins: each conversation resolves to its own endpoint.
         assert len(backend._affinity) == 2
-        assert backend._affinity.pinned(ProxyContext(), req_a) == "model-A"
-        assert backend._affinity.pinned(ProxyContext(), req_b) == "model-B"
+        assert await backend._affinity.pinned(ProxyContext(), req_a) == "model-A"
+        assert await backend._affinity.pinned(ProxyContext(), req_b) == "model-B"
 
     async def test_degraded_pin_reroutes_and_repins(self):
         """When the pinned endpoint degrades, the next turn re-routes to a
@@ -613,7 +613,7 @@ class TestSessionAffinity:
         })
         req = _conv_request("task")
         await backend.call(ProxyContext(), req)
-        assert backend._affinity.pinned(ProxyContext(), req) == "model-A"
+        assert await backend._affinity.pinned(ProxyContext(), req) == "model-A"
 
         # model-A degrades; model-B becomes the only healthy endpoint.
         _set_health(backend, {
@@ -623,7 +623,7 @@ class TestSessionAffinity:
         ctx2 = ProxyContext()
         await backend.call(ctx2, req)
         assert ctx2.selected_model == "model-B"
-        assert backend._affinity.pinned(ProxyContext(), req) == "model-B"
+        assert await backend._affinity.pinned(ProxyContext(), req) == "model-B"
 
     async def test_pin_follows_recovery_after_call_failure(self):
         """If the first-turn endpoint fails the call, the pin records the
@@ -647,7 +647,7 @@ class TestSessionAffinity:
         await backend.call(ctx, req)
         # Regardless of which endpoint was tried first, only model-B succeeds.
         assert ctx.selected_model == "model-B"
-        assert backend._affinity.pinned(ProxyContext(), req) == "model-B"
+        assert await backend._affinity.pinned(ProxyContext(), req) == "model-B"
 
     async def test_lru_eviction_bounds_map(self):
         """The affinity map never exceeds affinity_max_sessions."""
@@ -708,6 +708,48 @@ class TestSessionAffinity:
         out = "\n".join(backend._render_prometheus_lines())
         assert "switchyard_affinity_hits_total" not in out
         assert "switchyard_affinity_misses_total" not in out
+
+    def test_affinity_l2_counters_rendered_when_shared_store_configured(self):
+        """L2 hit/error counters appear on /metrics when a shared store is on.
+
+        Constructing the Redis store never connects (the client is lazy), so
+        this stays hermetic.
+        """
+        backend = _make_backend(_config(
+            "model-A",
+            session_affinity=True,
+            affinity_store="redis",
+            affinity_store_url="redis://cache.test:6379/0",
+        ))
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert "switchyard_affinity_l2_hits_total 0" in out
+        assert "switchyard_affinity_l2_errors_total 0" in out
+        assert "switchyard_affinity_l2_breaker_open 0" in out
+
+    def test_affinity_l2_breaker_gauge_reads_1_while_open(self):
+        """The breaker gauge flips to 1 once the failure streak opens it."""
+        backend = _make_backend(_config(
+            "model-A",
+            session_affinity=True,
+            affinity_store="redis",
+            affinity_store_url="redis://cache.test:6379/0",
+        ))
+        affinity = backend._affinity
+        for _ in range(affinity._l2_breaker_threshold):
+            affinity._record_l2_failure("test-induced failure")
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert "switchyard_affinity_l2_breaker_open 1" in out
+
+    def test_affinity_l2_counters_absent_for_memory_store(self):
+        """Without a shared store the L2 counters stay off the metric surface."""
+        backend = _make_backend(_config("model-A", session_affinity=True))
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert "switchyard_affinity_l2_hits_total" not in out
+        assert "switchyard_affinity_l2_errors_total" not in out
+        assert "switchyard_affinity_l2_breaker_open" not in out
 
     def test_negative_affinity_max_rejected_at_construction(self):
         """A negative cap is rejected when the config is built — otherwise the
@@ -1556,10 +1598,33 @@ class TestReadinessAndShutdown:
         backend._poller._poll_count = 1
         assert backend.is_ready() is True
 
-    def test_shutdown_stops_poller(self):
+    async def test_shutdown_stops_poller(self):
         backend = _make_backend(_config("model-A"))
-        backend.shutdown()
+        await backend.shutdown()
         assert backend._poller._stop_event.is_set()
+
+    async def test_shutdown_closes_shared_affinity_store(self):
+        """Backend teardown releases the shared (L2) pin store's connections."""
+
+        class _ClosableL2:
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def get(self, key: str) -> str | None:
+                return None
+
+            async def put(self, key: str, value: str) -> None:
+                return None
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+        backend = _make_backend(_config("model-A", session_affinity=True))
+        l2 = _ClosableL2()
+        backend._affinity._l2 = l2
+
+        await backend.shutdown()
+        assert l2.closed is True
 
 
 # ---------------------------------------------------------------------------

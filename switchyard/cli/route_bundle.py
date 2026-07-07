@@ -215,6 +215,10 @@ _LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
     "enable_stats",
     "session_affinity",
     "affinity_max_sessions",
+    "affinity_store",
+    "affinity_store_url",
+    "affinity_store_ttl_seconds",
+    "affinity_key_prefix",
 }) | _LATENCY_ENDPOINT_DEFAULT_KEYS
 _NOOP_ROUTE_KEYS = _ROUTE_METADATA_KEYS
 _DETERMINISTIC_ROUTE_KEYS = (
@@ -1168,6 +1172,12 @@ def _latency_service_switchyard(
         "affinity_max_sessions": _optional_int(
             route.get("affinity_max_sessions"), default=10_000
         ),
+        "affinity_store": _optional_str(route.get("affinity_store")) or "memory",
+        "affinity_store_url": _optional_str(route.get("affinity_store_url")),
+        "affinity_store_ttl_seconds": _optional_int(
+            route.get("affinity_store_ttl_seconds"), default=3_600
+        ),
+        "affinity_key_prefix": _optional_str(route.get("affinity_key_prefix")) or "swyd:pin:",
     })
     return ProfileSwitchyard(
         LatencyServiceProfileConfig.from_config(config)

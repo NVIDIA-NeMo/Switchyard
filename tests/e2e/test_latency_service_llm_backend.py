@@ -233,7 +233,7 @@ class TestLatencyServiceBackendNonStreaming:
             assert response.body["choices"][0]["message"]["role"] == "assistant"
             assert ctx.selected_model == MODEL_A
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
     async def test_response_has_usage(self, mock_latency_service):
         """Response should include token usage statistics."""
@@ -250,7 +250,7 @@ class TestLatencyServiceBackendNonStreaming:
             assert response.body["usage"]["prompt_tokens"] > 0
             assert response.body["usage"]["completion_tokens"] > 0
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
 
 # ================================================================== #
@@ -284,7 +284,7 @@ class TestLatencyServiceBackendStreaming:
             full_text = "".join(text_parts)
             assert len(full_text) > 0
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
 
 # ================================================================== #
@@ -315,7 +315,7 @@ class TestLatencyServiceBackendHealth:
                 f"Expected all traffic to HEALTHY model, got: {selected_models}"
             )
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
     async def test_unknown_falls_back_to_random(self, mock_latency_service):
         """When all endpoints are UNKNOWN, the backend should distribute
@@ -336,7 +336,7 @@ class TestLatencyServiceBackendHealth:
                 f"Expected random distribution across models, got: {selected_models}"
             )
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
     async def test_poller_receives_health_updates(self, mock_latency_service):
         """The background poller should pick up health changes from the
@@ -354,7 +354,7 @@ class TestLatencyServiceBackendHealth:
 
             assert backend._health_cache[MODEL_A].status == EndpointHealthStatus.DEGRADED
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
 
 # ================================================================== #
@@ -366,7 +366,7 @@ class TestLatencyServiceBackendHealth:
 class TestLatencyServiceBackendReadiness:
     """Verify is_ready() behavior with a real poller."""
 
-    def test_ready_after_first_poll(self, mock_latency_service):
+    async def test_ready_after_first_poll(self, mock_latency_service):
         """is_ready() should return True once the poller has fetched health."""
         mock_latency_service.set_health(MODEL_A, "healthy")
         backend = _make_backend(mock_latency_service.url, [MODEL_A])
@@ -375,7 +375,7 @@ class TestLatencyServiceBackendReadiness:
             _wait_for_first_poll(backend)
             assert backend.is_ready()
         finally:
-            backend.shutdown()
+            await backend.shutdown()
 
 
 # ================================================================== #
@@ -424,4 +424,4 @@ class TestLatencyServiceBackendStickiness:
             )
             assert selected[0] in {MODEL_A, MODEL_B}
         finally:
-            backend.shutdown()
+            await backend.shutdown()

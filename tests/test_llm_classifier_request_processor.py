@@ -141,7 +141,7 @@ async def test_classifier_skips_llm_call_when_session_pinned() -> None:
     assert len(fake.calls) == 1
 
     # The tier selector would pin the conversation after the first turn.
-    affinity.pin(ProxyContext(), req, "weak")
+    await affinity.pin(ProxyContext(), req, "weak")
 
     # Later turns of the same conversation skip the LLM call entirely.
     ctx2 = ProxyContext()
@@ -163,15 +163,15 @@ async def test_classifier_runs_until_warmup_pin_exists() -> None:
 
     req1 = _request()
     await processor.process(ProxyContext(), req1)
-    affinity.pin(ProxyContext(), req1, "weak")
+    await affinity.pin(ProxyContext(), req1, "weak")
 
     req2 = _request(messages=_messages_with_prior_assistant_turns(1))
     await processor.process(ProxyContext(), req2)
-    affinity.pin(ProxyContext(), req2, "weak")
+    await affinity.pin(ProxyContext(), req2, "weak")
 
     req3 = _request(messages=_messages_with_prior_assistant_turns(2))
     await processor.process(ProxyContext(), req3)
-    affinity.pin(ProxyContext(), req3, "weak")
+    await affinity.pin(ProxyContext(), req3, "weak")
 
     assert len(fake.calls) == 3
 
@@ -193,7 +193,7 @@ async def test_classifier_runs_when_affinity_disabled() -> None:
         affinity=affinity,
     )
     req = _request()
-    affinity.pin(ProxyContext(), req, "weak")  # no-op while disabled
+    await affinity.pin(ProxyContext(), req, "weak")  # no-op while disabled
 
     await processor.process(ProxyContext(), req)
     await processor.process(ProxyContext(), req)

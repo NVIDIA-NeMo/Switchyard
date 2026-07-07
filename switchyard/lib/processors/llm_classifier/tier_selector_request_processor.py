@@ -201,7 +201,7 @@ class SignalTierSelectorRequestProcessor:
 
     async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
         signals = _read_signals(ctx)
-        decision = self._decide(ctx, request, signals)
+        decision = await self._decide(ctx, request, signals)
 
         ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = decision.tier
         ctx.metadata[CTX_DETERMINISTIC_TIER_DECISION] = decision
@@ -217,14 +217,14 @@ class SignalTierSelectorRequestProcessor:
         )
         return request
 
-    def _decide(
+    async def _decide(
         self, ctx: ProxyContext, request: ChatRequest, signals: RouteDecision | None
     ) -> TierSelectionDecision:
         """Select a tier, reusing a per-conversation pin when affinity is on.
 
         On a reused pin the classifier was skipped upstream, so ``signals`` may
         be absent — the pin alone decides the tier."""
-        pinned = self._affinity.pinned(ctx, request) if self._affinity else None
+        pinned = await self._affinity.pinned(ctx, request) if self._affinity else None
         if pinned is not None:
             return TierSelectionDecision(
                 tier=pinned,
@@ -235,7 +235,7 @@ class SignalTierSelectorRequestProcessor:
         # Pin only a confident verdict — pinning a fail-open fallback would lock
         # the task to the default tier and the classifier would never re-run.
         if self._affinity is not None and decision.source in _STICKY_SOURCES:
-            self._affinity.pin(ctx, request, decision.tier)
+            await self._affinity.pin(ctx, request, decision.tier)
         return decision
 
     def _select(self, signals: RouteDecision | None) -> TierSelectionDecision:

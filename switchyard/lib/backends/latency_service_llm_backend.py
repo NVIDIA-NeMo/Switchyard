@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from openai import APIStatusError, AsyncStream
 
+from switchyard.lib.affinity_pin_store import AffinityPinStore
 from switchyard.lib.backends.health_poller import (
     EndpointHealth,
     EndpointHealthStatus,
@@ -131,10 +132,13 @@ class LatencyServiceLLMBackend(LLMBackend):
         # Session affinity: pins a conversation to the endpoint that last served
         # it so its upstream prompt/KV cache stays warm. Shared coordinator with
         # the classifier router; the latency-specific reuse policy (health-gated,
-        # failover-aware) lives in ``_select_endpoint_decision``.
+        # failover-aware) lives in ``_select_endpoint_decision``. An optional
+        # shared L2 (Redis) lets pins outlive this worker and be read by peers,
+        # so a conversation stays pinned across replicas and pod churn.
         self._affinity = SessionAffinity(
             enabled=config.session_affinity,
             max_sessions=config.affinity_max_sessions,
+            l2=_build_affinity_l2(config),
         )
         # Cumulative warm-reuse counters, published on /metrics when affinity is
         # enabled. A "hit" is a turn served by an existing pin; a "miss" is a
@@ -363,7 +367,7 @@ class LatencyServiceLLMBackend(LLMBackend):
         # Resolve the session-affinity pin once (keyed on the stable conversation
         # prefix). ``None`` when affinity is disabled or the conversation isn't
         # pinned yet, so every attempt routes purely by health + latency.
-        pinned_endpoint = self._affinity.pinned(ctx, request)
+        pinned_endpoint = await self._affinity.pinned(ctx, request)
 
         last_exc: Exception | None = None
         # Upstream model of the last failed attempt, surfaced on the error
@@ -541,7 +545,7 @@ class LatencyServiceLLMBackend(LLMBackend):
                 # follows a recovery: if the previous pin degraded and we
                 # re-routed, the endpoint that worked becomes the new pin.
                 # (No-op when affinity is disabled.)
-                self._affinity.pin(ctx, request, model_id)
+                await self._affinity.pin(ctx, request, model_id)
 
                 return _chat_response_for_request_type(target_request_type, result)
 
@@ -653,15 +657,17 @@ class LatencyServiceLLMBackend(LLMBackend):
 
     # -- Lifecycle ----------------------------------------------------------
 
-    def shutdown(self) -> None:
-        """Stop the background :class:`HealthPoller` daemon.
+    async def shutdown(self) -> None:
+        """Stop the background :class:`HealthPoller` daemon and release the
+        shared session-affinity store, when one is configured.
 
-        Picked up automatically by ``NemoSwitchyardServer``'s component
-        teardown hook (see ``server.py``'s lifespan context manager).
-        Safe to call multiple times.
+        Picked up automatically by the server's component teardown hook
+        (``_run_lifecycle_method``), which awaits awaitable ``shutdown``
+        results. Safe to call multiple times.
         """
         prometheus_emitter.unregister(self._render_prometheus_lines)
         self._poller.stop()
+        await self._affinity.aclose()
 
     def is_ready(self) -> bool:
         """True once the background poller has completed at least one successful poll."""
@@ -773,6 +779,42 @@ class LatencyServiceLLMBackend(LLMBackend):
             lines.append("# TYPE switchyard_affinity_misses_total counter")
             lines.append(f"switchyard_affinity_misses_total {self._affinity_misses}")
 
+            # Shared-store (L2) counters — emitted only when a shared pin store
+            # is configured. Hits measure cross-worker/churn pin reuse; errors
+            # count fail-open store operations (the alerting signal for a store
+            # that is degraded while requests keep succeeding).
+            if self._affinity.l2_enabled:
+                lines.append(
+                    "# HELP switchyard_affinity_l2_hits_total "
+                    "Pins resolved from the shared (L2) affinity store after an "
+                    "in-process (L1) miss — cross-worker warm reuse."
+                )
+                lines.append("# TYPE switchyard_affinity_l2_hits_total counter")
+                lines.append(
+                    f"switchyard_affinity_l2_hits_total {self._affinity.l2_hits}"
+                )
+
+                lines.append(
+                    "# HELP switchyard_affinity_l2_errors_total "
+                    "Shared (L2) affinity-store operations that failed open "
+                    "(get or put); routing fell back to in-process pins only."
+                )
+                lines.append("# TYPE switchyard_affinity_l2_errors_total counter")
+                lines.append(
+                    f"switchyard_affinity_l2_errors_total {self._affinity.l2_errors}"
+                )
+
+                lines.append(
+                    "# HELP switchyard_affinity_l2_breaker_open "
+                    "1 while the shared-store circuit breaker is open "
+                    "(operations skipped without a network attempt); 0 when closed."
+                )
+                lines.append("# TYPE switchyard_affinity_l2_breaker_open gauge")
+                lines.append(
+                    "switchyard_affinity_l2_breaker_open "
+                    f"{int(self._affinity.l2_breaker_open)}"
+                )
+
         # Per-model upstream-attempt breakdown — the latency-service-scoped
         # complement to the layer-aggregate ``switchyard_upstream_attempts_total``.
         # Series are created lazily per (requested_model, upstream_model, outcome,
@@ -850,6 +892,25 @@ def _affinity_usable(health: EndpointHealth | None) -> bool:
     return health is not None and health.status in (
         EndpointHealthStatus.HEALTHY,
         EndpointHealthStatus.UNKNOWN,
+    )
+
+
+def _build_affinity_l2(config: LatencyServiceBackendConfig) -> AffinityPinStore | None:
+    """Build the optional shared L2 pin store from config (``None`` = L1-only).
+
+    ``affinity_store="memory"`` (the default) keeps pins per process. ``"redis"``
+    imports :class:`RedisPinStore` lazily so the ``redis`` dependency stays
+    optional. Config validation guarantees a URL when the store is Redis.
+    """
+    if config.affinity_store != "redis":
+        return None
+    from switchyard.lib.redis_pin_store import RedisPinStore
+
+    assert config.affinity_store_url is not None  # enforced by config validator
+    return RedisPinStore(
+        config.affinity_store_url,
+        ttl_seconds=config.affinity_store_ttl_seconds,
+        key_prefix=config.affinity_key_prefix,
     )
 
 
