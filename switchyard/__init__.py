@@ -15,6 +15,7 @@ from switchyard.lib.backends import (
     AnthropicNativeBackend,
     EndpointHealth,
     EndpointHealthStatus,
+    GeminiNativeBackend,
     HealthPoller,
     LatencyServiceLLMBackend,
     OpenAiNativeBackend,
@@ -25,6 +26,7 @@ from switchyard.lib.backends.llm_target import (
 )
 from switchyard.lib.chat_request import (
     AnthropicChatRequest,
+    GeminiChatRequest,
     OpenAIChatRequest,
     ResponsesChatRequest,
 )
@@ -34,6 +36,9 @@ from switchyard.lib.chat_response import (
     AnthropicStreamingChatResponse,
     AnyResponseStream,
     CompletionChatResponse,
+    GeminiChatResponse,
+    GeminiResponseStream,
+    GeminiStreamingChatResponse,
     ResponsesApiChatResponse,
     ResponsesApiStream,
     ResponsesApiStreamingChatResponse,
@@ -109,6 +114,7 @@ if TYPE_CHECKING:
     from switchyard.lib.endpoints.anthropic_messages_endpoint import (
         AnthropicMessagesEndpoint,
     )
+    from switchyard.lib.endpoints.gemini_endpoint import GeminiEndpoint
     from switchyard.lib.endpoints.models_endpoint import ModelsEndpoint
     from switchyard.lib.endpoints.openai_chat_endpoint import (
         OpenAIChatEndpoint,
@@ -131,6 +137,10 @@ def __getattr__(name: str) -> Any:
         )
 
         return AnthropicMessagesEndpoint
+    if name == "GeminiEndpoint":
+        from switchyard.lib.endpoints.gemini_endpoint import GeminiEndpoint
+
+        return GeminiEndpoint
     if name == "ResponsesEndpoint":
         from switchyard.lib.endpoints.responses_endpoint import ResponsesEndpoint
 
@@ -151,6 +161,7 @@ __all__ = [
     "AnthropicChatRequest",
     "ChatRequest",
     "ChatRequestType",
+    "GeminiChatRequest",
     "OpenAIChatRequest",
     "ResponsesChatRequest",
     # Chain infrastructure
@@ -192,9 +203,11 @@ __all__ = [
     "profile_config",
     "profile_config_type",
     "AnthropicNativeBackend",
+    "GeminiNativeBackend",
     "OpenAiNativeBackend",
     "OpenAIChatEndpoint",
     "AnthropicMessagesEndpoint",
+    "GeminiEndpoint",
     "ResponsesEndpoint",
     "ModelsEndpoint",
     "build_switchyard_app",
@@ -234,9 +247,12 @@ __all__ = [
     "ResponsesApiChatResponse",
     "ResponsesApiStreamingChatResponse",
     "AnthropicStreamingChatResponse",
+    "GeminiChatResponse",
+    "GeminiStreamingChatResponse",
     "ResponseStream",
     "ResponsesApiStream",
     "AnthropicResponseStream",
+    "GeminiResponseStream",
     "AnyResponseStream",
 ]
 

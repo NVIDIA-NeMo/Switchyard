@@ -8,6 +8,11 @@ from switchyard.lib.chat_response.anthropic import (
     AnthropicResponseStream,
     AnthropicStreamingChatResponse,
 )
+from switchyard.lib.chat_response.gemini import (
+    GeminiChatResponse,
+    GeminiResponseStream,
+    GeminiStreamingChatResponse,
+)
 from switchyard.lib.chat_response.openai_chat import (
     CompletionChatResponse,
     ResponseStream,
@@ -31,6 +36,9 @@ __all__ = [
     "ChatResponseStream",
     "ChatResponseType",
     "CompletionChatResponse",
+    "GeminiChatResponse",
+    "GeminiResponseStream",
+    "GeminiStreamingChatResponse",
     "ResponsesApiChatResponse",
     "ResponsesApiStream",
     "ResponsesApiStreamingChatResponse",

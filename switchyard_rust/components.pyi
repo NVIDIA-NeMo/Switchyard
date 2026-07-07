@@ -17,6 +17,7 @@ class BackendFormat:
     OPENAI: ClassVar[BackendFormat]
     RESPONSES: ClassVar[BackendFormat]
     ANTHROPIC: ClassVar[BackendFormat]
+    GEMINI: ClassVar[BackendFormat]
 
     value: str
 
@@ -227,6 +228,12 @@ class OpenAiPassthroughBackend(LLMBackend):
 
 
 class AnthropicNativeBackend(LLMBackend):
+    target: LlmTarget
+
+    def __init__(self, target: LlmTarget) -> None: ...
+
+
+class GeminiNativeBackend(LLMBackend):
     target: LlmTarget
 
     def __init__(self, target: LlmTarget) -> None: ...

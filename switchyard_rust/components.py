@@ -17,6 +17,7 @@ _COMPONENT_EXPORTS = frozenset(
         "DimensionCollector",
         "DimensionScore",
         "EndpointConfig",
+        "GeminiNativeBackend",
         "IntakeQueueFullPolicy",
         "IntakeRequestMetadata",
         "IntakeRequestProcessor",
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     DimensionCollector: type[Any]
     DimensionScore: type[Any]
     EndpointConfig: type[Any]
+    GeminiNativeBackend: type[Any]
     IntakeQueueFullPolicy: type[Any]
     IntakeRequestMetadata: type[Any]
     IntakeRequestProcessor: type[Any]

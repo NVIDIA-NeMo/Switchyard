@@ -19,6 +19,7 @@ from switchyard.lib.backends.llm_target import (
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.components import (
     AnthropicNativeBackend,
+    GeminiNativeBackend,
     LlmTargetBackend,
     MultiLlmBackend,
     OpenAiNativeBackend,
@@ -49,6 +50,8 @@ def build_native_backend(target: LlmTarget) -> LLMBackend:
         return OpenAiNativeBackend(target)
     if target.format == BackendFormat.ANTHROPIC:
         return AnthropicNativeBackend(target)
+    if target.format == BackendFormat.GEMINI:
+        return GeminiNativeBackend(target)
     raise ValueError(f"Unsupported backend format: {target.format!r}")
 
 

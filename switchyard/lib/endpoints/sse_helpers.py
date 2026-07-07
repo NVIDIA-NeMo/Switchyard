@@ -159,6 +159,44 @@ async def iter_anthropic_sse(
         await _aclose_stream(events)
 
 
+async def iter_gemini_sse(
+    chunks: AsyncIterator[Mapping[str, object]],
+) -> AsyncGenerator[str, None]:
+    """Frame Gemini stream chunks into unnamed ``data: <json>\\n\\n`` lines.
+
+    Gemini's ``streamGenerateContent?alt=sse`` contract carries one complete
+    ``GenerateContentResponse`` JSON object per ``data:`` line, with no named
+    events and no ``[DONE]`` terminator — the final chunk is recognizable by
+    its ``finishReason`` and ``usageMetadata``.
+
+    Mid-stream iteration failures emit a final ``data:`` frame carrying a
+    Gemini-shaped ``{"error": {...}}`` payload and terminate — same error
+    quarantine pattern as :func:`iter_chat_completion_sse`.
+
+    Args:
+        chunks: Async iterator of Gemini chunk dicts.
+
+    Yields:
+        SSE-framed strings suitable for ``StreamingResponse``.
+    """
+    try:
+        async for chunk in chunks:
+            chunk_dict = dict(chunk) if isinstance(chunk, Mapping) else {"data": str(chunk)}
+            yield f"data: {json.dumps(chunk_dict)}\n\n"
+    except Exception as e:
+        log.error("Error during gemini streaming: %s: %s", type(e).__name__, e)
+        error_data = {
+            "error": {
+                "code": 500,
+                "message": repr(e)[:200],
+                "status": "INTERNAL",
+            }
+        }
+        yield f"data: {json.dumps(error_data)}\n\n"
+    finally:
+        await _aclose_stream(chunks)
+
+
 async def iter_preframed_sse(
     frames: AsyncIterator[object],
 ) -> AsyncGenerator[str, None]:

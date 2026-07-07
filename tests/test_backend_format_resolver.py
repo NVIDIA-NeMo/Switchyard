@@ -87,6 +87,63 @@ def test_auto_model_prefix_anthropic_skips_probes(
 
 
 @pytest.mark.parametrize("model", [
+    "gemini-2.5-flash",
+    "gemini-3-pro-preview",
+    "models/gemini-2.5-pro",
+])
+def test_auto_model_prefix_gemini_skips_probes(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Bare gemini and models/gemini IDs → GEMINI without probing."""
+    monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync",
+                        _no_probe("chat-completions"))
+    monkeypatch.setattr(resolver_mod, "probe_anthropic_messages_support_sync",
+                        _no_probe("anthropic"))
+    monkeypatch.setattr(resolver_mod, "probe_openai_responses_support_sync",
+                        _no_probe("responses"))
+
+    resolution = resolver_mod.BackendFormatResolver.resolve(
+        LlmTarget(
+            model=model,
+            format=BackendFormat.AUTO,
+            base_url="https://generativelanguage.googleapis.com",
+            api_key="AIza-test",  # pragma: allowlist secret
+        ),
+    )
+
+    assert resolution.format is BackendFormat.GEMINI
+    assert "prefix" in resolution.reason
+
+
+@pytest.mark.parametrize("model", [
+    "google/gemini-2.5-flash",
+    "openrouter/google/gemini-2.5-pro",
+])
+def test_auto_gateway_gemini_model_probes_chat_completions_first(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Gateway-namespaced Gemini models are NOT fast-pathed; probing runs."""
+    chat_probe = _RecordingProbe(result=True)
+    monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync", chat_probe)
+    monkeypatch.setattr(resolver_mod, "probe_anthropic_messages_support_sync",
+                        _no_probe("anthropic"))
+    monkeypatch.setattr(resolver_mod, "probe_openai_responses_support_sync",
+                        _no_probe("responses"))
+
+    resolution = resolver_mod.BackendFormatResolver.resolve(
+        LlmTarget(
+            model=model,
+            format=BackendFormat.AUTO,
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-test",  # pragma: allowlist secret
+        ),
+    )
+
+    assert resolution.format is BackendFormat.OPENAI
+    assert len(chat_probe.calls) == 1
+
+
+@pytest.mark.parametrize("model", [
     "openrouter/anthropic/claude-3-5-sonnet",
     "aws/anthropic/bedrock-claude-opus-4-7",
 ])

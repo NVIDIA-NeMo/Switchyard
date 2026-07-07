@@ -223,6 +223,8 @@ class FormatTranslateResponseProcessor:
                 response,
                 original_body=_original_body(ctx),
             )
+        if request_type_value(original) == request_type_value(ChatRequestType.GEMINI):
+            return TranslationEngine().response_to(ChatRequestType.GEMINI, response)
         raise NotImplementedError(
             f"Unsupported original format for response translation: {original!r}",
         )
@@ -252,6 +254,8 @@ def _request_for_original_format(
         return request_with_type(original, cast("MessageCreateParamsBase", body))
     if request_type_value(original) == request_type_value(ChatRequestType.OPENAI_RESPONSES):
         return request_with_type(original, cast("ResponseCreateParamsBase", body))
+    if request_type_value(original) == request_type_value(ChatRequestType.GEMINI):
+        return request_with_type(original, body)
     raise NotImplementedError(f"Unsupported original format: {original!r}")
 
 
@@ -305,8 +309,12 @@ def _target_request_type_for_backend_format(
         return ChatRequestType.OPENAI_RESPONSES
     if backend_format == BackendFormat.ANTHROPIC:
         return ChatRequestType.ANTHROPIC
+    if backend_format == BackendFormat.GEMINI:
+        return ChatRequestType.GEMINI
     if backend_format == BackendFormat.AUTO:
         if request_type_matches(request, ChatRequestType.ANTHROPIC):
             return ChatRequestType.ANTHROPIC
+        if request_type_matches(request, ChatRequestType.GEMINI):
+            return ChatRequestType.GEMINI
         return ChatRequestType.OPENAI_CHAT
     raise ValueError(f"Unsupported backend_format: {backend_format!r}")

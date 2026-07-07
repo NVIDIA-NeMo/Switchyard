@@ -169,6 +169,7 @@ class TestMultiLlmBackendConstruction:
             "openai_chat",
             "openai_responses",
             "anthropic",
+            "gemini",
         ]
 
     def test_mapping_keys_fill_default_target_ids(self) -> None:

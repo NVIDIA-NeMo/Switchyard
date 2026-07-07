@@ -47,6 +47,7 @@ def test_openai_chat_request_owns_body_and_exposes_model() -> None:
 def test_request_constructors_preserve_wire_format() -> None:
     responses = ChatRequest.openai_responses({"model": "gpt-4o", "input": "hello"})
     anthropic = ChatRequest.anthropic({"model": "claude-sonnet-4.5", "messages": []})
+    gemini = ChatRequest.gemini({"model": "gemini-2.5-flash", "contents": [{}]})
 
     assert responses.request_type == ChatRequestType.OPENAI_RESPONSES
     assert responses.request_type.value == "openai_responses"
@@ -54,6 +55,9 @@ def test_request_constructors_preserve_wire_format() -> None:
     assert anthropic.request_type == ChatRequestType.ANTHROPIC
     assert anthropic.request_type.value == "anthropic"
     assert anthropic.model == "claude-sonnet-4.5"
+    assert gemini.request_type == ChatRequestType.GEMINI
+    assert gemini.request_type.value == "gemini"
+    assert gemini.model == "gemini-2.5-flash"
 
 
 def test_set_model_mutates_rust_owned_body() -> None:
@@ -124,11 +128,18 @@ def test_response_constructors_preserve_wire_shape() -> None:
         "model": "claude-sonnet-4.5",
         "content": [],
     })
+    gemini = ChatResponse.gemini_completion({
+        "candidates": [],
+        "modelVersion": "gemini-2.5-flash",
+        "responseId": "resp-test",
+    })
 
     assert responses.response_type == ChatResponseType.OPENAI_RESPONSES_COMPLETION
     assert responses.response_type.value == "openai_responses_completion"
     assert anthropic.response_type == ChatResponseType.ANTHROPIC_COMPLETION
     assert anthropic.response_type.value == "anthropic_completion"
+    assert gemini.response_type == ChatResponseType.GEMINI_COMPLETION
+    assert gemini.response_type.value == "gemini_completion"
 
 
 async def test_stream_response_uses_rust_owned_async_stream_and_rejects_body_access() -> None:

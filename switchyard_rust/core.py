@@ -22,6 +22,7 @@ class _ChatRequestType(Protocol):
     OPENAI_CHAT: ClassVar[_ChatRequestType]
     OPENAI_RESPONSES: ClassVar[_ChatRequestType]
     ANTHROPIC: ClassVar[_ChatRequestType]
+    GEMINI: ClassVar[_ChatRequestType]
 
     value: str
 
@@ -42,6 +43,9 @@ class _ChatRequest(Protocol):
     @classmethod
     def anthropic(cls, body: Mapping[str, Any] | JsonValue) -> _ChatRequest: ...
 
+    @classmethod
+    def gemini(cls, body: Mapping[str, Any] | JsonValue) -> _ChatRequest: ...
+
     def set_model(self, model: str) -> None: ...
     def replace_body(self, body: Mapping[str, Any] | JsonValue) -> None: ...
     def to_body(self) -> JsonValue: ...
@@ -56,6 +60,8 @@ class _ChatResponseType(Protocol):
     OPENAI_RESPONSES_STREAM: ClassVar[_ChatResponseType]
     ANTHROPIC_COMPLETION: ClassVar[_ChatResponseType]
     ANTHROPIC_STREAM: ClassVar[_ChatResponseType]
+    GEMINI_COMPLETION: ClassVar[_ChatResponseType]
+    GEMINI_STREAM: ClassVar[_ChatResponseType]
 
     value: str
 
@@ -86,6 +92,12 @@ class _ChatResponse(Protocol):
 
     @classmethod
     def anthropic_stream(cls, stream: object) -> _ChatResponse: ...
+
+    @classmethod
+    def gemini_completion(cls, body: Mapping[str, Any] | JsonValue | object) -> _ChatResponse: ...
+
+    @classmethod
+    def gemini_stream(cls, stream: object) -> _ChatResponse: ...
 
     def replace_body(self, body: Mapping[str, Any] | JsonValue | object) -> None: ...
     def to_body(self) -> JsonValue: ...
@@ -466,6 +478,7 @@ if TYPE_CHECKING:
         OPENAI_CHAT: ClassVar[ChatRequestType]
         OPENAI_RESPONSES: ClassVar[ChatRequestType]
         ANTHROPIC: ClassVar[ChatRequestType]
+        GEMINI: ClassVar[ChatRequestType]
         value: str
 
     class ChatRequest:
@@ -481,6 +494,8 @@ if TYPE_CHECKING:
         def openai_responses(cls, body: Mapping[str, Any] | JsonValue) -> ChatRequest: ...
         @classmethod
         def anthropic(cls, body: Mapping[str, Any] | JsonValue) -> ChatRequest: ...
+        @classmethod
+        def gemini(cls, body: Mapping[str, Any] | JsonValue) -> ChatRequest: ...
         def validate(self) -> None: ...
         def set_model(self, model: str) -> None: ...
         def replace_body(self, body: Mapping[str, Any] | JsonValue) -> None: ...
@@ -495,6 +510,8 @@ if TYPE_CHECKING:
         OPENAI_RESPONSES_STREAM: ClassVar[ChatResponseType]
         ANTHROPIC_COMPLETION: ClassVar[ChatResponseType]
         ANTHROPIC_STREAM: ClassVar[ChatResponseType]
+        GEMINI_COMPLETION: ClassVar[ChatResponseType]
+        GEMINI_STREAM: ClassVar[ChatResponseType]
         value: str
 
     class ChatResponse:
@@ -525,6 +542,13 @@ if TYPE_CHECKING:
         ) -> ChatResponse: ...
         @classmethod
         def anthropic_stream(cls, stream: object) -> ChatResponse: ...
+        @classmethod
+        def gemini_completion(
+            cls,
+            body: Mapping[str, Any] | JsonValue | object,
+        ) -> ChatResponse: ...
+        @classmethod
+        def gemini_stream(cls, stream: object) -> ChatResponse: ...
         def replace_body(self, body: Mapping[str, Any] | JsonValue | object) -> None: ...
         def to_body(self) -> JsonValue: ...
 
@@ -665,7 +689,9 @@ def request_type_value(value: object) -> str:
         raise TypeError(f"Request type must be a string-like value, got {type(raw).__name__}")
     if raw == "anthropic_messages":
         return "anthropic"
-    if raw in {"openai_chat", "openai_responses", "anthropic"}:
+    if raw == "gemini_generate_content":
+        return "gemini"
+    if raw in {"openai_chat", "openai_responses", "anthropic", "gemini"}:
         return raw
     raise ValueError(f"Unknown request type: {value!r}")
 
@@ -680,6 +706,8 @@ def request_type_enum(value: object) -> _ChatRequestType:
         return request_type.OPENAI_RESPONSES
     if normalized == "anthropic":
         return request_type.ANTHROPIC
+    if normalized == "gemini":
+        return request_type.GEMINI
     raise ValueError(f"Unknown request type: {value!r}")
 
 
@@ -698,6 +726,8 @@ def request_with_type(request_type: object, body: Mapping[str, Any] | JsonValue)
         return cast("ChatRequest", chat_request.openai_responses(body))
     if normalized == "anthropic":
         return cast("ChatRequest", chat_request.anthropic(body))
+    if normalized == "gemini":
+        return cast("ChatRequest", chat_request.gemini(body))
     raise ValueError(f"Unknown request type: {request_type!r}")
 
 
@@ -720,6 +750,8 @@ def response_type_value(value: object) -> str:
         "openai_responses_stream",
         "anthropic_completion",
         "anthropic_stream",
+        "gemini_completion",
+        "gemini_stream",
     }:
         return raw
     raise ValueError(f"Unknown response type: {value!r}")
@@ -741,6 +773,10 @@ def response_type_enum(value: object) -> _ChatResponseType:
         return response_type.ANTHROPIC_COMPLETION
     if normalized == "anthropic_stream":
         return response_type.ANTHROPIC_STREAM
+    if normalized == "gemini_completion":
+        return response_type.GEMINI_COMPLETION
+    if normalized == "gemini_stream":
+        return response_type.GEMINI_STREAM
     raise ValueError(f"Unknown response type: {value!r}")
 
 
@@ -768,6 +804,10 @@ def response_with_type(
         return cast("ChatResponse", chat_response.anthropic_completion(body_or_stream))
     if normalized == "anthropic_stream":
         return cast("ChatResponse", chat_response.anthropic_stream(body_or_stream))
+    if normalized == "gemini_completion":
+        return cast("ChatResponse", chat_response.gemini_completion(body_or_stream))
+    if normalized == "gemini_stream":
+        return cast("ChatResponse", chat_response.gemini_stream(body_or_stream))
     raise ValueError(f"Unknown response type: {response_type!r}")
 
 
@@ -786,6 +826,8 @@ def response_type_for_request_type(
         )
     if normalized == "anthropic":
         return response_type_enum("anthropic_stream" if stream else "anthropic_completion")
+    if normalized == "gemini":
+        return response_type_enum("gemini_stream" if stream else "gemini_completion")
     raise ValueError(f"Unknown request type: {request_type!r}")
 
 
@@ -805,6 +847,8 @@ def response_matches_request_type(
         }
     if request_type_normalized == "anthropic":
         return response_type in {"anthropic_completion", "anthropic_stream"}
+    if request_type_normalized == "gemini":
+        return response_type in {"gemini_completion", "gemini_stream"}
     raise ValueError(f"Unknown request type: {request_type!r}")
 
 

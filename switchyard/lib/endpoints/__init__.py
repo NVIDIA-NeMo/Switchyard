@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from switchyard.lib.endpoints.anthropic_messages_endpoint import (
         AnthropicMessagesEndpoint,
     )
+    from switchyard.lib.endpoints.gemini_endpoint import GeminiEndpoint
     from switchyard.lib.endpoints.models_endpoint import ModelsEndpoint
     from switchyard.lib.endpoints.openai_chat_endpoint import (
         OpenAIChatEndpoint,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 __all__ = [
     "StatsEndpoint",
     "AnthropicMessagesEndpoint",
+    "GeminiEndpoint",
     "ModelsEndpoint",
     "OpenAIChatEndpoint",
     "ResponsesEndpoint",
@@ -39,6 +41,9 @@ def __getattr__(name: str) -> Any:
             AnthropicMessagesEndpoint,
         )
         return AnthropicMessagesEndpoint
+    elif name == "GeminiEndpoint":
+        from switchyard.lib.endpoints.gemini_endpoint import GeminiEndpoint
+        return GeminiEndpoint
     elif name == "OpenAIChatEndpoint":
         from switchyard.lib.endpoints.openai_chat_endpoint import (
             OpenAIChatEndpoint,

@@ -3,10 +3,10 @@
 
 """Convenience factory for serving a ``Switchyard`` or model table.
 
-The default setup registers all three inbound endpoints so the app
-can serve OpenAI Chat Completions, Anthropic Messages, and OpenAI
-Responses API clients simultaneously — the chain handles format
-translation internally.
+The default setup registers all four inbound endpoints so the app
+can serve OpenAI Chat Completions, Anthropic Messages, OpenAI
+Responses API, and Gemini generateContent clients simultaneously —
+the chain handles format translation internally.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from switchyard.lib.endpoints.anthropic_messages_endpoint import (
 )
 from switchyard.lib.endpoints.base import Endpoint
 from switchyard.lib.endpoints.dispatch import invalid_request_response
+from switchyard.lib.endpoints.gemini_endpoint import GeminiEndpoint
 from switchyard.lib.endpoints.models_endpoint import ModelsEndpoint
 from switchyard.lib.endpoints.openai_chat_endpoint import (
     OpenAIChatEndpoint,
@@ -45,6 +46,14 @@ _LLM_ROUTES: frozenset[str] = frozenset({
     "/v1/messages",
     "/v1/responses",
 })
+
+#: Gemini routes carry the model in the path, so they match by prefix.
+_GEMINI_ROUTE_PREFIX = "/v1beta/models/"
+
+
+def _is_llm_route(path: str) -> bool:
+    """Return whether *path* serves LLM traffic (exact or Gemini-templated)."""
+    return path in _LLM_ROUTES or path.startswith(_GEMINI_ROUTE_PREFIX)
 
 if TYPE_CHECKING:
     from switchyard.lib.route_table import SwitchyardApp
@@ -67,15 +76,17 @@ async def _shutdown_components(components: Iterable[object]) -> None:
 def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
     """Create a FastAPI app serving *switchyard* over all inbound formats.
 
-    Registers three LLM endpoints plus a liveness probe:
+    Registers four LLM endpoints plus a liveness probe:
 
     - ``POST /v1/chat/completions`` (OpenAI Chat Completions)
     - ``POST /v1/messages``         (Anthropic Messages)
     - ``POST /v1/responses``        (OpenAI Responses API)
+    - ``POST /v1beta/models/{model}:generateContent`` (Gemini, plus
+      ``:streamGenerateContent`` for SSE)
     - ``GET  /v1/models``           (local model discovery)
     - ``GET  /health``              (liveness — always 200 when the process is up)
 
-    All three LLM routes go through the same chain — translation
+    All LLM routes go through the same chain — translation
     between wire formats is handled by ``TranslationEngine``
     inside the backend and ``TranslationEngine`` inside the
     translator.
@@ -124,7 +135,7 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
         body parameter. Non-LLM routes and non-body errors fall through to
         FastAPI's default 422 handler.
         """
-        if request.url.path in _LLM_ROUTES:
+        if _is_llm_route(request.url.path):
             body_errors = [e for e in exc.errors() if e.get("loc", (None,))[0] == "body"]
             if body_errors:
                 is_json_parse = any(e["type"] == "json_invalid" for e in body_errors)
@@ -161,7 +172,7 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
         upstream-error passthrough, internal exception, model-not-found).
         """
         response = await call_next(request)
-        if request.url.path in _LLM_ROUTES:
+        if _is_llm_route(request.url.path):
             outcome_metrics.record_client_response(response.status_code)
         return response
 
@@ -173,6 +184,7 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
         OpenAIChatEndpoint(),
         AnthropicMessagesEndpoint(),
         ResponsesEndpoint(),
+        GeminiEndpoint(),
         ModelsEndpoint(),
     ]:
         endpoint.register(app)

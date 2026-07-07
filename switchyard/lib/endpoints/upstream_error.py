@@ -37,7 +37,7 @@ from switchyard_rust.core import SwitchyardUpstreamError
 if TYPE_CHECKING:
     from switchyard.lib.proxy_context import ProxyContext
 
-Inbound = Literal["anthropic", "openai", "openai-responses"]
+Inbound = Literal["anthropic", "openai", "openai-responses", "gemini"]
 
 _log = logging.getLogger(__name__)
 

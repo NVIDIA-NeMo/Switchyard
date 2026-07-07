@@ -17,6 +17,7 @@ import pytest
 
 from switchyard.lib.chat_request.anthropic import AnthropicChatRequest
 from switchyard.lib.chat_request.base import ChatRequest
+from switchyard.lib.chat_request.gemini import GeminiChatRequest
 from switchyard.lib.chat_request.openai_chat import OpenAIChatRequest
 from switchyard.lib.chat_request.openai_responses import ResponsesChatRequest
 from switchyard_rust.core import ChatRequestType, request_type_matches
@@ -38,6 +39,11 @@ ANTHROPIC_BODY = {
     "model": "claude-3-haiku",
     "messages": [{"role": "user", "content": "ping"}],
     "max_tokens": 16,
+}
+
+GEMINI_BODY = {
+    "model": "gemini-2.5-flash",
+    "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
 }
 
 
@@ -62,6 +68,13 @@ REQUEST_CASES: list[tuple[str, RequestAlias, RequestFactory, object, dict]] = [
         ChatRequest.anthropic,
         ChatRequestType.ANTHROPIC,
         ANTHROPIC_BODY,
+    ),
+    (
+        "GeminiChatRequest",
+        GeminiChatRequest,
+        ChatRequest.gemini,
+        ChatRequestType.GEMINI,
+        GEMINI_BODY,
     ),
 ]
 

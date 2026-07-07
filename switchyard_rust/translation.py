@@ -57,7 +57,9 @@ class _NativeModule(Protocol):
 
 
 _T = TypeVar("_T")
-_NativeFormat = Literal["openai_chat", "openai_responses", "anthropic_messages"]
+_NativeFormat = Literal[
+    "openai_chat", "openai_responses", "anthropic_messages", "gemini_generate_content"
+]
 _StreamOutput = Literal["objects", "chat_chunks", "responses_sse"]
 _native: _NativeModule | None = None
 _log = logging.getLogger(__name__)
@@ -288,7 +290,14 @@ def _format_name(value: str | ChatRequestType) -> _NativeFormat:
     raw = value.value if hasattr(value, "value") else str(value)
     if raw == "anthropic":
         raw = "anthropic_messages"
-    if raw in {"openai_chat", "openai_responses", "anthropic_messages"}:
+    if raw == "gemini":
+        raw = "gemini_generate_content"
+    if raw in {
+        "openai_chat",
+        "openai_responses",
+        "anthropic_messages",
+        "gemini_generate_content",
+    }:
         return cast(_NativeFormat, raw)
     raise ValueError(f"Unknown translation format: {value!r}")
 
@@ -314,6 +323,8 @@ def _response_format(response: ChatResponse) -> _NativeFormat:
         return "openai_responses"
     if response_type in {"anthropic_completion", "anthropic_stream"}:
         return "anthropic_messages"
+    if response_type in {"gemini_completion", "gemini_stream"}:
+        return "gemini_generate_content"
     raise NotImplementedError(
         f"Response translation not implemented for {type(response).__name__}"
     )
@@ -328,6 +339,8 @@ def _wrap_request(format_name: _NativeFormat, body: dict[str, Any]) -> ChatReque
         return request_with_type("openai_responses", body)
     if format_name == "anthropic_messages":
         return request_with_type("anthropic", body)
+    if format_name == "gemini_generate_content":
+        return request_with_type("gemini", body)
     raise ValueError(f"Unknown request format: {format_name!r}")
 
 
@@ -340,6 +353,8 @@ def _wrap_response(format_name: _NativeFormat, body: dict[str, Any]) -> ChatResp
         return ChatResponse.openai_responses_completion(body)
     if format_name == "anthropic_messages":
         return ChatResponse.anthropic_completion(body)
+    if format_name == "gemini_generate_content":
+        return ChatResponse.gemini_completion(body)
     raise ValueError(f"Unknown response format: {format_name!r}")
 
 
@@ -348,6 +363,7 @@ def _wrap_streaming_response(
     stream: AsyncIterable[Any],
 ) -> ChatResponse:
     from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
+    from switchyard.lib.chat_response.gemini import GeminiResponseStream
     from switchyard.lib.chat_response.openai_chat import ResponseStream
     from switchyard.lib.chat_response.openai_responses import ResponsesApiStream
     from switchyard_rust.core import ChatResponse
@@ -358,6 +374,8 @@ def _wrap_streaming_response(
         return ChatResponse.openai_responses_stream(ResponsesApiStream(cast(Any, stream)))
     if format_name == "anthropic_messages":
         return ChatResponse.anthropic_stream(AnthropicResponseStream(cast(Any, stream)))
+    if format_name == "gemini_generate_content":
+        return ChatResponse.gemini_stream(GeminiResponseStream(cast(Any, stream)))
     raise ValueError(f"Unknown streaming response format: {format_name!r}")
 
 

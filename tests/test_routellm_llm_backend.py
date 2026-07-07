@@ -64,6 +64,7 @@ def test_profile_builds_multi_llm_backend_without_stats() -> None:
         "openai_chat",
         "openai_responses",
         "anthropic",
+        "gemini",
     ]
 
 
@@ -81,6 +82,7 @@ def test_profile_wraps_multi_llm_backend_with_stats_when_enabled() -> None:
         "openai_chat",
         "openai_responses",
         "anthropic",
+        "gemini",
     ]
 
 

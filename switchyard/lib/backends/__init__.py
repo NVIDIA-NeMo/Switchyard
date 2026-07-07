@@ -24,6 +24,7 @@ from switchyard.lib.backends.stats_llm_backend import (
 )
 from switchyard_rust.components import (
     AnthropicNativeBackend,
+    GeminiNativeBackend,
     OpenAiNativeBackend,
     OpenAiPassthroughBackend,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "BackendFormatResolver",
     "EndpointHealth",
     "EndpointHealthStatus",
+    "GeminiNativeBackend",
     "HealthPoller",
     "LatencyServiceLLMBackend",
     "OpenAiPassthroughBackend",

@@ -83,6 +83,12 @@ class BackendFormatResolver:
                 reason="model prefix indicates native Anthropic; skipping probes",
             )
 
+        if _model_is_gemini(tier.model):
+            return BackendFormatResolution(
+                format=BackendFormat.GEMINI,
+                reason="model prefix indicates native Gemini; skipping probes",
+            )
+
         timeout_s = tier.endpoint.timeout_secs or _DEFAULT_TIMEOUT_S
 
         if probe_openai_chat_completions_support_sync(
@@ -122,6 +128,21 @@ class BackendFormatResolver:
             format=BackendFormat.OPENAI,
             reason="all probes failed; assuming Chat Completions",
         )
+
+
+def _model_is_gemini(model: str | None) -> bool:
+    """Return True if the model ID unambiguously identifies a native Gemini model.
+
+    Matches bare ``gemini<…>`` and ``models/gemini<…>`` IDs only — the naming
+    the Gemini API itself uses. Gateway-namespaced IDs like
+    ``google/gemini-…`` are intentionally NOT matched: OpenAI-compatible
+    gateways (e.g. OpenRouter) serve Gemini models over Chat Completions, so
+    probing is preferred over assuming the native generateContent format.
+    """
+    if not model:
+        return False
+    m = model.lower()
+    return m.startswith("gemini") or m.startswith("models/gemini")
 
 
 def _model_is_anthropic(model: str | None) -> bool:

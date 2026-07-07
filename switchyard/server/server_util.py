@@ -35,6 +35,7 @@ class InboundFormat(Enum):
     """Inbound wire format accepted by the proxy."""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
     BOTH = "both"
 
 
