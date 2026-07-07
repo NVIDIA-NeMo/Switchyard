@@ -1,9 +1,10 @@
 # Switchyard-Lib Design
 
-Status: design draft. The Rust crate in `src/` (`lib.rs` traits, `rand.rs`, `llm_class.rs`) is the
-proof of concept and the design of record; this doc describes the intended shape and marks where the
-POC still diverges (see *POC Gaps*). The model is language-independent — "trait" means
-interface/contract — but it is worked out against the Rust code, not any binding or port.
+Status: design draft. The Rust crate in `src/` (`lib.rs` traits, `rand.rs`, `llm_class.rs`, and the
+`client.rs` wrapper) is the proof of concept and the design of record; the type names below match the
+code (the `AgentApi*` prefix). This doc describes the intended shape and marks where the POC still
+diverges (see *POC Gaps*). The model is language-independent — "trait" means interface/contract —
+but it is worked out against the Rust code, not any binding or port.
 
 ## Summary
 
@@ -11,17 +12,18 @@ interface/contract — but it is worked out against the Rust code, not any bindi
 case. It sits where a request is about to hit a model and decides — statefully, using more than the
 request — which model(s) to call, how to rewrite the call, or whether to skip it.
 
-It is not a service: no server, no provider SDK, no transport. It is **provider- and
-transport-agnostic** so it embeds in inference platforms, agentic systems, and routing proxies.
-Model calls are the host's job (see *The Loop*).
+It is not a service: no server, and the optimization core owns no transport — model calls are the
+host's job (see *The Loop*). It is **provider- and transport-agnostic** so it embeds in inference
+platforms, agentic systems, and routing proxies; the bundled `HttpCaller` (used by the client
+wrapper) is a convenience default, not a coupling.
 
 ## The Loop
 
 The whole library is one pair of traits and one loop:
 
 ```text
-OptAlgorithm --optimizer()--> Optimizer --feed()/optimize()--> Decision
-  (config/factory)            (per-session, stateful)
+AgentApiOptAlgorithm --optimizer()--> AgentApiOptimizer --feed()/optimize()--> Decision
+  (config/factory)                    (per-session, stateful)
 ```
 
 The host feeds the optimizer inputs and calls `optimize()`, which returns either "make these model
@@ -36,39 +38,76 @@ loop:
 ```
 
 A one-round router and a multi-round LLM classifier are the *same* loop; the host's code does not
-change when the algorithm's round count does.
+change when the algorithm's round count does. Most integrators do not write this loop by hand —
+`RoutedClient` drives it for them (see *Client Wrapper*).
 
 ```rust
 #[async_trait]
-pub trait Optimizer<D>: Send + Sync {
-    async fn feed(&mut self, input: OptInput, enrichment: EnrichmentData) -> Result<(), OptError>;
-    async fn optimize(&mut self) -> Result<Decision<D>, OptError>;
+pub trait AgentApiOptimizer<D>: Send + Sync {
+    async fn feed(&mut self, input: AgentApiOptInput, enrichment: EnrichmentData)
+        -> Result<(), Box<dyn Error>>;
+    async fn optimize(&mut self) -> Result<Decision<D>, Box<dyn Error>>;
 }
 
-pub trait OptAlgorithm<D>: Send + Sync {
-    fn optimizer(&self) -> Box<dyn Optimizer<D>>; // fresh instance per session
+pub trait AgentApiOptAlgorithm<D>: Send + Sync {
+    fn optimizer(&self) -> Box<dyn AgentApiOptimizer<D>>; // fresh instance per session
 }
 ```
 
-`OptAlgorithm` is immutable, shareable config; the `Optimizer` holds the per-session mutable state.
-`D` is the algorithm's typed **decision metadata** (see *Construction* for the config path).
+`AgentApiOptAlgorithm` is immutable, shareable config; the `AgentApiOptimizer` holds the per-session
+mutable state. `D` is the algorithm's typed **decision metadata** (see *Construction* for the config
+path).
+
+## Client Wrapper
+
+`RoutedClient` turns the loop into a **blackbox LLM client**, so most integrators never touch
+`feed`/`optimize`. It is a drop-in for an existing client — one `complete` call in, one response out:
+
+```rust
+impl<D> RoutedClient<D> {
+    pub fn new(algorithm: Box<dyn AgentApiOptAlgorithm<D>>, caller: Box<dyn ModelCaller>) -> Self;
+    pub fn with_http(algorithm: Box<dyn AgentApiOptAlgorithm<D>>, base_url, api_key) -> Self;
+
+    async fn complete(&self, request: AgentApiRequest) -> Result<AgentApiResponse, Box<dyn Error>>;
+    async fn complete_with(&self, request, enrichment) -> Result<AgentApiResponse, Box<dyn Error>>;
+}
+```
+
+Each `complete` mints a fresh optimizer, feeds the request, and drives the loop to `Return` —
+performing every model call the optimizer asks for and feeding the results back. Single- and
+multi-round algorithms are indistinguishable to the caller: the classifier's internal classifier
+call is just another call the client makes and consumes, and the routed response is what comes back.
+
+The one piece of I/O `libsy` does not own is the model call itself, expressed as a trait:
+
+```rust
+#[async_trait]
+pub trait ModelCaller: Send + Sync {
+    async fn call(&self, request: AgentApiRequest) -> Result<AgentApiResponse, Box<dyn Error>>;
+}
+```
+
+Integrators implement `ModelCaller` over their own transport. `HttpCaller` is the built-in default —
+it POSTs to `{base_url}/chat/completions` on any OpenAI-compatible endpoint, and `with_http` wires it
+in one line. This keeps the transport-agnostic core intact: the default is a convenience, not
+something the algorithms depend on.
 
 ## Data Model
 
 Neutral request/response — the host converts to/from provider wire types at the edge:
 
 ```rust
-pub struct AgentRequest  { pub prompt: String, pub model: String }  // +params/tools later
-pub struct AgentResponse { pub completion: String }                 // +token usage, latency later
+pub struct AgentApiRequest  { pub prompt: String, pub model: String }  // +params/tools later
+pub struct AgentApiResponse { pub completion: String }                 // +token usage, latency later
 ```
 
 Inputs are a tagged union, so optimization is driven by more than the request — responses **and**
 events from the agentic stack:
 
 ```rust
-pub enum OptInput {
-    Request(AgentRequest),
-    Response(AgentResponse),
+pub enum AgentApiOptInput {
+    Request(AgentApiRequest),
+    Response(AgentApiResponse),         // design intent; see POC Gaps for the current shape
     Signal(Signal),                     // tool/task/plan/budget/telemetry events
     Metadata(BTreeMap<String, String>),
 }
@@ -85,10 +124,10 @@ pub enum Signal {                       // open, versioned; algorithms opt in, i
 A decision names the calls to make plus its own explanation:
 
 ```rust
-pub enum Decision<D> { ModelInference(OptimizerResponse<D>), Return }
+pub enum Decision<D> { ModelInference(AgentApiOptimizerResponse<D>), Return }
 
-pub struct OptimizerResponse<D> {
-    pub requests: Vec<AgentRequest>,
+pub struct AgentApiOptimizerResponse<D> {
+    pub requests: Vec<AgentApiRequest>,
     pub enrichment_data: Vec<EnrichmentData>,
     pub decision_reasoning: Option<String>,   // human-readable "why" (traces)
     pub decision_info: Option<D>,             // structured "why" (metrics, eval)
@@ -109,7 +148,7 @@ pub struct EnrichmentData {
 
 ## Algorithms Are Traits
 
-Implement `OptAlgorithm` + `Optimizer`; no base class, no framework. Reference impls:
+Implement `AgentApiOptAlgorithm` + `AgentApiOptimizer`; no base class, no framework. Reference impls:
 
 - **`RandomRouterAlgorithm`** (`rand.rs`) — weighted random over N targets. One round: draw a target,
   rewrite `model`, return; after the response is fed, `Return`.
@@ -135,7 +174,7 @@ Production and research/benchmarking need the same data, so it is a core feature
 - `optimize()` and each host model call are **spans**, tagged with the correlation set + algorithm
   name + round.
 - Metrics on those spans: **token counts, timings, failures**, decisions by model/tier. Token usage
-  is a fed input (on `AgentResponse`/`Budget`), not a guess.
+  is a fed input (on `AgentApiResponse`/`Budget`), not a guess.
 - `decision_reasoning`/`decision_info` are recorded per decision: an explanation in production, the
   dataset in research (win-rate / cost / latency deltas). Shadow and A/B modes fall out of the loop
   directly; a benchmark is a batch of recorded sessions.
@@ -144,33 +183,38 @@ Production and research/benchmarking need the same data, so it is a core feature
 
 ## Construction
 
-Two entry points:
+Two entry points to select an algorithm:
 
-- **Direct** — instantiate a concrete algorithm; you get typed decision metadata.
-  `RandomRouterAlgorithm { models, rng_seed }.optimizer()`.
-- **Config** — `SwitchyardOptimizer::from_config(cfg, registry)` (aliased `SwitchyardRouter`) selects
-  a named algorithm from a builder registry. Because the registry is heterogeneous, the config path
-  standardizes decision metadata to a **serializable structured value** instead of the concrete `D`;
-  the observability contract is preserved either way. That erasure is the one cost of the config
-  path.
+- **Direct** (built) — instantiate a concrete algorithm; you get typed decision metadata.
+  `RandomRouterAlgorithm { models, rng_seed }.optimizer()`. Wrap it in a `RoutedClient` (see *Client
+  Wrapper*) for a client-style API.
+- **Config** (future) — `SwitchyardOptimizer::from_config(cfg, registry)` (aliased `SwitchyardRouter`)
+  selects a named algorithm from a builder registry. Because the registry is heterogeneous, the
+  config path standardizes decision metadata to a **serializable structured value** instead of the
+  concrete `D`; the observability contract is preserved either way. That erasure is the one cost of
+  the config path.
 
-Errors are typed (`OptError`), so illegal sequences (optimize-before-feed, out-of-phase response)
-are matchable, not panics. Routing fails **open**: when a decision can't be made safely (e.g. an
-unparseable classifier score) the algorithm keeps traffic on a safe tier and records why.
+Errors are returned as `Box<dyn Error>` today (a typed `OptError` is a future cleanup), so illegal
+sequences (optimize-before-feed, out-of-phase response) surface as errors, not panics. Routing fails
+**open**: when a decision can't be made safely (e.g. an unparseable classifier score) the algorithm
+keeps traffic on a safe tier and records why.
 
 ## POC Gaps
 
 The code in `src/` diverges from this design in known ways:
 
-- **Naming is mid-rename and does not compile:** `lib.rs` renamed the request type to
-  `AgentApitRequest` (typo) / `AgentApiResponse` while `rand.rs`/`llm_class.rs` still use
-  `ChatRequest`, and `EnrichementData` is misspelled. Reconciling to the canonical names above is
-  the first cleanup.
-- **`OptInput` has no `Signal` variant** (only Request/Response/Metadata), and `EnrichmentData` lacks
-  `tool_id` — these realize the event-driven and tool-correlation requirements.
-- **No observability layer** and **no config construction** (`SwitchyardOptimizer`/`SwitchyardRouter`,
-  registry, metadata erasure) yet; `decision_reasoning`/`decision_info` are the hook they build on.
-- Request is single-prompt; a message model, params, and tool schema are open questions.
+- **`AgentApiOptInput` has no `Signal` variant** (only Request/Response/Metadata), so event/
+  signal-driven optimization is designed but not yet wired. Its `Response` variant also currently
+  carries a request-shaped struct (completion in `prompt`) rather than `AgentApiResponse` — a rough
+  edge the client wrapper works around when feeding responses back.
+- **`EnrichmentData` lacks `tool_id`** — the tool-correlation dimension shown above is proposed, not
+  built.
+- **No observability layer** (spans, the metrics sink, token/timing/failure tagging) —
+  `decision_reasoning`/`decision_info` are the hook it will build on, and they already exist.
+- **No config-driven construction** — `RoutedClient` covers the direct/blackbox path, but
+  `SwitchyardOptimizer`/`SwitchyardRouter`, the builder registry, and decision-metadata erasure do
+  not exist yet.
+- **Errors are `Box<dyn Error>`**, not the typed `OptError` the design calls for.
+- **Requests are single-prompt** — a message model, params, and tool schema are open questions.
 
-Keep this section accurate; delete the naming note once the rename lands. Update the sketches here if
-the traits in `src/` change.
+Keep this section accurate. Update the sketches above if the traits in `src/` change.
