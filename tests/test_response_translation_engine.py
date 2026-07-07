@@ -351,3 +351,75 @@ class TestStreamOpenAIToAnthropicUsage:
         assert signature_delta["delta"]["signature"] == ""
         RawContentBlockStartEvent.model_validate(thinking_start)
         RawContentBlockDeltaEvent.model_validate(signature_delta)
+
+
+# ---------------------------------------------------------------------------
+# Raw SSE frame parsing for cross-format stream translation (SWITCH-883)
+# ---------------------------------------------------------------------------
+
+
+class TestSseFramePayloads:
+    """``sse_frame_payloads`` feeds verbatim-passthrough frame strings back
+    into the translator; the SSE grammar corners must parse correctly."""
+
+    def test_single_frame_with_event_name(self):
+        from switchyard_rust.translation import sse_frame_payloads
+
+        payloads = sse_frame_payloads(
+            'event: response.created\ndata: {"type":"response.created"}\n\n'
+        )
+        assert payloads == [{"type": "response.created"}]
+
+    def test_multi_data_lines_join_with_newline(self):
+        from switchyard_rust.translation import sse_frame_payloads
+
+        payloads = sse_frame_payloads('data: {"a":\ndata:  1}\n\n')
+        assert payloads == [{"a": 1}]
+
+    def test_comment_done_and_non_json_frames_yield_nothing(self):
+        from switchyard_rust.translation import sse_frame_payloads
+
+        assert sse_frame_payloads(": keep-alive\n\n") == []
+        assert sse_frame_payloads("data: [DONE]\n\n") == []
+        assert sse_frame_payloads("data: not-json\n\n") == []
+
+    def test_multiple_frames_in_one_string_parse_in_order(self):
+        from switchyard_rust.translation import sse_frame_payloads
+
+        payloads = sse_frame_payloads('data: {"a":1}\n\ndata: {"b":2}\n\n')
+        assert payloads == [{"a": 1}, {"b": 2}]
+
+
+async def test_translate_stream_accepts_raw_sse_frame_strings():
+    """Cross-format translation parses raw Responses frames into chat chunks."""
+
+    async def _frames() -> AsyncIterator[str]:
+        yield (
+            'event: response.created\n'
+            'data: {"type":"response.created","response":{"id":"r1","model":"m"}}\n\n'
+        )
+        yield (
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"hello"}\n\n'
+        )
+        yield ": keep-alive\n\n"
+        yield (
+            'event: response.completed\n'
+            'data: {"type":"response.completed","response":{"id":"r1","usage":'
+            '{"input_tokens":1,"output_tokens":1}}}\n\n'
+        )
+
+    chunks = [
+        chunk
+        async for chunk in E.translate_stream(
+            "openai_responses", "openai_chat", _frames(), model="m",
+        )
+    ]
+
+    deltas = [
+        choice.get("delta", {}).get("content")
+        for chunk in chunks
+        if isinstance(chunk, dict)
+        for choice in chunk.get("choices", [])
+    ]
+    assert "hello" in deltas

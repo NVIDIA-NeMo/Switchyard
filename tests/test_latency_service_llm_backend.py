@@ -28,7 +28,12 @@ from switchyard.lib.config.latency_service_backend_config import (
     LatencyServiceBackendConfig,
     LatencyServiceEndpoint,
 )
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.proxy_context import (
+    CTX_ERROR_SOURCE,
+    CTX_UPSTREAM_HTTP_STATUS,
+    CTX_UPSTREAM_MODEL,
+    ProxyContext,
+)
 from switchyard.lib.switchyard import Switchyard
 from switchyard.server.switchyard_app import build_switchyard_app
 from switchyard_rust.core import (
@@ -783,6 +788,37 @@ class TestCall:
         assert "messages" not in call_kwargs
         assert ctx.selected_model == "model-A"
 
+    async def test_responses_endpoint_preserves_exact_upstream_body(self):
+        """Same-format Responses passthrough returns the upstream JSON untouched.
+
+        Provider-specific extras and explicit-null fields must survive the
+        wrap into ``ChatResponse`` (SWITCH-883) — nothing may be normalized,
+        re-synthesized, or dropped on this path.
+        """
+        upstream_body = {
+            "id": "resp-raw",
+            "object": "response",
+            "created_at": 1719890000,
+            "model": "model-A",
+            "status": "completed",
+            "output": [],
+            "store": False,
+            "temperature": 1.0,
+            "top_p": 0.9,
+            "previous_response_id": None,
+            "provider_meta": {"region": "eastus"},
+        }
+        backend = _make_backend(_config("model-A", request_type="openai_responses"))
+        backend._clients["model-A"].aresponses = AsyncMock(return_value=dict(upstream_body))
+
+        result = await backend.call(
+            ProxyContext(),
+            ChatRequest.openai_responses({"model": "incoming-model", "input": "hi"}),
+        )
+
+        assert response_type_matches(result, ChatResponseType.OPENAI_RESPONSES_COMPLETION)
+        assert result.body == upstream_body
+
     async def test_chat_endpoint_translates_responses_to_chat_fallback(self):
         backend = _make_backend(_config("model-A"))
         backend._clients["model-A"].acompletion = AsyncMock(
@@ -1433,6 +1469,76 @@ class TestPerModelUpstreamMetrics:
         out = "\n".join(backend._render_prometheus_lines())
 
         assert "switchyard_latency_upstream_attempts_total" not in out
+
+
+# ---------------------------------------------------------------------------
+# Failure-source annotation (SWITCH-882)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorSourceAnnotation:
+    """The backend stamps the failure origin + upstream model on ctx."""
+
+    async def test_http_failure_stamps_provider_source_and_upstream_model(self):
+        backend = _make_backend(_config("model-A"))
+        _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
+        backend._clients["model-A"].acompletion = AsyncMock(
+            side_effect=_api_status_error(401)
+        )
+
+        ctx = ProxyContext()
+        with pytest.raises(openai.APIStatusError):
+            await backend.call(ctx, _openai_request())
+
+        assert ctx.metadata[CTX_ERROR_SOURCE] == "provider"
+        assert ctx.metadata[CTX_UPSTREAM_MODEL] == "model-A"
+        assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
+
+    async def test_network_failure_stamps_provider_without_status(self):
+        """A status-less upstream fault is still provider-originated, so the
+        endpoint's 500 envelope can say so instead of implying an internal bug."""
+        backend = _make_backend(_config("model-A"))
+        _set_health(backend, {"model-A": EndpointHealthStatus.HEALTHY})
+        backend._clients["model-A"].acompletion = AsyncMock(
+            side_effect=RuntimeError("connection reset")
+        )
+
+        ctx = ProxyContext()
+        with pytest.raises(RuntimeError):
+            await backend.call(ctx, _openai_request())
+
+        assert ctx.metadata[CTX_ERROR_SOURCE] == "provider"
+        assert ctx.metadata[CTX_UPSTREAM_MODEL] == "model-A"
+        assert CTX_UPSTREAM_HTTP_STATUS not in ctx.metadata
+
+    async def test_caller_required_rejection_is_switchyard_source(self):
+        """The caller_required 401 rides the upstream-status channel but is
+        Switchyard's own rejection — the source label must say so."""
+        backend = _make_backend(
+            _config("model-A", credential_policy="caller_required")
+        )
+
+        ctx = ProxyContext()
+        with pytest.raises(PermissionError):
+            await backend.call(ctx, _openai_request())
+
+        assert ctx.metadata[CTX_ERROR_SOURCE] == "switchyard"
+        assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
+        assert CTX_UPSTREAM_MODEL not in ctx.metadata
+
+    def test_translation_rejection_is_switchyard_source(self):
+        """The translation invalid-value 400 is likewise Switchyard-originated."""
+        from switchyard.lib.backends.latency_service_llm_backend import (
+            _stash_invalid_request_error,
+        )
+
+        ctx = ProxyContext()
+        _stash_invalid_request_error(
+            ctx, ValueError("InvalidValue: unsupported message role 'api'")
+        )
+
+        assert ctx.metadata[CTX_ERROR_SOURCE] == "switchyard"
+        assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 400
 
 
 # ---------------------------------------------------------------------------

@@ -50,27 +50,36 @@ def log_upstream_attempt_failure(
     attempt: int,
     status_code: int | None,
     error: BaseException,
+    upstream_model: str | None = None,
 ) -> None:
     """Emit one structured JSON record for a single failed upstream attempt.
 
     ``status_code`` is the raw upstream HTTP status, or ``None`` for a
     non-HTTP failure (network error, pre-status timeout) — recorded as
     ``status_code: null`` with ``code="none"``. ``attempt`` is 1-based.
+    ``upstream_model`` is the model actually sent upstream (``body["model"]``)
+    when the caller knows it; ``model`` remains the internal route/endpoint id.
 
     ``code`` and ``outcome`` mirror the labels on
     ``switchyard_upstream_attempts_total`` so the event log is joinable to
-    the aggregate counter. The record is logged at WARNING.
+    the aggregate counter. ``error_source`` is always ``provider`` — this
+    event exists only for failures of actual upstream attempts. The record
+    is logged at WARNING.
     """
     record = {
         "event": EVENT_NAME,
         "timestamp": datetime.now(UTC).isoformat(),
         "model": model,
+        "upstream_model": upstream_model,
         "attempt": attempt,
         "status_code": status_code,
         "code": code_label(status_code),
         # None (non-HTTP failure) is a retryable_error, matching how
         # record_upstream_attempt buckets it.
         "outcome": "retryable_error" if status_code is None else classify(status_code),
+        # Attempt failures are upstream-side by definition; the constant field
+        # keeps the event joinable to the response-header/span vocabulary.
+        "error_source": "provider",
         "error_type": type(error).__name__,
         "error": str(error)[:_MAX_ERROR_CHARS],
     }

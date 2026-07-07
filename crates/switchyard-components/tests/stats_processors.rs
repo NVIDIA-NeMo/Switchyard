@@ -448,6 +448,47 @@ async fn streaming_response_is_forwarded_and_records_nested_responses_usage() ->
     Ok(())
 }
 
+// Raw SSE frame strings (verbatim Responses passthrough) still record usage.
+#[tokio::test]
+async fn raw_sse_frame_responses_stream_passes_through_and_records_usage() -> Result<()> {
+    let accumulator = StatsAccumulator::new();
+    let processor = StatsResponseProcessor::new(accumulator.clone());
+    let mut ctx = ProxyContext::new();
+    record_backend_selection(&mut ctx, ModelId::new("raw-frame-model")?);
+    ctx.insert(StatsRequestStart::now());
+
+    let events = vec![
+        StreamEvent::Text(
+            "event: response.output_text.delta\n\
+             data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+                .to_string(),
+        ),
+        StreamEvent::Text(": keep-alive\n\n".to_string()),
+        StreamEvent::Text(
+            "event: response.completed\n\
+             data: {\"type\":\"response.completed\",\"response\":{\"usage\":\
+             {\"input_tokens\":8,\"output_tokens\":13,\
+             \"input_tokens_details\":{\"cached_tokens\":5}}}}\n\n"
+                .to_string(),
+        ),
+    ];
+    let stream_events = events.clone();
+    let stream = futures_util::stream::iter(stream_events.into_iter().map(Ok));
+    let response = ChatResponse::OpenAiResponsesStream(Box::pin(stream));
+
+    let processed = processor.process(&mut ctx, response).await?;
+    let drained = drain_responses_stream(processed).await?;
+
+    // Frames pass through byte-identical; usage still lands in the snapshot.
+    assert_eq!(drained, events);
+    let snapshot = accumulator.snapshot()?;
+    let model = model_stats(&snapshot, "raw-frame-model")?;
+    assert_eq!(model.prompt_tokens, 8);
+    assert_eq!(model.completion_tokens, 13);
+    assert_eq!(model.cached_tokens, 5);
+    Ok(())
+}
+
 // OpenAI streams should record the first real usage block only.
 #[tokio::test]
 async fn openai_chat_stream_records_first_usage_chunk_only_with_details() -> Result<()> {

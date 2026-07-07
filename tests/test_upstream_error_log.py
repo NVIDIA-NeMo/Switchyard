@@ -51,15 +51,20 @@ class TestRecordShape:
             "event",
             "timestamp",
             "model",
+            "upstream_model",
             "attempt",
             "status_code",
             "code",
             "outcome",
+            "error_source",
             "error_type",
             "error",
         }
         assert rec["event"] == EVENT_NAME == "upstream_attempt_failed"
         assert rec["model"] == "m"
+        # No upstream_model supplied → logged as null; source is constant.
+        assert rec["upstream_model"] is None
+        assert rec["error_source"] == "provider"
         assert rec["attempt"] == 1
         assert rec["error_type"] == "RuntimeError"
         assert rec["error"] == "boom"

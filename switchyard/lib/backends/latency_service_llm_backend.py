@@ -44,9 +44,13 @@ from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.prometheus_exposition import format_number, render_labels
 from switchyard.lib.proxy_context import (
     CTX_CALLER_API_KEY,
+    CTX_ERROR_SOURCE,
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
     CTX_UPSTREAM_HTTP_BODY,
     CTX_UPSTREAM_HTTP_STATUS,
+    CTX_UPSTREAM_MODEL,
+    ERROR_SOURCE_PROVIDER,
+    ERROR_SOURCE_SWITCHYARD,
     ProxyContext,
 )
 from switchyard.lib.roles import LLMBackend
@@ -362,6 +366,10 @@ class LatencyServiceLLMBackend(LLMBackend):
         pinned_endpoint = self._affinity.pinned(ctx, request)
 
         last_exc: Exception | None = None
+        # Upstream model of the last failed attempt, surfaced on the error
+        # envelope/span/log so operators can tell *which* endpoint the
+        # provider-originated failure came from.
+        last_upstream_model: str | None = None
         tried: set[str] = set()
         api_key_override = self._api_key_override_for_policy(
             ctx.metadata.get(CTX_CALLER_API_KEY)
@@ -437,6 +445,8 @@ class LatencyServiceLLMBackend(LLMBackend):
                         "switchyard.outcome": outcome_metrics.classify(exc.status_code),
                         "switchyard.upstream_status_code": exc.status_code,
                         "switchyard.error_code": outcome_metrics.code_label(exc.status_code),
+                        "switchyard.error_source": ERROR_SOURCE_PROVIDER,
+                        "switchyard.upstream_model": upstream_model,
                     })
                     if self._stats is not None:
                         await self._stats.record_error(model_id)
@@ -454,8 +464,10 @@ class LatencyServiceLLMBackend(LLMBackend):
                         attempt=attempt + 1,
                         status_code=exc.status_code,
                         error=exc,
+                        upstream_model=upstream_model,
                     )
                     last_exc = exc
+                    last_upstream_model = upstream_model
                     # A client error (4xx other than 408/429) is deterministic —
                     # replicas reject the same payload identically — so fail fast
                     # instead of burning attempts; the post-loop passthrough
@@ -467,6 +479,8 @@ class LatencyServiceLLMBackend(LLMBackend):
                     set_tags(attempt_span, {
                         "switchyard.outcome": "retryable_error",
                         "switchyard.error_code": outcome_metrics.NO_STATUS_CODE,
+                        "switchyard.error_source": ERROR_SOURCE_PROVIDER,
+                        "switchyard.upstream_model": upstream_model,
                     })
                     if self._stats is not None:
                         await self._stats.record_error(model_id)
@@ -487,8 +501,10 @@ class LatencyServiceLLMBackend(LLMBackend):
                         attempt=attempt + 1,
                         status_code=None,
                         error=exc,
+                        upstream_model=upstream_model,
                     )
                     last_exc = exc
+                    last_upstream_model = upstream_model
                     continue
 
                 backend_latency_ms = (time.monotonic() - started_at) * 1000.0
@@ -540,6 +556,15 @@ class LatencyServiceLLMBackend(LLMBackend):
             upstream_body = _extract_upstream_body(last_exc)
             if upstream_body is not None:
                 ctx.metadata[CTX_UPSTREAM_HTTP_BODY] = upstream_body
+
+        # Failure-origin annotation for the client-facing error envelope:
+        # every exhausted attempt failed at a selected upstream, so what the
+        # endpoint surfaces — the HTTP passthrough above, or the 500 for
+        # status-less network failures — is provider-originated. (The stash
+        # helpers below mark Switchyard-originated rejections instead.)
+        ctx.metadata[CTX_ERROR_SOURCE] = ERROR_SOURCE_PROVIDER
+        if last_upstream_model is not None:
+            ctx.metadata[CTX_UPSTREAM_MODEL] = last_upstream_model
 
         raise last_exc  # type: ignore[misc]
 
@@ -791,7 +816,10 @@ def _chat_response_for_request_type(
     result: object,
 ) -> ChatResponse:
     if request_type == ChatRequestType.OPENAI_RESPONSES:
-        if isinstance(result, AsyncStream):
+        # Streaming yields raw SSE frame strings (``RawSSEFrameStream``) so the
+        # upstream events pass through verbatim; anything async-iterable is a
+        # stream, a plain mapping is the exact non-streaming JSON body.
+        if isinstance(result, AsyncStream) or hasattr(result, "__aiter__"):
             return ChatResponse.openai_responses_stream(ResponsesApiStream(result))
         return ChatResponse.openai_responses_completion(result)
     if isinstance(result, AsyncStream):
@@ -855,6 +883,9 @@ def _stash_invalid_request_error(ctx: ProxyContext, error: Exception) -> None:
             "code": "invalid_value",
         }
     }
+    # This 400 rides the upstream-status channel but is Switchyard's own
+    # translation rejection — label it so the error-source header is truthful.
+    ctx.metadata[CTX_ERROR_SOURCE] = ERROR_SOURCE_SWITCHYARD
 
 
 def _reject_missing_caller_api_key(ctx: ProxyContext) -> None:
@@ -875,6 +906,9 @@ def _reject_missing_caller_api_key(ctx: ProxyContext) -> None:
             "code": "missing_caller_api_key",
         }
     }
+    # Rides the upstream-status channel but no upstream was contacted — this
+    # is Switchyard's own credential-policy rejection.
+    ctx.metadata[CTX_ERROR_SOURCE] = ERROR_SOURCE_SWITCHYARD
     raise PermissionError("caller_required policy: missing caller API key")
 
 

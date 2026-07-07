@@ -66,9 +66,33 @@ CTX_UPSTREAM_HTTP_BODY = "_upstream_http_body"
 #: loop — those rely on the endpoint fallback.
 CTX_UPSTREAM_ATTEMPTS_RECORDED = "_upstream_attempts_recorded"
 
+#: Which layer originated the failure being surfaced to the client:
+#: ``"provider"`` for an upstream LLM failure passed through, ``"switchyard"``
+#: for an error this proxy synthesized (credential rejection, translation
+#: rejection, routing failure). Written by backends on the error path; read by
+#: the endpoint layer to stamp the ``x-switchyard-error-source`` response
+#: header. Unset means the endpoint's per-path default applies (``provider``
+#: for a stashed upstream status, ``switchyard`` for synthesized envelopes).
+CTX_ERROR_SOURCE = "_error_source"
+
+#: :data:`CTX_ERROR_SOURCE` value for errors Switchyard itself originated.
+#: Defined here (not in the endpoints layer) so backends can stamp it without
+#: importing FastAPI-dependent modules.
+ERROR_SOURCE_SWITCHYARD = "switchyard"
+
+#: :data:`CTX_ERROR_SOURCE` value for upstream provider failures passed through.
+ERROR_SOURCE_PROVIDER = "provider"
+
+#: Upstream model actually attempted when the surfaced failure happened, when
+#: a routing selection took place. Written alongside
+#: :data:`CTX_ERROR_SOURCE`; read by the endpoint layer to stamp the
+#: ``x-switchyard-upstream-model`` response header.
+CTX_UPSTREAM_MODEL = "_upstream_model"
+
 
 __all__ = [
     "CTX_CALLER_API_KEY",
+    "CTX_ERROR_SOURCE",
     "CTX_ORIGINAL_FORMAT",
     "CTX_ORIGINAL_MODEL",
     "CTX_ORIGINAL_REQUEST",
@@ -78,5 +102,8 @@ __all__ = [
     "CTX_UPSTREAM_ATTEMPTS_RECORDED",
     "CTX_UPSTREAM_HTTP_BODY",
     "CTX_UPSTREAM_HTTP_STATUS",
+    "CTX_UPSTREAM_MODEL",
+    "ERROR_SOURCE_PROVIDER",
+    "ERROR_SOURCE_SWITCHYARD",
     "ProxyContext",
 ]

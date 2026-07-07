@@ -10,7 +10,22 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from switchyard.lib.proxy_context import ERROR_SOURCE_PROVIDER, ERROR_SOURCE_SWITCHYARD
+
 _DEFAULT_UPSTREAM_MESSAGE = "upstream returned HTTP {status}"
+
+#: Response header naming the layer that originated the error: ``switchyard``
+#: (this proxy rejected or failed the request itself) or ``provider`` (an
+#: upstream LLM failure passed through). Layers above Switchyard (e.g. a
+#: LiteLLM front proxy) are expected to tag their own failures the same way
+#: and propagate this header from below — Switchyard cannot see them. The
+#: values live in :mod:`switchyard.lib.proxy_context` so FastAPI-free backend
+#: code can stamp them.
+ERROR_SOURCE_HEADER = "x-switchyard-error-source"
+
+#: Response header carrying the upstream model actually attempted when the
+#: surfaced failure happened, when a routing selection took place.
+UPSTREAM_MODEL_HEADER = "x-switchyard-upstream-model"
 
 
 def error_payload(
@@ -38,19 +53,43 @@ def error_response(
     error_type: str,
     code: str,
     extra: Mapping[str, object] | None = None,
+    error_source: str | None = ERROR_SOURCE_SWITCHYARD,
+    upstream_model: str | None = None,
 ) -> JSONResponse:
-    """Build a JSONResponse with Switchyard's normalized error envelope."""
+    """Build a JSONResponse with Switchyard's normalized error envelope.
+
+    Stamps the failure-source headers: every direct caller synthesizes a
+    Switchyard-originated envelope, so ``error_source`` defaults to
+    ``switchyard``; the upstream passthrough path overrides it with
+    ``provider``. Headers rather than body fields keep the passthrough
+    contract intact — provider error bodies flow through unmodified.
+    """
+    headers: dict[str, str] = {}
+    if error_source:
+        headers[ERROR_SOURCE_HEADER] = error_source
+    if upstream_model:
+        headers[UPSTREAM_MODEL_HEADER] = upstream_model
     return JSONResponse(
         status_code=status_code,
         content=error_payload(message, error_type=error_type, code=code, extra=extra),
+        headers=headers or None,
     )
 
 
 def upstream_error_response(
     status_code: int,
     body: object,
+    *,
+    error_source: str = ERROR_SOURCE_PROVIDER,
+    upstream_model: str | None = None,
 ) -> JSONResponse:
-    """Normalize an upstream provider error body into Switchyard's envelope."""
+    """Normalize an upstream provider error body into Switchyard's envelope.
+
+    ``error_source`` defaults to ``provider`` — this path renders upstream
+    failures — but a backend that deliberately routes its own rejection
+    through the upstream-status stash (e.g. the ``caller_required`` 401)
+    overrides it back to ``switchyard`` via ``ctx``.
+    """
     parsed = _upstream_error_fields(status_code, body)
     return error_response(
         status_code,
@@ -58,6 +97,8 @@ def upstream_error_response(
         error_type=parsed.error_type,
         code=parsed.code,
         extra=parsed.extra,
+        error_source=error_source,
+        upstream_model=upstream_model,
     )
 
 

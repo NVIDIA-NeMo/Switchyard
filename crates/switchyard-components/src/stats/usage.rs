@@ -47,14 +47,52 @@ pub fn openai_chat_usage_from_stream_event(event: &StreamEvent) -> Option<TokenU
 }
 
 /// Extracts OpenAI Responses streaming usage from an event.
+///
+/// Fidelity-preserving backends yield raw SSE frame *strings*
+/// (`StreamEvent::Text`) instead of decoded JSON events; those frames are
+/// parsed here so usage accounting survives verbatim passthrough.
 pub fn openai_responses_usage_from_stream_event(event: &StreamEvent) -> Option<TokenUsage> {
-    let StreamEvent::Json(value) = event else {
-        return None;
-    };
+    match event {
+        StreamEvent::Json(value) => usage_from_responses_value(value),
+        StreamEvent::Text(text) => sse_data_payloads(text)
+            .iter()
+            .find_map(usage_from_responses_value),
+    }
+}
+
+/// Reads `response.usage` from one decoded Responses stream event.
+fn usage_from_responses_value(value: &Value) -> Option<TokenUsage> {
     value
         .get("response")
         .and_then(|response| response.get("usage"))
         .and_then(usage_from_candidate)
+}
+
+/// Parses the JSON `data:` payload(s) out of a raw SSE frame string.
+///
+/// Per the SSE contract, a frame's `data:` lines join with newlines to form
+/// one payload; a single leading space after the colon is stripped. Comment
+/// frames, `[DONE]` sentinels, and non-JSON payloads yield nothing.
+fn sse_data_payloads(text: &str) -> Vec<Value> {
+    let mut payloads = Vec::new();
+    for block in text.split("\n\n") {
+        let data_lines: Vec<&str> = block
+            .split('\n')
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(|value| value.strip_prefix(' ').unwrap_or(value))
+            .collect();
+        if data_lines.is_empty() {
+            continue;
+        }
+        let data = data_lines.join("\n");
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(&data) {
+            payloads.push(parsed);
+        }
+    }
+    payloads
 }
 
 /// Accumulates Anthropic streaming usage and commits once at `message_stop`.
