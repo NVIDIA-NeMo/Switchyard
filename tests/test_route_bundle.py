@@ -152,7 +152,8 @@ def test_route_bundle_rejects_missing_environment_variable() -> None:
             },
             "strong_probablity",
         ),
-        ({"type": "passthrough", "model": "gpt-4o"}, "model"),
+        ({"type": "passthrough", "target": "gpt-4o"}, "unsupported route type"),
+        ({"type": "noop"}, "unsupported route type"),
         ({"type": "model", "target": {"modle": "gpt-4o"}}, "modle"),
     ],
 )
@@ -164,11 +165,9 @@ def test_route_bundle_rejects_unknown_route_keys(
         build_route_bundle_table({"routes": {"bad": route}})
 
 
-def test_empty_route_mapping_registers_noop() -> None:
-    table = build_route_bundle_table({"routes": {"noop": {}}})
-
-    assert table.registered_models() == ["noop"]
-    assert table.registered_model_entries()[0]["switchyard"]["profile"] == "noop"
+def test_empty_route_mapping_is_rejected() -> None:
+    with pytest.raises(RouteBundleConfigError, match="recognizable route shape"):
+        build_route_bundle_table({"routes": {"empty": {}}})
 
 
 def test_random_routing_hydrates_tier_and_catalog_models(
@@ -253,86 +252,6 @@ def test_model_route_aliases_under_route_key(
     assert table.default_model() == "configured-route"
 
 
-def test_passthrough_route_hydrates_catalog(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A ``passthrough`` route hydrates the catalog under the route id.
-
-    The route's YAML key becomes the tier's configured model name (passthrough
-    routes don't take an explicit target); catalog entries register alongside.
-    """
-    monkeypatch.setattr(
-        "switchyard.cli.route_bundle.fetch_model_ids",
-        lambda base_url, api_key: ["catalog/x", "catalog/y"],
-    )
-
-    table = build_route_bundle_table({
-        "routes": {
-            "openai-passthrough": {
-                "type": "passthrough",
-                "api_key": "k",
-                "base_url": "https://example/v1",
-            },
-        },
-    })
-
-    assert table.registered_models() == [
-        "openai-passthrough",
-        "catalog/x",
-        "catalog/y",
-    ]
-    assert table.default_model() == "openai-passthrough"
-
-
-def test_route_bundle_keeps_first_passthrough_route_as_default() -> None:
-    """Later discovered-route merges must not override the advertised default."""
-    table = build_route_bundle_table({
-        "routes": {
-            "first-route": {
-                "type": "passthrough",
-                "api_key": "k-first",
-                "base_url": "https://first.example/v1",
-            },
-            "second-route": {
-                "type": "passthrough",
-                "api_key": "k-second",
-                "base_url": "https://second.example/v1",
-            },
-        },
-    })
-
-    assert table.registered_models() == ["first-route", "second-route"]
-    assert table.default_model() == "first-route"
-
-
-def test_passthrough_route_preserves_warning_when_catalog_fetch_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_catalog(_base_url: str, _api_key: str) -> list[str]:
-        raise RuntimeError("catalog timed out")
-
-    monkeypatch.setattr(
-        "switchyard.cli.route_bundle.fetch_model_ids",
-        fail_catalog,
-    )
-
-    table = build_route_bundle_table({
-        "routes": {
-            "configured-route": {
-                "type": "passthrough",
-                "api_key": "k",
-                "base_url": "https://primary.example/v1",
-            },
-        },
-    })
-
-    assert table.registered_models() == ["configured-route"]
-    assert table.default_model() == "configured-route"
-    assert table.model_listing_warnings() == [
-        "Model discovery failed for https://primary.example/v1: catalog timed out"
-    ]
-
-
 def test_random_routing_with_empty_catalog_registers_only_tier_passthroughs() -> None:
     """When discovery yields an empty catalog, only tier passthroughs register.
 
@@ -374,12 +293,12 @@ def test_route_bundle_threads_extra_processors_through_routes() -> None:
     response_processor = _NoopResponseProcessor()
 
     table = build_route_bundle_table(
-        {"routes": {"noop": {"type": "noop"}}},
+        {"routes": {"single-model": {"type": "model", "target": "upstream/model"}}},
         pre_routing_request_processors=[request_processor],
         extra_response_processors=[response_processor],
     )
 
-    components = table.lookup_switchyard("noop").iter_components()
+    components = table.lookup_switchyard("single-model").iter_components()
     assert request_processor in components
     assert response_processor in components
 
@@ -391,7 +310,7 @@ def test_serve_subcommand_hands_table_to_server(
     import switchyard.cli.switchyard_cli as cli
 
     yaml_path = tmp_path / "routes.yaml"
-    yaml_path.write_text("routes:\n  noop:\n    type: noop\n")
+    yaml_path.write_text("routes:\n  single-model:\n    type: model\n    target: upstream/model\n")
     captured: dict[str, Any] = {}
 
     def _fake_serve(
@@ -416,7 +335,7 @@ def test_serve_subcommand_hands_table_to_server(
     args.func(args)
 
     assert isinstance(captured["switchyard"], RouteTable)
-    assert captured["switchyard"].registered_models() == ["noop"]
+    assert captured["switchyard"].registered_models() == ["single-model"]
     assert captured["args"].port == 4555
     assert captured["inbound_default"] == "both"
 
@@ -494,7 +413,7 @@ def test_serve_config_and_routing_profiles_are_mutually_exclusive(
     config_path = tmp_path / "profiles.yaml"
     routes_path = tmp_path / "routes.yaml"
     config_path.write_text("profiles:\n  bench:\n    type: noop\n")
-    routes_path.write_text("routes:\n  bench:\n    type: noop\n")
+    routes_path.write_text("routes:\n  bench:\n    type: model\n    target: upstream/model\n")
 
     args = cli._build_parser().parse_args([
         "--routing-profiles",
@@ -627,7 +546,7 @@ def test_main_warns_when_routing_profiles_flag_is_used(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     yaml_path = tmp_path / "routes.yaml"
-    yaml_path.write_text("routes:\n  noop:\n    type: noop\n")
+    yaml_path.write_text("routes:\n  single-model:\n    type: model\n    target: upstream/model\n")
 
     monkeypatch.setattr(
         sys, "argv", ["switchyard", "--routing-profiles", str(yaml_path), "serve"]
@@ -659,7 +578,7 @@ def test_serve_warns_when_saved_route_bundle_is_used(
     from switchyard.cli.config.user_config import UserConfig, save_user_config
 
     monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-    save_user_config(UserConfig(routing_profiles={"routes": {"noop": {"type": "noop"}}}))
+    save_user_config(UserConfig(routing_profiles={"routes": {"single-model": {"type": "model", "target": "upstream/model"}}}))
 
     def _fake_serve(
         args: argparse.Namespace,
@@ -693,8 +612,9 @@ def test_serve_subcommand_enables_intake_from_cli_args(
     yaml_path = tmp_path / "routes.yaml"
     yaml_path.write_text(
         "routes:\n"
-        "  noop:\n"
-        "    type: noop\n"
+        "  single-model:\n"
+        "    type: model\n"
+        "    target: upstream/model\n"
     )
     captured: dict[str, Any] = {}
 
@@ -722,7 +642,7 @@ def test_serve_subcommand_enables_intake_from_cli_args(
     ])
     args.func(args)
 
-    components = captured["switchyard"].lookup_switchyard("noop").iter_components()
+    components = captured["switchyard"].lookup_switchyard("single-model").iter_components()
     assert any(isinstance(component, IntakeRequestProcessor) for component in components)
     assert any(isinstance(component, IntakeResponseProcessor) for component in components)
 

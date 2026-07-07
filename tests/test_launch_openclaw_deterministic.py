@@ -67,8 +67,9 @@ class TestMutualExclusion:
             "  base_url: https://upstream.invalid/v1\n"
             "  format: openai\n"
             "routes:\n"
-            "  bench:\n"
-            "    type: noop\n"
+            "  single-model:\n"
+            "    type: model\n"
+            "    target: upstream/model\n"
         )
         parser = _build_parser()
         args = parser.parse_args([
@@ -140,7 +141,7 @@ class TestDispatch:
     def test_model_flag_opts_out_of_classifier(
         self, monkeypatch, tmp_path,
     ) -> None:
-        """Passing --model X falls through to single-model passthrough."""
+        """Passing --model X falls through to single-model route."""
         from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_openclaw
 
         parser = _build_parser()

@@ -38,7 +38,7 @@ async def main():
         print("Set it with: export OPENAI_API_KEY='sk-...'")
         return
 
-    # Create a passthrough proxy that forwards to OpenAI
+    # Create a single-model route that forwards to OpenAI
     switchyard = SwitchyardRecipes.passthrough_recipe(
         api_key=api_key,
         base_url="https://api.openai.com/v1",

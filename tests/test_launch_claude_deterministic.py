@@ -141,7 +141,7 @@ class TestDispatch:
     def test_model_flag_opts_out_of_deterministic(
         self, monkeypatch, tmp_path,
     ) -> None:
-        """Passing --model X falls through to single-model passthrough."""
+        """Passing --model X falls through to single-model route."""
         from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
 
         parser = _build_parser()

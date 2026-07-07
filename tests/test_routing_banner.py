@@ -35,18 +35,18 @@ _STAGE_ROUTER_YAML = textwrap.dedent("""\
           model: clf-model/v1
 """)
 
-_PASSTHROUGH_YAML = textwrap.dedent("""\
+_MODEL_YAML = textwrap.dedent("""\
     routes:
       my_route:
-        type: passthrough
-        model: some/model
+        type: model
+        target: some/model
 """)
 
 
 class TestStrategyHelpers:
     def test_passthrough_summary(self):
-        """passthrough_strategy_summary returns 'passthrough → <model>'."""
-        assert passthrough_strategy_summary("my/model") == "passthrough → my/model"
+        """passthrough_strategy_summary returns 'model → <model>'."""
+        assert passthrough_strategy_summary("my/model") == "model → my/model"
 
     def test_routing_profiles_stage_router(self, tmp_path):
         """routing_profiles_strategy_summary describes the default stage_router route."""
@@ -55,12 +55,12 @@ class TestStrategyHelpers:
         result = routing_profiles_strategy_summary(str(p), "my_route")
         assert result == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
 
-    def test_routing_profiles_passthrough_type(self, tmp_path):
-        """routing_profiles_strategy_summary describes a passthrough-type route."""
+    def test_routing_profiles_model_type(self, tmp_path):
+        """routing_profiles_strategy_summary describes a model-type route."""
         p = tmp_path / "profiles.yaml"
-        p.write_text(_PASSTHROUGH_YAML)
+        p.write_text(_MODEL_YAML)
         result = routing_profiles_strategy_summary(str(p), "my_route")
-        assert result == "passthrough → some/model"
+        assert result == "model → some/model"
 
     def test_routing_profiles_fallback_on_missing_file(self):
         """Falls back to default_model when the profiles file cannot be read."""
@@ -137,7 +137,7 @@ def _patch_build_deps(monkeypatch):
 
 class TestCodexRoutingBanner:
     def test_passthrough_banner(self):
-        """launch_codex produces passthrough → <model> for single-model launch."""
+        """launch_codex produces model → <model> for single-model launch."""
         captured: dict = {}
         with _patch_codex_runner(captured):
             launch_codex(
@@ -148,7 +148,7 @@ class TestCodexRoutingBanner:
                 timeout=None,
                 codex_args=[],
             )
-        assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
+        assert _captured_strategy(captured) == "model → nvidia/moonshotai/kimi-k2.6"
 
     def test_routing_profiles_banner(self, tmp_path):
         """launch_codex describes the default route type for routing-profiles launch."""
@@ -176,7 +176,7 @@ class TestCodexRoutingBanner:
 
 class TestOpenclawRoutingBanner:
     def test_passthrough_banner(self):
-        """launch_openclaw produces passthrough → <model> for single-model launch."""
+        """launch_openclaw produces model → <model> for single-model launch."""
         captured: dict = {}
         with _patch_openclaw_runner(captured):
             launch_openclaw(
@@ -187,7 +187,7 @@ class TestOpenclawRoutingBanner:
                 timeout=None,
                 openclaw_args=[],
             )
-        assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
+        assert _captured_strategy(captured) == "model → nvidia/moonshotai/kimi-k2.6"
 
     def test_routing_profiles_banner(self, tmp_path):
         """launch_openclaw describes the default route type for routing-profiles launch."""
@@ -215,7 +215,7 @@ class TestOpenclawRoutingBanner:
 
 class TestClaudeRoutingBanner:
     def test_passthrough_banner(self):
-        """launch_claude produces passthrough → <model> for single-model launch."""
+        """launch_claude produces model → <model> for single-model launch."""
         captured: dict = {}
         with _patch_claude_runner(captured):
             launch_claude(
@@ -226,7 +226,7 @@ class TestClaudeRoutingBanner:
                 timeout=None,
                 claude_args=[],
             )
-        assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
+        assert _captured_strategy(captured) == "model → nvidia/moonshotai/kimi-k2.6"
 
     def test_routing_profiles_banner(self, tmp_path):
         """launch_claude describes the default route type for routing-profiles launch."""

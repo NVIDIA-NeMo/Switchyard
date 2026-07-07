@@ -587,7 +587,7 @@ class TestLaunchOpenclaw:
         def fake_passthrough(**_kwargs):
             raise AssertionError(
                 "no --model should default to the classifier launcher, "
-                "not single-model passthrough",
+                "not single-model route",
             )
 
         def fake_classifier(**_kwargs):

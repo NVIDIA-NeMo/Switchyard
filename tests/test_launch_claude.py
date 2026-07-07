@@ -1049,10 +1049,10 @@ class TestResolveInitialFromProfiles:
     def test_empty_bundle_raises(self, tmp_path):
         from switchyard.cli.launch_command import _resolve_initial_from_profiles
         yaml_path = tmp_path / "empty.yaml"
-        yaml_path.write_text("routes:\n  noop:\n    type: noop\n")
+        yaml_path.write_text("routes:\n  single-model:\n    type: model\n    target: upstream/model\n")
         assert (
             _resolve_initial_from_profiles(target="codex", routing_profiles=str(yaml_path))
-            == "noop"
+            == "single-model"
         )
 
     def test_model_and_profiles_mutually_exclusive(self):

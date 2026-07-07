@@ -71,10 +71,6 @@ profile and target appears on `GET /v1/models`:
 
 ```yaml
 profiles:
-  fast:
-    type: passthrough
-    target: weak
-
   smart:
     type: random-routing
     strong: strong
@@ -82,26 +78,17 @@ profiles:
     strong_probability: 0.3
 ```
 
-Use the profile ID to select policy behavior (`fast` or `smart`) and a target ID
-to bypass routing (`weak` or `strong`).
+Use the profile ID to select policy behavior (`smart`) and a target ID to bypass
+routing (`weak` or `strong`).
 
-## Direct targets and passthrough aliases
+## Direct targets and model routes
 
-For new profile configs, use one public model concept:
+For new profile configs, select a target ID directly when you want to call one
+upstream model without a routing policy. The target ID is already a public model
+ID on `GET /v1/models`.
 
-- Select a target ID directly when its configured name is the client-facing
-  name you want.
-- Add a `type: passthrough` profile only when you need another stable alias for
-  that target, such as `fast` above.
-
-Both choices call the same single target. There is no `type: model` profile in
-the current profile schema.
-
-The deprecated `--routing-profiles` route-bundle format has a separate legacy
-distinction: `type: model` registers one explicit alias without model discovery,
-while `type: passthrough` queries the upstream model catalog and registers the
-discovered models too. That distinction applies only to legacy `routes:`
-bundles used by the launcher compatibility path.
+The deprecated `--routing-profiles` route-bundle format uses `type: model` for
+standalone target aliases.
 
 ## Self-hosted targets
 
@@ -126,15 +113,12 @@ targets:
     model: my-rl-qwen
     format: openai
 
-profiles:
-  fast-local:
-    type: passthrough
-    target: local-weak
 ```
 
-Reference `local-weak` from any routing profile field that accepts a target ID,
-including `strong`, `weak`, `target`, or `targets`. Switchyard does not start or
-manage the model server; it only sends requests to the configured endpoint.
+Clients can select `local-weak` directly as a model ID, or reference it from any
+routing profile field that accepts a target ID, including `strong`, `weak`,
+`target`, or `targets`. Switchyard does not start or manage the model server; it
+only sends requests to the configured endpoint.
 
 ## How session affinity composes
 

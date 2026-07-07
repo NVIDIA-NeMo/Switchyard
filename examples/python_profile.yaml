@@ -10,8 +10,8 @@
 #
 #   switchyard serve --config examples/python_profile.yaml
 #
-# `direct` is a Rust passthrough; `smart` is the shipped Python `header-routing`
-# profile (switchyard/lib/profiles/header_routing.py), which picks a tier from the
+# `smart` is the shipped Python `header-routing` profile
+# (switchyard/lib/profiles/header_routing.py), which picks a tier from the
 # x-switchyard-tier request header and delegates the call to a Rust target
 # backend. Both share the same resolved targets.
 
@@ -31,10 +31,6 @@ targets:
     format: openai
 
 profiles:
-  direct:
-    type: passthrough
-    target: weak
-
   smart:
     type: header-routing
     strong: strong

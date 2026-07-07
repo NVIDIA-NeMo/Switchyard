@@ -220,8 +220,8 @@ def stdin_is_tty() -> bool:
 
 
 def passthrough_strategy_summary(model: str) -> str:
-    """Return the strategy summary string for a single-model passthrough."""
-    return f"passthrough → {model}"
+    """Return the strategy summary string for a single-model route."""
+    return f"model → {model}"
 
 
 def routing_profiles_strategy_summary(routing_profiles: str, default_model: str) -> str:
@@ -277,9 +277,9 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
     if route_type == "random_routing":
         p = r.get("strong_probability", "")
         return f"random-routing: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}, p_strong={p}"
-    if route_type in ("model", "passthrough"):
+    if route_type == "model":
         target = r.get("model") or r.get("target") or route_key
-        return f"passthrough → {target}"
+        return f"model → {target}"
     return f"{route_type}: {route_key}"
 
 
@@ -307,7 +307,7 @@ def _format_strategy_lines(summary: str) -> list[str]:
     """Expand a strategy summary string into one or more banner lines.
 
     ``type: k1=v1, k2=v2`` → type on first line, each k=v pair indented.
-    ``passthrough → model`` → single line (no key=value pairs to split).
+    ``model → target`` → single line (no key=value pairs to split).
     """
     col = "  routing   "  # label column: 2 indent + 7 label + 3 gap = 12 chars
     pad = " " * len(col)

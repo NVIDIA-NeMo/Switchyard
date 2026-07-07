@@ -61,19 +61,16 @@ faster. A tier is a role you hand to a target rather than a fixed property of it
 so the same target can be the strong tier in one profile and the weak tier in
 another.
 
-A profile's `type` sets the strategy. `passthrough` sends everything to one
-target with no routing. `random-routing` splits traffic on a fixed probability.
-`llm-routing` asks a classifier model to pick a tier for each turn. `stage_router`
-escalates from weak to strong when request signals call for it. The
-[Routing Overview](routing_algorithms/overview.md) covers when to use each and
-how to tune it.
+A profile's `type` sets the strategy. `random-routing` splits traffic on a
+fixed probability. `llm-routing` asks a classifier model to pick a tier for each
+turn. `stage_router` escalates from weak to strong when request signals call for
+it. The [Routing Overview](routing_algorithms/overview.md) covers when to use
+each and how to tune it.
 
-!!! warning "There is no `type: model`"
-    The current profile config does not have a `type: model`. To expose a single
-    model, point clients at a target ID directly, or add a `passthrough` profile
-    when you want a second name for it. `type: model` survives only in the
-    deprecated `--routing-profiles` bundles used by the launcher compatibility
-    path.
+!!! note "Single-model routes"
+    In profile configs, target IDs are directly addressable model IDs. In the
+    deprecated `--routing-profiles` route-bundle format, use `type: model` for a
+    standalone target alias.
 
 Session affinity, or sticky routing, pins a conversation to one tier so later
 turns reuse it instead of being classified again. It belongs to `llm-routing`

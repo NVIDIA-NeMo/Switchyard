@@ -51,7 +51,7 @@ single model.
 
 ## Override the default route
 
-Use `--model` for a single-model passthrough session:
+Use `--model` for a single-model route session:
 
 ```bash
 switchyard launch claude --model openai/gpt-4o-mini
@@ -100,8 +100,9 @@ simultaneously.
 2. Switch back to the validated default route. If that works, the issue is
    model-specific.
 
-In passthrough mode, Switchyard forwards the empty response as-is. Multi-target
-routing profiles treat empty completions as errors and surface them explicitly.
+For a single-model route, Switchyard forwards the empty response as-is.
+Multi-target routing profiles treat empty completions as errors and surface them
+explicitly.
 
 ### Claude Code with MCP tools
 
