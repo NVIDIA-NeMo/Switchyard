@@ -16,6 +16,8 @@ pub enum WireFormat {
     AnthropicMessages,
     #[serde(rename = "openai_responses")]
     OpenAiResponses,
+    #[serde(rename = "gemini_generate_content")]
+    GeminiGenerateContent,
 }
 
 impl WireFormat {
@@ -25,6 +27,7 @@ impl WireFormat {
             Self::OpenAiChat => "openai_chat",
             Self::AnthropicMessages => "anthropic_messages",
             Self::OpenAiResponses => "openai_responses",
+            Self::GeminiGenerateContent => "gemini_generate_content",
         }
     }
 }

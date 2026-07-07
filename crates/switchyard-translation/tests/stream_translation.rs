@@ -416,3 +416,132 @@ fn anthropic_thinking_stream_deltas_do_not_become_openai_chat_content() -> TestR
         .any(|event| { event["choices"][0]["delta"]["content"] == "private chain of thought" }));
     Ok(())
 }
+
+// Verifies Gemini chunks translate to OpenAI Chat chunks with tool calls
+// delivered whole and thinking tokens folded into usage.
+#[test]
+fn gemini_stream_translates_to_openai_chat_chunks() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::GeminiGenerateContent, WireFormat::OpenAiChat);
+
+    let text_chunk = json!({
+        "candidates": [{
+            "content": {"parts": [{"text": "Hi"}], "role": "model"},
+            "index": 0
+        }],
+        "modelVersion": "gemini-2.5-flash",
+        "responseId": "resp-1"
+    });
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::GeminiGenerateContent,
+        WireFormat::OpenAiChat,
+        &text_chunk,
+    )?;
+    assert_eq!(events[0]["model"], "gemini-2.5-flash");
+    assert_eq!(events[0]["choices"][0]["delta"]["content"], "Hi");
+
+    let final_chunk = json!({
+        "candidates": [{
+            "content": {
+                "parts": [{"functionCall": {"name": "run", "args": {"cmd": "ls"}}}],
+                "role": "model"
+            },
+            "finishReason": "STOP",
+            "index": 0
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 2,
+            "candidatesTokenCount": 1,
+            "thoughtsTokenCount": 4
+        }
+    });
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::GeminiGenerateContent,
+        WireFormat::OpenAiChat,
+        &final_chunk,
+    )?;
+
+    let tool_delta = &events[0]["choices"][0]["delta"]["tool_calls"][0];
+    assert_eq!(tool_delta["function"]["name"], "run");
+    assert_eq!(tool_delta["function"]["arguments"], "{\"cmd\":\"ls\"}");
+    let terminal = events
+        .last()
+        .ok_or("gemini finish chunk should emit a terminal event")?;
+    // Function calls on the stream override Gemini's STOP finish reason.
+    assert_eq!(terminal["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(terminal["usage"]["completion_tokens"], 5);
+    Ok(())
+}
+
+// Verifies OpenAI streamed tool calls buffer into one terminal Gemini chunk.
+#[test]
+fn openai_chat_stream_translates_to_gemini_terminal_chunk() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::GeminiGenerateContent);
+
+    for chunk in [
+        json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-4o-mini",
+            "choices": [{"index": 0, "delta": {"content": "Hi"}}]
+        }),
+        json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "run", "arguments": "{\"cmd\":"}
+                }]}
+            }]
+        }),
+        json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"arguments": "\"ls\"}"}
+                }]}
+            }]
+        }),
+        json!({
+            "id": "chatcmpl-1",
+            "model": "gpt-4o-mini",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        }),
+    ] {
+        let events = engine.translate_event(
+            &mut state,
+            WireFormat::OpenAiChat,
+            WireFormat::GeminiGenerateContent,
+            &chunk,
+        )?;
+        for event in &events {
+            // Text deltas stream through; tool-call fragments stay buffered.
+            assert!(event.get("candidates").is_some());
+        }
+    }
+
+    let finish = engine.finish_stream(&mut state, WireFormat::GeminiGenerateContent)?;
+    let terminal = finish
+        .last()
+        .ok_or("gemini finish should emit a terminal chunk")?;
+    let candidate = &terminal["candidates"][0];
+    assert_eq!(
+        candidate["content"]["parts"][0]["functionCall"],
+        json!({"name": "run", "args": {"cmd": "ls"}})
+    );
+    assert_eq!(candidate["finishReason"], "STOP");
+    assert_eq!(terminal["usageMetadata"]["promptTokenCount"], 3);
+    Ok(())
+}

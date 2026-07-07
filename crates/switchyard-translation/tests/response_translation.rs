@@ -320,3 +320,120 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
     assert_eq!(output["output"][1]["call_id"], "call_1");
     Ok(())
 }
+
+// Verifies Gemini function-call responses surface as OpenAI tool calls, with
+// thinking tokens folded into completion tokens.
+#[test]
+fn gemini_function_call_response_translates_to_openai_tool_calls() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "candidates": [{
+            "content": {
+                "parts": [{
+                    "functionCall": {"name": "get_weather", "args": {"city": "Paris"}}
+                }],
+                "role": "model"
+            },
+            // Gemini reports STOP even for function-call turns.
+            "finishReason": "STOP",
+            "index": 0
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "thoughtsTokenCount": 7,
+            "totalTokenCount": 22
+        },
+        "modelVersion": "gemini-2.5-flash",
+        "responseId": "resp-1"
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::GeminiGenerateContent,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let choice = &output["choices"][0];
+    assert_eq!(choice["finish_reason"], "tool_calls");
+    assert_eq!(
+        choice["message"]["tool_calls"][0]["function"]["name"],
+        "get_weather"
+    );
+    assert_eq!(output["usage"]["prompt_tokens"], 10);
+    assert_eq!(output["usage"]["completion_tokens"], 12);
+    assert_eq!(output["model"], "gemini-2.5-flash");
+    Ok(())
+}
+
+// Verifies OpenAI completions map onto the Gemini candidates shape.
+#[test]
+fn openai_chat_response_translates_to_gemini_candidates() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-1",
+        "model": "gpt-4o-mini",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello"},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let candidate = &output["candidates"][0];
+    assert_eq!(candidate["content"]["parts"], json!([{"text": "Hello"}]));
+    assert_eq!(candidate["content"]["role"], "model");
+    assert_eq!(candidate["finishReason"], "STOP");
+    assert_eq!(output["usageMetadata"]["promptTokenCount"], 4);
+    assert_eq!(output["usageMetadata"]["candidatesTokenCount"], 2);
+    assert_eq!(output["responseId"], "chatcmpl-1");
+    Ok(())
+}
+
+// Verifies Anthropic tool-use responses map to Gemini function-call parts.
+#[test]
+fn anthropic_tool_use_response_translates_to_gemini_function_call() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-x",
+        "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Paris"}}
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 3, "output_tokens": 2}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let candidate = &output["candidates"][0];
+    assert_eq!(
+        candidate["content"]["parts"][0]["functionCall"],
+        json!({"name": "get_weather", "args": {"city": "Paris"}})
+    );
+    // Gemini reports STOP for tool-call turns.
+    assert_eq!(candidate["finishReason"], "STOP");
+    Ok(())
+}

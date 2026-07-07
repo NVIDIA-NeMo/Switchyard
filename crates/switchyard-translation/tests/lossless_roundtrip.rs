@@ -9,10 +9,11 @@ use switchyard_translation::{
     PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat, PRESERVATION_METADATA_KEY,
 };
 
-const FORMATS: [WireFormat; 3] = [
+const FORMATS: [WireFormat; 4] = [
     WireFormat::OpenAiChat,
     WireFormat::AnthropicMessages,
     WireFormat::OpenAiResponses,
+    WireFormat::GeminiGenerateContent,
 ];
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -283,6 +284,7 @@ fn format_key(format: WireFormat) -> &'static str {
         WireFormat::OpenAiChat => "openai_chat",
         WireFormat::AnthropicMessages => "anthropic_messages",
         WireFormat::OpenAiResponses => "openai_responses",
+        WireFormat::GeminiGenerateContent => "gemini_generate_content",
     }
 }
 
@@ -537,6 +539,85 @@ fn request_fixture(format: WireFormat) -> Value {
             "store": false,
             "truncation": "auto"
         }),
+        WireFormat::GeminiGenerateContent => json!({
+            "model": "gemini-2.5-flash",
+            "stream": true,
+            "systemInstruction": {
+                "parts": [{"text": "Follow exact instructions."}]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "Inspect this payload."},
+                        {
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": "iVBORw0KGgo="
+                            }
+                        },
+                        {
+                            "fileData": {
+                                "mimeType": "video/mp4",
+                                "fileUri": "https://example.test/clip.mp4"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "role": "model",
+                    "parts": [
+                        {"text": "Planning the lookup.", "thought": true},
+                        {
+                            "functionCall": {
+                                "name": "lookup",
+                                "args": {"query": "rust", "limit": 2}
+                            },
+                            "thoughtSignature": "c2lnbmF0dXJl"
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": "lookup",
+                            "response": {"parts": [{"text": "found"}]}
+                        }
+                    }]
+                }
+            ],
+            "tools": [{
+                "functionDeclarations": [{
+                    "name": "lookup",
+                    "description": "Lookup data",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {"query": {"type": "STRING"}},
+                        "required": ["query"]
+                    }
+                }]
+            }],
+            "toolConfig": {
+                "functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["lookup"]}
+            },
+            "generationConfig": {
+                "maxOutputTokens": 888,
+                "temperature": 0.2,
+                "topP": 0.91,
+                "topK": 40,
+                "stopSequences": ["END"],
+                "responseMimeType": "application/json",
+                "responseSchema": {"type": "OBJECT"},
+                "thinkingConfig": {"thinkingBudget": 1024, "includeThoughts": true}
+            },
+            "safetySettings": [{
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_NONE"
+            }],
+            "cachedContent": "cachedContents/example",
+            "labels": {"trace": "gemini-request"}
+        }),
     }
 }
 
@@ -675,6 +756,38 @@ fn response_fixture(format: WireFormat) -> Value {
             "tools": [{"type": "web_search_preview"}],
             "metadata": {"trace": "responses-response", "kept": {"nested": true}},
             "service_tier": "default"
+        }),
+        WireFormat::GeminiGenerateContent => json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "Planning the lookup.", "thought": true},
+                        {"text": "Here is the answer."},
+                        {
+                            "functionCall": {
+                                "name": "lookup",
+                                "args": {"query": "rust"}
+                            },
+                            "thoughtSignature": "c2lnbmF0dXJl"
+                        }
+                    ],
+                    "role": "model"
+                },
+                "finishReason": "STOP",
+                "index": 0,
+                "finishMessage": "Model generated function call(s)."
+            }],
+            "promptFeedback": {"safetyRatings": []},
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "thoughtsTokenCount": 2,
+                "totalTokenCount": 17,
+                "cachedContentTokenCount": 4,
+                "serviceTier": "standard"
+            },
+            "modelVersion": "gemini-2.5-flash",
+            "responseId": "resp_adversarial"
         }),
     }
 }

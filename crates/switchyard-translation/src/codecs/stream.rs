@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::codecs::anthropic::AnthropicMessagesStreamCodec;
+use crate::codecs::gemini::GeminiGenerateContentStreamCodec;
 use crate::codecs::openai_chat::OpenAiChatStreamCodec;
 use crate::codecs::responses::OpenAiResponsesStreamCodec;
 use crate::engine::{FormatRegistry, TranslationEngine};
@@ -57,6 +58,10 @@ pub struct StreamTranslationState {
 
     pub(crate) reasoning_block_index: Option<usize>,
     pub(crate) reasoning_block_started: bool,
+
+    /// Count of tool calls decoded from the source stream, used by decoders
+    /// whose wire format has no per-call index (for example Gemini).
+    pub(crate) source_tool_calls_seen: usize,
 }
 
 // Tracks an in-progress streamed tool call across provider-specific deltas.
@@ -167,6 +172,7 @@ impl StreamCodecRegistry {
         registry.register(OpenAiChatStreamCodec);
         registry.register(AnthropicMessagesStreamCodec);
         registry.register(OpenAiResponsesStreamCodec);
+        registry.register(GeminiGenerateContentStreamCodec);
         registry
     }
 

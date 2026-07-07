@@ -1101,3 +1101,175 @@ fn responses_to_chat_preserves_tool_choice_when_tools_survive() -> TestResult {
     );
     Ok(())
 }
+
+// Verifies OpenAI Chat requests map to Gemini generateContent shape.
+#[test]
+fn openai_chat_request_translates_to_gemini_generate_content() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gemini-2.5-flash",
+        "messages": [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "Weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
+                }]
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "22C"}
+        ],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"city": {"type": "string", "default": "Paris"}},
+                    "required": ["city"]
+                }
+            }
+        }],
+        "tool_choice": "required",
+        "max_tokens": 128,
+        "temperature": 0.3,
+        "stop": ["END"],
+        "stream": true
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["model"], "gemini-2.5-flash");
+    assert_eq!(output["stream"], true);
+    assert_eq!(
+        output["systemInstruction"],
+        json!({"parts": [{"text": "Be terse."}]})
+    );
+    assert_eq!(
+        output["contents"][0],
+        json!({"role": "user", "parts": [{"text": "Weather in Paris?"}]})
+    );
+    assert_eq!(
+        output["contents"][1]["parts"][0]["functionCall"],
+        json!({"name": "get_weather", "args": {"city": "Paris"}})
+    );
+    let function_response = &output["contents"][2]["parts"][0]["functionResponse"];
+    assert_eq!(function_response["name"], "get_weather");
+    assert_eq!(function_response["response"]["parts"][0]["text"], "22C");
+    // The declaration schema is sanitized into Gemini's OpenAPI subset.
+    let parameters = &output["tools"][0]["functionDeclarations"][0]["parameters"];
+    assert_eq!(parameters["type"], "OBJECT");
+    assert_eq!(parameters["properties"]["city"]["type"], "STRING");
+    assert!(parameters["properties"]["city"].get("default").is_none());
+    assert!(parameters.get("additionalProperties").is_none());
+    assert_eq!(output["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+    let generation = &output["generationConfig"];
+    assert_eq!(generation["maxOutputTokens"], 128);
+    assert_eq!(generation["temperature"], 0.3);
+    assert_eq!(generation["stopSequences"], json!(["END"]));
+    Ok(())
+}
+
+// Verifies Gemini requests translate to OpenAI Chat with paired tool-call IDs.
+#[test]
+fn gemini_request_translates_to_openai_chat_with_paired_tool_ids() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gemini-2.5-flash",
+        "systemInstruction": {"parts": [{"text": "Be terse."}]},
+        "contents": [
+            {"role": "user", "parts": [{"text": "Weather?"}]},
+            {"role": "model", "parts": [
+                {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}}
+            ]},
+            {"role": "user", "parts": [
+                {"functionResponse": {"name": "get_weather", "response": {"result": "22C"}}}
+            ]}
+        ],
+        "tools": [{
+            "functionDeclarations": [{
+                "name": "get_weather",
+                "parameters": {"type": "OBJECT", "properties": {"city": {"type": "STRING"}}}
+            }]
+        }],
+        "generationConfig": {"maxOutputTokens": 64, "stopSequences": ["END"]}
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::GeminiGenerateContent,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"][0],
+        json!({"role": "system", "content": "Be terse."})
+    );
+    let call_id = output["messages"][2]["tool_calls"][0]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!call_id.is_empty());
+    assert_eq!(output["messages"][3]["role"], "tool");
+    assert_eq!(
+        output["messages"][3]["tool_call_id"],
+        Value::String(call_id)
+    );
+    // Gemini's uppercase schema types are restored to JSON Schema form.
+    assert_eq!(
+        output["tools"][0]["function"]["parameters"]["properties"]["city"]["type"],
+        "string"
+    );
+    assert_eq!(output["max_completion_tokens"], 64);
+    assert_eq!(output["stop"], json!(["END"]));
+    Ok(())
+}
+
+// Verifies signed thinking blocks replay as Gemini thought signatures.
+#[test]
+fn anthropic_signed_thinking_replays_as_gemini_thought_signature() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gemini-2.5-flash",
+        "max_tokens": 64,
+        "messages": [
+            {"role": "user", "content": "Weather?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "checking", "signature": "sig-1"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}}
+                ]
+            }
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let call_part = &output["contents"][1]["parts"][0];
+    assert_eq!(call_part["functionCall"]["name"], "get_weather");
+    assert_eq!(call_part["thoughtSignature"], "sig-1");
+    Ok(())
+}

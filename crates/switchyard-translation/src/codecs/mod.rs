@@ -5,6 +5,7 @@
 
 pub mod anthropic;
 pub(crate) mod common;
+pub mod gemini;
 pub mod openai_chat;
 pub mod responses;
 pub mod stream;
