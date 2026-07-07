@@ -472,17 +472,17 @@ fn decode_anthropic_content_block(
             content: decode_tool_result_content(block.get("content").unwrap_or(&Value::Null)),
             is_error: block.get("is_error").and_then(Value::as_bool),
         })],
-        Some("image") => {
-            let source = block
-                .get("source")
-                .cloned()
-                .map(ImageSource::Raw)
-                .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone())));
-            vec![ContentBlock::Image { source }]
-        }
+        Some("image") => vec![ContentBlock::Image {
+            source: decode_anthropic_image_source(
+                block.get("source").unwrap_or(&Value::Object(block.clone())),
+            ),
+        }],
         Some("input_image") | Some("image_url") => decode_image_source(block)
             .map(|source| vec![ContentBlock::Image { source }])
             .unwrap_or_default(),
+        Some("document") => vec![ContentBlock::File {
+            source: decode_anthropic_document_source(block.get("source").unwrap_or(&Value::Null)),
+        }],
         Some("input_file") | Some("file") => vec![ContentBlock::File {
             source: decode_file_source(block),
         }],
@@ -493,30 +493,42 @@ fn decode_anthropic_content_block(
     })
 }
 
-// Converts Anthropic tool-result content into text-like IR blocks.
+// Converts Anthropic tool-result content into IR blocks, keeping image
+// attachments typed so target codecs can re-encode them instead of leaking
+// base64 payloads into prompt text.
 fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
     match value {
         Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
         Value::Array(blocks) => {
-            let mut text = Vec::new();
+            let mut content = Vec::new();
             for block in blocks {
-                if let Some(block) = block.as_object() {
-                    if block.get("type").and_then(Value::as_str) == Some("text") {
-                        text.push(
-                            block
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        );
-                    } else {
-                        text.push(json_string(&Value::Object(block.clone())));
-                    }
+                let Some(block) = block.as_object() else {
+                    continue;
+                };
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => content.push(ContentBlock::Text {
+                        text: block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    }),
+                    Some("image") => content.push(ContentBlock::Image {
+                        source: decode_anthropic_image_source(
+                            block.get("source").unwrap_or(&Value::Null),
+                        ),
+                    }),
+                    _ => content.push(ContentBlock::Text {
+                        text: json_string(&Value::Object(block.clone())),
+                    }),
                 }
             }
-            vec![ContentBlock::Text {
-                text: text.join(" "),
-            }]
+            if content.is_empty() {
+                content.push(ContentBlock::Text {
+                    text: String::new(),
+                });
+            }
+            content
         }
         Value::Null => vec![ContentBlock::Text {
             text: String::new(),
@@ -524,6 +536,63 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
         other => vec![ContentBlock::Text {
             text: json_string(other),
         }],
+    }
+}
+
+// Parses an Anthropic image `source` into a typed IR image source so
+// cross-provider encoders can carry the payload; unknown shapes stay raw.
+fn decode_anthropic_image_source(source: &Value) -> ImageSource {
+    let Some(object) = source.as_object() else {
+        return ImageSource::Raw(source.clone());
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("base64") => ImageSource::Base64 {
+            media_type: object
+                .get("media_type")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            data: object
+                .get("data")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("url") => ImageSource::Url {
+            url: object
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            detail: None,
+        },
+        _ => ImageSource::Raw(source.clone()),
+    }
+}
+
+// Parses an Anthropic document `source` into a typed IR file source; only
+// base64 payloads have a cross-provider representation.
+fn decode_anthropic_document_source(source: &Value) -> FileSource {
+    let Some(object) = source.as_object() else {
+        return FileSource::Raw(source.clone());
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("base64") => FileSource::FileData {
+            data: object
+                .get("data")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            filename: object
+                .get("filename")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        },
+        Some("file") => object
+            .get("file_id")
+            .and_then(Value::as_str)
+            .map(|file_id| FileSource::FileId(file_id.to_string()))
+            .unwrap_or_else(|| FileSource::Raw(source.clone())),
+        _ => FileSource::Raw(source.clone()),
     }
 }
 
@@ -736,7 +805,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
         ContentBlock::ToolResult(result) => vec![json!({
             "type": "tool_result",
             "tool_use_id": sanitize_anthropic_tool_use_id(&result.tool_call_id),
-            "content": text_from_blocks(&result.content, " "),
+            "content": anthropic_tool_result_content(&result.content),
         })],
         ContentBlock::Image { source } => vec![match source {
             ImageSource::Url { url, .. } => {
@@ -798,6 +867,42 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
     }
 }
 
+// Tool results stay plain strings for text-only content (the common wire
+// shape) and become block arrays when image attachments must survive.
+fn anthropic_tool_result_content(content: &[ContentBlock]) -> Value {
+    let has_images = content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }));
+    if !has_images {
+        return Value::String(text_from_blocks(content, " "));
+    }
+    let blocks = content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+            ContentBlock::Image { source } => Some(match source {
+                ImageSource::Base64 { media_type, data } => json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type.clone().unwrap_or_else(|| "image/png".to_string()),
+                        "data": data,
+                    },
+                }),
+                ImageSource::Url { url, .. } => {
+                    json!({"type": "image", "source": {"type": "url", "url": url}})
+                }
+                ImageSource::Raw(raw) => json!({"type": "image", "source": raw.clone()}),
+            }),
+            other => {
+                let text = text_from_blocks(std::slice::from_ref(other), " ");
+                (!text.is_empty()).then(|| json!({"type": "text", "text": text}))
+            }
+        })
+        .collect::<Vec<_>>();
+    Value::Array(blocks)
+}
+
 // Anthropic requires `tool_use.input` to be object-shaped, while OpenAI and
 // Responses commonly carry function-call arguments as JSON strings.
 fn anthropic_tool_input(arguments: &Value) -> Value {
@@ -829,11 +934,26 @@ fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
                 json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
-                    "input_schema": tool.parameters,
+                    "input_schema": anthropic_input_schema(&tool.parameters),
                 })
             })
             .collect(),
     )
+}
+
+// Anthropic requires `input_schema.type`; parameterless tools arrive from
+// other providers as empty (or typeless) schemas and default to `object`.
+fn anthropic_input_schema(parameters: &Value) -> Value {
+    match parameters {
+        Value::Object(schema) => {
+            let mut schema = schema.clone();
+            schema
+                .entry("type".to_string())
+                .or_insert_with(|| Value::String("object".to_string()));
+            Value::Object(schema)
+        }
+        _ => json!({"type": "object"}),
+    }
 }
 
 // Encodes normalized tool choice into Anthropic tool-choice JSON.

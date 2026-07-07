@@ -503,38 +503,49 @@ pub(crate) fn decode_openai_content(
 pub(crate) fn decode_image_source(block: &Map<String, Value>) -> Option<ImageSource> {
     if let Some(image_url) = block.get("image_url") {
         if let Some(url) = image_url.as_str() {
-            return Some(ImageSource::Url {
-                url: url.to_string(),
-                detail: block
+            return Some(image_source_from_url(
+                url,
+                block
                     .get("detail")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
-            });
+            ));
         }
         if let Some(payload) = image_url.as_object() {
-            return payload
-                .get("url")
-                .and_then(Value::as_str)
-                .map(|url| ImageSource::Url {
-                    url: url.to_string(),
-                    detail: payload
+            return payload.get("url").and_then(Value::as_str).map(|url| {
+                image_source_from_url(
+                    url,
+                    payload
                         .get("detail")
                         .or_else(|| block.get("detail"))
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned),
-                });
+                )
+            });
         }
     }
     if let Some(image_url) = block.get("image_url").and_then(Value::as_str) {
-        return Some(ImageSource::Url {
-            url: image_url.to_string(),
-            detail: block
+        return Some(image_source_from_url(
+            image_url,
+            block
                 .get("detail")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
-        });
+        ));
     }
     None
+}
+
+// Normalizes data URLs into base64 sources so every target codec can carry
+// the payload; remote URLs stay URL sources (and keep their detail hint).
+fn image_source_from_url(url: &str, detail: Option<String>) -> ImageSource {
+    match crate::codecs::common::parse_data_url(url) {
+        Some((media_type, data)) => ImageSource::Base64 { media_type, data },
+        None => ImageSource::Url {
+            url: url.to_string(),
+            detail,
+        },
+    }
 }
 
 /// Decodes OpenAI file block shapes into normalized file sources.
@@ -697,6 +708,7 @@ fn encode_message_with_tool_results_to_openai(
     let mut out = Vec::new();
     let mut pending_content = Vec::new();
 
+    let mut hoisted_images = Vec::new();
     for block in &message.content {
         if let ContentBlock::ToolResult(result) = block {
             push_pending_openai_message(
@@ -706,6 +718,13 @@ fn encode_message_with_tool_results_to_openai(
                 diagnostics,
                 policy,
             )?;
+            // OpenAI tool messages are text-only; image attachments inside
+            // tool results are hoisted into a user message that follows the
+            // tool messages, where vision models can actually read them.
+            hoisted_images.extend(result.content.iter().filter_map(|block| match block {
+                ContentBlock::Image { source } => openai_image_part(source),
+                _ => None,
+            }));
             out.push(json!({
                 "role": "tool",
                 "tool_call_id": result.tool_call_id,
@@ -723,6 +742,9 @@ fn encode_message_with_tool_results_to_openai(
         diagnostics,
         policy,
     )?;
+    if !hoisted_images.is_empty() {
+        out.push(json!({"role": "user", "content": hoisted_images}));
+    }
     Ok(out)
 }
 

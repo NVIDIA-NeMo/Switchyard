@@ -365,7 +365,9 @@ class TestRequestEngineEdgeCases:
 
     def test_anthropic_tool_result_with_structured_content(self, req_engine):
         """tool_result where content is a list of blocks (text + image)
-        should flatten text parts and JSON-serialize non-text blocks.
+        should flatten text parts; image attachments have no OpenAI tool
+        message representation and are dropped rather than leaked as
+        stringified base64 prompt text.
         """
         body = {
             "model": "claude-sonnet-4-20250514",
@@ -398,8 +400,8 @@ class TestRequestEngineEdgeCases:
         assert len(tool_msgs) == 1
         # Text is preserved
         assert "Temperature: 72F" in tool_msgs[0]["content"]
-        # Non-text block is JSON-serialized, not dropped
-        assert "image" in tool_msgs[0]["content"]
+        # The image payload must not leak into prompt text
+        assert "iVBORw" not in tool_msgs[0]["content"]
 
     def test_anthropic_content_list_with_non_dict_items(self, req_engine):
         """Content blocks that are not dicts (e.g. raw strings in the list)

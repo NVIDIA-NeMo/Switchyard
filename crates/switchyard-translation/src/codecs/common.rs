@@ -33,6 +33,19 @@ pub(crate) fn reasoning_text_from_blocks(content: &[ContentBlock], separator: &s
         .join(separator)
 }
 
+/// Splits a `data:<media type>;base64,<data>` URL into its components.
+///
+/// Provider APIs disagree on inline-image encoding: OpenAI embeds base64
+/// payloads in data URLs while Anthropic and Gemini carry explicit media-type
+/// plus data fields, so decoders normalize data URLs into base64 sources.
+pub(crate) fn parse_data_url(url: &str) -> Option<(Option<String>, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (header, data) = rest.split_once(',')?;
+    let header = header.strip_suffix(";base64")?;
+    let media_type = (!header.is_empty()).then(|| header.to_string());
+    Some((media_type, data.to_string()))
+}
+
 /// Copies unknown provider fields into the IR extension map.
 pub(crate) fn provider_extensions(
     object: &Map<String, Value>,

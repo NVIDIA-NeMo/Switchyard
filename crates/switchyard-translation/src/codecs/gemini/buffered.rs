@@ -808,19 +808,26 @@ fn encode_gemini_contents(
                 }
                 ContentBlock::ToolResult(result) => {
                     parts.push(encode_gemini_function_response(result, messages));
+                    // Gemini models do not read media nested inside the
+                    // functionResponse payload (and 2.5 rejects the dedicated
+                    // multimodal field), so attachments are hoisted to
+                    // sibling parts of the same user turn where they are
+                    // fully visible.
+                    for block in &result.content {
+                        if let ContentBlock::Image { source } = block {
+                            if let Some(part) = gemini_inline_image(source) {
+                                parts.push(part);
+                            }
+                        }
+                    }
                 }
-                ContentBlock::Image { source } => match source {
-                    ImageSource::Base64 { media_type, data } => parts.push(json!({
-                        "inlineData": {
-                            "mimeType": media_type.clone().unwrap_or_else(|| "image/png".to_string()),
-                            "data": data,
-                        },
-                    })),
-                    ImageSource::Url { .. } | ImageSource::Raw(_) => {
+                ContentBlock::Image { source } => match gemini_inline_image(source) {
+                    Some(part) => parts.push(part),
+                    None => {
                         push_lossy(
                             diagnostics,
                             policy,
-                            "Gemini does not accept URL or raw image sources; image dropped",
+                            "Gemini does not accept remote image URLs; image dropped",
                         )?;
                     }
                 },
@@ -863,6 +870,34 @@ fn encode_gemini_contents(
     Ok(contents)
 }
 
+// Maps IR image sources to Gemini inlineData parts when a payload exists.
+// Remote URLs return None: Gemini cannot fetch arbitrary web images.
+fn gemini_inline_image(source: &ImageSource) -> Option<Value> {
+    let (media_type, data) = match source {
+        ImageSource::Base64 { media_type, data } => (media_type.clone(), data.clone()),
+        ImageSource::Url { url, .. } => crate::codecs::common::parse_data_url(url)?,
+        ImageSource::Raw(raw) => {
+            // Recognize the flattened media_type/data shape other providers use.
+            let object = raw.as_object()?;
+            let data = object.get("data").and_then(Value::as_str)?.to_string();
+            (
+                object
+                    .get("media_type")
+                    .or_else(|| object.get("mimeType"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                data,
+            )
+        }
+    };
+    Some(json!({
+        "inlineData": {
+            "mimeType": media_type.unwrap_or_else(|| "image/png".to_string()),
+            "data": data,
+        },
+    }))
+}
+
 // Encodes base64 and URL media sources into Gemini parts.
 fn encode_gemini_media(
     source: &MediaSource,
@@ -897,18 +932,13 @@ fn encode_gemini_media(
 // name from the tool call it answers (Gemini pairs by name, not ID).
 fn encode_gemini_function_response(result: &ToolResult, messages: &[Message]) -> Value {
     let name = find_tool_name(messages, &result.tool_call_id).unwrap_or_else(|| "tool".to_string());
+    // Image attachments are hoisted to sibling parts by the caller; the
+    // response payload itself carries the text-shaped content.
     let mut parts = Vec::new();
     for block in &result.content {
         match block {
             ContentBlock::Text { text } => parts.push(json!({"text": text})),
-            ContentBlock::Image {
-                source: ImageSource::Base64 { media_type, data },
-            } => parts.push(json!({
-                "inlineData": {
-                    "mimeType": media_type.clone().unwrap_or_else(|| "image/png".to_string()),
-                    "data": data,
-                },
-            })),
+            ContentBlock::Image { .. } => {}
             other => parts.push(json!({"text": json_string(&json!(other))})),
         }
     }

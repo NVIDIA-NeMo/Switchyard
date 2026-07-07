@@ -1273,3 +1273,196 @@ fn anthropic_signed_thinking_replays_as_gemini_thought_signature() -> TestResult
     assert_eq!(call_part["thoughtSignature"], "sig-1");
     Ok(())
 }
+
+// Verifies OpenAI data-URL images become typed base64 payloads that both
+// Anthropic and Gemini can carry natively.
+#[test]
+fn openai_data_url_image_translates_to_anthropic_and_gemini_base64() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "m",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What color?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,aW1n"}
+                }
+            ]
+        }]
+    });
+
+    let anthropic = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let image = &anthropic["messages"][0]["content"][1];
+    assert_eq!(image["source"]["type"], "base64");
+    assert_eq!(image["source"]["media_type"], "image/png");
+    assert_eq!(image["source"]["data"], "aW1n");
+
+    let gemini = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let part = &gemini["contents"][0]["parts"][1];
+    assert_eq!(part["inlineData"]["mimeType"], "image/png");
+    assert_eq!(part["inlineData"]["data"], "aW1n");
+    Ok(())
+}
+
+// Verifies Anthropic base64 images survive translation toward every target
+// instead of degrading to raw passthrough shapes.
+#[test]
+fn anthropic_image_translates_to_openai_data_url_and_gemini_inline_data() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "m",
+        "max_tokens": 128,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "aW1n"}
+            }]
+        }]
+    });
+
+    let openai = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        openai["messages"][0]["content"][0]["image_url"]["url"],
+        "data:image/jpeg;base64,aW1n"
+    );
+
+    let gemini = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        gemini["contents"][0]["parts"][0]["inlineData"]["data"],
+        "aW1n"
+    );
+    Ok(())
+}
+
+// Verifies tool-result image attachments stay typed blocks toward Anthropic
+// and Gemini, and are dropped (not leaked as text) toward OpenAI.
+#[test]
+fn tool_result_image_attachment_translates_per_target_capability() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "m",
+        "max_tokens": 128,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "take_screenshot",
+                    "input": {}
+                }]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": [
+                        {"type": "text", "text": "screenshot captured"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "c2NyZWVuc2hvdA=="
+                            }
+                        }
+                    ]
+                }]
+            }
+        ]
+    });
+
+    // Anthropic round trip keeps the typed image block inside the result.
+    let anthropic = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy {
+                preservation: switchyard_translation::PreservationPolicy::Disabled,
+                ..TranslationPolicy::default()
+            },
+        )?
+        .body;
+    let result_content = &anthropic["messages"][1]["content"][0]["content"];
+    assert!(result_content.is_array());
+    assert_eq!(result_content[1]["type"], "image");
+    assert_eq!(result_content[1]["source"]["data"], "c2NyZWVuc2hvdA==");
+
+    // Gemini cannot read media nested inside the functionResponse payload,
+    // so the image is hoisted to a sibling part of the same user turn.
+    let gemini = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::GeminiGenerateContent,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let result_parts = &gemini["contents"][1]["parts"];
+    assert_eq!(
+        result_parts[0]["functionResponse"]["response"]["parts"][0]["text"],
+        "screenshot captured"
+    );
+    assert_eq!(result_parts[1]["inlineData"]["data"], "c2NyZWVuc2hvdA==");
+
+    // OpenAI tool messages are text-only: text survives, and the payload is
+    // hoisted into a following user message instead of leaking as text.
+    let openai = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let messages = openai["messages"]
+        .as_array()
+        .ok_or("translated body should carry messages")?;
+    let tool_index = messages
+        .iter()
+        .position(|message| message["role"] == "tool")
+        .ok_or("translated body should contain a tool message")?;
+    let content = messages[tool_index]["content"].as_str().unwrap_or_default();
+    assert!(content.contains("screenshot captured"));
+    assert!(!content.contains("c2NyZWVuc2hvdA=="));
+    let hoisted = &messages[tool_index + 1];
+    assert_eq!(hoisted["role"], "user");
+    assert_eq!(
+        hoisted["content"][0]["image_url"]["url"],
+        "data:image/png;base64,c2NyZWVuc2hvdA=="
+    );
+    Ok(())
+}
