@@ -18,6 +18,42 @@ use crate::{
     EnrichmentData,
 };
 
+/// Observes the generic routed-client loop without owning routing policy.
+///
+/// Callbacks are registered on [`RoutedClientBuilder`] and run for every
+/// algorithm the client hosts. Algorithm-specific decision metadata remains in
+/// `D`; the callback layer only observes the common lifecycle.
+#[async_trait]
+pub trait RouterCallback<D: Send + Sync>: Send + Sync {
+    /// Called after each optimizer decision, before any requested model calls.
+    async fn on_decision(
+        &self,
+        _decision: &Decision<D>,
+        _enrichment: &EnrichmentData,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    /// Called immediately before the host performs one model call.
+    async fn before_model_call(
+        &self,
+        _request: &AgentApiRequest,
+        _enrichment: &EnrichmentData,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
+    /// Called after one model call succeeds and before its response is fed back.
+    async fn after_model_call(
+        &self,
+        _request: &AgentApiRequest,
+        _response: &AgentApiResponse,
+        _enrichment: &EnrichmentData,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+}
+
 /// Performs a single model call. This is the one piece of I/O the client does
 /// not own — integrators implement it with their own HTTP/transport stack, or
 /// use [`HttpCaller`].
@@ -36,15 +72,29 @@ pub trait ModelCaller: Send + Sync {
 /// returns the final model response. Single-round routers (weighted random) and
 /// multi-round ones (LLM classifier) are handled by the same loop; the caller
 /// sees only "request in, response out".
-pub struct RoutedClient<D> {
+pub struct RoutedClient<D: Send + Sync> {
     algorithm: Box<dyn AgentApiOptAlgorithm<D>>,
     caller: Box<dyn ModelCaller>,
+    callbacks: Vec<Box<dyn RouterCallback<D>>>,
 }
 
-impl<D> RoutedClient<D> {
+impl<D: Send + Sync> RoutedClient<D> {
+    /// Start a builder that can register callbacks before constructing the
+    /// client.
+    pub fn builder(
+        algorithm: Box<dyn AgentApiOptAlgorithm<D>>,
+        caller: Box<dyn ModelCaller>,
+    ) -> RoutedClientBuilder<D> {
+        RoutedClientBuilder::new(algorithm, caller)
+    }
+
     /// Build a client from an algorithm and a model caller.
     pub fn new(algorithm: Box<dyn AgentApiOptAlgorithm<D>>, caller: Box<dyn ModelCaller>) -> Self {
-        RoutedClient { algorithm, caller }
+        RoutedClient {
+            algorithm,
+            caller,
+            callbacks: Vec::new(),
+        }
     }
 
     /// Build a client that makes model calls with the built-in [`HttpCaller`]
@@ -55,6 +105,42 @@ impl<D> RoutedClient<D> {
         api_key: impl Into<String>,
     ) -> Self {
         RoutedClient::new(algorithm, Box::new(HttpCaller::new(base_url, api_key)))
+    }
+
+    async fn on_decision(
+        &self,
+        decision: &Decision<D>,
+        enrichment: &EnrichmentData,
+    ) -> Result<(), Box<dyn Error>> {
+        for callback in &self.callbacks {
+            callback.on_decision(decision, enrichment).await?;
+        }
+        Ok(())
+    }
+
+    async fn before_model_call(
+        &self,
+        request: &AgentApiRequest,
+        enrichment: &EnrichmentData,
+    ) -> Result<(), Box<dyn Error>> {
+        for callback in &self.callbacks {
+            callback.before_model_call(request, enrichment).await?;
+        }
+        Ok(())
+    }
+
+    async fn after_model_call(
+        &self,
+        request: &AgentApiRequest,
+        response: &AgentApiResponse,
+        enrichment: &EnrichmentData,
+    ) -> Result<(), Box<dyn Error>> {
+        for callback in &self.callbacks {
+            callback
+                .after_model_call(request, response, enrichment)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Optimize and run `request` to completion, returning the final response.
@@ -80,26 +166,68 @@ impl<D> RoutedClient<D> {
         // Round-agnostic drive loop: keep performing the model calls the
         // optimizer asks for and feeding their responses back until it returns.
         let mut last: Option<AgentApiResponse> = None;
-        while let Decision::ModelInference(response) = optimizer.optimize().await? {
-            for req in response.requests {
-                let model = req.model.clone();
-                let result = self.caller.call(req).await?;
-                // The Response input variant carries a request-shaped struct
-                // whose `prompt` holds the completion text.
-                optimizer
-                    .feed(
-                        AgentApiOptInput::Response(AgentApiRequest {
-                            prompt: result.completion.clone(),
-                            model,
-                        }),
-                        enrichment.clone(),
-                    )
-                    .await?;
-                last = Some(result);
+        loop {
+            let decision = optimizer.optimize().await?;
+            self.on_decision(&decision, &enrichment).await?;
+            match decision {
+                Decision::ModelInference(response) => {
+                    for req in response.requests {
+                        let model = req.model.clone();
+                        self.before_model_call(&req, &enrichment).await?;
+                        let result = self.caller.call(req.clone()).await?;
+                        self.after_model_call(&req, &result, &enrichment).await?;
+                        // The Response input variant carries a request-shaped
+                        // struct whose `prompt` holds the completion text.
+                        optimizer
+                            .feed(
+                                AgentApiOptInput::Response(AgentApiRequest {
+                                    prompt: result.completion.clone(),
+                                    model,
+                                }),
+                                enrichment.clone(),
+                            )
+                            .await?;
+                        last = Some(result);
+                    }
+                }
+                Decision::Return() => break,
             }
         }
 
         last.ok_or_else(|| "optimizer returned before requesting any model call".into())
+    }
+}
+
+/// Builder for registering routed-client callbacks before construction.
+pub struct RoutedClientBuilder<D: Send + Sync> {
+    algorithm: Box<dyn AgentApiOptAlgorithm<D>>,
+    caller: Box<dyn ModelCaller>,
+    callbacks: Vec<Box<dyn RouterCallback<D>>>,
+}
+
+impl<D: Send + Sync> RoutedClientBuilder<D> {
+    /// Create a builder from the algorithm and host-owned model caller.
+    pub fn new(algorithm: Box<dyn AgentApiOptAlgorithm<D>>, caller: Box<dyn ModelCaller>) -> Self {
+        RoutedClientBuilder {
+            algorithm,
+            caller,
+            callbacks: Vec::new(),
+        }
+    }
+
+    /// Register a callback that observes the generic optimize/call/feed loop.
+    pub fn callback(mut self, callback: impl RouterCallback<D> + 'static) -> Self {
+        self.callbacks.push(Box::new(callback));
+        self
+    }
+
+    /// Build the routed client.
+    pub fn build(self) -> RoutedClient<D> {
+        RoutedClient {
+            algorithm: self.algorithm,
+            caller: self.caller,
+            callbacks: self.callbacks,
+        }
     }
 }
 
@@ -212,6 +340,51 @@ mod tests {
         }
     }
 
+    struct RecordingCallback {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingCallback {
+        fn push(&self, event: impl Into<String>) -> Result<(), Box<dyn Error>> {
+            self.events
+                .lock()
+                .map_err(|_| "callback lock poisoned")?
+                .push(event.into());
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl<D: Send + Sync> RouterCallback<D> for RecordingCallback {
+        async fn on_decision(
+            &self,
+            decision: &Decision<D>,
+            _enrichment: &EnrichmentData,
+        ) -> Result<(), Box<dyn Error>> {
+            match decision {
+                Decision::ModelInference(_) => self.push("decision:model_inference"),
+                Decision::Return() => self.push("decision:return"),
+            }
+        }
+
+        async fn before_model_call(
+            &self,
+            request: &AgentApiRequest,
+            _enrichment: &EnrichmentData,
+        ) -> Result<(), Box<dyn Error>> {
+            self.push(format!("before:{}", request.model))
+        }
+
+        async fn after_model_call(
+            &self,
+            request: &AgentApiRequest,
+            response: &AgentApiResponse,
+            _enrichment: &EnrichmentData,
+        ) -> Result<(), Box<dyn Error>> {
+            self.push(format!("after:{}:{}", request.model, response.completion))
+        }
+    }
+
     #[tokio::test]
     async fn rand_client_routes_once_and_returns_the_response() -> Result<(), Box<dyn Error>> {
         let algorithm = RandomRouterAlgorithm {
@@ -223,7 +396,12 @@ mod tests {
             classifier_model: "unused".to_string(),
             calls: Arc::clone(&calls),
         };
-        let client = RoutedClient::new(Box::new(algorithm), Box::new(caller));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let client = RoutedClient::builder(Box::new(algorithm), Box::new(caller))
+            .callback(RecordingCallback {
+                events: Arc::clone(&events),
+            })
+            .build();
 
         let response = client
             .complete(AgentApiRequest {
@@ -236,6 +414,18 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].model, "frontier/model");
         assert_eq!(response.completion, "answer from frontier/model");
+        drop(recorded);
+
+        let events = events.lock().map_err(|_| "lock poisoned")?.clone();
+        assert_eq!(
+            events,
+            vec![
+                "decision:model_inference",
+                "before:frontier/model",
+                "after:frontier/model:answer from frontier/model",
+                "decision:return",
+            ]
+        );
         Ok(())
     }
 
@@ -253,7 +443,12 @@ mod tests {
             classifier_model: "router/classifier".to_string(),
             calls: Arc::clone(&calls),
         };
-        let client = RoutedClient::new(Box::new(algorithm), Box::new(caller));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let client = RoutedClient::builder(Box::new(algorithm), Box::new(caller))
+            .callback(RecordingCallback {
+                events: Arc::clone(&events),
+            })
+            .build();
 
         let response = client
             .complete(AgentApiRequest {
@@ -270,6 +465,21 @@ mod tests {
         assert_eq!(recorded[1].model, "frontier/model"); // score 0.9 >= 0.5 -> strong
                                                          // The returned response is the routed call's, not the classifier's.
         assert_eq!(response.completion, "answer from frontier/model");
+        drop(recorded);
+
+        let events = events.lock().map_err(|_| "lock poisoned")?.clone();
+        assert_eq!(
+            events,
+            vec![
+                "decision:model_inference",
+                "before:router/classifier",
+                "after:router/classifier:0.9",
+                "decision:model_inference",
+                "before:frontier/model",
+                "after:frontier/model:answer from frontier/model",
+                "decision:return",
+            ]
+        );
         Ok(())
     }
 }

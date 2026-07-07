@@ -14,6 +14,7 @@ use std::error::Error;
 /// AgentApiRequest internal representation of an llm request.
 /// This structure is designed to be converted to a from provider specifiic structs without loosing
 /// information
+#[derive(Clone, Debug)]
 pub struct AgentApiRequest {
     pub prompt: String,
     pub model: String,
@@ -22,6 +23,7 @@ pub struct AgentApiRequest {
 /// AgentApiRequest internal representation of an llm response.
 /// This structure is designed to be converted to a from provider specifiic structs without loosing
 /// information
+#[derive(Clone, Debug)]
 pub struct AgentApiResponse {
     pub completion: String,
 }
