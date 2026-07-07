@@ -354,7 +354,7 @@ class TestStreamOpenAIToAnthropicUsage:
 
 
 # ---------------------------------------------------------------------------
-# Raw SSE frame parsing for cross-format stream translation (SWITCH-883)
+# Raw SSE frame parsing for cross-format stream translation
 # ---------------------------------------------------------------------------
 
 

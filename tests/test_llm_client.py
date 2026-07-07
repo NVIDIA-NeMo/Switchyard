@@ -51,7 +51,7 @@ class TestAcompletionApiKeyOverride:
         overridden.responses.create = AsyncMock(return_value="responses-overridden")
         client.async_client.with_options.return_value = overridden
         # Non-streaming ``aresponses`` fetches the raw HTTP response and
-        # returns its exact JSON body (SWITCH-883); wire raw spies per client.
+        # returns its exact JSON body; wire raw spies per client.
         for target, label in ((client.async_client, "base"), (overridden, "overridden")):
             raw = MagicMock()
             raw.http_response.json.return_value = {"src": f"responses-{label}"}
@@ -122,7 +122,7 @@ class TestAcompletionApiKeyOverride:
 
 @respx.mock
 async def test_aresponses_returns_exact_upstream_json() -> None:
-    """Non-streaming Responses calls return the upstream body as-is (SWITCH-883).
+    """Non-streaming Responses calls return the upstream body as-is.
 
     Provider-specific extras and explicit-null fields must survive — the SDK
     typed-model round-trip would normalize the former and ``exclude_none``
@@ -173,7 +173,7 @@ _SSE_FRAMES = [
 @respx.mock
 async def test_aresponses_streaming_yields_verbatim_sse_frames() -> None:
     """Streaming Responses calls yield the upstream SSE frames byte-for-byte
-    (SWITCH-883): unknown provider fields, explicit nulls, comment keep-alives,
+   : unknown provider fields, explicit nulls, comment keep-alives,
     and event names all survive because no typed-model parse happens.
     """
     respx.post("http://upstream.test/v1/responses").mock(

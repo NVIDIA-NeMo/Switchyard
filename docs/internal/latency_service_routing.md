@@ -407,8 +407,8 @@ Wire-level proofs live in
 (`test_responses_body_returned_exactly_on_the_wire`,
 `test_responses_stream_forwarded_verbatim_on_the_wire`,
 `test_azure_flavored_responses_stream_preserved_on_the_wire`) against
-OpenAI-shaped and Azure-shaped samples; validation against live Inference Hub
-captures remains an IH-side step.
+OpenAI-shaped and Azure-shaped samples; validation against live production
+captures remains a deployment-side step.
 
 ## Failure-source annotation
 

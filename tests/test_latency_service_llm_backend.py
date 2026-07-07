@@ -834,7 +834,7 @@ class TestCall:
         """Same-format Responses passthrough returns the upstream JSON untouched.
 
         Provider-specific extras and explicit-null fields must survive the
-        wrap into ``ChatResponse`` (SWITCH-883) — nothing may be normalized,
+        wrap into ``ChatResponse`` — nothing may be normalized,
         re-synthesized, or dropped on this path.
         """
         upstream_body = {
@@ -1514,7 +1514,7 @@ class TestPerModelUpstreamMetrics:
 
 
 # ---------------------------------------------------------------------------
-# Failure-source annotation (SWITCH-882)
+# Failure-source annotation
 # ---------------------------------------------------------------------------
 
 

@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # Use this when every upstream call must be billed to the *caller's* own API key
-# (e.g. per-user Inference Hub spend attribution) and the service-level key must
+# (e.g. per-user spend attribution in multi-tenant gateways) and the service-level key must
 # NEVER authenticate caller inference.
 #
 # What `credential_policy: caller_required` does:

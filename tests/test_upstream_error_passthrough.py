@@ -715,7 +715,7 @@ def test_anthropic_invalid_role_returns_400(
 
 
 # ---------------------------------------------------------------------------
-# Failure-source headers on the wire (SWITCH-882)
+# Failure-source headers on the wire
 # ---------------------------------------------------------------------------
 # The header tests above the endpoint layer call helpers directly; these prove
 # the annotation actually survives the real FastAPI handlers + middleware to
@@ -854,7 +854,7 @@ def test_caller_required_401_header_labels_switchyard_on_the_wire() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Responses API fidelity on the wire (SWITCH-883)
+# Responses API fidelity on the wire
 # ---------------------------------------------------------------------------
 
 
@@ -862,7 +862,7 @@ def test_responses_body_returned_exactly_on_the_wire() -> None:
     """A Responses request through the full app returns the upstream JSON
     byte-for-byte: provider extras and explicit-null fields included.
 
-    This is the composed proof for SWITCH-883 — backend raw wrap, the
+    This is the composed fidelity proof — backend raw wrap, the
     terminal translation short-circuit, and endpoint serialization together.
     """
     upstream_body = {
@@ -955,7 +955,7 @@ def _latency_responses_app(frames: list[str]) -> FastAPI:
 def test_responses_stream_forwarded_verbatim_on_the_wire() -> None:
     """A same-format streaming Responses request returns the upstream SSE
     frames byte-for-byte: unknown provider fields, explicit nulls, event
-    names, and comment keep-alives all survive (SWITCH-883 streaming leg)."""
+    names, and comment keep-alives all survive (streaming fidelity leg)."""
     frames = [
         (
             'event: response.created\n'

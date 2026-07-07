@@ -102,7 +102,7 @@ class LatencyServiceBackendConfig(BaseModel):
             forwards the caller key but never falls back — a request with no caller
             key is rejected with HTTP 401 and the configured ``api_key`` is never
             used for upstream inference (use this for per-user spend attribution,
-            e.g. the ``nvidia/switchyard/*`` Inference Hub routes).
+            e.g. multi-tenant gateway routes).
         session_affinity: When ``True``, pin each conversation to the endpoint
             that first served it (cache stays warm); a pin is broken only when
             its endpoint degrades or the call fails. Per process. Default off.

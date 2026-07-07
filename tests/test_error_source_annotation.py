@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""SWITCH-882: failure-source annotation on error responses and the event log.
+"""failure-source annotation on error responses and the event log.
 
 Every client-facing error carries ``x-switchyard-error-source`` naming the
 layer that originated it (``switchyard`` | ``provider``), plus
