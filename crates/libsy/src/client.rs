@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(recorded[0].model, "router/classifier");
         assert!(recorded[0].prompt.contains("prove it"));
         assert_eq!(recorded[1].model, "frontier/model"); // score 0.9 >= 0.5 -> strong
-                                                          // The returned response is the routed call's, not the classifier's.
+                                                         // The returned response is the routed call's, not the classifier's.
         assert_eq!(response.completion, "answer from frontier/model");
         Ok(())
     }
