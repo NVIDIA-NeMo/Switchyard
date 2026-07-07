@@ -3,6 +3,7 @@
 
 //! Switchyard library crate.
 
+pub mod client;
 pub mod llm_class;
 pub mod rand;
 
@@ -13,7 +14,7 @@ use std::error::Error;
 /// AgentApiRequest internal representation of an llm request.
 /// This structure is designed to be converted to a from provider specifiic structs without loosing
 /// information
-pub struct AgentApitRequest {
+pub struct AgentApiRequest {
     pub prompt: String,
     pub model: String,
 }
@@ -25,8 +26,9 @@ pub struct AgentApiResponse {
     pub completion: String,
 }
 
-/// enrichement and correlation data use for routing the request
-pub struct EnrichementData {
+/// enrichment and correlation data use for routing the request
+#[derive(Clone, Default)]
+pub struct EnrichmentData {
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
     pub task_id: Option<String>,
@@ -42,16 +44,16 @@ pub enum Decision<D> {
 
 /// Input to the AgentApiOptimizer, can be a request, response or metadata
 pub enum AgentApiOptInput {
-    Request(ChatRequest),
-    Response(ChatRequest),
+    Request(AgentApiRequest),
+    Response(AgentApiRequest),
     Metadata(BTreeMap<String, String>),
 }
 
 /// The response from the AgentApiOptimizer, containing the optimized requests and any additional
 /// data.
 pub struct AgentApiOptimizerResponse<D> {
-    pub requests: Vec<ChatRequest>,
-    pub enrichment_data: Vec<EnrichementData>,
+    pub requests: Vec<AgentApiRequest>,
+    pub enrichment_data: Vec<EnrichmentData>,
     pub decision_reasoning: Option<String>,
     pub decision_info: Option<D>,
 }
@@ -66,7 +68,7 @@ pub trait AgentApiOptimizer<D>: Send + Sync {
     async fn feed(
         &mut self,
         _input: AgentApiOptInput,
-        _enrichment: EnrichementData,
+        _enrichment: EnrichmentData,
     ) -> Result<(), Box<dyn Error>> {
         Ok(())
     }

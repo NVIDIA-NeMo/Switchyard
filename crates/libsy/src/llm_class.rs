@@ -15,7 +15,7 @@ use std::error::Error;
 
 use crate::{
     AgentApiOptAlgorithm, AgentApiOptInput, AgentApiOptimizer, AgentApiOptimizerResponse,
-    ChatRequest, Decision, EnrichementData,
+    AgentApiRequest, Decision, EnrichmentData,
 };
 
 /// Preamble prepended to the user prompt when asking the classifier model for a
@@ -114,7 +114,7 @@ pub struct LlmClassifierRouter {
     weak_model: String,
     threshold: f64,
     phase: Phase,
-    pending_request: Option<ChatRequest>,
+    pending_request: Option<AgentApiRequest>,
     score: Option<f64>,
 }
 
@@ -145,7 +145,7 @@ impl AgentApiOptimizer<ClassifierRoutingDecision> for LlmClassifierRouter {
     async fn feed(
         &mut self,
         input: AgentApiOptInput,
-        _enrichment: EnrichementData,
+        _enrichment: EnrichmentData,
     ) -> Result<(), Box<dyn Error>> {
         match input {
             AgentApiOptInput::Request(request) => {
@@ -182,7 +182,7 @@ impl AgentApiOptimizer<ClassifierRoutingDecision> for LlmClassifierRouter {
                     .prompt
                     .clone();
                 self.phase = Phase::AwaitingScore;
-                let classifier_request = ChatRequest {
+                let classifier_request = AgentApiRequest {
                     model: self.classifier_model.clone(),
                     prompt: format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
                 };
@@ -233,8 +233,8 @@ mod tests {
     use super::*;
 
     /// Empty enrichment payload for feeds under test.
-    fn enrichment() -> EnrichementData {
-        EnrichementData {
+    fn enrichment() -> EnrichmentData {
+        EnrichmentData {
             session_id: None,
             agent_id: None,
             task_id: None,
@@ -243,8 +243,8 @@ mod tests {
         }
     }
 
-    fn request(prompt: &str, model: &str) -> ChatRequest {
-        ChatRequest {
+    fn request(prompt: &str, model: &str) -> AgentApiRequest {
+        AgentApiRequest {
             prompt: prompt.to_string(),
             model: model.to_string(),
         }

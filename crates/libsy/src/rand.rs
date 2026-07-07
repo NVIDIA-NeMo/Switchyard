@@ -13,7 +13,7 @@ use ::rand::{Rng, SeedableRng};
 
 use crate::{
     AgentApiOptAlgorithm, AgentApiOptInput, AgentApiOptimizer, AgentApiOptimizerResponse,
-    ChatRequest, Decision, EnrichementData,
+    AgentApiRequest, Decision, EnrichmentData,
 };
 
 /// A routing target and its relative selection weight.
@@ -90,7 +90,7 @@ impl AgentApiOptAlgorithm<RandomRoutingDecision> for RandomRouterAlgorithm {
 pub struct RandomRouter {
     models: Vec<WeightedModel>,
     rng: StdRng,
-    pending_request: Option<ChatRequest>,
+    pending_request: Option<AgentApiRequest>,
     completed: bool,
 }
 
@@ -146,7 +146,7 @@ impl AgentApiOptimizer<RandomRoutingDecision> for RandomRouter {
     async fn feed(
         &mut self,
         input: AgentApiOptInput,
-        _enrichment: EnrichementData,
+        _enrichment: EnrichmentData,
     ) -> Result<(), Box<dyn Error>> {
         match input {
             AgentApiOptInput::Request(request) => self.pending_request = Some(request),
@@ -186,8 +186,8 @@ mod tests {
     use super::*;
 
     /// Empty enrichment payload for feeds under test.
-    fn enrichment() -> EnrichementData {
-        EnrichementData {
+    fn enrichment() -> EnrichmentData {
+        EnrichmentData {
             session_id: None,
             agent_id: None,
             task_id: None,
@@ -196,8 +196,8 @@ mod tests {
         }
     }
 
-    fn request(prompt: &str, model: &str) -> ChatRequest {
-        ChatRequest {
+    fn request(prompt: &str, model: &str) -> AgentApiRequest {
+        AgentApiRequest {
             prompt: prompt.to_string(),
             model: model.to_string(),
         }
