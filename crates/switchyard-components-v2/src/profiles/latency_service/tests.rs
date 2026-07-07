@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_core::Stream;
+use futures_util::StreamExt;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 use switchyard_core::{BackendFormat, ChatRequest, LlmTargetId, ModelId, StreamEvent};
@@ -42,6 +43,7 @@ struct TestBackend {
 enum ResponseMode {
     Completion,
     OpenAiStream,
+    OpenAiStreamWithUsage,
 }
 
 struct OneEventStream {
@@ -83,6 +85,15 @@ impl ProfileBackend for TestBackend {
                     event: Some(Ok(StreamEvent::Json(json!({
                         "backend": self.name,
                         "model": request.model(),
+                    })))),
+                })))
+            }
+            ResponseMode::OpenAiStreamWithUsage => {
+                Ok(ChatResponse::OpenAiStream(Box::pin(OneEventStream {
+                    event: Some(Ok(StreamEvent::Json(json!({
+                        "backend": self.name,
+                        "model": request.model(),
+                        "usage": {"prompt_tokens": 21, "completion_tokens": 11},
                     })))),
                 })))
             }
@@ -590,6 +601,54 @@ fn unknown_target_health_update_is_rejected() -> Result<()> {
     assert!(error
         .to_string()
         .contains("target missing is not configured"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_response_records_usage_after_consumption() -> Result<()> {
+    let (profile, _calls) = profile_with_backend_modes(
+        vec![target("fast", "upstream-fast")?],
+        BTreeMap::new(),
+        BTreeMap::from([("fast", ResponseMode::OpenAiStreamWithUsage)]),
+        0,
+    )?;
+    profile.update_health(
+        LlmTargetId::from_static("fast"),
+        EndpointHealth::new(EndpointHealthStatus::Healthy),
+    )?;
+
+    let response = profile
+        .run(profile_input(ChatRequest::openai_chat(json!({
+            "model": "incoming-model",
+            "messages": [],
+        }))))
+        .await?;
+
+    // The call is attributed immediately; streaming usage is recorded lazily.
+    let before = profile.stats.snapshot()?;
+    assert_eq!(before.total_requests, 1);
+    assert_eq!(before.total_tokens.prompt, 0);
+
+    let mut stream = match response.response {
+        ChatResponse::OpenAiStream(stream) => stream,
+        _ => {
+            return Err(SwitchyardError::Other(
+                "expected OpenAI stream response".into(),
+            ))
+        }
+    };
+    while let Some(event) = stream.next().await {
+        event?;
+    }
+
+    let after = profile.stats.snapshot()?;
+    assert_eq!(after.total_tokens.prompt, 21);
+    assert_eq!(after.total_tokens.completion, 11);
+    let model = after
+        .models
+        .get("upstream-fast")
+        .ok_or_else(|| SwitchyardError::Other("model stats should be present".into()))?;
+    assert_eq!(model.calls, 1);
     Ok(())
 }
 

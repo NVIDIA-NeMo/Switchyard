@@ -6,12 +6,12 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
-use switchyard_components::stats::usage_from_body;
 use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result};
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats::{record_usage_or_tap_stream, UsageAttribution};
 use crate::{profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse};
 
 /// Config for the flatter passthrough profile.
@@ -85,16 +85,16 @@ impl Profile for PassthroughProfile {
         let backend_latency_ms = backend_started_at.elapsed().as_secs_f64() * 1000.0;
         self.stats
             .record_success(target_model.to_string(), Some(backend_latency_ms), None)?;
-        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-        let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
-            target_model.to_string(),
-            usage,
-            Some(total_latency_ms),
-            Some(routing_overhead_ms),
-            None,
-        )?;
+        let response = record_usage_or_tap_stream(
+            response,
+            UsageAttribution::new(
+                self.stats.clone(),
+                target_model.as_str(),
+                None,
+                profile_started_at,
+                backend_latency_ms,
+            ),
+        );
         let response = self.rprocess(&processed, response).await?;
         Ok(ProfileResponse::from(response))
     }
@@ -105,8 +105,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use futures_util::StreamExt;
     use serde_json::{json, Value};
-    use switchyard_core::{BackendFormat, ChatRequest, LlmTargetId, ModelId, SwitchyardError};
+    use switchyard_core::{
+        BackendFormat, ChatRequest, LlmTargetId, ModelId, StreamEvent, SwitchyardError,
+    };
 
     use crate::backend::{ProfileBackend, TargetBackend};
     use crate::RequestMetadata;
@@ -270,6 +273,71 @@ mod tests {
         let calls = observed(&calls)?;
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].body, json!({"model": "provider/model"}));
+        Ok(())
+    }
+
+    struct StreamBackend;
+
+    #[async_trait]
+    impl ProfileBackend for StreamBackend {
+        async fn call(&self, _request: &ChatRequest) -> Result<ChatResponse> {
+            let events: Vec<Result<StreamEvent>> = vec![
+                Ok(StreamEvent::Json(json!({
+                    "choices": [{"delta": {"content": "hi"}}],
+                }))),
+                Ok(StreamEvent::Json(json!({
+                    "choices": [],
+                    "usage": {"prompt_tokens": 17, "completion_tokens": 9},
+                }))),
+            ];
+            Ok(ChatResponse::OpenAiStream(Box::pin(
+                futures_util::stream::iter(events),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn run_records_streaming_usage_as_events_are_consumed() -> Result<()> {
+        let profile = PassthroughProfile {
+            backend: TargetBackend::new(
+                target("direct", "provider/model")?,
+                Arc::new(StreamBackend),
+            ),
+            stats: StatsAccumulator::new(),
+        };
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [],
+            }))))
+            .await?;
+
+        // The call is counted right away, but streaming usage is not known until
+        // the stream is consumed.
+        let before = profile.stats.snapshot()?;
+        assert_eq!(before.total_requests, 1);
+        assert_eq!(before.total_tokens.prompt, 0);
+
+        let mut stream = match response.response {
+            ChatResponse::OpenAiStream(stream) => stream,
+            _ => return Err(SwitchyardError::Other("expected stream response".into())),
+        };
+        let mut forwarded = 0;
+        while let Some(event) = stream.next().await {
+            event?;
+            forwarded += 1;
+        }
+        assert_eq!(forwarded, 2, "every event must still reach the client");
+
+        let after = profile.stats.snapshot()?;
+        assert_eq!(after.total_tokens.prompt, 17);
+        assert_eq!(after.total_tokens.completion, 9);
+        let model = after
+            .models
+            .get("provider/model")
+            .ok_or_else(|| SwitchyardError::Other("model stats should be present".into()))?;
+        assert_eq!(model.calls, 1);
         Ok(())
     }
 }

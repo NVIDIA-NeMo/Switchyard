@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use switchyard_components::request_processors::{
     RandomRoutingDecision, RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier,
 };
-use switchyard_components::stats::usage_from_body;
 use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result, SwitchyardError};
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats::{record_usage_or_tap_stream, UsageAttribution};
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -167,16 +167,16 @@ impl Profile for RandomRoutingProfile {
             Some(backend_latency_ms),
             Some(decision.tier.as_str()),
         )?;
-        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-        let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
-            decision.selected_model.as_str(),
-            usage,
-            Some(total_latency_ms),
-            Some(routing_overhead_ms),
-            Some(decision.tier.as_str()),
-        )?;
+        let response = record_usage_or_tap_stream(
+            response,
+            UsageAttribution::new(
+                self.stats.clone(),
+                decision.selected_model.as_str(),
+                Some(decision.tier.as_str().to_string()),
+                profile_started_at,
+                backend_latency_ms,
+            ),
+        );
         let response = self.rprocess(&processed, response).await?;
         Ok(ProfileResponse::with_routing_metadata(
             response,
@@ -195,8 +195,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use futures_util::StreamExt;
     use serde_json::{json, Value};
-    use switchyard_core::{BackendFormat, ChatRequest, LlmTargetId, ModelId, SwitchyardError};
+    use switchyard_core::{
+        BackendFormat, ChatRequest, LlmTargetId, ModelId, StreamEvent, SwitchyardError,
+    };
 
     use crate::backend::{ProfileBackend, TargetBackend};
     use crate::RequestMetadata;
@@ -476,6 +479,71 @@ mod tests {
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
         assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    struct StreamBackend;
+
+    #[async_trait]
+    impl ProfileBackend for StreamBackend {
+        async fn call(&self, _request: &ChatRequest) -> Result<ChatResponse> {
+            let events: Vec<Result<StreamEvent>> = vec![
+                Ok(StreamEvent::Json(json!({
+                    "choices": [{"delta": {"content": "hi"}}],
+                }))),
+                Ok(StreamEvent::Json(json!({
+                    "choices": [],
+                    "usage": {"prompt_tokens": 17, "completion_tokens": 9},
+                }))),
+            ];
+            Ok(ChatResponse::OpenAiStream(Box::pin(
+                futures_util::stream::iter(events),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn run_records_streaming_usage_with_selected_tier() -> Result<()> {
+        let strong = target("strong", "frontier/model")?;
+        let weak = target("weak", "cheap/model")?;
+        let router_config = RandomRoutingProcessorConfig::new(strong.clone(), weak.clone())
+            .with_strong_probability(1.0)?
+            .with_rng_seed(Some(7));
+        let profile = RandomRoutingProfile {
+            router: RandomRoutingEngine::new(router_config)?,
+            strong_backend: TargetBackend::new(strong.clone(), Arc::new(StreamBackend)),
+            weak_backend: TargetBackend::new(weak, Arc::new(StreamBackend)),
+            stats: StatsAccumulator::new(),
+        };
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [],
+            }))))
+            .await?;
+
+        let before = profile.stats.snapshot()?;
+        assert_eq!(before.total_requests, 1);
+        assert_eq!(before.total_tokens.prompt, 0);
+
+        let mut stream = match response.response {
+            ChatResponse::OpenAiStream(stream) => stream,
+            _ => return Err(SwitchyardError::Other("expected stream response".into())),
+        };
+        while let Some(event) = stream.next().await {
+            event?;
+        }
+
+        let after = profile.stats.snapshot()?;
+        assert_eq!(after.total_tokens.prompt, 17);
+        assert_eq!(after.total_tokens.completion, 9);
+        let tier = after
+            .tiers
+            .get("strong")
+            .ok_or_else(|| SwitchyardError::Other("strong tier stats should be present".into()))?;
+        assert_eq!(tier.calls, 1);
+        assert_eq!(tier.model, "frontier/model");
         Ok(())
     }
 }

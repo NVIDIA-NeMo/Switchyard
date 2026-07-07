@@ -17,6 +17,7 @@ use switchyard_core::{ChatRequest, ChatResponse, LlmTarget, LlmTargetId, Result,
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats::{record_usage_or_tap_stream, UsageAttribution};
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -483,27 +484,28 @@ impl StageRouterProfile {
     fn record_success(
         &self,
         decision: &StageRouterDecision,
-        response: &ChatResponse,
-        total_latency_ms: f64,
+        response: ChatResponse,
+        started_at: Instant,
         backend_latency_ms: f64,
-    ) -> Result<()> {
-        if let Some(stats) = self.stats_handle() {
-            stats.record_success(
+    ) -> Result<ChatResponse> {
+        let Some(stats) = self.stats_handle() else {
+            return Ok(response);
+        };
+        stats.record_success(
+            decision.selected_model.as_str(),
+            Some(backend_latency_ms),
+            Some(decision.tier.as_str()),
+        )?;
+        Ok(record_usage_or_tap_stream(
+            response,
+            UsageAttribution::new(
+                stats.clone(),
                 decision.selected_model.as_str(),
-                Some(backend_latency_ms),
-                Some(decision.tier.as_str()),
-            )?;
-            let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-            let usage = response.body().map(usage_from_body).unwrap_or_default();
-            stats.record_usage_after_success_attribution(
-                decision.selected_model.as_str(),
-                usage,
-                Some(total_latency_ms),
-                Some(routing_overhead_ms),
-                Some(decision.tier.as_str()),
-            )?;
-        }
-        Ok(())
+                Some(decision.tier.as_str().to_string()),
+                started_at,
+                backend_latency_ms,
+            ),
+        ))
     }
 
     fn record_error(&self, decision: &StageRouterDecision) -> Result<()> {
@@ -561,11 +563,10 @@ impl Profile for StageRouterProfile {
         let (first_result, first_backend_latency_ms) = self.call_selected(&processed).await;
         match first_result {
             Ok(response) => {
-                let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                self.record_success(
+                let response = self.record_success(
                     &processed.decision,
-                    &response,
-                    total_latency_ms,
+                    response,
+                    profile_started_at,
                     first_backend_latency_ms,
                 )?;
                 let response = self.rprocess(&processed, response).await?;
@@ -579,11 +580,10 @@ impl Profile for StageRouterProfile {
                 let (retry_result, retry_backend_latency_ms) = self.call_selected(&retry).await;
                 match retry_result {
                     Ok(response) => {
-                        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                        self.record_success(
+                        let response = self.record_success(
                             &retry.decision,
-                            &response,
-                            total_latency_ms,
+                            response,
+                            profile_started_at,
                             retry_backend_latency_ms,
                         )?;
                         let response = self.rprocess(&retry, response).await?;
@@ -1017,8 +1017,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use futures_util::StreamExt;
     use serde_json::json;
-    use switchyard_core::{BackendFormat, ModelId};
+    use switchyard_core::{BackendFormat, ModelId, StreamEvent};
 
     use crate::backend::ProfileBackend;
     use crate::RequestMetadata;
@@ -1034,6 +1035,7 @@ mod tests {
     #[derive(Clone, Debug)]
     enum BackendAction {
         Ok,
+        OkStream,
         ContextOverflow,
     }
 
@@ -1069,6 +1071,20 @@ mod tests {
                         "completion_tokens": 5,
                     },
                 }))),
+                BackendAction::OkStream => {
+                    let events: Vec<Result<StreamEvent>> = vec![
+                        Ok(StreamEvent::Json(json!({
+                            "choices": [{"delta": {"content": "hi"}}],
+                        }))),
+                        Ok(StreamEvent::Json(json!({
+                            "choices": [],
+                            "usage": {"prompt_tokens": 19, "completion_tokens": 6},
+                        }))),
+                    ];
+                    Ok(ChatResponse::OpenAiStream(Box::pin(
+                        futures_util::stream::iter(events),
+                    )))
+                }
                 BackendAction::ContextOverflow => Err(SwitchyardError::ContextWindowExceeded {
                     target_id: self.target_id.clone(),
                     model: request.model().unwrap_or("").to_string(),
@@ -1148,6 +1164,43 @@ mod tests {
             enable_stats: true,
         };
         Ok((profile, calls))
+    }
+
+    #[tokio::test]
+    async fn stage_router_records_streaming_usage_after_consumption() -> Result<()> {
+        let (profile, _calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
+            0.7,
+            vec![BackendAction::OkStream],
+            vec![BackendAction::OkStream],
+        )?;
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "smart-stage-router",
+                "messages": [{"role": "user", "content": "hi"}],
+            }))))
+            .await?;
+
+        // The call is attributed synchronously; streaming usage lands on consume.
+        let before = profile.stats.snapshot()?;
+        assert_eq!(before.total_requests, 1);
+        assert_eq!(before.total_tokens.prompt, 0);
+
+        let mut stream = match response.response {
+            ChatResponse::OpenAiStream(stream) => stream,
+            _ => return Err(SwitchyardError::Other("expected stream response".into())),
+        };
+        while let Some(event) = stream.next().await {
+            event?;
+        }
+
+        let after = profile.stats.snapshot()?;
+        assert_eq!(after.total_tokens.prompt, 19);
+        assert_eq!(after.total_tokens.completion, 6);
+        Ok(())
     }
 
     #[tokio::test]

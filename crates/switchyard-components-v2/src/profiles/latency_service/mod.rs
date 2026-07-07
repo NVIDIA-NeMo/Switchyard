@@ -16,7 +16,6 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use switchyard_components::stats::usage_from_body;
 use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, LlmTargetId, Result, SwitchyardError};
 
@@ -26,6 +25,7 @@ use self::selection::select_target;
 pub use self::selection::SelectedTarget;
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats::{record_usage_or_tap_stream, UsageAttribution};
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -329,16 +329,16 @@ impl Profile for LatencyServiceProfile {
                         Some(backend_latency_ms),
                         None,
                     )?;
-                    let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                    let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-                    let usage = response.body().map(usage_from_body).unwrap_or_default();
-                    self.stats.record_usage_after_success_attribution(
-                        stats_model,
-                        usage,
-                        Some(total_latency_ms),
-                        Some(routing_overhead_ms),
-                        None,
-                    )?;
+                    let response = record_usage_or_tap_stream(
+                        response,
+                        UsageAttribution::new(
+                            self.stats.clone(),
+                            stats_model,
+                            None,
+                            profile_started_at,
+                            backend_latency_ms,
+                        ),
+                    );
                     let processed = LatencyServiceProcessedRequest {
                         profile_input: input,
                         selected,

@@ -17,6 +17,7 @@ use switchyard_core::{
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats::{record_usage_or_tap_stream, UsageAttribution};
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -421,25 +422,25 @@ impl LlmRoutingProfile {
     fn record_success(
         &self,
         decision: &LlmRoutingDecision,
-        response: &ChatResponse,
-        total_latency_ms: f64,
+        response: ChatResponse,
+        started_at: Instant,
         backend_latency_ms: f64,
-    ) -> Result<()> {
+    ) -> Result<ChatResponse> {
         self.stats.record_success(
             decision.selected_model.as_str(),
             Some(backend_latency_ms),
             Some(decision.tier.as_str()),
         )?;
-        let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
-            decision.selected_model.as_str(),
-            usage,
-            Some(total_latency_ms),
-            Some(routing_overhead_ms),
-            Some(decision.tier.as_str()),
-        )?;
-        Ok(())
+        Ok(record_usage_or_tap_stream(
+            response,
+            UsageAttribution::new(
+                self.stats.clone(),
+                decision.selected_model.as_str(),
+                Some(decision.tier.clone()),
+                started_at,
+                backend_latency_ms,
+            ),
+        ))
     }
 
     fn record_error(&self, decision: &LlmRoutingDecision) -> Result<()> {
@@ -489,11 +490,10 @@ impl Profile for LlmRoutingProfile {
         let (first_result, first_backend_latency_ms) = self.call_selected(&processed).await;
         match first_result {
             Ok(response) => {
-                let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                self.record_success(
+                let response = self.record_success(
                     &processed.decision,
-                    &response,
-                    total_latency_ms,
+                    response,
+                    profile_started_at,
                     first_backend_latency_ms,
                 )?;
                 let response = self.rprocess(&processed, response).await?;
@@ -507,11 +507,10 @@ impl Profile for LlmRoutingProfile {
                 let (retry_result, retry_backend_latency_ms) = self.call_selected(&retry).await;
                 match retry_result {
                     Ok(response) => {
-                        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                        self.record_success(
+                        let response = self.record_success(
                             &retry.decision,
-                            &response,
-                            total_latency_ms,
+                            response,
+                            profile_started_at,
                             retry_backend_latency_ms,
                         )?;
                         let response = self.rprocess(&retry, response).await?;
@@ -1602,4 +1601,171 @@ fn normalize_reasoning_effort(request: &mut ChatRequest) {
         "reasoning_effort".to_string(),
         Value::String("high".to_string()),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use futures_util::StreamExt;
+    use serde_json::json;
+    use switchyard_core::{ModelId, StreamEvent};
+
+    use crate::backend::ProfileBackend;
+
+    use super::*;
+
+    // Stub backend used only to satisfy the profile struct; `record_success`
+    // never dispatches through it.
+    struct UnusedBackend;
+
+    #[async_trait]
+    impl ProfileBackend for UnusedBackend {
+        async fn call(&self, _request: &ChatRequest) -> Result<ChatResponse> {
+            Err(SwitchyardError::Other(
+                "backend should not be called".to_string(),
+            ))
+        }
+    }
+
+    fn target(id: &str, model: &str) -> Result<LlmTarget> {
+        let mut target = LlmTarget::new(LlmTargetId::new(id)?, ModelId::new(model)?);
+        target.format = BackendFormat::OpenAi;
+        Ok(target)
+    }
+
+    fn stub_backend(target: &LlmTarget) -> TargetBackend {
+        TargetBackend::new(target.clone(), Arc::new(UnusedBackend))
+    }
+
+    fn config(
+        strong: &LlmTarget,
+        weak: &LlmTarget,
+        classifier: &LlmTarget,
+    ) -> LlmRoutingProfileConfig {
+        LlmRoutingProfileConfig {
+            strong: strong.clone(),
+            weak: weak.clone(),
+            classifier: classifier.clone(),
+            fallback_target_on_evict: strong.id.clone(),
+            profile_name: PROFILE_GENERAL.to_string(),
+            classifier_min_confidence: 0.0,
+            classifier_fail_open: true,
+            classifier_recent_turn_window: 4,
+            classifier_max_tokens: 256,
+            alignment_min_confidence: DEFAULT_ALIGNMENT_MIN_CONFIDENCE,
+            default_tier: None,
+            tier_mapping: None,
+            classifier_system_prompt: None,
+            classifier_tool_name: None,
+            classifier_tool_description: None,
+            classifier_tool_parameters: None,
+        }
+    }
+
+    fn profile(stats: StatsAccumulator) -> Result<LlmRoutingProfile> {
+        let strong = target("strong", "frontier/model")?;
+        let weak = target("weak", "cheap/model")?;
+        let classifier = target("classifier", "cls/model")?;
+        let config = config(&strong, &weak, &classifier);
+        let policy = ClassifierPolicy::from_name(&config.profile_name)?;
+        Ok(LlmRoutingProfile {
+            policy,
+            strong_backend: stub_backend(&strong),
+            weak_backend: stub_backend(&weak),
+            classifier_backend: stub_backend(&classifier),
+            classifier_target: classifier,
+            fallback_target_on_evict: config.fallback_target_on_evict.clone(),
+            classifier_min_confidence: config.classifier_min_confidence,
+            classifier_fail_open: config.classifier_fail_open,
+            classifier_recent_turn_window: config.classifier_recent_turn_window,
+            classifier_max_tokens: config.classifier_max_tokens,
+            alignment_min_confidence: config.alignment_min_confidence,
+            default_tier: resolve_default_tier(config.default_tier.as_deref())?,
+            tier_mapping: config
+                .tier_mapping
+                .clone()
+                .unwrap_or_else(|| policy.default_tier_mapping()),
+            classifier_tool: LlmRoutingClassifierTool::from_config(policy, &config),
+            stats,
+        })
+    }
+
+    fn weak_decision() -> LlmRoutingDecision {
+        LlmRoutingDecision {
+            tier: TIER_WEAK.to_string(),
+            source: "unit_test".to_string(),
+            reason: "unit_test".to_string(),
+            policy_tier: None,
+            llm_recommended_tier: None,
+            confidence: None,
+            selected_target: "weak".to_string(),
+            selected_model: "cheap/model".to_string(),
+            signals: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_success_taps_streaming_usage_on_consumption() -> Result<()> {
+        let stats = StatsAccumulator::new();
+        let profile = profile(stats.clone())?;
+
+        let events: Vec<Result<StreamEvent>> = vec![
+            Ok(StreamEvent::Json(json!({
+                "choices": [{"delta": {"content": "hi"}}],
+            }))),
+            Ok(StreamEvent::Json(json!({
+                "choices": [],
+                "usage": {"prompt_tokens": 23, "completion_tokens": 12},
+            }))),
+        ];
+        let response = ChatResponse::OpenAiStream(Box::pin(futures_util::stream::iter(events)));
+
+        let response = profile.record_success(&weak_decision(), response, Instant::now(), 4.0)?;
+
+        // Success is attributed synchronously; streaming usage waits for consume.
+        let before = stats.snapshot()?;
+        assert_eq!(before.total_requests, 1);
+        assert_eq!(before.total_tokens.prompt, 0);
+
+        let mut stream = match response {
+            ChatResponse::OpenAiStream(stream) => stream,
+            _ => return Err(SwitchyardError::Other("expected stream response".into())),
+        };
+        let mut forwarded = 0;
+        while let Some(event) = stream.next().await {
+            event?;
+            forwarded += 1;
+        }
+        assert_eq!(forwarded, 2, "every event must still reach the client");
+
+        let after = stats.snapshot()?;
+        assert_eq!(after.total_tokens.prompt, 23);
+        assert_eq!(after.total_tokens.completion, 12);
+        let tier = after
+            .tiers
+            .get(TIER_WEAK)
+            .ok_or_else(|| SwitchyardError::Other("weak tier stats should be present".into()))?;
+        assert_eq!(tier.calls, 1);
+        assert_eq!(tier.model, "cheap/model");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn record_success_records_buffered_usage_immediately() -> Result<()> {
+        let stats = StatsAccumulator::new();
+        let profile = profile(stats.clone())?;
+
+        let response = ChatResponse::openai_completion(json!({
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2},
+        }));
+        let _response = profile.record_success(&weak_decision(), response, Instant::now(), 4.0)?;
+
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.total_requests, 1);
+        assert_eq!(snapshot.total_tokens.prompt, 7);
+        assert_eq!(snapshot.total_tokens.completion, 2);
+        Ok(())
+    }
 }
