@@ -62,9 +62,10 @@ class RedisPinStore:
             # Lazy import keeps ``redis`` an optional dependency.
             from redis.asyncio import from_url
 
-            # redis-py's from_url is untyped; keep strict mypy green for devs
-            # who install the optional extra.
-            self._client = from_url(  # type: ignore[no-untyped-call]
+            # redis-py's from_url is untyped when the optional extra is
+            # installed; without it the import is opaque and the ignore is
+            # unused — suppress both cases so strict mypy stays green either way.
+            self._client = from_url(  # type: ignore[no-untyped-call,unused-ignore]
                 self._url,
                 decode_responses=True,
                 socket_timeout=self._socket_timeout,
