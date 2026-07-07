@@ -102,6 +102,11 @@ CTX_UPSTREAM_MODEL = "_upstream_model"
 #: correlation id.
 CTX_ROUTE_SELECTION = "_route_selection"
 
+#: Client-visible successful fallback marker. Endpoints surface this as
+#: ``x-switchyard-fallback`` so callers can distinguish normal 200 responses
+#: from availability-preserving fallback paths.
+CTX_SWITCHYARD_FALLBACK = "_switchyard_fallback"
+
 
 __all__ = [
     "CTX_CALLER_API_KEY",
@@ -113,6 +118,7 @@ __all__ = [
     "CTX_ROUTE_SELECTION",
     "CTX_ROUTING",
     "CTX_TARGET_FORMAT",
+    "CTX_SWITCHYARD_FALLBACK",
     "CTX_UPSTREAM_ATTEMPTS_RECORDED",
     "CTX_UPSTREAM_HTTP_BODY",
     "CTX_UPSTREAM_HTTP_STATUS",

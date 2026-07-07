@@ -14,6 +14,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.processors._structured_output import build_response_format
 from switchyard.lib.processors.llm_classifier.signals import (
@@ -23,7 +24,7 @@ from switchyard.lib.processors.llm_classifier.signals import (
     RouteTier,
 )
 from switchyard.lib.processors.message_condensing import strip_markdown_fence, trim_messages
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.proxy_context import CTX_SWITCHYARD_FALLBACK, ProxyContext
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
@@ -381,6 +382,13 @@ class LLMClassifierRequestProcessor:
             signals = self._signal_schema.make_abstain(
                 self._config.fallback_recommended_tier,
             )
+            reason = (
+                "parse_error"
+                if isinstance(exc, LLMClassifierError)
+                else outcome_metrics.classifier_fail_open_reason(exc)
+            )
+            outcome_metrics.record_classifier_fail_open(reason)
+            ctx.metadata[CTX_SWITCHYARD_FALLBACK] = "classifier_error"
             _fail_open_exc: Exception | None = exc
         else:
             _fail_open_exc = None

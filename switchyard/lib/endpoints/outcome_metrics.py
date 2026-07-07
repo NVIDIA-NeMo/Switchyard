@@ -3,7 +3,7 @@
 
 """Outcome counters used to compute router-vs-direct error-rate ratios.
 
-Three process-wide counters published on ``/metrics``:
+Four process-wide counters published on ``/metrics``:
 
 * ``switchyard_client_responses_total{outcome}`` — every HTTP response
   returned to a client on an LLM-serving route. The denominator for the
@@ -20,6 +20,9 @@ Three process-wide counters published on ``/metrics``:
   incremented whenever a request's first upstream attempt failed and a
   subsequent attempt succeeded — direct evidence the steering logic
   rescued the request.
+* ``switchyard_classifier_fail_open_triggered_total{reason}`` — classifier
+  fallback events where routing used the default tier because the classifier
+  could not produce a usable verdict.
 
 Bucket semantics:
 
@@ -57,6 +60,16 @@ from threading import Lock
 from typing import Literal
 
 OutcomeBucket = Literal["success", "retryable_error", "other_error"]
+
+CLASSIFIER_FAIL_OPEN_REASONS = (
+    "upstream_5xx",
+    "upstream_4xx",
+    "timeout",
+    "ssl",
+    "parse_error",
+    "low_confidence",
+    "other",
+)
 
 #: HTTP status codes the success criterion counts as router-rescuable
 #: errors. 429 (rate limit), 500 (server error), 504 (gateway timeout).
@@ -104,6 +117,7 @@ def _seed_upstream() -> dict[tuple[str, str], int]:
 #: string, ``"none"`` for a non-HTTP failure, or a clamped ``"Nxx"`` class.
 _upstream_attempts: dict[tuple[str, str], int] = _seed_upstream()
 _retry_recovered: int = 0
+_classifier_fail_open: dict[str, int] = dict.fromkeys(CLASSIFIER_FAIL_OPEN_REASONS, 0)
 
 
 def classify(status_code: int) -> OutcomeBucket:
@@ -174,6 +188,49 @@ def record_retry_recovered() -> None:
         _retry_recovered += 1
 
 
+def classifier_fail_open_reason(exc: BaseException) -> str:
+    """Map classifier failures onto bounded Prometheus reasons."""
+    status = _status_code(exc)
+    if status is not None:
+        if 500 <= status < 600:
+            return "upstream_5xx"
+        if 400 <= status < 500:
+            return "upstream_4xx"
+    text = _exception_chain_text(exc)
+    if "ssl" in text or "certificate" in text:
+        return "ssl"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    return "other"
+
+
+def record_classifier_fail_open(reason: str) -> None:
+    """Record one classifier fallback-to-default event."""
+    if reason not in _classifier_fail_open:
+        reason = "other"
+    with _lock:
+        _classifier_fail_open[reason] += 1
+
+
+def _status_code(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _exception_chain_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.extend((type(current).__name__, str(current)))
+        current = current.__cause__ or current.__context__
+    return " ".join(parts).lower()
+
+
 def render_lines() -> list[str]:
     """Render the current counter state as Prometheus exposition lines.
 
@@ -184,6 +241,7 @@ def render_lines() -> list[str]:
         client = dict(_client_responses)
         upstream = dict(_upstream_attempts)
         recovered = _retry_recovered
+        fail_open = dict(_classifier_fail_open)
 
     lines: list[str] = []
     lines.append(
@@ -220,6 +278,17 @@ def render_lines() -> list[str]:
     lines.append("# TYPE switchyard_router_retry_recovered_total counter")
     lines.append(f"switchyard_router_retry_recovered_total {recovered}")
 
+    lines.append(
+        "# HELP switchyard_classifier_fail_open_triggered_total "
+        "Classifier fallbacks to the default tier after unusable classifier verdicts."
+    )
+    lines.append("# TYPE switchyard_classifier_fail_open_triggered_total counter")
+    for reason in CLASSIFIER_FAIL_OPEN_REASONS:
+        lines.append(
+            f'switchyard_classifier_fail_open_triggered_total{{reason="{reason}"}} '
+            f"{fail_open[reason]}"
+        )
+
     return lines
 
 
@@ -233,15 +302,20 @@ def _reset_for_tests() -> None:
         # each test starts from the same canonical seed.
         _upstream_attempts = _seed_upstream()
         _retry_recovered = 0
+        for reason in _classifier_fail_open:
+            _classifier_fail_open[reason] = 0
 
 
 __all__ = [
+    "CLASSIFIER_FAIL_OPEN_REASONS",
     "KNOWN_STATUS_CODES",
     "NO_STATUS_CODE",
     "RETRYABLE_STATUSES",
     "OutcomeBucket",
+    "classifier_fail_open_reason",
     "classify",
     "code_label",
+    "record_classifier_fail_open",
     "record_client_response",
     "record_retry_recovered",
     "record_upstream_attempt",

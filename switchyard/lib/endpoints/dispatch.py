@@ -11,7 +11,10 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from switchyard.lib.endpoints.error_envelope import error_response
 from switchyard.lib.endpoints.route_selection import route_selection_headers
 from switchyard.lib.endpoints.upstream_error import record_upstream_attempt_success
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.proxy_context import (
+    CTX_SWITCHYARD_FALLBACK,
+    ProxyContext,
+)
 from switchyard.lib.roles import TranslatedResponse
 from switchyard.lib.route_table import RouteTable
 from switchyard_rust.core import ChatRequest
@@ -110,6 +113,11 @@ def serialize_chain_result(
     silently opt out of spend attribution.
     """
     headers = route_selection_headers(ctx)
+    fallback = ctx.metadata.get(CTX_SWITCHYARD_FALLBACK)
+    if isinstance(fallback, str) and fallback:
+        # Client-visible marker for availability-preserving fallback paths,
+        # stamped alongside the route-selection headers on every branch.
+        headers["x-switchyard-fallback"] = fallback
     if isinstance(result, Response):
         # Merge rather than pass through untouched: no current chain path
         # yields a pre-built Response after a billed upstream success, but if

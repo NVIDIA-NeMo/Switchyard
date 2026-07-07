@@ -23,6 +23,10 @@ LLM-classifier router, which you tune with `--weak-model`, `--classifier-model`,
 single-model passthrough. The `--routing-profiles FILE` path is deprecated and
 remains only for launcher-owned legacy bundles.
 
+Production LLM-classifier deployments should alert on
+`switchyard_classifier_fail_open_triggered_total`; successful fail-open responses
+include `x-switchyard-fallback: classifier_error`.
+
 ## Features
 
 - **Protocol Translation**: convert between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats

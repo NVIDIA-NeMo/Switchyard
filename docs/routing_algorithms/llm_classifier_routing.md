@@ -90,6 +90,32 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 Treat these as smoke checks, not fixed test vectors: the classifier model and
 prompt determine the verdict.
 
+## Production observability
+
+`classifier_fail_open: true` keeps traffic available when the classifier times
+out, returns a bad status, hits an SSL failure, or emits unparseable JSON. The
+client still receives HTTP 200 from the configured default tier, so production
+deployments must alert on the fallback path rather than on client errors.
+
+Switchyard exposes two first-class signals when fail-open is triggered:
+
+- Prometheus counter:
+  `switchyard_classifier_fail_open_triggered_total{reason="upstream_5xx"|"upstream_4xx"|"timeout"|"ssl"|"parse_error"|"low_confidence"|"other"}`
+- HTTP response header: `x-switchyard-fallback: classifier_error`
+
+Recommended alert:
+
+```yaml
+- alert: SwitchyardClassifierFailOpen
+  expr: sum(rate(switchyard_classifier_fail_open_triggered_total[5m])) > 0.05
+  for: 10m
+  annotations:
+    summary: Switchyard classifier failing; requests are falling back to the default tier
+```
+
+`/v1/routing/stats` still includes the lower-level
+`classifier.total_errors` counter for debugging the classifier bucket.
+
 ## Useful options
 
 | Option | Use it when |

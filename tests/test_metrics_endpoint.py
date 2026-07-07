@@ -19,6 +19,7 @@ import pytest
 from fastapi import FastAPI
 from prometheus_client.parser import text_string_to_metric_families
 
+from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.endpoints.stats_endpoint import PROMETHEUS_CONTENT_TYPE, StatsEndpoint
 from switchyard.lib.stats_accumulator import StatsAccumulator
 
@@ -26,6 +27,13 @@ from switchyard.lib.stats_accumulator import StatsAccumulator
 @pytest.fixture
 def stats() -> StatsAccumulator:
     return StatsAccumulator()
+
+
+@pytest.fixture(autouse=True)
+def _reset_classifier_fail_open_metrics() -> None:
+    outcome_metrics._reset_for_tests()
+    yield
+    outcome_metrics._reset_for_tests()
 
 
 @pytest.fixture
@@ -90,6 +98,21 @@ async def test_metrics_returns_prometheus_exposition(
     assert (
         'switchyard_model_call_latency_ms_count{model="strong/m",tier="strong"} 1'
         in body
+    )
+
+
+async def test_metrics_includes_classifier_fail_open_counter(
+    client: httpx.AsyncClient,
+) -> None:
+    outcome_metrics.record_classifier_fail_open("upstream_5xx")
+
+    resp = await client.get("/metrics")
+
+    assert resp.status_code == 200
+    assert "# TYPE switchyard_classifier_fail_open_triggered_total counter" in resp.text
+    assert (
+        'switchyard_classifier_fail_open_triggered_total{reason="upstream_5xx"} 1'
+        in resp.text
     )
 
 

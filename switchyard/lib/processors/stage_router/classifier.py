@@ -11,7 +11,9 @@ import time
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.llm_client import OpenAILLMClient
+from switchyard.lib.proxy_context import CTX_SWITCHYARD_FALLBACK
 
 if TYPE_CHECKING:
     from switchyard.lib.proxy_context import ProxyContext
@@ -221,8 +223,12 @@ class TierClassifier:
                 max_tokens=4096,
                 extra_body=extra_body,
             )
-        except Exception:
+        except Exception as exc:
             log.warning("classifier call failed; falling open", exc_info=True)
+            outcome_metrics.record_classifier_fail_open(
+                outcome_metrics.classifier_fail_open_reason(exc)
+            )
+            ctx.metadata[CTX_SWITCHYARD_FALLBACK] = "classifier_error"
             if self._stats is not None:
                 try:
                     await self._stats.record_classifier_error(self._model)
@@ -243,7 +249,11 @@ class TierClassifier:
                 )
             except Exception:
                 pass
-        return _parse_tier(response)
+        tier = _parse_tier(response)
+        if tier is None:
+            outcome_metrics.record_classifier_fail_open("parse_error")
+            ctx.metadata[CTX_SWITCHYARD_FALLBACK] = "classifier_error"
+        return tier
 
 
 __all__ = ["CAPABLE_TIER", "TierClassifier", "EFFICIENT_TIER"]
