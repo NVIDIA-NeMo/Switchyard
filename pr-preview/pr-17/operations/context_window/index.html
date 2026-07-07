@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../../routing_algorithms/cascade_routing/">
+        <link rel="prev" href="../../routing_algorithms/stage_router_routing/">
       
       
         <link rel="next" href="../../cli_reference/">
@@ -798,14 +798,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../routing_algorithms/cascade_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Cascade Routing
+    Stage-Router Routing
   
 
     
@@ -1149,7 +1149,7 @@ context window, Switchyard evicts that target for the current request,
 reroutes to the configured fallback target, and retries once. If the fallback
 also overflows, the request fails with a 400 in the client's inbound wire
 format.</p>
-<p>Any multi-target route (cascade, random_routing, or deterministic) supports
+<p>Any multi-target route (stage-router, random_routing, or deterministic) supports
 this. Set <code>fallback_target_on_evict</code> on the route. Single-target routes
 (<code>type: passthrough</code>, <code>type: model</code>) have no alternative target, so the original
 overflow propagates unchanged.</p>
@@ -1157,9 +1157,9 @@ overflow propagates unchanged.</p>
 <p><code>fallback_target_on_evict</code> is required on every multi-target route and must
 match one of the route's declared target ids:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">my-cascade</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cascade</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">picker</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cascade_strong_default</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">my-stage-router</span><span class="p">:</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">stage_router</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">picker</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">capable_first</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span><span class="w">   </span><span class="c1"># must match strong.id or weak.id</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>

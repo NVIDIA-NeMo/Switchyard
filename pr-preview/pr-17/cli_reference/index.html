@@ -796,14 +796,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/cascade_routing/" class="md-nav__link">
+      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Cascade Routing
+    Stage-Router Routing
   
 
     
@@ -1742,7 +1742,7 @@ launchers:</p>
 </tr>
 <tr>
 <td><code>--routing-profiles PATH</code></td>
-<td>Deprecated path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>cascade</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
+<td>Deprecated path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>stage_router</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
 </tr>
 </tbody>
 </table>
@@ -1989,7 +1989,7 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># select a profile by id (the `model` field):</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>curl<span class="w"> </span>localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart-cascade&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart-stage-router&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
 </span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># mixed Rust/Python profile config on the same request APIs</span>
 </span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/python_profile.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
