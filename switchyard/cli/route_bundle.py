@@ -801,6 +801,7 @@ def _build_switchyard_for_route(
 
     if route_type == "latency_service":
         return _latency_service_switchyard(
+            model_id,
             route,
             target_defaults,
             stats=stats,
@@ -1131,6 +1132,7 @@ def _passthrough_target(
 
 
 def _latency_service_switchyard(
+    model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
     stats: StatsAccumulator,
@@ -1154,6 +1156,9 @@ def _latency_service_switchyard(
             "latency_service.latency_service_url",
         ),
         "endpoints": endpoints,
+        # The YAML route key is what clients send as ``model``; hand it to the
+        # backend so the per-model metric can attribute route-key traffic.
+        "route_model": model_id,
         "poll_interval_s": _optional_float(route.get("poll_interval_s"), default=10.0),
         "poll_timeout_s": _optional_float(route.get("poll_timeout_s"), default=5.0),
         "max_retries": _optional_int(route.get("max_retries"), default=2),

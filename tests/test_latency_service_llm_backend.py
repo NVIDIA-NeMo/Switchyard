@@ -1361,6 +1361,35 @@ class TestPerModelUpstreamMetrics:
             'outcome="retryable_error",code="500"} 1'
         ) in out
 
+    async def test_route_model_preserved_as_requested_model_label(self):
+        # Clients of a deployed route send the route key (e.g.
+        # ``nvidia/switchyard/gpt-5.4``), never an endpoint id. The route id is
+        # config-derived, so it joins the bounded label set instead of
+        # collapsing to the ``"other"`` sentinel.
+        config = LatencyServiceBackendConfig(
+            latency_service_url=LATENCY_SERVICE_URL,
+            endpoints=[_ep("azure/openai/gpt-5.4")],
+            route_model="nvidia/switchyard/gpt-5.4",
+        )
+        backend = _make_backend(config)
+        backend._clients["azure/openai/gpt-5.4"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+        _set_health(backend, {"azure/openai/gpt-5.4": EndpointHealthStatus.HEALTHY})
+
+        await backend.call(
+            ProxyContext(), _openai_request(model="nvidia/switchyard/gpt-5.4")
+        )
+
+        out = "\n".join(backend._render_prometheus_lines())
+        assert (
+            'switchyard_latency_upstream_attempts_total{'
+            'requested_model="nvidia/switchyard/gpt-5.4",'
+            'upstream_model="azure/openai/gpt-5.4",'
+            'outcome="success",code="200"} 1'
+        ) in out
+        assert 'requested_model="other"' not in out
+
     async def test_unknown_requested_model_normalized_to_sentinel(self):
         # A client-supplied model that is not a configured endpoint id must not
         # become a raw Prometheus label (unbounded cardinality); it collapses to

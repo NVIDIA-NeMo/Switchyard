@@ -145,10 +145,11 @@ class LatencyServiceLLMBackend(LLMBackend):
         # outcome, HTTP code). Kept separate from the layer-aggregate
         # ``switchyard_upstream_attempts_total`` so that counter stays model-free.
         # Cardinality is bounded: ``upstream_model`` comes from config, and
-        # ``requested_model`` is normalized to a configured endpoint id or the
-        # ``"other"`` sentinel in ``_record_model_attempt`` so a caller-supplied
-        # model string can't grow the series set. Mutated and read only on the
-        # event loop (like the affinity counters), so no lock.
+        # ``requested_model`` is normalized to a config-derived id (route id or
+        # endpoint id) or the ``"other"`` sentinel in ``_record_model_attempt``
+        # so a caller-supplied model string can't grow the series set. Mutated
+        # and read only on the event loop (like the affinity counters), so no
+        # lock.
         self._upstream_attempts_by_model: dict[tuple[str, str, str, str], int] = {}
 
         for ep_cfg in config.endpoints:
@@ -189,6 +190,15 @@ class LatencyServiceLLMBackend(LLMBackend):
                 ep_cfg.request_type,
                 ep_cfg.base_url,
             )
+
+        # Bounded ``requested_model`` label set: the configured endpoint ids
+        # plus the client-facing route id when the deployment supplied one
+        # (IH clients request the route key, e.g. ``nvidia/switchyard/gpt-5.4``,
+        # never an endpoint id). Both sources are config-derived, so metric
+        # cardinality stays bounded.
+        self._requested_model_ids = frozenset(self._clients) | (
+            frozenset((config.route_model,)) if config.route_model else frozenset()
+        )
 
         self._poller = HealthPoller(
             latency_service_url=config.latency_service_url,
@@ -602,11 +612,15 @@ class LatencyServiceLLMBackend(LLMBackend):
         """Count one upstream attempt for the per-model /metrics breakdown.
 
         Event-loop only (no lock). ``requested_model`` is the client-supplied
-        model; it is bounded to a configured endpoint id (or the ``"other"``
-        sentinel) before becoming a Prometheus label, so caller-controlled input
-        can't create unbounded metric-series cardinality.
+        model; it is bounded to a config-derived id — the route id
+        (``config.route_model``) or a configured endpoint id — with the
+        ``"other"`` sentinel as fallback before becoming a Prometheus label, so
+        caller-controlled input can't create unbounded metric-series
+        cardinality.
         """
-        requested = requested_model if requested_model in self._clients else "other"
+        requested = (
+            requested_model if requested_model in self._requested_model_ids else "other"
+        )
         key = (requested, upstream_model, outcome, code)
         self._upstream_attempts_by_model[key] = (
             self._upstream_attempts_by_model.get(key, 0) + 1

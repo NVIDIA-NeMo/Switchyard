@@ -1633,6 +1633,29 @@ def test_latency_endpoint_request_type_reaches_backend_config() -> None:
     assert by_model["w"].request_type == "openai_chat"
 
 
+def test_latency_route_key_reaches_backend_as_route_model() -> None:
+    """The YAML route key becomes the backend's metrics route_model id."""
+    table = build_route_bundle_table({
+        "routes": {
+            "nvidia/switchyard/gpt-5.4": {
+                "type": "latency_service",
+                "latency_service_url": "http://ls.test:8080",
+                "endpoints": [
+                    {
+                        "model": "azure/openai/gpt-5.4",
+                        "api_key": "k",
+                        "base_url": "https://ls.test/v1",
+                    },
+                ],
+            },
+        },
+    })
+
+    backend = _latency_backend(table.lookup_switchyard("nvidia/switchyard/gpt-5.4"))
+
+    assert backend._config.route_model == "nvidia/switchyard/gpt-5.4"
+
+
 def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
     """affinity_warmup_turns is a deterministic-route knob."""
     table = build_route_bundle_table({

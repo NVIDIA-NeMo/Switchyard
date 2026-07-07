@@ -83,6 +83,13 @@ class LatencyServiceBackendConfig(BaseModel):
         max_retries: On error, retry on a different endpoint up to this
             many times.  Dedup prevents re-selecting an endpoint that
             already failed for the same request.
+        route_model: Client-facing route id this backend serves (the
+            route-table / YAML route key, e.g.
+            ``"nvidia/switchyard/gpt-5.4"``).  Metrics-only: it joins the
+            bounded ``requested_model`` label set on
+            ``switchyard_latency_upstream_attempts_total`` so route-key
+            traffic is attributed instead of collapsing to ``"other"``.
+            Has no effect on routing.
         credential_policy: Which credential authenticates the upstream call.
             The caller key is read from the ``x-switchyard-api-key`` header
             (preferred — it survives proxies such as LiteLLM that strip
@@ -114,6 +121,7 @@ class LatencyServiceBackendConfig(BaseModel):
 
     latency_service_url: str = ""
     endpoints: list[LatencyServiceEndpoint] = Field(default_factory=list)
+    route_model: str | None = None
     poll_interval_s: float = 10.0
     poll_timeout_s: float = 5.0
     max_retries: int = 2
