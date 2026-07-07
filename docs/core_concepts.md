@@ -83,11 +83,12 @@ covers it in full.
 
 ## Formats and translation
 
-Clients reach Switchyard in one of three inbound formats: OpenAI Chat
-Completions, Anthropic Messages, or OpenAI Responses. Each target has its own
-backend format, set by its `format:` field, which is one of `openai`,
-`anthropic`, `responses`, or `auto`. When the two differ, Switchyard translates
-the request on the way out and the response on the way back.
+Clients reach Switchyard in one of four inbound formats: OpenAI Chat
+Completions, Anthropic Messages, OpenAI Responses, or Gemini generateContent.
+Each target has its own backend format, set by its `format:` field, which is
+one of `openai`, `anthropic`, `responses`, `gemini`, or `auto`. When the two
+differ, Switchyard translates the request on the way out and the response on
+the way back.
 
 That translation is what lets Claude Code, which speaks Anthropic Messages, run
 against an OpenAI-compatible model, and the reverse. The

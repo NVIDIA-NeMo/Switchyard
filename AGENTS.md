@@ -162,11 +162,13 @@ switchyard/
 │   │   ├── base.py                 # ChatResponse, ChatResponseType compatibility re-export
 │   │   ├── openai_chat.py          # ResponseStream
 │   │   ├── openai_responses.py     # ResponsesApiStream
-│   │   └── anthropic.py            # AnthropicResponseStream
+│   │   ├── anthropic.py            # AnthropicResponseStream
+│   │   └── gemini.py               # GeminiResponseStream
 │   ├── backends/                   # LLMBackend implementations
 │   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
 │   │   ├── openai_native_backend.py        # OpenAiNativeBackend
 │   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
+│   │   ├── gemini_native_llm_backend.py    # GeminiNativeBackend
 │   │   ├── latency_service_llm_backend.py  # LatencyServiceLLMBackend
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
 │   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
@@ -187,6 +189,7 @@ switchyard/
 │   ├── endpoints/                  # FastAPI endpoint wrappers (require `nemo-switchyard[server]`)
 │   │   ├── openai_chat_endpoint.py         # OpenAIChatEndpoint
 │   │   ├── anthropic_messages_endpoint.py  # AnthropicMessagesEndpoint
+│   │   ├── gemini_endpoint.py              # GeminiEndpoint
 │   │   ├── responses_endpoint.py           # ResponsesEndpoint
 │   │   ├── stats_endpoint.py               # StatsEndpoint
 │   │   ├── sse_helpers.py
@@ -330,6 +333,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 | `OPENAI_API_KEY` | API key for OpenAI-compatible backends |
 | `OPENAI_BASE_URL` | Base URL for OpenAI-compatible API |
 | `ANTHROPIC_API_KEY` | API key for Anthropic Claude |
+| `GEMINI_API_KEY` | API key for Google Gemini generateContent backends |
 | `NVIDIA_API_KEY` | API key for NVIDIA NIM / Inference Hub |
 | `OPENROUTER_API_KEY` | OpenRouter key for examples and saved provider setup; pass via `--api-key` or `switchyard configure` |
 | `SWITCHYARD_INTAKE_CAPTURE_CONTENT` | Set truthy to include prompt/response text in intake; default off (metadata-only) |

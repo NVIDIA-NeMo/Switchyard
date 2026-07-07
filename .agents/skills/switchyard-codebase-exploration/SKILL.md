@@ -42,7 +42,7 @@ Before making a code change, be able to name:
 
 - the client ingress path: CLI, FastAPI endpoint, Python API, or route-table host
 - the chain slot touched: request-side component, `LLMBackend`, response-side component, `TranslationEngine`, or wiring only
-- the wire formats involved: OpenAI Chat, Anthropic Messages, OpenAI Responses, streaming/non-streaming
+- the wire formats involved: OpenAI Chat, Anthropic Messages, OpenAI Responses, Gemini generateContent, streaming/non-streaming
 - the profile/route-table/export path that exposes the behavior
 - the focused tests and the broad validation gate to run
 

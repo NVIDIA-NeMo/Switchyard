@@ -12,13 +12,13 @@ flowchart TB
     switchyard["Switchyard<br/>Local proxy, shared service, or embedded runtime"]
     backends["Model backends<br/>Hosted providers, private endpoints, local models"]
 
-    clients <-->|"OpenAI and Anthropic API formats"| switchyard
+    clients <-->|"OpenAI, Anthropic, and Gemini API formats"| switchyard
     switchyard <-->|"Provider-compatible requests and responses"| backends
 ```
 
-Clients connect using supported OpenAI or Anthropic API formats. Switchyard can
-route a request to a backend with a different native format and still return the
-response shape expected by the client.
+Clients connect using supported OpenAI, Anthropic, or Gemini API formats.
+Switchyard can route a request to a backend with a different native format and
+still return the response shape expected by the client.
 
 ## Request Lifecycle
 
@@ -48,6 +48,7 @@ formats select an endpoint directly and do not run capability probes.
 | `ANTHROPIC` | Always sends to `/v1/messages`. No probe. | You know the upstream is Anthropic-native (Anthropic API, NIM Claude routes). |
 | `RESPONSES` | Always sends to `/v1/responses`. No probe. | You know the upstream supports the OpenAI Responses API. Fails on NIM / non-OpenAI upstreams. |
 | `OPENAI` | Always sends to `/v1/chat/completions`. No probe. | You know the upstream is OpenAI-compatible (NIM, OpenRouter, etc). Safe universal choice. |
+| `GEMINI` | Always sends to `/v1beta/models/{model}:generateContent`. No probe. | You know the upstream is Gemini-native (`generativelanguage.googleapis.com`). Bare `gemini*` model IDs also fast-path here under `AUTO`. |
 | `AUTO` | Probes at startup, picks best format (see below). | Upstream is unknown or varies across deployments. Used by Claude Code and Codex launchers. OpenClaw is intentionally pinned to `OPENAI`. |
 | *(omitted)* | Defaults to `OPENAI` — no probe, no fast-path. Silently uses Chat Completions, which is wrong for Anthropic/Bedrock models. Always set `format:` explicitly. |  |
 Claude Code and Codex launchers use `AUTO` for their single-model targets.
