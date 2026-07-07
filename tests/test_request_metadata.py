@@ -123,7 +123,7 @@ class TestCallerKeyForwardedButNotRetained:
         attach_caller_api_key(ctx, headers)
 
         # Extracted for upstream forwarding...
-        assert ctx.metadata[CTX_CALLER_API_KEY] == "nvapi-secret"
+        assert ctx.metadata[CTX_CALLER_API_KEY] == "nvapi-secret"  # pragma: allowlist secret
         # ...but the retained header map carries no raw credential.
         stored = ctx.metadata[CTX_PROFILE_REQUEST_HEADERS]
         assert stored["x-switchyard-api-key"] == "[REDACTED]"
