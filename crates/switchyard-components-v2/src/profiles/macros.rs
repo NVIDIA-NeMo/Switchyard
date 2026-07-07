@@ -43,26 +43,43 @@ macro_rules! profile_types {
         }
 
         /// Parses a serialized profile body by dispatching to the owning config type.
+        ///
+        /// The `type` discriminator is matched with `-` and `_` treated as
+        /// equivalent, so a snake_case name copied from a legacy route bundle
+        /// (e.g. `random_routing`) resolves to its v2 profile, and a hyphenated
+        /// spelling of an underscore type (e.g. `stage-router`) resolves too.
         pub(crate) fn parse_profile_config(
             profile_type: &str,
             value: serde_json::Value,
             env: &crate::config::ProfileBuildEnv<'_>,
         ) -> switchyard_core::Result<ProfileConfigEntry> {
-            match profile_type {
-                $(
-                    <$config as crate::config::ProfileConfigDefinition>::PROFILE_TYPE => {
-                        let config =
-                            <$config as crate::config::ProfileConfigDefinition>::parse_profile_config(
-                                value,
-                                env,
-                            )?;
-                        Ok(ProfileConfigEntry::$config(Box::new(config)))
-                    }
-                )+
-                other => Err(switchyard_core::SwitchyardError::InvalidConfig(format!(
-                    "unknown profile type `{other}`"
-                ))),
+            // Compare treating `-` and `_` as equal without allocating. Profile
+            // type names are short ASCII, so an equal-length per-byte scan that
+            // folds the separators is enough. Registered names must stay unique
+            // under this folding (they are today) so dispatch is unambiguous.
+            fn eq_ignoring_separators(a: &str, b: &str) -> bool {
+                a.len() == b.len()
+                    && a.bytes().zip(b.bytes()).all(|(x, y)| {
+                        x == y || (matches!(x, b'-' | b'_') && matches!(y, b'-' | b'_'))
+                    })
             }
+
+            $(
+                if eq_ignoring_separators(
+                    profile_type,
+                    <$config as crate::config::ProfileConfigDefinition>::PROFILE_TYPE,
+                ) {
+                    let config =
+                        <$config as crate::config::ProfileConfigDefinition>::parse_profile_config(
+                            value,
+                            env,
+                        )?;
+                    return Ok(ProfileConfigEntry::$config(Box::new(config)));
+                }
+            )+
+            Err(switchyard_core::SwitchyardError::InvalidConfig(format!(
+                "unknown profile type `{profile_type}`"
+            )))
         }
     };
 }

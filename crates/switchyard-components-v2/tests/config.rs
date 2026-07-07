@@ -309,6 +309,73 @@ profiles:
     Ok(())
 }
 
+// `-` and `_` are equivalent in the `type` discriminator, so a name written with
+// either separator resolves to the same v2 profile: a legacy `random_routing`
+// spelling, and `stage-router` for the underscore-canonical stage router.
+#[test]
+fn profile_type_separators_are_normalized_during_resolution() -> Result<()> {
+    let input = r#"
+endpoints:
+  nvidia:
+    api_key: ${NVIDIA_API_KEY}
+    base_url: https://inference-api.nvidia.com/v1
+
+targets:
+  strong:
+    endpoint: nvidia
+    model: nvidia/moonshotai/kimi-k2.5
+    format: openai
+  weak:
+    endpoint: nvidia
+    model: nvidia/nvidia/nemotron-nano-9b-v2
+    format: openai
+  classifier:
+    endpoint: nvidia
+    model: nvidia/nvidia/nemotron-nano-9b-v2
+    format: openai
+
+profiles:
+  snake-llm:
+    type: llm_routing
+    strong: strong
+    weak: weak
+    classifier: classifier
+    profile_name: coding_agent
+  hyphen-stage:
+    type: stage-router
+    capable: strong
+    efficient: weak
+    fallback_target_on_evict: strong
+    picker: capable_first
+    confidence_threshold: 0.7
+  snake-latency:
+    type: latency_service
+    latency_service_url: http://latency.local
+    targets: [strong, weak]
+"#;
+
+    let plan = parse_yaml(input)?.resolve()?;
+
+    // Resolved profiles report the canonical type name regardless of the
+    // separator spelled in the config.
+    assert_eq!(
+        plan.profile_type(&ProfileId::new("snake-llm")?),
+        Some("llm-routing")
+    );
+    assert_eq!(
+        plan.profile_type(&ProfileId::new("hyphen-stage")?),
+        Some("stage_router")
+    );
+    assert_eq!(
+        plan.profile_type(&ProfileId::new("snake-latency")?),
+        Some("latency-service")
+    );
+
+    // The profiles build, not just parse.
+    assert_eq!(plan.build_profiles()?.len(), 3);
+    Ok(())
+}
+
 // Missing profile type discriminators should fail while parsing the document.
 #[test]
 fn missing_profile_type_is_rejected_during_document_parse() {
