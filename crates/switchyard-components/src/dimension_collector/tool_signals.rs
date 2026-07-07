@@ -320,6 +320,14 @@ pub fn extract_tool_signals_with_window(
                 .unwrap_or(&[]);
             extract_from_messages_openai_chat(messages, recent_window)
         }
+        ChatRequestType::Gemini => {
+            let contents = obj
+                .get("contents")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            extract_from_contents_gemini(contents, recent_window)
+        }
     }
 }
 
@@ -509,6 +517,68 @@ fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolRe
         tool_texts,
         tool_calls,
         items.len() as u32,
+        prompt_char_count,
+        recent_window,
+    )
+}
+
+fn extract_from_contents_gemini(contents: &[Value], recent_window: usize) -> ToolResultSignal {
+    let mut tool_texts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
+    let mut prompt_char_count: u32 = 0;
+
+    for content in contents {
+        let Some(obj) = content.as_object() else {
+            continue;
+        };
+        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
+        let Some(parts) = obj.get("parts").and_then(Value::as_array) else {
+            continue;
+        };
+        for part in parts {
+            let Some(p) = part.as_object() else { continue };
+            if let Some(response) = p.get("functionResponse").and_then(|fr| fr.get("response")) {
+                // Function responses carry arbitrary JSON; classify the
+                // serialized form so error markers inside it are visible.
+                tool_texts.push(
+                    response
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| response.to_string()),
+                );
+                continue;
+            }
+            if role == "model" {
+                if let Some(call) = p.get("functionCall").and_then(Value::as_object) {
+                    let Some(name) = call.get("name").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    // Gemini delivers `args` as a parsed object.
+                    let command = call
+                        .get("args")
+                        .and_then(Value::as_object)
+                        .and_then(|args| args.get("command"))
+                        .and_then(Value::as_str)
+                        .map(|s| s.to_lowercase());
+                    tool_calls.push(ObservedToolCall {
+                        name: name.to_string(),
+                        command,
+                    });
+                }
+                continue;
+            }
+            if role == "user" {
+                if let Some(text) = p.get("text").and_then(Value::as_str) {
+                    prompt_char_count = text.len() as u32;
+                }
+            }
+        }
+    }
+
+    build_signal(
+        tool_texts,
+        tool_calls,
+        contents.len() as u32,
         prompt_char_count,
         recent_window,
     )

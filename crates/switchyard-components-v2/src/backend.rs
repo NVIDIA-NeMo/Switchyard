@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use switchyard_components::backends::{AnthropicNativeBackend, OpenAiNativeBackend};
+use switchyard_components::backends::{
+    AnthropicNativeBackend, GeminiNativeBackend, OpenAiNativeBackend,
+};
 use switchyard_core::{
     BackendFormat, ChatRequest, ChatResponse, LlmTarget, Result, SwitchyardError,
 };
@@ -49,6 +51,7 @@ pub(crate) fn native_target_backend(target: LlmTarget) -> Result<TargetBackend> 
             Arc::new(OpenAiNativeBackend::new(target.clone())?)
         }
         BackendFormat::Anthropic => Arc::new(AnthropicNativeBackend::new(target.clone())?),
+        BackendFormat::Gemini => Arc::new(GeminiNativeBackend::new(target.clone())?),
         BackendFormat::Auto => {
             return Err(SwitchyardError::InvalidConfig(format!(
                 "target {} must have a resolved backend format",
@@ -68,6 +71,13 @@ impl ProfileBackend for OpenAiNativeBackend {
 
 #[async_trait]
 impl ProfileBackend for AnthropicNativeBackend {
+    async fn call(&self, request: &ChatRequest) -> Result<ChatResponse> {
+        self.call_without_context(request).await
+    }
+}
+
+#[async_trait]
+impl ProfileBackend for GeminiNativeBackend {
     async fn call(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.call_without_context(request).await
     }

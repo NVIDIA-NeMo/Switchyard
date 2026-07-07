@@ -273,12 +273,13 @@ impl AnthropicTransport for ReqwestAnthropicTransport {
 fn validate_target_format(target: &LlmTarget) -> Result<()> {
     match target.format {
         BackendFormat::Anthropic => Ok(()),
-        BackendFormat::Auto | BackendFormat::OpenAi | BackendFormat::Responses => {
-            Err(SwitchyardError::InvalidConfig(format!(
-                "AnthropicNativeBackend requires a target with resolved Anthropic format, got {:?} for {}",
-                target.format, target.id
-            )))
-        }
+        BackendFormat::Auto
+        | BackendFormat::OpenAi
+        | BackendFormat::Responses
+        | BackendFormat::Gemini => Err(SwitchyardError::InvalidConfig(format!(
+            "AnthropicNativeBackend requires a target with resolved Anthropic format, got {:?} for {}",
+            target.format, target.id
+        ))),
     }
 }
 

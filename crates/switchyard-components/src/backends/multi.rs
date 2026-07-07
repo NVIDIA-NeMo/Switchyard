@@ -20,10 +20,11 @@ use switchyard_core::{
 
 use super::{BackendSelection, BackendSelectionReason};
 
-const DEFAULT_SUPPORTED_REQUEST_TYPES: [ChatRequestType; 3] = [
+const DEFAULT_SUPPORTED_REQUEST_TYPES: [ChatRequestType; 4] = [
     ChatRequestType::OpenAiChat,
     ChatRequestType::OpenAiResponses,
     ChatRequestType::Anthropic,
+    ChatRequestType::Gemini,
 ];
 
 /// One configured upstream target and the backend that can call it.

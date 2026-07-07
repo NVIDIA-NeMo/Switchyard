@@ -60,7 +60,8 @@ impl IntakeResponseProcessor {
         match response {
             ChatResponse::OpenAiCompletion(_)
             | ChatResponse::OpenAiResponsesCompletion(_)
-            | ChatResponse::AnthropicCompletion(_) => {
+            | ChatResponse::AnthropicCompletion(_)
+            | ChatResponse::GeminiCompletion(_) => {
                 let payload = self.buffered_payload(ctx, &response);
                 enqueue_payload(Arc::clone(&self.sink), payload).await;
                 Ok(response)
@@ -90,6 +91,13 @@ impl IntakeResponseProcessor {
                     IntakeStreamFormat::Anthropic,
                 )))
             }
+            ChatResponse::GeminiStream(stream) => Ok(ChatResponse::GeminiStream(wrap_stream(
+                stream,
+                self.builder.clone(),
+                Arc::clone(&self.sink),
+                IntakePayloadContext::from_proxy_context(ctx, None),
+                IntakeStreamFormat::Gemini,
+            ))),
         }
     }
 

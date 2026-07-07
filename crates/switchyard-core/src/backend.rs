@@ -24,6 +24,8 @@ pub enum BackendFormat {
     Responses,
     /// Anthropic Messages wire format.
     Anthropic,
+    /// Gemini generateContent wire format.
+    Gemini,
 }
 
 /// Optional endpoint overrides for an LLM target.

@@ -248,9 +248,24 @@ impl IntakePayloadBuilder {
                         "failed to translate Anthropic intake response to OpenAI Chat: {error}"
                     ))
                 }),
+            ChatResponseType::GeminiCompletion => self
+                .translation
+                .translate_response(
+                    WireFormat::GeminiGenerateContent,
+                    WireFormat::OpenAiChat,
+                    body,
+                    &self.policy,
+                )
+                .map(|output| output.body)
+                .map_err(|error| {
+                    SwitchyardError::Processor(format!(
+                        "failed to translate Gemini intake response to OpenAI Chat: {error}"
+                    ))
+                }),
             ChatResponseType::OpenAiStream
             | ChatResponseType::OpenAiResponsesStream
-            | ChatResponseType::AnthropicStream => Err(SwitchyardError::Processor(
+            | ChatResponseType::AnthropicStream
+            | ChatResponseType::GeminiStream => Err(SwitchyardError::Processor(
                 "intake payload builder requires a buffered response".to_string(),
             )),
         }
@@ -356,6 +371,7 @@ pub fn request_type_value(request_type: ChatRequestType) -> &'static str {
         ChatRequestType::OpenAiChat => "openai_chat",
         ChatRequestType::OpenAiResponses => "openai_responses",
         ChatRequestType::Anthropic => "anthropic",
+        ChatRequestType::Gemini => "gemini",
     }
 }
 
@@ -368,6 +384,8 @@ pub enum IntakeStreamFormat {
     OpenAiResponses,
     /// Anthropic Messages stream.
     Anthropic,
+    /// Gemini generateContent stream.
+    Gemini,
 }
 
 /// Format-specific stream capture state.
@@ -378,6 +396,8 @@ pub enum IntakeStreamCapture {
     OpenAiResponses(ResponsesStreamCapture),
     /// Anthropic stream capture.
     Anthropic(AnthropicStreamCapture),
+    /// Gemini stream capture.
+    Gemini(GeminiStreamCapture),
 }
 
 impl IntakeStreamCapture {
@@ -393,6 +413,7 @@ impl IntakeStreamCapture {
             IntakeStreamFormat::Anthropic => {
                 Self::Anthropic(AnthropicStreamCapture::new(served_model))
             }
+            IntakeStreamFormat::Gemini => Self::Gemini(GeminiStreamCapture::new(served_model)),
         }
     }
 
@@ -402,6 +423,7 @@ impl IntakeStreamCapture {
             Self::OpenAiChat(capture) => capture.observe(event),
             Self::OpenAiResponses(capture) => capture.observe(event),
             Self::Anthropic(capture) => capture.observe(event),
+            Self::Gemini(capture) => capture.observe(event),
         }
     }
 
@@ -411,6 +433,7 @@ impl IntakeStreamCapture {
             Self::OpenAiChat(capture) => Ok(capture.finish()),
             Self::OpenAiResponses(capture) => capture.finish(),
             Self::Anthropic(capture) => Ok(capture.finish()),
+            Self::Gemini(capture) => Ok(capture.finish()),
         }
     }
 }
@@ -442,6 +465,15 @@ pub fn responses_response_from_stream(
     served_model: Option<&str>,
 ) -> Result<Value> {
     let mut capture = ResponsesStreamCapture::new(served_model);
+    for event in events {
+        capture.observe(event);
+    }
+    capture.finish()
+}
+
+/// Reconstructs an OpenAI Chat completion from Gemini stream chunks.
+pub fn gemini_response_from_stream(events: &[StreamEvent], served_model: Option<&str>) -> Value {
+    let mut capture = GeminiStreamCapture::new(served_model);
     for event in events {
         capture.observe(event);
     }
@@ -664,6 +696,7 @@ fn request_wire_format(request_type: ChatRequestType) -> WireFormat {
         ChatRequestType::OpenAiChat => WireFormat::OpenAiChat,
         ChatRequestType::OpenAiResponses => WireFormat::OpenAiResponses,
         ChatRequestType::Anthropic => WireFormat::AnthropicMessages,
+        ChatRequestType::Gemini => WireFormat::GeminiGenerateContent,
     }
 }
 
@@ -1510,6 +1543,179 @@ impl AnthropicStreamCapture {
         }
         response
     }
+}
+
+/// Capture state for Gemini generateContent streaming.
+///
+/// Gemini stream chunks are complete `GenerateContentResponse` objects:
+/// text arrives as incremental `parts`, function calls arrive whole in a
+/// single chunk, and the terminal chunk carries `finishReason` plus the
+/// authoritative `usageMetadata`. Only `candidates[0]` is captured.
+pub struct GeminiStreamCapture {
+    /// Backend-selected model fallback.
+    served_model: Option<String>,
+    /// Response ID from the stream.
+    id: Option<String>,
+    /// Model version reported by the stream.
+    model: Option<String>,
+    /// Accumulated non-thought text content.
+    content: String,
+    /// Completed OpenAI-shaped tool calls.
+    tool_calls: Vec<Value>,
+    /// Gemini finish reason from the terminal chunk.
+    finish_reason: Option<String>,
+    /// Latest usageMetadata object observed on the stream.
+    usage: Option<Value>,
+}
+
+impl GeminiStreamCapture {
+    /// Creates empty Gemini stream capture state.
+    fn new(served_model: Option<&str>) -> Self {
+        Self {
+            served_model: served_model.map(str::to_string),
+            id: None,
+            model: None,
+            content: String::new(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            usage: None,
+        }
+    }
+
+    /// Merges one Gemini stream chunk into the capture state.
+    fn observe(&mut self, event: &StreamEvent) {
+        let StreamEvent::Json(value) = event else {
+            return;
+        };
+        if self.id.is_none() {
+            self.id = value
+                .get("responseId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if self.model.is_none() {
+            self.model = value
+                .get("modelVersion")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if let Some(usage) = value.get("usageMetadata").filter(|usage| usage.is_object()) {
+            self.usage = Some(usage.clone());
+        }
+        let Some(candidate) = value
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|candidates| candidates.first())
+        else {
+            return;
+        };
+        if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
+            self.finish_reason = Some(reason.to_string());
+        }
+        let Some(parts) = candidate
+            .get("content")
+            .and_then(|content| content.get("parts"))
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        for part in parts {
+            // Thought parts are private reasoning; keep them out of content.
+            if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                self.content.push_str(text);
+                continue;
+            }
+            if let Some(call) = part.get("functionCall").and_then(Value::as_object) {
+                let index = self.tool_calls.len();
+                self.tool_calls.push(json!({
+                    "id": format!("call_switchyard_{index}"),
+                    "type": "function",
+                    "function": {
+                        "name": call.get("name").and_then(Value::as_str).unwrap_or_default(),
+                        "arguments": json_argument_string(call.get("args")),
+                    },
+                }));
+            }
+        }
+    }
+
+    /// Builds a buffered OpenAI Chat completion from captured Gemini state.
+    fn finish(self) -> Value {
+        let has_tool_calls = !self.tool_calls.is_empty();
+        let mut message = json!({
+            "role": "assistant",
+            "content": if self.content.is_empty() { Value::Null } else { Value::String(self.content) },
+        });
+        if has_tool_calls {
+            if let Value::Object(object) = &mut message {
+                object.insert("tool_calls".to_string(), Value::Array(self.tool_calls));
+            }
+        }
+        let mut response = json!({
+            "id": self.id.unwrap_or_else(|| "gemini_switchyard_stream".to_string()),
+            "object": "chat.completion",
+            "model": self
+                .model
+                .or(self.served_model)
+                .unwrap_or_else(|| UNKNOWN_MODEL.to_string()),
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": self
+                    .finish_reason
+                    .map(|reason| gemini_finish_reason_to_openai(&reason, has_tool_calls))
+                    .unwrap_or_else(|| default_openai_finish_reason(has_tool_calls)),
+            }],
+        });
+        if let Some(usage) = self.usage {
+            let prompt_tokens = coerce_i64(usage.get("promptTokenCount")).unwrap_or(0);
+            let completion_tokens = coerce_i64(usage.get("candidatesTokenCount"))
+                .unwrap_or(0)
+                .saturating_add(coerce_i64(usage.get("thoughtsTokenCount")).unwrap_or(0));
+            let cached_tokens = coerce_i64(usage.get("cachedContentTokenCount")).unwrap_or(0);
+            let mut usage_object = Map::new();
+            usage_object.insert("prompt_tokens".to_string(), Value::from(prompt_tokens));
+            usage_object.insert(
+                "completion_tokens".to_string(),
+                Value::from(completion_tokens),
+            );
+            usage_object.insert(
+                "total_tokens".to_string(),
+                Value::from(prompt_tokens.saturating_add(completion_tokens)),
+            );
+            if cached_tokens != 0 {
+                usage_object.insert(
+                    "prompt_tokens_details".to_string(),
+                    json!({"cached_tokens": cached_tokens}),
+                );
+            }
+            if let Value::Object(object) = &mut response {
+                object.insert("usage".to_string(), Value::Object(usage_object));
+            }
+        }
+        response
+    }
+}
+
+/// Maps Gemini finish reasons onto OpenAI Chat finish reasons.
+///
+/// Gemini reports `STOP` even for function-call turns, so tool-call presence
+/// takes precedence over the raw reason.
+fn gemini_finish_reason_to_openai(reason: &str, has_tool_calls: bool) -> Value {
+    Value::String(
+        match reason {
+            "STOP" if has_tool_calls => "tool_calls",
+            "STOP" => "stop",
+            "MAX_TOKENS" => "length",
+            "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
+            | "IMAGE_SAFETY" => "content_filter",
+            other => other,
+        }
+        .to_string(),
+    )
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

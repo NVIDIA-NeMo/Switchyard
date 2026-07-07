@@ -51,6 +51,12 @@ impl PyChatResponseType {
     #[classattr]
     const ANTHROPIC_STREAM: Self = Self::new(ChatResponseType::AnthropicStream);
 
+    #[classattr]
+    const GEMINI_COMPLETION: Self = Self::new(ChatResponseType::GeminiCompletion);
+
+    #[classattr]
+    const GEMINI_STREAM: Self = Self::new(ChatResponseType::GeminiStream);
+
     #[getter]
     fn value(&self) -> &'static str {
         response_type_name(self.inner)
@@ -75,6 +81,8 @@ impl PyChatResponseType {
             ChatResponseType::OpenAiResponsesStream => 4,
             ChatResponseType::AnthropicCompletion => 5,
             ChatResponseType::AnthropicStream => 6,
+            ChatResponseType::GeminiCompletion => 7,
+            ChatResponseType::GeminiStream => 8,
         }
     }
 }
@@ -148,6 +156,21 @@ impl PyChatResponse {
         Self::stream_response(stream.py(), ChatResponseType::AnthropicStream, stream)
     }
 
+    #[classmethod]
+    fn gemini_completion(_cls: &Bound<'_, PyType>, body: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: PyChatResponseInner::Buffered {
+                response_type: ChatResponseType::GeminiCompletion,
+                body: value_from_python(body)?,
+            },
+        })
+    }
+
+    #[classmethod]
+    fn gemini_stream(_cls: &Bound<'_, PyType>, stream: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Self::stream_response(stream.py(), ChatResponseType::GeminiStream, stream)
+    }
+
     #[getter]
     fn response_type(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         response_type_object(py, self.response_type_inner())
@@ -191,9 +214,17 @@ impl PyChatResponse {
                     body,
                 }
             }
+            ChatResponseType::GeminiCompletion => {
+                let body = value_from_python(body)?;
+                PyChatResponseInner::Buffered {
+                    response_type: ChatResponseType::GeminiCompletion,
+                    body,
+                }
+            }
             ChatResponseType::OpenAiStream
             | ChatResponseType::OpenAiResponsesStream
-            | ChatResponseType::AnthropicStream => {
+            | ChatResponseType::AnthropicStream
+            | ChatResponseType::GeminiStream => {
                 return Err(PyValueError::new_err(
                     "streaming ChatResponse values do not have a replaceable body",
                 ));
@@ -246,6 +277,14 @@ impl PyChatResponse {
                 response_type: ChatResponseType::AnthropicStream,
                 stream: Py::new(py, PyResponseStream::from_core_stream(stream))?,
             },
+            ChatResponse::GeminiCompletion(response) => PyChatResponseInner::Buffered {
+                response_type: ChatResponseType::GeminiCompletion,
+                body: response.into_body(),
+            },
+            ChatResponse::GeminiStream(stream) => PyChatResponseInner::Stream {
+                response_type: ChatResponseType::GeminiStream,
+                stream: Py::new(py, PyResponseStream::from_core_stream(stream))?,
+            },
         };
         Ok(Self { inner })
     }
@@ -263,9 +302,11 @@ impl PyChatResponse {
                 ChatResponseType::AnthropicCompletion => {
                     ChatResponse::anthropic_completion(body.clone())
                 }
+                ChatResponseType::GeminiCompletion => ChatResponse::gemini_completion(body.clone()),
                 ChatResponseType::OpenAiStream
                 | ChatResponseType::OpenAiResponsesStream
-                | ChatResponseType::AnthropicStream => {
+                | ChatResponseType::AnthropicStream
+                | ChatResponseType::GeminiStream => {
                     return Err(PyRuntimeError::new_err(
                         "streaming response type stored without a stream",
                     ));
@@ -282,9 +323,11 @@ impl PyChatResponse {
                         ChatResponse::OpenAiResponsesStream(stream)
                     }
                     ChatResponseType::AnthropicStream => ChatResponse::AnthropicStream(stream),
+                    ChatResponseType::GeminiStream => ChatResponse::GeminiStream(stream),
                     ChatResponseType::OpenAiCompletion
                     | ChatResponseType::OpenAiResponsesCompletion
-                    | ChatResponseType::AnthropicCompletion => {
+                    | ChatResponseType::AnthropicCompletion
+                    | ChatResponseType::GeminiCompletion => {
                         return Err(PyRuntimeError::new_err(
                             "buffered response type stored with a stream",
                         ));
@@ -828,6 +871,8 @@ fn response_type_name(response_type: ChatResponseType) -> &'static str {
         ChatResponseType::OpenAiResponsesStream => "openai_responses_stream",
         ChatResponseType::AnthropicCompletion => "anthropic_completion",
         ChatResponseType::AnthropicStream => "anthropic_stream",
+        ChatResponseType::GeminiCompletion => "gemini_completion",
+        ChatResponseType::GeminiStream => "gemini_stream",
     }
 }
 
@@ -839,6 +884,8 @@ fn response_type_variant_name(response_type: ChatResponseType) -> &'static str {
         ChatResponseType::OpenAiResponsesStream => "OPENAI_RESPONSES_STREAM",
         ChatResponseType::AnthropicCompletion => "ANTHROPIC_COMPLETION",
         ChatResponseType::AnthropicStream => "ANTHROPIC_STREAM",
+        ChatResponseType::GeminiCompletion => "GEMINI_COMPLETION",
+        ChatResponseType::GeminiStream => "GEMINI_STREAM",
     }
 }
 

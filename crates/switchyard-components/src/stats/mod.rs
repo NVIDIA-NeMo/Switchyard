@@ -20,6 +20,7 @@ pub use context::{
 };
 pub use cost::{estimate_model_cost, has_model_price, CostBreakdown, CostEstimate};
 pub use usage::{
-    openai_chat_usage_from_stream_event, openai_responses_usage_from_stream_event, usage_from_body,
-    AnthropicStreamUsage, TokenUsage,
+    gemini_usage_from_body, openai_chat_usage_from_stream_event,
+    openai_responses_usage_from_stream_event, usage_from_body, AnthropicStreamUsage,
+    GeminiStreamUsage, TokenUsage,
 };

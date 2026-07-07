@@ -38,6 +38,13 @@ pub fn usage_from_body(body: &Value) -> TokenUsage {
         .unwrap_or_default()
 }
 
+/// Extracts usage from a buffered Gemini generateContent response body.
+pub fn gemini_usage_from_body(body: &Value) -> TokenUsage {
+    body.get("usageMetadata")
+        .map(token_usage_from_gemini_metadata)
+        .unwrap_or_default()
+}
+
 /// Extracts OpenAI Chat streaming usage from an event.
 pub fn openai_chat_usage_from_stream_event(event: &StreamEvent) -> Option<TokenUsage> {
     let StreamEvent::Json(value) = event else {
@@ -167,6 +174,88 @@ impl AnthropicStreamUsage {
         if let Some(value) = int_field(usage, "cache_creation_input_tokens") {
             self.cache_creation_input_tokens = value;
         }
+    }
+}
+
+/// Accumulates Gemini streaming usage and commits once on the terminal chunk.
+///
+/// Gemini streams have no explicit stop event; the final chunk carries both
+/// `candidates[].finishReason` and the authoritative `usageMetadata`. A
+/// finish-reason chunk before any usage frame is a known no-op, matching the
+/// Anthropic stream tap behavior.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GeminiStreamUsage {
+    prompt_tokens: u64,
+    candidates_tokens: u64,
+    thoughts_tokens: u64,
+    cached_tokens: u64,
+    saw_usage: bool,
+    committed: bool,
+}
+
+impl GeminiStreamUsage {
+    /// Observes one stream chunk and returns usage exactly once at the finish chunk.
+    pub fn observe(&mut self, event: &StreamEvent) -> Option<TokenUsage> {
+        let StreamEvent::Json(value) = event else {
+            return None;
+        };
+        if let Some(usage) = value.get("usageMetadata") {
+            self.merge(usage);
+        }
+        let finished = value
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|candidates| candidates.first())
+            .and_then(|candidate| candidate.get("finishReason"))
+            .and_then(Value::as_str)
+            .is_some();
+        if finished && self.saw_usage && !self.committed {
+            self.committed = true;
+            return Some(TokenUsage {
+                prompt_tokens: self.prompt_tokens,
+                // Gemini bills thinking tokens as output but reports them
+                // outside candidatesTokenCount; fold them back in.
+                completion_tokens: self.candidates_tokens.saturating_add(self.thoughts_tokens),
+                cached_tokens: self.cached_tokens,
+                cache_creation_tokens: 0,
+                reasoning_tokens: self.thoughts_tokens,
+                cacheable_prompt_tokens: 0,
+            });
+        }
+        None
+    }
+
+    fn merge(&mut self, usage: &Value) {
+        if !usage.is_object() {
+            return;
+        }
+        self.saw_usage = true;
+        if let Some(value) = int_field(usage, "promptTokenCount") {
+            self.prompt_tokens = value;
+        }
+        if let Some(value) = int_field(usage, "candidatesTokenCount") {
+            self.candidates_tokens = value;
+        }
+        if let Some(value) = int_field(usage, "thoughtsTokenCount") {
+            self.thoughts_tokens = value;
+        }
+        if let Some(value) = int_field(usage, "cachedContentTokenCount") {
+            self.cached_tokens = value;
+        }
+    }
+}
+
+// Converts Gemini `usageMetadata` counters into normalized token usage.
+fn token_usage_from_gemini_metadata(usage: &Value) -> TokenUsage {
+    let candidates = int_field(usage, "candidatesTokenCount").unwrap_or(0);
+    let thoughts = int_field(usage, "thoughtsTokenCount").unwrap_or(0);
+    TokenUsage {
+        prompt_tokens: int_field(usage, "promptTokenCount").unwrap_or(0),
+        completion_tokens: candidates.saturating_add(thoughts),
+        cached_tokens: int_field(usage, "cachedContentTokenCount").unwrap_or(0),
+        cache_creation_tokens: 0,
+        reasoning_tokens: thoughts,
+        cacheable_prompt_tokens: 0,
     }
 }
 

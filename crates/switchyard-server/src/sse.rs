@@ -44,7 +44,9 @@ fn frame_event(
     value: Value,
 ) -> std::result::Result<Event, SwitchyardError> {
     match target_format {
-        WireFormat::OpenAiChat => Event::default()
+        // Gemini streams are unnamed `data:` frames like OpenAI Chat, but
+        // without the terminal `[DONE]` marker (see `frame_stream`).
+        WireFormat::OpenAiChat | WireFormat::GeminiGenerateContent => Event::default()
             .json_data(value)
             .map_err(|error| SwitchyardError::Other(error.to_string())),
         WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
@@ -68,6 +70,16 @@ fn error_event(target_format: WireFormat, message: String) -> Event {
                 "error": {
                     "message": message,
                     "type": "SwitchyardError",
+                }
+            })
+            .to_string(),
+        ),
+        WireFormat::GeminiGenerateContent => Event::default().data(
+            json!({
+                "error": {
+                    "code": 500,
+                    "message": message,
+                    "status": "INTERNAL",
                 }
             })
             .to_string(),

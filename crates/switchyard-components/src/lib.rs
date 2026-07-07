@@ -16,8 +16,9 @@ pub mod stats;
 mod telemetry;
 
 pub use backends::{
-    AnthropicNativeBackend, BackendSelection, BackendSelectionReason, LlmTargetBackend,
-    MultiLlmBackend, OpenAiNativeBackend, OpenAiPassthroughBackend, StatsLlmBackend,
+    AnthropicNativeBackend, BackendSelection, BackendSelectionReason, GeminiNativeBackend,
+    LlmTargetBackend, MultiLlmBackend, OpenAiNativeBackend, OpenAiPassthroughBackend,
+    StatsLlmBackend,
 };
 pub use dimension_collector::{
     extract_tool_signals, ContextSignals, DimensionScore, Keywords, ResponseFlag, ResponseSignals,

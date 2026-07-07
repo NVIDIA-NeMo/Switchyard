@@ -21,6 +21,8 @@ pub enum ChatRequestType {
     OpenAiResponses,
     #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "gemini")]
+    Gemini,
 }
 
 /// JSON request body wrapper shared by all request variants.
@@ -61,6 +63,8 @@ pub enum ChatRequest {
     OpenAiResponses(WireRequest),
     #[serde(rename = "anthropic")]
     Anthropic(WireRequest),
+    #[serde(rename = "gemini")]
+    Gemini(WireRequest),
 }
 
 impl ChatRequest {
@@ -79,13 +83,19 @@ impl ChatRequest {
         Self::Anthropic(WireRequest::new(body))
     }
 
+    /// Creates a Gemini generateContent request.
+    pub fn gemini(body: Value) -> Self {
+        Self::Gemini(WireRequest::new(body))
+    }
+
     /// Validates the request body before it enters the chain.
     ///
     /// Catches structurally valid but semantically invalid input so it
     /// fails fast with a 4xx instead of reaching the backend and surfacing
     /// as an opaque upstream 5xx. Currently rejects a present-but-empty
     /// `messages` array on the message-based formats (OpenAI Chat,
-    /// Anthropic). Absent or non-array `messages` are left for the backend
+    /// Anthropic) and a present-but-empty `contents` array on Gemini.
+    /// Absent or non-array conversation fields are left for the backend
     /// to interpret; the Responses format carries `input`, not `messages`,
     /// and is exempt.
     pub fn validate(&self) -> Result<()> {
@@ -99,6 +109,15 @@ impl ChatRequest {
                 }
             }
         }
+        if matches!(self, Self::Gemini(_)) {
+            if let Some(contents) = self.body().get("contents").and_then(Value::as_array) {
+                if contents.is_empty() {
+                    return Err(SwitchyardError::InvalidRequest(
+                        "contents must be a non-empty array".to_string(),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -108,6 +127,7 @@ impl ChatRequest {
             Self::OpenAiChat(_) => ChatRequestType::OpenAiChat,
             Self::OpenAiResponses(_) => ChatRequestType::OpenAiResponses,
             Self::Anthropic(_) => ChatRequestType::Anthropic,
+            Self::Gemini(_) => ChatRequestType::Gemini,
         }
     }
 
@@ -116,7 +136,8 @@ impl ChatRequest {
         match self {
             Self::OpenAiChat(request)
             | Self::OpenAiResponses(request)
-            | Self::Anthropic(request) => request.body(),
+            | Self::Anthropic(request)
+            | Self::Gemini(request) => request.body(),
         }
     }
 
@@ -125,7 +146,8 @@ impl ChatRequest {
         match self {
             Self::OpenAiChat(request)
             | Self::OpenAiResponses(request)
-            | Self::Anthropic(request) => request.body_mut(),
+            | Self::Anthropic(request)
+            | Self::Gemini(request) => request.body_mut(),
         }
     }
 
@@ -164,6 +186,10 @@ pub enum ChatResponseType {
     AnthropicCompletion,
     #[serde(rename = "anthropic_stream")]
     AnthropicStream,
+    #[serde(rename = "gemini_completion")]
+    GeminiCompletion,
+    #[serde(rename = "gemini_stream")]
+    GeminiStream,
 }
 
 /// JSON response body wrapper shared by buffered response variants.
@@ -208,6 +234,8 @@ pub enum ChatResponse {
     OpenAiResponsesStream(BoxResponseStream),
     AnthropicCompletion(WireResponse),
     AnthropicStream(BoxResponseStream),
+    GeminiCompletion(WireResponse),
+    GeminiStream(BoxResponseStream),
 }
 
 impl ChatResponse {
@@ -226,6 +254,11 @@ impl ChatResponse {
         Self::AnthropicCompletion(WireResponse::new(body))
     }
 
+    /// Creates a buffered Gemini generateContent response.
+    pub fn gemini_completion(body: Value) -> Self {
+        Self::GeminiCompletion(WireResponse::new(body))
+    }
+
     /// Returns the response's tagged wire shape.
     pub fn response_type(&self) -> ChatResponseType {
         match self {
@@ -235,6 +268,8 @@ impl ChatResponse {
             Self::OpenAiResponsesStream(_) => ChatResponseType::OpenAiResponsesStream,
             Self::AnthropicCompletion(_) => ChatResponseType::AnthropicCompletion,
             Self::AnthropicStream(_) => ChatResponseType::AnthropicStream,
+            Self::GeminiCompletion(_) => ChatResponseType::GeminiCompletion,
+            Self::GeminiStream(_) => ChatResponseType::GeminiStream,
         }
     }
 
@@ -243,10 +278,12 @@ impl ChatResponse {
         match self {
             Self::OpenAiCompletion(response)
             | Self::OpenAiResponsesCompletion(response)
-            | Self::AnthropicCompletion(response) => Some(response.body()),
-            Self::OpenAiStream(_) | Self::OpenAiResponsesStream(_) | Self::AnthropicStream(_) => {
-                None
-            }
+            | Self::AnthropicCompletion(response)
+            | Self::GeminiCompletion(response) => Some(response.body()),
+            Self::OpenAiStream(_)
+            | Self::OpenAiResponsesStream(_)
+            | Self::AnthropicStream(_)
+            | Self::GeminiStream(_) => None,
         }
     }
 }
@@ -274,6 +311,11 @@ impl fmt::Debug for ChatResponse {
             Self::AnthropicStream(_) => {
                 f.debug_tuple("AnthropicStream").field(&"<stream>").finish()
             }
+            Self::GeminiCompletion(response) => f
+                .debug_tuple("GeminiCompletion")
+                .field(response.body())
+                .finish(),
+            Self::GeminiStream(_) => f.debug_tuple("GeminiStream").field(&"<stream>").finish(),
         }
     }
 }

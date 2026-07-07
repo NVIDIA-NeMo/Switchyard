@@ -6,12 +6,14 @@
 pub mod anthropic;
 mod common;
 mod context_overflow;
+pub mod gemini;
 pub mod multi;
 pub mod openai;
 mod selection;
 pub mod stats;
 
 pub use anthropic::AnthropicNativeBackend;
+pub use gemini::GeminiNativeBackend;
 pub use multi::{LlmTargetBackend, MultiLlmBackend};
 pub use openai::{OpenAiNativeBackend, OpenAiPassthroughBackend};
 pub use selection::{BackendSelection, BackendSelectionReason};

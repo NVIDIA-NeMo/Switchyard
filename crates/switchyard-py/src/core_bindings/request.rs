@@ -34,6 +34,9 @@ impl PyChatRequestType {
     #[classattr]
     const ANTHROPIC: Self = Self::new(ChatRequestType::Anthropic);
 
+    #[classattr]
+    const GEMINI: Self = Self::new(ChatRequestType::Gemini);
+
     #[getter]
     fn value(&self) -> &'static str {
         request_type_name(self.inner)
@@ -52,6 +55,7 @@ impl PyChatRequestType {
             ChatRequestType::OpenAiChat => 1,
             ChatRequestType::OpenAiResponses => 2,
             ChatRequestType::Anthropic => 3,
+            ChatRequestType::Gemini => 4,
         }
     }
 }
@@ -95,6 +99,13 @@ impl PyChatRequest {
         })
     }
 
+    #[classmethod]
+    fn gemini(_cls: &Bound<'_, PyType>, body: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: ChatRequest::gemini(value_from_python(body)?),
+        })
+    }
+
     /// Validates the request at the inbound trust boundary.
     ///
     /// Kept separate from construction so internal re-wraps (e.g. the
@@ -131,6 +142,7 @@ impl PyChatRequest {
             ChatRequestType::OpenAiChat => ChatRequest::openai_chat(body),
             ChatRequestType::OpenAiResponses => ChatRequest::openai_responses(body),
             ChatRequestType::Anthropic => ChatRequest::anthropic(body),
+            ChatRequestType::Gemini => ChatRequest::gemini(body),
         };
         Ok(())
     }
@@ -164,6 +176,7 @@ pub(crate) fn request_type_from_python(value: &Bound<'_, PyAny>) -> PyResult<Cha
         "openai_chat" => Ok(ChatRequestType::OpenAiChat),
         "openai_responses" => Ok(ChatRequestType::OpenAiResponses),
         "anthropic" | "anthropic_messages" => Ok(ChatRequestType::Anthropic),
+        "gemini" | "gemini_generate_content" => Ok(ChatRequestType::Gemini),
         _ => Err(PyValueError::new_err(format!(
             "Unknown request type: {raw:?}"
         ))),
@@ -175,6 +188,7 @@ pub(crate) fn request_type_name(request_type: ChatRequestType) -> &'static str {
         ChatRequestType::OpenAiChat => "openai_chat",
         ChatRequestType::OpenAiResponses => "openai_responses",
         ChatRequestType::Anthropic => "anthropic",
+        ChatRequestType::Gemini => "gemini",
     }
 }
 
@@ -183,6 +197,7 @@ pub(crate) fn request_type_variant_name(request_type: ChatRequestType) -> &'stat
         ChatRequestType::OpenAiChat => "OPENAI_CHAT",
         ChatRequestType::OpenAiResponses => "OPENAI_RESPONSES",
         ChatRequestType::Anthropic => "ANTHROPIC",
+        ChatRequestType::Gemini => "GEMINI",
     }
 }
 

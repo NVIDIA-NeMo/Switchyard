@@ -254,6 +254,7 @@ fn default_supported_request_types_are_all_wire_formats_in_stable_order() -> Res
             ChatRequestType::OpenAiChat,
             ChatRequestType::OpenAiResponses,
             ChatRequestType::Anthropic,
+            ChatRequestType::Gemini,
         ]
     );
     Ok(())

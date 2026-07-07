@@ -124,6 +124,12 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
+        // Gemini encodes the model and verb in one path segment, e.g.
+        // `/v1beta/models/gemini-2.5-flash:generateContent`.
+        .route(
+            "/v1beta/models/{model_action}",
+            post(gemini_generate_content),
+        )
         .route("/v1/models", get(models))
         // Keep the legacy routing stats aliases wired to the same handlers.
         .route("/v1/stats", get(stats))
@@ -235,6 +241,45 @@ async fn openai_responses(
         ChatRequest::openai_responses(body),
         WireFormat::OpenAiResponses,
         metadata_from_headers(&headers, ChatRequestType::OpenAiResponses),
+    )
+    .await
+}
+
+async fn gemini_generate_content(
+    State(state): State<ServerState>,
+    axum::extract::Path(model_action): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+) -> Response {
+    // The URL encodes what other formats carry in the body: the model and,
+    // via the verb, whether the response streams.
+    let Some((model, verb)) = model_action.rsplit_once(':') else {
+        return *Box::new(invalid_body_error(
+            "Gemini requests must use models/{model}:generateContent or :streamGenerateContent",
+        ));
+    };
+    let stream = match verb {
+        "generateContent" => false,
+        "streamGenerateContent" => true,
+        _ => {
+            return *Box::new(invalid_body_error(format!(
+                "Unsupported Gemini action {verb:?}; expected generateContent or streamGenerateContent"
+            )));
+        }
+    };
+    let mut body = match llm_json_body(body) {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    if let Some(object) = body.as_object_mut() {
+        object.insert("model".to_string(), Value::String(model.to_string()));
+        object.insert("stream".to_string(), Value::Bool(stream));
+    }
+    handle_llm_request(
+        state,
+        ChatRequest::gemini(body),
+        WireFormat::GeminiGenerateContent,
+        metadata_from_headers(&headers, ChatRequestType::Gemini),
     )
     .await
 }
@@ -506,6 +551,7 @@ fn model_entry_json(entry: &ServedModel) -> Value {
                 "openai-chat-completions",
                 "openai-responses",
                 "anthropic-messages",
+                "gemini-generate-content",
             ],
         },
     })
@@ -533,6 +579,10 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
     push_line(&mut output, "    POST /v1/chat/completions");
     push_line(&mut output, "    POST /v1/messages");
     push_line(&mut output, "    POST /v1/responses");
+    push_line(
+        &mut output,
+        "    POST /v1beta/models/{model}:generateContent",
+    );
     push_line(&mut output, "    GET  /v1/routing/stats");
     push_line(&mut output, "    POST /v1/routing/stats/reset");
     push_line(&mut output, "");

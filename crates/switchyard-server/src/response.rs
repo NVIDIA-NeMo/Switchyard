@@ -50,6 +50,13 @@ pub(crate) fn translate_chain_response(
             translation,
             &policy,
         ),
+        ChatResponse::GeminiCompletion(response) => translate_buffered_response(
+            response.into_body(),
+            WireFormat::GeminiGenerateContent,
+            target_format,
+            translation,
+            &policy,
+        ),
         ChatResponse::OpenAiStream(stream) => Ok(TranslatedResponse::Stream(
             translate_stream_response(stream, WireFormat::OpenAiChat, target_format, translation),
         )),
@@ -65,6 +72,14 @@ pub(crate) fn translate_chain_response(
             Ok(TranslatedResponse::Stream(translate_stream_response(
                 stream,
                 WireFormat::AnthropicMessages,
+                target_format,
+                translation,
+            )))
+        }
+        ChatResponse::GeminiStream(stream) => {
+            Ok(TranslatedResponse::Stream(translate_stream_response(
+                stream,
+                WireFormat::GeminiGenerateContent,
                 target_format,
                 translation,
             )))

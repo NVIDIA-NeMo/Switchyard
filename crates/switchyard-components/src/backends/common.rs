@@ -60,6 +60,7 @@ pub(crate) fn request_wire_format(request_type: ChatRequestType) -> WireFormat {
         ChatRequestType::OpenAiChat => WireFormat::OpenAiChat,
         ChatRequestType::OpenAiResponses => WireFormat::OpenAiResponses,
         ChatRequestType::Anthropic => WireFormat::AnthropicMessages,
+        ChatRequestType::Gemini => WireFormat::GeminiGenerateContent,
     }
 }
 

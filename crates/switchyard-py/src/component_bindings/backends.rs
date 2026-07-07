@@ -9,8 +9,8 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PyTuple};
 use switchyard_components::{
-    AnthropicNativeBackend, LlmTargetBackend, MultiLlmBackend, OpenAiNativeBackend,
-    OpenAiPassthroughBackend, StatsLlmBackend,
+    AnthropicNativeBackend, GeminiNativeBackend, LlmTargetBackend, MultiLlmBackend,
+    OpenAiNativeBackend, OpenAiPassthroughBackend, StatsLlmBackend,
 };
 use switchyard_core::{ChatRequestType, EndpointConfig, LlmBackend, LlmTargetId};
 
@@ -185,6 +185,41 @@ impl PyAnthropicNativeBackend {
 }
 
 #[pyclass(
+    name = "GeminiNativeBackend",
+    extends = PyLlmBackend,
+    skip_from_py_object
+)]
+#[derive(Clone, Debug)]
+pub(crate) struct PyGeminiNativeBackend {
+    inner: Arc<GeminiNativeBackend>,
+}
+
+#[pymethods]
+impl PyGeminiNativeBackend {
+    #[new]
+    fn py_new(target: PyRef<'_, PyLlmTarget>) -> PyResult<PyClassInitializer<Self>> {
+        let backend = GeminiNativeBackend::new(target.clone_core()).map_err(py_core_error)?;
+        let backend = Arc::new(backend);
+        let base: Arc<dyn LlmBackend> = backend.clone();
+        Ok(PyClassInitializer::from(PyLlmBackend::from_native(base))
+            .add_subclass(Self { inner: backend }))
+    }
+
+    #[getter]
+    fn target(&self) -> PyLlmTarget {
+        PyLlmTarget::from_core(self.inner.target().clone())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GeminiNativeBackend(target_id={:?}, model={:?})",
+            self.inner.target().id.as_str(),
+            self.inner.target().model.as_str(),
+        )
+    }
+}
+
+#[pyclass(
     name = "MultiLlmBackend",
     extends = PyLlmBackend,
     skip_from_py_object
@@ -344,6 +379,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyOpenAiNativeBackend>()?;
     module.add_class::<PyOpenAiPassthroughBackend>()?;
     module.add_class::<PyAnthropicNativeBackend>()?;
+    module.add_class::<PyGeminiNativeBackend>()?;
     module.add_class::<PyMultiLlmBackend>()?;
     module.add_class::<PyStatsLlmBackend>()?;
     Ok(())

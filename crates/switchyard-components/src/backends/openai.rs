@@ -80,7 +80,7 @@ impl OpenAiNativeBackend {
         match self.target.format {
             BackendFormat::OpenAi => ChatRequestType::OpenAiChat,
             BackendFormat::Responses => ChatRequestType::OpenAiResponses,
-            BackendFormat::Auto | BackendFormat::Anthropic => {
+            BackendFormat::Auto | BackendFormat::Anthropic | BackendFormat::Gemini => {
                 unreachable!("OpenAiNativeBackend target format is validated at construction")
             }
         }
@@ -90,7 +90,7 @@ impl OpenAiNativeBackend {
         match self.target_request_type() {
             ChatRequestType::OpenAiChat => WireFormat::OpenAiChat,
             ChatRequestType::OpenAiResponses => WireFormat::OpenAiResponses,
-            ChatRequestType::Anthropic => {
+            ChatRequestType::Anthropic | ChatRequestType::Gemini => {
                 unreachable!("OpenAiNativeBackend only targets OpenAI wire formats")
             }
         }
@@ -243,7 +243,7 @@ impl LlmBackend for OpenAiNativeBackend {
         match self.target.format {
             BackendFormat::OpenAi => &OPENAI_CHAT_ONLY,
             BackendFormat::Responses => &OPENAI_RESPONSES_ONLY,
-            BackendFormat::Auto | BackendFormat::Anthropic => {
+            BackendFormat::Auto | BackendFormat::Anthropic | BackendFormat::Gemini => {
                 unreachable!("OpenAiNativeBackend target format is validated at construction")
             }
         }
@@ -444,7 +444,7 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
 fn validate_target_format(target: &LlmTarget) -> Result<()> {
     match target.format {
         BackendFormat::OpenAi | BackendFormat::Responses => Ok(()),
-        BackendFormat::Auto | BackendFormat::Anthropic => {
+        BackendFormat::Auto | BackendFormat::Anthropic | BackendFormat::Gemini => {
             Err(SwitchyardError::InvalidConfig(format!(
                 "OpenAiNativeBackend requires a target with resolved OpenAI format, got {:?} for {}",
                 target.format, target.id
@@ -457,9 +457,11 @@ fn endpoint_for_backend_format(format: BackendFormat) -> Result<OpenAiEndpoint> 
     match format {
         BackendFormat::OpenAi => Ok(OpenAiEndpoint::ChatCompletions),
         BackendFormat::Responses => Ok(OpenAiEndpoint::Responses),
-        BackendFormat::Auto | BackendFormat::Anthropic => Err(SwitchyardError::InvalidConfig(
-            format!("OpenAiNativeBackend cannot dispatch target format {format:?}"),
-        )),
+        BackendFormat::Auto | BackendFormat::Anthropic | BackendFormat::Gemini => {
+            Err(SwitchyardError::InvalidConfig(format!(
+                "OpenAiNativeBackend cannot dispatch target format {format:?}"
+            )))
+        }
     }
 }
 

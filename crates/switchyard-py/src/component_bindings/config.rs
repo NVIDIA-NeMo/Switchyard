@@ -50,6 +50,9 @@ impl PyBackendFormat {
     #[classattr]
     const ANTHROPIC: Self = Self::new_inner(BackendFormat::Anthropic);
 
+    #[classattr]
+    const GEMINI: Self = Self::new_inner(BackendFormat::Gemini);
+
     #[getter]
     fn value(&self) -> &'static str {
         backend_format_name(self.inner)
@@ -69,6 +72,7 @@ impl PyBackendFormat {
             BackendFormat::OpenAi => 2,
             BackendFormat::Responses => 3,
             BackendFormat::Anthropic => 4,
+            BackendFormat::Gemini => 5,
         }
     }
 
@@ -679,6 +683,7 @@ fn backend_format_from_str(value: &str) -> PyResult<BackendFormat> {
         "openai" => Ok(BackendFormat::OpenAi),
         "responses" => Ok(BackendFormat::Responses),
         "anthropic" => Ok(BackendFormat::Anthropic),
+        "gemini" => Ok(BackendFormat::Gemini),
         _ => Err(PyValueError::new_err(format!(
             "Unknown backend format: {value:?}"
         ))),
@@ -691,6 +696,7 @@ fn backend_format_name(format: BackendFormat) -> &'static str {
         BackendFormat::OpenAi => "openai",
         BackendFormat::Responses => "responses",
         BackendFormat::Anthropic => "anthropic",
+        BackendFormat::Gemini => "gemini",
     }
 }
 
@@ -700,6 +706,7 @@ fn backend_format_variant_name(format: BackendFormat) -> &'static str {
         BackendFormat::OpenAi => "OPENAI",
         BackendFormat::Responses => "RESPONSES",
         BackendFormat::Anthropic => "ANTHROPIC",
+        BackendFormat::Gemini => "GEMINI",
     }
 }
 

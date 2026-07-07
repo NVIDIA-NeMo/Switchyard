@@ -8,9 +8,10 @@ use futures_util::StreamExt;
 use switchyard_core::{BoxResponseStream, ChatResponse, ProxyContext, Result};
 
 use crate::stats::{
-    openai_chat_usage_from_stream_event, openai_responses_usage_from_stream_event,
-    selected_stats_model, selected_stats_tier, usage_from_body, AnthropicStreamUsage, PrefixProbe,
-    StatsAccumulator, StatsBackendLatency, StatsRequestStart, TokenUsage,
+    gemini_usage_from_body, openai_chat_usage_from_stream_event,
+    openai_responses_usage_from_stream_event, selected_stats_model, selected_stats_tier,
+    usage_from_body, AnthropicStreamUsage, GeminiStreamUsage, PrefixProbe, StatsAccumulator,
+    StatsBackendLatency, StatsRequestStart, TokenUsage,
 };
 
 /// Records token usage, total latency, and routing overhead.
@@ -83,6 +84,18 @@ impl StatsResponseProcessor {
                 )?;
                 Ok(ChatResponse::AnthropicCompletion(response))
             }
+            ChatResponse::GeminiCompletion(response) => {
+                record_usage(
+                    &self.accumulator,
+                    &model,
+                    gemini_usage_from_body(response.body()),
+                    started_at,
+                    backend_latency,
+                    tier.as_deref(),
+                    cache_eligible,
+                )?;
+                Ok(ChatResponse::GeminiCompletion(response))
+            }
             ChatResponse::OpenAiStream(stream) => {
                 Ok(ChatResponse::OpenAiStream(wrap_openai_chat_stream(
                     stream,
@@ -107,6 +120,17 @@ impl StatsResponseProcessor {
             )),
             ChatResponse::AnthropicStream(stream) => {
                 Ok(ChatResponse::AnthropicStream(wrap_anthropic_stream(
+                    stream,
+                    self.accumulator.clone(),
+                    model,
+                    started_at,
+                    backend_latency,
+                    tier,
+                    cache_eligible,
+                )))
+            }
+            ChatResponse::GeminiStream(stream) => {
+                Ok(ChatResponse::GeminiStream(wrap_gemini_stream(
                     stream,
                     self.accumulator.clone(),
                     model,
@@ -195,6 +219,35 @@ fn wrap_anthropic_stream(
 ) -> BoxResponseStream {
     Box::pin(try_stream! {
         let mut stream_usage = AnthropicStreamUsage::default();
+        while let Some(event) = stream.next().await {
+            let event = event?;
+            if let Some(usage) = stream_usage.observe(&event) {
+                log_stream_record_result(record_usage(
+                    &accumulator,
+                    &model,
+                    usage,
+                    started_at,
+                    backend_latency,
+                    tier.as_deref(),
+                    cache_eligible,
+                ), &model);
+            }
+            yield event;
+        }
+    })
+}
+
+fn wrap_gemini_stream(
+    mut stream: BoxResponseStream,
+    accumulator: StatsAccumulator,
+    model: String,
+    started_at: Option<StatsRequestStart>,
+    backend_latency: Option<StatsBackendLatency>,
+    tier: Option<String>,
+    cache_eligible: f64,
+) -> BoxResponseStream {
+    Box::pin(try_stream! {
+        let mut stream_usage = GeminiStreamUsage::default();
         while let Some(event) = stream.next().await {
             let event = event?;
             if let Some(usage) = stream_usage.observe(&event) {
