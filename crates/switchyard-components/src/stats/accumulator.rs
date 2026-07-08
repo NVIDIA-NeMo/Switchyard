@@ -80,6 +80,39 @@ impl StatsAccumulator {
         Ok(())
     }
 
+    /// Records one physical request sent by an instrumented OpenAI transport.
+    ///
+    /// This counter is intentionally separate from `total_requests`, which is
+    /// the number of logical backend calls. A transport-level retry must not
+    /// change logical call/turn attribution.
+    pub(crate) fn record_openai_physical_attempt(&self) {
+        let mut inner = self.lock();
+        inner.openai_physical_attempts = inner.openai_physical_attempts.saturating_add(1);
+    }
+
+    /// Records one null-EOF retry immediately before its physical send.
+    pub(crate) fn record_openai_null_eof_retry(&self) {
+        let mut inner = self.lock();
+        inner.openai_null_eof_retries = inner.openai_null_eof_retries.saturating_add(1);
+    }
+
+    /// Charges one recovered null-EOF retry with the successful retry usage.
+    ///
+    /// The charge is a sensitivity estimate only. It does not alter headline
+    /// provider usage or cost estimates and is not an upper bound on unseen work.
+    pub(crate) fn record_openai_retry_usage_charge(&self, usage: TokenUsage) {
+        let mut inner = self.lock();
+        inner.openai_retry_usage_charges = inner.openai_retry_usage_charges.saturating_add(1);
+        inner.openai_retry_token_sensitivity.add_usage(usage);
+    }
+
+    /// Records a null-EOF retry that ended without a usable terminal charge.
+    pub(crate) fn record_openai_unpriced_null_eof_retry(&self) {
+        let mut inner = self.lock();
+        inner.openai_unpriced_null_eof_retries =
+            inner.openai_unpriced_null_eof_retries.saturating_add(1);
+    }
+
     /// Returns the cache-eligible fraction for `model` and records the prefix as seen.
     ///
     /// Switch-aware: a prefix counts only if this model was previously sent it, so a
@@ -391,6 +424,11 @@ struct StatsAccumulatorInner {
     planner_requests: u64,
     planner_errors: u64,
     routing_decisions: BTreeMap<String, BTreeMap<String, u64>>,
+    openai_physical_attempts: u64,
+    openai_null_eof_retries: u64,
+    openai_retry_usage_charges: u64,
+    openai_unpriced_null_eof_retries: u64,
+    openai_retry_token_sensitivity: TokenTotals,
 }
 
 impl StatsAccumulatorInner {
@@ -492,6 +530,13 @@ impl StatsAccumulatorInner {
             classifier,
             planner,
             routing_decisions: self.routing_decisions.clone(),
+            openai_transport: OpenAiTransportStatsSnapshot {
+                physical_attempts: self.openai_physical_attempts,
+                null_eof_retries: self.openai_null_eof_retries,
+                retry_usage_charges: self.openai_retry_usage_charges,
+                unpriced_null_eof_retries: self.openai_unpriced_null_eof_retries,
+                retry_token_sensitivity: self.openai_retry_token_sensitivity.clone(),
+            },
         }
     }
 }
@@ -749,6 +794,24 @@ pub struct StatsSnapshot {
     pub classifier: ClassifierStatsSnapshot,
     pub planner: PlannerStatsSnapshot,
     pub routing_decisions: BTreeMap<String, BTreeMap<String, u64>>,
+    /// Physical OpenAI transport activity, kept separate from logical calls.
+    #[serde(default)]
+    pub openai_transport: OpenAiTransportStatsSnapshot,
+}
+
+/// Physical OpenAI transport attempts and null-EOF retry sensitivity.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenAiTransportStatsSnapshot {
+    /// Every instrumented call to the OpenAI HTTP transport.
+    pub physical_attempts: u64,
+    /// Physical retries triggered by a proven null SSE EOF.
+    pub null_eof_retries: u64,
+    /// Recovered retries charged with terminal provider usage.
+    pub retry_usage_charges: u64,
+    /// Retried streams dropped or terminated without usable charge evidence.
+    pub unpriced_null_eof_retries: u64,
+    /// Hypothetical tokens assigned to abandoned null attempts for sensitivity.
+    pub retry_token_sensitivity: TokenTotals,
 }
 
 /// LLM-classifier overhead stats, recorded out-of-band from routed-backend
@@ -787,6 +850,19 @@ pub struct TokenTotals {
     pub cache_creation: u64,
     pub reasoning: u64,
     pub total: u64,
+}
+
+impl TokenTotals {
+    fn add_usage(&mut self, usage: TokenUsage) {
+        self.prompt = self.prompt.saturating_add(usage.prompt_tokens);
+        self.completion = self.completion.saturating_add(usage.completion_tokens);
+        self.cached = self.cached.saturating_add(usage.cached_tokens);
+        self.cache_creation = self
+            .cache_creation
+            .saturating_add(usage.cache_creation_tokens);
+        self.reasoning = self.reasoning.saturating_add(usage.reasoning_tokens);
+        self.total = self.prompt.saturating_add(self.completion);
+    }
 }
 
 /// Per-model stats in a snapshot.
@@ -885,4 +961,67 @@ fn round4(value: f64) -> f64 {
 
 fn round6(value: f64) -> f64 {
     (value * 1_000_000.0).round() / 1_000_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn openai_transport_snapshot_serializes_and_reset_clears() -> Result<()> {
+        let accumulator = StatsAccumulator::new();
+        for _ in 0..3 {
+            accumulator.record_openai_physical_attempt();
+        }
+        for _ in 0..2 {
+            accumulator.record_openai_null_eof_retry();
+        }
+        accumulator.record_openai_retry_usage_charge(TokenUsage {
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            cached_tokens: 3,
+            cache_creation_tokens: 2,
+            reasoning_tokens: 5,
+            cacheable_prompt_tokens: 0,
+        });
+        accumulator.record_openai_unpriced_null_eof_retry();
+
+        let snapshot = accumulator.snapshot()?;
+        assert_eq!(snapshot.total_requests, 0);
+        assert_eq!(snapshot.total_tokens.total, 0);
+        assert_eq!(snapshot.openai_transport.physical_attempts, 3);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 2);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 1);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_token_sensitivity.total, 18);
+        let serialized = serde_json::to_value(&snapshot).map_err(|error| {
+            switchyard_core::SwitchyardError::Other(format!("serialize stats snapshot: {error}"))
+        })?;
+        assert_eq!(
+            serialized.get("openai_transport"),
+            Some(&json!({
+                "physical_attempts": 3,
+                "null_eof_retries": 2,
+                "retry_usage_charges": 1,
+                "unpriced_null_eof_retries": 1,
+                "retry_token_sensitivity": {
+                    "prompt": 11,
+                    "completion": 7,
+                    "cached": 3,
+                    "cache_creation": 2,
+                    "reasoning": 5,
+                    "total": 18,
+                },
+            })),
+        );
+
+        accumulator.reset()?;
+        assert_eq!(
+            accumulator.snapshot()?.openai_transport,
+            OpenAiTransportStatsSnapshot::default(),
+        );
+        Ok(())
+    }
 }

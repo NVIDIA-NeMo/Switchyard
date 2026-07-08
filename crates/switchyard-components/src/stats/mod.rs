@@ -10,8 +10,8 @@ mod cost;
 mod usage;
 
 pub use accumulator::{
-    ClassifierStatsSnapshot, LatencyHistogramSnapshot, ModelStatsSnapshot, StatsAccumulator,
-    StatsSnapshot, TierStatsSnapshot, TokenTotals,
+    ClassifierStatsSnapshot, LatencyHistogramSnapshot, ModelStatsSnapshot,
+    OpenAiTransportStatsSnapshot, StatsAccumulator, StatsSnapshot, TierStatsSnapshot, TokenTotals,
 };
 pub use cache_eligibility::{prefix_probe, tracking_enabled_from_env, PrefixProbe};
 pub use context::{

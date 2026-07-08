@@ -1,0 +1,17 @@
+{
+  "candidate_id": "preflight-sentinel",
+  "skills": [
+    {
+      "path": "SKILL.md",
+      "sha256": "5d0eaa58caae56a546d2c310753f789a46d8f434673e69bdf0f8db5e2dfae6a8"
+    },
+    {
+      "path": "tooluniverse-trialqa/SKILL.md",
+      "sha256": "80ef80b8df4641d170222f75a20f51e0ae732d4674836c8ed01b74dc2c04a82f"
+    }
+  ],
+  "validation": {
+    "scope": "discovery-only-no-model-preflight",
+    "status": "passed"
+  }
+}

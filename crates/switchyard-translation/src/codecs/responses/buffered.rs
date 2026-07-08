@@ -3,7 +3,7 @@
 
 //! Buffered codec for OpenAI Responses request and response JSON.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Map, Value};
 
@@ -19,6 +19,9 @@ use crate::ir::{
     is_known_role_name, ContentBlock, ConversationRequest, ConversationResponse, MediaSource,
     Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
     SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+};
+use crate::namespace_tools::{
+    decode_namespace_tool_name, encode_namespace_tool_name, reject_reserved_namespace_tool_name,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -85,10 +88,12 @@ impl FormatCodec for OpenAiResponsesCodec {
             &mut diagnostics,
             policy,
         )?;
-        request.tools = decode_responses_tools(body.get("tools"));
+        request.tools = decode_responses_tools(body.get("tools"))?;
         request.tool_choice = body
             .get("tool_choice")
-            .and_then(decode_responses_tool_choice);
+            .map(decode_responses_tool_choice)
+            .transpose()?
+            .flatten();
         request.extensions.fields = provider_extensions(
             body,
             &[
@@ -148,10 +153,10 @@ impl FormatCodec for OpenAiResponsesCodec {
             encode_responses_input(&request.messages, &mut diagnostics, _policy)?,
         );
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_responses_tools(&request.tools));
+            body.insert("tools".to_string(), encode_responses_tools(&request.tools)?);
         }
         if let Some(choice) = &request.tool_choice {
-            if let Some(choice) = encode_responses_tool_choice(choice) {
+            if let Some(choice) = encode_responses_tool_choice(choice)? {
                 body.insert("tool_choice".to_string(), choice);
             }
         }
@@ -240,6 +245,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 diagnostics: Vec::new(),
             });
         }
+        let output = encode_responses_output(&response.outputs)?;
         Ok(EncodedResponse {
             body: embed_preservation(
                 json!({
@@ -248,7 +254,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "created_at": 0,
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
                     "status": "completed",
-                    "output": encode_responses_output(&response.outputs),
+                    "output": output,
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
                     "tool_choice": "auto",
@@ -338,11 +344,7 @@ fn decode_responses_input(
                             });
                         pending_tool_calls.push(ToolCall {
                             id,
-                            name: item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
+                            name: decode_responses_call_name(item, &format!("$.input[{index}]"))?,
                             arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
                         });
                     }
@@ -391,6 +393,24 @@ fn decode_responses_input(
             Role::User,
             string_value(other).unwrap_or_default(),
         )]),
+    }
+}
+
+// Flattens a Responses function-call namespace into the reversible Chat name.
+fn decode_responses_call_name(item: &Map<String, Value>, path: &str) -> Result<String> {
+    let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
+    match item.get("namespace") {
+        Some(Value::String(namespace)) => {
+            encode_namespace_tool_name(namespace, name, format!("{path}.name"))
+        }
+        Some(_) => Err(TranslationError::InvalidValue {
+            path: format!("{path}.namespace"),
+            message: "namespace must be a string".to_string(),
+        }),
+        None => {
+            reject_reserved_namespace_tool_name(name, format!("{path}.name"))?;
+            Ok(name.to_string())
+        }
     }
 }
 
@@ -598,117 +618,226 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 }
 
 // Decodes Responses tool shapes, including Codex-style tool entries.
-fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
+fn decode_responses_tools(value: Option<&Value>) -> Result<Vec<ToolDefinition>> {
     let Some(tools) = value.and_then(Value::as_array) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    for tool in tools {
+    let mut seen_names = HashSet::new();
+    for (index, tool) in tools.iter().enumerate() {
         let Some(tool) = tool.as_object() else {
             continue;
         };
-        if tool.get("type").and_then(Value::as_str) == Some("function") {
+        let path = format!("$.tools[{index}]");
+        if tool.get("type").and_then(Value::as_str) == Some("namespace") {
+            push_responses_namespace_tools(&mut out, &mut seen_names, tool, &path)?;
+        } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
-                if let Some(name) = function.get("name").and_then(Value::as_str) {
-                    if !name.is_empty() {
-                        out.push(ToolDefinition {
-                            name: name.to_string(),
-                            description: function
-                                .get("description")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
-                            parameters: function
-                                .get("parameters")
-                                .cloned()
-                                .unwrap_or_else(|| json!({})),
-                            strict: function.get("strict").and_then(Value::as_bool),
-                        });
-                    }
-                }
+                push_responses_function_tool(
+                    &mut out,
+                    &mut seen_names,
+                    function,
+                    &format!("{path}.function"),
+                )?;
             } else {
-                if !push_responses_function_tool(&mut out, tool) {
-                    push_responses_id_tool(&mut out, tool);
+                if !push_responses_function_tool(&mut out, &mut seen_names, tool, &path)? {
+                    push_responses_id_tool(&mut out, &mut seen_names, tool, &path)?;
                 }
             }
         } else if tool.get("type").is_none() && tool.contains_key("name") {
-            push_responses_function_tool(&mut out, tool);
+            push_responses_function_tool(&mut out, &mut seen_names, tool, &path)?;
         } else {
-            push_responses_id_tool(&mut out, tool);
+            push_responses_id_tool(&mut out, &mut seen_names, tool, &path)?;
         }
     }
-    out
+    Ok(out)
+}
+
+// Flattens every child of one Responses namespace into a Chat function tool.
+fn push_responses_namespace_tools(
+    out: &mut Vec<ToolDefinition>,
+    seen_names: &mut HashSet<String>,
+    tool: &Map<String, Value>,
+    path: &str,
+) -> Result<()> {
+    let namespace =
+        tool.get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TranslationError::InvalidValue {
+                path: format!("{path}.name"),
+                message: "namespace tool must have a string name".to_string(),
+            })?;
+    let children = tool.get("tools").and_then(Value::as_array).ok_or_else(|| {
+        TranslationError::InvalidValue {
+            path: format!("{path}.tools"),
+            message: "namespace tool must contain an array of function tools".to_string(),
+        }
+    })?;
+    if children.is_empty() {
+        return Err(TranslationError::InvalidValue {
+            path: format!("{path}.tools"),
+            message: "namespace tool must contain at least one function tool".to_string(),
+        });
+    }
+    let namespace_description = tool.get("description").and_then(Value::as_str);
+
+    for (child_index, child) in children.iter().enumerate() {
+        let child_path = format!("{path}.tools[{child_index}]");
+        let child = child
+            .as_object()
+            .ok_or_else(|| TranslationError::InvalidValue {
+                path: child_path.clone(),
+                message: "namespace child must be an object".to_string(),
+            })?;
+        if child.get("type").and_then(Value::as_str) != Some("function") {
+            return Err(TranslationError::InvalidValue {
+                path: format!("{child_path}.type"),
+                message: "namespace children must be function tools".to_string(),
+            });
+        }
+        let function = child
+            .get("function")
+            .and_then(Value::as_object)
+            .unwrap_or(child);
+        let child_name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TranslationError::InvalidValue {
+                path: format!("{child_path}.name"),
+                message: "namespace child must have a string name".to_string(),
+            })?;
+        let flattened = encode_namespace_tool_name(namespace, child_name, &child_path)?;
+        let child_description = function.get("description").and_then(Value::as_str);
+        let description = match (namespace_description, child_description) {
+            (Some(namespace), Some(child)) if !namespace.is_empty() && !child.is_empty() => {
+                Some(format!("{namespace}\n\n{child}"))
+            }
+            (Some(namespace), _) if !namespace.is_empty() => Some(namespace.to_string()),
+            (_, Some(child)) if !child.is_empty() => Some(child.to_string()),
+            _ => None,
+        };
+        push_unique_tool(
+            out,
+            seen_names,
+            ToolDefinition {
+                name: flattened,
+                description,
+                parameters: function
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                strict: function.get("strict").and_then(Value::as_bool),
+            },
+            &child_path,
+        )?;
+    }
+    Ok(())
 }
 
 // Adds an OpenAI-style function tool to the normalized tool list.
 fn push_responses_function_tool(
     out: &mut Vec<ToolDefinition>,
-    tool: &serde_json::Map<String, Value>,
-) -> bool {
+    seen_names: &mut HashSet<String>,
+    tool: &Map<String, Value>,
+    path: &str,
+) -> Result<bool> {
     let Some(name) = tool.get("name").and_then(Value::as_str) else {
-        return false;
+        return Ok(false);
     };
     if name.is_empty() {
-        return false;
+        return Ok(false);
     }
+    reject_reserved_namespace_tool_name(name, format!("{path}.name"))?;
 
-    out.push(ToolDefinition {
-        name: name.to_string(),
-        description: tool
-            .get("description")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        parameters: tool.get("parameters").cloned().unwrap_or_else(|| json!({})),
-        strict: tool.get("strict").and_then(Value::as_bool),
-    });
-    true
+    push_unique_tool(
+        out,
+        seen_names,
+        ToolDefinition {
+            name: name.to_string(),
+            description: tool
+                .get("description")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            parameters: tool.get("parameters").cloned().unwrap_or_else(|| json!({})),
+            strict: tool.get("strict").and_then(Value::as_bool),
+        },
+        path,
+    )?;
+    Ok(true)
 }
 
 // Adds a Codex-style ID tool to the normalized tool list.
 fn push_responses_id_tool(
     out: &mut Vec<ToolDefinition>,
-    tool: &serde_json::Map<String, Value>,
-) -> bool {
+    seen_names: &mut HashSet<String>,
+    tool: &Map<String, Value>,
+    path: &str,
+) -> Result<bool> {
     let Some(id) = tool.get("id").and_then(Value::as_str) else {
-        return false;
+        return Ok(false);
     };
     if id.is_empty() {
-        return false;
+        return Ok(false);
     }
+    reject_reserved_namespace_tool_name(id, format!("{path}.id"))?;
 
-    out.push(ToolDefinition {
-        name: id.to_string(),
-        description: tool
-            .get("description")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        parameters: tool
-            .get("inputSchema")
-            .and_then(Value::as_object)
-            .and_then(|schema| schema.get("jsonSchema"))
-            .cloned()
-            .unwrap_or_else(|| json!({})),
-        strict: None,
-    });
-    true
+    push_unique_tool(
+        out,
+        seen_names,
+        ToolDefinition {
+            name: id.to_string(),
+            description: tool
+                .get("description")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            parameters: tool
+                .get("inputSchema")
+                .and_then(Value::as_object)
+                .and_then(|schema| schema.get("jsonSchema"))
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+            strict: None,
+        },
+        path,
+    )?;
+    Ok(true)
+}
+
+// Adds one flat tool after verifying its encoded Chat name is unique.
+fn push_unique_tool(
+    out: &mut Vec<ToolDefinition>,
+    seen_names: &mut HashSet<String>,
+    tool: ToolDefinition,
+    path: &str,
+) -> Result<()> {
+    if !seen_names.insert(tool.name.clone()) {
+        return Err(TranslationError::InvalidValue {
+            path: path.to_string(),
+            message: format!("duplicate or colliding tool name {:?}", tool.name),
+        });
+    }
+    out.push(tool);
+    Ok(())
 }
 
 // Decodes Responses tool-choice values into normalized policy.
-fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
-    match value {
+fn decode_responses_tool_choice(value: &Value) -> Result<Option<ToolChoice>> {
+    Ok(match value {
         Value::String(text) if text == "auto" => Some(ToolChoice::Auto),
         Value::String(text) if text == "required" => Some(ToolChoice::Required),
         Value::String(text) if text == "none" => Some(ToolChoice::None),
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
-            object
-                .get("name")
-                .and_then(Value::as_str)
-                .map(|name| ToolChoice::Tool {
-                    name: name.to_string(),
+            if object.contains_key("name") || object.contains_key("namespace") {
+                Some(ToolChoice::Tool {
+                    name: decode_responses_call_name(object, "$.tool_choice")?,
                 })
+            } else {
+                None
+            }
         }
         Value::Object(_) => None,
         _ => Some(ToolChoice::Raw(value.clone())),
-    }
+    })
 }
 
 // Maps Responses text format options into Chat-compatible response_format JSON.
@@ -767,18 +896,17 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(
-                message
-                    .content
-                    .iter()
-                    .filter_map(encode_responses_special_input),
-            );
+            for block in &message.content {
+                if let Some(item) = encode_responses_special_input(block)? {
+                    encoded.push(item);
+                }
+            }
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
         for block in &message.content {
-            if let Some(item) = encode_responses_special_input(block) {
+            if let Some(item) = encode_responses_special_input(block)? {
                 encoded.push(item);
                 emitted_special = true;
             } else {
@@ -798,26 +926,33 @@ fn encode_responses_input(
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
-fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
-    match block {
+fn encode_responses_special_input(block: &ContentBlock) -> Result<Option<Value>> {
+    Ok(match block {
         ContentBlock::Reasoning { text, .. } => Some(json!({
             "type": "reasoning",
             "content": [{"type": "reasoning_text", "text": text}],
             "summary": [],
         })),
-        ContentBlock::ToolCall(call) => Some(json!({
-            "type": "function_call",
-            "call_id": call.id,
-            "name": call.name,
-            "arguments": call.arguments,
-        })),
+        ContentBlock::ToolCall(call) => {
+            let mut item = json!({
+                "type": "function_call",
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+            });
+            if let Some(namespaced) = decode_namespace_tool_name(&call.name, "$.input[].name")? {
+                item["namespace"] = Value::String(namespaced.namespace);
+                item["name"] = Value::String(namespaced.name);
+            }
+            Some(item)
+        }
         ContentBlock::ToolResult(result) => Some(json!({
             "type": "function_call_output",
             "call_id": result.tool_call_id,
             "output": text_from_blocks(&result.content, " "),
         })),
         _ => None,
-    }
+    })
 }
 
 // Maps normalized roles back to Responses role strings.
@@ -901,35 +1036,71 @@ fn encode_responses_content(
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
-fn encode_responses_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                let mut item = json!({
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "parameters": tool.parameters,
-                });
-                if let Some(strict) = tool.strict {
-                    item["strict"] = Value::Bool(strict);
-                }
-                item
-            })
-            .collect(),
-    )
+fn encode_responses_tools(tools: &[ToolDefinition]) -> Result<Value> {
+    let mut encoded = Vec::new();
+    let mut namespace_indexes = HashMap::<String, usize>::new();
+    let mut seen_names = HashSet::new();
+
+    for (index, tool) in tools.iter().enumerate() {
+        if !seen_names.insert(tool.name.clone()) {
+            return Err(TranslationError::InvalidValue {
+                path: format!("$.tools[{index}]"),
+                message: format!("duplicate or colliding tool name {:?}", tool.name),
+            });
+        }
+        let namespaced = decode_namespace_tool_name(&tool.name, format!("$.tools[{index}].name"))?;
+        let child_name = namespaced
+            .as_ref()
+            .map(|value| value.name.as_str())
+            .unwrap_or(tool.name.as_str());
+        let mut child = json!({
+            "type": "function",
+            "name": child_name,
+            "description": tool.description.clone().unwrap_or_default(),
+            "parameters": tool.parameters,
+        });
+        if let Some(strict) = tool.strict {
+            child["strict"] = Value::Bool(strict);
+        }
+
+        let Some(namespaced) = namespaced else {
+            encoded.push(child);
+            continue;
+        };
+        if let Some(namespace_index) = namespace_indexes.get(&namespaced.namespace).copied() {
+            encoded[namespace_index]["tools"]
+                .as_array_mut()
+                .expect("namespace tools are initialized as an array")
+                .push(child);
+        } else {
+            let namespace_index = encoded.len();
+            namespace_indexes.insert(namespaced.namespace.clone(), namespace_index);
+            encoded.push(json!({
+                "type": "namespace",
+                "name": namespaced.namespace,
+                "tools": [child],
+            }));
+        }
+    }
+    Ok(Value::Array(encoded))
 }
 
 // Encodes normalized tool choice into Responses JSON.
-fn encode_responses_tool_choice(choice: &ToolChoice) -> Option<Value> {
-    match choice {
+fn encode_responses_tool_choice(choice: &ToolChoice) -> Result<Option<Value>> {
+    Ok(match choice {
         ToolChoice::Auto => Some(Value::String("auto".to_string())),
         ToolChoice::Required => Some(Value::String("required".to_string())),
         ToolChoice::None => Some(Value::String("none".to_string())),
-        ToolChoice::Tool { name } => Some(json!({"type": "function", "name": name})),
+        ToolChoice::Tool { name } => {
+            let mut encoded = json!({"type": "function", "name": name});
+            if let Some(namespaced) = decode_namespace_tool_name(name, "$.tool_choice.name")? {
+                encoded["namespace"] = Value::String(namespaced.namespace);
+                encoded["name"] = Value::String(namespaced.name);
+            }
+            Some(encoded)
+        }
         ToolChoice::Raw(value) => Some(value.clone()),
-    }
+    })
 }
 
 // Decodes one Responses output item into a normalized response output.
@@ -960,11 +1131,7 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                name: item
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                name: decode_responses_call_name(item, "$.output[]")?,
                 arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
             })],
             stop_reason: Some(StopReason::ToolUse),
@@ -979,51 +1146,55 @@ fn decode_responses_output_item(
 }
 
 // Encodes normalized response outputs into Responses output items.
-fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
-    Value::Array(
-        outputs
+fn encode_responses_output(outputs: &[ResponseOutput]) -> Result<Value> {
+    let mut encoded = Vec::new();
+    for (output_index, output) in outputs.iter().enumerate() {
+        let has_tool_calls = output
+            .content
             .iter()
-            .flat_map(|output| {
-                let has_tool_calls = output
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
-                let text = text_from_blocks(&output.content, "");
-                let reasoning = reasoning_text_from_blocks(&output.content, "\n");
-                let mut items = Vec::new();
+            .any(|block| matches!(block, ContentBlock::ToolCall(_)));
+        let text = text_from_blocks(&output.content, "");
+        let reasoning = reasoning_text_from_blocks(&output.content, "\n");
 
-                if !reasoning.is_empty() {
-                    items.push(encode_responses_reasoning_output(&reasoning));
-                }
+        if !reasoning.is_empty() {
+            encoded.push(encode_responses_reasoning_output(&reasoning));
+        }
 
-                if !text.is_empty() || (!has_tool_calls && reasoning.is_empty()) {
-                    items.push(json!({
-                        "type": "message",
-                        "id": "msg_switchyard",
-                        "status": "completed",
-                        "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": [],
-                        }],
-                    }));
-                }
+        if !text.is_empty() || (!has_tool_calls && reasoning.is_empty()) {
+            encoded.push(json!({
+                "type": "message",
+                "id": "msg_switchyard",
+                "status": "completed",
+                "role": role_to_responses(output.role),
+                "content": [{
+                    "type": "output_text",
+                    "text": text,
+                    "annotations": [],
+                }],
+            }));
+        }
 
-                items.extend(output.content.iter().filter_map(|block| match block {
-                    ContentBlock::ToolCall(call) => Some(json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "arguments": json_string_python_style(&call.arguments),
-                    })),
-                    _ => None,
-                }));
-
-                items
-            })
-            .collect(),
-    )
+        for (content_index, block) in output.content.iter().enumerate() {
+            let ContentBlock::ToolCall(call) = block else {
+                continue;
+            };
+            let mut item = json!({
+                "type": "function_call",
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": json_string_python_style(&call.arguments),
+            });
+            if let Some(namespaced) = decode_namespace_tool_name(
+                &call.name,
+                format!("$.output[{output_index}].content[{content_index}].name"),
+            )? {
+                item["namespace"] = Value::String(namespaced.namespace);
+                item["name"] = Value::String(namespaced.name);
+            }
+            encoded.push(item);
+        }
+    }
+    Ok(Value::Array(encoded))
 }
 
 // Encodes private reasoning as a separate Responses output item.

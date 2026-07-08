@@ -7,10 +7,14 @@ use serde_json::{json, Value};
 
 use crate::codecs::stream::{
     record_source_identity, target_message_id_or_source_message_id, target_model_or_source_model,
-    ConversationStreamEvent, StreamCodec, StreamTranslationState,
+    ConversationStreamEvent, StreamCodec, StreamToolState, StreamTranslationState,
 };
+use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::ir::Usage;
+use crate::namespace_tools::{
+    decode_namespace_tool_name, encode_namespace_tool_name, reject_reserved_namespace_tool_name,
+};
 
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;
@@ -257,14 +261,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "output_index": output_index,
             "arguments": tool.arguments,
         }));
-        let item = json!({
-            "type": "function_call",
-            "id": tool.response_item_id.clone().unwrap_or_else(|| format!("fc_{output_index}")),
-            "call_id": tool.id.clone().unwrap_or_else(|| format!("call_{output_index}")),
-            "name": tool.name.clone().unwrap_or_default(),
-            "arguments": tool.arguments,
-            "status": "completed",
-        });
+        let item = responses_tool_call_item(tool, output_index, "completed", &tool.arguments);
         out.push(json!({
             "type": "response.output_item.done",
             "output_index": output_index,
@@ -306,6 +303,14 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<ConversationStreamEv
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    let name = match decode_responses_stream_call_name(item, "$.item") {
+        Ok(name) => name,
+        Err(error) => {
+            return vec![ConversationStreamEvent::Error {
+                message: error.to_string(),
+            }];
+        }
+    };
     vec![ConversationStreamEvent::ToolCallDelta {
         index,
         id: item
@@ -313,10 +318,7 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<ConversationStreamEv
             .or_else(|| item.get("id"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        name: item
-            .get("name")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        name,
         arguments_delta: item
             .get("arguments")
             .and_then(Value::as_str)
@@ -466,8 +468,21 @@ fn encode_responses_tool_delta(
     if id.is_some() {
         tool.id = id;
     }
-    if name.is_some() {
-        tool.name = name;
+    if let Some(name) = name {
+        match decode_namespace_tool_name(&name, "$.choices[].delta.tool_calls[].function.name") {
+            Ok(Some(namespaced)) => {
+                tool.namespace = Some(namespaced.namespace);
+                tool.name = Some(namespaced.name);
+            }
+            Ok(None) => {
+                tool.namespace = None;
+                tool.name = Some(name);
+            }
+            Err(error) => {
+                out.push(json!({"type": "error", "message": error.to_string()}));
+                return out;
+            }
+        }
     }
     if let Some(delta) = arguments_delta {
         tool.arguments.push_str(&delta);
@@ -475,25 +490,19 @@ fn encode_responses_tool_delta(
     }
 
     if !tool.started {
-        let Some(name) = tool.name.clone() else {
+        if tool.name.is_none() {
             return out;
-        };
+        }
         let output_index = state.next_response_output_index;
         state.next_response_output_index += 1;
         tool.response_output_index = Some(output_index);
         tool.response_item_id = Some(format!("fc_{output_index}"));
         tool.started = true;
+        let item = responses_tool_call_item(tool, output_index, "in_progress", "");
         out.push(json!({
             "type": "response.output_item.added",
             "output_index": output_index,
-            "item": {
-                "type": "function_call",
-                "id": tool.response_item_id.clone().unwrap_or_else(|| format!("fc_{output_index}")),
-                "call_id": tool.id.clone().unwrap_or_else(|| format!("call_{index}")),
-                "name": name,
-                "arguments": "",
-                "status": "in_progress",
-            },
+            "item": item,
         }));
         if !tool.pending_arguments.is_empty() {
             out.push(json!({
@@ -517,6 +526,60 @@ fn encode_responses_tool_delta(
         }
     }
     out
+}
+
+// Flattens an optional Responses namespace into one reversible stream name.
+fn decode_responses_stream_call_name(
+    item: &serde_json::Map<String, Value>,
+    path: &str,
+) -> Result<Option<String>> {
+    let name = item.get("name").and_then(Value::as_str);
+    match item.get("namespace") {
+        Some(Value::String(namespace)) => {
+            let name = name.ok_or_else(|| TranslationError::InvalidValue {
+                path: format!("{path}.name"),
+                message: "namespaced function call must have a string name".to_string(),
+            })?;
+            encode_namespace_tool_name(namespace, name, format!("{path}.name")).map(Some)
+        }
+        Some(_) => Err(TranslationError::InvalidValue {
+            path: format!("{path}.namespace"),
+            message: "namespace must be a string".to_string(),
+        }),
+        None => {
+            if let Some(name) = name {
+                reject_reserved_namespace_tool_name(name, format!("{path}.name"))?;
+            }
+            Ok(name.map(ToOwned::to_owned))
+        }
+    }
+}
+
+// Builds one Responses function-call item with namespace omitted for plain tools.
+fn responses_tool_call_item(
+    tool: &StreamToolState,
+    output_index: usize,
+    status: &str,
+    arguments: &str,
+) -> Value {
+    let mut item = json!({
+        "type": "function_call",
+        "id": tool
+            .response_item_id
+            .clone()
+            .unwrap_or_else(|| format!("fc_{output_index}")),
+        "call_id": tool
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("call_{output_index}")),
+        "name": tool.name.clone().unwrap_or_default(),
+        "arguments": arguments,
+        "status": status,
+    });
+    if let Some(namespace) = &tool.namespace {
+        item["namespace"] = Value::String(namespace.clone());
+    }
+    item
 }
 
 // Normalizes OpenAI Responses token usage fields.

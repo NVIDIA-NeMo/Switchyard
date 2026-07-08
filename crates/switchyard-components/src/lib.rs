@@ -36,7 +36,7 @@ pub use response_processors::{
 };
 pub use stats::{
     prefix_probe, tracking_enabled_from_env, ClassifierStatsSnapshot, CostBreakdown, CostEstimate,
-    LatencyHistogramSnapshot, ModelStatsSnapshot, PrefixProbe, StatsAccumulator,
-    StatsBackendLatency, StatsRequestStart, StatsRouteLabel, StatsSnapshot, TierStatsSnapshot,
-    TokenTotals, TokenUsage,
+    LatencyHistogramSnapshot, ModelStatsSnapshot, OpenAiTransportStatsSnapshot, PrefixProbe,
+    StatsAccumulator, StatsBackendLatency, StatsRequestStart, StatsRouteLabel, StatsSnapshot,
+    TierStatsSnapshot, TokenTotals, TokenUsage,
 };

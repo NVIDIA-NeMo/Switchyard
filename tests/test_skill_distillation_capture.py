@@ -15,6 +15,8 @@ from switchyard.cli.config.user_config import (
 )
 from switchyard.cli.launchers.launch_intake_config import build_launch_capture_processors
 from switchyard.cli.launchers.skill_distillation import (
+    ACTIVE_SKILL_EVIDENCE_PATH_ENV,
+    RUN_CONTEXT_PATH_ENV,
     build_launch_skill_distillation_session,
     launch_skill_distillation_session,
 )
@@ -91,6 +93,50 @@ def test_store_layout_and_skipped_interrupted_session(tmp_path: Path) -> None:
     assert metadata["distillation"]["status"] == "skipped"
     assert _read_json(session.stats_path)["total_requests"] == 0
     assert _read_jsonl(session.ledger_path)[0]["status"] == "skipped"
+
+
+def test_capture_records_run_context_and_attested_active_candidate(tmp_path: Path) -> None:
+    active = {
+        "loaded": True,
+        "candidate_id": "trialqa-v1",
+        "manifest_sha256": "sha256:" + "a" * 64,
+        "injection_mode": "managed_symlink",
+    }
+    context = {
+        "task_id": "trialqa-0001-r001",
+        "condition": "skilled",
+        "repeat_index": 1,
+    }
+    session = SkillDistillationSessionCapture(
+        namespace="tooluniverse-trialqa",
+        launch_target="codex",
+        display_model="sd-executor",
+        project_dir=tmp_path,
+        run_context=context,
+        active_skill_evidence=active,
+    )
+
+    session.record_turn({"messages": [{"role": "assistant", "content": "answer"}]})
+    session.finish(exit_code=0, stats=StatsAccumulator())
+
+    metadata = _read_json(session.session_path)
+    assert metadata["run_context"] == context
+    assert metadata["active_skill"] == active
+    turn = _read_jsonl(session.turns_path)[0]
+    assert turn["active_skill_version"] == "trialqa-v1"
+    assert turn["active_skill_candidate_id"] == "trialqa-v1"
+    assert turn["active_skill_manifest_sha256"] == "sha256:" + "a" * 64
+
+
+def test_capture_rejects_active_evidence_without_loaded_flag(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="boolean loaded"):
+        SkillDistillationSessionCapture(
+            namespace="tooluniverse-trialqa",
+            launch_target="codex",
+            display_model="sd-executor",
+            project_dir=tmp_path,
+            active_skill_evidence={"candidate_id": "trialqa-v1"},
+        )
 
 
 async def test_processors_write_completed_turn_and_finalize(tmp_path: Path) -> None:
@@ -219,6 +265,70 @@ def test_launcher_helper_uses_saved_namespace_and_cwd(
     assert session.store_path == (
         project_dir / ".switchyard" / "skill-distillation" / "tooluniverse-trialqa"
     )
+
+
+def test_launcher_helper_loads_local_run_and_skill_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    save_user_config(
+        UserConfig(
+            skill_distillation=SkillDistillationConfig(namespace="tooluniverse-trialqa"),
+        ),
+        config_dir=config_dir,
+    )
+    context = project_dir / "run-context.json"
+    context.write_text(json.dumps({"task_id": "trialqa-0001-r001"}), encoding="utf-8")
+    active = project_dir / "active-evidence.json"
+    active.write_text(
+        json.dumps({"loaded": False, "reason": "baseline"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv(RUN_CONTEXT_PATH_ENV, context.name)
+    monkeypatch.setenv(ACTIVE_SKILL_EVIDENCE_PATH_ENV, active.name)
+    monkeypatch.chdir(project_dir)
+
+    session = build_launch_skill_distillation_session(
+        target="codex",
+        display_model="sd-executor",
+    )
+
+    assert session is not None
+    assert session.run_context == {"task_id": "trialqa-0001-r001"}
+    assert _read_json(session.session_path)["active_skill"] == {
+        "loaded": False,
+        "reason": "baseline",
+    }
+
+
+def test_launcher_helper_rejects_metadata_outside_project(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}\n", encoding="utf-8")
+    save_user_config(
+        UserConfig(
+            skill_distillation=SkillDistillationConfig(namespace="tooluniverse-trialqa"),
+        ),
+        config_dir=config_dir,
+    )
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv(RUN_CONTEXT_PATH_ENV, str(outside))
+    monkeypatch.chdir(project_dir)
+
+    with pytest.raises(ValueError, match="inside the launch project"):
+        build_launch_skill_distillation_session(
+            target="codex",
+            display_model="sd-executor",
+        )
 
 
 def test_launch_session_context_finalizes_failed_launch(

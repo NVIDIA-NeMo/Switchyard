@@ -63,6 +63,7 @@ pub struct StreamTranslationState {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StreamToolState {
     pub(crate) id: Option<String>,
+    pub(crate) namespace: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) arguments: String,
     pub(crate) pending_arguments: String,

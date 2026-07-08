@@ -1,16 +1,24 @@
 # Skill Distillation
 
 Skill distillation turns agent sessions into a reusable skill for the same
-kind of work. The model is not retrained. Switchyard saves the session history,
-uses it to update a `SKILL.md`, and makes the active skill available to later
-agent launches for the same namespace.
+kind of work. The model is not retrained. Switchyard saves session history and
+provides local storage contracts that an explicit workflow can use to produce,
+validate, and activate a `SKILL.md` for the same namespace.
 
-The current release saves the namespace, defines the shared Rust contracts,
+The launcher surface saves the namespace, defines the shared Rust contracts,
 and automatically captures completed `switchyard launch` turns under the
-current project. It does not yet run distillation, update skills, import
-external runs, validate results, or mount skills into launched agents. Saved
-sessions and the local ledger are the input that later distillation commands
-will use.
+current project. It still does not automatically run distillation, import
+external runs, activate a candidate, or mount skills into launched agents.
+Saved sessions and the local ledger are inputs for an explicitly orchestrated
+distillation workflow.
+
+The Python library also provides explicit building blocks for controlled local
+experiments: it can normalize captured Switchyard sessions as immutable native
+evidence, save and validate a skill candidate, activate it, and roll back to the
+previous active bundle. These are library APIs, not a new launcher flag or an
+automatic background workflow. See the container-free
+[Nemotron Ultra LABBench2 TrialQA demo](../benchmark/TRIALQA_SKILL_DISTILLATION_DEMO.md)
+for the end-to-end benchmark orchestration.
 
 ## Configure It
 
@@ -28,22 +36,25 @@ credentials. To remove it:
 switchyard configure --disable-skill-distillation
 ```
 
-## Intended Workflow
+## Workflow and Current Boundaries
 
-The initial launcher flow is automatic after configuration:
+Session capture is automatic after configuration. The remaining stages require
+an explicit caller today:
 
 ```text
 configure a namespace
 run an agent through switchyard launch
 save the session under that namespace
-mark completed sessions as ready for distillation
-create or update the namespace's active SKILL.md
-load that active skill in a later launch for the same namespace
+  [automatic launcher capture ends here]
+import or select completed evidence
+create and validate an immutable skill candidate
+activate or roll back the namespace's active bundle
+mount that active skill into a later run
 ```
 
-If no skill exists yet, the first distilled session creates one. Later sessions
-update the existing skill and keep enough history to inspect or roll back the
-change.
+The store can create the first active bundle from a validated candidate and can
+archive later active bundles for rollback. Candidate generation and launch-time
+mounting remain responsibilities of the explicit orchestration layer.
 
 Skill distillation is namespace-based. The namespace is saved user
 configuration, not a per-request header. A future request may be recorded as
@@ -89,11 +100,11 @@ request handling. Switchyard owns the saved sessions, local files, distillation
 hooks, validation hooks, history, and launch-time skill loading. It should not
 turn every request into a memory update.
 
-The automatic workflow still needs guardrails. Every skill update should record
-which sessions supported it, keep the previous active skill available for
-rollback, and produce review output. Later checks should flag answer leakage,
-source IDs, URLs, benchmark shortcuts, and task-specific details before a skill
-is trusted.
+Every candidate records which evidence supported it and must have passed
+validation before activation. The store keeps the previous active bundle for
+rollback. Content checks for answer leakage, source IDs, URLs, benchmark
+shortcuts, and task-specific details belong to the validator used by the
+orchestration layer.
 
 ## Store Layout
 
@@ -106,10 +117,20 @@ Session capture writes inspectable local files:
     turns.jsonl
     stats.json
   distillation-ledger.jsonl
-  candidates/
+  evidence/<evidence-id>/
+    manifest.json
+    evidence.json
+    raw/
+  evidence-ledger.jsonl
+  candidates/<candidate-id>/
+    manifest.json
+    <skill-name>/SKILL.md
   reports/
-  active/SKILL.md
-  history/
+  active/
+    manifest.json
+    <skill-name>/SKILL.md
+  history/<archived-bundle>/
+  history/activation-ledger.jsonl
 ```
 
 `session.json` records the launch target, display model, strategy summary,
@@ -117,10 +138,12 @@ status, active skill path, and distillation handoff status. `turns.jsonl`
 records normalized request and response turns, including messages, usage, and
 routing metadata when available. `stats.json` records the final session stats.
 
-The ledger tracks whether each saved session is pending future distillation or
-was skipped because no completed turns were captured. That lets a later
-distiller use new sessions by default instead of depending on a long-lived
-lookback-count setting.
+The capture ledger tracks whether each saved session is pending future
+distillation or was skipped because no completed turns were captured. Native
+TrialQA imports use immutable evidence directories and a content-addressed
+ledger. Candidate manifests hash every `SKILL.md`, name their source evidence,
+and carry validation status. Activation revalidates the candidate and its local
+evidence before publishing the bundle and recording the change.
 
 ## Rust Contracts
 

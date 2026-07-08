@@ -296,6 +296,220 @@ fn responses_stream_delta_translates_to_openai_chat_chunk() -> TestResult {
     Ok(())
 }
 
+// Verifies a flattened Chat tool name becomes namespace fields in every Responses stream item.
+#[test]
+fn openai_chat_namespaced_tool_stream_reconstructs_responses_namespace() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let first = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "nemotron",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "__sy1n17_mcp__tooluniversetrialqa_load_active_skill",
+                        "arguments": "{"
+                    }
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+    let second = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "nemotron",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": {"arguments": "}"}
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &first,
+    )?;
+    events.extend(engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &second,
+    )?);
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let added = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.added")
+        .ok_or("expected a Responses function-call item")?;
+    assert_eq!(added["item"]["namespace"], "mcp__tooluniverse");
+    assert_eq!(added["item"]["name"], "trialqa_load_active_skill");
+    assert_eq!(added["item"]["call_id"], "call_1");
+
+    let done = events
+        .iter()
+        .find(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "function_call"
+        })
+        .ok_or("expected a completed Responses function-call item")?;
+    assert_eq!(done["item"]["namespace"], "mcp__tooluniverse");
+    assert_eq!(done["item"]["name"], "trialqa_load_active_skill");
+    assert_eq!(done["item"]["arguments"], "{}");
+
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected a Responses completion event")?;
+    assert_eq!(
+        completed["response"]["output"][0]["namespace"],
+        "mcp__tooluniverse"
+    );
+    assert_eq!(
+        completed["response"]["output"][0]["name"],
+        "trialqa_load_active_skill"
+    );
+    assert_eq!(completed["response"]["output"][0]["arguments"], "{}");
+    Ok(())
+}
+
+// Verifies Responses namespace fields flatten into the reversible Chat streaming name.
+#[test]
+fn responses_namespaced_tool_stream_flattens_for_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let created = json!({
+        "type": "response.created",
+        "response": {"id": "resp_1", "model": "gpt-4o"}
+    });
+    engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &created,
+    )?;
+    let added = json!({
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+            "type": "function_call",
+            "id": "fc_0",
+            "call_id": "call_1",
+            "namespace": "mcp__tooluniverse",
+            "name": "trialqa_search",
+            "arguments": "",
+            "status": "in_progress"
+        }
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &added,
+    )?;
+
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
+        "__sy1n17_mcp__tooluniversetrialqa_search"
+    );
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["tool_calls"][0]["id"],
+        "call_1"
+    );
+    Ok(())
+}
+
+// Verifies ordinary streaming function names remain ordinary Responses function calls.
+#[test]
+fn openai_chat_plain_tool_stream_does_not_add_responses_namespace() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "nemotron",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "plain_lookup", "arguments": "{}"}
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    let added = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.added")
+        .ok_or("expected a Responses function-call item")?;
+    assert_eq!(added["item"]["name"], "plain_lookup");
+    assert!(added["item"].get("namespace").is_none());
+    Ok(())
+}
+
+// Verifies malformed reserved streaming names fail closed instead of reaching Responses.
+#[test]
+fn malformed_namespaced_tool_stream_marker_emits_error() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "nemotron",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "__sy1n_bad_marker", "arguments": "{}"}
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    assert!(events.iter().any(|event| event["type"] == "error"));
+    assert!(!events
+        .iter()
+        .any(|event| event["item"]["type"] == "function_call"));
+    Ok(())
+}
+
 // Verifies OpenAI-compatible reasoning deltas become Anthropic thinking, not text content.
 #[test]
 fn openai_chat_reasoning_stream_fields_do_not_become_anthropic_text() -> TestResult {

@@ -13,6 +13,7 @@ pub mod engine;
 pub mod error;
 pub mod format;
 pub mod ir;
+mod namespace_tools;
 pub mod policy;
 pub mod stream;
 pub mod util;

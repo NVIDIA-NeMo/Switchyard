@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_stream::try_stream;
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use serde_json::{Map, Value};
 use switchyard_core::{
     merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
@@ -24,11 +25,14 @@ use super::common::{
     parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
     ParsedSseFrame,
 };
+use super::stats::StatsTransportRecorder;
 use super::{BackendSelection, BackendSelectionReason};
+use crate::stats::{openai_chat_usage_from_stream_event, TokenUsage};
 use crate::telemetry::{telemetry_header_value, SWITCHYARD_VERSION_HEADER};
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+const MAX_BUFFERED_CHAT_METADATA_EVENTS: usize = 8;
 static OPENAI_CHAT_ONLY: [ChatRequestType; 1] = [ChatRequestType::OpenAiChat];
 static OPENAI_RESPONSES_ONLY: [ChatRequestType; 1] = [ChatRequestType::OpenAiResponses];
 static OPENAI_PASSTHROUGH_TARGET_ID: &str = "passthrough";
@@ -132,7 +136,7 @@ impl OpenAiNativeBackend {
     /// Calls this target without requiring chain-local `ProxyContext` state.
     pub async fn call_without_context(&self, request: &ChatRequest) -> Result<ChatResponse> {
         let http_request = self.http_request(request)?;
-        self.send_http_request(http_request).await
+        self.send_http_request(http_request, None).await
     }
 
     // Builds the upstream HTTP request before any context observations are recorded.
@@ -152,16 +156,27 @@ impl OpenAiNativeBackend {
     }
 
     // Sends an already-normalized upstream request.
-    async fn send_http_request(&self, request: OpenAiHttpRequest) -> Result<ChatResponse> {
+    async fn send_http_request(
+        &self,
+        request: OpenAiHttpRequest,
+        stats: Option<StatsTransportRecorder>,
+    ) -> Result<ChatResponse> {
         let endpoint = request.endpoint;
-        match self.transport.send(request).await? {
+        if let Some(stats) = &stats {
+            stats.record_openai_physical_attempt();
+        }
+        match self.transport.send(&request).await? {
             OpenAiHttpResponse::Buffered(body) => match endpoint {
                 OpenAiEndpoint::ChatCompletions => Ok(ChatResponse::openai_completion(body)),
                 OpenAiEndpoint::Responses => Ok(ChatResponse::openai_responses_completion(body)),
             },
             OpenAiHttpResponse::Stream(stream) => match endpoint {
-                OpenAiEndpoint::ChatCompletions => Ok(ChatResponse::OpenAiStream(stream)),
-                OpenAiEndpoint::Responses => Ok(ChatResponse::OpenAiResponsesStream(stream)),
+                OpenAiEndpoint::ChatCompletions => Ok(ChatResponse::OpenAiStream(
+                    retry_null_openai_stream(stream, request, Arc::clone(&self.transport), stats),
+                )),
+                OpenAiEndpoint::Responses => Ok(ChatResponse::OpenAiResponsesStream(
+                    forward_openai_stream(stream),
+                )),
             },
         }
     }
@@ -261,7 +276,8 @@ impl LlmBackend for OpenAiNativeBackend {
             request.model().map(str::to_string),
         ));
 
-        self.send_http_request(http_request).await
+        let stats = ctx.get::<StatsTransportRecorder>().cloned();
+        self.send_http_request(http_request, stats).await
     }
 }
 
@@ -301,9 +317,15 @@ impl LlmBackend for OpenAiPassthroughBackend {
             ));
         }
 
-        match self.transport.send(http_request).await? {
+        let stats = ctx.get::<StatsTransportRecorder>().cloned();
+        if let Some(stats) = &stats {
+            stats.record_openai_physical_attempt();
+        }
+        match self.transport.send(&http_request).await? {
             OpenAiHttpResponse::Buffered(body) => Ok(ChatResponse::openai_completion(body)),
-            OpenAiHttpResponse::Stream(stream) => Ok(ChatResponse::OpenAiStream(stream)),
+            OpenAiHttpResponse::Stream(stream) => Ok(ChatResponse::OpenAiStream(
+                retry_null_openai_stream(stream, http_request, Arc::clone(&self.transport), stats),
+            )),
         }
     }
 }
@@ -348,14 +370,24 @@ impl OpenAiEndpoint {
 enum OpenAiHttpResponse {
     /// Complete JSON response from a non-streaming upstream call.
     Buffered(Value),
-    /// Streamed SSE response converted into Switchyard stream events.
-    Stream(BoxResponseStream),
+    /// Streamed SSE response, including provider terminal evidence.
+    Stream(BoxOpenAiStream),
 }
+
+/// An upstream stream item before provider-only terminal markers are removed.
+enum OpenAiStreamItem {
+    /// A response event that may be forwarded to the caller.
+    Event(StreamEvent),
+    /// The OpenAI `[DONE]` marker, which is terminal evidence but not JSON output.
+    ProviderTerminal,
+}
+
+type BoxOpenAiStream = Pin<Box<dyn Stream<Item = Result<OpenAiStreamItem>> + Send>>;
 
 #[async_trait]
 trait OpenAiTransport: Send + Sync {
     /// Sends one already-normalized OpenAI-compatible request.
-    async fn send(&self, request: OpenAiHttpRequest) -> Result<OpenAiHttpResponse>;
+    async fn send(&self, request: &OpenAiHttpRequest) -> Result<OpenAiHttpResponse>;
 }
 
 struct ReqwestOpenAiTransport {
@@ -372,11 +404,11 @@ impl ReqwestOpenAiTransport {
 
 #[async_trait]
 impl OpenAiTransport for ReqwestOpenAiTransport {
-    async fn send(&self, request: OpenAiHttpRequest) -> Result<OpenAiHttpResponse> {
+    async fn send(&self, request: &OpenAiHttpRequest) -> Result<OpenAiHttpResponse> {
         let target_id = request.target_id.clone();
         let endpoint = request.endpoint;
         let mut builder = self.client.post(&request.url).json(&request.body);
-        if let Some(api_key) = request.api_key {
+        if let Some(api_key) = request.api_key.as_deref() {
             builder = builder.bearer_auth(api_key);
         }
         if let Some(version) = telemetry_header_value() {
@@ -439,6 +471,306 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
         })?;
         Ok(OpenAiHttpResponse::Buffered(body))
     }
+}
+
+// Some OpenAI-compatible gateways occasionally close a successful SSE response
+// after emitting only the initial role chunk. Hold those pre-semantic frames so
+// the exact request can be retried once without exposing a duplicated stream to
+// the caller. Once any semantic output or billable usage is observed, the
+// stream is committed and can never be retried.
+fn retry_null_openai_stream(
+    initial_stream: BoxOpenAiStream,
+    retry_request: OpenAiHttpRequest,
+    transport: Arc<dyn OpenAiTransport>,
+    stats: Option<StatsTransportRecorder>,
+) -> BoxResponseStream {
+    Box::pin(try_stream! {
+        let mut stream = initial_stream;
+        let mut retried = false;
+        let mut retry_charge: Option<OpenAiRetryChargeGuard> = None;
+
+        loop {
+            let mut attempt_usage = None;
+            let mut buffered = Vec::with_capacity(MAX_BUFFERED_CHAT_METADATA_EVENTS);
+            while let Some(item) = stream.next().await {
+                let event = match item? {
+                    OpenAiStreamItem::ProviderTerminal => {
+                        if retried {
+                            charge_terminal_retry(&mut retry_charge, attempt_usage);
+                        }
+                        for event in buffered.drain(..) {
+                            yield event;
+                        }
+                        return;
+                    }
+                    OpenAiStreamItem::Event(event) => event,
+                };
+                if retried {
+                    observe_retry_usage(&event, &mut attempt_usage);
+                }
+                let event_commits = openai_chat_stream_event_commits(&event);
+                if !event_commits && buffered.len() < MAX_BUFFERED_CHAT_METADATA_EVENTS {
+                    buffered.push(event);
+                    continue;
+                }
+                if !event_commits {
+                    tracing::warn!(
+                        target_id = %retry_request.target_id,
+                        buffered_events = buffered.len(),
+                        "OpenAI pre-semantic metadata limit reached; disabling retry"
+                    );
+                }
+
+                let mut saw_terminal = openai_chat_stream_event_is_terminal(&event);
+                for event in buffered.drain(..) {
+                    yield event;
+                }
+                yield event;
+
+                // Semantic output, non-zero usage, or too much metadata makes
+                // the request non-retryable. Continue through trailing usage.
+                while let Some(item) = stream.next().await {
+                    match item? {
+                        OpenAiStreamItem::Event(event) => {
+                            if retried {
+                                observe_retry_usage(&event, &mut attempt_usage);
+                            }
+                            saw_terminal |= openai_chat_stream_event_is_terminal(&event);
+                            yield event;
+                        }
+                        OpenAiStreamItem::ProviderTerminal => {
+                            if retried {
+                                charge_terminal_retry(&mut retry_charge, attempt_usage);
+                            }
+                            return;
+                        }
+                    }
+                }
+                if saw_terminal {
+                    if retried {
+                        charge_terminal_retry(&mut retry_charge, attempt_usage);
+                    }
+                    return;
+                }
+                Err(SwitchyardError::Upstream(format!(
+                    "{} stream became non-retryable and ended without provider terminal evidence",
+                    retry_request.endpoint.label(),
+                )))?;
+            }
+
+            if retried {
+                Err(SwitchyardError::Upstream(format!(
+                    "{} stream ended without provider terminal evidence, semantic output, or non-zero usage after one retry",
+                    retry_request.endpoint.label(),
+                )))?;
+            }
+
+            retried = true;
+            if let Some(stats) = &stats {
+                stats.record_openai_null_eof_retry();
+            }
+            retry_charge = Some(OpenAiRetryChargeGuard::new(stats.clone()));
+            tracing::warn!(
+                target_id = %retry_request.target_id,
+                endpoint = retry_request.endpoint.label(),
+                retry_attempt = 1_u8,
+                max_retries = 1_u8,
+                "OpenAI stream ended without terminal evidence or output; retrying once"
+            );
+            if let Some(stats) = &stats {
+                stats.record_openai_physical_attempt();
+            }
+            stream = match transport.send(&retry_request).await? {
+                OpenAiHttpResponse::Stream(stream) => stream,
+                OpenAiHttpResponse::Buffered(_) => {
+                    Err(SwitchyardError::Upstream(format!(
+                        "{} streaming retry returned a buffered response",
+                        retry_request.endpoint.label(),
+                    )))?
+                }
+            };
+        }
+    })
+}
+
+/// Resolves retry accounting exactly once, or records an unpriced retry when
+/// the lazy stream errors, terminates without usage, or is dropped by a client.
+struct OpenAiRetryChargeGuard {
+    stats: Option<StatsTransportRecorder>,
+    resolved: bool,
+}
+
+impl OpenAiRetryChargeGuard {
+    fn new(stats: Option<StatsTransportRecorder>) -> Self {
+        Self {
+            stats,
+            resolved: false,
+        }
+    }
+
+    fn charge(&mut self, usage: TokenUsage) {
+        if self.resolved {
+            return;
+        }
+        if let Some(stats) = &self.stats {
+            stats.record_openai_retry_usage_charge(usage);
+        }
+        self.resolved = true;
+    }
+}
+
+impl Drop for OpenAiRetryChargeGuard {
+    fn drop(&mut self) {
+        if self.resolved {
+            return;
+        }
+        if let Some(stats) = &self.stats {
+            stats.record_openai_unpriced_null_eof_retry();
+        }
+        self.resolved = true;
+    }
+}
+
+fn observe_retry_usage(event: &StreamEvent, usage: &mut Option<TokenUsage>) {
+    if let Some(observed) = openai_chat_usage_from_stream_event(event) {
+        if !observed.is_zero() {
+            *usage = Some(observed);
+        }
+    }
+}
+
+fn charge_terminal_retry(
+    retry_charge: &mut Option<OpenAiRetryChargeGuard>,
+    usage: Option<TokenUsage>,
+) {
+    if let (Some(retry_charge), Some(usage)) = (retry_charge.as_mut(), usage) {
+        retry_charge.charge(usage);
+    }
+}
+
+// Responses upstreams retain their prior pass-through EOF behavior. The
+// bounded retry above is intentionally scoped to Chat Completions targets.
+fn forward_openai_stream(mut stream: BoxOpenAiStream) -> BoxResponseStream {
+    Box::pin(try_stream! {
+        while let Some(item) = stream.next().await {
+            match item? {
+                OpenAiStreamItem::Event(event) => yield event,
+                OpenAiStreamItem::ProviderTerminal => return,
+            }
+        }
+    })
+}
+
+fn openai_chat_stream_event_commits(event: &StreamEvent) -> bool {
+    let StreamEvent::Json(value) = event else {
+        // The reqwest transport only produces JSON; unknown non-empty text
+        // fails closed rather than risking replay.
+        return matches!(event, StreamEvent::Text(text) if !text.is_empty());
+    };
+
+    has_chat_terminal_json(value) || !is_retryable_chat_metadata(value)
+}
+
+fn openai_chat_stream_event_is_terminal(event: &StreamEvent) -> bool {
+    matches!(event, StreamEvent::Json(value) if has_chat_terminal_json(value))
+}
+
+fn is_retryable_chat_metadata(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.iter().all(|(key, value)| match key.as_str() {
+        "id" | "object" | "model" | "system_fingerprint" | "service_tier" => {
+            value.is_null() || value.is_string()
+        }
+        "created" => value.is_null() || value.is_number(),
+        "choices" => retryable_chat_choices(value),
+        "usage" => usage_is_proven_zero(value),
+        _ => json_value_is_empty(value),
+    })
+}
+
+fn retryable_chat_choices(value: &Value) -> bool {
+    let Some(choices) = value.as_array() else {
+        return false;
+    };
+    choices.iter().all(|choice| {
+        choice.as_object().is_some_and(|choice| {
+            choice.iter().all(|(key, value)| match key.as_str() {
+                "index" => value.is_null() || value.is_number(),
+                "delta" => retryable_chat_delta(value),
+                "finish_reason" => value.is_null(),
+                "logprobs" => json_value_is_empty(value),
+                _ => json_value_is_empty(value),
+            })
+        })
+    })
+}
+
+fn retryable_chat_delta(value: &Value) -> bool {
+    value.as_object().is_some_and(|delta| {
+        delta.iter().all(|(key, value)| match key.as_str() {
+            "role" => value.is_null() || value.is_string(),
+            _ => json_value_is_empty(value),
+        })
+    })
+}
+
+fn usage_is_proven_zero(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Number(number) => number.as_f64() == Some(0.0),
+        Value::Object(object) if object.is_empty() => true,
+        Value::Object(object) => {
+            let mut saw_number = false;
+            object
+                .values()
+                .all(|value| zero_usage_component(value, &mut saw_number))
+                && saw_number
+        }
+        Value::Bool(_) | Value::String(_) | Value::Array(_) => false,
+    }
+}
+
+fn zero_usage_component(value: &Value, saw_number: &mut bool) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Number(number) if number.as_f64() == Some(0.0) => {
+            *saw_number = true;
+            true
+        }
+        Value::Object(object) => object
+            .values()
+            .all(|value| zero_usage_component(value, saw_number)),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => false,
+    }
+}
+
+fn json_value_is_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(value) => value.is_empty(),
+        Value::Array(value) => value.is_empty(),
+        Value::Object(value) => value.is_empty(),
+        Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
+fn has_chat_terminal_json(value: &Value) -> bool {
+    if value.get("error").is_some_and(|error| !error.is_null()) {
+        return true;
+    }
+
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|choice| {
+            choice
+                .get("finish_reason")
+                .is_some_and(|reason| !reason.is_null())
+        })
 }
 
 fn validate_target_format(target: &LlmTarget) -> Result<()> {
@@ -544,7 +876,7 @@ fn is_context_overflow(body: &str) -> bool {
     )
 }
 
-fn openai_sse_stream(response: reqwest::Response) -> BoxResponseStream {
+fn openai_sse_stream(response: reqwest::Response) -> BoxOpenAiStream {
     Box::pin(try_stream! {
         let mut chunks = response.bytes_stream();
         let mut buffer = Vec::new();
@@ -559,8 +891,13 @@ fn openai_sse_stream(response: reqwest::Response) -> BoxResponseStream {
             // across TCP chunks.
             while let Some(frame) = drain_next_sse_frame(&mut buffer, "OpenAI")? {
                 match parse_json_sse_frame(&frame, "OpenAI", Some("[DONE]"))? {
-                    ParsedSseFrame::Json(value) => yield StreamEvent::Json(value),
-                    ParsedSseFrame::Done => return,
+                    ParsedSseFrame::Json(value) => {
+                        yield OpenAiStreamItem::Event(StreamEvent::Json(value));
+                    }
+                    ParsedSseFrame::Done => {
+                        yield OpenAiStreamItem::ProviderTerminal;
+                        return;
+                    }
                     ParsedSseFrame::Empty => {}
                 }
             }
@@ -571,8 +908,11 @@ fn openai_sse_stream(response: reqwest::Response) -> BoxResponseStream {
         if has_non_whitespace_bytes(&buffer) {
             let frame = decode_sse_frame(&buffer, "OpenAI")?;
             match parse_json_sse_frame(&frame, "OpenAI", Some("[DONE]"))? {
-                ParsedSseFrame::Json(value) => yield StreamEvent::Json(value),
-                ParsedSseFrame::Done | ParsedSseFrame::Empty => {}
+                ParsedSseFrame::Json(value) => {
+                    yield OpenAiStreamItem::Event(StreamEvent::Json(value));
+                }
+                ParsedSseFrame::Done => yield OpenAiStreamItem::ProviderTerminal,
+                ParsedSseFrame::Empty => {}
             }
         }
     })
@@ -580,46 +920,83 @@ fn openai_sse_stream(response: reqwest::Response) -> BoxResponseStream {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    use futures_util::stream;
     use serde_json::json;
     use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
 
     use super::*;
+    use crate::{StatsAccumulator, StatsLlmBackend, StatsResponseProcessor};
 
     struct FakeOpenAiTransport {
         requests: Mutex<Vec<OpenAiHttpRequest>>,
-        response: Mutex<Option<Result<OpenAiHttpResponse>>>,
+        responses: Mutex<VecDeque<Result<OpenAiHttpResponse>>>,
     }
 
     impl FakeOpenAiTransport {
         fn with_error(message: &str) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
-                response: Mutex::new(Some(Err(SwitchyardError::Upstream(message.to_string())))),
+                responses: Mutex::new(VecDeque::from([Err(SwitchyardError::Upstream(
+                    message.to_string(),
+                ))])),
             }
+        }
+
+        fn with_responses(responses: impl IntoIterator<Item = OpenAiHttpResponse>) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+            }
+        }
+
+        fn requests(&self) -> Result<Vec<OpenAiHttpRequest>> {
+            self.requests
+                .lock()
+                .map(|requests| requests.clone())
+                .map_err(|_| {
+                    SwitchyardError::Other("fake transport request mutex poisoned".to_string())
+                })
         }
     }
 
     #[async_trait]
     impl OpenAiTransport for FakeOpenAiTransport {
-        async fn send(&self, request: OpenAiHttpRequest) -> Result<OpenAiHttpResponse> {
+        async fn send(&self, request: &OpenAiHttpRequest) -> Result<OpenAiHttpResponse> {
             self.requests
                 .lock()
                 .map_err(|_| {
                     SwitchyardError::Other("fake transport request mutex poisoned".to_string())
                 })?
-                .push(request);
-            self.response
+                .push(request.clone());
+            self.responses
                 .lock()
                 .map_err(|_| {
                     SwitchyardError::Other("fake transport response mutex poisoned".to_string())
                 })?
-                .take()
+                .pop_front()
                 .ok_or_else(|| {
-                    SwitchyardError::Other("fake transport response already consumed".to_string())
+                    SwitchyardError::Other("fake transport responses exhausted".to_string())
                 })?
         }
+    }
+
+    fn raw_stream<I>(events: I) -> BoxOpenAiStream
+    where
+        I: IntoIterator<Item = OpenAiStreamItem>,
+        I::IntoIter: Send + 'static,
+    {
+        Box::pin(stream::iter(events.into_iter().map(Ok)))
+    }
+
+    fn stream_response(events: Vec<Value>, done: bool) -> OpenAiHttpResponse {
+        let events = events
+            .into_iter()
+            .map(|value| OpenAiStreamItem::Event(StreamEvent::Json(value)))
+            .chain(done.then_some(OpenAiStreamItem::ProviderTerminal));
+        OpenAiHttpResponse::Stream(raw_stream(events))
     }
 
     fn openai_target() -> LlmTarget {
@@ -635,6 +1012,347 @@ mod tests {
             extra_body: None,
             extra_headers: BTreeMap::new(),
         }
+    }
+
+    fn streaming_request() -> ChatRequest {
+        ChatRequest::openai_chat(json!({
+            "model": "client-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }))
+    }
+
+    async fn call_stream(transport: Arc<FakeOpenAiTransport>) -> Result<BoxResponseStream> {
+        let backend = OpenAiNativeBackend::with_transport(openai_target(), transport)?;
+        match backend.call_without_context(&streaming_request()).await? {
+            ChatResponse::OpenAiStream(stream) => Ok(stream),
+            other => Err(SwitchyardError::Other(format!(
+                "expected OpenAI stream, got {:?}",
+                other.response_type(),
+            ))),
+        }
+    }
+
+    async fn call_stream_with_stats(
+        transport: Arc<FakeOpenAiTransport>,
+    ) -> Result<(BoxResponseStream, StatsAccumulator)> {
+        let stats = StatsAccumulator::new();
+        let backend = StatsLlmBackend::new(
+            Arc::new(OpenAiNativeBackend::with_transport(
+                openai_target(),
+                transport,
+            )?),
+            stats.clone(),
+        );
+        let mut ctx = ProxyContext::new();
+        let response = backend.call(&mut ctx, &streaming_request()).await?;
+        let response = StatsResponseProcessor::new(stats.clone())
+            .process(&mut ctx, response)
+            .await?;
+        match response {
+            ChatResponse::OpenAiStream(stream) => Ok((stream, stats)),
+            other => Err(SwitchyardError::Other(format!(
+                "expected OpenAI stream, got {:?}",
+                other.response_type(),
+            ))),
+        }
+    }
+
+    async fn collect_stream(mut stream: BoxResponseStream) -> Result<Vec<StreamEvent>> {
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event?);
+        }
+        Ok(events)
+    }
+
+    #[tokio::test]
+    async fn null_stream_retries_exact_request_before_forwarding_output() -> Result<()> {
+        let first_role = json!({
+            "id": "first-attempt",
+            "choices": [{"delta": {"role": "assistant", "content": ""}}],
+        });
+        let second_role = json!({
+            "id": "second-attempt",
+            "choices": [{"delta": {"role": "assistant"}}],
+        });
+        let content = json!({"choices": [{"delta": {"content": "hello"}}]});
+        let terminal = json!({"choices": [{"delta": {}, "finish_reason": "stop"}]});
+        let usage = json!({
+            "choices": [],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        });
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([
+            stream_response(
+                vec![
+                    first_role,
+                    json!({
+                        "choices": [],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    }),
+                ],
+                false,
+            ),
+            stream_response(
+                vec![
+                    second_role.clone(),
+                    content.clone(),
+                    terminal.clone(),
+                    usage.clone(),
+                ],
+                true,
+            ),
+        ]));
+        let (stream, stats) = call_stream_with_stats(transport.clone()).await?;
+        let events = collect_stream(stream).await?;
+
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Json(second_role),
+                StreamEvent::Json(content),
+                StreamEvent::Json(terminal),
+                StreamEvent::Json(usage),
+            ],
+        );
+        let requests = transport.requests()?;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0], requests[1]);
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.total_requests, 1);
+        assert_eq!(snapshot.total_tokens.total, 4);
+        assert_eq!(snapshot.openai_transport.physical_attempts, 2);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 1);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 0);
+        assert_eq!(
+            snapshot.openai_transport.retry_token_sensitivity,
+            snapshot.total_tokens,
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_null_stream_returns_explicit_upstream_error() -> Result<()> {
+        let null_attempt = || {
+            stream_response(
+                vec![
+                    json!({"choices": [{"delta": {"role": "assistant"}}]}),
+                    json!({
+                        "choices": [],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    }),
+                ],
+                false,
+            )
+        };
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([
+            null_attempt(),
+            null_attempt(),
+        ]));
+        let (mut stream, stats) = call_stream_with_stats(transport.clone()).await?;
+
+        let Some(Err(error)) = stream.next().await else {
+            return Err(SwitchyardError::Other(
+                "two null streams should fail before buffered metadata is forwarded".to_string(),
+            ));
+        };
+        assert!(matches!(error, SwitchyardError::Upstream(_)));
+        assert!(error.to_string().contains("after one retry"));
+        assert!(stream.next().await.is_none());
+        let requests = transport.requests()?;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0], requests[1]);
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.total_requests, 1);
+        assert_eq!(snapshot.openai_transport.physical_attempts, 2);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 0);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_token_sensitivity.total, 0,);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_classifier_only_accepts_proven_metadata() {
+        for value in [
+            json!({
+                "id": "chatcmpl-1", "object": "chat.completion.chunk", "created": 1,
+                "model": "model", "system_fingerprint": null, "service_tier": "default",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null, "logprobs": null}]
+            }),
+            json!({"usage": null, "choices": []}),
+            json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0, "details": {"cached_tokens": 0}}}),
+        ] {
+            assert!(!openai_chat_stream_event_commits(&StreamEvent::Json(value)));
+        }
+
+        for value in [
+            json!({"choices": {}}),
+            json!({"choices": [null]}),
+            json!({"choices": [{"message": {"content": "future"}}]}),
+            json!({"choices": [{"text": "future"}]}),
+            json!({"choices": [{"logprobs": {"content": []}}]}),
+            json!({"choices": [{"future_choice_field": 0}]}),
+            json!({"future_top_level_field": "value"}),
+            json!({"usage": {"prompt_tokens": "0"}}),
+        ] {
+            assert!(openai_chat_stream_event_commits(&StreamEvent::Json(value)));
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_delta_disables_retry_but_truncated_stream_errors() -> Result<()> {
+        for value in [
+            json!({"choices": [{"delta": {"content": "text"}}]}),
+            json!({"choices": [{"delta": {"reasoning_content": "thought"}}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0}]}}]}),
+            json!({"choices": [{"delta": {"future_output": "value"}}]}),
+            json!({"usage": {"prompt_tokens": 1, "completion_tokens": 0}}),
+        ] {
+            assert!(openai_chat_stream_event_commits(&StreamEvent::Json(value)));
+        }
+
+        let role = json!({"choices": [{"delta": {"role": "assistant"}}]});
+        let content = json!({"choices": [{"delta": {"content": "partial"}}]});
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([stream_response(
+            vec![role.clone(), content.clone()],
+            false,
+        )]));
+        let (mut stream, stats) = call_stream_with_stats(transport.clone()).await?;
+
+        assert_eq!(
+            stream.next().await.transpose()?,
+            Some(StreamEvent::Json(role))
+        );
+        assert_eq!(
+            stream.next().await.transpose()?,
+            Some(StreamEvent::Json(content)),
+        );
+        let Some(Err(error)) = stream.next().await else {
+            return Err(SwitchyardError::Other(
+                "semantic output without terminal evidence should be an error".to_string(),
+            ));
+        };
+        assert!(matches!(error, SwitchyardError::Upstream(_)));
+        assert!(error.to_string().contains("became non-retryable"));
+        assert_eq!(transport.requests()?.len(), 1);
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.total_requests, 1);
+        assert_eq!(snapshot.openai_transport.physical_attempts, 1);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 0);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 0);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_empty_stream_is_accepted_without_retry() -> Result<()> {
+        let role = json!({"choices": [{"delta": {"role": "assistant"}}]});
+        let terminal = json!({"choices": [{"delta": {}, "finish_reason": "stop"}]});
+        let zero_usage = json!({
+            "choices": [],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        });
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([stream_response(
+            vec![role.clone(), terminal.clone(), zero_usage.clone()],
+            false,
+        )]));
+        let (stream, stats) = call_stream_with_stats(transport.clone()).await?;
+        let events = collect_stream(stream).await?;
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Json(role),
+                StreamEvent::Json(terminal),
+                StreamEvent::Json(zero_usage),
+            ],
+        );
+        assert_eq!(transport.requests()?.len(), 1);
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.openai_transport.physical_attempts, 1);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 0);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 0);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_retry_with_only_zero_usage_is_unpriced() -> Result<()> {
+        let first_role = json!({"choices": [{"delta": {"role": "assistant"}}]});
+        let second_role = json!({"choices": [{"delta": {"role": "assistant"}}]});
+        let terminal = json!({"choices": [{"delta": {}, "finish_reason": "stop"}]});
+        let zero_usage = json!({
+            "choices": [],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        });
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([
+            stream_response(vec![first_role], false),
+            stream_response(
+                vec![second_role.clone(), terminal.clone(), zero_usage.clone()],
+                true,
+            ),
+        ]));
+        let (stream, stats) = call_stream_with_stats(transport).await?;
+        let events = collect_stream(stream).await?;
+
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Json(second_role),
+                StreamEvent::Json(terminal),
+                StreamEvent::Json(zero_usage),
+            ],
+        );
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.openai_transport.physical_attempts, 2);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 0);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_token_sensitivity.total, 0,);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropped_retry_stream_is_counted_as_unpriced() -> Result<()> {
+        let first = stream_response(
+            vec![json!({"choices": [{"delta": {"role": "assistant"}}]})],
+            false,
+        );
+        let pending = OpenAiHttpResponse::Stream(Box::pin(stream::pending()));
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([first, pending]));
+        let (mut stream, stats) = call_stream_with_stats(transport.clone()).await?;
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(20), stream.next()).await;
+        assert!(result.is_err());
+        assert_eq!(transport.requests()?.len(), 2);
+        drop(stream);
+
+        let snapshot = stats.snapshot()?;
+        assert_eq!(snapshot.openai_transport.physical_attempts, 2);
+        assert_eq!(snapshot.openai_transport.null_eof_retries, 1);
+        assert_eq!(snapshot.openai_transport.retry_usage_charges, 0);
+        assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn metadata_prefix_limit_disables_retry() -> Result<()> {
+        let role = json!({"choices": [{"delta": {"role": "assistant"}}]});
+        let transport = Arc::new(FakeOpenAiTransport::with_responses([
+            stream_response(vec![role; MAX_BUFFERED_CHAT_METADATA_EVENTS + 1], false),
+            stream_response(Vec::new(), true),
+        ]));
+
+        let Err(error) = collect_stream(call_stream(transport.clone()).await?).await else {
+            return Err(SwitchyardError::Other(
+                "an over-limit metadata prefix should become non-retryable".to_string(),
+            ));
+        };
+        assert!(matches!(error, SwitchyardError::Upstream(_)));
+        assert_eq!(transport.requests()?.len(), 1);
+        Ok(())
     }
 
     #[test]

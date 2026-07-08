@@ -13,8 +13,40 @@ use switchyard_core::{
 };
 
 use crate::stats::{
-    selected_stats_model, selected_stats_tier, StatsAccumulator, StatsBackendLatency,
+    selected_stats_model, selected_stats_tier, StatsAccumulator, StatsBackendLatency, TokenUsage,
 };
+
+/// Internal side channel from stats wrappers to lazy native transports.
+///
+/// The recorder is cloned into a response stream, so transport accounting can
+/// continue after `LlmBackend::call` has returned without retaining a mutable
+/// `ProxyContext` reference.
+#[derive(Clone, Debug)]
+pub(crate) struct StatsTransportRecorder {
+    accumulator: StatsAccumulator,
+}
+
+impl StatsTransportRecorder {
+    fn new(accumulator: StatsAccumulator) -> Self {
+        Self { accumulator }
+    }
+
+    pub(crate) fn record_openai_physical_attempt(&self) {
+        self.accumulator.record_openai_physical_attempt();
+    }
+
+    pub(crate) fn record_openai_null_eof_retry(&self) {
+        self.accumulator.record_openai_null_eof_retry();
+    }
+
+    pub(crate) fn record_openai_retry_usage_charge(&self, usage: TokenUsage) {
+        self.accumulator.record_openai_retry_usage_charge(usage);
+    }
+
+    pub(crate) fn record_openai_unpriced_null_eof_retry(&self) {
+        self.accumulator.record_openai_unpriced_null_eof_retry();
+    }
+}
 
 /// Transparent backend wrapper that records call success/error and backend latency.
 #[derive(Clone)]
@@ -58,7 +90,14 @@ impl LlmBackend for StatsLlmBackend {
     async fn call(&self, ctx: &mut ProxyContext, request: &ChatRequest) -> Result<ChatResponse> {
         let request_model = request.model().map(str::to_string);
         let started_at = Instant::now();
-        match self.inner.call(ctx, request).await {
+        let previous_recorder = ctx.insert(StatsTransportRecorder::new(self.accumulator.clone()));
+        let result = self.inner.call(ctx, request).await;
+        if let Some(previous_recorder) = previous_recorder {
+            ctx.insert(previous_recorder);
+        } else {
+            ctx.remove::<StatsTransportRecorder>();
+        }
+        match result {
             Ok(response) => {
                 let latency = started_at.elapsed();
                 ctx.insert(StatsBackendLatency(latency));

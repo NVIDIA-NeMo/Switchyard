@@ -3,6 +3,10 @@
 
 # Harbor Benchmarks
 
+> The Nemotron Ultra skill-distillation experiment is a separate,
+> container-free LABBench2 TrialQA workflow. It does not use Harbor or Docker;
+> see [the TrialQA demo runbook](TRIALQA_SKILL_DISTILLATION_DEMO.md).
+
 Use this guide to run Harbor Terminal-Bench Lite from a fresh Switchyard clone.
 It covers the two smoke paths most people need first:
 

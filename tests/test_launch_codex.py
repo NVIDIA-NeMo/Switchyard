@@ -84,6 +84,19 @@ class TestModelRewriteRequestProcessor:
 
 
 class TestFindCodexBinary:
+    def test_explicit_binary_overrides_path(self, tmp_path, monkeypatch):
+        codex = tmp_path / "pinned-codex"
+        codex.write_text("#!/bin/sh\necho codex\n")
+        codex.chmod(0o755)
+        monkeypatch.setenv("SWITCHYARD_CODEX_BIN", str(codex))
+        with patch("shutil.which", return_value="/usr/local/bin/codex"):
+            assert _find_codex_binary() == str(codex)
+
+    def test_invalid_explicit_binary_fails_closed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SWITCHYARD_CODEX_BIN", str(tmp_path / "missing"))
+        with patch("shutil.which", return_value="/usr/local/bin/codex"):
+            assert _find_codex_binary() is None
+
     def test_returns_path_hit_when_on_path(self):
         with patch("shutil.which", return_value="/usr/local/bin/codex"):
             assert _find_codex_binary() == "/usr/local/bin/codex"

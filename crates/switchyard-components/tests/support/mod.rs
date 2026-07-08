@@ -28,6 +28,8 @@ pub struct CapturedRequest {
     pub headers: BTreeMap<String, String>,
     /// JSON request body.
     pub body: Value,
+    /// Exact request body bytes received on the socket.
+    pub raw_body: Vec<u8>,
 }
 
 impl CapturedRequest {
@@ -119,6 +121,25 @@ impl OneShotServer {
 impl SequenceServer {
     /// Creates a sequence server returning one JSON response per request.
     pub fn json(responses: Vec<(u16, Value)>) -> Result<Self> {
+        Self::raw(
+            responses
+                .into_iter()
+                .map(|(status, body)| (status, "application/json", body.to_string()))
+                .collect(),
+        )
+    }
+
+    /// Creates a sequence server returning one SSE response per request.
+    pub fn sse(responses: Vec<String>) -> Result<Self> {
+        Self::raw(
+            responses
+                .into_iter()
+                .map(|body| (200, "text/event-stream", body))
+                .collect(),
+        )
+    }
+
+    fn raw(responses: Vec<(u16, &'static str, String)>) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|error| SwitchyardError::Other(format!("bind test server: {error}")))?;
         let address = listener.local_addr().map_err(|error| {
@@ -184,20 +205,20 @@ fn handle_one_request(
     Ok(request)
 }
 
-/// Handles a fixed sequence of HTTP requests with matching JSON responses.
+/// Handles a fixed sequence of HTTP requests with matching responses.
 fn handle_request_sequence(
     listener: TcpListener,
-    responses: Vec<(u16, Value)>,
+    responses: Vec<(u16, &'static str, String)>,
 ) -> Result<Vec<CapturedRequest>> {
     let mut requests = Vec::with_capacity(responses.len());
-    for (status, body) in responses {
+    for (status, content_type, body) in responses {
         requests.push(handle_one_request(
             listener
                 .try_clone()
                 .map_err(|error| SwitchyardError::Other(format!("clone test listener: {error}")))?,
             status,
-            "application/json",
-            body.to_string(),
+            content_type,
+            body,
         )?);
     }
     Ok(requests)
@@ -230,7 +251,8 @@ fn read_request(stream: &mut std::net::TcpStream) -> Result<CapturedRequest> {
     })?;
     let body_start = header_end + 4;
     let body_end = body_start + content_length;
-    let raw_body = std::str::from_utf8(&bytes[body_start..body_end])
+    let raw_body = bytes[body_start..body_end].to_vec();
+    let raw_body_text = std::str::from_utf8(&raw_body)
         .map_err(|error| SwitchyardError::Other(format!("body should be valid UTF-8: {error}")))?
         .to_string();
 
@@ -250,10 +272,10 @@ fn read_request(stream: &mut std::net::TcpStream) -> Result<CapturedRequest> {
         headers.insert(name.to_ascii_lowercase(), value.trim().to_string());
     }
 
-    let body = if raw_body.is_empty() {
+    let body = if raw_body_text.is_empty() {
         Value::Null
     } else {
-        serde_json::from_str(&raw_body).map_err(|error| {
+        serde_json::from_str(&raw_body_text).map_err(|error| {
             SwitchyardError::Other(format!("request body should be JSON: {error}"))
         })?
     };
@@ -263,6 +285,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Result<CapturedRequest> {
         path,
         headers,
         body,
+        raw_body,
     })
 }
 

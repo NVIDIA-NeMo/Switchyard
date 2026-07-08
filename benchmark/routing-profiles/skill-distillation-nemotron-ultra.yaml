@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Model aliases for the LABBench2 TrialQA skill-distillation A/B demo. Every
+# executor, distiller, and judge request goes through Switchyard and the NVIDIA
+# OpenAI-compatible endpoint. The first route intentionally pins the executor
+# used by ``switchyard launch codex``; the other routes are selected explicitly
+# by the native analyst/merge and semantic-judge clients.
+
+defaults:
+  api_key: ${NVIDIA_API_KEY}
+  base_url: https://inference-api.nvidia.com/v1
+  timeout_secs: 3600.0
+
+routes:
+  sd-executor:
+    type: model
+    target:
+      model: nvidia/nvidia/nemotron-3-ultra
+      format: openai
+
+  sd-distiller:
+    type: model
+    target:
+      model: aws/anthropic/bedrock-claude-opus-4-8
+      format: openai
+
+  sd-judge:
+    type: model
+    target:
+      model: aws/anthropic/bedrock-claude-opus-4-8
+      format: openai

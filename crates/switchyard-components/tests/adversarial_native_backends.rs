@@ -5,10 +5,13 @@
 
 mod support;
 
+use std::sync::Arc;
+
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use switchyard_components::{
     AnthropicNativeBackend, BackendSelection, OpenAiNativeBackend, OpenAiPassthroughBackend,
+    StatsAccumulator, StatsLlmBackend, StatsResponseProcessor,
 };
 use switchyard_core::{
     BackendFormat, ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, EndpointConfig,
@@ -16,7 +19,7 @@ use switchyard_core::{
     SwitchyardError,
 };
 
-use support::{CapturedRequest, OneShotServer};
+use support::{CapturedRequest, OneShotServer, SequenceServer};
 
 // Reads the selected model stamped by the backend into context.
 fn selected_model(ctx: &ProxyContext) -> Option<&ModelId> {
@@ -479,6 +482,67 @@ async fn openai_streaming_injects_usage_opt_in_and_parses_done() -> Result<()> {
         request.body["stream_options"],
         json!({"include_usage": true})
     );
+    Ok(())
+}
+
+// A real HTTP clean EOF followed by a terminal retry should replay the exact
+// request without exposing first-attempt metadata and should persist transport
+// accounting separately from the one logical model call.
+#[tokio::test]
+async fn openai_null_eof_retry_is_lossless_and_accounted_over_localhost() -> Result<()> {
+    let server = SequenceServer::sse(vec![
+        "data: {\"id\":\"first-attempt\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"
+            .to_string(),
+        "data: {\"id\":\"second-attempt\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n\
+         data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n\
+         data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+         data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n\
+         data: [DONE]\n\n"
+            .to_string(),
+    ])?;
+    let stats = StatsAccumulator::new();
+    let backend = StatsLlmBackend::new(
+        Arc::new(OpenAiNativeBackend::new(openai_target(format!(
+            "{}/v1",
+            server.base_url()
+        ))?)?),
+        stats.clone(),
+    );
+    let mut ctx = ProxyContext::new();
+
+    let response = backend
+        .call(
+            &mut ctx,
+            &ChatRequest::openai_chat(json!({
+                "model": "client-gpt",
+                "messages": [{"role": "user", "content": "retry"}],
+                "stream": true,
+            })),
+        )
+        .await?;
+    let response = StatsResponseProcessor::new(stats.clone())
+        .process(&mut ctx, response)
+        .await?;
+    let events = collect_json_events(response).await?;
+    let requests = server.captured()?;
+
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].raw_body, requests[1].raw_body);
+    assert_eq!(requests[0].body, requests[1].body);
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0]["id"], "second-attempt");
+    assert!(events.iter().all(|event| event["id"] != "first-attempt"));
+    assert_eq!(events[1]["choices"][0]["delta"]["content"], "hello");
+    assert_eq!(events[3]["usage"]["total_tokens"], 4);
+
+    let snapshot = stats.snapshot()?;
+    assert_eq!(snapshot.total_requests, 1);
+    assert_eq!(snapshot.total_tokens.total, 4);
+    assert_eq!(snapshot.openai_transport.physical_attempts, 2);
+    assert_eq!(snapshot.openai_transport.null_eof_retries, 1);
+    assert_eq!(snapshot.openai_transport.retry_usage_charges, 1);
+    assert_eq!(snapshot.openai_transport.unpriced_null_eof_retries, 0);
+    assert_eq!(snapshot.openai_transport.retry_token_sensitivity.total, 4);
     Ok(())
 }
 

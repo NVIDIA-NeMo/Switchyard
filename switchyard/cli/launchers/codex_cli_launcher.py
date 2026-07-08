@@ -98,6 +98,7 @@ _READY_TIMEOUT_S = 10.0
 _SHUTDOWN_JOIN_S = 3.0
 _EXIT_BINARY_NOT_FOUND = 127
 _EXIT_SIGINT = 130
+_CODEX_BIN_ENV = "SWITCHYARD_CODEX_BIN"
 
 # Identifier we register the transient provider under via ``-c`` overrides.
 # Arbitrary — codex only cares that ``model_provider`` matches a key in
@@ -117,6 +118,12 @@ def _find_codex_binary() -> str | None:
     ``npm install -g @openai/codex`` default on machines that pin npm's
     global prefix) and ``~/.local/bin/codex`` (alternative layouts).
     """
+    explicit = os.environ.get(_CODEX_BIN_ENV)
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        return None
     path_hit = shutil.which("codex")
     if path_hit:
         return path_hit

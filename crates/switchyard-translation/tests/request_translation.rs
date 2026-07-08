@@ -481,6 +481,210 @@ fn responses_request_translates_python_compatible_tool_shape_to_openai_chat() ->
     Ok(())
 }
 
+// Verifies Codex namespace tools, history calls, and forced choices use one reversible Chat name.
+#[test]
+fn responses_namespace_tools_flatten_consistently_for_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let flattened = "__sy1n17_mcp__tooluniversetrialqa_search";
+    let body = json!({
+        "model": "gpt-4",
+        "input": [
+            {"type": "message", "role": "user", "content": "Find a trial"},
+            {
+                "type": "function_call",
+                "namespace": "mcp__tooluniverse",
+                "name": "trialqa_search",
+                "call_id": "call_1",
+                "arguments": "{\"query\":\"melanoma\"}"
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "NCT00000001"}
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "name": "plain_lookup",
+                "description": "Plain function",
+                "parameters": {"type": "object"}
+            },
+            {
+                "type": "namespace",
+                "name": "mcp__tooluniverse",
+                "description": "Load the active skill first.",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "trialqa_search",
+                        "description": "Search clinical trials.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "additionalProperties": false
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "name": "trialqa_load_active_skill",
+                        "description": "Load the skill.",
+                        "parameters": {"type": "object", "additionalProperties": false}
+                    }
+                ]
+            }
+        ],
+        "tool_choice": {
+            "type": "function",
+            "namespace": "mcp__tooluniverse",
+            "name": "trialqa_search"
+        }
+    });
+
+    let chat = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(chat["tools"].as_array().map(Vec::len), Some(3));
+    assert_eq!(chat["tools"][0]["function"]["name"], "plain_lookup");
+    assert_eq!(chat["tools"][1]["function"]["name"], flattened);
+    assert_eq!(
+        chat["tools"][1]["function"]["description"],
+        "Load the active skill first.\n\nSearch clinical trials."
+    );
+    assert_eq!(
+        chat["messages"][1]["tool_calls"][0]["function"]["name"],
+        flattened
+    );
+    assert_eq!(
+        chat["tool_choice"],
+        json!({"type": "function", "function": {"name": flattened}})
+    );
+
+    let round_trip = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &chat,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    let namespace = round_trip["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["type"] == "namespace"))
+        .ok_or("round trip should reconstruct the namespace")?;
+    assert_eq!(namespace["name"], "mcp__tooluniverse");
+    assert_eq!(namespace["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(round_trip["input"][1]["namespace"], "mcp__tooluniverse");
+    assert_eq!(round_trip["input"][1]["name"], "trialqa_search");
+    assert_eq!(round_trip["tool_choice"]["namespace"], "mcp__tooluniverse");
+    assert_eq!(round_trip["tool_choice"]["name"], "trialqa_search");
+    Ok(())
+}
+
+// Verifies namespace encoding honors the Chat function-name boundary without truncation.
+#[test]
+fn responses_namespace_tool_name_boundary_is_fail_closed() -> TestResult {
+    let engine = TranslationEngine::default();
+    let exact_child = "a".repeat(55);
+    let exact = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [{
+            "type": "namespace",
+            "name": "n",
+            "tools": [{
+                "type": "function",
+                "name": exact_child,
+                "parameters": {"type": "object"}
+            }]
+        }]
+    });
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &exact,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        output["tools"][0]["function"]["name"]
+            .as_str()
+            .map(str::len),
+        Some(64)
+    );
+
+    let overlong_child = "a".repeat(56);
+    let overlong = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [{
+            "type": "namespace",
+            "name": "n",
+            "tools": [{
+                "type": "function",
+                "name": overlong_child,
+                "parameters": {"type": "object"}
+            }]
+        }]
+    });
+    assert!(engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &overlong,
+            &TranslationPolicy::default(),
+        )
+        .is_err());
+    Ok(())
+}
+
+// Verifies duplicate namespace children and reserved normal names cannot alias silently.
+#[test]
+fn responses_namespace_tool_collisions_are_rejected() {
+    let engine = TranslationEngine::default();
+    let duplicate = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [{
+            "type": "namespace",
+            "name": "mcp__tooluniverse",
+            "tools": [
+                {"type": "function", "name": "trialqa_search", "parameters": {}},
+                {"type": "function", "name": "trialqa_search", "parameters": {}}
+            ]
+        }]
+    });
+    assert!(engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &duplicate,
+            &TranslationPolicy::default(),
+        )
+        .is_err());
+
+    let reserved = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "__sy1n17_mcp__tooluniversetrialqa_search",
+            "parameters": {}
+        }]
+    });
+    assert!(engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &reserved,
+            &TranslationPolicy::default(),
+        )
+        .is_err());
+}
+
 // Verifies unknown Responses input items are preserved as valid OpenAI text content.
 #[test]
 fn responses_unknown_input_item_is_preserved_for_openai_chat() -> TestResult {

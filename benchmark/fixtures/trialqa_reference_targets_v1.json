@@ -1,0 +1,79 @@
+{
+  "schema_version": "switchyard.trialqa_reference_targets.v1",
+  "source": {
+    "document": "2026-05-21-Skill-Distillation-Demo-V2.pptx.pdf",
+    "document_sha256": "sha256:6eaf38bb8177b6f4abbbe748ee9a2bfca631e41df65c0c555abcbb495b5b1137",
+    "slide_title": "Key Results Across Models and Distillation Conditions for TrialQA",
+    "pdf_page": 13,
+    "visual_render_checked": "/tmp/switchyard-trialqa-pdf/key-results-13.png"
+  },
+  "population": {
+    "dataset": "LABBench2 TrialQA",
+    "heldout_questions": 96,
+    "repeats_per_question": 5,
+    "trials": 480,
+    "tool_provider": "ToolUniverse MCP",
+    "injected_context": false
+  },
+  "super": {
+    "base": {
+      "accuracy": 0.61,
+      "worst_case": 0.292,
+      "tokens_per_trial": 549000,
+      "operational_calls_per_trial": 15.5
+    },
+    "r1": {
+      "accuracy": 0.738,
+      "accuracy_relative_lift": 0.21,
+      "worst_case": 0.5,
+      "worst_case_relative_lift": 0.71,
+      "tokens_per_trial": 385000,
+      "token_reduction": 0.3,
+      "operational_calls_per_trial": 8.6,
+      "operational_call_reduction": 0.45
+    },
+    "r1b": {
+      "accuracy": 0.742,
+      "accuracy_relative_lift": 0.22,
+      "worst_case": 0.479,
+      "worst_case_relative_lift": 0.64,
+      "tokens_per_trial": 389000,
+      "token_reduction": 0.29,
+      "operational_calls_per_trial": 9.0,
+      "operational_call_reduction": 0.42
+    }
+  },
+  "nano": {
+    "base": {
+      "accuracy": 0.375,
+      "worst_case": 0.094,
+      "tokens_per_trial": 673000,
+      "operational_calls_per_trial": 14.9
+    },
+    "r1": {
+      "accuracy": 0.531,
+      "accuracy_relative_lift": 0.42,
+      "worst_case": 0.302,
+      "worst_case_relative_lift": 2.21,
+      "tokens_per_trial": 436000,
+      "token_reduction": 0.35,
+      "operational_calls_per_trial": 8.5,
+      "operational_call_reduction": 0.43
+    },
+    "r1b": {
+      "accuracy": 0.556,
+      "accuracy_relative_lift": 0.48,
+      "worst_case": 0.281,
+      "worst_case_relative_lift": 1.99,
+      "tokens_per_trial": 371000,
+      "token_reduction": 0.45,
+      "operational_calls_per_trial": 8.4,
+      "operational_call_reduction": 0.44
+    }
+  },
+  "local_success_interpretation": {
+    "first_canary": "directional operational safety screen only; not performance evidence",
+    "prospective_8_question_scope": "directional local validation of quality parity and efficiency benefit",
+    "official_reproduction": "requires a 96-heldout-question, 5-repeat, 480-trial comparable evaluation or an agreed successor population"
+  }
+}

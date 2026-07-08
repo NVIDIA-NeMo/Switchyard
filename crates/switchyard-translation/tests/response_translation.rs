@@ -282,6 +282,111 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     Ok(())
 }
 
+// Verifies a flattened Chat function call reconstructs Codex's namespace fields.
+#[test]
+fn openai_chat_namespaced_tool_call_reconstructs_responses_namespace() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "nemotron",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "__sy1n17_mcp__tooluniversetrialqa_load_active_skill",
+                        "arguments": "{}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["output"][0]["type"], "function_call");
+    assert_eq!(output["output"][0]["namespace"], "mcp__tooluniverse");
+    assert_eq!(output["output"][0]["name"], "trialqa_load_active_skill");
+    assert_eq!(output["output"][0]["call_id"], "call_1");
+    assert_eq!(output["output"][0]["arguments"], "{}");
+    Ok(())
+}
+
+// Verifies Responses namespace calls flatten on the reverse buffered path as well.
+#[test]
+fn responses_namespaced_tool_call_flattens_for_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp-test",
+        "model": "gpt-4",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "namespace": "mcp__tooluniverse",
+            "name": "trialqa_search",
+            "call_id": "call_1",
+            "arguments": "{\"query\":\"melanoma\"}"
+        }]
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        output["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "__sy1n17_mcp__tooluniversetrialqa_search"
+    );
+    Ok(())
+}
+
+// Verifies malformed reserved markers never escape as ordinary Responses calls.
+#[test]
+fn malformed_namespaced_tool_call_marker_is_rejected() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "nemotron",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "__sy1n_bad_marker", "arguments": "{}"}
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+    assert!(engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .is_err());
+}
+
 // Verifies mixed assistant text and tool calls both survive into Responses output.
 #[test]
 fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -> TestResult {
