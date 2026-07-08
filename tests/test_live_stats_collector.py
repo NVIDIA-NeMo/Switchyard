@@ -54,7 +54,7 @@ def test_record_accumulates_across_calls():
     assert s.request_count == 2
     assert s.prompt_tokens == 30
     assert s.completion_tokens == 15
-    assert c.to_dict()["models"]["unknown"]["max_prompt_tokens"] == 20
+    assert c.to_dict()["models"]["unknown"]["max_observed_context_tokens"] == 30
 
 
 def test_snapshot_returns_copy():

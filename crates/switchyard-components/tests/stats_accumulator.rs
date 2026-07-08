@@ -87,7 +87,7 @@ fn accumulator_matches_python_two_tier_snapshot_contract() -> Result<()> {
     assert_eq!(strong.tier.as_deref(), Some("strong"));
     assert_eq!(strong.request_pct, 50.0);
     assert_eq!(strong.token_pct, 73.53);
-    assert_eq!(strong.max_prompt_tokens, 100);
+    assert_eq!(strong.max_observed_context_tokens, 125);
     assert_eq!(strong.avg_prompt_tokens, 100.0);
     assert_eq!(strong.avg_completion_tokens, 25.0);
     assert_eq!(strong.cache_hit_rate, 0.1);
@@ -112,14 +112,15 @@ fn accumulator_matches_python_two_tier_snapshot_contract() -> Result<()> {
 }
 
 #[test]
-fn accumulator_tracks_max_prompt_tokens_per_model() -> Result<()> {
+fn accumulator_tracks_max_observed_context_tokens_per_model() -> Result<()> {
     let accumulator = StatsAccumulator::new();
-    for prompt_tokens in [100, 250, 175] {
+    for (prompt_tokens, completion_tokens) in [(100, 10), (90, 50), (120, 5)] {
         accumulator.record_success("model-a", None, None)?;
         accumulator.record_usage(
             "model-a",
             TokenUsage {
                 prompt_tokens,
+                completion_tokens,
                 ..TokenUsage::default()
             },
             None,
@@ -130,8 +131,9 @@ fn accumulator_tracks_max_prompt_tokens_per_model() -> Result<()> {
 
     let snapshot = accumulator.snapshot()?;
     let model = model_stats(&snapshot, "model-a")?;
-    assert_eq!(model.prompt_tokens, 525);
-    assert_eq!(model.max_prompt_tokens, 250);
+    assert_eq!(model.prompt_tokens, 310);
+    assert_eq!(model.completion_tokens, 65);
+    assert_eq!(model.max_observed_context_tokens, 140);
     Ok(())
 }
 
@@ -678,7 +680,7 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
         .get(model)
         .ok_or_else(|| SwitchyardError::Other("backend row missing".to_string()))?;
     assert_eq!(backend.prompt_tokens, 1_000_000);
-    assert_eq!(backend.max_prompt_tokens, 1_000_000);
+    assert_eq!(backend.max_observed_context_tokens, 1_000_000);
     assert_eq!(backend.calls, 1);
 
     // Classifier bucket: same model id, separate row, separate counts.
@@ -688,7 +690,7 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
         .get(model)
         .ok_or_else(|| SwitchyardError::Other("classifier row missing".to_string()))?;
     assert_eq!(classifier.prompt_tokens, 500_000);
-    assert_eq!(classifier.max_prompt_tokens, 500_000);
+    assert_eq!(classifier.max_observed_context_tokens, 500_000);
     assert_eq!(classifier.calls, 1);
     assert_eq!(snapshot.classifier.total_requests, 1);
 
@@ -701,13 +703,14 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
 }
 
 #[test]
-fn planner_bucket_tracks_max_prompt_tokens() -> Result<()> {
+fn planner_bucket_tracks_max_observed_context_tokens() -> Result<()> {
     let accumulator = StatsAccumulator::new();
-    for prompt_tokens in [120, 300, 200] {
+    for (prompt_tokens, completion_tokens) in [(120, 0), (300, 5), (200, 200)] {
         accumulator.record_planner_usage(
             "planner/model",
             TokenUsage {
                 prompt_tokens,
+                completion_tokens,
                 ..TokenUsage::default()
             },
             None,
@@ -721,20 +724,29 @@ fn planner_bucket_tracks_max_prompt_tokens() -> Result<()> {
         .get("planner/model")
         .ok_or_else(|| SwitchyardError::Other("planner row missing".to_string()))?;
     assert_eq!(planner.prompt_tokens, 620);
-    assert_eq!(planner.max_prompt_tokens, 300);
+    assert_eq!(planner.max_observed_context_tokens, 400);
     Ok(())
 }
 
 #[test]
 fn classifier_latency_lands_on_classifier_model_call_latency() -> Result<()> {
     let accumulator = StatsAccumulator::new();
-    accumulator.record_classifier_usage("claude-sonnet-4-6", TokenUsage::default(), Some(15.0))?;
+    accumulator.record_classifier_usage(
+        "claude-sonnet-4-6",
+        TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            ..TokenUsage::default()
+        },
+        Some(15.0),
+    )?;
     let snapshot = accumulator.snapshot()?;
     let row = snapshot
         .classifier
         .models
         .get("claude-sonnet-4-6")
         .ok_or_else(|| SwitchyardError::Other("classifier row missing".to_string()))?;
+    assert_eq!(row.max_observed_context_tokens, 15);
     assert_eq!(row.model_call_latency.count, 1);
     assert_eq!(row.model_call_latency.total_ms, 15.0);
     Ok(())

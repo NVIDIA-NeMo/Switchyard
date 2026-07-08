@@ -53,7 +53,7 @@ async def test_v1_stats_returns_existing_json_shape(
     assert body["total_requests"] == 1
     assert body["models"]["m"]["calls"] == 1
     assert body["models"]["m"]["prompt_tokens"] == 5
-    assert body["models"]["m"]["max_prompt_tokens"] == 5
+    assert body["models"]["m"]["max_observed_context_tokens"] == 8
     assert "cost_estimate" in body
 
 

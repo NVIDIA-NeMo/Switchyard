@@ -93,8 +93,8 @@ class ModelStats:
       sum ``input_tokens + cache_creation_input_tokens +
       cache_read_input_tokens`` (Anthropic reports them as siblings, not
       parent/child).  For OpenAI it is ``usage.prompt_tokens``.
-    * ``max_prompt_tokens`` — largest input-token count observed in one
-      completed response.
+    * ``max_observed_context_tokens`` — largest prompt-plus-completion
+      token count observed in one completed response.
     * ``completion_tokens`` — total output tokens.
     * ``total_tokens`` — ``prompt_tokens + completion_tokens``.
     * ``reasoning_tokens`` — subset of ``completion_tokens`` for chain-of-
@@ -110,7 +110,7 @@ class ModelStats:
     tier: str = ""
     calls: int = 0
     prompt_tokens: int = 0
-    max_prompt_tokens: int = 0
+    max_observed_context_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     reasoning_tokens: int = 0
@@ -160,7 +160,10 @@ class LiveStatsCollector:
                 self._models[model] = bucket
             bucket.calls += 1
             bucket.prompt_tokens += prompt_tokens
-            bucket.max_prompt_tokens = max(bucket.max_prompt_tokens, prompt_tokens)
+            bucket.max_observed_context_tokens = max(
+                bucket.max_observed_context_tokens,
+                prompt_tokens + completion_tokens,
+            )
             bucket.completion_tokens += completion_tokens
             bucket.total_tokens += prompt_tokens + completion_tokens
             bucket.reasoning_tokens += reasoning_tokens
@@ -218,7 +221,7 @@ class LiveStatsCollector:
                         "tier": str,
                         "calls": int,
                         "prompt_tokens": int,
-                        "max_prompt_tokens": int,
+                        "max_observed_context_tokens": int,
                         "completion_tokens": int,
                         "total_tokens": int,
                         "reasoning_tokens": int,
@@ -248,7 +251,7 @@ class LiveStatsCollector:
                 "tier": b.tier,
                 "calls": b.calls,
                 "prompt_tokens": b.prompt_tokens,
-                "max_prompt_tokens": b.max_prompt_tokens,
+                "max_observed_context_tokens": b.max_observed_context_tokens,
                 "completion_tokens": b.completion_tokens,
                 "total_tokens": b.total_tokens,
                 "reasoning_tokens": b.reasoning_tokens,
