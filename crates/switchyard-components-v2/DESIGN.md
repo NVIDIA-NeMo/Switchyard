@@ -74,7 +74,8 @@ bundles, or backend wrappers by hand.
 
 The v2 runtime has two surfaces:
 
-- an object-safe serving surface for code that only needs to run a profile;
+- an object-safe runtime surface for code that needs to run a profile or request a
+  decision without selected-backend dispatch;
 - a typed hook surface for code that wants to inspect or embed the profile's request and response
   hooks.
 
@@ -84,6 +85,12 @@ In Rust, that target shape is:
 #[async_trait]
 pub trait Profile: Send + Sync {
     async fn run(&self, input: ProfileInput) -> Result<ChatResponse>;
+
+    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
+        Err(SwitchyardError::DecisionUnsupported {
+            profile_id: request.decision_profile.profile_id,
+        })
+    }
 }
 
 #[async_trait]
@@ -105,12 +112,14 @@ Conceptually:
 ```text
 process(request)              -> profile-specific processed request
 run(request)                  -> final response
+decide(routing_request)       -> routing decision without selected-backend dispatch
 rprocess(processed, response) -> processed response
 ```
 
-`Profile` is the erased serving contract. Servers, config loaders, and generic profile tables
-can store `Box<dyn Profile>` and call `run()` without knowing a profile's private request
-state.
+`Profile` is the erased runtime contract. Servers, config loaders, and generic profile tables
+can store `Box<dyn Profile>` and call `run()` or `decide()` without knowing a profile's private
+request state. `decide()` defaults to a typed unsupported-profile error so the one configured
+runtime registry can serve both full requests and capability-checked decision calls.
 
 `ProfileHooks` is the typed authoring and embedding contract. The associated `ProcessedRequest`
 type is the profile-owned wrapper around the prepared request and any request-side decision the
@@ -122,6 +131,8 @@ hidden pipeline:
 
 - `run()` is the authoritative serving path. It owns the complete request lifecycle and is the
   method a Switchyard server should call.
+- `decide()` is the decision-only path. Supporting profiles reuse their request-side policy but
+  stop before selected-backend dispatch; other profiles return a typed unsupported error.
 - `process()` is the request-side library hook. It returns the prepared request plus any typed
   profile-specific state needed later, such as a random-routing decision or an initial
   latency-service target selection.
@@ -206,8 +217,9 @@ of one universal metadata object.
 
 Do not implement unsupported hooks with `panic!`, `unimplemented!()`, or runtime
 `NotImplementedError`. If every profile must expose the hook, make the hook total with a meaningful
-identity wrapper for simple profiles. If a future capability only applies to some profiles, split it
-into a separate trait instead of adding a method that most profiles cannot honestly implement.
+identity wrapper for simple profiles. Decision-only routing is the explicit exception: it stays on
+the object-safe profile contract so one registry owns each runtime, and unsupported profiles return
+the typed `DecisionUnsupported` error instead of being rebuilt in a parallel capability registry.
 
 ## What A Profile Owns
 
