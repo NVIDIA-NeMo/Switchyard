@@ -321,21 +321,29 @@ impl StageRouterProfile {
         snapshot: Option<&RelaySnapshot>,
     ) -> Result<(StageRouterProcessedRequest, Option<FeatureFreshness>)> {
         let original_model = input.request.model().map(std::borrow::ToOwned::to_owned);
-        let (decision, freshness) = match self.signal_from_relay_snapshot(snapshot) {
+        let (decision, freshness) = match snapshot
+            .filter(|snapshot| snapshot.freshness == FeatureFreshness::Fresh)
+            .and_then(|snapshot| self.signal_from_relay_snapshot(Some(snapshot)))
+        {
             Some(signal) => (
                 self.pick(&input.request, &signal, original_model).await?,
                 Some(FeatureFreshness::Fresh),
             ),
-            None => (
-                self.decision_for_tier(
-                    self.picker.default_tier(),
-                    original_model,
-                    StageRouterDecisionSource::FallOpen,
-                    0.0,
-                    None,
-                )?,
-                None,
-            ),
+            None => {
+                let freshness = snapshot
+                    .filter(|snapshot| !snapshot.messages.is_empty())
+                    .map(|snapshot| snapshot.freshness);
+                (
+                    self.decision_for_tier(
+                        self.picker.default_tier(),
+                        original_model,
+                        StageRouterDecisionSource::FallOpen,
+                        0.0,
+                        None,
+                    )?,
+                    freshness,
+                )
+            }
         };
         input.request.set_model(decision.selected_model.as_str());
         self.record_decision_source(decision.source)?;
@@ -946,11 +954,11 @@ fn summarise_signal(
     );
     let recent_messages = recent_messages(request, recent_window);
     if recent_messages.is_empty() {
-        return format!("Decide STRONG or WEAK for the next call. {state_line}");
+        return format!("Decide CAPABLE or EFFICIENT for the next call. {state_line}");
     }
 
     let mut lines = vec![
-        "Decide STRONG or WEAK for the next call.".to_string(),
+        "Decide CAPABLE or EFFICIENT for the next call.".to_string(),
         state_line,
         "Recent turns (most recent last):".to_string(),
     ];
@@ -1222,6 +1230,9 @@ mod tests {
             event_count: messages.len() as u64,
             messages,
             turn_depth,
+            freshness: FeatureFreshness::Fresh,
+            age_millis: 0,
+            max_age_millis: 300_000,
         }
     }
 
@@ -1362,6 +1373,59 @@ mod tests {
             StageRouterDecisionSource::Override
         );
         assert_eq!(processed.decision.confidence, Some(1.0));
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stage_router_decision_stale_history_uses_configured_default_without_classifier(
+    ) -> Result<()> {
+        let (mut profile, calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
+            0.0,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        profile.classifier = Some(StageRouterTierClassifier::new(
+            &StageRouterClassifierConfig {
+                model: "unreachable-classifier".to_string(),
+                api_key: "test-key".to_string(),
+                base_url: Some("http://127.0.0.1:1/v1".to_string()),
+                timeout_secs: 0.01,
+                recent_turn_window: 1,
+                max_tokens: CLASSIFIER_MAX_TOKENS,
+                system_prompt: None,
+            },
+        )?);
+        let mut snapshot = relay_snapshot(
+            vec![json!({
+                "role": "tool",
+                "tool_call_id": "call-oom",
+                "content": "critical failure: out of memory",
+            })],
+            3,
+        );
+        snapshot.freshness = FeatureFreshness::Stale;
+        snapshot.age_millis = snapshot.max_age_millis + 1;
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-stage-router",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, Some(FeatureFreshness::Stale));
+        assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::FallOpen
+        );
+        assert_eq!(processed.decision.confidence, None);
         assert!(observed(&calls)?.is_empty());
         Ok(())
     }

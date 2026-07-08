@@ -33,7 +33,7 @@ pub use features::{
     RelaySnapshotAccumulator, RelaySnapshotLimits, DEFAULT_MAX_ATOF_BATCH_BYTES,
     DEFAULT_MAX_ATOF_EVENT_BYTES, DEFAULT_MAX_RELAY_DEDUPE_ENTRIES,
     DEFAULT_MAX_RELAY_HISTORY_PER_IDENTITY, DEFAULT_MAX_RELAY_IDENTITIES,
-    DEFAULT_MAX_RELAY_RETAINED_BYTES,
+    DEFAULT_MAX_RELAY_RETAINED_BYTES, DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS,
 };
 pub use profile::{
     reconcile_session_id, session_id_from_normalized_headers, Profile, ProfileHooks, ProfileInput,

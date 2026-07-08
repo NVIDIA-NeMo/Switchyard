@@ -217,6 +217,7 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
                  [--atof-max-retained-bytes BYTES]
                  [--atof-max-event-bytes BYTES]
                  [--atof-max-batch-bytes BYTES]
+                 [--atof-max-snapshot-age-millis MILLISECONDS]
 ```
 
 **Flags**
@@ -233,6 +234,7 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 | `--atof-max-identities`, `--atof-max-history-per-identity`, `--atof-max-dedupe-entries` | Fixed in-memory caps for exact Relay identities, reconstructed messages per identity, and event idempotency keys. The matching `SWITCHYARD_ATOF_MAX_*` environment variables are also accepted. |
 | `--atof-max-retained-bytes` | Hard cap on exact encoded message bytes plus retained identity and dedupe string bytes (default: 64 MiB). Defaults to `SWITCHYARD_ATOF_MAX_RETAINED_BYTES` when set. |
 | `--atof-max-event-bytes`, `--atof-max-batch-bytes` | Fixed request limits for one event and one finite HTTP batch. The event limit cannot exceed the batch limit. The matching `SWITCHYARD_ATOF_MAX_*` environment variables are also accepted. |
+| `--atof-max-snapshot-age-millis` | Maximum monotonic age of the latest accepted routing signal before an exact Relay snapshot is stale (default: 300000, or five minutes). Turn lifecycle events do not refresh existing signal age. Stale StageRouter snapshots bypass scoring and classification and return the picker default with explicit stale metadata. Defaults to `SWITCHYARD_ATOF_MAX_SNAPSHOT_AGE_MILLIS` when set. |
 
 **Notes**
 

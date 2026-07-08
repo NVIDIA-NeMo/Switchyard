@@ -322,7 +322,13 @@ pub async fn decision_for_stage_router_routing(
     let (processed, freshness) = profile
         .process_decision_snapshot(input, relay_snapshot.as_ref())
         .await?;
-    stage_router_processed_to_decision(profile, &request, processed, freshness)
+    stage_router_processed_to_decision(
+        profile,
+        &request,
+        processed,
+        freshness,
+        relay_snapshot.as_ref(),
+    )
 }
 // Builds the request-only state needed by policies that can route from summaries.
 pub(crate) fn summary_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
@@ -516,6 +522,7 @@ fn stage_router_processed_to_decision(
     request: &RoutingRequest,
     processed: StageRouterProcessedRequest,
     freshness: Option<FeatureFreshness>,
+    snapshot: Option<&RelaySnapshot>,
 ) -> Result<RoutingDecision> {
     let target = profile.target_for_decision(&processed.decision)?;
     let baseline_route = routing_target(profile.capable_target(), "capable".to_string())?;
@@ -534,7 +541,41 @@ fn stage_router_processed_to_decision(
             ),
             "fresh",
         ),
+        Some(FeatureFreshness::Stale) => (
+            "stage_router_feature_stale_default".to_string(),
+            "selected the configured StageRouter picker default because Relay feature state is stale"
+                .to_string(),
+            "stale",
+        ),
     };
+    let mut metadata = BTreeMap::from([
+        (
+            "source".to_string(),
+            Value::from(processed.decision.source.as_str()),
+        ),
+        ("score".to_string(), Value::from(processed.decision.score)),
+        ("feature_state".to_string(), Value::from(feature_state)),
+    ]);
+    if let Some(snapshot) = snapshot {
+        metadata.extend([
+            (
+                "snapshot_age_millis".to_string(),
+                Value::from(snapshot.age_millis),
+            ),
+            (
+                "snapshot_max_age_millis".to_string(),
+                Value::from(snapshot.max_age_millis),
+            ),
+            (
+                "snapshot_event_count".to_string(),
+                Value::from(snapshot.event_count),
+            ),
+            (
+                "snapshot_turn_depth".to_string(),
+                Value::from(snapshot.turn_depth),
+            ),
+        ]);
+    }
     Ok(RoutingDecision {
         schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
         decision_id: format!(
@@ -552,14 +593,7 @@ fn stage_router_processed_to_decision(
         confidence: processed.decision.confidence,
         reason_code: Some(reason_code),
         reason_summary: Some(reason_summary),
-        metadata: BTreeMap::from([
-            (
-                "source".to_string(),
-                Value::from(processed.decision.source.as_str()),
-            ),
-            ("score".to_string(), Value::from(processed.decision.score)),
-            ("feature_state".to_string(), Value::from(feature_state)),
-        ]),
+        metadata,
     })
 }
 
