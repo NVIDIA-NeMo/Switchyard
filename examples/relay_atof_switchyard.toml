@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# NeMo Relay plugin config for finite, atomic ATOF delivery to Switchyard.
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 1
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.endpoints]]
+url = "http://127.0.0.1:4000/v1/atof/events"
+transport = "http_post"
+field_name_policy = "preserve"
+
+[components.config.atof.endpoints.headers]
+Authorization = "Bearer replace-with-shared-token"
