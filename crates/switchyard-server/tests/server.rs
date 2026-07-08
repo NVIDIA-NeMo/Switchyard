@@ -112,6 +112,7 @@ profiles:
     assert_eq!(decision["route"]["backend_id"], "capable");
     assert_eq!(decision["route"]["target_model"], "upstream-capable");
     assert_eq!(decision["route"]["target_protocol_profile"], "openai_chat");
+    assert!(decision.get("baseline_route").is_none());
     Ok(())
 }
 
@@ -154,6 +155,19 @@ async fn stage_router_decision_warms_from_one_relay_record_without_target_dispat
     assert_eq!(warm["router"]["name"], "stage_router");
     assert_eq!(warm["route"]["backend_id"], "capable");
     assert_eq!(warm["route"]["target_model"], "provider/capable");
+    assert_eq!(
+        warm["route"]["target_protocol_profile"],
+        "anthropic_messages"
+    );
+    assert_eq!(warm["route"]["target_endpoint"], "/v1/messages");
+    assert_eq!(warm["baseline_route"]["tier"], "capable");
+    assert_eq!(warm["baseline_route"]["backend_id"], "capable");
+    assert_eq!(warm["baseline_route"]["target_model"], "provider/capable");
+    assert_eq!(
+        warm["baseline_route"]["target_protocol_profile"],
+        "anthropic_messages"
+    );
+    assert_eq!(warm["baseline_route"]["target_endpoint"], "/v1/messages");
     assert_eq!(warm["reason_code"], "override");
     assert_eq!(warm["confidence"], 1.0);
     assert_eq!(warm["metadata"]["feature_state"], "fresh");
@@ -167,6 +181,9 @@ async fn stage_router_decision_warms_from_one_relay_record_without_target_dispat
     assert_eq!(cold.status(), StatusCode::OK);
     let cold = json_body(cold).await?;
     assert_eq!(cold["route"]["backend_id"], "efficient");
+    assert_eq!(cold["route"]["target_protocol_profile"], "openai_responses");
+    assert_eq!(cold["route"]["target_endpoint"], "/v1/responses");
+    assert_eq!(cold["baseline_route"], warm["baseline_route"]);
     assert_eq!(cold["reason_code"], "stage_router_feature_cold_default");
     assert!(cold["confidence"].is_null());
     assert_eq!(cold["metadata"]["feature_state"], "cold");
@@ -1831,11 +1848,11 @@ fn stage_router_decision_yaml() -> &'static str {
 targets:
   capable:
     model: provider/capable
-    format: openai
+    format: anthropic
     base_url: http://127.0.0.1:1/v1
   efficient:
     model: provider/efficient
-    format: openai
+    format: responses
     base_url: http://127.0.0.1:1/v1
 profiles:
   remote-stage_router:

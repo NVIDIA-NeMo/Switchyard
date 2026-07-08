@@ -599,6 +599,7 @@ pub async fn decision_for_llm_routing(
             version: profile.decision_router_version(),
         },
         route: routing_target(target, processed.decision.tier.clone())?,
+        baseline_route: None,
         confidence: processed.decision.confidence,
         reason_code: Some(processed.decision.source),
         reason_summary: Some(processed.decision.reason),

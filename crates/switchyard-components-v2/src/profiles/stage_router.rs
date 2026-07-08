@@ -499,6 +499,11 @@ impl StageRouterProfile {
             .map(TargetBackend::target)
     }
 
+    /// Returns the configured capable target used as the routing counterfactual.
+    pub(crate) fn capable_target(&self) -> &LlmTarget {
+        self.capable_backend.target()
+    }
+
     fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<StageRouterTier> {
         if *target_id == self.capable_backend.target().id {
             Ok(StageRouterTier::Capable)
