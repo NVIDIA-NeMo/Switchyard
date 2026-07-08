@@ -17,14 +17,15 @@ pub use latency_service::{
     LatencyServiceProfileConfig, SelectedTarget,
 };
 pub use llm_routing::{
-    LlmRoutingDecision, LlmRoutingProcessedRequest, LlmRoutingProfile, LlmRoutingProfileConfig,
-    LlmRoutingTierMapping,
+    decision_for_llm_routing, LlmRoutingDecision, LlmRoutingProcessedRequest, LlmRoutingProfile,
+    LlmRoutingProfileConfig, LlmRoutingTierMapping,
 };
 pub use noop::{NoopProfile, NoopProfileConfig};
 pub use passthrough::{PassthroughProfile, PassthroughProfileConfig};
 pub(crate) use profile_types::{parse_profile_config, ProfileConfigEntry};
 pub use random_routing::{
-    RandomRoutingProcessedRequest, RandomRoutingProfile, RandomRoutingProfileConfig,
+    decision_for_random_routing, RandomRoutingProcessedRequest, RandomRoutingProfile,
+    RandomRoutingProfileConfig,
 };
 pub use stage_router::{
     StageRouterClassifierConfig, StageRouterDecision, StageRouterDecisionSource,
