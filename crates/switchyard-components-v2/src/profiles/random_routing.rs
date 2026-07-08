@@ -20,8 +20,8 @@ use crate::decision::{routing_target, summary_profile_input};
 use crate::decision::{DecisionProvider, ROUTING_DECISION_SCHEMA_VERSION};
 use crate::profile_stats_accumulator;
 use crate::{
-    profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
-    RoutingDecision, RoutingMetadata, RoutingRequest,
+    profile_config, DecisionContext, Profile, ProfileConfig, ProfileHooks, ProfileInput,
+    ProfileResponse, RoutingDecision, RoutingMetadata,
 };
 
 /// Config for the flatter random-routing profile.
@@ -197,16 +197,17 @@ impl Profile for RandomRoutingProfile {
     }
 
     /// Selects a configured target without dispatching it.
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
-        decision_for_random_routing(self, request).await
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        decision_for_random_routing(self, context).await
     }
 }
 
 /// Produces a decision-only Random routing response without backend dispatch.
 pub async fn decision_for_random_routing(
     profile: &RandomRoutingProfile,
-    request: RoutingRequest,
+    context: DecisionContext,
 ) -> Result<RoutingDecision> {
+    let (request, _relay_snapshot) = context.into_parts();
     request.validate()?;
     let input = summary_profile_input(&request)?;
     let processed = profile.process(input).await?;

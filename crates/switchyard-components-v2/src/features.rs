@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use parking_lot::RwLock;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use switchyard_core::{Result, SwitchyardError};
 
@@ -22,6 +22,16 @@ pub const DEFAULT_MAX_RELAY_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_ATOF_EVENT_BYTES: usize = 256 * 1024;
 /// Default maximum encoded size accepted for one ATOF request batch.
 pub const DEFAULT_MAX_ATOF_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+/// Readiness of an ATOF-derived feature snapshot consumed by a router.
+///
+/// Absence is represented as `None`; the initial typed state is fresh only.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureFreshness {
+    /// The snapshot contains routing-ready reconstructed history.
+    Fresh,
+}
 
 // JSON values retain both serialized content and heap-backed container
 // allocations. Reserve a conservative second payload-sized copy plus a small

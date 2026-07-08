@@ -21,13 +21,14 @@ pub use config::{
     ProfileConfig, ProfileConfigDocument, ProfileConfigFormat, ProfileConfigPlan,
 };
 pub use decision::{
-    route_endpoint_for_format, route_protocol_for_format, CurrentRequestMaterialization,
-    DecisionAttempt, DecisionProfile, DecisionProvider, IdentityQuality, RequestIdentity,
-    RequestProtocol, RequestSummary, RoutingDecision, RoutingRequest, RoutingTarget,
-    ROUTING_DECISION_SCHEMA_VERSION, ROUTING_REQUEST_SCHEMA_VERSION,
+    decision_for_stage_router_routing, route_endpoint_for_format, route_protocol_for_format,
+    CurrentRequestMaterialization, DecisionAttempt, DecisionContext, DecisionProfile,
+    DecisionProvider, IdentityQuality, RequestIdentity, RequestProtocol, RequestSummary,
+    RoutingDecision, RoutingRequest, RoutingTarget, ROUTING_DECISION_SCHEMA_VERSION,
+    ROUTING_REQUEST_SCHEMA_VERSION,
 };
 pub use features::{
-    atof_event_dedupe_key, json_string_at, relay_identity_key_from_atof_event,
+    atof_event_dedupe_key, json_string_at, relay_identity_key_from_atof_event, FeatureFreshness,
     RelayAccumulatorCounters, RelayIdentityKey, RelayIngestReport, RelaySnapshot,
     RelaySnapshotAccumulator, RelaySnapshotLimits, DEFAULT_MAX_ATOF_BATCH_BYTES,
     DEFAULT_MAX_ATOF_EVENT_BYTES, DEFAULT_MAX_RELAY_DEDUPE_ENTRIES,
@@ -35,7 +36,9 @@ pub use features::{
     DEFAULT_MAX_RELAY_RETAINED_BYTES,
 };
 pub use profile::{
-    Profile, ProfileHooks, ProfileInput, ProfileResponse, RequestMetadata, RoutingMetadata,
+    reconcile_session_id, session_id_from_normalized_headers, Profile, ProfileHooks, ProfileInput,
+    ProfileResponse, RequestMetadata, RoutingMetadata, PROXY_SESSION_ID_HEADER,
+    RELAY_SESSION_ID_HEADER,
 };
 pub use profiles::{
     decision_for_llm_routing, decision_for_random_routing, EndpointHealth, EndpointHealthStatus,

@@ -86,9 +86,9 @@ In Rust, that target shape is:
 pub trait Profile: Send + Sync {
     async fn run(&self, input: ProfileInput) -> Result<ChatResponse>;
 
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
         Err(SwitchyardError::DecisionUnsupported {
-            profile_id: request.decision_profile.profile_id,
+            profile_id: context.request().decision_profile.profile_id.clone(),
         })
     }
 }
@@ -112,7 +112,7 @@ Conceptually:
 ```text
 process(request)              -> profile-specific processed request
 run(request)                  -> final response
-decide(routing_request)       -> routing decision without selected-backend dispatch
+decide(decision_context)      -> routing decision without selected-backend dispatch
 rprocess(processed, response) -> processed response
 ```
 
@@ -139,6 +139,20 @@ hidden pipeline:
 - `rprocess()` is the response-side library hook. It receives the processed request state and the
   backend response so the profile can perform cleanup, normalization, or accounting without a
   side-channel.
+
+`DecisionContext` owns the typed `RoutingRequest` and any immutable, request-scoped resources
+resolved by the server. For Relay integration, `ServerState` owns one bounded snapshot accumulator,
+looks up only the exact `(session_id, owner_id)` identity, and passes the resulting optional
+snapshot through the existing registry to the same configured profile instance. Profiles do not
+own an accumulator, rebuild another runtime, or perform broader identity fallback. An absent or
+non-routing-ready snapshot remains explicit cold state; routing-ready state is represented by the
+typed `FeatureFreshness::Fresh` value when the concrete profile projects the snapshot into its own
+feature model.
+
+`RequestMetadata.session_id` is the typed session identity for normal profile execution. HTTP
+endpoints reconcile the legacy `proxy_x_session_id` and canonical
+`x-nemo-relay-session-id` aliases before entering a profile, while Decision inputs copy the
+validated body identity into the same field.
 
 `run()` should normally call `process()` and `rprocess()` when those hooks express the same
 lifecycle cleanly. If `process()` seems unable to carry the state that `run()` needs, the first fix
@@ -350,11 +364,11 @@ macro handles the repetitive serde and config-resolution surface:
 #[profile_config("random-routing")]
 pub struct RandomRoutingProfileConfig {
     #[profile_target]
-    pub strong: LlmTarget,
+    pub capable: LlmTarget,
     #[profile_target]
-    pub weak: LlmTarget,
-    #[serde(default = "default_strong_probability")]
-    pub strong_probability: f64,
+    pub efficient: LlmTarget,
+    #[serde(default = "default_capable_probability")]
+    pub capable_probability: f64,
     #[serde(default)]
     pub rng_seed: Option<u64>,
 }
@@ -477,15 +491,15 @@ impl ProfileConfig for RandomRoutingProfileConfig {
 
     fn build(&self) -> Result<Self::Runtime> {
         let router = RandomRoutingEngine::new(
-            RandomRoutingProcessorConfig::new(self.strong.clone(), self.weak.clone())
-                .with_strong_probability(self.strong_probability)?
+            RandomRoutingProcessorConfig::new(self.capable.clone(), self.efficient.clone())
+                .with_capable_probability(self.capable_probability)?
                 .with_rng_seed(self.rng_seed),
         )?;
 
         Ok(RandomRoutingProfile {
             router,
-            strong_backend: native_target_backend(self.strong.clone())?,
-            weak_backend: native_target_backend(self.weak.clone())?,
+            capable_backend: native_target_backend(self.capable.clone())?,
+            efficient_backend: native_target_backend(self.efficient.clone())?,
             stats: profile_stats_accumulator(),
         })
     }
@@ -514,7 +528,7 @@ Profile modules own everything profile-specific:
 - backend/runtime construction,
 - profile-specific error semantics.
 
-This is why `#[profile_target]` matters. The file can say `strong: strong`, but the runtime config
+This is why `#[profile_target]` matters. The file can say `capable: capable`, but the runtime config
 still receives a real `LlmTarget`. The profile author writes the natural runtime type, while the
 macro handles the file-facing ID indirection.
 
@@ -530,10 +544,10 @@ The Rust shape should make the full lifecycle visible in one profile module:
 #[profile_config("random-routing")]
 pub struct RandomRoutingProfileConfig {
     #[profile_target]
-    pub strong: LlmTarget,
+    pub capable: LlmTarget,
     #[profile_target]
-    pub weak: LlmTarget,
-    pub strong_probability: f64,
+    pub efficient: LlmTarget,
+    pub capable_probability: f64,
     pub rng_seed: Option<u64>,
 }
 
@@ -541,12 +555,12 @@ impl ProfileConfig for RandomRoutingProfileConfig {
     type Runtime = RandomRoutingProfile;
 
     fn build(&self) -> Result<Self::Runtime> {
-        validate_probability(self.strong_probability)?;
+        validate_probability(self.capable_probability)?;
 
         Ok(RandomRoutingProfile {
             router: RandomRoutingEngine::from_config(self)?,
-            strong_backend: native_target_backend(self.strong.clone())?,
-            weak_backend: native_target_backend(self.weak.clone())?,
+            capable_backend: native_target_backend(self.capable.clone())?,
+            efficient_backend: native_target_backend(self.efficient.clone())?,
             stats: profile_stats_accumulator(),
         })
     }
@@ -554,8 +568,8 @@ impl ProfileConfig for RandomRoutingProfileConfig {
 
 pub struct RandomRoutingProfile {
     router: RandomRoutingEngine,
-    strong_backend: TargetBackend,
-    weak_backend: TargetBackend,
+    capable_backend: TargetBackend,
+    efficient_backend: TargetBackend,
     stats: StatsAccumulator,
 }
 
@@ -633,22 +647,22 @@ class ProfileHooks(Protocol[ProcessedRequestT]):
 @profile_config("random-routing")
 @dataclass
 class RandomRoutingProfileConfig:
-    strong: LlmTarget
-    weak: LlmTarget
-    strong_probability: float = 0.5
+    capable: LlmTarget
+    efficient: LlmTarget
+    capable_probability: float = 0.5
     rng_seed: int | None = None
 
     def build(self) -> "RandomRoutingProfile":
-        validate_probability(self.strong_probability)
+        validate_probability(self.capable_probability)
         return RandomRoutingProfile(
             router=RandomRoutingEngine(
-                strong=self.strong,
-                weak=self.weak,
-                strong_probability=self.strong_probability,
+                capable=self.capable,
+                efficient=self.efficient,
+                capable_probability=self.capable_probability,
                 rng_seed=self.rng_seed,
             ),
-            strong_backend=native_target_backend(self.strong),
-            weak_backend=native_target_backend(self.weak),
+            capable_backend=native_target_backend(self.capable),
+            efficient_backend=native_target_backend(self.efficient),
             stats=profile_stats_accumulator(),
         )
 
@@ -664,13 +678,13 @@ class RandomRoutingProfile(Profile[RandomRoutingProcessedRequest]):
         self,
         *,
         router: RandomRoutingEngine,
-        strong_backend: TargetBackend,
-        weak_backend: TargetBackend,
+        capable_backend: TargetBackend,
+        efficient_backend: TargetBackend,
         stats: StatsAccumulator,
     ) -> None:
         self.router = router
-        self.strong_backend = strong_backend
-        self.weak_backend = weak_backend
+        self.capable_backend = capable_backend
+        self.efficient_backend = efficient_backend
         self.stats = stats
 
     async def process(self, request: ChatRequest) -> RandomRoutingProcessedRequest:

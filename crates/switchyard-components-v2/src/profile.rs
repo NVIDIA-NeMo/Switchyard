@@ -9,7 +9,12 @@ use std::collections::BTreeMap;
 
 use switchyard_core::{ChatRequest, ChatRequestType, ChatResponse, RequestId, Result};
 
-use crate::decision::{RoutingDecision, RoutingRequest};
+use crate::decision::{DecisionContext, RoutingDecision};
+
+/// Legacy proxy session header used by Switchyard Python endpoints.
+pub const PROXY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
+/// Canonical Relay session header accepted alongside the proxy alias.
+pub const RELAY_SESSION_ID_HEADER: &str = "x-nemo-relay-session-id";
 
 /// Explicit per-request metadata passed to v2 profiles.
 ///
@@ -18,12 +23,72 @@ use crate::decision::{RoutingDecision, RoutingRequest};
 /// through multi-value headers without silently collapsing them.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct RequestMetadata {
+    /// Canonical request/session identity resolved from endpoint headers or a Decision body.
+    pub session_id: Option<String>,
     /// Caller-provided request identifier, when present.
     pub request_id: Option<RequestId>,
     /// Inbound wire format recorded by the endpoint, when present.
     pub inbound_format: Option<ChatRequestType>,
     /// Request headers supplied by the caller, keyed by normalized header name.
     pub headers: BTreeMap<String, Vec<String>>,
+}
+
+/// Resolves all values from both supported session-header aliases.
+///
+/// Values are trimmed before comparison. Empty values and any disagreement
+/// across aliases or repeated values are rejected instead of being ignored.
+pub fn session_id_from_normalized_headers(
+    headers: &BTreeMap<String, Vec<String>>,
+) -> Result<Option<String>> {
+    let mut resolved = None;
+    for name in [PROXY_SESSION_ID_HEADER, RELAY_SESSION_ID_HEADER] {
+        let Some(values) = headers.get(name) else {
+            continue;
+        };
+        if values.is_empty() {
+            return Err(switchyard_core::SwitchyardError::InvalidRequest(format!(
+                "{name} must contain at least one non-empty session ID"
+            )));
+        }
+        for value in values {
+            merge_session_id(&mut resolved, value, name)?;
+        }
+    }
+    Ok(resolved)
+}
+
+/// Reconciles an explicit session ID with both normalized header aliases.
+pub fn reconcile_session_id(
+    explicit: Option<&str>,
+    headers: &BTreeMap<String, Vec<String>>,
+) -> Result<Option<String>> {
+    let mut resolved = None;
+    if let Some(explicit) = explicit {
+        merge_session_id(&mut resolved, explicit, "session_id")?;
+    }
+    if let Some(header_session_id) = session_id_from_normalized_headers(headers)? {
+        merge_session_id(&mut resolved, &header_session_id, "session header aliases")?;
+    }
+    Ok(resolved)
+}
+
+fn merge_session_id(resolved: &mut Option<String>, raw: &str, source: &str) -> Result<()> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(switchyard_core::SwitchyardError::InvalidRequest(format!(
+            "{source} must contain a non-empty session ID"
+        )));
+    }
+    if let Some(existing) = resolved {
+        if existing != value {
+            return Err(switchyard_core::SwitchyardError::InvalidRequest(format!(
+                "conflicting session IDs {existing:?} and {value:?}"
+            )));
+        }
+        return Ok(());
+    }
+    *resolved = Some(value.to_string());
+    Ok(())
 }
 
 /// Input object handed to v2 profiles.
@@ -129,10 +194,10 @@ pub trait Profile: Send + Sync {
     ///
     /// Profiles that do not implement decision-only routing return a typed
     /// unsupported-profile error by default.
-    async fn decide(&self, request: RoutingRequest) -> Result<RoutingDecision> {
-        request.validate()?;
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        context.request().validate()?;
         Err(switchyard_core::SwitchyardError::DecisionUnsupported {
-            profile_id: request.decision_profile.profile_id,
+            profile_id: context.request().decision_profile.profile_id.clone(),
         })
     }
 }
@@ -172,6 +237,7 @@ mod tests {
     #[test]
     fn request_metadata_is_plain_data() {
         let metadata = RequestMetadata {
+            session_id: Some("session-1".to_string()),
             request_id: None,
             inbound_format: Some(ChatRequestType::OpenAiChat),
             headers: BTreeMap::from([(
@@ -188,6 +254,7 @@ mod tests {
             Some(&["abc123".to_string()][..])
         );
         assert_eq!(metadata.inbound_format, Some(ChatRequestType::OpenAiChat));
+        assert_eq!(metadata.session_id.as_deref(), Some("session-1"));
     }
 
     #[test]
@@ -198,6 +265,7 @@ mod tests {
                 "messages": [],
             })),
             metadata: RequestMetadata {
+                session_id: Some("session-1".to_string()),
                 request_id: None,
                 inbound_format: None,
                 headers: BTreeMap::from([(
@@ -217,5 +285,53 @@ mod tests {
             Some(&["unit-test".to_string()][..])
         );
         assert!(input.metadata.request_id.is_none());
+    }
+
+    #[test]
+    fn session_header_aliases_and_repeated_values_reconcile() -> Result<()> {
+        let headers = BTreeMap::from([
+            (
+                PROXY_SESSION_ID_HEADER.to_string(),
+                vec![" session-1 ".to_string(), "session-1".to_string()],
+            ),
+            (
+                RELAY_SESSION_ID_HEADER.to_string(),
+                vec!["session-1".to_string()],
+            ),
+        ]);
+
+        assert_eq!(
+            session_id_from_normalized_headers(&headers)?.as_deref(),
+            Some("session-1")
+        );
+        assert_eq!(
+            reconcile_session_id(Some(" session-1 "), &headers)?.as_deref(),
+            Some("session-1")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn session_header_aliases_reject_conflicts_and_empty_values() {
+        for headers in [
+            BTreeMap::from([(
+                PROXY_SESSION_ID_HEADER.to_string(),
+                vec!["session-1".to_string(), "session-2".to_string()],
+            )]),
+            BTreeMap::from([
+                (
+                    PROXY_SESSION_ID_HEADER.to_string(),
+                    vec!["session-1".to_string()],
+                ),
+                (
+                    RELAY_SESSION_ID_HEADER.to_string(),
+                    vec!["session-2".to_string()],
+                ),
+            ]),
+            BTreeMap::from([(RELAY_SESSION_ID_HEADER.to_string(), vec!["   ".to_string()])]),
+            BTreeMap::from([(PROXY_SESSION_ID_HEADER.to_string(), Vec::new())]),
+        ] {
+            assert!(session_id_from_normalized_headers(&headers).is_err());
+        }
     }
 }

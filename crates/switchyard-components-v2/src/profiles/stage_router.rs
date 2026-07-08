@@ -18,7 +18,8 @@ use switchyard_core::{ChatRequest, ChatResponse, LlmTarget, LlmTargetId, Result,
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
 use crate::{
-    profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
+    decision_for_stage_router_routing, profile_config, DecisionContext, FeatureFreshness, Profile,
+    ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse, RelaySnapshot, RoutingDecision,
     RoutingMetadata,
 };
 
@@ -313,6 +314,55 @@ impl StageRouterProfile {
         })
     }
 
+    /// Routes an immutable Decision snapshot without dispatching the selected target.
+    pub(crate) async fn process_decision_snapshot(
+        &self,
+        mut input: ProfileInput,
+        snapshot: Option<&RelaySnapshot>,
+    ) -> Result<(StageRouterProcessedRequest, Option<FeatureFreshness>)> {
+        let original_model = input.request.model().map(std::borrow::ToOwned::to_owned);
+        let (decision, freshness) = match self.signal_from_relay_snapshot(snapshot) {
+            Some(signal) => (
+                self.pick(&input.request, &signal, original_model).await?,
+                Some(FeatureFreshness::Fresh),
+            ),
+            None => (
+                self.decision_for_tier(
+                    self.picker.default_tier(),
+                    original_model,
+                    StageRouterDecisionSource::FallOpen,
+                    0.0,
+                    None,
+                )?,
+                None,
+            ),
+        };
+        input.request.set_model(decision.selected_model.as_str());
+        self.record_decision_source(decision.source)?;
+        Ok((
+            StageRouterProcessedRequest {
+                profile_input: input,
+                decision,
+            },
+            freshness,
+        ))
+    }
+
+    // Projects router-neutral Relay history into StageRouter's existing feature model.
+    fn signal_from_relay_snapshot(
+        &self,
+        snapshot: Option<&RelaySnapshot>,
+    ) -> Option<ToolResultSignal> {
+        let snapshot = snapshot.filter(|snapshot| !snapshot.messages.is_empty())?;
+        let request = ChatRequest::openai_chat(json!({
+            "model": "stage_router-relay-snapshot",
+            "messages": snapshot.messages,
+        }));
+        let mut signal = extract_tool_signals_with_window(&request, self.signal_recent_window);
+        signal.turn_depth = u32::try_from(snapshot.turn_depth).unwrap_or(u32::MAX);
+        Some(signal)
+    }
+
     // Routing decision flow:
     // 1. Hard overrides choose capable for critical failures or efficient for clean tests.
     // 2. Dimensions scoring chooses by score sign when confidence clears the threshold.
@@ -441,6 +491,12 @@ impl StageRouterProfile {
                 "stage_router selected target {target_id} that is not configured for this profile"
             )))
         }
+    }
+
+    /// Returns selected target metadata for a decision-only integration.
+    pub(crate) fn target_for_decision(&self, decision: &StageRouterDecision) -> Result<&LlmTarget> {
+        self.backend_for_target(&decision.selected_target)
+            .map(TargetBackend::target)
     }
 
     fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<StageRouterTier> {
@@ -611,6 +667,11 @@ impl Profile for StageRouterProfile {
                 return Err(error);
             }
         }
+    }
+
+    /// Routes from an exact Relay snapshot without dispatching the selected target.
+    async fn decide(&self, context: DecisionContext) -> Result<RoutingDecision> {
+        decision_for_stage_router_routing(self, context).await
     }
 }
 
@@ -880,11 +941,11 @@ fn summarise_signal(
     );
     let recent_messages = recent_messages(request, recent_window);
     if recent_messages.is_empty() {
-        return format!("Decide CAPABLE or EFFICIENT for the next call. {state_line}");
+        return format!("Decide STRONG or WEAK for the next call. {state_line}");
     }
 
     let mut lines = vec![
-        "Decide CAPABLE or EFFICIENT for the next call.".to_string(),
+        "Decide STRONG or WEAK for the next call.".to_string(),
         state_line,
         "Recent turns (most recent last):".to_string(),
     ];
@@ -1021,7 +1082,7 @@ mod tests {
     use switchyard_core::{BackendFormat, ModelId};
 
     use crate::backend::ProfileBackend;
-    use crate::RequestMetadata;
+    use crate::{RelayIdentityKey, RequestMetadata};
 
     use super::*;
 
@@ -1150,6 +1211,248 @@ mod tests {
         Ok((profile, calls))
     }
 
+    fn relay_snapshot(messages: Vec<Value>, turn_depth: u64) -> RelaySnapshot {
+        RelaySnapshot {
+            identity: RelayIdentityKey::session_only("session-1"),
+            event_count: messages.len() as u64,
+            messages,
+            turn_depth,
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_router_decision_cold_state_uses_configured_default_without_classifier_or_target_call(
+    ) -> Result<()> {
+        for (picker, expected_tier, expected_model) in [
+            (
+                StageRouterPickerMode::CapableFirst,
+                StageRouterTier::Capable,
+                "frontier/model",
+            ),
+            (
+                StageRouterPickerMode::EfficientFirst,
+                StageRouterTier::Efficient,
+                "cheap/model",
+            ),
+        ] {
+            let (mut profile, calls) = profile(
+                target("capable", "frontier/model")?,
+                target("efficient", "cheap/model")?,
+                picker,
+                1.0,
+                vec![BackendAction::Ok],
+                vec![BackendAction::Ok],
+            )?;
+            profile.classifier = Some(StageRouterTierClassifier::new(
+                &StageRouterClassifierConfig {
+                    model: "unreachable-classifier".to_string(),
+                    api_key: "test-key".to_string(),
+                    base_url: Some("http://127.0.0.1:1/v1".to_string()),
+                    timeout_secs: 0.01,
+                    recent_turn_window: 1,
+                    max_tokens: CLASSIFIER_MAX_TOKENS,
+                    system_prompt: None,
+                },
+            )?);
+
+            let (processed, freshness) = profile
+                .process_decision_snapshot(
+                    profile_input(ChatRequest::openai_chat(json!({
+                        "model": "smart-stage_router",
+                    }))),
+                    None,
+                )
+                .await?;
+
+            assert_eq!(freshness, None);
+            assert_eq!(processed.decision.tier, expected_tier);
+            assert_eq!(
+                processed.decision.source,
+                StageRouterDecisionSource::FallOpen
+            );
+            assert_eq!(processed.decision.confidence, None);
+            assert_eq!(processed.decision.score, 0.0);
+            assert_eq!(
+                processed.profile_input.request.model(),
+                Some(expected_model)
+            );
+            assert!(observed(&calls)?.is_empty());
+            assert_eq!(
+                profile
+                    .stats
+                    .snapshot()?
+                    .routing_decisions
+                    .get("stage_router")
+                    .and_then(|sources| sources.get("fall_open")),
+                Some(&1)
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stage_router_decision_turn_only_snapshot_remains_cold() -> Result<()> {
+        let (profile, calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
+            0.0,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        let snapshot = relay_snapshot(Vec::new(), 42);
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-stage_router",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, None);
+        assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::FallOpen
+        );
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stage_router_decision_projects_fresh_relay_history_without_target_dispatch(
+    ) -> Result<()> {
+        let (profile, calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
+            0.7,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        let snapshot = relay_snapshot(
+            vec![json!({
+                "role": "tool",
+                "tool_call_id": "call-oom",
+                "content": "process failed: out of memory",
+            })],
+            3,
+        );
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-stage_router",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, Some(FeatureFreshness::Fresh));
+        assert_eq!(processed.decision.tier, StageRouterTier::Capable);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Override
+        );
+        assert_eq!(processed.decision.confidence, Some(1.0));
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stage_router_decision_fresh_clean_signal_uses_dimensions() -> Result<()> {
+        let (profile, calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::CapableFirst,
+            0.0,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+        let snapshot = relay_snapshot(
+            vec![json!({
+                "role": "tool",
+                "tool_call_id": "call-tests",
+                "content": "all tests passed",
+            })],
+            1,
+        );
+
+        let (processed, freshness) = profile
+            .process_decision_snapshot(
+                profile_input(ChatRequest::openai_chat(json!({
+                    "model": "smart-stage_router",
+                }))),
+                Some(&snapshot),
+            )
+            .await?;
+
+        assert_eq!(freshness, Some(FeatureFreshness::Fresh));
+        assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Dimensions
+        );
+        assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn stage_router_decision_snapshot_turn_depth_saturates_to_u32() -> Result<()> {
+        let (profile, _calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
+            0.7,
+            Vec::new(),
+            Vec::new(),
+        )?;
+        let snapshot = relay_snapshot(
+            vec![json!({"role": "user", "content": "continue"})],
+            u64::MAX,
+        );
+
+        let signal = profile
+            .signal_from_relay_snapshot(Some(&snapshot))
+            .ok_or_else(|| SwitchyardError::Other("expected fresh signal".to_string()))?;
+
+        assert_eq!(signal.turn_depth, u32::MAX);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stage_router_normal_run_still_extracts_request_signals_and_dispatches() -> Result<()> {
+        let (profile, calls) = profile(
+            target("capable", "frontier/model")?,
+            target("efficient", "cheap/model")?,
+            StageRouterPickerMode::EfficientFirst,
+            0.7,
+            vec![BackendAction::Ok],
+            vec![BackendAction::Ok],
+        )?;
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "smart-stage_router",
+                "messages": [{"role": "user", "content": "continue"}],
+            }))))
+            .await?;
+
+        assert_eq!(
+            response
+                .routing_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.selected_tier.as_deref()),
+            Some("efficient")
+        );
+        let calls = observed(&calls)?;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].backend, "efficient-backend");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stage_router_routes_critical_tool_errors_to_capable() -> Result<()> {
         let (profile, calls) = profile(
@@ -1163,7 +1466,7 @@ mod tests {
 
         let response = profile
             .run(profile_input(ChatRequest::openai_chat(json!({
-                "model": "smart-stage-router",
+                "model": "smart-stage_router",
                 "messages": [
                     {"role": "assistant", "tool_calls": [{
                         "type": "function",
@@ -1232,7 +1535,7 @@ mod tests {
 
         let processed = profile
             .process(profile_input(ChatRequest::openai_chat(json!({
-                "model": "smart-stage-router",
+                "model": "smart-stage_router",
                 "messages": [{"role": "user", "content": "continue"}],
             }))))
             .await?;
@@ -1260,7 +1563,7 @@ mod tests {
 
         let response = profile
             .run(profile_input(ChatRequest::openai_chat(json!({
-                "model": "smart-stage-router",
+                "model": "smart-stage_router",
                 "messages": [{"role": "user", "content": "continue"}],
             }))))
             .await?;
@@ -1348,7 +1651,7 @@ mod tests {
 
         let body = classifier.request_body(
             &ChatRequest::openai_chat(json!({
-                "model": "smart-stage-router",
+                "model": "smart-stage_router",
                 "messages": [{"role": "user", "content": "hi"}],
             })),
             &ToolResultSignal::default(),
