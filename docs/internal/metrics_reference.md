@@ -63,7 +63,7 @@ Each summary emits `{quantile="0.5"}` and `{quantile="0.99"}` rows plus
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `switchyard_routing_overhead_ms{quantile}` | summary | `total_latency − backend_latency`, across all calls. Bundles format translation, endpoint selection, body mutation, response wrapping, and retry wall time. |
+| `switchyard_routing_overhead_ms{quantile}` | summary | `total_latency_ms − backend_call_latency_ms`, across all calls. Bundles format translation, endpoint selection, body mutation, response wrapping, and retry wall time. |
 
 Healthy traffic typically sits at p50 ≈ 0.4 ms, p99 ≈ 0.6 ms.
 

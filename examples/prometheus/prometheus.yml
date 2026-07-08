@@ -4,7 +4,7 @@
 # prometheus.yml. The `/metrics` endpoint is plain HTTP, no auth, and
 # uses the Prometheus text exposition format 0.0.4.
 #
-# See docs/METRICS_REFERENCE.md for the full metric catalog and
+# See docs/internal/metrics_reference.md for the full metric catalog and
 # examples/prometheus/switchyard.rules.yaml for ready-to-load alert
 # rules.
 

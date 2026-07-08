@@ -1,7 +1,7 @@
 # Prometheus alert rules for a Switchyard deployment.
 #
 # Implements the operational and success-criterion alerts documented in
-# docs/METRICS_REFERENCE.md. Drop into Prometheus's rule_files: list and
+# docs/internal/metrics_reference.md. Drop into Prometheus's rule_files: list and
 # validate with `promtool check rules switchyard.rules.yaml` before
 # reloading.
 #
@@ -28,8 +28,10 @@ groups:
             the upstream LS.
 
       - alert: LatencyServicePollStale
+        # No `for:` — the age gauge only grows while polls keep failing, so
+        # the >60s threshold is already debounced; a `for:` would only delay
+        # the alert past the documented 60s staleness budget.
         expr: switchyard_latency_service_poll_age_seconds > 60
-        for: 60s
         labels:
           severity: warning
           component: switchyard

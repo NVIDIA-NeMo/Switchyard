@@ -20,7 +20,6 @@ from fastapi.responses import JSONResponse
 
 from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.endpoints.error_envelope import (
-    ERROR_SOURCE_HEADER,
     error_response,
     upstream_error_response,
 )
@@ -215,14 +214,11 @@ def context_exhausted_response(exc: BaseException, inbound: Inbound) -> JSONResp
     after consecutive context-window overflows; FastAPI endpoints catch it
     and call this helper to produce the shared Switchyard HTTP error envelope.
     """
-    error: dict[str, object] = {
-        "type": "invalid_request_error",
-        "message": str(exc),
-        "code": "context_length_exceeded",
-    }
-    return JSONResponse(
-        status_code=400,
-        content={"error": error},
-        # Chain-executor rejection, not an upstream failure.
-        headers={ERROR_SOURCE_HEADER: ERROR_SOURCE_SWITCHYARD},
+    # Chain-executor rejection, not an upstream failure — ``error_response``
+    # stamps the ``switchyard`` source header by default.
+    return error_response(
+        400,
+        str(exc),
+        error_type="invalid_request_error",
+        code="context_length_exceeded",
     )

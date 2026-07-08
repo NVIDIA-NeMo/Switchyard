@@ -1116,7 +1116,10 @@ class TestCallerApiKey:
 
     async def test_caller_required_policy_rejects_missing_caller_key(self):
         """No caller key under caller_required → 401 stashed, no upstream call."""
-        from switchyard.lib.proxy_context import CTX_UPSTREAM_HTTP_STATUS
+        from switchyard.lib.proxy_context import (
+            CTX_UPSTREAM_ATTEMPTS_RECORDED,
+            CTX_UPSTREAM_HTTP_STATUS,
+        )
 
         backend = _make_backend(_config("model-A", credential_policy="caller_required"))
         backend._clients["model-A"].acompletion = AsyncMock(
@@ -1129,11 +1132,19 @@ class TestCallerApiKey:
 
         assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
         backend._clients["model-A"].acompletion.assert_not_called()
+        # Attempt accounting stays claimed: no upstream attempt happened, so
+        # the endpoint fallback must not count this 401 in
+        # ``switchyard_upstream_attempts_total``.
+        assert ctx.metadata[CTX_UPSTREAM_ATTEMPTS_RECORDED] is True
+        assert "switchyard_latency_upstream_attempts_total" not in "\n".join(
+            backend._render_prometheus_lines()
+        )
 
     async def test_caller_required_policy_rejects_blank_caller_key(self):
         """A blank caller key is unusable → 401, never the configured service key."""
         from switchyard.lib.proxy_context import (
             CTX_CALLER_API_KEY,
+            CTX_UPSTREAM_ATTEMPTS_RECORDED,
             CTX_UPSTREAM_HTTP_STATUS,
         )
 
@@ -1149,6 +1160,20 @@ class TestCallerApiKey:
 
         assert ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] == 401
         backend._clients["model-A"].acompletion.assert_not_called()
+        assert ctx.metadata[CTX_UPSTREAM_ATTEMPTS_RECORDED] is True
+
+    async def test_caller_required_rejection_skips_affinity_lookup(self):
+        """The credential check runs before pin resolution, so a doomed
+        request never touches the session-affinity store."""
+        backend = _make_backend(_config(
+            "model-A", credential_policy="caller_required", session_affinity=True,
+        ))
+        backend._affinity.pinned = AsyncMock()
+
+        with pytest.raises(PermissionError):
+            await backend.call(ProxyContext(), _openai_request())
+
+        backend._affinity.pinned.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

@@ -361,6 +361,22 @@ class LatencyServiceLLMBackend(LLMBackend):
         # request so the endpoint-layer fallback in ``dispatch`` /
         # ``handle_chain_exception`` does not double-count the retry fan-out.
         ctx.metadata[CTX_UPSTREAM_ATTEMPTS_RECORDED] = True
+        api_key_override = self._api_key_override_for_policy(
+            ctx.metadata.get(CTX_CALLER_API_KEY)
+        )
+        # ``caller_required`` never falls back to the configured endpoint key:
+        # reject before any upstream call so the service credential can't
+        # authenticate caller inference — and before the affinity lookup, so a
+        # doomed request never pays a pin resolution (possibly a shared-store
+        # round-trip). The rejection deliberately stays invisible to
+        # ``switchyard_upstream_attempts_total`` (the accounting flag above is
+        # already claimed): no upstream attempt happened, and counting a
+        # synthetic 401 would skew the direct-to-endpoint baseline error rate.
+        # ``api_key_override`` is ``None`` here only when no usable caller key
+        # was supplied.
+        if self._config.credential_policy == "caller_required" and api_key_override is None:
+            _reject_missing_caller_api_key(ctx)
+
         # Captured before the per-attempt ``body["model"]`` override so the span
         # records the model the client asked for, not the selected endpoint.
         incoming_model = request.model
@@ -375,15 +391,6 @@ class LatencyServiceLLMBackend(LLMBackend):
         # provider-originated failure came from.
         last_upstream_model: str | None = None
         tried: set[str] = set()
-        api_key_override = self._api_key_override_for_policy(
-            ctx.metadata.get(CTX_CALLER_API_KEY)
-        )
-        # ``caller_required`` never falls back to the configured endpoint key:
-        # reject before any upstream call so the service credential can't
-        # authenticate caller inference. ``api_key_override`` is ``None`` here
-        # only when no usable caller key was supplied.
-        if self._config.credential_policy == "caller_required" and api_key_override is None:
-            _reject_missing_caller_api_key(ctx)
 
         for attempt in range(1 + self._config.max_retries):
             # -- Route decision span: which endpoint, out of which candidates --

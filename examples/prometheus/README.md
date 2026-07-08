@@ -1,7 +1,7 @@
 # Prometheus + Alertmanager deployable artifacts
 
 Drop-in Prometheus configuration for a Switchyard deployment. Pair with
-[`docs/METRICS_REFERENCE.md`](../../docs/METRICS_REFERENCE.md) for the
+[`docs/internal/metrics_reference.md`](../../docs/internal/metrics_reference.md) for the
 full metric inventory and label semantics.
 
 ## Files
@@ -13,7 +13,7 @@ full metric inventory and label semantics.
 
 A Grafana dashboard is intentionally not included — dashboard authoring
 belongs to whichever team owns observability conventions in your
-deployment. The metric catalog in `docs/METRICS_REFERENCE.md` is the
+deployment. The metric catalog in `docs/internal/metrics_reference.md` is the
 input.
 
 ## Wire-up
@@ -60,7 +60,7 @@ series:
 {__name__=~"switchyard_.*"}
 ```
 
-You should see the families documented in `METRICS_REFERENCE.md` —
+You should see the families documented in `metrics_reference.md` —
 top-line gauges, per-endpoint counters/summaries, Latency Service state,
 poll health, and outcome counters.
 
