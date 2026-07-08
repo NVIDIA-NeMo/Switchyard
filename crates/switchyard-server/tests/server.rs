@@ -1179,7 +1179,7 @@ profiles:
     assert_eq!(response.status(), StatusCode::OK);
     for (name, expected) in [
         ("x-model-router-selected-model", "upstream-efficient"),
-        ("x-model-router-selected-tier", "efficient"),
+        ("x-model-router-selected-tier", "weak"),
         ("x-model-router-version", "random-routing:v1"),
         ("x-model-router-tolerance", "0.0000004"),
     ] {
