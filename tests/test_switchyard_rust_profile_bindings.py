@@ -144,15 +144,15 @@ targets:
     format: openai
     base_url: "{base_url}/direct/v1"
     api_key: test-key
-  capable:
-    model: provider/capable
+  strong:
+    model: provider/strong
     format: openai
-    base_url: "{base_url}/capable/v1"
+    base_url: "{base_url}/strong/v1"
     api_key: test-key
-  efficient:
-    model: provider/efficient
+  weak:
+    model: provider/weak
     format: openai
-    base_url: "{base_url}/efficient/v1"
+    base_url: "{base_url}/weak/v1"
     api_key: test-key
   latency:
     model: provider/latency
@@ -171,9 +171,9 @@ profiles:
     target: direct
   random:
     type: random-routing
-    capable: capable
-    efficient: efficient
-    capable_probability: 1.0
+    strong: strong
+    weak: weak
+    strong_probability: 1.0
     rng_seed: 7
   latency:
     type: latency-service
@@ -182,15 +182,15 @@ profiles:
     max_retries: 0
   llm:
     type: llm-routing
-    capable: capable
-    efficient: efficient
+    strong: strong
+    weak: weak
     classifier: classifier
     profile_name: coding_agent
   stage_router:
     type: stage_router
-    capable: capable
-    efficient: efficient
-    fallback_target_on_evict: capable
+    capable: strong
+    efficient: weak
+    fallback_target_on_evict: strong
     picker: capable_first
     confidence_threshold: 0.7
     classifier:
@@ -234,9 +234,9 @@ def test_profile_config_plan_is_inspectable() -> None:
     ]
     assert document.profile_type("direct") == "passthrough"
     assert document.profile_body("random") == {
-        "capable": "capable",
-        "efficient": "efficient",
-        "capable_probability": 1.0,
+        "strong": "strong",
+        "weak": "weak",
+        "strong_probability": 1.0,
         "rng_seed": 7,
     }
     rust_document = document.without_profiles(["random"])
@@ -253,7 +253,7 @@ def test_profile_config_plan_is_inspectable() -> None:
         "random",
         "stage_router",
     ]
-    assert plan.target_ids() == ["classifier", "direct", "latency", "capable", "efficient"]
+    assert plan.target_ids() == ["classifier", "direct", "latency", "strong", "weak"]
     assert plan.profile_type("direct") == "passthrough"
     assert plan.profile_type("random") == "random-routing"
     assert plan.profile_type("latency") == "latency-service"
@@ -327,22 +327,22 @@ async def test_native_profiles_run_against_local_openai_mock(
 
     assert direct_response.body["model"] == "provider/direct"
     assert direct_response.body["mock_path"] == "/direct/v1/chat/completions"
-    assert random_response.body["model"] == "provider/capable"
-    assert random_response.body["mock_path"] == "/capable/v1/chat/completions"
+    assert random_response.body["model"] == "provider/strong"
+    assert random_response.body["mock_path"] == "/strong/v1/chat/completions"
     assert latency_response.body["model"] == "provider/latency"
     assert latency_response.body["mock_path"] == "/latency/v1/chat/completions"
-    assert llm_response.body["model"] == "provider/efficient"
-    assert llm_response.body["mock_path"] == "/efficient/v1/chat/completions"
-    assert stage_router_response.body["model"] == "provider/efficient"
-    assert stage_router_response.body["mock_path"] == "/efficient/v1/chat/completions"
+    assert llm_response.body["model"] == "provider/weak"
+    assert llm_response.body["mock_path"] == "/weak/v1/chat/completions"
+    assert stage_router_response.body["model"] == "provider/weak"
+    assert stage_router_response.body["mock_path"] == "/weak/v1/chat/completions"
     assert [call["body"]["model"] for call in mock_openai_server.calls] == [
         "provider/direct",
-        "provider/capable",
+        "provider/strong",
         "provider/latency",
         "provider/classifier",
-        "provider/efficient",
+        "provider/weak",
         "provider/classifier",
-        "provider/efficient",
+        "provider/weak",
     ]
     llm_classifier_body = mock_openai_server.calls[3]["body"]
     assert llm_classifier_body["tools"][0]["function"]["strict"] is True
