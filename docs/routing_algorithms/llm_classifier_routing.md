@@ -63,12 +63,6 @@ profiles:
     classifier_recent_turn_window: 4
 ```
 
-Use a distinct upstream `model` for each target. The profile server registers
-both target IDs and upstream model IDs as direct aliases, so reusing an upstream
-model across targets causes a duplicate-registration error at startup. The
-OpenRouter-specific `extra_body` in this example requests that reasoning be
-disabled only for the classifier call.
-
 The classifier target must use `format: openai`. Start the profile server with:
 
 ```bash
