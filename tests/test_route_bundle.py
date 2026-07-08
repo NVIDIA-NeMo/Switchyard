@@ -1606,6 +1606,56 @@ def test_latency_service_invalid_credential_policy_rejected_via_bundle() -> None
         })
 
 
+def test_latency_endpoint_request_type_reaches_backend_config() -> None:
+    """Endpoint-level request_type in YAML selects the upstream API surface."""
+    table = build_route_bundle_table({
+        "routes": {
+            "r": {
+                "type": "latency_service",
+                "latency_service_url": "http://ls.test:8080",
+                "endpoints": [
+                    {
+                        "model": "codex-mini",
+                        "api_key": "k",
+                        "base_url": "https://ls.test/v1",
+                        "request_type": "openai_responses",
+                    },
+                    {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
+                ],
+            },
+        },
+    })
+
+    backend = _latency_backend(table.lookup_switchyard("r"))
+
+    by_model = {endpoint.model: endpoint for endpoint in backend._config.endpoints}
+    assert by_model["codex-mini"].request_type == "openai_responses"
+    assert by_model["w"].request_type == "openai_chat"
+
+
+def test_latency_route_key_reaches_backend_as_route_model() -> None:
+    """The YAML route key becomes the backend's metrics route_model id."""
+    table = build_route_bundle_table({
+        "routes": {
+            "nvidia/switchyard/gpt-5.4": {
+                "type": "latency_service",
+                "latency_service_url": "http://ls.test:8080",
+                "endpoints": [
+                    {
+                        "model": "azure/openai/gpt-5.4",
+                        "api_key": "k",
+                        "base_url": "https://ls.test/v1",
+                    },
+                ],
+            },
+        },
+    })
+
+    backend = _latency_backend(table.lookup_switchyard("nvidia/switchyard/gpt-5.4"))
+
+    assert backend._config.route_model == "nvidia/switchyard/gpt-5.4"
+
+
 def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
     """affinity_warmup_turns is a deterministic-route knob."""
     table = build_route_bundle_table({
@@ -1621,6 +1671,37 @@ def test_zero_capacity_affinity_rejected_via_bundle(route: dict[str, Any]) -> No
 
     with pytest.raises(ValidationError):
         build_route_bundle_table({"routes": {"r": {**route, "affinity_max_sessions": 0}}})
+
+
+def test_latency_affinity_redis_reaches_backend_via_bundle() -> None:
+    """Redis L2 keys parse and construct a RedisPinStore on the latency backend."""
+    from switchyard.lib.redis_pin_store import RedisPinStore
+
+    table = build_route_bundle_table({
+        "routes": {
+            "r": {
+                **_AFFINITY_LAT_ROUTE,
+                "affinity_store": "redis",
+                "affinity_store_url": "redis://cache:6379/0",
+                "affinity_store_ttl_seconds": 120,
+                "affinity_key_prefix": "k:",
+            },
+        },
+    })
+    backend = _latency_backend(table.lookup_switchyard("r"))
+    assert backend._config.affinity_store == "redis"
+    assert backend._config.affinity_store_url == "redis://cache:6379/0"
+    assert isinstance(backend._affinity._l2, RedisPinStore)
+
+
+def test_latency_affinity_redis_requires_url_via_bundle() -> None:
+    """affinity_store=redis without a URL fails closed at config load."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        build_route_bundle_table({
+            "routes": {"r": {**_AFFINITY_LAT_ROUTE, "affinity_store": "redis"}},
+        })
 
 
 def test_negative_affinity_warmup_turns_rejected_via_bundle() -> None:

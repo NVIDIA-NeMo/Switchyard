@@ -381,6 +381,39 @@ async def test_attaches_openai_responses_stream_tap():
     assert s.cache_read_tokens == 60
 
 
+async def test_openai_responses_tap_reads_usage_from_raw_sse_frames():
+    """Verbatim-passthrough streams yield raw SSE frame strings; the tap must
+    still find the usage in the ``response.completed`` frame."""
+    from switchyard.lib.chat_response.openai_responses import ResponsesApiStream
+
+    collector = LiveStatsCollector()
+    proc = StatsResponseProcessor(collector)
+
+    async def _frames():
+        yield (
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        )
+        yield ": keep-alive\n\n"
+        yield (
+            'event: response.completed\n'
+            'data: {"type":"response.completed","response":{"id":"resp-raw","usage":'
+            '{"input_tokens":300,"output_tokens":120,'
+            '"input_tokens_details":{"cached_tokens":60},'
+            '"output_tokens_details":{"reasoning_tokens":40}}}}\n\n'
+        )
+
+    response = ChatResponse.openai_responses_stream(ResponsesApiStream(_frames()))
+    await proc.process(_make_ctx(), response)
+    [_ async for _ in response.stream]
+
+    s = collector.snapshot()
+    assert s.request_count == 1
+    assert s.prompt_tokens == 300
+    assert s.completion_tokens == 120
+    assert s.cache_read_tokens == 60
+
+
 # ---------------------------------------------------------------------------
 # Cost estimation — model name normalization
 # ---------------------------------------------------------------------------

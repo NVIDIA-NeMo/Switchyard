@@ -185,20 +185,20 @@ class TestPollHealthGauges:
 
 
 class TestEmitterLifecycle:
-    def test_construction_registers_emitter(self) -> None:
+    async def test_construction_registers_emitter(self) -> None:
         assert prometheus_emitter._EMITTERS == []
         backend = _make_backend(_config("model-A"))
         assert len(prometheus_emitter._EMITTERS) == 1
         # Confirm table output includes this backend's lines.
         assert "switchyard_endpoint_status" in prometheus_emitter.render()
-        backend.shutdown()
+        await backend.shutdown()
         assert prometheus_emitter._EMITTERS == []
 
-    def test_shutdown_idempotent(self) -> None:
+    async def test_shutdown_idempotent(self) -> None:
         """Lifespan tear-down may call shutdown more than once."""
         backend = _make_backend(_config("model-A"))
-        backend.shutdown()
-        backend.shutdown()
+        await backend.shutdown()
+        await backend.shutdown()
         assert prometheus_emitter._EMITTERS == []
 
 

@@ -203,6 +203,9 @@ async def test_api_status_error_tags(tracer: _FakeTracer) -> None:
     assert attempt.tags["switchyard.upstream_status_code"] == 429
     assert attempt.tags["switchyard.outcome"] == "retryable_error"
     assert attempt.tags["switchyard.error_code"] == "429"
+    # Failure-source annotation: the attempt failed upstream.
+    assert attempt.tags["switchyard.error_source"] == "provider"
+    assert attempt.tags["switchyard.upstream_model"] == "model-A"
 
 
 async def test_generic_error_tags(tracer: _FakeTracer) -> None:
@@ -218,6 +221,9 @@ async def test_generic_error_tags(tracer: _FakeTracer) -> None:
     assert attempt.tags["switchyard.error_code"] == "none"
     # A non-HTTP failure has no status line.
     assert "switchyard.upstream_status_code" not in attempt.tags
+    # A network-level fault is still an upstream-side failure.
+    assert attempt.tags["switchyard.error_source"] == "provider"
+    assert attempt.tags["switchyard.upstream_model"] == "model-A"
 
 
 async def test_retry_count_is_sequential_and_ends_success(tracer: _FakeTracer) -> None:

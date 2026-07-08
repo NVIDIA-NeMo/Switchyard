@@ -32,6 +32,7 @@ from switchyard_rust.core import (
     ChatResponseType,
     response_type_matches,
 )
+from switchyard_rust.translation import sse_frame_payloads
 
 if TYPE_CHECKING:
     from switchyard.lib.endpoints.base import Endpoint
@@ -293,7 +294,13 @@ def _attach_openai_responses_tap(
         nonlocal seen
         if seen:
             return
-        inner = _field(event, "response")
+        # Verbatim-passthrough backends yield raw SSE frame strings; parse the
+        # frame's data payload(s) to find the usage-carrying event.
+        candidates = sse_frame_payloads(event) if isinstance(event, str) else [event]
+        inner = next(
+            (found for c in candidates if (found := _field(c, "response")) is not None),
+            None,
+        )
         if inner is None:
             return
         u = _field(inner, "usage")

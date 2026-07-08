@@ -120,5 +120,71 @@ class OpenAILLMClient:
         ``api_key`` is ``None`` or blank, no override is applied and the
         construction-time key configured on the client is used. SDK validation
         and upstream errors are intentionally propagated unchanged.
+
+        Non-streaming calls return the upstream's **exact JSON body** (a
+        ``dict``) rather than the SDK's typed ``Response`` model: round-tripping
+        through the typed model re-normalizes the payload and its
+        ``exclude_none`` serialization drops explicit-null fields, eroding
+        schema fidelity for Responses passthrough.
+
+        Streaming calls return a :class:`RawSSEFrameStream` yielding the
+        upstream's SSE frames as **verbatim strings** (modulo CRLF → LF line
+        normalization) for the same reason — the SDK's typed event stream
+        drops provider extras and explicit nulls per event. The HTTP request
+        is sent (and error statuses raise) *before* this method returns, so
+        the caller's retry/failover contract is unchanged.
         """
-        return await self._client_for_api_key(api_key).responses.create(**kwargs)
+        client = self._client_for_api_key(api_key)
+        if kwargs.get("stream"):
+            cm = client.responses.with_streaming_response.create(**kwargs)
+            # Enter eagerly: the request goes out and non-2xx statuses raise
+            # ``APIStatusError`` here, not at first iteration — after first
+            # iteration the endpoint has already committed an HTTP 200.
+            response = await cm.__aenter__()
+            return RawSSEFrameStream(cm, response.http_response)
+        raw = await client.responses.with_raw_response.create(**kwargs)
+        return raw.http_response.json()
+
+
+class RawSSEFrameStream:
+    """Async iterator over an SSE response's frames as verbatim strings.
+
+    Each item is one complete frame (all lines up to and including the blank
+    separator, e.g. ``"event: x\\ndata: {...}\\n\\n"``), byte-equivalent to the
+    upstream modulo CRLF → LF normalization. Comment/keep-alive frames pass
+    through unchanged. ``aclose`` releases the underlying HTTP response and is
+    safe to call at any point, including before the first ``__anext__``.
+    """
+
+    def __init__(self, cm: Any, http_response: Any) -> None:
+        self._cm = cm
+        self._lines = http_response.aiter_lines()
+        self._closed = False
+
+    def __aiter__(self) -> RawSSEFrameStream:
+        return self
+
+    async def __anext__(self) -> str:
+        buffer: list[str] = []
+        try:
+            async for line in self._lines:
+                if line == "":
+                    if buffer:
+                        return "\n".join(buffer) + "\n\n"
+                    continue
+                buffer.append(line)
+        except BaseException:
+            await self.aclose()
+            raise
+        await self.aclose()
+        if buffer:
+            # Upstream closed without a trailing blank line; emit the tail as
+            # a well-formed frame rather than dropping it.
+            return "\n".join(buffer) + "\n\n"
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._cm.__aexit__(None, None, None)

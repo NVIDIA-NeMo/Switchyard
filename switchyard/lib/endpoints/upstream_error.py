@@ -19,11 +19,18 @@ from typing import TYPE_CHECKING, Literal
 from fastapi.responses import JSONResponse
 
 from switchyard.lib.endpoints import outcome_metrics
-from switchyard.lib.endpoints.error_envelope import error_response, upstream_error_response
+from switchyard.lib.endpoints.error_envelope import (
+    error_response,
+    upstream_error_response,
+)
 from switchyard.lib.proxy_context import (
+    CTX_ERROR_SOURCE,
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
     CTX_UPSTREAM_HTTP_BODY,
     CTX_UPSTREAM_HTTP_STATUS,
+    CTX_UPSTREAM_MODEL,
+    ERROR_SOURCE_PROVIDER,
+    ERROR_SOURCE_SWITCHYARD,
 )
 from switchyard_rust.core import SwitchyardUpstreamError
 
@@ -97,8 +104,29 @@ def upstream_response_from_ctx(
     """
     status = ctx.metadata.get(CTX_UPSTREAM_HTTP_STATUS)
     if isinstance(status, int):
-        return upstream_error_response(status, ctx.metadata.get(CTX_UPSTREAM_HTTP_BODY))
+        return upstream_error_response(
+            status,
+            ctx.metadata.get(CTX_UPSTREAM_HTTP_BODY),
+            # A stashed status without an explicit source is an upstream
+            # passthrough; backends that reuse this channel for their own
+            # rejections (caller_required 401, translation 400) mark the
+            # stash ``switchyard`` so the header stays truthful.
+            error_source=_ctx_error_source(ctx, default=ERROR_SOURCE_PROVIDER),
+            upstream_model=_ctx_upstream_model(ctx),
+        )
     return upstream_response_from_error(exc, inbound=inbound)
+
+
+def _ctx_error_source(ctx: ProxyContext, *, default: str) -> str:
+    """Failure origin stamped by the backend, or ``default`` for the path."""
+    source = ctx.metadata.get(CTX_ERROR_SOURCE)
+    return source if isinstance(source, str) and source else default
+
+
+def _ctx_upstream_model(ctx: ProxyContext) -> str | None:
+    """Upstream model recorded at failure time, when a selection happened."""
+    model = ctx.metadata.get(CTX_UPSTREAM_MODEL)
+    return model if isinstance(model, str) and model else None
 
 
 def upstream_response_from_error(
@@ -125,7 +153,13 @@ def _parse_body(raw: str) -> object:
         return text
 
 
-def internal_chain_error_response(exc: BaseException, inbound: Inbound) -> JSONResponse:
+def internal_chain_error_response(
+    exc: BaseException,
+    inbound: Inbound,
+    *,
+    error_source: str = ERROR_SOURCE_SWITCHYARD,
+    upstream_model: str | None = None,
+) -> JSONResponse:
     """Translate an unexpected chain failure into the client error envelope.
 
     Used when an exception escapes dispatch or response-processing that is not
@@ -135,6 +169,11 @@ def internal_chain_error_response(exc: BaseException, inbound: Inbound) -> JSONR
     this helper so the full context is preserved server-side. ``inbound`` is
     retained in the signature because endpoint callers already pass it, but the
     HTTP envelope is intentionally shared across inbound formats.
+
+    ``error_source`` defaults to ``switchyard`` (an unexpected internal
+    failure) but a backend that failed on a status-less upstream fault (e.g.
+    a network error after retries) marks ``ctx`` so this 500 is labeled
+    ``provider`` instead.
     """
     message = repr(exc)[:200]
     return error_response(
@@ -142,6 +181,8 @@ def internal_chain_error_response(exc: BaseException, inbound: Inbound) -> JSONR
         message,
         error_type="internal_error",
         code="internal_chain_error",
+        error_source=error_source,
+        upstream_model=upstream_model,
     )
 
 
@@ -158,7 +199,12 @@ def handle_chain_exception(
     if upstream is not None:
         return upstream
     _log.error(log_msg, exc_info=exc)
-    return internal_chain_error_response(exc, inbound=inbound)
+    return internal_chain_error_response(
+        exc,
+        inbound=inbound,
+        error_source=_ctx_error_source(ctx, default=ERROR_SOURCE_SWITCHYARD),
+        upstream_model=_ctx_upstream_model(ctx),
+    )
 
 
 def context_exhausted_response(exc: BaseException, inbound: Inbound) -> JSONResponse:
@@ -168,9 +214,11 @@ def context_exhausted_response(exc: BaseException, inbound: Inbound) -> JSONResp
     after consecutive context-window overflows; FastAPI endpoints catch it
     and call this helper to produce the shared Switchyard HTTP error envelope.
     """
-    error: dict[str, object] = {
-        "type": "invalid_request_error",
-        "message": str(exc),
-        "code": "context_length_exceeded",
-    }
-    return JSONResponse(status_code=400, content={"error": error})
+    # Chain-executor rejection, not an upstream failure — ``error_response``
+    # stamps the ``switchyard`` source header by default.
+    return error_response(
+        400,
+        str(exc),
+        error_type="invalid_request_error",
+        code="context_length_exceeded",
+    )

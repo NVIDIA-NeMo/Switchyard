@@ -18,7 +18,9 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 LatencyServiceRequestType = Literal["openai_chat", "openai_responses"]
-LatencyServiceCredentialPolicy = Literal["configured_endpoint", "caller_override"]
+LatencyServiceCredentialPolicy = Literal[
+    "configured_endpoint", "caller_override", "caller_required"
+]
 
 
 class LatencyServiceEndpoint(BaseModel):
@@ -81,15 +83,41 @@ class LatencyServiceBackendConfig(BaseModel):
         max_retries: On error, retry on a different endpoint up to this
             many times.  Dedup prevents re-selecting an endpoint that
             already failed for the same request.
-        credential_policy: Which credential wins when the inbound HTTP
-            request carries a caller key.  ``"configured_endpoint"`` keeps
-            using each endpoint's configured ``api_key``; ``"caller_override"``
-            opts into BYO-key forwarding.
+        route_model: Client-facing route id this backend serves (the
+            route-table / YAML route key, e.g.
+            ``"nvidia/switchyard/gpt-5.4"``).  Metrics-only: it joins the
+            bounded ``requested_model`` label set on
+            ``switchyard_latency_upstream_attempts_total`` so route-key
+            traffic is attributed instead of collapsing to ``"other"``.
+            Has no effect on routing.
+        credential_policy: Which credential authenticates the upstream call.
+            The caller key is read from the ``x-switchyard-api-key`` header
+            (preferred — it survives proxies such as LiteLLM that strip
+            ``Authorization``), then ``Authorization: Bearer`` / ``x-api-key``, on
+            every ingress path (``/chat/completions``, ``/responses``,
+            ``/messages``).  ``"configured_endpoint"`` always uses each endpoint's
+            configured ``api_key`` and ignores any caller key.  ``"caller_override"``
+            opts into BYO-key forwarding: a caller key is used when present, else
+            the call falls back to the configured ``api_key``.  ``"caller_required"``
+            forwards the caller key but never falls back — a request with no caller
+            key is rejected with HTTP 401 and the configured ``api_key`` is never
+            used for upstream inference (use this for per-user spend attribution,
+            e.g. multi-tenant gateway routes).
         session_affinity: When ``True``, pin each conversation to the endpoint
             that first served it (cache stays warm); a pin is broken only when
             its endpoint degrades or the call fails. Per process. Default off.
         affinity_max_sessions: Bounded-LRU cap on pinned conversations; ignored
             when ``session_affinity`` is off.
+        affinity_store: Shared L2 pin store behind the in-process LRU. ``"memory"``
+            (default) keeps pins per process; ``"redis"`` shares them across
+            workers/pods and persists them across pod churn. The store is
+            best-effort — an L2 error never fails a request.
+        affinity_store_url: Connection URL for the shared store (e.g.
+            ``"redis://host:6379/0"``). Required when ``affinity_store`` is
+            ``"redis"``.
+        affinity_store_ttl_seconds: Expiry for a shared pin. The backend re-pins
+            on every successful turn, so an active conversation slides its TTL.
+        affinity_key_prefix: Namespace prefix for shared-store keys.
         enable_stats: When ``True`` (default), the factory wires a
             :class:`StatsRequestProcessor` + :class:`StatsResponseProcessor`
             pair sharing one :class:`StatsAccumulator` and wraps the
@@ -103,12 +131,17 @@ class LatencyServiceBackendConfig(BaseModel):
 
     latency_service_url: str = ""
     endpoints: list[LatencyServiceEndpoint] = Field(default_factory=list)
+    route_model: str | None = None
     poll_interval_s: float = 10.0
     poll_timeout_s: float = 5.0
     max_retries: int = 2
     credential_policy: LatencyServiceCredentialPolicy = "configured_endpoint"
     session_affinity: bool = False
     affinity_max_sessions: int = Field(default=10_000, ge=0)
+    affinity_store: Literal["memory", "redis"] = "memory"
+    affinity_store_url: str | None = None
+    affinity_store_ttl_seconds: int = Field(default=3_600, gt=0)
+    affinity_key_prefix: str = "swyd:pin:"
     enable_stats: bool = True
 
     @model_validator(mode="after")
@@ -118,4 +151,18 @@ class LatencyServiceBackendConfig(BaseModel):
             raise ValueError(
                 "affinity_max_sessions must be > 0 when session_affinity is enabled"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _redis_store_requires_url_and_affinity(self) -> Self:
+        # A shared store is dead config unless affinity is on and reachable.
+        if self.affinity_store == "redis":
+            if not self.session_affinity:
+                raise ValueError(
+                    'affinity_store="redis" requires session_affinity to be enabled'
+                )
+            if not self.affinity_store_url:
+                raise ValueError(
+                    'affinity_store="redis" requires affinity_store_url to be set'
+                )
         return self

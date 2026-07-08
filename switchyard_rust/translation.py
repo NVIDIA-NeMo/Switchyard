@@ -231,8 +231,9 @@ class TranslationEngine:
         )
         try:
             async for event in stream:
-                for translated in translator.translate_event(_jsonable_mapping(event)):
-                    yield _coerce_stream_output(target_format, translated, output)
+                for payload in _stream_event_payloads(event):
+                    for translated in translator.translate_event(payload):
+                        yield _coerce_stream_output(target_format, translated, output)
             for translated in translator.finish():
                 yield _coerce_stream_output(target_format, translated, output)
         finally:
@@ -424,6 +425,50 @@ def _sse_frame(event: Mapping[str, Any]) -> str:
 def _jsonable_mapping(value: Any) -> dict[str, Any]:
     value = _jsonable(value, set())
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _stream_event_payloads(event: Any) -> list[dict[str, Any]]:
+    """JSON payload(s) of one stream item, for cross-format translation.
+
+    Backends that preserve wire fidelity yield raw SSE frame *strings*
+    (see ``RawSSEFrameStream``); those are parsed here so the translator
+    still sees event dicts. Every other item shape keeps the existing
+    jsonable-mapping coercion.
+    """
+    if isinstance(event, str):
+        return sse_frame_payloads(event)
+    return [_jsonable_mapping(event)]
+
+
+def sse_frame_payloads(frame: str) -> list[dict[str, Any]]:
+    """Parse an SSE frame string into its JSON ``data:`` payload(s).
+
+    Follows the SSE contract: a frame's ``data:`` lines are joined with
+    newlines to form one payload; an optional single leading space after the
+    colon is stripped. Comment/keep-alive frames, the ``[DONE]`` sentinel,
+    and non-JSON or non-object payloads yield nothing. Accepts a string
+    containing multiple ``\\n\\n``-separated frames and returns payloads in
+    order.
+    """
+    payloads: list[dict[str, Any]] = []
+    for block in frame.split("\n\n"):
+        data_lines: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("data:"):
+                value = line[5:]
+                data_lines.append(value[1:] if value.startswith(" ") else value)
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines)
+        if data.strip() == "[DONE]":
+            continue
+        try:
+            parsed = json.loads(data)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            payloads.append(parsed)
+    return payloads
 
 
 def _jsonable(value: Any, seen: set[int]) -> Any:

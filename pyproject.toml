@@ -82,9 +82,18 @@ intake = [
     "nemo-platform>=0.1.0,<1.0",
 ]
 
+# Shared session-affinity pin store. redis-py ships ``redis.asyncio`` natively,
+# so no separate async client is needed. Lazy-imported by
+# ``switchyard.lib.redis_pin_store`` — the default install never pulls it in.
+# Floor 5.0.1: first release with ``aclose()`` on async clients, which the
+# store's shutdown path calls.
+affinity-redis = [
+    "redis>=5.0.1,<6",
+]
+
 # Everything — all optional dependencies for full-featured deployment.
 all = [
-    "nemo-switchyard[server,cli,gpu,tracing,intake]",
+    "nemo-switchyard[server,cli,gpu,tracing,intake,affinity-redis]",
 ]
 
 # Dev tooling lives in a PEP 735 dependency group rather than an optional

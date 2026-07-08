@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from openai import APIStatusError, AsyncStream
 
+from switchyard.lib.affinity_pin_store import AffinityPinStore
 from switchyard.lib.backends.health_poller import (
     EndpointHealth,
     EndpointHealthStatus,
@@ -44,9 +45,13 @@ from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.prometheus_exposition import format_number, render_labels
 from switchyard.lib.proxy_context import (
     CTX_CALLER_API_KEY,
+    CTX_ERROR_SOURCE,
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
     CTX_UPSTREAM_HTTP_BODY,
     CTX_UPSTREAM_HTTP_STATUS,
+    CTX_UPSTREAM_MODEL,
+    ERROR_SOURCE_PROVIDER,
+    ERROR_SOURCE_SWITCHYARD,
     ProxyContext,
 )
 from switchyard.lib.roles import LLMBackend
@@ -127,10 +132,13 @@ class LatencyServiceLLMBackend(LLMBackend):
         # Session affinity: pins a conversation to the endpoint that last served
         # it so its upstream prompt/KV cache stays warm. Shared coordinator with
         # the classifier router; the latency-specific reuse policy (health-gated,
-        # failover-aware) lives in ``_select_endpoint_decision``.
+        # failover-aware) lives in ``_select_endpoint_decision``. An optional
+        # shared L2 (Redis) lets pins outlive this worker and be read by peers,
+        # so a conversation stays pinned across replicas and pod churn.
         self._affinity = SessionAffinity(
             enabled=config.session_affinity,
             max_sessions=config.affinity_max_sessions,
+            l2=_build_affinity_l2(config),
         )
         # Cumulative warm-reuse counters, published on /metrics when affinity is
         # enabled. A "hit" is a turn served by an existing pin; a "miss" is a
@@ -139,6 +147,18 @@ class LatencyServiceLLMBackend(LLMBackend):
         # them. Incremented and read only on the event loop, so no lock needed.
         self._affinity_hits = 0
         self._affinity_misses = 0
+
+        # Per-model upstream-attempt counts for the latency-service-scoped
+        # /metrics breakdown, keyed by (requested model, selected upstream model,
+        # outcome, HTTP code). Kept separate from the layer-aggregate
+        # ``switchyard_upstream_attempts_total`` so that counter stays model-free.
+        # Cardinality is bounded: ``upstream_model`` comes from config, and
+        # ``requested_model`` is normalized to a config-derived id (route id or
+        # endpoint id) or the ``"other"`` sentinel in ``_record_model_attempt``
+        # so a caller-supplied model string can't grow the series set. Mutated
+        # and read only on the event loop (like the affinity counters), so no
+        # lock.
+        self._upstream_attempts_by_model: dict[tuple[str, str, str, str], int] = {}
 
         for ep_cfg in config.endpoints:
             model_id = ep_cfg.model
@@ -178,6 +198,15 @@ class LatencyServiceLLMBackend(LLMBackend):
                 ep_cfg.request_type,
                 ep_cfg.base_url,
             )
+
+        # Bounded ``requested_model`` label set: the configured endpoint ids
+        # plus the client-facing route id when the deployment supplied one
+        # (IH clients request the route key, e.g. ``nvidia/switchyard/gpt-5.4``,
+        # never an endpoint id). Both sources are config-derived, so metric
+        # cardinality stays bounded.
+        self._requested_model_ids = frozenset(self._clients) | (
+            frozenset((config.route_model,)) if config.route_model else frozenset()
+        )
 
         self._poller = HealthPoller(
             latency_service_url=config.latency_service_url,
@@ -332,19 +361,36 @@ class LatencyServiceLLMBackend(LLMBackend):
         # request so the endpoint-layer fallback in ``dispatch`` /
         # ``handle_chain_exception`` does not double-count the retry fan-out.
         ctx.metadata[CTX_UPSTREAM_ATTEMPTS_RECORDED] = True
+        api_key_override = self._api_key_override_for_policy(
+            ctx.metadata.get(CTX_CALLER_API_KEY)
+        )
+        # ``caller_required`` never falls back to the configured endpoint key:
+        # reject before any upstream call so the service credential can't
+        # authenticate caller inference — and before the affinity lookup, so a
+        # doomed request never pays a pin resolution (possibly a shared-store
+        # round-trip). The rejection deliberately stays invisible to
+        # ``switchyard_upstream_attempts_total`` (the accounting flag above is
+        # already claimed): no upstream attempt happened, and counting a
+        # synthetic 401 would skew the direct-to-endpoint baseline error rate.
+        # ``api_key_override`` is ``None`` here only when no usable caller key
+        # was supplied.
+        if self._config.credential_policy == "caller_required" and api_key_override is None:
+            _reject_missing_caller_api_key(ctx)
+
         # Captured before the per-attempt ``body["model"]`` override so the span
         # records the model the client asked for, not the selected endpoint.
         incoming_model = request.model
         # Resolve the session-affinity pin once (keyed on the stable conversation
         # prefix). ``None`` when affinity is disabled or the conversation isn't
         # pinned yet, so every attempt routes purely by health + latency.
-        pinned_endpoint = self._affinity.pinned(ctx, request)
+        pinned_endpoint = await self._affinity.pinned(ctx, request)
 
         last_exc: Exception | None = None
+        # Upstream model of the last failed attempt, surfaced on the error
+        # envelope/span/log so operators can tell *which* endpoint the
+        # provider-originated failure came from.
+        last_upstream_model: str | None = None
         tried: set[str] = set()
-        api_key_override = self._api_key_override_for_policy(
-            ctx.metadata.get(CTX_CALLER_API_KEY)
-        )
 
         for attempt in range(1 + self._config.max_retries):
             # -- Route decision span: which endpoint, out of which candidates --
@@ -410,10 +456,18 @@ class LatencyServiceLLMBackend(LLMBackend):
                         "switchyard.outcome": outcome_metrics.classify(exc.status_code),
                         "switchyard.upstream_status_code": exc.status_code,
                         "switchyard.error_code": outcome_metrics.code_label(exc.status_code),
+                        "switchyard.error_source": ERROR_SOURCE_PROVIDER,
+                        "switchyard.upstream_model": upstream_model,
                     })
                     if self._stats is not None:
                         await self._stats.record_error(model_id)
                     outcome_metrics.record_upstream_attempt(exc.status_code)
+                    self._record_model_attempt(
+                        incoming_model,
+                        upstream_model,
+                        outcome_metrics.classify(exc.status_code),
+                        outcome_metrics.code_label(exc.status_code),
+                    )
                     # Per-event structured log (Loki) — the timestamped complement
                     # to the aggregate outcome counter recorded above.
                     log_upstream_attempt_failure(
@@ -421,8 +475,10 @@ class LatencyServiceLLMBackend(LLMBackend):
                         attempt=attempt + 1,
                         status_code=exc.status_code,
                         error=exc,
+                        upstream_model=upstream_model,
                     )
                     last_exc = exc
+                    last_upstream_model = upstream_model
                     # A client error (4xx other than 408/429) is deterministic —
                     # replicas reject the same payload identically — so fail fast
                     # instead of burning attempts; the post-loop passthrough
@@ -434,6 +490,8 @@ class LatencyServiceLLMBackend(LLMBackend):
                     set_tags(attempt_span, {
                         "switchyard.outcome": "retryable_error",
                         "switchyard.error_code": outcome_metrics.NO_STATUS_CODE,
+                        "switchyard.error_source": ERROR_SOURCE_PROVIDER,
+                        "switchyard.upstream_model": upstream_model,
                     })
                     if self._stats is not None:
                         await self._stats.record_error(model_id)
@@ -442,14 +500,22 @@ class LatencyServiceLLMBackend(LLMBackend):
                     # are exactly the faults a health-aware router should absorb
                     # by selecting a different endpoint on the next attempt.
                     outcome_metrics.record_upstream_attempt(None)
+                    self._record_model_attempt(
+                        incoming_model,
+                        upstream_model,
+                        "retryable_error",
+                        outcome_metrics.NO_STATUS_CODE,
+                    )
                     # status_code=None → logged as code="none" (no HTTP status).
                     log_upstream_attempt_failure(
                         model=model_id,
                         attempt=attempt + 1,
                         status_code=None,
                         error=exc,
+                        upstream_model=upstream_model,
                     )
                     last_exc = exc
+                    last_upstream_model = upstream_model
                     continue
 
                 backend_latency_ms = (time.monotonic() - started_at) * 1000.0
@@ -460,6 +526,9 @@ class LatencyServiceLLMBackend(LLMBackend):
                 if self._stats is not None:
                     await self._stats.record_success(model_id, backend_latency_ms)
                 outcome_metrics.record_upstream_attempt(200)
+                self._record_model_attempt(
+                    incoming_model, upstream_model, "success", "200",
+                )
                 # A successful attempt after at least one failure is direct
                 # evidence the steering logic rescued this request. Counted
                 # once per client request, not per recovered retry.
@@ -483,7 +552,7 @@ class LatencyServiceLLMBackend(LLMBackend):
                 # follows a recovery: if the previous pin degraded and we
                 # re-routed, the endpoint that worked becomes the new pin.
                 # (No-op when affinity is disabled.)
-                self._affinity.pin(ctx, request, model_id)
+                await self._affinity.pin(ctx, request, model_id)
 
                 return _chat_response_for_request_type(target_request_type, result)
 
@@ -498,6 +567,15 @@ class LatencyServiceLLMBackend(LLMBackend):
             upstream_body = _extract_upstream_body(last_exc)
             if upstream_body is not None:
                 ctx.metadata[CTX_UPSTREAM_HTTP_BODY] = upstream_body
+
+        # Failure-origin annotation for the client-facing error envelope:
+        # every exhausted attempt failed at a selected upstream, so what the
+        # endpoint surfaces — the HTTP passthrough above, or the 500 for
+        # status-less network failures — is provider-originated. (The stash
+        # helpers below mark Switchyard-originated rejections instead.)
+        ctx.metadata[CTX_ERROR_SOURCE] = ERROR_SOURCE_PROVIDER
+        if last_upstream_model is not None:
+            ctx.metadata[CTX_UPSTREAM_MODEL] = last_upstream_model
 
         raise last_exc  # type: ignore[misc]
 
@@ -546,23 +624,57 @@ class LatencyServiceLLMBackend(LLMBackend):
         )
 
     def _api_key_override_for_policy(self, caller_api_key: object) -> str | None:
-        if self._config.credential_policy != "caller_override":
+        """Per-request key to forward upstream, or ``None`` to use the endpoint key.
+
+        ``configured_endpoint`` never forwards a caller key. ``caller_override``
+        and ``caller_required`` forward a usable caller key; they differ only in
+        the no-key case, which ``call`` handles before any upstream attempt
+        (``caller_override`` falls back to the endpoint key, ``caller_required``
+        returns 401).
+        """
+        if self._config.credential_policy == "configured_endpoint":
             return None
         if isinstance(caller_api_key, str) and caller_api_key.strip():
             return caller_api_key
         return None
 
+    def _record_model_attempt(
+        self,
+        requested_model: str | None,
+        upstream_model: str,
+        outcome: str,
+        code: str,
+    ) -> None:
+        """Count one upstream attempt for the per-model /metrics breakdown.
+
+        Event-loop only (no lock). ``requested_model`` is the client-supplied
+        model; it is bounded to a config-derived id — the route id
+        (``config.route_model``) or a configured endpoint id — with the
+        ``"other"`` sentinel as fallback before becoming a Prometheus label, so
+        caller-controlled input can't create unbounded metric-series
+        cardinality.
+        """
+        requested = (
+            requested_model if requested_model in self._requested_model_ids else "other"
+        )
+        key = (requested, upstream_model, outcome, code)
+        self._upstream_attempts_by_model[key] = (
+            self._upstream_attempts_by_model.get(key, 0) + 1
+        )
+
     # -- Lifecycle ----------------------------------------------------------
 
-    def shutdown(self) -> None:
-        """Stop the background :class:`HealthPoller` daemon.
+    async def shutdown(self) -> None:
+        """Stop the background :class:`HealthPoller` daemon and release the
+        shared session-affinity store, when one is configured.
 
-        Picked up automatically by ``NemoSwitchyardServer``'s component
-        teardown hook (see ``server.py``'s lifespan context manager).
-        Safe to call multiple times.
+        Picked up automatically by the server's component teardown hook
+        (``_run_lifecycle_method``), which awaits awaitable ``shutdown``
+        results. Safe to call multiple times.
         """
         prometheus_emitter.unregister(self._render_prometheus_lines)
         self._poller.stop()
+        await self._affinity.aclose()
 
     def is_ready(self) -> bool:
         """True once the background poller has completed at least one successful poll."""
@@ -673,6 +785,72 @@ class LatencyServiceLLMBackend(LLMBackend):
             )
             lines.append("# TYPE switchyard_affinity_misses_total counter")
             lines.append(f"switchyard_affinity_misses_total {self._affinity_misses}")
+
+            # Shared-store (L2) counters — emitted only when a shared pin store
+            # is configured. Hits measure cross-worker/churn pin reuse; errors
+            # count fail-open store operations (the alerting signal for a store
+            # that is degraded while requests keep succeeding).
+            if self._affinity.l2_enabled:
+                lines.append(
+                    "# HELP switchyard_affinity_l2_hits_total "
+                    "Pins resolved from the shared (L2) affinity store after an "
+                    "in-process (L1) miss — cross-worker warm reuse."
+                )
+                lines.append("# TYPE switchyard_affinity_l2_hits_total counter")
+                lines.append(
+                    f"switchyard_affinity_l2_hits_total {self._affinity.l2_hits}"
+                )
+
+                lines.append(
+                    "# HELP switchyard_affinity_l2_errors_total "
+                    "Shared (L2) affinity-store operations that failed open "
+                    "(get or put); routing fell back to in-process pins only."
+                )
+                lines.append("# TYPE switchyard_affinity_l2_errors_total counter")
+                lines.append(
+                    f"switchyard_affinity_l2_errors_total {self._affinity.l2_errors}"
+                )
+
+                lines.append(
+                    "# HELP switchyard_affinity_l2_breaker_open "
+                    "1 while the shared-store circuit breaker is open "
+                    "(operations skipped without a network attempt); 0 when closed."
+                )
+                lines.append("# TYPE switchyard_affinity_l2_breaker_open gauge")
+                lines.append(
+                    "switchyard_affinity_l2_breaker_open "
+                    f"{int(self._affinity.l2_breaker_open)}"
+                )
+
+        # Per-model upstream-attempt breakdown — the latency-service-scoped
+        # complement to the layer-aggregate ``switchyard_upstream_attempts_total``.
+        # Series are created lazily per (requested_model, upstream_model, outcome,
+        # code), so the surface stays empty until traffic flows. Snapshotted to a
+        # plain dict for a stable view across the emission loop.
+        attempts_by_model = dict(self._upstream_attempts_by_model)
+        if attempts_by_model:
+            lines.append(
+                "# HELP switchyard_latency_upstream_attempts_total "
+                "Upstream call attempts from the latency-service backend, labelled "
+                "by requested (route) model, selected upstream model, outcome, and "
+                "HTTP status code (code=\"none\" for non-HTTP failures). Per-model "
+                "complement to the layer-aggregate switchyard_upstream_attempts_total; "
+                "cardinality is bounded by the configured endpoint set."
+            )
+            lines.append("# TYPE switchyard_latency_upstream_attempts_total counter")
+            # Sorted for deterministic exposition order across scrapes.
+            for (requested_model, upstream_model, outcome, code), count in sorted(
+                attempts_by_model.items()
+            ):
+                labels = render_labels({
+                    "requested_model": requested_model,
+                    "upstream_model": upstream_model,
+                    "outcome": outcome,
+                    "code": code,
+                })
+                lines.append(
+                    f"switchyard_latency_upstream_attempts_total{labels} {count}"
+                )
         return lines
 
 
@@ -687,7 +865,10 @@ def _chat_response_for_request_type(
     result: object,
 ) -> ChatResponse:
     if request_type == ChatRequestType.OPENAI_RESPONSES:
-        if isinstance(result, AsyncStream):
+        # Streaming yields raw SSE frame strings (``RawSSEFrameStream``) so the
+        # upstream events pass through verbatim; anything async-iterable is a
+        # stream, a plain mapping is the exact non-streaming JSON body.
+        if isinstance(result, AsyncStream) or hasattr(result, "__aiter__"):
             return ChatResponse.openai_responses_stream(ResponsesApiStream(result))
         return ChatResponse.openai_responses_completion(result)
     if isinstance(result, AsyncStream):
@@ -721,6 +902,25 @@ def _affinity_usable(health: EndpointHealth | None) -> bool:
     )
 
 
+def _build_affinity_l2(config: LatencyServiceBackendConfig) -> AffinityPinStore | None:
+    """Build the optional shared L2 pin store from config (``None`` = L1-only).
+
+    ``affinity_store="memory"`` (the default) keeps pins per process. ``"redis"``
+    imports :class:`RedisPinStore` lazily so the ``redis`` dependency stays
+    optional. Config validation guarantees a URL when the store is Redis.
+    """
+    if config.affinity_store != "redis":
+        return None
+    from switchyard.lib.redis_pin_store import RedisPinStore
+
+    assert config.affinity_store_url is not None  # enforced by config validator
+    return RedisPinStore(
+        config.affinity_store_url,
+        ttl_seconds=config.affinity_store_ttl_seconds,
+        key_prefix=config.affinity_key_prefix,
+    )
+
+
 # Prefix of the stringified translation error for a client-invalid payload.
 # ``TranslationError::kind()`` is the stable FFI signal for the error variant
 # (``crates/switchyard-translation/src/error.rs``); ``py_translation_error``
@@ -751,6 +951,33 @@ def _stash_invalid_request_error(ctx: ProxyContext, error: Exception) -> None:
             "code": "invalid_value",
         }
     }
+    # This 400 rides the upstream-status channel but is Switchyard's own
+    # translation rejection — label it so the error-source header is truthful.
+    ctx.metadata[CTX_ERROR_SOURCE] = ERROR_SOURCE_SWITCHYARD
+
+
+def _reject_missing_caller_api_key(ctx: ProxyContext) -> None:
+    """Reject a ``caller_required`` request that carries no caller API key.
+
+    Stashes an HTTP 401 and a provider-compatible error envelope on ``ctx`` the
+    same way upstream-status passthrough does, then raises so the chain errors
+    out before any upstream call. No upstream is contacted or counted;
+    ``upstream_response_from_ctx`` reads the stashed status to return a 401. This
+    is what keeps the configured endpoint key from ever authenticating caller
+    inference under the ``caller_required`` policy.
+    """
+    ctx.metadata[CTX_UPSTREAM_HTTP_STATUS] = 401
+    ctx.metadata[CTX_UPSTREAM_HTTP_BODY] = {
+        "error": {
+            "message": "missing caller API key; supply it via the x-switchyard-api-key header",
+            "type": "invalid_request_error",
+            "code": "missing_caller_api_key",
+        }
+    }
+    # Rides the upstream-status channel but no upstream was contacted — this
+    # is Switchyard's own credential-policy rejection.
+    ctx.metadata[CTX_ERROR_SOURCE] = ERROR_SOURCE_SWITCHYARD
+    raise PermissionError("caller_required policy: missing caller API key")
 
 
 def _extract_upstream_body(error: APIStatusError) -> object | None:

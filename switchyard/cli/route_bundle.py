@@ -200,7 +200,9 @@ _LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
     "timeout",
     "timeout_secs",
 })
-_LATENCY_ENDPOINT_KEYS = _LATENCY_ENDPOINT_DEFAULT_KEYS | frozenset({"model", "upstream_model"})
+_LATENCY_ENDPOINT_KEYS = _LATENCY_ENDPOINT_DEFAULT_KEYS | frozenset(
+    {"model", "upstream_model", "request_type"}
+)
 _LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
     "defaults",
     "endpoints",
@@ -213,6 +215,10 @@ _LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
     "enable_stats",
     "session_affinity",
     "affinity_max_sessions",
+    "affinity_store",
+    "affinity_store_url",
+    "affinity_store_ttl_seconds",
+    "affinity_key_prefix",
 }) | _LATENCY_ENDPOINT_DEFAULT_KEYS
 _NOOP_ROUTE_KEYS = _ROUTE_METADATA_KEYS
 _DETERMINISTIC_ROUTE_KEYS = (
@@ -799,6 +805,7 @@ def _build_switchyard_for_route(
 
     if route_type == "latency_service":
         return _latency_service_switchyard(
+            model_id,
             route,
             target_defaults,
             stats=stats,
@@ -1129,6 +1136,7 @@ def _passthrough_target(
 
 
 def _latency_service_switchyard(
+    model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
     stats: StatsAccumulator,
@@ -1152,6 +1160,9 @@ def _latency_service_switchyard(
             "latency_service.latency_service_url",
         ),
         "endpoints": endpoints,
+        # The YAML route key is what clients send as ``model``; hand it to the
+        # backend so the per-model metric can attribute route-key traffic.
+        "route_model": model_id,
         "poll_interval_s": _optional_float(route.get("poll_interval_s"), default=10.0),
         "poll_timeout_s": _optional_float(route.get("poll_timeout_s"), default=5.0),
         "max_retries": _optional_int(route.get("max_retries"), default=2),
@@ -1161,6 +1172,12 @@ def _latency_service_switchyard(
         "affinity_max_sessions": _optional_int(
             route.get("affinity_max_sessions"), default=10_000
         ),
+        "affinity_store": _optional_str(route.get("affinity_store")) or "memory",
+        "affinity_store_url": _optional_str(route.get("affinity_store_url")),
+        "affinity_store_ttl_seconds": _optional_int(
+            route.get("affinity_store_ttl_seconds"), default=3_600
+        ),
+        "affinity_key_prefix": _optional_str(route.get("affinity_key_prefix")) or "swyd:pin:",
     })
     return ProfileSwitchyard(
         LatencyServiceProfileConfig.from_config(config)
@@ -1272,7 +1289,7 @@ def _latency_endpoint(
 
     endpoint_data = {
         key: data[key]
-        for key in ("model", "upstream_model", "api_key", "base_url", "timeout")
+        for key in ("model", "upstream_model", "api_key", "base_url", "timeout", "request_type")
         if key in data
     }
     return LatencyServiceEndpoint.model_validate(endpoint_data)
