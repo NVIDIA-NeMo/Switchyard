@@ -150,7 +150,8 @@ impl StageRouterProfileConfig {
     fn validate(&self) -> Result<()> {
         if self.capable.id == self.efficient.id {
             return Err(SwitchyardError::InvalidConfig(
-                "stage_router capable and efficient targets must have distinct target ids".to_string(),
+                "stage_router capable and efficient targets must have distinct target ids"
+                    .to_string(),
             ));
         }
         if !self.confidence_threshold.is_finite()
@@ -1193,7 +1194,12 @@ mod tests {
                 calls.clone(),
                 capable_actions,
             ),
-            efficient_backend: target_backend(&efficient, "efficient-backend", calls.clone(), efficient_actions),
+            efficient_backend: target_backend(
+                &efficient,
+                "efficient-backend",
+                calls.clone(),
+                efficient_actions,
+            ),
             fallback_target_on_evict: capable.id.clone(),
             picker,
             confidence_threshold,
@@ -1237,15 +1243,17 @@ mod tests {
                 vec![BackendAction::Ok],
                 vec![BackendAction::Ok],
             )?;
-            profile.classifier = Some(StageRouterTierClassifier::new(&StageRouterClassifierConfig {
-                model: "unreachable-classifier".to_string(),
-                api_key: "test-key".to_string(),
-                base_url: Some("http://127.0.0.1:1/v1".to_string()),
-                timeout_secs: 0.01,
-                recent_turn_window: 1,
-                max_tokens: CLASSIFIER_MAX_TOKENS,
-                system_prompt: None,
-            })?);
+            profile.classifier = Some(StageRouterTierClassifier::new(
+                &StageRouterClassifierConfig {
+                    model: "unreachable-classifier".to_string(),
+                    api_key: "test-key".to_string(),
+                    base_url: Some("http://127.0.0.1:1/v1".to_string()),
+                    timeout_secs: 0.01,
+                    recent_turn_window: 1,
+                    max_tokens: CLASSIFIER_MAX_TOKENS,
+                    system_prompt: None,
+                },
+            )?);
 
             let (processed, freshness) = profile
                 .process_decision_snapshot(
@@ -1258,7 +1266,10 @@ mod tests {
 
             assert_eq!(freshness, None);
             assert_eq!(processed.decision.tier, expected_tier);
-            assert_eq!(processed.decision.source, StageRouterDecisionSource::FallOpen);
+            assert_eq!(
+                processed.decision.source,
+                StageRouterDecisionSource::FallOpen
+            );
             assert_eq!(processed.decision.confidence, None);
             assert_eq!(processed.decision.score, 0.0);
             assert_eq!(
@@ -1302,13 +1313,17 @@ mod tests {
 
         assert_eq!(freshness, None);
         assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
-        assert_eq!(processed.decision.source, StageRouterDecisionSource::FallOpen);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::FallOpen
+        );
         assert!(observed(&calls)?.is_empty());
         Ok(())
     }
 
     #[tokio::test]
-    async fn stage_router_decision_projects_fresh_relay_history_without_target_dispatch() -> Result<()> {
+    async fn stage_router_decision_projects_fresh_relay_history_without_target_dispatch(
+    ) -> Result<()> {
         let (profile, calls) = profile(
             target("capable", "frontier/model")?,
             target("efficient", "cheap/model")?,
@@ -1337,7 +1352,10 @@ mod tests {
 
         assert_eq!(freshness, Some(FeatureFreshness::Fresh));
         assert_eq!(processed.decision.tier, StageRouterTier::Capable);
-        assert_eq!(processed.decision.source, StageRouterDecisionSource::Override);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Override
+        );
         assert_eq!(processed.decision.confidence, Some(1.0));
         assert!(observed(&calls)?.is_empty());
         Ok(())
@@ -1373,7 +1391,10 @@ mod tests {
 
         assert_eq!(freshness, Some(FeatureFreshness::Fresh));
         assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
-        assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Dimensions
+        );
         assert!(observed(&calls)?.is_empty());
         Ok(())
     }
@@ -1520,7 +1541,10 @@ mod tests {
             .await?;
 
         assert_eq!(processed.decision.tier, StageRouterTier::Efficient);
-        assert_eq!(processed.decision.source, StageRouterDecisionSource::Dimensions);
+        assert_eq!(
+            processed.decision.source,
+            StageRouterDecisionSource::Dimensions
+        );
         assert_eq!(processed.profile_input.request.model(), Some("cheap/model"));
         assert!(observed(&calls)?.is_empty());
         Ok(())

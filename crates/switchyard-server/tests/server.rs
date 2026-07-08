@@ -142,7 +142,11 @@ async fn stage_router_decision_warms_from_one_relay_record_without_target_dispat
         .oneshot(request(
             "POST",
             "/v1/routing/decision",
-            Some(routing_request_json("remote-stage_router", "summary_only", None)),
+            Some(routing_request_json(
+                "remote-stage_router",
+                "summary_only",
+                None,
+            )),
         )?)
         .await?;
     assert_eq!(warm.status(), StatusCode::OK);
@@ -171,7 +175,8 @@ async fn stage_router_decision_warms_from_one_relay_record_without_target_dispat
 }
 
 #[tokio::test]
-async fn stage_router_decision_uses_exact_owner_identity_and_keeps_turn_only_state_cold() -> TestResult {
+async fn stage_router_decision_uses_exact_owner_identity_and_keeps_turn_only_state_cold(
+) -> TestResult {
     let state = state_from_yaml(stage_router_decision_yaml())?;
     let app = build_switchyard_router(state);
     let owner_event = tool_event(
