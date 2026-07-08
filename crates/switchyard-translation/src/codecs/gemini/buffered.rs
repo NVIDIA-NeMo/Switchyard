@@ -205,11 +205,7 @@ impl FormatCodec for GeminiGenerateContentCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
         let candidate = body
             .get("candidates")
@@ -217,6 +213,7 @@ impl FormatCodec for GeminiGenerateContentCodec {
             .and_then(|candidates| candidates.first())
             .and_then(Value::as_object);
         let mut content = Vec::new();
+        let mut diagnostics = Vec::new();
         if let Some(parts) = candidate
             .and_then(|candidate| candidate.get("content"))
             .and_then(|value| value.get("parts"))
@@ -229,8 +226,8 @@ impl FormatCodec for GeminiGenerateContentCodec {
                     content.extend(decode_gemini_part(
                         part,
                         generated_id,
-                        &mut Vec::new(),
-                        &TranslationPolicy::default(),
+                        &mut diagnostics,
+                        policy,
                     )?);
                 }
             }
@@ -281,12 +278,12 @@ impl FormatCodec for GeminiGenerateContentCodec {
             preservation: capture_response_preservation(
                 WireFormat::GeminiGenerateContent,
                 &Value::Object(body.clone()),
-                _policy,
+                policy,
             ),
         };
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 
@@ -814,10 +811,36 @@ fn encode_gemini_contents(
                     // sibling parts of the same user turn where they are
                     // fully visible.
                     for block in &result.content {
-                        if let ContentBlock::Image { source } = block {
-                            if let Some(part) = gemini_inline_image(source) {
-                                parts.push(part);
+                        match block {
+                            ContentBlock::Image { source } => {
+                                if let Some(part) = gemini_inline_image(source) {
+                                    parts.push(part);
+                                }
                             }
+                            ContentBlock::Audio { source } => {
+                                encode_gemini_media(
+                                    source,
+                                    "audio/mpeg",
+                                    &mut parts,
+                                    diagnostics,
+                                    policy,
+                                )?;
+                            }
+                            ContentBlock::Video { source } => {
+                                encode_gemini_media(
+                                    source,
+                                    "video/mp4",
+                                    &mut parts,
+                                    diagnostics,
+                                    policy,
+                                )?;
+                            }
+                            ContentBlock::File {
+                                source: FileSource::FileData { data, .. },
+                            } => parts.push(json!({
+                                "inlineData": {"mimeType": "application/pdf", "data": data},
+                            })),
+                            _ => {}
                         }
                     }
                 }
@@ -932,13 +955,18 @@ fn encode_gemini_media(
 // name from the tool call it answers (Gemini pairs by name, not ID).
 fn encode_gemini_function_response(result: &ToolResult, messages: &[Message]) -> Value {
     let name = find_tool_name(messages, &result.tool_call_id).unwrap_or_else(|| "tool".to_string());
-    // Image attachments are hoisted to sibling parts by the caller; the
+    // Media attachments are hoisted to sibling parts by the caller; the
     // response payload itself carries the text-shaped content.
     let mut parts = Vec::new();
     for block in &result.content {
         match block {
             ContentBlock::Text { text } => parts.push(json!({"text": text})),
-            ContentBlock::Image { .. } => {}
+            ContentBlock::Image { .. }
+            | ContentBlock::Audio { .. }
+            | ContentBlock::Video { .. }
+            | ContentBlock::File {
+                source: FileSource::FileData { .. },
+            } => {}
             other => parts.push(json!({"text": json_string(&json!(other))})),
         }
     }

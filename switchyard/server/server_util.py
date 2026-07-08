@@ -91,7 +91,7 @@ def add_transport_args(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         choices=[f.value for f in InboundFormat],
-        help="Inbound API format: openai, anthropic, or both",
+        help="Inbound API format: openai, anthropic, gemini, or both",
     )
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 

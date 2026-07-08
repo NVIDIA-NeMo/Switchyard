@@ -302,6 +302,8 @@ def _target_request_type_for_backend_format(
     * OpenAI Chat inbound remains OpenAI Chat.
     * Responses-capable targets preserve OpenAI Responses instead of
       normalizing through Chat.
+    * Gemini inbound remains Gemini, preserving native generateContent
+      fields instead of translating them away.
     """
     if backend_format == BackendFormat.OPENAI:
         return ChatRequestType.OPENAI_CHAT

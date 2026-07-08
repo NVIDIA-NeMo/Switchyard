@@ -481,7 +481,9 @@ fn decode_anthropic_content_block(
             .map(|source| vec![ContentBlock::Image { source }])
             .unwrap_or_default(),
         Some("document") => vec![ContentBlock::File {
-            source: decode_anthropic_document_source(block.get("source").unwrap_or(&Value::Null)),
+            source: decode_anthropic_document_source(
+                block.get("source").unwrap_or(&Value::Object(block.clone())),
+            ),
         }],
         Some("input_file") | Some("file") => vec![ContentBlock::File {
             source: decode_file_source(block),
@@ -515,7 +517,7 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
                     }),
                     Some("image") => content.push(ContentBlock::Image {
                         source: decode_anthropic_image_source(
-                            block.get("source").unwrap_or(&Value::Null),
+                            block.get("source").unwrap_or(&Value::Object(block.clone())),
                         ),
                     }),
                     _ => content.push(ContentBlock::Text {

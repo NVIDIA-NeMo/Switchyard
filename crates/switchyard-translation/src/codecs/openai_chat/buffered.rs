@@ -524,15 +524,6 @@ pub(crate) fn decode_image_source(block: &Map<String, Value>) -> Option<ImageSou
             });
         }
     }
-    if let Some(image_url) = block.get("image_url").and_then(Value::as_str) {
-        return Some(image_source_from_url(
-            image_url,
-            block
-                .get("detail")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        ));
-    }
     None
 }
 
@@ -964,12 +955,15 @@ fn openai_image_part(source: &ImageSource) -> Option<Value> {
             }
             Some(json!({"type": "image_url", "image_url": image_url}))
         }
-        ImageSource::Base64 { media_type, data } => media_type.as_ref().map(|media_type| {
-            json!({
+        ImageSource::Base64 { media_type, data } => {
+            // Data URLs need a media type; default like the other codecs do
+            // rather than dropping the payload.
+            let media_type = media_type.as_deref().unwrap_or("image/png");
+            Some(json!({
                 "type": "image_url",
                 "image_url": {"url": format!("data:{media_type};base64,{data}")},
-            })
-        }),
+            }))
+        }
         ImageSource::Raw(raw) => openai_raw_image_part(raw),
     }
 }

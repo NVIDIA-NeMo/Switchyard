@@ -161,7 +161,7 @@ impl LlmBackend for GeminiNativeBackend {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 struct GeminiHttpRequest {
     /// Target ID used only for logging and diagnostics.
     target_id: LlmTargetId,
@@ -177,6 +177,20 @@ struct GeminiHttpRequest {
     stream: bool,
     /// Per-target headers merged onto the outbound request.
     extra_headers: BTreeMap<String, String>,
+}
+
+// Manual impl so the raw API key never reaches logs via `{:?}` formatting.
+impl fmt::Debug for GeminiHttpRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GeminiHttpRequest")
+            .field("target_id", &self.target_id)
+            .field("url", &self.url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model", &self.model)
+            .field("stream", &self.stream)
+            .finish_non_exhaustive()
+    }
 }
 
 enum GeminiHttpResponse {
