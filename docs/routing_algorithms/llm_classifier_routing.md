@@ -46,6 +46,8 @@ targets:
     endpoint: openrouter
     model: openai/gpt-4o-mini
     format: openai
+    # Any OpenAI-compatible endpoint can serve as the classifier; routing
+    # latency matters more than answer quality, so prefer small fast models.
 
 profiles:
   smart:
