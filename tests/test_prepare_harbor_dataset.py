@@ -116,6 +116,29 @@ def test_terminal_bench_2_dataset_adds_proxy_allowlist_hosts(tmp_path: Path) -> 
         assert host in manifest["closed_book"]["proxy_allowlist_hosts"]
 
 
+def test_terminal_bench_2_1_dataset_reuses_terminal_bench_2_allowlist(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_task(source, "tb21-task", "[environment]\n", "FROM ubuntu:22.04\n")
+
+    output = _prepare(
+        tmp_path,
+        source,
+        source_dataset="terminal-bench/terminal-bench-2-1",
+    )
+    allowlist = (output / "tb21-task" / "environment" / "proxy" / "allowlist-base.txt").read_text()
+    manifest = json.loads((output / "switchyard_dataset_manifest.json").read_text())
+
+    for host in (
+        "archive.ubuntu.com",
+        "pypi.org",
+        "github.com",
+        "huggingface.co",
+        "download.pytorch.org",
+    ):
+        assert host in allowlist
+        assert host in manifest["closed_book"]["proxy_allowlist_hosts"]
+
+
 def test_swe_bench_pro_dataset_keeps_agent_proxy_allowlist_empty(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_task(source, "swe-task", "[environment]\n", "FROM ubuntu:22.04\n")

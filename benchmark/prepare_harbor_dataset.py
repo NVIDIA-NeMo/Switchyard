@@ -30,6 +30,9 @@ AGENT_VERSIONS_FILE = SCRIPT_DIR / "agent-versions.env"
 PROXY_ASSET_DIR = SCRIPT_DIR / "closed_book_proxy" / "proxy"
 AGENT_ENTRYPOINT = "switchyard-agent-entrypoint.sh"
 TERMINAL_BENCH_2_SOURCE_DATASET = "terminal-bench/terminal-bench-2"
+TERMINAL_BENCH_2_1_SOURCE_DATASET = "terminal-bench/terminal-bench-2-1"
+# Shared across the TB2 family (2.0 + the 2.1 verified iteration): 2.1 tweaks
+# timeouts/resources on existing tasks, so its Oracle solutions reach the same hosts.
 TERMINAL_BENCH_2_PROXY_ALLOWLIST_HOSTS = (
     "api.github.com",
     "api.launchpad.net",
@@ -128,7 +131,7 @@ def _exported_dataset_candidates(download_root: Path, source_dataset: str) -> li
 
 def _proxy_allowlist_hosts_for_dataset(source_dataset: str) -> tuple[str, ...]:
     source_name = source_dataset.split("@", 1)[0]
-    if source_name == TERMINAL_BENCH_2_SOURCE_DATASET:
+    if source_name in (TERMINAL_BENCH_2_SOURCE_DATASET, TERMINAL_BENCH_2_1_SOURCE_DATASET):
         return TERMINAL_BENCH_2_PROXY_ALLOWLIST_HOSTS
     return ()
 

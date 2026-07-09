@@ -12,6 +12,21 @@ benchmark/datasets/openthoughts-tblite-closed-book
 Use this page when you want to prepare a different Harbor dataset for the same
 Switchyard benchmark runner.
 
+## Supported Datasets
+
+These Harbor datasets are supported out of the box — `prepare_harbor_dataset.py` recognizes each
+one and generates the right closed-book proxy allowlist automatically:
+
+| Dataset | Harbor id | Closed-book allowlist |
+|---------|-----------|-----------------------|
+| TB Lite (default) | `openthoughts-tblite@2.0` | none beyond the closed-book base |
+| Terminal-Bench 2.0 | `terminal-bench/terminal-bench-2` | TB2 Oracle package/data sources |
+| Terminal-Bench 2.1 | `terminal-bench/terminal-bench-2-1` | shares the TB2 Oracle allowlist |
+| SWE-Bench Pro | `cais/swebenchpro` | none beyond the closed-book base |
+
+Any other Harbor dataset that matches the [supported shape](#supported-shape) can still be prepared;
+it just receives no dataset-specific allowlist. Generate commands for each are below.
+
 ## Supported Shape
 
 `prepare_harbor_dataset.py` is a repo-local dataset rewriter, not a published Harbor adapter. It can
@@ -33,6 +48,16 @@ the package and data sources needed by the official Oracle solutions:
 uv run --no-sync python benchmark/prepare_harbor_dataset.py \
   --source-dataset terminal-bench/terminal-bench-2 \
   --output-dir benchmark/datasets/terminal-bench-2-closed-book \
+  --overwrite
+```
+
+Terminal-Bench 2.1 is the verified iteration of 2.0. It shares the same task family and Oracle
+egress, so the generated proxy allowlist matches 2.0:
+
+```bash
+uv run --no-sync python benchmark/prepare_harbor_dataset.py \
+  --source-dataset terminal-bench/terminal-bench-2-1 \
+  --output-dir benchmark/datasets/terminal-bench-2-1-closed-book \
   --overwrite
 ```
 

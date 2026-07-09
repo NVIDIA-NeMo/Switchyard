@@ -119,6 +119,16 @@ uv run --no-sync python benchmark/prepare_harbor_dataset.py \
   --overwrite
 ```
 
+Terminal-Bench 2.1 (the verified iteration of 2.0) is supported the same way and shares the 2.0
+Oracle allowlist:
+
+```bash
+uv run --no-sync python benchmark/prepare_harbor_dataset.py \
+  --source-dataset terminal-bench/terminal-bench-2-1 \
+  --output-dir benchmark/datasets/terminal-bench-2-1-closed-book \
+  --overwrite
+```
+
 SWE-Bench Pro is supported with the Harbor dataset `cais/swebenchpro`. The generated dataset uses
 the same pinned-agent and closed-book proxy path without opening dataset-specific agent egress.
 
