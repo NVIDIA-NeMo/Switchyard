@@ -44,8 +44,11 @@ targets:
     format: openai
   classifier:
     endpoint: openrouter
-    model: openai/gpt-4o-mini
+    model: nvidia/nemotron-3-nano-30b-a3b
     format: openai
+    extra_body:
+      reasoning:
+        enabled: false
 
 profiles:
   smart:
