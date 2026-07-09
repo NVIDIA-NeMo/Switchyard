@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use serde_json::{json, Map, Value};
 
 use crate::codecs::common::{provider_extensions, reasoning_text_from_blocks, text_from_blocks};
-use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_chat::{decode_file_source, decode_image_source, parse_arguments};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -16,8 +16,8 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::ir::{
-    is_known_role_name, ContentBlock, ConversationRequest, ConversationResponse, MediaSource,
-    Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    is_known_role_name, ContentBlock, ConversationRequest, ConversationResponse, ImageSource,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
     SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
@@ -854,9 +854,10 @@ fn encode_responses_content(
             ContentBlock::Refusal { text } => {
                 blocks.push(json!({"type": "refusal", "refusal": text}));
             }
-            ContentBlock::Image { source } => {
-                blocks.push(json!({"type": "input_image", "image_url": source}));
-            }
+            ContentBlock::Image { source } => blocks.push(json!({
+                "type": "input_image",
+                "image_url": responses_image_url(source, diagnostics, policy)?,
+            })),
             ContentBlock::Audio { source } => blocks.push(match source {
                 MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
                 MediaSource::Url { url, media_type } => json!({
@@ -898,6 +899,29 @@ fn encode_responses_content(
         }
     }
     Ok(Value::Array(blocks))
+}
+
+fn responses_image_url(
+    source: &ImageSource,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    match source {
+        ImageSource::Url { url, .. } => Ok(Value::String(url.clone())),
+        ImageSource::Base64 { media_type, data } => Ok(Value::String(format!(
+            "data:{};base64,{data}",
+            media_type.as_deref().unwrap_or("application/octet-stream")
+        ))),
+        ImageSource::Raw(Value::String(url)) => Ok(Value::String(url.clone())),
+        ImageSource::Raw(raw) => {
+            push_lossy(
+                diagnostics,
+                policy,
+                "raw image source cannot be represented as a Responses image URL",
+            )?;
+            Ok(Value::String(json_string(raw)))
+        }
+    }
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
@@ -965,7 +989,10 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                arguments: item
+                    .get("arguments")
+                    .map(parse_arguments)
+                    .unwrap_or_else(|| json!({})),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),

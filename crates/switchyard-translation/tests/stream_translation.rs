@@ -88,6 +88,137 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn provider_errors_do_not_emit_synthetic_success_terminals() -> TestResult {
+    let engine = TranslationEngine::default();
+
+    let mut chat_state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chat_events = engine.translate_event(
+        &mut chat_state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &json!({"error": {"message": "chat failed"}}),
+    )?;
+    assert_eq!(chat_events[0]["type"], "error");
+    assert!(engine
+        .finish_stream(&mut chat_state, WireFormat::AnthropicMessages)?
+        .is_empty());
+
+    let mut responses_state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let response_events = engine.translate_event(
+        &mut responses_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &json!({
+            "type": "response.failed",
+            "response": {"error": {"message": "responses failed"}}
+        }),
+    )?;
+    assert_eq!(response_events[0]["error"]["message"], "responses failed");
+    assert!(engine
+        .finish_stream(&mut responses_state, WireFormat::OpenAiChat)?
+        .is_empty());
+    Ok(())
+}
+
+#[test]
+fn responses_incomplete_preserves_supported_target_semantics() -> TestResult {
+    let engine = TranslationEngine::default();
+    let created = json!({
+        "type": "response.created",
+        "response": {"id": "resp_1", "model": "gpt-4o"}
+    });
+    let max_tokens = json!({
+        "type": "response.incomplete",
+        "response": {
+            "id": "resp_1",
+            "model": "gpt-4o",
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }
+    });
+
+    let mut chat_state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    engine.translate_event(
+        &mut chat_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &created,
+    )?;
+    let chat_events = engine.translate_event(
+        &mut chat_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &max_tokens,
+    )?;
+    assert_eq!(chat_events[0]["choices"][0]["finish_reason"], "length");
+
+    let mut anthropic_state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::AnthropicMessages);
+    engine.translate_event(
+        &mut anthropic_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &created,
+    )?;
+    engine.translate_event(
+        &mut anthropic_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &json!({
+            "type": "response.incomplete",
+            "response": {
+                "id": "resp_1",
+                "model": "gpt-4o",
+                "incomplete_details": {"reason": "content_filter"}
+            }
+        }),
+    )?;
+    let anthropic_events =
+        engine.finish_stream(&mut anthropic_state, WireFormat::AnthropicMessages)?;
+    let Some(message_delta) = anthropic_events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+    else {
+        return Err("expected Anthropic terminal message_delta".into());
+    };
+    assert_eq!(message_delta["delta"]["stop_reason"], "refusal");
+
+    let mut responses_state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
+    engine.translate_event(
+        &mut responses_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &created,
+    )?;
+    let mut response_events = engine.translate_event(
+        &mut responses_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &max_tokens,
+    )?;
+    response_events
+        .extend(engine.finish_stream(&mut responses_state, WireFormat::OpenAiResponses)?);
+    let Some(incomplete) = response_events
+        .iter()
+        .find(|event| event["type"] == "response.incomplete")
+    else {
+        return Err("expected final Responses incomplete event".into());
+    };
+    assert_eq!(incomplete["response"]["status"], "incomplete");
+    assert_eq!(
+        incomplete["response"]["incomplete_details"]["reason"],
+        "max_output_tokens"
+    );
+    assert!(!response_events
+        .iter()
+        .any(|event| event["type"] == "response.completed"));
+    Ok(())
+}
+
 // Verifies Chat target streams expose upstream model identity, not the client request alias.
 #[test]
 fn anthropic_to_openai_chat_uses_source_model_even_with_target_override() -> TestResult {

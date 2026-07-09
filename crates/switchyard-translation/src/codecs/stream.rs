@@ -39,6 +39,8 @@ pub struct StreamTranslationState {
     pub(crate) saw_backend_usage: bool,
     pub(crate) usage_extras: BTreeMap<String, u64>,
     pub(crate) stop_reason: Option<String>,
+    pub(crate) incomplete: bool,
+    pub(crate) incomplete_reason: Option<String>,
 
     pub(crate) next_content_index: usize,
     pub(crate) text_block_index: Option<usize>,

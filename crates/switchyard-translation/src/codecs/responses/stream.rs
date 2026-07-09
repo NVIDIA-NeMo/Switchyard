@@ -120,7 +120,7 @@ fn decode_responses_stream(
                 .unwrap_or_default()
         }
         Some("response.output_item.done") => decode_responses_output_item_done(event, state),
-        Some("response.completed") => {
+        Some("response.completed" | "response.incomplete") => {
             let mut out = Vec::new();
             if let Some(usage) = event
                 .get("response")
@@ -133,15 +133,23 @@ fn decode_responses_stream(
                 state.saw_backend_usage = true;
                 out.push(ConversationStreamEvent::Usage(usage));
             }
-            out.push(ConversationStreamEvent::MessageStop { reason: None });
+            let reason = if event_type == Some("response.incomplete") {
+                let reason = responses_incomplete_reason(event);
+                state.incomplete = true;
+                state.incomplete_reason = reason.map(ToOwned::to_owned);
+                match reason {
+                    Some("max_output_tokens" | "max_tokens") => Some("max_tokens".to_string()),
+                    Some("content_filter") => Some("content_filter".to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            out.push(ConversationStreamEvent::MessageStop { reason });
             out
         }
-        Some("error") => vec![ConversationStreamEvent::Error {
-            message: event
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
+        Some("response.failed" | "error") => vec![ConversationStreamEvent::Error {
+            message: responses_error_message(event),
         }],
         _ => Vec::new(),
     }
@@ -177,6 +185,7 @@ fn encode_responses_stream(
             Vec::new()
         }
         ConversationStreamEvent::Error { message } => {
+            state.finished = true;
             vec![json!({"type": "error", "message": message})]
         }
     }
@@ -184,7 +193,15 @@ fn encode_responses_stream(
 
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = ensure_responses_created(state);
+    let status = if state.incomplete {
+        "incomplete"
+    } else {
+        "completed"
+    };
     if state.response_text_started {
         if let Some(output_index) = state.response_text_output_index {
             out.push(json!({
@@ -199,7 +216,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
                 "item": {
                     "type": "message",
                     "role": "assistant",
-                    "status": "completed",
+                    "status": status,
                     "content": [{"type": "output_text", "text": state.response_text}],
                 },
             }));
@@ -218,7 +235,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             let item = json!({
                 "type": "reasoning",
                 "id": format!("rs_{output_index}"),
-                "status": "completed",
+                "status": status,
                 "content": [{
                     "type": "reasoning_text",
                     "text": state.response_reasoning_text,
@@ -263,7 +280,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "call_id": tool.id.clone().unwrap_or_else(|| format!("call_{output_index}")),
             "name": tool.name.clone().unwrap_or_default(),
             "arguments": tool.arguments,
-            "status": "completed",
+            "status": status,
         });
         out.push(json!({
             "type": "response.output_item.done",
@@ -279,12 +296,23 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         .map(|(_, item)| item)
         .collect::<Vec<_>>();
 
+    let terminal_type = if state.incomplete {
+        "response.incomplete"
+    } else {
+        "response.completed"
+    };
+    let incomplete_details = state.incomplete.then(|| {
+        json!({
+            "reason": state.incomplete_reason.as_deref().unwrap_or("unknown"),
+        })
+    });
     out.push(json!({
-        "type": "response.completed",
+        "type": terminal_type,
         "response": {
             "id": responses_id(state),
             "object": "response",
-            "status": "completed",
+            "status": status,
+            "incomplete_details": incomplete_details,
             "model": target_model_or_source_model(state),
             "output": output,
             "usage": responses_usage_value(&state.usage),
@@ -292,6 +320,29 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     }));
     state.finished = true;
     out
+}
+
+fn responses_incomplete_reason(event: &Value) -> Option<&str> {
+    event
+        .get("response")
+        .and_then(|response| response.get("incomplete_details"))
+        .and_then(|details| details.get("reason"))
+        .and_then(Value::as_str)
+}
+
+fn responses_error_message(event: &Value) -> String {
+    event
+        .get("message")
+        .or_else(|| event.get("error").and_then(|error| error.get("message")))
+        .or_else(|| {
+            event
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+        })
+        .and_then(Value::as_str)
+        .unwrap_or("unknown Responses stream error")
+        .to_string()
 }
 
 // Converts Responses function-call item creation into a neutral tool-call delta.

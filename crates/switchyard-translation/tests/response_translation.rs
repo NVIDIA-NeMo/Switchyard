@@ -320,3 +320,66 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
     assert_eq!(output["output"][1]["call_id"], "call_1");
     Ok(())
 }
+
+#[test]
+fn responses_mixed_text_and_tool_output_translates_to_single_message_protocols() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "model": "gpt-5",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Checking", "annotations": []}]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": "{\"q\":\"rust\"}"
+            }
+        ],
+        "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}
+    });
+
+    let chat = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(chat["choices"][0]["message"]["content"], "Checking");
+    assert_eq!(
+        chat["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        "{\"q\":\"rust\"}"
+    );
+
+    let anthropic = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        anthropic["content"][0],
+        json!({"type": "text", "text": "Checking"})
+    );
+    assert_eq!(
+        anthropic["content"][1],
+        json!({
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "lookup",
+            "input": {"q": "rust"}
+        })
+    );
+    Ok(())
+}

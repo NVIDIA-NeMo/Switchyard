@@ -666,6 +666,73 @@ fn responses_function_call_arguments_wrap_non_object_values_for_anthropic() -> T
     Ok(())
 }
 
+#[test]
+fn anthropic_images_translate_to_responses_image_urls() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "url", "url": "https://example.test/cat.png"}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}}
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"][0]["content"][0],
+        json!({"type": "input_image", "image_url": "https://example.test/cat.png"})
+    );
+    assert_eq!(
+        output["input"][0]["content"][1],
+        json!({"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="})
+    );
+    Ok(())
+}
+
+#[test]
+fn openai_data_uri_translates_to_anthropic_base64_image() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,aGVsbG8="}
+            }]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"][0]["content"][0],
+        json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}
+        })
+    );
+    Ok(())
+}
+
 // Verifies deferred Responses messages remain after matching tool results.
 #[test]
 fn responses_deferred_message_stays_after_matching_tool_result_for_openai_chat() -> TestResult {

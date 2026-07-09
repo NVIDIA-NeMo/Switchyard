@@ -51,6 +51,15 @@ fn decode_openai_chat_stream(
             message: "OpenAI stream event is not an object".to_string(),
         }];
     };
+    if let Some(error) = object.get("error") {
+        return vec![ConversationStreamEvent::Error {
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown OpenAI stream error")
+                .to_string(),
+        }];
+    }
 
     let mut out = Vec::new();
     if !state.saw_message_start {
@@ -204,7 +213,10 @@ fn encode_openai_chat_stream(
                 Some(openai_usage_value(state)),
             )]
         }
-        ConversationStreamEvent::Error { message } => vec![json!({"error": {"message": message}})],
+        ConversationStreamEvent::Error { message } => {
+            state.finished = true;
+            vec![json!({"error": {"message": message}})]
+        }
     }
 }
 
@@ -361,6 +373,7 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
-        Some(other) => other.to_string(),
+        Some("content_filter" | "refusal") => "content_filter".to_string(),
+        Some(_) => "stop".to_string(),
     }
 }

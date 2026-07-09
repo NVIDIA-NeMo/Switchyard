@@ -9,7 +9,7 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version.workspace = true
+rust-version = "1.93.0"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
