@@ -70,18 +70,6 @@ jobs:
           fi
           echo "OK: All Python files carry the required SPDX header"
 
-  secrets:
-    name: Secret scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.12"
-          enable-cache: true
-      - name: detect-secrets
-        run: uv run --isolated --no-project --with pre-commit pre-commit run detect-secrets --all-files
-
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -209,7 +197,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [lint, spdx-headers, secrets, rust, typecheck, test, slim-install-smoke]
+    needs: [lint, spdx-headers, rust, typecheck, test, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

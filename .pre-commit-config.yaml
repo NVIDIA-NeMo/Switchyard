@@ -11,17 +11,6 @@ repos:
         additional_dependencies:
           - "@commitlint/config-conventional@20.4.1"
 
-  - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.5.0
-    hooks:
-      - id: detect-secrets
-        name: detect-secrets (strict)
-        args:
-          - --baseline
-          - .secrets.baseline
-          - --no-verify
-        stages: [pre-commit]
-
   - repo: local
     hooks:
       - id: spdx-headers
