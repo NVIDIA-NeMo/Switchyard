@@ -2,6 +2,36 @@
 
 Thank you for your interest in contributing! This document outlines the development workflow, testing practices, and code standards.
 
+## External Contributions
+
+We welcome contributions of all sizes, from typo fixes to new features. The short version:
+
+1. [Fork the repository](https://github.com/NVIDIA-NeMo/Switchyard/fork) and clone your fork:
+
+   ```bash
+   git clone https://github.com/YOUR-USERNAME/Switchyard.git
+   cd Switchyard
+   git remote add upstream https://github.com/NVIDIA-NeMo/Switchyard.git
+   ```
+
+2. Pick the right process for the size of your change:
+   - **Small changes** (typos, docs, focused bug fixes under ~100 lines): open a PR directly, no issue needed.
+   - **Larger changes** (new features, refactors, anything 100+ lines): [open an issue](https://github.com/NVIDIA-NeMo/Switchyard/issues/new/choose) first so maintainers can confirm the direction before you invest time.
+
+3. Create a branch, make your change, and run the checks in [Code standards](#2-code-standards).
+
+4. Commit with a DCO sign-off (see [Signing Your Work](#signing-your-work)):
+
+   ```bash
+   git commit -s -m "fix: description of the change"
+   ```
+
+5. Push to your fork and open a PR against `main`, linking any related issues (e.g. "Closes #42").
+
+Review is requested automatically from the core team via [CODEOWNERS](.github/CODEOWNERS), so there is no need to pick reviewers. Keep each PR focused on one concern, include tests for behavior changes, and respond to feedback with follow-up commits rather than force-pushes.
+
+Using AI tools to write code is fine, but you must understand and be able to explain every change in your PR.
+
 ## Setup
 
 See [Development](DEVELOPMENT.md) for full setup instructions.
@@ -57,6 +87,9 @@ Commit messages must follow
 [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
 This is enforced locally by the `commit-msg` hook and in GitHub Actions.
 
+Every commit must also carry a DCO sign-off (`git commit -s`), enforced by the
+required DCO check on every PR. See [Signing Your Work](#signing-your-work).
+
 - ✓ `fix: handle async context cleanup in ProxyContext`
 - ✓ `feat: add stage-router routing backend`
 - ✗ `Fixed stuff` / `Updated code`
@@ -110,10 +143,8 @@ feat(api)!: remove legacy route option
    Keep the PR title conventional too, because GitHub can use the PR title for
    the squash-merge commit.
 
-Maintainers should mark these GitHub status checks as required on `main`:
-
-- `Commitlint / Commit messages`
-- `PR Title / Validate PR title`
+The `CI Success` and `DCO` status checks are required on `main`; the other
+workflows (commitlint, PR title) run on every PR but are advisory.
 
 ## Testing
 
