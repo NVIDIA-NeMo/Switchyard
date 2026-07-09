@@ -173,6 +173,7 @@ fn encode_anthropic_stream(
             Vec::new()
         }
         ConversationStreamEvent::Error { message } => {
+            state.finished = true;
             vec![json!({"type": "error", "error": {"message": message}})]
         }
     }
@@ -180,6 +181,9 @@ fn encode_anthropic_stream(
 
 // Emits any missing Anthropic terminal events and closes open content blocks.
 fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     if !state.emitted_message_start {
         out.extend(encode_anthropic_stream(

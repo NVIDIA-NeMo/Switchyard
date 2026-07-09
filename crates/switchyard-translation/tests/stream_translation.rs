@@ -88,6 +88,41 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn provider_errors_do_not_emit_synthetic_success_terminals() -> TestResult {
+    let engine = TranslationEngine::default();
+
+    let mut chat_state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chat_events = engine.translate_event(
+        &mut chat_state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &json!({"error": {"message": "chat failed"}}),
+    )?;
+    assert_eq!(chat_events[0]["type"], "error");
+    assert!(engine
+        .finish_stream(&mut chat_state, WireFormat::AnthropicMessages)?
+        .is_empty());
+
+    let mut responses_state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let response_events = engine.translate_event(
+        &mut responses_state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &json!({
+            "type": "response.failed",
+            "response": {"error": {"message": "responses failed"}}
+        }),
+    )?;
+    assert_eq!(response_events[0]["error"]["message"], "responses failed");
+    assert!(engine
+        .finish_stream(&mut responses_state, WireFormat::OpenAiChat)?
+        .is_empty());
+    Ok(())
+}
+
 // Verifies Chat target streams expose upstream model identity, not the client request alias.
 #[test]
 fn anthropic_to_openai_chat_uses_source_model_even_with_target_override() -> TestResult {

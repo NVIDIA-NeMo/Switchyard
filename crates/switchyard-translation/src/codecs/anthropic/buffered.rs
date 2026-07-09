@@ -6,7 +6,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::codecs::common::{provider_extensions, text_from_blocks};
-use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_chat::{decode_file_source, decode_image_source, decode_image_url};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -311,18 +311,24 @@ impl FormatCodec for AnthropicMessagesCodec {
                 diagnostics: Vec::new(),
             });
         }
-        let output = response.first_output();
-        let content = output
-            .map(|output| encode_anthropic_content(&output.content))
-            .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
+        let mut content = response
+            .outputs
+            .iter()
+            .flat_map(|output| encode_anthropic_content(&output.content))
+            .collect::<Vec<_>>();
+        if content.is_empty() {
+            content.push(json!({"type": "text", "text": ""}));
+        }
         let body = json!({
             "id": response.id.clone().unwrap_or_else(|| "msg_switchyard".to_string()),
             "type": "message",
             "role": "assistant",
             "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
             "content": content,
-            "stop_reason": output
-                .and_then(|output| output.stop_reason)
+            "stop_reason": response.outputs
+                .iter()
+                .rev()
+                .find_map(|output| output.stop_reason)
                 .map(anthropic_stop_reason)
                 .unwrap_or("end_turn"),
             "stop_sequence": Value::Null,
@@ -475,8 +481,7 @@ fn decode_anthropic_content_block(
         Some("image") => {
             let source = block
                 .get("source")
-                .cloned()
-                .map(ImageSource::Raw)
+                .map(decode_anthropic_image_source)
                 .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone())));
             vec![ContentBlock::Image { source }]
         }
@@ -491,6 +496,31 @@ fn decode_anthropic_content_block(
             raw: Value::Object(block.clone()),
         }],
     })
+}
+
+fn decode_anthropic_image_source(source: &Value) -> ImageSource {
+    let Some(source_object) = source.as_object() else {
+        return ImageSource::Raw(source.clone());
+    };
+    match source_object.get("type").and_then(Value::as_str) {
+        Some("url") => source_object
+            .get("url")
+            .and_then(Value::as_str)
+            .map(|url| decode_image_url(url, None))
+            .unwrap_or_else(|| ImageSource::Raw(source.clone())),
+        Some("base64") => source_object
+            .get("data")
+            .and_then(Value::as_str)
+            .map(|data| ImageSource::Base64 {
+                media_type: source_object
+                    .get("media_type")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                data: data.to_string(),
+            })
+            .unwrap_or_else(|| ImageSource::Raw(source.clone())),
+        _ => ImageSource::Raw(source.clone()),
+    }
 }
 
 // Converts Anthropic tool-result content into text-like IR blocks.

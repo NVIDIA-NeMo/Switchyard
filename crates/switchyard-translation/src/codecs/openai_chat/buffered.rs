@@ -323,29 +323,27 @@ impl FormatCodec for OpenAiChatCodec {
                 diagnostics: Vec::new(),
             });
         }
-        let output = response.first_output();
-        let content = output
+        let content = response
+            .outputs
+            .iter()
             .map(|output| text_from_blocks(&output.content, ""))
-            .unwrap_or_default();
-        let tool_calls = output
-            .map(|output| {
-                output
-                    .content
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::ToolCall(call) => Some(json!({
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.name,
-                                "arguments": json_string(&call.arguments),
-                            },
-                        })),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
+            .collect::<String>();
+        let tool_calls = response
+            .outputs
+            .iter()
+            .flat_map(|output| output.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall(call) => Some(json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json_string(&call.arguments),
+                    },
+                })),
+                _ => None,
             })
-            .unwrap_or_default();
+            .collect::<Vec<_>>();
         let mut message = json!({
             "role": "assistant",
             "content": if content.is_empty() && !tool_calls.is_empty() {
@@ -354,10 +352,14 @@ impl FormatCodec for OpenAiChatCodec {
                 Value::String(content)
             },
         });
-        if let Some(reasoning) = output
+        let reasoning = response
+            .outputs
+            .iter()
             .map(|output| reasoning_text_from_blocks(&output.content, "\n"))
             .filter(|reasoning| !reasoning.is_empty())
-        {
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !reasoning.is_empty() {
             message["reasoning_content"] = Value::String(reasoning);
         }
         if !tool_calls.is_empty() {
@@ -372,8 +374,10 @@ impl FormatCodec for OpenAiChatCodec {
             "choices": [{
                 "index": 0,
                 "message": message,
-                "finish_reason": output
-                    .and_then(|output| output.stop_reason)
+                "finish_reason": response.outputs
+                    .iter()
+                    .rev()
+                    .find_map(|output| output.stop_reason)
                     .map(openai_finish_reason)
                     .unwrap_or("stop"),
             }],
@@ -503,38 +507,48 @@ pub(crate) fn decode_openai_content(
 pub(crate) fn decode_image_source(block: &Map<String, Value>) -> Option<ImageSource> {
     if let Some(image_url) = block.get("image_url") {
         if let Some(url) = image_url.as_str() {
-            return Some(ImageSource::Url {
-                url: url.to_string(),
-                detail: block
+            return Some(decode_image_url(
+                url,
+                block
                     .get("detail")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
-            });
+            ));
         }
         if let Some(payload) = image_url.as_object() {
-            return payload
-                .get("url")
-                .and_then(Value::as_str)
-                .map(|url| ImageSource::Url {
-                    url: url.to_string(),
-                    detail: payload
+            return payload.get("url").and_then(Value::as_str).map(|url| {
+                decode_image_url(
+                    url,
+                    payload
                         .get("detail")
                         .or_else(|| block.get("detail"))
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned),
-                });
+                )
+            });
         }
     }
-    if let Some(image_url) = block.get("image_url").and_then(Value::as_str) {
-        return Some(ImageSource::Url {
-            url: image_url.to_string(),
-            detail: block
-                .get("detail")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        });
-    }
     None
+}
+
+pub(crate) fn decode_image_url(url: &str, detail: Option<String>) -> ImageSource {
+    if let Some((media_type, data)) = base64_data_uri_parts(url) {
+        ImageSource::Base64 {
+            media_type: Some(media_type.to_string()),
+            data: data.to_string(),
+        }
+    } else {
+        ImageSource::Url {
+            url: url.to_string(),
+            detail,
+        }
+    }
+}
+
+fn base64_data_uri_parts(url: &str) -> Option<(&str, &str)> {
+    let (metadata, data) = url.strip_prefix("data:")?.split_once(',')?;
+    let media_type = metadata.strip_suffix(";base64")?;
+    (!media_type.is_empty() && !data.is_empty()).then_some((media_type, data))
 }
 
 /// Decodes OpenAI file block shapes into normalized file sources.

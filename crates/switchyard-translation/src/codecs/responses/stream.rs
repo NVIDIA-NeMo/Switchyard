@@ -120,7 +120,7 @@ fn decode_responses_stream(
                 .unwrap_or_default()
         }
         Some("response.output_item.done") => decode_responses_output_item_done(event, state),
-        Some("response.completed") => {
+        Some("response.completed" | "response.incomplete") => {
             let mut out = Vec::new();
             if let Some(usage) = event
                 .get("response")
@@ -133,15 +133,14 @@ fn decode_responses_stream(
                 state.saw_backend_usage = true;
                 out.push(ConversationStreamEvent::Usage(usage));
             }
-            out.push(ConversationStreamEvent::MessageStop { reason: None });
+            out.push(ConversationStreamEvent::MessageStop {
+                reason: (event_type == Some("response.incomplete"))
+                    .then(|| "incomplete".to_string()),
+            });
             out
         }
-        Some("error") => vec![ConversationStreamEvent::Error {
-            message: event
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
+        Some("response.failed" | "error") => vec![ConversationStreamEvent::Error {
+            message: responses_error_message(event),
         }],
         _ => Vec::new(),
     }
@@ -177,6 +176,7 @@ fn encode_responses_stream(
             Vec::new()
         }
         ConversationStreamEvent::Error { message } => {
+            state.finished = true;
             vec![json!({"type": "error", "message": message})]
         }
     }
@@ -184,6 +184,9 @@ fn encode_responses_stream(
 
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = ensure_responses_created(state);
     if state.response_text_started {
         if let Some(output_index) = state.response_text_output_index {
@@ -292,6 +295,21 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     }));
     state.finished = true;
     out
+}
+
+fn responses_error_message(event: &Value) -> String {
+    event
+        .get("message")
+        .or_else(|| event.get("error").and_then(|error| error.get("message")))
+        .or_else(|| {
+            event
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+        })
+        .and_then(Value::as_str)
+        .unwrap_or("unknown Responses stream error")
+        .to_string()
 }
 
 // Converts Responses function-call item creation into a neutral tool-call delta.
