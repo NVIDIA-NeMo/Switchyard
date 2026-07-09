@@ -475,6 +475,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill_distillation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Distillation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -768,14 +796,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/cascade_routing/" class="md-nav__link">
+      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Cascade Routing
+    Stage-Router Routing
   
 
     
@@ -1714,7 +1742,7 @@ launchers:</p>
 </tr>
 <tr>
 <td><code>--routing-profiles PATH</code></td>
-<td>Deprecated path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>cascade</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
+<td>Deprecated path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>stage_router</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
 </tr>
 </tbody>
 </table>
@@ -1961,7 +1989,7 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># select a profile by id (the `model` field):</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>curl<span class="w"> </span>localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart-cascade&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart-stage-router&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
 </span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># mixed Rust/Python profile config on the same request APIs</span>
 </span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/python_profile.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
@@ -2131,7 +2159,8 @@ default is resolved. <code>--weak-model</code>, <code>--classifier-model</code>,
 </span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--<span class="w"> </span>--message<span class="w"> </span><span class="s2">&quot;Hello&quot;</span>
 </span></code></pre></div>
 <h2 id="switchyard-configure"><code>switchyard configure</code><a class="headerlink" href="#switchyard-configure" title="Permanent link">&para;</a></h2>
-<p>Persist user-level Switchyard defaults under <code>~/.config/switchyard/</code>. Credentials are stored separately from non-secret config, with owner-only file permissions.</p>
+<p>Persist user-level Switchyard defaults under <code>~/.config/switchyard/</code>. Credentials are stored separately from non-secret config, with owner-only file permissions.
+Skill distillation config also lives in <code>~/.config/switchyard/config.json</code> under <code>skill_distillation</code> and can be updated without configuring provider credentials.</p>
 <p><strong>Synopsis</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --reset | --list-models]
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>                     [--target {all,provider,claude,codex,openclaw}]
@@ -2141,7 +2170,8 @@ default is resolved. <code>--weak-model</code>, <code>--classifier-model</code>,
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>                     [--claude-model ID]   [--claude-base-url URL]   [--claude-api-key VALUE]
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>                     [--codex-model ID]    [--codex-base-url URL]    [--codex-api-key VALUE]
 </span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>                     [--openclaw-model ID] [--openclaw-base-url URL] [--openclaw-api-key VALUE]
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>                     [--no-model-discovery] [--no-tui]
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>                     [--skill-distillation NAMESPACE] [--disable-skill-distillation]
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>                     [--no-model-discovery] [--no-tui]
 </span></code></pre></div>
 <p><strong>Modes (mutually exclusive)</strong></p>
 <table>
@@ -2196,6 +2226,14 @@ default is resolved. <code>--weak-model</code>, <code>--classifier-model</code>,
 <td>Global flag; pass before <code>configure</code>. Parses the YAML at <code>PATH</code> and stores the parsed bundle inline in <code>~/.config/switchyard/config.json</code>. Subsequent <code>serve</code> and <code>launch</code> runs use this when no <code>--routing-profiles</code> is on the CLI. Pass an empty string to clear.</td>
 </tr>
 <tr>
+<td><code>--skill-distillation NAMESPACE</code></td>
+<td>Save a namespace for one skill that improves over time. Many sessions or trajectories can contribute to it; the namespace is not a session ID. This release stores only the namespace; session saving, distillation, and launch-time skill loading are separate implementation work.</td>
+</tr>
+<tr>
+<td><code>--disable-skill-distillation</code></td>
+<td>Remove the saved skill distillation config. Cannot be combined with <code>--skill-distillation</code>.</td>
+</tr>
+<tr>
 <td><code>--query</code> / <code>-q SUBSTRING</code></td>
 <td>With <code>--list-models</code>, case-insensitive substring filter.</td>
 </tr>
@@ -2217,39 +2255,55 @@ default is resolved. <code>--weak-model</code>, <code>--classifier-model</code>,
 </tr>
 </tbody>
 </table>
+<p><strong>Skill distillation config</strong></p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;skill_distillation&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="nt">&quot;namespace&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tooluniverse-trialqa&quot;</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
+One namespace identifies one skill that improves over time, and many sessions or trajectories can contribute to it. Use a different namespace when you want a separate skill. A namespace is not a session ID; each future launcher run will receive its own internal session ID.
+The top-level key is omitted when skill distillation is not configured. <code>namespace</code> is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.</p>
 <p><strong>Examples</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># First-run interactive setup</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>switchyard<span class="w"> </span>configure
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Save a routing bundle as the default for serve + launchers</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="c1"># Inspect what&#39;s stored, plus resolved provider / key source / harness paths</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show
-</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>
-</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="c1"># Inspect plus live GET /models probe</span>
-</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--check
-</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>
-</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="c1"># Raw redacted JSON, e.g. for tooling</span>
-</span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--json
-</span><span id="__span-11-15"><a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>
-</span><span id="__span-11-16"><a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="c1"># One-off override for a probe (without persisting anything)</span>
-</span><span id="__span-11-17"><a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--check
-</span><span id="__span-11-18"><a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>
-</span><span id="__span-11-19"><a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="c1"># Browse the backend&#39;s models</span>
-</span><span id="__span-11-20"><a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--list-models<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--query<span class="w"> </span>gpt
-</span><span id="__span-11-21"><a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--list-models<span class="w"> </span>--limit<span class="w"> </span><span class="m">0</span><span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1
-</span><span id="__span-11-22"><a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a>
-</span><span id="__span-11-23"><a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="c1"># Set just the Claude default model non-interactively</span>
-</span><span id="__span-11-24"><a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--claude-model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--no-tui
-</span><span id="__span-11-25"><a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a>
-</span><span id="__span-11-26"><a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a><span class="c1"># Non-interactive / CI: save provider credentials only (no launcher models required)</span>
-</span><span id="__span-11-27"><a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-28"><a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a><span class="w">  </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-29"><a id="__codelineno-11-29" name="__codelineno-11-29" href="#__codelineno-11-29"></a><span class="w">  </span>--no-tui<span class="w"> </span>--no-model-discovery
-</span><span id="__span-11-30"><a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a>
-</span><span id="__span-11-31"><a id="__codelineno-11-31" name="__codelineno-11-31" href="#__codelineno-11-31"></a><span class="c1"># Wipe everything</span>
-</span><span id="__span-11-32"><a id="__codelineno-11-32" name="__codelineno-11-32" href="#__codelineno-11-32"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--reset
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># First-run interactive setup</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>switchyard<span class="w"> </span>configure
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Save a routing bundle as the default for serve + launchers</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Inspect what&#39;s stored, plus resolved provider / key source / harness paths</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="c1"># Inspect plus live GET /models probe</span>
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--check
+</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>
+</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="c1"># Raw redacted JSON, e.g. for tooling</span>
+</span><span id="__span-12-14"><a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--json
+</span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>
+</span><span id="__span-12-16"><a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a><span class="c1"># One-off override for a probe (without persisting anything)</span>
+</span><span id="__span-12-17"><a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--check
+</span><span id="__span-12-18"><a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a>
+</span><span id="__span-12-19"><a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a><span class="c1"># Browse the backend&#39;s models</span>
+</span><span id="__span-12-20"><a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--list-models<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--query<span class="w"> </span>gpt
+</span><span id="__span-12-21"><a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--list-models<span class="w"> </span>--limit<span class="w"> </span><span class="m">0</span><span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1
+</span><span id="__span-12-22"><a id="__codelineno-12-22" name="__codelineno-12-22" href="#__codelineno-12-22"></a>
+</span><span id="__span-12-23"><a id="__codelineno-12-23" name="__codelineno-12-23" href="#__codelineno-12-23"></a><span class="c1"># Set just the Claude default model non-interactively</span>
+</span><span id="__span-12-24"><a id="__codelineno-12-24" name="__codelineno-12-24" href="#__codelineno-12-24"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--claude-model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--no-tui
+</span><span id="__span-12-25"><a id="__codelineno-12-25" name="__codelineno-12-25" href="#__codelineno-12-25"></a>
+</span><span id="__span-12-26"><a id="__codelineno-12-26" name="__codelineno-12-26" href="#__codelineno-12-26"></a><span class="c1"># Non-interactive / CI: save provider credentials only (no launcher models required)</span>
+</span><span id="__span-12-27"><a id="__codelineno-12-27" name="__codelineno-12-27" href="#__codelineno-12-27"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-28"><a id="__codelineno-12-28" name="__codelineno-12-28" href="#__codelineno-12-28"></a><span class="w">  </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-29"><a id="__codelineno-12-29" name="__codelineno-12-29" href="#__codelineno-12-29"></a><span class="w">  </span>--no-tui<span class="w"> </span>--no-model-discovery
+</span><span id="__span-12-30"><a id="__codelineno-12-30" name="__codelineno-12-30" href="#__codelineno-12-30"></a>
+</span><span id="__span-12-31"><a id="__codelineno-12-31" name="__codelineno-12-31" href="#__codelineno-12-31"></a><span class="c1"># Save a skill distillation namespace without provider credentials</span>
+</span><span id="__span-12-32"><a id="__codelineno-12-32" name="__codelineno-12-32" href="#__codelineno-12-32"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--skill-distillation<span class="w"> </span>tooluniverse-trialqa
+</span><span id="__span-12-33"><a id="__codelineno-12-33" name="__codelineno-12-33" href="#__codelineno-12-33"></a>
+</span><span id="__span-12-34"><a id="__codelineno-12-34" name="__codelineno-12-34" href="#__codelineno-12-34"></a><span class="c1"># Remove the skill distillation namespace without touching provider credentials</span>
+</span><span id="__span-12-35"><a id="__codelineno-12-35" name="__codelineno-12-35" href="#__codelineno-12-35"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--disable-skill-distillation
+</span><span id="__span-12-36"><a id="__codelineno-12-36" name="__codelineno-12-36" href="#__codelineno-12-36"></a>
+</span><span id="__span-12-37"><a id="__codelineno-12-37" name="__codelineno-12-37" href="#__codelineno-12-37"></a><span class="c1"># Wipe everything</span>
+</span><span id="__span-12-38"><a id="__codelineno-12-38" name="__codelineno-12-38" href="#__codelineno-12-38"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--reset
 </span></code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Non-interactive / CI usage</p>
@@ -2266,8 +2320,8 @@ non-interactively.</p>
 <p>Sequenced pass/fail checklist that confirms a Switchyard install works end-to-end against a real backend, without spawning a harness binary. Fast (~1–3s on a healthy stack); suitable for K8s readiness probes and pre-deployment smoke tests.</p>
 <p>For harness-driven smoke tests (proxy + spawn <code>claude</code> / <code>codex</code> / <code>openclaw</code> once with a fixed prompt), use <a href="#switchyard-launch-claude"><code>launch claude --smoke</code></a> / <a href="#switchyard-launch-codex"><code>launch codex --smoke</code></a> / <a href="#switchyard-launch-openclaw"><code>launch openclaw --smoke</code></a> instead.</p>
 <p><strong>Synopsis</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>switchyard verify [--model ID] [--base-url URL] [--api-key VALUE]
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>                  [--port PORT] [--timeout SECONDS]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>switchyard verify [--model ID] [--base-url URL] [--api-key VALUE]
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>                  [--port PORT] [--timeout SECONDS]
 </span></code></pre></div>
 <p><strong>Example model</strong></p>
 <p><code>openai/gpt-4o-mini</code> is a portable OpenRouter example. Pass <code>--model</code> when
@@ -2287,9 +2341,9 @@ your provider uses a different model ID.</p>
 <li>Non-zero: first failing step; the error message names the source it tried and what to fix.</li>
 </ul>
 <p><strong>Examples</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>switchyard<span class="w"> </span>verify
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>switchyard<span class="w"> </span>verify
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1
 </span></code></pre></div>
 <h2 id="environment-variables">Environment variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
 <table>

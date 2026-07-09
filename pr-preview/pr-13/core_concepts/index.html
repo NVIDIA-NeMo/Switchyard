@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../guides/agent_launchers/">
+        <link rel="prev" href="../skill_distillation/">
       
       
         <link rel="next" href="../architecture/">
@@ -477,6 +477,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill_distillation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Distillation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -887,14 +915,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/cascade_routing/" class="md-nav__link">
+      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Cascade Routing
+    Stage-Router Routing
   
 
     
@@ -1274,7 +1302,7 @@ so the same target can be the strong tier in one profile and the weak tier in
 another.</p>
 <p>A profile's <code>type</code> sets the strategy. <code>passthrough</code> sends everything to one
 target with no routing. <code>random-routing</code> splits traffic on a fixed probability.
-<code>llm-routing</code> asks a classifier model to pick a tier for each turn. <code>cascade</code>
+<code>llm-routing</code> asks a classifier model to pick a tier for each turn. <code>stage_router</code>
 escalates from weak to strong when request signals call for it. The
 <a href="../routing_algorithms/overview/">Routing Overview</a> covers when to use each and
 how to tune it.</p>
@@ -1288,7 +1316,7 @@ path.</p>
 </div>
 <p>Session affinity, or sticky routing, pins a conversation to one tier so later
 turns reuse it instead of being classified again. It belongs to <code>llm-routing</code>
-and is not a strategy of its own; random and cascade routing decide every
+and is not a strategy of its own; random and stage-router routing decide every
 request on its own merits. <a href="../routing_algorithms/sticky_routing/">Sticky Routing</a>
 covers it in full.</p>
 <h2 id="formats-and-translation">Formats and translation<a class="headerlink" href="#formats-and-translation" title="Permanent link">&para;</a></h2>

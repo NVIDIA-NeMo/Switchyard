@@ -477,6 +477,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../skill_distillation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Distillation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -887,14 +915,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../cascade_routing/" class="md-nav__link">
+      <a href="../stage_router_routing/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Cascade Routing
+    Stage-Router Routing
   
 
     
@@ -1232,9 +1260,9 @@ for configuration and tuning.</p>
 <td><code>llm-routing</code></td>
 </tr>
 <tr>
-<td><a href="../cascade_routing/">Cascade Routing</a></td>
+<td><a href="../stage_router_routing/">Stage-Router Routing</a></td>
 <td>Tool-result and agent-progress signals should route most turns without an extra classifier call.</td>
-<td><code>cascade</code></td>
+<td><code>stage_router</code></td>
 </tr>
 </tbody>
 </table>
@@ -1342,7 +1370,7 @@ call.</p>
 <p>Pins use a bounded in-process LRU keyed from the stable conversation prefix.
 They are not shared across workers or restarts. See
 <a href="../sticky_routing/">Sticky Routing</a> for configuration and key derivation.</p>
-<p>Random and cascade routing do not expose session-affinity settings; they
+<p>Random and stage-router routing do not expose session-affinity settings; they
 continue to make a routing decision for each request.</p>
 <div class="admonition note">
 <p class="admonition-title">CLI schema availability</p>
