@@ -29,6 +29,17 @@ into a confidence score for "this turn needs the capable tier", then routes:
 - the **capable** tier for uncertain, exploratory, or error-recovery turns, and
 - the **efficient** tier for settled, mechanical turns.
 
+For Decision API routing, Switchyard reconstructs this history from Relay ATOF
+events under the request's exact session/owner identity. Snapshot readiness is
+based on the latest material routing signal's monotonic ingestion age rather
+than the event's wall-clock timestamp, so client clock skew cannot make old
+state appear current. Turn lifecycle events do not refresh existing signal age. A missing or
+tool-history-free snapshot is `cold`; a snapshot older than
+`--atof-max-snapshot-age-millis` is `stale`. Cold and stale snapshots bypass the
+scorer and optional classifier and return the configured picker default. The
+decision metadata records `feature_state` and, when a snapshot exists, its age,
+threshold, event count, and turn depth.
+
 `confidence_threshold` sets how sure that estimate must be before the router acts
 on the signal alone. Below it, the turn stays on the picker's default tier (or,
 if you added the optional classifier, goes to it first). A turn with no

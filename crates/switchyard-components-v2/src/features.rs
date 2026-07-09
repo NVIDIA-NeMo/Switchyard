@@ -4,6 +4,7 @@
 //! Bounded, router-neutral snapshots reconstructed from Relay ATOF events.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Instant;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -22,15 +23,19 @@ pub const DEFAULT_MAX_RELAY_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_ATOF_EVENT_BYTES: usize = 256 * 1024;
 /// Default maximum encoded size accepted for one ATOF request batch.
 pub const DEFAULT_MAX_ATOF_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Default maximum age of the most recently ingested routing event before a snapshot is stale.
+pub const DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS: u64 = 5 * 60 * 1_000;
 
 /// Readiness of an ATOF-derived feature snapshot consumed by a router.
 ///
-/// Absence is represented as `None`; the initial typed state is fresh only.
+/// Absence is represented as `None` by callers that perform an exact lookup.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureFreshness {
     /// The snapshot contains routing-ready reconstructed history.
     Fresh,
+    /// The snapshot exists but its most recent accepted event is too old for routing.
+    Stale,
 }
 
 // JSON values retain both serialized content and heap-backed container
@@ -82,6 +87,8 @@ pub struct RelaySnapshotLimits {
     pub max_event_bytes: usize,
     /// Maximum encoded size of one HTTP ingestion batch.
     pub max_batch_bytes: usize,
+    /// Maximum age of the most recently ingested routing signal at decision time.
+    pub max_snapshot_age_millis: u64,
 }
 
 impl RelaySnapshotLimits {
@@ -107,6 +114,12 @@ impl RelaySnapshotLimits {
                 self.max_event_bytes, self.max_batch_bytes
             )));
         }
+        if self.max_snapshot_age_millis == 0 {
+            return Err(SwitchyardError::InvalidConfig(
+                "Relay snapshot limit max_snapshot_age_millis must be greater than zero"
+                    .to_string(),
+            ));
+        }
         Ok(self)
     }
 }
@@ -120,6 +133,7 @@ impl Default for RelaySnapshotLimits {
             max_retained_bytes: DEFAULT_MAX_RELAY_RETAINED_BYTES,
             max_event_bytes: DEFAULT_MAX_ATOF_EVENT_BYTES,
             max_batch_bytes: DEFAULT_MAX_ATOF_BATCH_BYTES,
+            max_snapshot_age_millis: DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS,
         }
     }
 }
@@ -135,6 +149,12 @@ pub struct RelaySnapshot {
     pub turn_depth: u64,
     /// Number of unique recognized events ingested for this identity.
     pub event_count: u64,
+    /// Readiness derived from the monotonic age of the latest accepted routing signal.
+    pub freshness: FeatureFreshness,
+    /// Monotonic age of the latest accepted routing signal when this snapshot was read.
+    pub age_millis: u64,
+    /// Configured age threshold used to classify this snapshot.
+    pub max_age_millis: u64,
 }
 
 /// Per-batch ingestion outcome, including every non-mutating drop category.
@@ -289,6 +309,7 @@ impl RelaySnapshotAccumulator {
             prepared.push(self.prepare_event(index, event, encoded_size)?);
         }
 
+        let ingested_at = Instant::now();
         let mut report = RelayIngestReport {
             received_events: prepared.len() as u64,
             ..RelayIngestReport::default()
@@ -298,7 +319,7 @@ impl RelaySnapshotAccumulator {
             match event {
                 PreparedRelayEvent::Drop(reason) => report.record_drop(reason),
                 PreparedRelayEvent::Recognized(event) => {
-                    inner.ingest(event, self.limits, &mut report);
+                    inner.ingest(event, ingested_at, self.limits, &mut report);
                 }
             }
         }
@@ -309,16 +330,34 @@ impl RelaySnapshotAccumulator {
 
     /// Returns a snapshot only for the exact `(session_id, owner_id)` key.
     pub fn snapshot(&self, key: &RelayIdentityKey) -> Option<RelaySnapshot> {
+        self.snapshot_at(key, Instant::now())
+    }
+
+    fn snapshot_at(&self, key: &RelayIdentityKey, now: Instant) -> Option<RelaySnapshot> {
         let inner = self.inner.read();
-        inner.identities.get(key).map(|state| RelaySnapshot {
-            identity: key.clone(),
-            messages: state
-                .messages
-                .iter()
-                .map(|message| message.value.clone())
-                .collect(),
-            turn_depth: state.turn_depth,
-            event_count: state.event_count,
+        inner.identities.get(key).and_then(|state| {
+            let freshness_anchor = state.signal_updated_at.or(state.updated_at)?;
+            let age_millis =
+                u64::try_from(now.saturating_duration_since(freshness_anchor).as_millis())
+                    .unwrap_or(u64::MAX);
+            let freshness = if age_millis <= self.limits.max_snapshot_age_millis {
+                FeatureFreshness::Fresh
+            } else {
+                FeatureFreshness::Stale
+            };
+            Some(RelaySnapshot {
+                identity: key.clone(),
+                messages: state
+                    .messages
+                    .iter()
+                    .map(|message| message.value.clone())
+                    .collect(),
+                turn_depth: state.turn_depth,
+                event_count: state.event_count,
+                freshness,
+                age_millis,
+                max_age_millis: self.limits.max_snapshot_age_millis,
+            })
         })
     }
 
@@ -414,6 +453,7 @@ impl RelayAccumulatorState {
     fn ingest(
         &mut self,
         event: RecognizedRelayEvent,
+        ingested_at: Instant,
         limits: RelaySnapshotLimits,
         report: &mut RelayIngestReport,
     ) {
@@ -441,7 +481,7 @@ impl RelayAccumulatorState {
 
         self.insert_dedupe(event.dedupe_key, event.dedupe_retained_bytes);
         self.ensure_identity(event.identity.clone(), event.identity_retained_bytes);
-        self.apply_update(&event.identity, event.update);
+        self.apply_update(&event.identity, event.update, ingested_at);
         report.ingested_events = report.ingested_events.saturating_add(1);
     }
 
@@ -500,17 +540,19 @@ impl RelayAccumulatorState {
         self.retained_state_bytes = self.retained_state_bytes.saturating_add(retained_key_bytes);
     }
 
-    fn apply_update(&mut self, key: &RelayIdentityKey, update: RelayUpdate) {
+    fn apply_update(&mut self, key: &RelayIdentityKey, update: RelayUpdate, ingested_at: Instant) {
         let Some(state) = self.identities.get_mut(key) else {
             return;
         };
         state.event_count = state.event_count.saturating_add(1);
+        state.updated_at = Some(ingested_at);
         match update {
             RelayUpdate::TurnStart => {
                 state.turn_depth = state.turn_depth.saturating_add(1);
             }
             RelayUpdate::TurnEnd => {}
             RelayUpdate::Message(message) => {
+                state.signal_updated_at = Some(ingested_at);
                 self.retained_state_bytes = self
                     .retained_state_bytes
                     .saturating_add(message.retained_bytes);
@@ -587,6 +629,8 @@ struct RelayIdentityState {
     turn_depth: u64,
     event_count: u64,
     retained_key_bytes: usize,
+    updated_at: Option<Instant>,
+    signal_updated_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -862,6 +906,7 @@ mod tests {
             max_retained_bytes: 64 * 1024,
             max_event_bytes: 4_096,
             max_batch_bytes: 16_384,
+            max_snapshot_age_millis: DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS,
         }
     }
 
@@ -921,6 +966,7 @@ mod tests {
         let limits = RelaySnapshotLimits::default().validate()?;
         assert!(limits.max_batch_bytes >= limits.max_event_bytes);
         assert_eq!(limits.max_retained_bytes, 64 * 1024 * 1024);
+        assert_eq!(limits.max_snapshot_age_millis, 5 * 60 * 1_000);
         Ok(())
     }
 
@@ -938,6 +984,12 @@ mod tests {
             ..RelaySnapshotLimits::default()
         };
         assert!(inverted.validate().is_err());
+
+        let zero_age = RelaySnapshotLimits {
+            max_snapshot_age_millis: 0,
+            ..RelaySnapshotLimits::default()
+        };
+        assert!(zero_age.validate().is_err());
     }
 
     #[test]
@@ -1052,12 +1104,58 @@ mod tests {
         assert_eq!(owner.messages[0]["role"], "assistant");
         assert_eq!(owner.messages[1]["role"], "tool");
         assert_eq!(owner.messages[1]["content"], "ok");
+        assert_eq!(owner.freshness, FeatureFreshness::Fresh);
+        assert!(owner.age_millis <= owner.max_age_millis);
         assert!(accumulator
             .snapshot(&RelayIdentityKey::new(
                 "session-1",
                 Some("owner-b".to_string())
             ))
             .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_freshness_uses_monotonic_ingestion_age() -> Result<()> {
+        let max_age_millis = 250;
+        let accumulator = RelaySnapshotAccumulator::with_limits(RelaySnapshotLimits {
+            max_snapshot_age_millis: max_age_millis,
+            ..limits(4, 8, 16)
+        })?;
+        let key = RelayIdentityKey::session_only("session-freshness");
+        accumulator.ingest_batch(&[tool_event(
+            Some("session-freshness"),
+            None,
+            "tool-freshness",
+            "end",
+            json!({"output": "ok"}),
+        )])?;
+
+        let fresh = accumulator
+            .snapshot(&key)
+            .ok_or_else(|| SwitchyardError::Other("missing fresh snapshot".to_string()))?;
+        assert_eq!(fresh.freshness, FeatureFreshness::Fresh);
+        assert_eq!(fresh.max_age_millis, max_age_millis);
+
+        let stale = accumulator
+            .snapshot_at(
+                &key,
+                Instant::now() + std::time::Duration::from_millis(max_age_millis + 1),
+            )
+            .ok_or_else(|| SwitchyardError::Other("missing stale snapshot".to_string()))?;
+        assert_eq!(stale.freshness, FeatureFreshness::Stale);
+        assert!(stale.age_millis > stale.max_age_millis);
+
+        // A new turn changes lifecycle depth but must not make old routing
+        // evidence fresh again.
+        accumulator.ingest_batch(&[turn_event("session-freshness", "turn-freshness", "start")])?;
+        let still_stale = accumulator
+            .snapshot_at(
+                &key,
+                Instant::now() + std::time::Duration::from_millis(max_age_millis + 1),
+            )
+            .ok_or_else(|| SwitchyardError::Other("missing stale snapshot".to_string()))?;
+        assert_eq!(still_stale.freshness, FeatureFreshness::Stale);
         Ok(())
     }
 

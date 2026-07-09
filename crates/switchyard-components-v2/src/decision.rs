@@ -243,6 +243,12 @@ pub struct RoutingDecision {
     pub router: DecisionProvider,
     /// Target route selected by Switchyard.
     pub route: RoutingTarget,
+    /// Optional counterfactual route used to estimate the effect of this decision.
+    ///
+    /// Profiles must omit this field unless they define an explicit, defensible
+    /// baseline. Relay must not infer a baseline from the selected route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_route: Option<RoutingTarget>,
     /// Optional confidence score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
@@ -316,7 +322,13 @@ pub async fn decision_for_stage_router_routing(
     let (processed, freshness) = profile
         .process_decision_snapshot(input, relay_snapshot.as_ref())
         .await?;
-    stage_router_processed_to_decision(profile, &request, processed, freshness)
+    stage_router_processed_to_decision(
+        profile,
+        &request,
+        processed,
+        freshness,
+        relay_snapshot.as_ref(),
+    )
 }
 // Builds the request-only state needed by policies that can route from summaries.
 pub(crate) fn summary_profile_input(request: &RoutingRequest) -> Result<ProfileInput> {
@@ -510,8 +522,10 @@ fn stage_router_processed_to_decision(
     request: &RoutingRequest,
     processed: StageRouterProcessedRequest,
     freshness: Option<FeatureFreshness>,
+    snapshot: Option<&RelaySnapshot>,
 ) -> Result<RoutingDecision> {
     let target = profile.target_for_decision(&processed.decision)?;
+    let baseline_route = routing_target(profile.capable_target(), "capable".to_string())?;
     let (reason_code, reason_summary, feature_state) = match freshness {
         None => (
             "stage_router_feature_cold_default".to_string(),
@@ -527,7 +541,41 @@ fn stage_router_processed_to_decision(
             ),
             "fresh",
         ),
+        Some(FeatureFreshness::Stale) => (
+            "stage_router_feature_stale_default".to_string(),
+            "selected the configured StageRouter picker default because Relay feature state is stale"
+                .to_string(),
+            "stale",
+        ),
     };
+    let mut metadata = BTreeMap::from([
+        (
+            "source".to_string(),
+            Value::from(processed.decision.source.as_str()),
+        ),
+        ("score".to_string(), Value::from(processed.decision.score)),
+        ("feature_state".to_string(), Value::from(feature_state)),
+    ]);
+    if let Some(snapshot) = snapshot {
+        metadata.extend([
+            (
+                "snapshot_age_millis".to_string(),
+                Value::from(snapshot.age_millis),
+            ),
+            (
+                "snapshot_max_age_millis".to_string(),
+                Value::from(snapshot.max_age_millis),
+            ),
+            (
+                "snapshot_event_count".to_string(),
+                Value::from(snapshot.event_count),
+            ),
+            (
+                "snapshot_turn_depth".to_string(),
+                Value::from(snapshot.turn_depth),
+            ),
+        ]);
+    }
     Ok(RoutingDecision {
         schema_version: ROUTING_DECISION_SCHEMA_VERSION.to_string(),
         decision_id: format!(
@@ -541,17 +589,11 @@ fn stage_router_processed_to_decision(
             version: "v1".to_string(),
         },
         route: routing_target(target, processed.decision.tier.as_str().to_string())?,
+        baseline_route: Some(baseline_route),
         confidence: processed.decision.confidence,
         reason_code: Some(reason_code),
         reason_summary: Some(reason_summary),
-        metadata: BTreeMap::from([
-            (
-                "source".to_string(),
-                Value::from(processed.decision.source.as_str()),
-            ),
-            ("score".to_string(), Value::from(processed.decision.score)),
-            ("feature_state".to_string(), Value::from(feature_state)),
-        ]),
+        metadata,
     })
 }
 
@@ -688,6 +730,31 @@ mod tests {
     }
 
     #[test]
+    fn routing_decision_contract_accepts_legacy_payloads_without_baseline() -> TestResult {
+        let legacy = json!({
+            "schema_version": ROUTING_DECISION_SCHEMA_VERSION,
+            "decision_id": "decision-1",
+            "router": {"name": "random-routing", "version": "v1"},
+            "route": {
+                "tier": "capable",
+                "target_model": "frontier/model",
+                "backend_id": "capable-target",
+                "target_protocol_profile": "openai_chat",
+                "target_endpoint": "/v1/chat/completions"
+            }
+        });
+
+        let decision: RoutingDecision = serde_json::from_value(legacy)?;
+
+        assert_eq!(decision.schema_version, ROUTING_DECISION_SCHEMA_VERSION);
+        assert_eq!(decision.baseline_route, None);
+        assert!(serde_json::to_value(decision)?
+            .get("baseline_route")
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
     fn routing_request_validation_requires_identity_protocol_and_materialization_shape(
     ) -> TestResult {
         let mut request = routing_request()?;
@@ -737,7 +804,11 @@ mod tests {
         assert_eq!(decision.route.backend_id, "capable-target");
         assert_eq!(decision.route.target_model, "frontier/model");
         assert_eq!(decision.route.target_protocol_profile, "openai_chat");
+        assert_eq!(decision.baseline_route, None);
         assert_eq!(decision.router.name, "random-routing");
+
+        let encoded = serde_json::to_value(decision)?;
+        assert!(encoded.get("baseline_route").is_none());
         Ok(())
     }
 

@@ -225,6 +225,7 @@ pub async fn decision_for_random_routing(
             version: "v1".to_string(),
         },
         route: routing_target(target, processed.decision.tier.as_str().to_string())?,
+        baseline_route: None,
         confidence: None,
         reason_code: Some("random_weighted".to_string()),
         reason_summary: Some("selected by weighted random routing".to_string()),

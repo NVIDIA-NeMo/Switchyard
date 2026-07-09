@@ -11,6 +11,7 @@ use switchyard_components_v2::{
     RelaySnapshotLimits, DEFAULT_MAX_ATOF_BATCH_BYTES, DEFAULT_MAX_ATOF_EVENT_BYTES,
     DEFAULT_MAX_RELAY_DEDUPE_ENTRIES, DEFAULT_MAX_RELAY_HISTORY_PER_IDENTITY,
     DEFAULT_MAX_RELAY_IDENTITIES, DEFAULT_MAX_RELAY_RETAINED_BYTES,
+    DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS,
 };
 use switchyard_core::Result;
 use switchyard_server::{run_server, ServerRunOptions, DEFAULT_LISTEN_BACKLOG};
@@ -97,6 +98,14 @@ pub(crate) struct ServerArgs {
         default_value_t = DEFAULT_MAX_ATOF_BATCH_BYTES
     )]
     pub(crate) atof_max_batch_bytes: usize,
+
+    /// Maximum age of the latest accepted ATOF routing signal before a snapshot is stale.
+    #[arg(
+        long,
+        env = "SWITCHYARD_ATOF_MAX_SNAPSHOT_AGE_MILLIS",
+        default_value_t = DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS
+    )]
+    pub(crate) atof_max_snapshot_age_millis: u64,
 }
 
 impl ServerArgs {
@@ -119,6 +128,7 @@ impl ServerArgs {
                 max_retained_bytes: self.atof_max_retained_bytes,
                 max_event_bytes: self.atof_max_event_bytes,
                 max_batch_bytes: self.atof_max_batch_bytes,
+                max_snapshot_age_millis: self.atof_max_snapshot_age_millis,
             },
         }
     }
@@ -154,6 +164,8 @@ mod tests {
             "1024",
             "--atof-max-batch-bytes",
             "2048",
+            "--atof-max-snapshot-age-millis",
+            "3000",
         ])?;
 
         let options = args.into_options();
@@ -164,6 +176,7 @@ mod tests {
         assert_eq!(options.relay_snapshot_limits.max_retained_bytes, 2000);
         assert_eq!(options.relay_snapshot_limits.max_event_bytes, 1024);
         assert_eq!(options.relay_snapshot_limits.max_batch_bytes, 2048);
+        assert_eq!(options.relay_snapshot_limits.max_snapshot_age_millis, 3000);
         Ok(())
     }
 }

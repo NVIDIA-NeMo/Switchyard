@@ -12,6 +12,7 @@ use switchyard_components_v2::{
     RelaySnapshotLimits, DEFAULT_MAX_ATOF_BATCH_BYTES, DEFAULT_MAX_ATOF_EVENT_BYTES,
     DEFAULT_MAX_RELAY_DEDUPE_ENTRIES, DEFAULT_MAX_RELAY_HISTORY_PER_IDENTITY,
     DEFAULT_MAX_RELAY_IDENTITIES, DEFAULT_MAX_RELAY_RETAINED_BYTES,
+    DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS,
 };
 use switchyard_server::{run_server, ServerRunOptions, DEFAULT_LISTEN_BACKLOG};
 
@@ -32,6 +33,7 @@ use crate::errors::py_core_error;
     atof_max_retained_bytes = DEFAULT_MAX_RELAY_RETAINED_BYTES,
     atof_max_event_bytes = DEFAULT_MAX_ATOF_EVENT_BYTES,
     atof_max_batch_bytes = DEFAULT_MAX_ATOF_BATCH_BYTES,
+    atof_max_snapshot_age_millis = DEFAULT_MAX_RELAY_SNAPSHOT_AGE_MILLIS,
 ))]
 // PyO3 exposes these as named Python deployment options; grouping them would
 // replace simple keyword arguments with a binding-only configuration class.
@@ -50,6 +52,7 @@ fn run_profile_server(
     atof_max_retained_bytes: usize,
     atof_max_event_bytes: usize,
     atof_max_batch_bytes: usize,
+    atof_max_snapshot_age_millis: u64,
 ) -> PyResult<()> {
     let ip: IpAddr = host.parse().map_err(|error| {
         PyValueError::new_err(format!(
@@ -69,6 +72,7 @@ fn run_profile_server(
             max_retained_bytes: atof_max_retained_bytes,
             max_event_bytes: atof_max_event_bytes,
             max_batch_bytes: atof_max_batch_bytes,
+            max_snapshot_age_millis: atof_max_snapshot_age_millis,
         },
     };
 

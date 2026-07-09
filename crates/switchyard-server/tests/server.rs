@@ -112,6 +112,7 @@ profiles:
     assert_eq!(decision["route"]["backend_id"], "capable");
     assert_eq!(decision["route"]["target_model"], "upstream-capable");
     assert_eq!(decision["route"]["target_protocol_profile"], "openai_chat");
+    assert!(decision.get("baseline_route").is_none());
     Ok(())
 }
 
@@ -154,10 +155,29 @@ async fn stage_router_decision_warms_from_one_relay_record_without_target_dispat
     assert_eq!(warm["router"]["name"], "stage_router");
     assert_eq!(warm["route"]["backend_id"], "capable");
     assert_eq!(warm["route"]["target_model"], "provider/capable");
+    assert_eq!(
+        warm["route"]["target_protocol_profile"],
+        "anthropic_messages"
+    );
+    assert_eq!(warm["route"]["target_endpoint"], "/v1/messages");
+    assert_eq!(warm["baseline_route"]["tier"], "capable");
+    assert_eq!(warm["baseline_route"]["backend_id"], "capable");
+    assert_eq!(warm["baseline_route"]["target_model"], "provider/capable");
+    assert_eq!(
+        warm["baseline_route"]["target_protocol_profile"],
+        "anthropic_messages"
+    );
+    assert_eq!(warm["baseline_route"]["target_endpoint"], "/v1/messages");
     assert_eq!(warm["reason_code"], "override");
     assert_eq!(warm["confidence"], 1.0);
     assert_eq!(warm["metadata"]["feature_state"], "fresh");
     assert_eq!(warm["metadata"]["source"], "override");
+    assert_eq!(warm["metadata"]["snapshot_event_count"], 1);
+    assert_eq!(warm["metadata"]["snapshot_turn_depth"], 0);
+    assert_eq!(warm["metadata"]["snapshot_max_age_millis"], 300_000);
+    assert!(warm["metadata"]["snapshot_age_millis"]
+        .as_u64()
+        .is_some_and(|age| age <= 300_000));
 
     let mut cold_request = routing_request_json("remote-stage_router", "summary_only", None);
     cold_request["identity"]["session_id"] = json!("different-session");
@@ -167,10 +187,65 @@ async fn stage_router_decision_warms_from_one_relay_record_without_target_dispat
     assert_eq!(cold.status(), StatusCode::OK);
     let cold = json_body(cold).await?;
     assert_eq!(cold["route"]["backend_id"], "efficient");
+    assert_eq!(cold["route"]["target_protocol_profile"], "openai_responses");
+    assert_eq!(cold["route"]["target_endpoint"], "/v1/responses");
+    assert_eq!(cold["baseline_route"], warm["baseline_route"]);
     assert_eq!(cold["reason_code"], "stage_router_feature_cold_default");
     assert!(cold["confidence"].is_null());
     assert_eq!(cold["metadata"]["feature_state"], "cold");
     assert_eq!(cold["metadata"]["source"], "fall_open");
+    assert!(cold["metadata"].get("snapshot_age_millis").is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn stage_router_decision_falls_open_when_relay_snapshot_is_stale() -> TestResult {
+    let state = state_from_yaml(stage_router_decision_yaml())?.with_relay_snapshot_limits(
+        RelaySnapshotLimits {
+            max_snapshot_age_millis: 1,
+            ..RelaySnapshotLimits::default()
+        },
+    )?;
+    let app = build_switchyard_router(state);
+    let event = tool_event(
+        "stale-oom",
+        "end",
+        Some("session-1"),
+        None,
+        json!({"output": "process failed: out of memory"}),
+    );
+    let ingest = app
+        .clone()
+        .oneshot(ndjson_request(&format!("{event}\n"), None)?)
+        .await?;
+    assert_eq!(ingest.status(), StatusCode::OK);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            "/v1/routing/decision",
+            Some(routing_request_json(
+                "remote-stage_router",
+                "summary_only",
+                None,
+            )),
+        )?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let decision = json_body(response).await?;
+    assert_eq!(decision["route"]["backend_id"], "efficient");
+    assert_eq!(
+        decision["reason_code"],
+        "stage_router_feature_stale_default"
+    );
+    assert_eq!(decision["metadata"]["feature_state"], "stale");
+    assert_eq!(decision["metadata"]["source"], "fall_open");
+    assert_eq!(decision["metadata"]["snapshot_max_age_millis"], 1);
+    assert!(decision["metadata"]["snapshot_age_millis"]
+        .as_u64()
+        .is_some_and(|age| age > 1));
     Ok(())
 }
 
@@ -879,6 +954,7 @@ profiles:
         max_retained_bytes: 4_096,
         max_event_bytes: 256,
         max_batch_bytes: 512,
+        max_snapshot_age_millis: 300_000,
     })?;
     let app = build_switchyard_router(state.clone());
 
@@ -1831,11 +1907,11 @@ fn stage_router_decision_yaml() -> &'static str {
 targets:
   capable:
     model: provider/capable
-    format: openai
+    format: anthropic
     base_url: http://127.0.0.1:1/v1
   efficient:
     model: provider/efficient
-    format: openai
+    format: responses
     base_url: http://127.0.0.1:1/v1
 profiles:
   remote-stage_router:
