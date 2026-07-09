@@ -87,6 +87,9 @@ Commit messages must follow
 [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
 This is enforced locally by the `commit-msg` hook and in GitHub Actions.
 
+Every commit must also carry a DCO sign-off (`git commit -s`), enforced by the
+required DCO check on every PR. See [Signing Your Work](#signing-your-work).
+
 - ✓ `fix: handle async context cleanup in ProxyContext`
 - ✓ `feat: add stage-router routing backend`
 - ✗ `Fixed stuff` / `Updated code`
@@ -140,10 +143,8 @@ feat(api)!: remove legacy route option
    Keep the PR title conventional too, because GitHub can use the PR title for
    the squash-merge commit.
 
-Maintainers should mark these GitHub status checks as required on `main`:
-
-- `Commitlint / Commit messages`
-- `PR Title / Validate PR title`
+The `CI Success` and `DCO` status checks are required on `main`; the other
+workflows (commitlint, PR title) run on every PR but are advisory.
 
 ## Testing
 
