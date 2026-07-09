@@ -373,6 +373,7 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
-        Some(other) => other.to_string(),
+        Some("content_filter" | "refusal") => "content_filter".to_string(),
+        Some(_) => "stop".to_string(),
     }
 }

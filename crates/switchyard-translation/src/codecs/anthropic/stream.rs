@@ -533,6 +533,7 @@ fn anthropic_stop_reason(reason: Option<&str>) -> String {
     match reason {
         Some("length") => "max_tokens".to_string(),
         Some("tool_calls") | Some("function_call") => "tool_use".to_string(),
+        Some("content_filter" | "refusal") => "refusal".to_string(),
         Some("end_turn") | Some("max_tokens") | Some("tool_use") | Some("stop_sequence") => {
             reason.unwrap_or("end_turn").to_string()
         }
