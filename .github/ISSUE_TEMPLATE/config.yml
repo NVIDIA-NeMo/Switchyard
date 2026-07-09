@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question or discussion
-    url: https://github.com/NVIDIA/switchyard/discussions
+    url: https://github.com/NVIDIA-NeMo/Switchyard/discussions
     about: For usage questions and design discussion, please open a Discussion instead of an Issue.
   - name: Security vulnerability
     url: https://www.nvidia.com/en-us/security/
