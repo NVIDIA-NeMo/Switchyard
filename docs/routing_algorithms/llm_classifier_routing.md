@@ -44,10 +44,13 @@ targets:
     format: openai
   classifier:
     endpoint: openrouter
-    model: openai/gpt-4o-mini
+    model: nvidia/nemotron-3-nano-30b-a3b
     format: openai
     # Any OpenAI-compatible endpoint can serve as the classifier; routing
     # latency matters more than answer quality, so prefer small fast models.
+    extra_body:
+      reasoning:
+        enabled: false
 
 profiles:
   smart:
