@@ -204,12 +204,42 @@ jobs:
             --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
             switchyard serve --help > /dev/null
 
+  # DCO is a hard gate on PRs: every commit must carry a Signed-off-by
+  # trailer (https://developercertificate.org/), as required by
+  # CONTRIBUTING.md. Merge commits (e.g. GitHub's "Update branch") are
+  # exempt. Skipped on main pushes, which ci-success tolerates.
+  dco:
+    name: DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check Signed-off-by on all PR commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          missing=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" \
+            --paginate \
+            --jq '.[] | select(.parents | length < 2)
+                      | select(.commit.message | test("(^|\\n)Signed-off-by: .+ <.+@.+>") | not)
+                      | .sha[0:8] + " " + (.commit.message | split("\n")[0])')
+          if [ -n "$missing" ]; then
+            echo "Commits missing a Signed-off-by trailer:"
+            echo "$missing"
+            echo
+            echo "Sign off past commits with: git rebase --signoff origin/main, then push."
+            echo "Sign off future commits with: git commit -s"
+            exit 1
+          fi
+          echo "All commits signed off."
+
   # Single required check for branch protection. Gates on every job above so
   # the ruleset never needs editing when jobs are added or renamed.
   ci-success:
     name: CI Success
     if: always()
-    needs: [lint, spdx-headers, secrets, rust, typecheck, test, slim-install-smoke]
+    needs: [lint, spdx-headers, secrets, rust, typecheck, test, slim-install-smoke, dco]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded
