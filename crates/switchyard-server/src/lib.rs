@@ -15,20 +15,23 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{rejection::JsonRejection, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
+use tokio::net::{TcpListener, TcpSocket};
+
 use switchyard_components_v2::{
     parse_profile_config_path, profile_stats_accumulator, ProfileConfigPlan, ProfileInput,
     ProfileResponse, RequestMetadata, RoutingMetadata,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, SwitchyardError};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
-use tokio::net::{TcpListener, TcpSocket};
 
 pub use registry::{ProfileRegistry, ServedModel};
 
@@ -91,6 +94,24 @@ pub struct ServerRunOptions {
     pub backlog: u32,
     /// Validate and print public model IDs without binding a socket.
     pub dry_run: bool,
+    /// If this is set server is HTTPS.
+    /// Caller must validate that the files exist.
+    pub tls: Option<TLSOptions>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TLSOptions {
+    /// TLS certificate path, PEM format
+    pub cert: PathBuf,
+
+    /// TLS certificate key path, PEM format
+    pub key: PathBuf,
+}
+
+impl ServerRunOptions {
+    fn is_tls(&self) -> bool {
+        self.tls.is_some()
+    }
 }
 
 /// Builds a server state by loading and resolving a profile config path.
@@ -111,12 +132,53 @@ pub async fn run_server(options: ServerRunOptions) -> Result<()> {
 
     let listener = bind_tcp_listener(options.addr, options.backlog)?;
     let bound_addr = listener.local_addr().map_err(server_io_error)?;
-    let banner_options = ServerRunOptions {
+    let server_options = ServerRunOptions {
         addr: bound_addr,
         ..options
     };
-    eprintln!("{}", startup_banner(&banner_options, state.registry()));
-    serve(listener, state).await
+    eprintln!("{}", startup_banner(&server_options, state.registry()));
+    let router = build_switchyard_router(state);
+    if let Some(tls) = server_options.tls {
+        serve_tls(listener, router, tls).await
+    } else {
+        serve(listener, router).await
+    }
+}
+
+pub async fn serve_tls(listener: TcpListener, router: Router, tls: TLSOptions) -> Result<()> {
+    // aws_lc_rs is the default but other crates pull in `ring` also,
+    // so rustls doesn't know which one to use. Tell it.
+    if let Err(e) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
+        eprintln!("TLS crypto provider already installed: {e:?}");
+    }
+
+    let config = RustlsConfig::from_pem_file(tls.cert, tls.key)
+        .await
+        .map_err(server_io_error)?;
+    let handle = axum_server::Handle::new();
+
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        // Drain connections. Later should loop on connection_count() > 0.
+        shutdown_handle.graceful_shutdown(Some(Duration::from_secs(2)));
+    });
+
+    let std_listener = listener.into_std().map_err(server_io_error)?;
+    axum_server::from_tcp_rustls(std_listener, config)
+        .map_err(server_io_error)?
+        .handle(handle.clone())
+        .serve(router.into_make_service())
+        .await
+        .map_err(server_io_error)
+}
+
+/// Serves a Switchyard router on an already-bound TCP listener.
+async fn serve(listener: TcpListener, router: Router) -> Result<()> {
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(server_io_error)
 }
 
 /// Builds an Axum router with the same primary endpoint paths as the Python app.
@@ -135,14 +197,6 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/health", get(health))
         .fallback(not_found)
         .with_state(state)
-}
-
-/// Serves a Switchyard router on an already-bound TCP listener.
-async fn serve(listener: TcpListener, state: ServerState) -> Result<()> {
-    axum::serve(listener, build_switchyard_router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(server_io_error)
 }
 
 fn bind_tcp_listener(addr: SocketAddr, backlog: u32) -> Result<TcpListener> {
@@ -500,8 +554,9 @@ fn model_entry_json(entry: &ServedModel) -> Value {
 
 fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> String {
     let entries = registry.served_models();
-    let listen_url = url_for_addr(options.addr);
-    let local_url = local_url_for_addr(options.addr);
+    let scheme = if options.is_tls() { "https" } else { "http" };
+    let listen_url = url_for_addr(scheme, options.addr);
+    let local_url = local_url_for_addr(scheme, options.addr);
     let mut output = String::new();
 
     push_line(&mut output, "Switchyard Rust profile server");
@@ -542,7 +597,7 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
         let payload = json!({
             "model": entry.id.as_str(),
             "messages": [{"role": "user", "content": "Say ok"}],
-            "max_tokens": 8,
+            "max_tokens": 256, // Space for thinking tokens
         });
         push_line(
             &mut output,
@@ -550,6 +605,12 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
                 "    curl -s {local_url}/v1/chat/completions -H 'content-type: application/json' -d '{}'",
                 payload
             ),
+        );
+    }
+    if options.is_tls() {
+        push_line(
+            &mut output,
+            "    For self-signed certificates use `curl --insecure ..`",
         );
     }
     push_line(&mut output, "");
@@ -579,17 +640,17 @@ fn push_line(output: &mut String, line: impl AsRef<str>) {
     output.push('\n');
 }
 
-fn url_for_addr(addr: SocketAddr) -> String {
-    format!("http://{}:{}", host_for_url(addr.ip()), addr.port())
+fn url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
+    format!("{scheme}://{}:{}", host_for_url(addr.ip()), addr.port())
 }
 
-fn local_url_for_addr(addr: SocketAddr) -> String {
+fn local_url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
     let host = match addr.ip() {
         std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
         std::net::IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_string(),
         ip => host_for_url(ip),
     };
-    format!("http://{host}:{}", addr.port())
+    format!("{scheme}://{host}:{}", addr.port())
 }
 
 fn host_for_url(ip: std::net::IpAddr) -> String {
