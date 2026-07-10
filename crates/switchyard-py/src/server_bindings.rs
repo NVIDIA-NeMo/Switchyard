@@ -39,6 +39,7 @@ fn run_profile_server(
         addr: SocketAddr::new(ip, port),
         backlog,
         dry_run,
+        tls: None,
     };
 
     // `detach` runs synchronously with the GIL released, so startup errors still

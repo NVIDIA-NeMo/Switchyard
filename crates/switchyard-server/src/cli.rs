@@ -7,8 +7,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use clap::Parser;
-use switchyard_core::Result;
-use switchyard_server::{run_server, ServerRunOptions, DEFAULT_LISTEN_BACKLOG};
+use switchyard_core::{Result, SwitchyardError};
+use switchyard_server::{run_server, ServerRunOptions, TLSOptions, DEFAULT_LISTEN_BACKLOG};
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DEFAULT_PORT: u16 = 4000;
@@ -40,6 +40,14 @@ pub(crate) struct ServerArgs {
     /// Validate and build the config without starting the HTTP listener.
     #[arg(long)]
     pub(crate) dry_run: bool,
+
+    /// TLS certificate path, PEM format
+    #[arg(long, requires = "tls_key")]
+    pub(crate) tls_cert: Option<PathBuf>,
+
+    /// TLS certificate key path, PEM format
+    #[arg(long, requires = "tls_cert")]
+    pub(crate) tls_key: Option<PathBuf>,
 }
 
 impl ServerArgs {
@@ -48,17 +56,30 @@ impl ServerArgs {
         Self::parse()
     }
 
-    fn into_options(self) -> ServerRunOptions {
-        ServerRunOptions {
+    fn into_options(self) -> Result<ServerRunOptions> {
+        let mut tls_options = None;
+        if let (Some(cert), Some(key)) = (self.tls_cert, self.tls_key) {
+            if !cert.exists() || !key.exists() {
+                return Err(SwitchyardError::InvalidConfig(format!(
+                    "Invalid path in --tls-cert {} or --tls-key {}. File does not exist.",
+                    cert.display(),
+                    key.display()
+                )));
+            }
+            tls_options = Some(TLSOptions { cert, key })
+        };
+        Ok(ServerRunOptions {
             config: self.config,
             addr: SocketAddr::new(self.host, self.port),
             backlog: self.backlog,
             dry_run: self.dry_run,
-        }
+            tls: tls_options,
+        })
     }
 }
 
 /// Loads config, optionally validates it, then starts the Rust server.
 pub(crate) async fn run(args: ServerArgs) -> Result<()> {
-    run_server(args.into_options()).await
+    let opts = args.into_options()?;
+    run_server(opts).await
 }
