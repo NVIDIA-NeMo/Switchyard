@@ -55,12 +55,14 @@
 //! ## Algorithms
 //!
 //! [`RandomAlgo`] provides uniform random routing in the core crate. Worked
-//! implementations of an LLM classifier and a stateful ensemble, plus runnable
-//! agents, live in the `libsy-examples` crate.
+//! [`agentic::AgentAwareOrchAlgo`] provides sub-agent-aware model-pool routing and
+//! neutral harness-header normalization. Worked implementations of an LLM classifier
+//! and a stateful ensemble, plus runnable agents, live in the `libsy-examples` crate.
 
 mod algorithms;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
 pub use algorithms::rand::{RandomAlgo, RandomDecision};
+pub mod agentic;
 
 mod driver;
 
@@ -74,7 +76,7 @@ use futures::{Stream, StreamExt};
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    AggLlmResponse, Context, Decision, LlmRequest, LlmResponse, LlmResponseChunk,
+    AgentContext, AggLlmResponse, Context, Decision, LlmRequest, LlmResponse, LlmResponseChunk,
     LlmResponseStream, Metadata, Request, Response, RoutedLlmClient,
 };
 

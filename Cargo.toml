@@ -15,6 +15,7 @@ members = [
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-translation",
+    "demo/libsy-proxy",
 ]
 
 [workspace.package]

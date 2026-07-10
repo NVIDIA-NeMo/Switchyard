@@ -40,6 +40,38 @@ println!("answer: {}", completion_text(&response.llm_response.aggregate().await?
 
 Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in the `libsy-examples` crate).
 
+## Agent- and subtask-aware routing
+
+`agentic::AgentAwareOrchAlgo` classifies the first request for a stable agent/task
+against an arbitrary model pool, then reuses that assignment. This keeps a child
+agent and its prompt-cache locality on one model while allowing sibling agents in
+the same root session to use different models. Invalid or failed classifier calls
+fall back without caching the failure.
+
+```rust
+use libsy::agentic::{AgentAwareOrchAlgo, AgentRoutingCandidate};
+
+let algo: Arc<dyn Algorithm> = Arc::new(AgentAwareOrchAlgo::new(
+    "classifier",
+    vec![
+        AgentRoutingCandidate::new("frontier", "planning, synthesis, and review"),
+        AgentRoutingCandidate::new("fast", "bounded research and mechanical edits"),
+    ],
+    "frontier", // fail-open target
+    targets,
+));
+```
+
+`metadata_from_headers` converts harness-specific identity into neutral `Metadata`.
+Supported inputs include Codex `session-id`, `thread-id`,
+`x-codex-parent-thread-id`, `x-openai-subagent`, and `x-codex-turn-metadata`;
+NeMo Relay `x-nemo-relay-session-id` / `x-nemo-relay-subagent-id`; Dynamo
+`x-dynamo-session-id` / `x-dynamo-parent-session-id`; and explicit
+`x-switchyard-*` overrides. The adapter stays local and dependency-free because
+Relay's matching gateway normalizer is not exposed through its public Rust library API.
+
+See [`demo/libsy-proxy`](../../demo/libsy-proxy) for a runnable Switchyard HTTP proxy.
+
 ## Requests & responses
 
 ```rust
