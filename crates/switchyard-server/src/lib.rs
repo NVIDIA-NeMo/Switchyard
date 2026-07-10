@@ -145,7 +145,7 @@ pub async fn run_server(options: ServerRunOptions) -> Result<()> {
     }
 }
 
-pub async fn serve_tls(listener: TcpListener, router: Router, tls: TLSOptions) -> Result<()> {
+async fn serve_tls(listener: TcpListener, router: Router, tls: TLSOptions) -> Result<()> {
     // aws_lc_rs is the default but other crates pull in `ring` also,
     // so rustls doesn't know which one to use. Tell it.
     if let Err(e) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
