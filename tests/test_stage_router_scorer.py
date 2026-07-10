@@ -11,7 +11,9 @@ from switchyard.lib.processors.stage_router.dimensions import (
     CodingAgentDimensions,
     from_signal,
 )
-from switchyard.lib.processors.stage_router.scorer import DEFAULT_WEIGHTS, score
+import math
+
+from switchyard.lib.processors.stage_router.scorer import DEFAULT_STEEPNESS, DEFAULT_WEIGHTS, score
 from switchyard_rust.components import DimensionCollector
 from switchyard_rust.core import ChatRequest, ProxyContext
 
@@ -52,17 +54,17 @@ def test_tests_passed_pushes_toward_efficient():
     assert result.score < 0
 
 
-def test_score_is_clipped_to_unit_interval():
-    """Out-of-range weighted sums must be clamped to [-1, 1]."""
+def test_score_bounded_by_unit_interval():
+    """tanh keeps score strictly in (-1, 1); extreme raw sums saturate near ±1."""
     dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    # Force overflow on both sides: a 5.0-magnitude weight × 1.0 dimension
-    # yields raw ±5.0, which must clip to ±1.0 with confidence 1.0.
     high = score(dims, weights={"severity": 5.0})
-    assert high.score == 1.0
-    assert high.confidence == 1.0
+    assert -1.0 < high.score <= 1.0
+    assert high.score > 0.99  # tanh(10) is ~1.0 to 5 decimal places
+    assert high.confidence == abs(high.score)
     low = score(dims, weights={"severity": -5.0})
-    assert low.score == -1.0
-    assert low.confidence == 1.0
+    assert -1.0 <= low.score < 1.0
+    assert low.score < -0.99
+    assert low.confidence == abs(low.score)
 
 
 def test_custom_weights_can_invert_decision():
@@ -74,23 +76,13 @@ def test_custom_weights_can_invert_decision():
     assert inverted.score < 0
 
 
-def test_contributions_sum_matches_unclipped_score():
-    """When no clipping fires, ``sum(contributions) == score`` exactly."""
+def test_contributions_are_pre_sigmoid_raw_products():
+    """contributions are the raw weight×dim products; score = tanh(k * sum(contributions))."""
     dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "tests_passed": 1.0})
     result = score(dims)
-    expected = sum(result.contributions.values())
-    assert abs(expected - result.score) < 1e-9
-
-
-def test_contributions_can_exceed_clipped_score():
-    """When clipping fires, ``sum(contributions)`` may exceed ``|score|``."""
-    dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    # Raw = 5.0 → clipped to 1.0; contributions remain unclipped.
-    result = score(dims, weights={"severity": 5.0})
-    raw = sum(result.contributions.values())
-    assert raw == 5.0
-    assert result.score == 1.0
-    assert raw > result.score
+    raw_sum = sum(result.contributions.values())
+    expected_score = math.tanh(DEFAULT_STEEPNESS * raw_sum)
+    assert abs(result.score - expected_score) < 1e-9
 
 
 @pytest.mark.asyncio
