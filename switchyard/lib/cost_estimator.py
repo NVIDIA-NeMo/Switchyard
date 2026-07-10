@@ -155,6 +155,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     ),
     # --- Anthropic Claude on AWS Bedrock (via NVIDIA Inference Hub) ---
     # 5-minute cache write = 1.25x input; cache read = 0.1x input.
+    "aws/anthropic/bedrock-claude-opus-4-8": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "aws/anthropic/bedrock-claude-opus-4-7": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
@@ -177,6 +180,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "azure/anthropic/claude-opus-4-7": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
+    "azure/anthropic/claude-opus-4-8": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "aws/anthropic/bedrock-claude-sonnet-4-6": ModelPriceData(
         input=3.00, output=15.00, cached=0.30, cache_write=3.75,
     ),
@@ -187,6 +193,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
         input=1.00, output=5.00, cached=0.10, cache_write=1.25,
     ),
     # --- Anthropic direct API aliases (no AWS prefix) ---
+    "claude-opus-4-8": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "claude-opus-4-7": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),

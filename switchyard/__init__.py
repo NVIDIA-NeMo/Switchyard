@@ -55,6 +55,9 @@ from switchyard.lib.processors.routellm_request_processor import (
     RouteLLMRequestProcessor,
 )
 from switchyard.lib.profiles import (
+    AdvisorConfig,
+    AdvisorPresets,
+    AdvisorProfileConfig,
     ClassifierConfig,
     ContextAwareProfile,
     DeterministicRoutingConfig,
@@ -156,6 +159,10 @@ __all__ = [
     # Chain infrastructure
     "Switchyard",
     "LLMBackend",
+    # Advisor (executor consults a stronger advisor model)
+    "AdvisorConfig",
+    "AdvisorPresets",
+    "AdvisorProfileConfig",
     "NoopProfile",
     "NoopProfileConfig",
     "StageRouterConfig",
