@@ -30,8 +30,7 @@ use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, Switchyar
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 use tokio::net::{TcpListener, TcpSocket};
 
-pub use registry::ProfileRegistry;
-use registry::ServedModel;
+pub use registry::{ProfileRegistry, ServedModel};
 
 use crate::response::{translate_chain_response, TranslatedResponse};
 
