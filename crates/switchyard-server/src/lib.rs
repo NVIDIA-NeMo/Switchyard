@@ -30,7 +30,8 @@ use switchyard_core::{ChatRequest, ChatRequestType, RequestId, Result, Switchyar
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 use tokio::net::{TcpListener, TcpSocket};
 
-pub use registry::{ProfileRegistry, ServedModel};
+pub use registry::ProfileRegistry;
+use registry::ServedModel;
 
 use crate::response::{translate_chain_response, TranslatedResponse};
 
@@ -94,12 +95,13 @@ pub struct ServerRunOptions {
 }
 
 /// Builds a server state by loading and resolving a profile config path.
-pub fn state_from_config_path(path: impl AsRef<Path>) -> Result<ServerState> {
+fn state_from_config_path(path: impl AsRef<Path>) -> Result<ServerState> {
     let document = parse_profile_config_path(path)?;
     let plan = document.resolve()?;
     ServerState::from_plan(&plan)
 }
 
+/// Entry point to this module.
 /// Loads config, optionally validates it, then starts the Rust server.
 pub async fn run_server(options: ServerRunOptions) -> Result<()> {
     let state = state_from_config_path(&options.config)?;
@@ -119,6 +121,7 @@ pub async fn run_server(options: ServerRunOptions) -> Result<()> {
 }
 
 /// Builds an Axum router with the same primary endpoint paths as the Python app.
+/// Public so that integration tests can see it.
 pub fn build_switchyard_router(state: ServerState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(openai_chat_completions))
@@ -136,26 +139,11 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
 }
 
 /// Serves a Switchyard router on an already-bound TCP listener.
-pub async fn serve(listener: TcpListener, state: ServerState) -> Result<()> {
+async fn serve(listener: TcpListener, state: ServerState) -> Result<()> {
     axum::serve(listener, build_switchyard_router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(server_io_error)
-}
-
-/// Binds and serves a Switchyard router.
-pub async fn serve_addr(addr: SocketAddr, state: ServerState) -> Result<()> {
-    serve_addr_with_backlog(addr, DEFAULT_LISTEN_BACKLOG, state).await
-}
-
-/// Binds with an explicit TCP listen backlog and serves a Switchyard router.
-pub async fn serve_addr_with_backlog(
-    addr: SocketAddr,
-    backlog: u32,
-    state: ServerState,
-) -> Result<()> {
-    let listener = bind_tcp_listener(addr, backlog)?;
-    serve(listener, state).await
 }
 
 fn bind_tcp_listener(addr: SocketAddr, backlog: u32) -> Result<TcpListener> {
