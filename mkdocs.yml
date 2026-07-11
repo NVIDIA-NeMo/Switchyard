@@ -32,6 +32,7 @@ nav:
       - LLM Classifier Routing: routing_algorithms/llm_classifier_routing.md
       - Sticky Routing: routing_algorithms/sticky_routing.md
       - Stage-Router Routing: routing_algorithms/stage_router_routing.md
+      - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
   - Reference:

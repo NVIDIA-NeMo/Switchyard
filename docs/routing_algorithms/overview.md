@@ -18,6 +18,7 @@ for configuration and tuning.
 | [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random-routing` |
 | [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm-routing` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and let an LLM judge escalate to strong — one-way per task — when the run is in trouble. | `escalation_router` (`routes:` bundle) |
 
 [Session Affinity (Sticky Routing)](sticky_routing.md) is an opt-in feature of
 LLM classifier routing, not a standalone routing strategy. The classifier
@@ -151,6 +152,12 @@ They are not shared across workers or restarts. See
 
 Random and stage-router routing do not expose session-affinity settings; they
 continue to make a routing decision for each request.
+
+The escalation router uses the same affinity store with the opposite policy:
+affinity is always on (the pin *is* the escalation latch), only the strong
+tier is ever pinned, and the judge keeps running every turn until the latch
+fires. See
+[Escalation-Router Routing](escalation_router_routing.md).
 
 !!! note "CLI schema availability"
     The CLI currently accepts these settings in a `deterministic` entry in a
