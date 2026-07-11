@@ -12,6 +12,10 @@ from switchyard.lib.profiles.deterministic_routing_presets import (
 from switchyard.lib.profiles.deterministic_routing_profile_config import (
     DeterministicRoutingProfileConfig,
 )
+from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
+from switchyard.lib.profiles.escalation_router_profile_config import (
+    EscalationRouterProfileConfig,
+)
 from switchyard.lib.profiles.header_routing import (
     HeaderRoutingConfig,
     HeaderRoutingDecision,
@@ -62,6 +66,8 @@ __all__ = [
     "DeterministicRoutingConfig",
     "DeterministicRoutingProfileConfig",
     "DeterministicRoutingPresets",
+    "EscalationRouterConfig",
+    "EscalationRouterProfileConfig",
     "HeaderRoutingConfig",
     "HeaderRoutingDecision",
     "HeaderRoutingProfile",

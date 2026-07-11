@@ -768,6 +768,89 @@ def test_serve_subcommand_enables_intake_from_cli_args(
     assert any(isinstance(component, IntakeResponseProcessor) for component in components)
 
 
+class TestEscalationRouterRouteType:
+    """`type: escalation_router` wires the judge-latched chain via YAML."""
+
+    def _bundle(self) -> dict:
+        return {
+            "routes": {
+                "myrouter/escalation": {
+                    "type": "escalation_router",
+                    "fallback_target_on_evict": "strong",
+                    "judge": {
+                        "model": "google/gemini-3.5-flash",
+                        "api_key": "sk-judge",
+                        "base_url": "https://judge.invalid/v1",
+                        "timeout_secs": 5.0,
+                        "min_turn": 4,
+                        "recent_turn_window": 10,
+                    },
+                    "strong": {
+                        "model": "openai/gpt-5.2",
+                        "api_key": "sk-strong",
+                        "base_url": "https://strong.invalid/v1",
+                    },
+                    "weak": {
+                        "model": "deepseek/deepseek-v4-pro",
+                        "api_key": "sk-weak",
+                        "base_url": "https://weak.invalid/v1",
+                    },
+                    "session_key_depth": 2,
+                },
+            },
+        }
+
+    def test_registers_route_key_and_tier_passthroughs(self):
+        from switchyard.cli.route_bundle import build_route_bundle_table
+        table = build_route_bundle_table(self._bundle())
+        # Route key first, tiers as direct passthroughs; the judge tier is
+        # internal-only and never registered.
+        assert table.registered_models() == [
+            "myrouter/escalation",
+            "openai/gpt-5.2",
+            "deepseek/deepseek-v4-pro",
+        ]
+
+    def test_judge_settings_thread_into_processor(self):
+        from switchyard.cli.route_bundle import build_route_bundle_table
+        from switchyard.lib.processors.escalation_judge_request_processor import (
+            EscalationJudgeRequestProcessor,
+        )
+        table = build_route_bundle_table(self._bundle())
+        switchyard = table.lookup_switchyard("myrouter/escalation")
+        judge = next(
+            c for c in switchyard.iter_components()
+            if isinstance(c, EscalationJudgeRequestProcessor)
+        )
+        assert judge._config.model == "google/gemini-3.5-flash"
+        assert judge._config.min_judge_turn == 4
+        assert judge._config.recent_turn_window == 10
+        assert judge._config.timeout_s == 5.0
+        assert judge._session_key_depth == 2
+
+    def test_rejects_missing_judge_block(self):
+        from switchyard.cli.route_bundle import (
+            RouteBundleConfigError,
+            build_route_bundle_table,
+        )
+        bundle = self._bundle()
+        del bundle["routes"]["myrouter/escalation"]["judge"]
+        with pytest.raises(RouteBundleConfigError) as exc:
+            build_route_bundle_table(bundle)
+        assert "judge" in str(exc.value)
+
+    def test_rejects_fallback_not_matching_a_tier(self):
+        from switchyard.cli.route_bundle import (
+            RouteBundleConfigError,
+            build_route_bundle_table,
+        )
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/escalation"]["fallback_target_on_evict"] = "judge"
+        with pytest.raises(RouteBundleConfigError) as exc:
+            build_route_bundle_table(bundle)
+        assert "fallback_target_on_evict" in str(exc.value)
+
+
 class TestDeterministicRouteType:
     """`type: deterministic` wires the LLM-classifier chain via YAML."""
 
