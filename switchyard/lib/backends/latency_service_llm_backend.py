@@ -20,10 +20,13 @@ selected, so Chat endpoints keep receiving Chat Completions while
 Responses-mode endpoints receive the OpenAI Responses API natively.
 """
 
+import json
 import logging
 import random
 import threading
 import time
+import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from openai import APIStatusError, AsyncStream
@@ -46,6 +49,7 @@ from switchyard.lib.prometheus_exposition import format_number, render_labels
 from switchyard.lib.proxy_context import (
     CTX_CALLER_API_KEY,
     CTX_ERROR_SOURCE,
+    CTX_ROUTE_SELECTION,
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
     CTX_UPSTREAM_HTTP_BODY,
     CTX_UPSTREAM_HTTP_STATUS,
@@ -62,6 +66,14 @@ from switchyard_rust.core import ChatRequest, ChatRequestType, ChatResponse, req
 from switchyard_rust.translation import TranslationEngine
 
 log = logging.getLogger(__name__)
+
+#: Request header read by a LiteLLM front proxy; its JSON value is copied into
+#: the provider spend-log DB row, tying that row back to the Switchyard route
+#: that selected it (see :data:`CTX_ROUTE_SELECTION` for the payload contract).
+SPEND_LOGS_METADATA_HEADER = "x-litellm-spend-logs-metadata"
+
+#: ``router_strategy`` value identifying this backend's selection algorithm.
+ROUTER_STRATEGY_LATENCY = "latency"
 
 
 @dataclass(frozen=True)
@@ -380,6 +392,10 @@ class LatencyServiceLLMBackend(LLMBackend):
         # Captured before the per-attempt ``body["model"]`` override so the span
         # records the model the client asked for, not the selected endpoint.
         incoming_model = request.model
+        # One correlation id per client request, shared by every failover
+        # attempt's spend-logs header and by the response headers — the join
+        # key between a front proxy's spend-log row and the provider rows.
+        correlation_id = str(uuid.uuid4())
         # Resolve the session-affinity pin once (keyed on the stable conversation
         # prefix). ``None`` when affinity is disabled or the conversation isn't
         # pinned yet, so every attempt routes purely by health + latency.
@@ -426,6 +442,15 @@ class LatencyServiceLLMBackend(LLMBackend):
             target_request_type = self._request_types[model_id]
             body = self._body_for_endpoint_request_type(ctx, request, target_request_type)
             body["model"] = upstream_model
+            # Per-attempt route-selection record: each upstream call is stamped
+            # with the endpoint it actually hits, so a failover retry's
+            # spend-log row doesn't inherit the failed attempt's selection.
+            route_selection = self._route_selection(
+                incoming_model=incoming_model,
+                model_id=model_id,
+                upstream_model=upstream_model,
+                correlation_id=correlation_id,
+            )
             log.debug(
                 "LatencyServiceLLMBackend: attempt=%d model=%s upstream=%s "
                 "request_type=%s stream=%s",
@@ -450,6 +475,9 @@ class LatencyServiceLLMBackend(LLMBackend):
                         target_request_type,
                         api_key=api_key_override,
                         body=body,
+                        extra_headers={
+                            SPEND_LOGS_METADATA_HEADER: json.dumps(route_selection),
+                        },
                     )
                 except APIStatusError as exc:
                     set_tags(attempt_span, {
@@ -547,6 +575,12 @@ class LatencyServiceLLMBackend(LLMBackend):
                 # Rust ``StatsLlmBackend`` that normally publishes this signal.
                 ctx.backend_call_latency_ms = backend_latency_ms
 
+                # The selection that actually served the request, surfaced to
+                # the endpoint layer as ``x-switchyard-*`` response headers so
+                # a front proxy can enrich its own spend-log row with the same
+                # correlation id the provider row received.
+                ctx.metadata[CTX_ROUTE_SELECTION] = route_selection
+
                 # Pin this conversation to the endpoint that served it so later
                 # turns reuse it (warm cache). Re-pinning on every success also
                 # follows a recovery: if the previous pin degraded and we
@@ -605,6 +639,33 @@ class LatencyServiceLLMBackend(LLMBackend):
             )
         return dict(normalized.body)
 
+    def _route_selection(
+        self,
+        *,
+        incoming_model: str | None,
+        model_id: str,
+        upstream_model: str,
+        correlation_id: str,
+    ) -> dict[str, str | None]:
+        """Build the route-selection payload for one upstream attempt.
+
+        This is the JSON value of the outbound ``x-litellm-spend-logs-metadata``
+        header and, for the attempt that succeeds, the
+        :data:`CTX_ROUTE_SELECTION` record behind the ``x-switchyard-*``
+        response headers. ``router_model`` falls back to the configured route id
+        when the client body carried no model; ``router_selected_provider`` is
+        the upstream model's leading path segment (IH/LiteLLM naming, e.g.
+        ``"openai/openai/gpt-5.4"`` → ``"openai"``).
+        """
+        return {
+            "router_model": incoming_model or self._config.route_model,
+            "router_strategy": ROUTER_STRATEGY_LATENCY,
+            "router_selected_endpoint": model_id,
+            "router_selected_model": upstream_model,
+            "router_selected_provider": upstream_model.split("/", 1)[0],
+            "router_correlation_id": correlation_id,
+        }
+
     async def _call_endpoint(
         self,
         model_id: str,
@@ -612,14 +673,32 @@ class LatencyServiceLLMBackend(LLMBackend):
         *,
         api_key: str | None,
         body: dict[str, object],
+        extra_headers: dict[str, str],
     ) -> object:
+        # ``extra_headers`` rides the client wrapper's ``**kwargs`` into the
+        # OpenAI SDK's per-request header merge (over ``default_headers``).
+        # A passthrough body may itself carry an SDK-style ``extra_headers``
+        # field (shape-preserving translation keeps unknown keys); merge it
+        # under ours rather than letting it collide with the keyword — it used
+        # to ride ``**body`` into the same SDK parameter, and the spend-logs
+        # header must win a name conflict so callers can't spoof it. A
+        # non-mapping value is dropped: it could only ever have broken the
+        # SDK call.
+        client_extra = body.pop("extra_headers", None)
+        headers: dict[str, object] = (
+            {**client_extra, **extra_headers}
+            if isinstance(client_extra, Mapping)
+            else dict(extra_headers)
+        )
         if target_request_type == ChatRequestType.OPENAI_RESPONSES:
             return await self._clients[model_id].aresponses(
                 api_key=api_key,
+                extra_headers=headers,
                 **body,
             )
         return await self._clients[model_id].acompletion(
             api_key=api_key,
+            extra_headers=headers,
             **body,
         )
 

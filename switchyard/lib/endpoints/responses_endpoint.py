@@ -84,7 +84,9 @@ class ResponsesEndpoint(NemoSwitchyardEndpoint):
                         stream,
                         type(result).__name__,
                     )
-                return serialize_chain_result(result, stream=stream, sse_iter=iter_preframed_sse)
+                return serialize_chain_result(
+                    result, stream=stream, sse_iter=iter_preframed_sse, ctx=ctx
+                )
             except (SwitchyardContextPoolExhaustedError, SwitchyardContextWindowExceededError) as exc:
                 return context_exhausted_response(exc, inbound="openai-responses")
             except Exception as exc:
