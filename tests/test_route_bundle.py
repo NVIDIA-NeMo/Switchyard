@@ -1462,6 +1462,45 @@ class TestAdvisorRouteType:
         assert not any(isinstance(c, StatsRequestProcessor) for c in components)
         assert not any(isinstance(c, StatsResponseProcessor) for c in components)
 
+    def test_openai_tiers_build_on_openai_wire(self):
+        """OSS executor + advisor pairs (format: openai) are first-class."""
+        from switchyard.lib.backends.advisor_tool_call_backend import (
+            AdvisorToolCallBackend,
+        )
+        from switchyard_rust.core import ChatRequestType
+
+        bundle = {
+            "routes": {
+                "myrouter/advisor-oss": {
+                    "type": "advisor",
+                    "executor": {
+                        "model": "qwen/qwen3-max",
+                        "api_key": "sk-exec",
+                        "base_url": "https://exec.invalid/v1",
+                        "format": "openai",
+                    },
+                    "advisor": {
+                        "model": "deepseek/deepseek-r2",
+                        "api_key": "sk-adv",
+                        "base_url": "https://adv.invalid/v1",
+                        "format": "openai",
+                    },
+                },
+            },
+        }
+        table = build_route_bundle_table(bundle)
+        backend = next(
+            c for c in table.iter_components()
+            if isinstance(c, AdvisorToolCallBackend)
+        )
+        assert backend.supported_request_types == [ChatRequestType.OPENAI_CHAT]
+
+    def test_responses_format_rejected(self):
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/advisor"]["executor"]["format"] = "responses"
+        with pytest.raises(Exception, match="responses"):
+            build_route_bundle_table(bundle)
+
 
 def test_stage_router_route_hydrates_tier_catalogs(
     monkeypatch: pytest.MonkeyPatch,

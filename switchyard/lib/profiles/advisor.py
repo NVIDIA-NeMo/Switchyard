@@ -13,12 +13,15 @@ executor a proxy-intercepted ``advisor`` tool
 ``"review_gate"`` consults the advisor once per session at the executor's first
 no-tool-call turn
 (:class:`~switchyard.lib.backends.advisor_loop_backend.AdvisorLoopBackend`).
-Both delegate the executor call to a native Anthropic backend (caching intact),
-stamp ``ctx.selected_model``, and record the advisor's usage themselves; they
-cannot be wrapped by ``StatsLlmBackend``, so the runtime attaches the shared
-accumulator through the ``_stats`` compatibility hook — mirroring
-``LatencyServiceLLMBackend``. Serving-level stats processors arrive via
-``with_runtime_components``, like every other profile.
+The executor call is delegated verbatim to the native backend for
+``executor.format`` — Anthropic keeps ``cache_control`` intact; OpenAI keeps
+the Chat body intact — and the advisor caller likewise dispatches on
+``advisor.format``. Both backends stamp ``ctx.selected_model`` and record the
+advisor's usage themselves; they cannot be wrapped by ``StatsLlmBackend``, so
+the runtime attaches the shared accumulator through the ``_stats``
+compatibility hook — mirroring ``LatencyServiceLLMBackend``. Serving-level
+stats processors arrive via ``with_runtime_components``, like every other
+profile.
 """
 
 from __future__ import annotations

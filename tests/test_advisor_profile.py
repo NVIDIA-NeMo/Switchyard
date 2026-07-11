@@ -27,12 +27,28 @@ from switchyard.lib.profiles import (
 )
 from switchyard.lib.profiles.table import profile_config_type
 from switchyard.lib.stats_accumulator import StatsAccumulator
+from switchyard_rust.core import ChatRequestType
 
 
 def _config(**overrides) -> AdvisorConfig:
+    # Formats pinned: an omitted format coerces to openai, which the
+    # review_gate validator rejects for the executor tier.
     base: dict = {
-        "executor": {"model": "exec-model", "base_url": "http://exec.test", "api_key": "k"},
-        "advisor": {"model": "adv-model", "base_url": "http://adv.test", "api_key": "k"},
+        "executor": {"model": "exec-model", "base_url": "http://exec.test", "api_key": "k",
+                     "format": "anthropic"},
+        "advisor": {"model": "adv-model", "base_url": "http://adv.test", "api_key": "k",
+                    "format": "anthropic"},
+    }
+    base.update(overrides)
+    return AdvisorConfig(**base)
+
+
+def _openai_config(**overrides) -> AdvisorConfig:
+    base: dict = {
+        "executor": {"model": "qwen/qwen3-max", "base_url": "http://exec.test",
+                     "api_key": "k", "format": "openai"},
+        "advisor": {"model": "deepseek/deepseek-r2", "base_url": "http://adv.test",
+                    "api_key": "k", "format": "openai"},
     }
     base.update(overrides)
     return AdvisorConfig(**base)
@@ -102,6 +118,20 @@ class TestProfileStructure:
         )
         assert backend._stats is stats
 
+    def test_openai_tiers_build_tool_call_backend_on_openai_wire(self) -> None:
+        backend = next(
+            c for c in _advisor_switchyard(_openai_config()).iter_components()
+            if isinstance(c, AdvisorToolCallBackend)
+        )
+        assert backend.supported_request_types == [ChatRequestType.OPENAI_CHAT]
+
+    def test_anthropic_executor_advertises_anthropic_wire(self) -> None:
+        backend = next(
+            c for c in _advisor_switchyard(_config()).iter_components()
+            if isinstance(c, AdvisorToolCallBackend)
+        )
+        assert backend.supported_request_types == [ChatRequestType.ANTHROPIC]
+
 
 class TestAdvisorConfig:
     def test_coerces_dict_targets(self) -> None:
@@ -118,6 +148,23 @@ class TestAdvisorConfig:
     def test_rejects_unknown_strategy(self) -> None:
         with pytest.raises(pydantic.ValidationError):
             _config(strategy="both")
+
+    def test_rejects_responses_format_on_either_tier(self) -> None:
+        for tier in ("executor", "advisor"):
+            with pytest.raises(pydantic.ValidationError, match="responses"):
+                _config(**{tier: {"model": "m", "base_url": "http://t", "api_key": "k",
+                                  "format": "responses"}})
+
+    def test_review_gate_rejects_openai_executor(self) -> None:
+        with pytest.raises(pydantic.ValidationError, match="review_gate"):
+            _openai_config(strategy="review_gate")
+
+    def test_tool_call_accepts_mixed_and_openai_tiers(self) -> None:
+        assert _openai_config().strategy == "tool_call"
+        mixed = _config(advisor={"model": "deepseek/deepseek-r2", "base_url": "http://adv.test",
+                                 "api_key": "k", "format": "openai"})
+        assert mixed.advisor.format == BackendFormat.OPENAI
+        assert mixed.executor.format == BackendFormat.ANTHROPIC
 
 
 class TestOpusPairPreset:

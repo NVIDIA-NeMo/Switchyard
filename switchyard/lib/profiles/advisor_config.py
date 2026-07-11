@@ -19,18 +19,29 @@ stronger **advisor**. ``strategy`` selects how the advisor participates:
   it back (REDO) with an optimized plan. See
   ``switchyard/lib/backends/advisor_loop_backend.py``.
 
-Both tiers are ordinary targets, served native Anthropic-Messages (Opus 4.7
-executor + Opus 4.8 advisor on NVIDIA Inference Hub) — no OpenAI translation, so
-the client's prompt caching survives.
+Both tiers are ordinary targets; each tier's ``format`` selects its wire
+independently. ``anthropic`` targets are served native Anthropic-Messages with
+the body passed through verbatim (the client's prompt caching survives);
+``openai`` targets (Qwen, DeepSeek, vLLM/NIM, OpenAI) are served OpenAI Chat
+Completions, likewise verbatim. Tiers mix freely under ``tool_call``;
+``review_gate`` supports native-Anthropic executors only, and ``responses``
+targets are rejected (the advisor loop is Chat-shaped).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
+from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget, coerce_llm_target
 from switchyard.lib.profiles.advisor_prompts import (
     ADVISOR_LENGTH_LINE,
     ADVISOR_SYSTEM_PROMPT,
@@ -129,6 +140,31 @@ class AdvisorConfig(BaseModel):
         if not tier.model:
             raise ValueError("target.model must be a non-empty string")
         return tier
+
+    @field_validator("executor", "advisor")
+    @classmethod
+    def _target_format_supported(cls, tier: LlmTarget, info: ValidationInfo) -> LlmTarget:
+        if tier.format == BackendFormat.RESPONSES:
+            raise ValueError(
+                f"{info.field_name}.format 'responses' is not supported by the advisor "
+                "profile (the loop is Chat-shaped); use 'openai' or 'anthropic'"
+            )
+        return tier
+
+    @model_validator(mode="after")
+    def _review_gate_requires_anthropic_executor(self) -> Self:
+        # AUTO is allowed here: it resolves to a concrete format at build time,
+        # where AdvisorLoopBackend's Anthropic-only wiring is the backstop.
+        if self.strategy == "review_gate" and self.executor.format not in (
+            BackendFormat.ANTHROPIC,
+            BackendFormat.AUTO,
+        ):
+            raise ValueError(
+                "strategy 'review_gate' supports only native-Anthropic executors "
+                "(set executor.format: anthropic); use strategy 'tool_call' for "
+                "OpenAI-compatible executors"
+            )
+        return self
 
 
 __all__ = ["AdvisorConfig"]

@@ -31,12 +31,14 @@ This is a near-superset of solo behavior — identical to the bare executor unti
 "done", plus one quality gate — so it is downside-protected (≈ baseline if the
 advisor always approves) while catching premature convergence.
 
-Both tiers are **native Anthropic** (``/v1/messages``, Bearer auth) — no OpenAI
-anywhere. The executor is called by delegating verbatim to an
-:class:`AnthropicNativeBackend`, so the client's ``cache_control`` breakpoints
-reach the upstream unchanged and prompt caching is honored. The gate reads the
-executor's tool use from the Anthropic ``stop_reason``/``tool_use`` content
-blocks. The advisor is consulted via the Anthropic Messages API.
+The executor is **native Anthropic** (``/v1/messages``, Bearer auth): it is
+called by delegating verbatim to an :class:`AnthropicNativeBackend`, so the
+client's ``cache_control`` breakpoints reach the upstream unchanged and prompt
+caching is honored (``AdvisorConfig`` validation rejects non-Anthropic
+executors for this strategy). The gate reads the executor's tool use from the
+Anthropic ``stop_reason``/``tool_use`` content blocks. The advisor tier is
+format-dispatched (``_build_advisor_caller``): Anthropic Messages or OpenAI
+Chat Completions.
 
 Chain integration::
 
@@ -87,6 +89,7 @@ from switchyard_rust.core import (
 from switchyard_rust.translation import TranslationEngine
 
 if TYPE_CHECKING:
+    from switchyard.lib.backends.llm_target import LlmTarget
     from switchyard.lib.proxy_context import ProxyContext
     from switchyard.lib.stats_accumulator import StatsAccumulator
     from switchyard_rust.core import ChatRequest
@@ -313,20 +316,34 @@ class AdvisorLoopBackend(LLMBackend):
 
 
 # ----------------------------------------------------------------------
-# Advisor caller (native Anthropic Messages)
+# Advisor callers
 # ----------------------------------------------------------------------
 
 
 def _build_advisor_caller(config: AdvisorConfig) -> AdvisorCaller:
-    """Build the Anthropic Messages advisor caller for ``config.advisor``."""
-    target = config.advisor
-    return _AnthropicAdvisorCaller(
-        api_key=target.endpoint.api_key,
-        base_url=target.endpoint.base_url,
-        model=target.model,
-        max_tokens=config.advisor_max_tokens,
-        temperature=config.advisor_temperature,
-        timeout=target.endpoint.timeout_secs,
+    """Build the advisor caller for ``config.advisor``, dispatched on its format."""
+    from switchyard.lib.backends.llm_target import BackendFormat
+    from switchyard.lib.backends.multi_llm_backend import resolve_llm_target
+
+    target = resolve_llm_target(config.advisor)
+    if target.format == BackendFormat.ANTHROPIC:
+        return _AnthropicAdvisorCaller(
+            api_key=target.endpoint.api_key,
+            base_url=target.endpoint.base_url,
+            model=target.model,
+            max_tokens=config.advisor_max_tokens,
+            temperature=config.advisor_temperature,
+            timeout=target.endpoint.timeout_secs,
+        )
+    if target.format == BackendFormat.OPENAI:
+        return _OpenAiAdvisorCaller(
+            target=target,
+            max_tokens=config.advisor_max_tokens,
+            temperature=config.advisor_temperature,
+        )
+    raise ValueError(
+        f"advisor tier does not support format {target.format!r}; "
+        "use 'openai' or 'anthropic'"
     )
 
 
@@ -363,6 +380,56 @@ class _AnthropicAdvisorCaller:
             response.raise_for_status()
             data = response.json()
         return _anthropic_text(data), data.get("usage")
+
+
+class _OpenAiAdvisorCaller:
+    """Consults an OpenAI-Chat advisor (``/chat/completions`` via the SDK).
+
+    Covers OSS advisors (DeepSeek, Qwen on vLLM/NIM) and OpenAI. Built with
+    ``max_retries=0`` so a slow or down advisor falls through to the backend's
+    own ``fail_open`` handling at the configured timeout instead of
+    compounding via SDK exponential backoff (same rationale as the LLM
+    classifier's client).
+    """
+
+    def __init__(
+        self, *, target: LlmTarget, max_tokens: int, temperature: float | None,
+    ) -> None:
+        from switchyard.lib.llm_client import OpenAILLMClient
+
+        self._client = OpenAILLMClient(
+            api_key=target.endpoint.api_key,
+            base_url=target.endpoint.base_url,
+            timeout=target.endpoint.timeout_secs,
+            max_retries=0,
+        )
+        self._model = target.model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        # Forward target-level overrides so gateway auth headers and vLLM
+        # chat-template hints configured on the route work here too.
+        self._extra_body = dict(target.extra_body) if target.extra_body else None
+        self._extra_headers = dict(target.extra_headers) if target.extra_headers else None
+
+    async def advise(self, *, system: str, transcript: str) -> tuple[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": transcript},
+            ],
+            "max_tokens": self._max_tokens,
+        }
+        if self._temperature is not None:
+            kwargs["temperature"] = self._temperature
+        if self._extra_body is not None:
+            kwargs["extra_body"] = self._extra_body
+        if self._extra_headers is not None:
+            kwargs["extra_headers"] = self._extra_headers
+        result = await self._client.acompletion(**kwargs)
+        choices = getattr(result, "choices", None) or []
+        content = getattr(getattr(choices[0], "message", None), "content", None) if choices else None
+        return (content or "").strip(), getattr(result, "usage", None)
 
 
 # ----------------------------------------------------------------------

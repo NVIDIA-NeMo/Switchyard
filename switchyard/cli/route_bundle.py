@@ -1160,12 +1160,15 @@ def _advisor_switchyard(
 
     Mirrors :func:`_plan_execute_switchyard`: the ``executor`` / ``advisor``
     tiers and scalar fields go through the shared ``_route_config`` →
-    :meth:`AdvisorConfig.model_validate` path. Both tiers are required and both
-    are typically ``format: anthropic`` (native ``/v1/messages``, so the
-    executor passthrough preserves prompt caching). ``strategy`` selects the
-    advisor mode: ``tool_call`` (default) offers the executor a
-    proxy-intercepted ``advisor`` tool; ``review_gate`` gates the executor with
-    a once-per-session advisor review.
+    :meth:`AdvisorConfig.model_validate` path. Both tiers are required, and
+    each tier's ``format`` selects its wire independently — ``anthropic``
+    (native ``/v1/messages``; the executor passthrough preserves prompt
+    caching) or ``openai`` (``/chat/completions``; Qwen/DeepSeek/vLLM/NIM/
+    OpenAI endpoints). ``responses`` targets are rejected at validation.
+    ``strategy`` selects the advisor mode: ``tool_call`` (default) offers the
+    executor a proxy-intercepted ``advisor`` tool; ``review_gate``
+    (Anthropic-executor-only) gates the executor with a once-per-session
+    advisor review.
     """
     config = AdvisorConfig.model_validate(
         _route_config(route, target_defaults, ("executor", "advisor"))

@@ -1,21 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""``LLMBackend`` that re-creates Anthropic's advisor tool proxy-side (native Anthropic).
+"""``LLMBackend`` that re-creates Anthropic's advisor tool proxy-side, on any Chat wire.
 
 Anthropic's native ``advisor_20260301`` server tool runs the advisor
 sub-inference server-side, so it is unavailable on gateways that only proxy
-model traffic (e.g. NVIDIA Inference Hub). This backend reproduces the
-*executor-triggered* behavior in the proxy:
+model traffic (e.g. NVIDIA Inference Hub) — and it only exists for Anthropic
+models at all. This backend reproduces the *executor-triggered* behavior in
+the proxy, for **any** Chat-shaped executor:
 
-1. Offer the executor a real, parameterless ``advisor`` tool (empty
-   ``input_schema`` — like the native tool, the executor signals timing and the
-   proxy supplies context).
-2. Call the executor. If its turn contains ``advisor`` ``tool_use`` blocks,
-   intercept them **before they reach the client**, consult the advisor model
-   on the transcript (including the text the executor produced so far in the
-   turn, mirroring the native tool's context), append the advice as a
-   ``tool_result``, and call the executor again.
+1. Offer the executor a real, parameterless ``advisor`` tool (empty schema —
+   like the native tool, the executor signals timing and the proxy supplies
+   context).
+2. Call the executor. If its turn contains ``advisor`` tool calls, intercept
+   them **before they reach the client**, consult the advisor model on the
+   transcript (including the text the executor produced so far in the turn,
+   mirroring the native tool's context), append the advice as the tool
+   result, and call the executor again.
 3. Loop until the executor returns an advisor-free turn (a real tool call for
    the client, or a final answer), then return that turn.
 
@@ -24,36 +25,52 @@ calls receive a ``max_uses exceeded`` tool result without a consult — the
 executor sees the error and continues, mirroring the native tool's
 ``max_uses_exceeded`` error result.
 
-Both tiers are **native Anthropic** (``/v1/messages``, Bearer auth). The
-executor is called by delegating to an :class:`AnthropicNativeBackend`, so the
-client's ``cache_control`` breakpoints reach the upstream unchanged and prompt
-caching is honored. Steering is injected cache-stably: the executor steering is
-prepended to the system prompt and the advisor length line is appended to the
-**first** user message (both constant across a session's turns; the native
-doc suggests the latest user message, but re-injecting there would shift the
-cached prefix on every turn because the client never sees the injection).
+The executor's wire format is selected by ``config.executor.format`` and
+handled by a private dialect object:
+
+* ``anthropic`` — the executor call is delegated verbatim to an
+  :class:`AnthropicNativeBackend` (``/v1/messages``), so the client's
+  ``cache_control`` breakpoints reach the upstream unchanged and prompt
+  caching is honored. Thinking blocks round-trip verbatim for upstreams that
+  verify signatures.
+* ``openai`` — the executor call is delegated verbatim to an
+  :class:`OpenAiNativeBackend` (``/chat/completions``), covering OSS models
+  (Qwen, DeepSeek on vLLM/NIM) and OpenAI. Vendor-specific assistant fields
+  (e.g. ``reasoning_content``) are dropped from the rebuilt advisor turns so
+  strict endpoints accept the replayed history.
+
+The advisor tier is likewise format-dispatched (see
+``advisor_loop_backend._build_advisor_caller``); tiers mix freely.
+``responses`` targets are rejected — the loop is Chat-shaped.
+
+Steering is injected cache-stably: the executor steering is prepended to the
+system prompt and the advisor length line is appended to the **first** user
+message (both constant across a session's turns; the native doc suggests the
+latest user message, but re-injecting there would shift the cached prefix on
+every turn because the client never sees the injection). The same placement
+holds on the OpenAI wire, where vLLM/OpenAI automatic prefix caching also
+wants a stable prefix.
 
 A turn that mixes advisor and client tool calls is regenerated: the appended
-assistant turn keeps only the advisor ``tool_use`` blocks (plus thinking/text),
-and the sibling client calls are re-issued advice-informed on the next
-iteration. The native API instead pauses with the client calls pending; a
-proxy cannot, because it can neither execute the client's tools nor hand the
-client a turn containing a tool it was never offered.
+assistant turn keeps only the advisor calls (plus text/thinking), and the
+sibling client calls are re-issued advice-informed on the next iteration. The
+native API instead pauses with the client calls pending; a proxy cannot,
+because it can neither execute the client's tools nor hand the client a turn
+containing a tool it was never offered.
 
 Chain integration::
 
     [RequestProcessor*] → AdvisorToolCallBackend → [ResponseProcessor*] → TranslationEngine
 
-Declares ``supported_request_types = [ANTHROPIC]`` and normalizes inbound
-OpenAI / Responses via the TranslationEngine, mirroring
-:class:`AdvisorLoopBackend`. The outer chain's ``StatsResponseProcessor``
-records the terminal turn's token usage; this backend additionally records the
-advisor consults **and the intermediate executor turns** (which the client
-never sees) into the planner bucket, so the run's cost output prices the full
-loop, and stamps ``ctx.selected_model``.
+Declares ``supported_request_types`` for the executor's wire so the
+TranslationEngine normalizes any inbound format to it once. The outer chain's
+``StatsResponseProcessor`` records the terminal turn's token usage; this
+backend additionally records the advisor consults **and the intermediate
+executor turns** (which the client never sees) into the planner bucket, so
+the run's cost output prices the full loop, and stamps ``ctx.selected_model``.
 
-Streaming is single-pass: each executor turn is streamed and buffered while its
-content blocks are reassembled to detect advisor calls; the terminal turn's
+Streaming is single-pass: each executor turn is streamed and buffered while
+its content is reassembled to detect advisor calls; the terminal turn's
 buffered events are replayed verbatim, so the turn the client pays for is
 generated exactly once. Advice is not persisted across client turns (the
 client cannot carry advisor exchanges back); its effect lives in the terminal
@@ -67,7 +84,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from switchyard.lib.backends.advisor_loop_backend import (
     AdvisorCaller,
@@ -77,14 +94,20 @@ from switchyard.lib.backends.advisor_loop_backend import (
     _replay_events,
     _usage_tokens,
 )
-from switchyard.lib.backends.multi_llm_backend import build_native_backend
+from switchyard.lib.backends.llm_target import BackendFormat
+from switchyard.lib.backends.multi_llm_backend import (
+    build_native_backend,
+    resolve_llm_target,
+)
 from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
+from switchyard.lib.chat_response.openai_chat import ResponseStream
 from switchyard.lib.profiles.advisor_config import AdvisorConfig
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.core import (
     ChatRequestType,
     ChatResponse,
     ChatResponseType,
+    request_type_enum,
     request_type_matches,
     request_with_type,
 )
@@ -107,14 +130,20 @@ _TOOL_SUMMARY_DESC_CHARS = 200
 
 @dataclass
 class _ToolCallTurn:
-    """One executor turn, normalized across the streaming / completion paths.
+    """One executor turn, normalized across wire formats and delivery modes.
 
-    ``blocks`` are the turn's reassembled Anthropic content blocks (dicts).
-    Exactly one of ``completion_body`` / ``stream_events`` carries the payload
-    for verbatim replay if the turn is terminal.
+    ``advisor_calls`` are the turn's advisor invocations in the executor's
+    native shape (Anthropic ``tool_use`` blocks / OpenAI ``tool_calls``
+    entries); ``message`` is the format-native assistant payload the dialect
+    rebuilds the feedback turn from (Anthropic content-block list / OpenAI
+    assistant message dict). Exactly one of ``completion_body`` /
+    ``stream_events`` carries the payload for verbatim replay if the turn is
+    terminal.
     """
 
-    blocks: list[dict[str, Any]]
+    advisor_calls: list[dict[str, Any]]
+    text: str
+    message: Any
     latency_ms: float
     input_tokens: int
     output_tokens: int
@@ -122,14 +151,294 @@ class _ToolCallTurn:
     completion_body: Any | None = None
     stream_events: list[Any] | None = None
 
-    @property
-    def text(self) -> str:
-        """The turn's assistant text (joined ``text`` blocks)."""
-        return _blocks_text(self.blocks)
+
+class _WireDialect(Protocol):
+    """Wire-format-specific operations of the advisor tool-call loop."""
+
+    #: ``request_with_type`` discriminator for the executor's wire
+    #: (``"anthropic"`` or ``"openai_chat"``).
+    request_type: str
+
+    def advisor_tool_def(self, *, name: str, description: str) -> dict[str, Any]:
+        """Build the synthetic, parameterless ``advisor`` tool definition."""
+        ...
+
+    def inject_steering(
+        self,
+        body: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        steering: str,
+        length_line: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return (body, messages) with executor steering injected cache-stably."""
+        ...
+
+    def tool_summaries(self, tools: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        """Return (name, description) pairs for the client's tools."""
+        ...
+
+    async def parse_turn(
+        self,
+        response: ChatResponse,
+        *,
+        advisor_tool_name: str,
+        latency_ms: float,
+    ) -> _ToolCallTurn:
+        """Buffer and reassemble an executor response into a ``_ToolCallTurn``."""
+        ...
+
+    def feedback_messages(
+        self, turn: _ToolCallTurn, advice: str,
+    ) -> list[dict[str, Any]]:
+        """Messages appending the advisor turn + its tool result(s)."""
+        ...
+
+    def replay(self, turn: _ToolCallTurn) -> ChatResponse:
+        """Rebuild the buffered terminal turn as a verbatim response."""
+        ...
+
+
+class _AnthropicDialect:
+    """Anthropic Messages wire (``tool_use`` blocks, ``tool_result`` turns)."""
+
+    request_type = "anthropic"
+
+    def advisor_tool_def(self, *, name: str, description: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "description": description,
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+
+    def inject_steering(
+        self,
+        body: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        steering: str,
+        length_line: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        body = {**body, "system": _prepend_system(body.get("system"), steering)}
+        return body, _with_length_line(messages, length_line)
+
+    def tool_summaries(self, tools: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        return [(str(t.get("name", "?")), str(t.get("description", ""))) for t in tools]
+
+    async def parse_turn(
+        self,
+        response: ChatResponse,
+        *,
+        advisor_tool_name: str,
+        latency_ms: float,
+    ) -> _ToolCallTurn:
+        if response.response_type == ChatResponseType.ANTHROPIC_STREAM:
+            events, blocks, usage = await _consume_stream(response.stream)
+            return self._turn(
+                blocks, advisor_tool_name, latency_ms, stream_events=events, **usage,
+            )
+        completion: Any = response.to_body()
+        blocks = [b for b in (completion.get("content") or []) if isinstance(b, dict)]
+        prompt_tokens, completion_tokens = _usage_tokens(completion.get("usage"))
+        cached = (completion.get("usage") or {}).get("cache_read_input_tokens") or 0
+        return self._turn(
+            blocks,
+            advisor_tool_name,
+            latency_ms,
+            input_tokens=prompt_tokens or 0,
+            output_tokens=completion_tokens or 0,
+            cached_tokens=int(cached),
+            completion_body=completion,
+        )
+
+    def _turn(
+        self,
+        blocks: list[dict[str, Any]],
+        advisor_tool_name: str,
+        latency_ms: float,
+        **kwargs: Any,
+    ) -> _ToolCallTurn:
+        advisor_calls = [
+            b for b in blocks
+            if b.get("type") == "tool_use" and b.get("name") == advisor_tool_name
+        ]
+        return _ToolCallTurn(
+            advisor_calls=advisor_calls,
+            text=_blocks_text(blocks),
+            message=blocks,
+            latency_ms=latency_ms,
+            **kwargs,
+        )
+
+    def feedback_messages(
+        self, turn: _ToolCallTurn, advice: str,
+    ) -> list[dict[str, Any]]:
+        # Thinking blocks must round-trip verbatim for upstreams that verify
+        # signatures; sibling client calls are dropped (regenerated next turn).
+        return [
+            {
+                "role": "assistant",
+                "content": _advisor_only_content(turn.message, turn.advisor_calls),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": call.get("id"), "content": advice}
+                    for call in turn.advisor_calls
+                ],
+            },
+        ]
+
+    def replay(self, turn: _ToolCallTurn) -> ChatResponse:
+        if turn.stream_events is not None:
+            return ChatResponse.anthropic_stream(
+                AnthropicResponseStream(_replay_events(turn.stream_events))
+            )
+        return ChatResponse.anthropic_completion(turn.completion_body)
+
+
+class _OpenAiDialect:
+    """OpenAI Chat Completions wire (``tool_calls``, ``role: tool`` results)."""
+
+    request_type = "openai_chat"
+
+    def advisor_tool_def(self, *, name: str, description: str) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def inject_steering(
+        self,
+        body: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        steering: str,
+        length_line: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        # OpenAI carries the system prompt as a leading message, not a body
+        # field. _with_length_line's list branch already emits the OpenAI
+        # content-part shape, so it is shared verbatim.
+        messages = _prepend_system_message(messages, steering)
+        return body, _with_length_line(messages, length_line)
+
+    def tool_summaries(self, tools: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        summaries: list[tuple[str, str]] = []
+        for tool in tools:
+            raw_function = tool.get("function")
+            function = raw_function if isinstance(raw_function, dict) else {}
+            summaries.append(
+                (str(function.get("name", "?")), str(function.get("description", "")))
+            )
+        return summaries
+
+    async def parse_turn(
+        self,
+        response: ChatResponse,
+        *,
+        advisor_tool_name: str,
+        latency_ms: float,
+    ) -> _ToolCallTurn:
+        if response.response_type == ChatResponseType.OPENAI_STREAM:
+            events, message, usage = await _consume_openai_stream(response.stream)
+            return self._turn(
+                message, advisor_tool_name, latency_ms, stream_events=events, **usage,
+            )
+        completion: Any = response.to_body()
+        choices = completion.get("choices") or [{}]
+        message = dict(choices[0].get("message") or {})
+        usage_value = completion.get("usage")
+        prompt_tokens, completion_tokens = _usage_tokens(usage_value)
+        cached = ((usage_value or {}).get("prompt_tokens_details") or {}).get(
+            "cached_tokens"
+        ) or 0
+        return self._turn(
+            message,
+            advisor_tool_name,
+            latency_ms,
+            input_tokens=prompt_tokens or 0,
+            output_tokens=completion_tokens or 0,
+            cached_tokens=int(cached),
+            completion_body=completion,
+        )
+
+    def _turn(
+        self,
+        message: dict[str, Any],
+        advisor_tool_name: str,
+        latency_ms: float,
+        **kwargs: Any,
+    ) -> _ToolCallTurn:
+        return _ToolCallTurn(
+            advisor_calls=_openai_advisor_calls(message, advisor_tool_name),
+            # reasoning_content is intentionally excluded, matching the
+            # Anthropic dialect excluding thinking blocks from the text.
+            text=str(message.get("content") or ""),
+            message=message,
+            latency_ms=latency_ms,
+            **kwargs,
+        )
+
+    def feedback_messages(
+        self, turn: _ToolCallTurn, advice: str,
+    ) -> list[dict[str, Any]]:
+        kept_ids = {call.get("id") for call in turn.advisor_calls}
+        # OpenAI requires exactly one role:"tool" message per tool_call id in
+        # the preceding assistant message; the same advice is fanned out.
+        return [
+            _advisor_only_message(turn.message, kept_ids),
+            *(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("id"),
+                    "content": advice,
+                }
+                for call in turn.advisor_calls
+            ),
+        ]
+
+    def replay(self, turn: _ToolCallTurn) -> ChatResponse:
+        if turn.stream_events is not None:
+            return ChatResponse.openai_stream(
+                ResponseStream(_replay_events(turn.stream_events))
+            )
+        return ChatResponse.openai_completion(turn.completion_body)
+
+
+def _dialect_for_format(fmt: BackendFormat) -> _WireDialect:
+    """Return the wire dialect for a resolved executor format."""
+    if fmt == BackendFormat.ANTHROPIC:
+        return _AnthropicDialect()
+    if fmt == BackendFormat.OPENAI:
+        return _OpenAiDialect()
+    if fmt == BackendFormat.RESPONSES:
+        # Backstop for format: auto resolving to a Responses endpoint; the
+        # config validator rejects an explicit responses format earlier.
+        raise ValueError(
+            "the advisor tool-call loop is Chat-shaped and does not support "
+            "Responses executors; use format 'openai' or 'anthropic'"
+        )
+    raise ValueError(
+        f"advisor executor format {fmt!r} must be resolved before constructing "
+        "AdvisorToolCallBackend (pin format: 'openai' or 'anthropic' when "
+        "supplying executor_backend)"
+    )
 
 
 class AdvisorToolCallBackend(LLMBackend):
-    """Executor backend offering a proxy-intercepted ``advisor`` tool (native Anthropic)."""
+    """Executor backend offering a proxy-intercepted ``advisor`` tool (any Chat wire)."""
 
     #: Absolute backstop on executor calls per request. ``max_uses`` already
     #: bounds consults; this bounds an executor that keeps calling the advisor
@@ -147,8 +456,19 @@ class AdvisorToolCallBackend(LLMBackend):
         self._config = config
         self._stats = stats_accumulator if config.enable_stats else None
         self._translation = TranslationEngine()
-        # The executor is delegated to verbatim so cache_control passes through.
-        self._executor_backend = executor_backend or build_native_backend(config.executor)
+        # Resolve format: auto before dialect selection; injected fakes must
+        # pin a concrete format (probing a fake's endpoint makes no sense).
+        executor_target = (
+            config.executor if executor_backend is not None
+            else resolve_llm_target(config.executor)
+        )
+        self._dialect = _dialect_for_format(executor_target.format)
+        self._request_type = cast(
+            "ChatRequestType", request_type_enum(self._dialect.request_type),
+        )
+        # The executor is delegated to verbatim so caching survives
+        # (cache_control breakpoints on Anthropic; prefix stability on OpenAI).
+        self._executor_backend = executor_backend or build_native_backend(executor_target)
         self._advisor_caller = advisor_caller or _build_advisor_caller(config)
 
     async def startup(self) -> None:
@@ -159,37 +479,47 @@ class AdvisorToolCallBackend(LLMBackend):
 
     @property
     def supported_request_types(self) -> list[ChatRequestType]:
-        """Executor + advisor are native Anthropic Messages."""
-        return [ChatRequestType.ANTHROPIC]
+        """The executor's native wire; inbound formats are normalized to it."""
+        return [self._request_type]
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
         normalized = self._translation.request_to_any_of(
             request, self.supported_request_types,
         )
-        if not request_type_matches(normalized, ChatRequestType.ANTHROPIC):
+        if not request_type_matches(normalized, self._request_type):
             raise TypeError(
-                "AdvisorToolCallBackend expected an Anthropic request after translation"
+                "AdvisorToolCallBackend expected a "
+                f"{self._dialect.request_type} request after translation"
             )
 
         body = dict(normalized.body)
         messages: list[dict[str, Any]] = list(body.get("messages") or [])
         base_tools: list[dict[str, Any]] = list(body.get("tools") or [])
         if self._config.inject_steering:
-            body["system"] = _prepend_system(body.get("system"), self._config.executor_steering)
-            messages = _with_length_line(messages, self._config.advisor_length_line)
-        tools = [*base_tools, self._advisor_tool_def()]
+            body, messages = self._dialect.inject_steering(
+                body,
+                messages,
+                steering=self._config.executor_steering,
+                length_line=self._config.advisor_length_line,
+            )
+        tools = [
+            *base_tools,
+            self._dialect.advisor_tool_def(
+                name=self._config.advisor_tool_name,
+                description=self._config.advisor_tool_description,
+            ),
+        ]
+        tool_summaries = self._dialect.tool_summaries(base_tools)
 
         advisor_uses = 0
         turn: _ToolCallTurn | None = None
         for _ in range(self._HARD_ITERATION_CAP):
             turn_body = {**body, "messages": messages, "tools": tools}
-            turn = await self._run_executor(ctx, request_with_type("anthropic", turn_body))
+            turn = await self._run_executor(
+                ctx, request_with_type(self._dialect.request_type, turn_body),
+            )
 
-            advisor_calls = [
-                b for b in turn.blocks
-                if b.get("type") == "tool_use" and b.get("name") == self._config.advisor_tool_name
-            ]
-            if not advisor_calls:
+            if not turn.advisor_calls:
                 # Real tool call(s) for the client, or a final answer.
                 return await self._finish(ctx, turn)
 
@@ -199,22 +529,11 @@ class AdvisorToolCallBackend(LLMBackend):
 
             if advisor_uses < self._config.max_uses:
                 advisor_uses += 1
-                advice = await self._consult_advisor(messages, turn.text, base_tools)
+                advice = await self._consult_advisor(messages, turn.text, tool_summaries)
             else:
                 advice = _MAX_USES_RESULT
 
-            # Rebuild the assistant turn keeping thinking/text and ONLY the
-            # advisor tool_use blocks; sibling client calls are re-issued
-            # (advice-informed) on the next iteration. Thinking blocks must
-            # round-trip verbatim for upstreams that verify signatures.
-            messages = [
-                *messages,
-                {"role": "assistant", "content": _advisor_only_content(turn.blocks, advisor_calls)},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": call.get("id"), "content": advice}
-                    for call in advisor_calls
-                ]},
-            ]
+            messages = [*messages, *self._dialect.feedback_messages(turn, advice)]
 
         log.warning(
             "AdvisorToolCallBackend: hit hard iteration cap (%d) without a terminal "
@@ -230,7 +549,7 @@ class AdvisorToolCallBackend(LLMBackend):
     # ------------------------------------------------------------------
 
     async def _run_executor(self, ctx: ProxyContext, request: ChatRequest) -> _ToolCallTurn:
-        """Call the executor, buffering its response and reassembling content blocks."""
+        """Call the executor, buffering its response and reassembling the turn."""
         started = time.monotonic()
         try:
             response = await self._executor_backend.call(ctx, request)
@@ -241,22 +560,10 @@ class AdvisorToolCallBackend(LLMBackend):
             raise
 
         latency_ms = (time.monotonic() - started) * 1000.0
-        if response.response_type == ChatResponseType.ANTHROPIC_STREAM:
-            events, blocks, usage = await _consume_stream(response.stream)
-            return _ToolCallTurn(
-                blocks=blocks, latency_ms=latency_ms, stream_events=events, **usage,
-            )
-        completion: Any = response.to_body()
-        blocks = [b for b in (completion.get("content") or []) if isinstance(b, dict)]
-        prompt_tokens, completion_tokens = _usage_tokens(completion.get("usage"))
-        cached = (completion.get("usage") or {}).get("cache_read_input_tokens") or 0
-        return _ToolCallTurn(
-            blocks=blocks,
+        return await self._dialect.parse_turn(
+            response,
+            advisor_tool_name=self._config.advisor_tool_name,
             latency_ms=latency_ms,
-            input_tokens=prompt_tokens or 0,
-            output_tokens=completion_tokens or 0,
-            cached_tokens=int(cached),
-            completion_body=completion,
         )
 
     async def _finish(self, ctx: ProxyContext, turn: _ToolCallTurn) -> ChatResponse:
@@ -265,11 +572,7 @@ class AdvisorToolCallBackend(LLMBackend):
         ctx.backend_call_latency_ms = turn.latency_ms
         if self._stats is not None:
             await self._stats.record_success(self._config.executor.model, turn.latency_ms)
-        if turn.stream_events is not None:
-            return ChatResponse.anthropic_stream(
-                AnthropicResponseStream(_replay_events(turn.stream_events))
-            )
-        return ChatResponse.anthropic_completion(turn.completion_body)
+        return self._dialect.replay(turn)
 
     async def _record_internal_turn(self, turn: _ToolCallTurn) -> None:
         """Price a proxy-internal executor turn into the planner bucket."""
@@ -291,7 +594,7 @@ class AdvisorToolCallBackend(LLMBackend):
         self,
         messages: list[dict[str, Any]],
         current_turn_text: str,
-        tools: list[dict[str, Any]],
+        tool_summaries: list[tuple[str, str]],
     ) -> str:
         """Consult the advisor on the transcript and return its guidance.
 
@@ -299,7 +602,7 @@ class AdvisorToolCallBackend(LLMBackend):
         so the executor can proceed; the failed call still counts toward
         ``max_uses`` at the call site, bounding retries against a down advisor.
         """
-        transcript = self._serialize_transcript(messages, current_turn_text, tools)
+        transcript = self._serialize_transcript(messages, current_turn_text, tool_summaries)
         started = time.monotonic()
         try:
             advice, usage = await self._advisor_caller.advise(
@@ -334,7 +637,7 @@ class AdvisorToolCallBackend(LLMBackend):
         self,
         messages: list[dict[str, Any]],
         current_turn_text: str,
-        tools: list[dict[str, Any]],
+        tool_summaries: list[tuple[str, str]],
     ) -> str:
         """Serialize the conversation for the advisor, newest turns kept first.
 
@@ -346,10 +649,10 @@ class AdvisorToolCallBackend(LLMBackend):
         consult is about.
         """
         sections: list[str] = []
-        if tools:
+        if tool_summaries:
             summary = "\n".join(
-                f"- {t.get('name', '?')}: {str(t.get('description', ''))[:_TOOL_SUMMARY_DESC_CHARS]}"
-                for t in tools
+                f"- {name}: {desc[:_TOOL_SUMMARY_DESC_CHARS]}"
+                for name, desc in tool_summaries
             )
             sections.append(f"Tools available to the executor:\n{summary}")
 
@@ -377,25 +680,9 @@ class AdvisorToolCallBackend(LLMBackend):
         )
         return "\n\n".join(sections)
 
-    # ------------------------------------------------------------------
-    # Request shaping
-    # ------------------------------------------------------------------
-
-    def _advisor_tool_def(self) -> dict[str, Any]:
-        """The synthetic, parameterless ``advisor`` tool (Anthropic shape)."""
-        return {
-            "name": self._config.advisor_tool_name,
-            "description": self._config.advisor_tool_description,
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            },
-        }
-
 
 # ----------------------------------------------------------------------
-# Module-level helpers
+# Anthropic-wire helpers
 # ----------------------------------------------------------------------
 
 
@@ -482,7 +769,8 @@ def _with_length_line(
     injection, so re-injecting into each turn's newest message would shift the
     upstream cache prefix every turn. The first user message is constant across
     a session, keeping the prefix stable; the advisor still reads the line via
-    the forwarded transcript.
+    the forwarded transcript. The list branch emits ``{"type": "text", ...}``
+    parts, valid on both the Anthropic and OpenAI wires.
     """
     msgs = [dict(m) for m in messages]
     for msg in msgs:
@@ -495,6 +783,139 @@ def _with_length_line(
             msg["content"] = f"{content or ''}\n\n{line}".lstrip()
         break
     return msgs
+
+
+# ----------------------------------------------------------------------
+# OpenAI-wire helpers
+# ----------------------------------------------------------------------
+
+
+async def _consume_openai_stream(
+    stream: Any,
+) -> tuple[list[Any], dict[str, Any], dict[str, int]]:
+    """Buffer an OpenAI Chat stream; reassemble the assistant message and usage.
+
+    Events are the ``chat.completion.chunk`` dicts the native backend's SSE
+    parser yields (``[DONE]`` is consumed upstream and never appears; the
+    backend force-injects ``stream_options.include_usage`` so a final usage
+    chunk normally arrives). ``delta.tool_calls`` fragments merge by ``index``:
+    non-empty ``id``/``name`` replace, ``arguments`` fragments concatenate.
+    """
+    events: list[Any] = []
+    text_parts: list[str] = []
+    slots: dict[int, dict[str, str]] = {}
+    usage = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+    async for event in stream:
+        events.append(event)
+        chunk_usage = _ev(event, "usage")
+        if isinstance(chunk_usage, dict):
+            usage["input_tokens"] = int(chunk_usage.get("prompt_tokens") or 0)
+            usage["output_tokens"] = int(chunk_usage.get("completion_tokens") or 0)
+            details = chunk_usage.get("prompt_tokens_details") or {}
+            usage["cached_tokens"] = int(details.get("cached_tokens") or 0)
+        choices = _ev(event, "choices") or []
+        delta = _ev(choices[0], "delta") if choices else None
+        if delta is None:
+            continue
+        piece = _ev(delta, "content")
+        if isinstance(piece, str):
+            text_parts.append(piece)
+        for fragment in _ev(delta, "tool_calls") or []:
+            index = int(_ev(fragment, "index") or 0)
+            slot = slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
+            fragment_id = _ev(fragment, "id")
+            if isinstance(fragment_id, str) and fragment_id:
+                slot["id"] = fragment_id
+            function = _ev(fragment, "function") or {}
+            name = _ev(function, "name")
+            if isinstance(name, str) and name:
+                slot["name"] = name
+            arguments = _ev(function, "arguments")
+            if isinstance(arguments, str):
+                slot["arguments"] += arguments
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(text_parts) or None,
+    }
+    if slots:
+        message["tool_calls"] = [
+            {
+                # A missing id (some OSS servers omit it in deltas) gets a
+                # synthesized one so the tool result can reference it.
+                "id": slot["id"] or f"call_switchyard_{index}",
+                "type": "function",
+                "function": {
+                    "name": slot["name"],
+                    # Empty arguments become "{}" so strict endpoints accept
+                    # the replayed history.
+                    "arguments": slot["arguments"] or "{}",
+                },
+            }
+            for index, slot in sorted(slots.items())
+        ]
+    return events, message, usage
+
+
+def _openai_advisor_calls(
+    message: dict[str, Any], tool_name: str,
+) -> list[dict[str, Any]]:
+    """The message's advisor ``tool_calls``, detected by function name.
+
+    Detection is by tool-call presence, never ``finish_reason`` — some OSS
+    servers mislabel tool-call turns as ``stop``.
+    """
+    return [
+        tc for tc in (message.get("tool_calls") or [])
+        if isinstance(tc, dict)
+        and (tc.get("function") or {}).get("name") == tool_name
+    ]
+
+
+def _advisor_only_message(
+    message: dict[str, Any], kept_ids: set[Any],
+) -> dict[str, Any]:
+    """The assistant message with sibling (non-advisor) tool calls dropped.
+
+    Key-whitelisted on purpose: vendor fields such as ``reasoning_content``
+    are dropped so strict endpoints (OpenAI proper) accept the round-trip;
+    the advisor already saw the turn's text via the transcript.
+    """
+    return {
+        "role": "assistant",
+        "content": message.get("content"),
+        "tool_calls": [
+            tc for tc in (message.get("tool_calls") or [])
+            if isinstance(tc, dict) and tc.get("id") in kept_ids
+        ],
+    }
+
+
+def _prepend_system_message(
+    messages: list[dict[str, Any]], prefix: str,
+) -> list[dict[str, Any]]:
+    """Prepend steering to the first ``system``/``developer`` message.
+
+    When the request carries no system-role message at all, one is inserted at
+    index 0 so the steering still leads the prompt (and the prefix cache stays
+    stable across the session's turns).
+    """
+    msgs = [dict(m) for m in messages]
+    for msg in msgs:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            msg["content"] = [{"type": "text", "text": prefix}, *content]
+        else:
+            msg["content"] = f"{prefix}\n\n{content or ''}".rstrip()
+        return msgs
+    return [{"role": "system", "content": prefix}, *msgs]
+
+
+# ----------------------------------------------------------------------
+# Audit
+# ----------------------------------------------------------------------
 
 
 def _audit_advisor(*, error: str | None, usage: Any, latency_ms: float) -> None:

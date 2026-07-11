@@ -25,9 +25,12 @@ from switchyard.lib.backends.advisor_loop_backend import (
     _AnthropicAdvisorCaller,
     _build_advisor_caller,
     _messages_url,
+    _OpenAiAdvisorCaller,
     _parse_verdict,
     _session_key,
+    _usage_tokens,
 )
+from switchyard.lib.backends.llm_target import coerce_llm_target
 from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
 from switchyard.lib.profiles.advisor_config import AdvisorConfig
 from switchyard.lib.proxy_context import ProxyContext
@@ -272,6 +275,46 @@ def test_session_key_stable_across_turns() -> None:
 
 def test_build_advisor_caller_is_anthropic() -> None:
     assert isinstance(_build_advisor_caller(_config()), _AnthropicAdvisorCaller)
+
+
+def test_build_advisor_caller_dispatches_openai() -> None:
+    config = _config(advisor={"model": "deepseek/deepseek-r2", "base_url": "http://adv.test",
+                              "api_key": "k", "format": "openai"})
+    assert isinstance(_build_advisor_caller(config), _OpenAiAdvisorCaller)
+
+
+@respx.mock
+async def test_openai_advisor_hits_chat_completions_endpoint() -> None:
+    route = respx.post("https://adv.example/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "id": "chatcmpl-x", "object": "chat.completion",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": " use a heap "}}],
+            "usage": {"prompt_tokens": 42, "completion_tokens": 6},
+        })
+    )
+    target = coerce_llm_target({
+        "model": "deepseek/deepseek-r2", "base_url": "https://adv.example/v1",
+        "api_key": "secret-key", "format": "openai",
+        "extra_headers": {"X-Gateway": "test"},
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }, default_id="advisor")
+    caller = _OpenAiAdvisorCaller(target=target, max_tokens=256, temperature=None)
+
+    text, usage = await caller.advise(system="advise this", transcript="conversation")
+
+    assert text == "use a heap"
+    prompt_tokens, completion_tokens = _usage_tokens(usage)
+    assert (prompt_tokens, completion_tokens) == (42, 6)
+    request = route.calls.last.request
+    assert request.headers["authorization"] == "Bearer secret-key"
+    assert request.headers["x-gateway"] == "test"
+    body = json.loads(request.content)
+    assert body["messages"][0] == {"role": "system", "content": "advise this"}
+    assert body["messages"][1] == {"role": "user", "content": "conversation"}
+    assert body["max_tokens"] == 256
+    assert "temperature" not in body
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 @respx.mock
