@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, cast
 
 from switchyard.lib.backends.deterministic_routing_llm_backend import (
@@ -19,12 +20,14 @@ from switchyard.lib.processors.escalation_judge_request_processor import (
 from switchyard.lib.processors.llm_classifier import ClassifierCompletion
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.session_affinity import CTX_SESSION_KEY, SessionAffinity
+from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 
 
 class _FakeJudgeClient:
-    def __init__(self, response: str | Exception) -> None:
+    def __init__(self, response: str | Exception, usage: Any | None = None) -> None:
         self.response = response
+        self.usage = usage
         self.calls: list[dict[str, str]] = []
 
     async def classify(
@@ -41,7 +44,7 @@ class _FakeJudgeClient:
         })
         if isinstance(self.response, Exception):
             raise self.response
-        return ClassifierCompletion(content=self.response)
+        return ClassifierCompletion(content=self.response, usage=self.usage)
 
 
 def _verdict_json(escalate: bool, reason: str = "same error repeating") -> str:
@@ -134,6 +137,143 @@ async def test_judge_failure_fails_open_to_weak_without_pin() -> None:
     await processor.process(ctx, _request())
     assert ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
     assert await affinity.pinned(ProxyContext(), _request()) is None
+
+
+async def test_confirmations_require_consecutive_escalates() -> None:
+    """With confirmations=2, one escalate verdict stays weak; the second latches."""
+    processor, fake, affinity = _processor(_verdict_json(True), escalate_confirmations=2)
+
+    ctx = ProxyContext()
+    await processor.process(ctx, _request(n_assistant_turns=3))
+    assert ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["escalate"] is True
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["confirmed"] is False
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["streak"] == 1
+    assert await affinity.pinned(ProxyContext(), _request()) is None
+
+    ctx = ProxyContext()
+    await processor.process(ctx, _request(n_assistant_turns=4))
+    assert ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "strong"
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["confirmed"] is True
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["streak"] == 2
+
+
+async def test_confirmation_window_tolerates_intervening_decline() -> None:
+    """window=3: escalate -> decline -> escalate confirms (recurring trouble)."""
+    affinity = SessionAffinity(enabled=True)
+    fake = _FakeJudgeClient(_verdict_json(True))
+    processor = EscalationJudgeRequestProcessor(
+        EscalationJudgeConfig(
+            model="judge-model", escalate_confirmations=2, confirmation_window=3,
+        ),
+        affinity=affinity,
+        client=fake,
+    )
+
+    await processor.process(ProxyContext(), _request(n_assistant_turns=3))
+    fake.response = _verdict_json(False, "")
+    await processor.process(ProxyContext(), _request(n_assistant_turns=4))
+    fake.response = _verdict_json(True)
+    ctx = ProxyContext()
+    await processor.process(ctx, _request(n_assistant_turns=5))
+
+    assert ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "strong"
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["confirmed"] is True
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["streak"] == 2
+
+
+async def test_confirmation_window_expires_after_enough_declines() -> None:
+    """window=2: two declines between fires expire the streak."""
+    affinity = SessionAffinity(enabled=True)
+    fake = _FakeJudgeClient(_verdict_json(True))
+    processor = EscalationJudgeRequestProcessor(
+        EscalationJudgeConfig(
+            model="judge-model", escalate_confirmations=2, confirmation_window=2,
+        ),
+        affinity=affinity,
+        client=fake,
+    )
+
+    await processor.process(ProxyContext(), _request(n_assistant_turns=3))
+    fake.response = _verdict_json(False, "")
+    await processor.process(ProxyContext(), _request(n_assistant_turns=4))
+    await processor.process(ProxyContext(), _request(n_assistant_turns=5))
+    fake.response = _verdict_json(True)
+    ctx = ProxyContext()
+    await processor.process(ctx, _request(n_assistant_turns=6))
+
+    assert ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["streak"] == 1
+    assert (
+        ctx.metadata[CTX_ESCALATION_VERDICT]["confirmed"] is False
+    )
+
+
+async def test_confirmations_streak_resets_on_decline() -> None:
+    """escalate -> decline -> escalate never latches with confirmations=2."""
+    affinity = SessionAffinity(enabled=True)
+    fake = _FakeJudgeClient(_verdict_json(True))
+    processor = EscalationJudgeRequestProcessor(
+        EscalationJudgeConfig(model="judge-model", escalate_confirmations=2),
+        affinity=affinity,
+        client=fake,
+    )
+
+    await processor.process(ProxyContext(), _request(n_assistant_turns=3))
+    fake.response = _verdict_json(False, "")
+    await processor.process(ProxyContext(), _request(n_assistant_turns=4))
+    fake.response = _verdict_json(True)
+    ctx = ProxyContext()
+    await processor.process(ctx, _request(n_assistant_turns=5))
+
+    assert ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
+    assert ctx.metadata[CTX_ESCALATION_VERDICT]["streak"] == 1
+    assert await affinity.pinned(ProxyContext(), _request()) is None
+
+
+async def test_judge_usage_recorded_into_classifier_stats() -> None:
+    """Judge token spend lands in the classifier bucket of the stats snapshot."""
+    stats = StatsAccumulator()
+    affinity = SessionAffinity(enabled=True)
+    fake = _FakeJudgeClient(
+        _verdict_json(False, ""),
+        usage=SimpleNamespace(
+            prompt_tokens=321,
+            completion_tokens=17,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=100),
+        ),
+    )
+    processor = EscalationJudgeRequestProcessor(
+        EscalationJudgeConfig(model="judge-model"),
+        affinity=affinity,
+        client=fake,
+        stats_accumulator=stats,
+    )
+
+    await processor.process(ProxyContext(), _request())
+
+    snapshot = await stats.snapshot()
+    judge = snapshot["classifier"]["models"]["judge-model"]
+    assert judge["calls"] == 1
+    assert judge["prompt_tokens"] == 321
+    assert judge["completion_tokens"] == 17
+    assert judge["model_call_latency"]["count"] == 1
+
+
+async def test_judge_failure_recorded_as_classifier_error() -> None:
+    stats = StatsAccumulator()
+    fake = _FakeJudgeClient(RuntimeError("judge down"))
+    processor = EscalationJudgeRequestProcessor(
+        EscalationJudgeConfig(model="judge-model"),
+        affinity=SessionAffinity(enabled=True),
+        client=fake,
+        stats_accumulator=stats,
+    )
+
+    await processor.process(ProxyContext(), _request())
+
+    snapshot = await stats.snapshot()
+    assert snapshot["classifier"]["total_errors"] == 1
 
 
 async def test_markdown_fenced_verdict_is_parsed() -> None:

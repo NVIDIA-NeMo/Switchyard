@@ -64,16 +64,24 @@ class EscalationRouterProfileConfig:
             warmup_turns=0,
         )
 
+        # DeepSeek judges get the same benchmark-gateway defaults as DeepSeek
+        # tiers (``X-Inference-Priority: batch``) so their calls land on the
+        # relaxed-timeout gateway alongside the routed tier traffic.
+        judge_target = _apply_deepseek_overrides(config.judge)
         judge_config = EscalationJudgeConfig(
-            model=config.judge.model,
-            api_key=config.judge.api_key,
-            base_url=config.judge.base_url,
-            timeout_s=config.judge.endpoint.timeout_secs or 5.0,
+            model=judge_target.model,
+            api_key=judge_target.api_key,
+            base_url=judge_target.base_url,
+            timeout_s=judge_target.endpoint.timeout_secs or 5.0,
             system_prompt=config.judge_system_prompt or ESCALATION_JUDGE_SYSTEM_PROMPT,
             min_judge_turn=config.judge_min_turn,
+            escalate_confirmations=config.judge_escalate_confirmations,
+            confirmation_window=config.judge_confirmation_window,
+            disable_reasoning=config.judge_disable_reasoning,
             recent_turn_window=config.judge_recent_turn_window,
+            window_message_chars=config.judge_window_message_chars,
             max_request_chars=config.judge_max_request_chars,
-            extra_headers=config.judge.extra_headers or None,
+            extra_headers=judge_target.extra_headers or None,
         )
         request_processors: list[Any] = [
             ReasoningEffortNormalizer(),

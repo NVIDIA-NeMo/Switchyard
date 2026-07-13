@@ -76,6 +76,7 @@ profiles are the reference set under `switchyard/lib/profiles/`.
 | A new role-shaped abstraction invented outside the backend role. | Keep pre-call logic in request-side profile code or plain request components, call logic in `LLMBackend`, post-call logic in response-side profile code or plain response components, and final wire conversion in `TranslationEngine`. |
 | Adding an OpenRouter-specific backend or translator just to point at `https://openrouter.ai/api/v1`. | Route it through the OpenAI-compatible backend/profile and provider configuration. Keep provider-specific code for actual protocol differences. |
 | Making route YAML declare arbitrary Python processors. | Route YAML is deployment config for supported profile route types. Runtime-only hooks such as intake are injected by the caller through the route-table builder kwargs. |
+| Hand-billing token costs from raw stats fields — charging `prompt_tokens` at the fresh-input rate and adding `cached_tokens` on top. | `prompt_tokens` in stats snapshots is **total** input: `uncached + cached_tokens + cache_creation_tokens` (Anthropic's three sibling usage counters are normalized into it). Fresh input = `prompt − cached − creation`. Use the built-in estimators — the snapshot's own `cost_estimate`, `estimate_model_cost()` in `cost_estimator.py`, or Rust `stats/cost.rs` — instead of ad-hoc math; ignoring the subtraction overstates cost ~5× on cache-heavy agentic traffic. |
 
 ## When Something Genuinely Doesn't Fit
 

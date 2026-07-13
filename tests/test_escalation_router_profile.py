@@ -76,11 +76,39 @@ def test_build_composes_judge_chain() -> None:
     assert profile._fallback_target_on_evict == "strong"
 
 
+def test_build_pins_deepseek_judge_to_batch_gateway() -> None:
+    """A DeepSeek judge inherits the benchmark-gateway header like DeepSeek tiers."""
+    profile = EscalationRouterProfileConfig.from_config(
+        _config(
+            judge=LlmTarget(
+                id="judge",
+                model="nvidia/deepseek-ai/deepseek-v4-flash",
+                base_url="https://judge.invalid/v1",
+                api_key="sk-judge",
+            ),
+        ),
+    ).build()
+
+    judge = profile._request_processors[1]
+    assert isinstance(judge, EscalationJudgeRequestProcessor)
+    assert judge._config.extra_headers == {"X-Inference-Priority": "batch"}
+
+
+def test_build_non_deepseek_judge_has_no_default_headers() -> None:
+    profile = EscalationRouterProfileConfig.from_config(_config()).build()
+
+    judge = profile._request_processors[1]
+    assert isinstance(judge, EscalationJudgeRequestProcessor)
+    assert judge._config.extra_headers is None
+
+
 def test_build_threads_judge_settings() -> None:
     profile = EscalationRouterProfileConfig.from_config(
         _config(
             judge_min_turn=5,
             judge_recent_turn_window=20,
+            judge_window_message_chars=500,
+            judge_disable_reasoning=False,
             session_key_depth=2,
         ),
     ).build()
@@ -89,6 +117,8 @@ def test_build_threads_judge_settings() -> None:
     assert isinstance(judge, EscalationJudgeRequestProcessor)
     assert judge._config.min_judge_turn == 5
     assert judge._config.recent_turn_window == 20
+    assert judge._config.window_message_chars == 500
+    assert judge._config.disable_reasoning is False
     assert judge._config.system_prompt == ESCALATION_JUDGE_SYSTEM_PROMPT
     assert judge._session_key_depth == 2
     assert judge._affinity.enabled
