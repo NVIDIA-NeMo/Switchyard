@@ -12,7 +12,10 @@ Build a target set, pick an algorithm, run a request:
 
 ```rust
 use libsy::llm_class::LlmClassifierOrchAlgo;
-use libsy::{text_request, Algorithm, Context, LlmClient, LlmTarget, LlmTargetSet, Request};
+use libsy::{
+    Algorithm, Context, LlmClient, LlmContentBlock, LlmMessage, LlmRequest, LlmResponse,
+    LlmResponseOutput, LlmRole, LlmTarget, LlmTargetSet, Request,
+};
 use std::sync::Arc;
 
 // Targets the algorithm routes among, each backed by your LlmClient (see below).
@@ -25,7 +28,11 @@ let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
 ));
 
 let req = Request {
-    llm_request: text_request("auto", "explain tail latency"),
+    llm_request: LlmRequest {
+        model: Some("auto".into()),
+        messages: vec![LlmMessage::text(LlmRole::User, "explain tail latency")],
+        ..LlmRequest::default()
+    },
     raw_request: None,
     metadata: None,
 };
@@ -51,9 +58,11 @@ pub struct Response {
 ```
 
 `LlmRequest` and `LlmResponse` are semantic aliases over Switchyard's shared
-conversation IR. Text-only algorithms and examples can use `text_request`,
-`text_response`, `request_text`, and `response_text`; richer provider details can ride
-in the IR itself or in `raw_request` when a host needs exact source-body fidelity.
+conversation IR. Construct and inspect the IR directly so tools, sampling parameters,
+reasoning, and provider extensions remain visible instead of being hidden behind a
+second convenience API. `raw_request` remains available when a host needs exact
+source-body fidelity. The related `LlmMessage`, `LlmContentBlock`, `LlmResponseOutput`,
+and `LlmRole` aliases live in `libsy::types` and are also re-exported from `libsy`.
 
 ## Targets and clients
 
@@ -71,7 +80,17 @@ impl LlmClient for MyClient {
         let model = routed.decision.selected_model();   // the routed target — map it to a provider id
         // routed.request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
-        Ok(Response { llm_response: text_response(completion), metadata: None })
+        Ok(Response {
+            llm_response: LlmResponse {
+                outputs: vec![LlmResponseOutput {
+                    role: LlmRole::Assistant,
+                    content: vec![LlmContentBlock::Text { text: completion }],
+                    stop_reason: None,
+                }],
+                ..LlmResponse::default()
+            },
+            metadata: None,
+        })
     }
 }
 ```
@@ -160,10 +179,12 @@ impl Algorithm for LlmClassifierOrchAlgo {
         driver.info(classify_decision.clone()).await?;
         let classify_response =
             driver.call_llm_target(&classifier, classify_req, classify_decision).await?;
-        let score = response_text(&classify_response.llm_response)
-            .trim()
-            .parse::<f64>()
-            .ok();
+        let score = classify_response.llm_response.first_output()
+            .and_then(|output| output.content.first())
+            .and_then(|block| match block {
+                LlmContentBlock::Text { text } => text.trim().parse::<f64>().ok(),
+                _ => None,
+            });
 
         // 2. Route: strong if score >= threshold, else weak (fail open on None).
         let model = if score.map_or(true, |s| s >= self.threshold) { &self.strong_model } else { &self.weak_model };

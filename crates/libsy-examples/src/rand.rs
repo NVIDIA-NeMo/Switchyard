@@ -97,7 +97,7 @@ impl Algorithm for RandomOrchAlgo {
 mod tests {
     use super::*;
     use libsy::{
-        response_text, text_request, text_response, LlmClient, LlmTarget, Response, RoutedRequest,
+        LlmClient, LlmMessage, LlmRequest, LlmResponse, LlmRole, LlmTarget, Response, RoutedRequest,
     };
     use std::collections::HashSet;
 
@@ -112,7 +112,10 @@ mod tests {
             routed: RoutedRequest,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             Ok(Response {
-                llm_response: text_response(routed.decision.selected_model()),
+                llm_response: LlmResponse {
+                    model: Some(routed.decision.selected_model().to_string()),
+                    ..LlmResponse::default()
+                },
                 metadata: None,
             })
         }
@@ -120,7 +123,11 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            llm_request: text_request("auto", "hi"),
+            llm_request: LlmRequest {
+                model: Some("auto".to_string()),
+                messages: vec![LlmMessage::text(LlmRole::User, "hi")],
+                ..LlmRequest::default()
+            },
             raw_request: None,
             metadata: None,
         }
@@ -147,7 +154,7 @@ mod tests {
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let orch = orch(&["only/model"]);
         let (trace, response) = orch.clone().run(Context::default(), request()).await?;
-        assert_eq!(response_text(&response.llm_response), "only/model");
+        assert_eq!(response.llm_response.model.as_deref(), Some("only/model"));
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].selected_model(), "only/model");
         Ok(())
@@ -160,7 +167,7 @@ mod tests {
         let orch = orch(&names);
         for _ in 0..50 {
             let (trace, response) = orch.clone().run(Context::default(), request()).await?;
-            let selected = response_text(&response.llm_response);
+            let selected = response.llm_response.model.unwrap_or_default();
             assert!(
                 names.contains(&selected.as_str()),
                 "selected {selected} not in target set"
@@ -178,7 +185,7 @@ mod tests {
         let mut seen = HashSet::new();
         for _ in 0..100 {
             let (_, response) = orch.clone().run(Context::default(), request()).await?;
-            seen.insert(response_text(&response.llm_response));
+            seen.insert(response.llm_response.model.unwrap_or_default());
         }
         // 100 uniform draws over two targets: both should appear (miss ~ 2^-99).
         assert_eq!(

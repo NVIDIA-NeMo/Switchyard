@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use libsy::{
-    request_text, response_text, text_request_with_model, Algorithm, Context, Decision, Driver,
+    Algorithm, Context, Decision, Driver, LlmContentBlock, LlmMessage, LlmRequest, LlmRole,
     LlmTargetSet, Request, Response, Signals,
 };
 
@@ -106,18 +106,39 @@ impl Algorithm for LlmClassifierOrchAlgo {
         driver: Driver,
         request: Request,
     ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-        let user_prompt = request_text(&request.llm_request);
-        // The agent's inbound name rides through unchanged on every sub-call; the
-        // model each sub-call actually hits is carried by its decision instead.
-        let inbound = request.llm_request.model.clone();
+        let user_prompt = request
+            .llm_request
+            .instructions
+            .iter()
+            .flat_map(|instruction| instruction.content.iter())
+            .chain(
+                request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.iter()),
+            )
+            .filter_map(|block| match block {
+                LlmContentBlock::Text { text }
+                | LlmContentBlock::Refusal { text }
+                | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
         // 1. Classify: call the classifier target with the score-eliciting prompt.
         let classifier_target = self.target_set.get_target(&self.classifier_model)?;
         let classify_request = Request {
-            llm_request: text_request_with_model(
-                inbound.clone(),
-                format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
-            ),
+            llm_request: LlmRequest {
+                model: request.llm_request.model.clone(),
+                messages: vec![LlmMessage::text(
+                    LlmRole::User,
+                    format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
+                )],
+                ..LlmRequest::default()
+            },
             raw_request: None,
             metadata: request.metadata.clone(),
         };
@@ -131,10 +152,21 @@ impl Algorithm for LlmClassifierOrchAlgo {
         let classify_response = driver
             .call_llm_target(&classifier_target, classify_request, classify_decision)
             .await?;
-        let score = response_text(&classify_response.llm_response)
-            .trim()
-            .parse::<f64>()
-            .ok();
+        let score_text = classify_response
+            .llm_response
+            .outputs
+            .iter()
+            .flat_map(|output| output.content.iter())
+            .filter_map(|block| match block {
+                LlmContentBlock::Text { text }
+                | LlmContentBlock::Refusal { text }
+                | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let score = score_text.trim().parse::<f64>().ok();
 
         // 2. Route: pick strong/weak. Fail open — an unparseable score routes strong.
         let (tier, model) = match score {
@@ -154,7 +186,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
             tier: Some(tier),
         });
         let routed_request = Request {
-            llm_request: text_request_with_model(inbound, user_prompt),
+            llm_request: request.llm_request,
             raw_request: request.raw_request,
             metadata: request.metadata,
         };
@@ -177,7 +209,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 mod tests {
     use super::*;
     use libsy::{
-        request_text, text_request, text_response, LlmClient, LlmTarget, Response, RoutedRequest,
+        LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest,
     };
     use std::sync::Mutex;
 
@@ -197,17 +229,27 @@ mod tests {
             routed: RoutedRequest,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             let name = routed.decision.selected_model().to_string();
-            let completion = if name == self.classifier_model {
-                self.score.clone()
+            let outputs = if name == self.classifier_model {
+                vec![LlmResponseOutput {
+                    role: LlmRole::Assistant,
+                    content: vec![LlmContentBlock::Text {
+                        text: self.score.clone(),
+                    }],
+                    stop_reason: None,
+                }]
             } else {
-                format!("answer from {name}")
+                Vec::new()
             };
             self.seen
                 .lock()
                 .map_err(|_| "lock poisoned")?
                 .push(routed.request);
             Ok(Response {
-                llm_response: text_response(completion),
+                llm_response: LlmResponse {
+                    model: Some(name),
+                    outputs,
+                    ..LlmResponse::default()
+                },
                 metadata: None,
             })
         }
@@ -242,7 +284,11 @@ mod tests {
 
     fn request(prompt: &str) -> Request {
         Request {
-            llm_request: text_request("auto", prompt),
+            llm_request: LlmRequest {
+                model: Some("auto".to_string()),
+                messages: vec![LlmMessage::text(LlmRole::User, prompt)],
+                ..LlmRequest::default()
+            },
             raw_request: None,
             metadata: None,
         }
@@ -270,8 +316,8 @@ mod tests {
             .run(Context::default(), request("solve this proof"))
             .await?;
         assert_eq!(
-            response_text(&response.llm_response),
-            "answer from frontier/model"
+            response.llm_response.model.as_deref(),
+            Some("frontier/model")
         );
         // Trace: [classify, route].
         assert_eq!(trace[0].selected_model(), "router/classifier");
@@ -288,10 +334,7 @@ mod tests {
         let (trace, response) = orch(algo)
             .run(Context::default(), request("say hello"))
             .await?;
-        assert_eq!(
-            response_text(&response.llm_response),
-            "answer from cheap/model"
-        );
+        assert_eq!(response.llm_response.model.as_deref(), Some("cheap/model"));
         let routed = as_classifier(&trace[1])?;
         assert_eq!(routed.tier, Some(ClassifierTier::Weak));
         assert_eq!(routed.score, Some(0.2));
@@ -306,8 +349,8 @@ mod tests {
             .run(Context::default(), request("borderline"))
             .await?;
         assert_eq!(
-            response_text(&response.llm_response),
-            "answer from frontier/model"
+            response.llm_response.model.as_deref(),
+            Some("frontier/model")
         );
         Ok(())
     }
@@ -317,8 +360,8 @@ mod tests {
         let (algo, _) = algo(0.5, "not-a-number");
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
-            response_text(&response.llm_response),
-            "answer from frontier/model"
+            response.llm_response.model.as_deref(),
+            Some("frontier/model")
         );
         let routed = as_classifier(&trace[1])?;
         assert_eq!(routed.tier, Some(ClassifierTier::Strong));
@@ -336,9 +379,15 @@ mod tests {
         let seen = seen.lock().map_err(|_| "lock poisoned")?;
         // Two calls: the classifier (preamble + user text), then the routed model.
         assert_eq!(seen.len(), 2);
-        assert!(request_text(&seen[0].llm_request).contains("prove it"));
-        assert!(request_text(&seen[0].llm_request).contains("frontier model"));
-        assert_eq!(request_text(&seen[1].llm_request), "prove it");
+        let classifier_prompt = seen[0].llm_request.messages[0]
+            .text_content("\n")
+            .ok_or("classifier prompt is not text")?;
+        assert!(classifier_prompt.contains("prove it"));
+        assert!(classifier_prompt.contains("frontier model"));
+        assert_eq!(
+            seen[1].llm_request.messages[0].text_content("\n"),
+            Some("prove it".to_string())
+        );
         Ok(())
     }
 }

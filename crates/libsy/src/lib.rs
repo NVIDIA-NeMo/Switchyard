@@ -58,16 +58,18 @@
 //! ensemble — plus runnable agents live in the `libsy-examples` crate.
 
 mod driver;
+pub mod types;
 
 use std::{error::Error, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use switchyard_translation::{
-    ContentBlock, ConversationRequest, ConversationResponse, Message, ResponseOutput, Role,
-};
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
+
+pub use crate::types::{
+    LlmContentBlock, LlmMessage, LlmRequest, LlmResponse, LlmResponseOutput, LlmRole,
+};
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
@@ -96,9 +98,6 @@ pub struct Metadata {
     pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// Semantic request view algorithms inspect and hand to targets.
-pub type LlmRequest = ConversationRequest;
-
 /// A request entering the orchestrator: the normalized [`LlmRequest`] plus the
 /// original provider payload and correlation [`Metadata`].
 #[derive(Clone)]
@@ -119,9 +118,6 @@ pub struct Request {
 #[derive(Clone)]
 pub struct Signals {}
 
-/// Semantic response view algorithms inspect and return.
-pub type LlmResponse = ConversationResponse;
-
 /// A response leaving the orchestrator: the neutral [`LlmResponse`] plus optional
 /// correlation [`Metadata`].
 #[derive(Clone)]
@@ -130,71 +126,6 @@ pub struct Response {
     pub llm_response: LlmResponse,
     /// Correlation metadata carried through the response.
     pub metadata: Option<Metadata>,
-}
-
-/// Build a text-only request for examples and algorithm-generated subcalls.
-pub fn text_request(model: impl Into<String>, prompt: impl Into<String>) -> LlmRequest {
-    text_request_with_model(Some(model.into()), prompt)
-}
-
-/// Build a text-only request with an optional inbound model name.
-pub fn text_request_with_model(model: Option<String>, prompt: impl Into<String>) -> LlmRequest {
-    LlmRequest {
-        model,
-        messages: vec![Message::text(Role::User, prompt)],
-        ..LlmRequest::default()
-    }
-}
-
-/// Build a text-only assistant response for examples and simple clients.
-pub fn text_response(completion: impl Into<String>) -> LlmResponse {
-    LlmResponse {
-        outputs: vec![ResponseOutput {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: completion.into(),
-            }],
-            stop_reason: None,
-        }],
-        ..LlmResponse::default()
-    }
-}
-
-/// Concatenate text-like request content for algorithms that need a prompt view.
-pub fn request_text(request: &LlmRequest) -> String {
-    let mut parts = Vec::new();
-    for instruction in &request.instructions {
-        collect_text(&instruction.content, &mut parts);
-    }
-    for message in &request.messages {
-        collect_text(&message.content, &mut parts);
-    }
-    parts.join("\n")
-}
-
-/// Concatenate text-like response content for algorithms that need a completion view.
-pub fn response_text(response: &LlmResponse) -> String {
-    let mut parts = Vec::new();
-    for output in &response.outputs {
-        collect_text(&output.content, &mut parts);
-    }
-    parts.join("\n")
-}
-
-fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
-    for block in content {
-        match block {
-            ContentBlock::Text { text }
-            | ContentBlock::Refusal { text }
-            | ContentBlock::Reasoning { text, .. } => parts.push(text.clone()),
-            ContentBlock::Unknown { raw, .. } => {
-                if let Some(text) = raw.as_str() {
-                    parts.push(text.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// A decision/trace object produced by an algorithm.
@@ -581,7 +512,10 @@ mod tests {
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
-                llm_response: text_response(routed.decision.selected_model()),
+                llm_response: LlmResponse {
+                    model: Some(routed.decision.selected_model().to_string()),
+                    ..LlmResponse::default()
+                },
                 metadata: None,
             })
         }
@@ -645,7 +579,11 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            llm_request: text_request("auto", "hi"),
+            llm_request: LlmRequest {
+                model: Some("auto".to_string()),
+                messages: vec![LlmMessage::text(LlmRole::User, "hi")],
+                ..LlmRequest::default()
+            },
             raw_request: None,
             metadata: None,
         }
@@ -682,7 +620,10 @@ mod tests {
                     assert_eq!(call.get_decision().selected_model(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
-                        llm_response: text_response("fulfilled"),
+                        llm_response: LlmResponse {
+                            model: Some("fulfilled".to_string()),
+                            ..LlmResponse::default()
+                        },
                         metadata: None,
                     }))?;
                 }
@@ -690,7 +631,7 @@ mod tests {
                     assert_eq!(decision.selected_model(), "offload/model");
                 }
                 Step::ReturnToAgent(response) => {
-                    final_completion = Some(response_text(&response.llm_response));
+                    final_completion = response.llm_response.model.clone();
                 }
             }
         }
@@ -726,7 +667,7 @@ mod tests {
                 }
                 Step::Decision(_) => {}
                 Step::ReturnToAgent(response) => {
-                    final_completion = Some(response_text(&response.llm_response));
+                    final_completion = response.llm_response.model.clone();
                 }
             }
         }
@@ -745,7 +686,7 @@ mod tests {
             .run(Context::default(), request())
             .await?;
         // TestAlgo calls the first target; EchoClient echoes its name.
-        assert_eq!(response_text(&response.llm_response), "direct/model");
+        assert_eq!(response.llm_response.model.as_deref(), Some("direct/model"));
         assert_eq!(trace[0].selected_model(), "direct/model");
         Ok(())
     }
@@ -785,7 +726,10 @@ mod tests {
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 self.barrier.wait().await;
                 Ok(Response {
-                    llm_response: text_response(routed.decision.selected_model()),
+                    llm_response: LlmResponse {
+                        model: Some(routed.decision.selected_model().to_string()),
+                        ..LlmResponse::default()
+                    },
                     metadata: None,
                 })
             }
@@ -807,7 +751,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 algo.run(Context::default(), request())
                     .await
-                    .map(|(_, response)| response_text(&response.llm_response))
+                    .map(|(_, response)| response.llm_response.model.unwrap_or_default())
             }));
         }
 

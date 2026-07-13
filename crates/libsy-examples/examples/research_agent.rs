@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    response_text, text_request, text_response, Algorithm, Context, LlmClient, LlmTarget,
-    LlmTargetSet, Request, Response, RoutedRequest,
+    Algorithm, Context, LlmClient, LlmContentBlock, LlmMessage, LlmRequest, LlmResponse,
+    LlmResponseOutput, LlmRole, LlmTarget, LlmTargetSet, Request, Response, RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 
@@ -41,7 +41,14 @@ impl LlmClient for StubClient {
             format!("answer from {model}")
         };
         Ok(Response {
-            llm_response: text_response(completion),
+            llm_response: LlmResponse {
+                outputs: vec![LlmResponseOutput {
+                    role: LlmRole::Assistant,
+                    content: vec![LlmContentBlock::Text { text: completion }],
+                    stop_reason: None,
+                }],
+                ..LlmResponse::default()
+            },
             metadata: None,
         })
     }
@@ -70,13 +77,32 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: text_request("auto", step),
+                llm_request: LlmRequest {
+                    model: Some("auto".to_string()),
+                    messages: vec![LlmMessage::text(LlmRole::User, step)],
+                    ..LlmRequest::default()
+                },
                 raw_request: None,
                 metadata: None,
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(response_text(&response.llm_response));
+            notes.push(
+                response
+                    .llm_response
+                    .outputs
+                    .iter()
+                    .flat_map(|output| output.content.iter())
+                    .filter_map(|block| match block {
+                        LlmContentBlock::Text { text }
+                        | LlmContentBlock::Refusal { text }
+                        | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                        LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
         }
         Ok(notes.join("\n"))
     }

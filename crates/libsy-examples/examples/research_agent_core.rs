@@ -13,8 +13,8 @@ use std::error::Error;
 use std::sync::Arc;
 
 use libsy::{
-    response_text, text_request, text_response, Algorithm, Context, Decision, LlmTarget,
-    LlmTargetSet, Request, Response, Step,
+    Algorithm, Context, Decision, LlmContentBlock, LlmMessage, LlmRequest, LlmResponse,
+    LlmResponseOutput, LlmRole, LlmTarget, LlmTargetSet, Request, Response, Step,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use tokio_stream::StreamExt;
@@ -34,7 +34,14 @@ async fn call_model(model: &str) -> Response {
         format!("answer from {model}")
     };
     Response {
-        llm_response: text_response(completion),
+        llm_response: LlmResponse {
+            outputs: vec![LlmResponseOutput {
+                role: LlmRole::Assistant,
+                content: vec![LlmContentBlock::Text { text: completion }],
+                stop_reason: None,
+            }],
+            ..LlmResponse::default()
+        },
         metadata: None,
     }
 }
@@ -62,7 +69,11 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: text_request("auto", step),
+                llm_request: LlmRequest {
+                    model: Some("auto".to_string()),
+                    messages: vec![LlmMessage::text(LlmRole::User, step)],
+                    ..LlmRequest::default()
+                },
                 raw_request: None,
                 metadata: None,
             };
@@ -78,7 +89,24 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(response_text(&response.llm_response));
+                        notes.push(
+                            response
+                                .llm_response
+                                .outputs
+                                .iter()
+                                .flat_map(|output| output.content.iter())
+                                .filter_map(|block| match block {
+                                    LlmContentBlock::Text { text }
+                                    | LlmContentBlock::Refusal { text }
+                                    | LlmContentBlock::Reasoning { text, .. } => {
+                                        Some(text.as_str())
+                                    }
+                                    LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        );
                     }
                 }
             }
