@@ -1,6 +1,6 @@
 name: Getting Started
 
-# Executable coverage for docs/getting_started.md.
+# Executable coverage for docs/getting_started.mdx.
 #
 # Fails when the guide drifts from the product — renamed CLI subcommand,
 # YAML schema change, broken Python snippet, /health regression, etc. The
@@ -10,7 +10,7 @@ name: Getting Started
 on:
   pull_request:
     paths:
-      - "docs/getting_started.md"
+      - "docs/getting_started.mdx"
       - "switchyard/**"
       - "switchyard_rust/**"
       - "tests/getting_started/**"
@@ -20,7 +20,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "docs/getting_started.md"
+      - "docs/getting_started.mdx"
       - "switchyard/**"
       - "switchyard_rust/**"
       - "tests/getting_started/**"
@@ -54,7 +54,7 @@ jobs:
         # the guide. The passthrough→noop fixture lives in
         # tests/getting_started/conftest.py so it only loads when collecting
         # from that subtree.
-        run: uv run pytest tests/getting_started --markdown-docs docs/getting_started.md -v
+        run: uv run pytest tests/getting_started --markdown-docs docs/getting_started.mdx -v
         env:
           # The server-lifecycle test interpolates ${OPENAI_API_KEY} into a
           # noop-backed routes.yaml; the value is never sent upstream. Stub

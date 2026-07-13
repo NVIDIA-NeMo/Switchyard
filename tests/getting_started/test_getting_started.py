@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Executable coverage for ``docs/getting_started.md``."""
+"""Executable coverage for ``docs/getting_started.mdx``."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from switchyard.cli.route_bundle import RouteBundleConfigError, build_route_bund
 from switchyard.cli.switchyard_cli import _build_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GUIDE_PATH = REPO_ROOT / "docs" / "getting_started.md"
+GUIDE_PATH = REPO_ROOT / "docs" / "getting_started.mdx"
 
 #: How long to wait for ``switchyard serve`` to become ready on /health.
 STARTUP_TIMEOUT_S: float = 30.0
@@ -152,7 +152,7 @@ def test_all_yaml_blocks_in_guide_validate_as_route_bundles(
             build_route_bundle_table(payload)
         except RouteBundleConfigError as exc:
             raise AssertionError(
-                f"YAML block {idx} in getting_started.md failed to parse "
+                f"YAML block {idx} in getting_started.mdx failed to parse "
                 f"as a route bundle: {exc}\n\nBlock:\n{block}"
             ) from exc
 

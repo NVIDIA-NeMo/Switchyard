@@ -1,5 +1,8 @@
-# Switchyard Documentation
-
+---
+title: "Home"
+description: "Route, translate, and operate LLM traffic across OpenAI, Anthropic, and compatible backends with NVIDIA NeMo Switchyard."
+position: 1
+---
 Switchyard is a typed control plane for LLM traffic. It sits between client
 applications and model backends, translates OpenAI Chat / Anthropic Messages /
 OpenAI Responses formats, and routes each request through profile-backed chains.
@@ -27,7 +30,7 @@ clients -> compatible API surface -> routing and resilience -> model backends
 ```
 
 For system context and request lifecycle diagrams, see
-[Architecture](architecture.md).
+[Switchyard Architecture](/concepts/architecture).
 
 ## First Run
 
@@ -38,46 +41,29 @@ switchyard launch claude
 ```
 
 For source installs, non-interactive configuration, and a curl sanity check, use
-[Getting Started](getting_started.md).
+[Getting Started with Switchyard](/get-started/getting-started).
 
 ## Main Workflows
 
-<div class="grid cards" markdown>
-
-- **Run coding agents**
-
+<Cards>
+  <Card title="Run coding agents" href="/guides/agent-launchers">
     Launch Claude Code, Codex, or OpenClaw through a local Switchyard proxy.
-
-    [Agent Launchers](guides/agent_launchers.md)
-
-- **Configure routing**
-
+  </Card>
+  <Card title="Configure routing" href="/routing/overview">
     Pick between fixed splits, classifier routing, and stage-router routing, with
     optional session affinity for classifier-driven conversations.
-
-    [Routing Overview](routing_algorithms/overview.md)
-
-- **Prepare skill distillation**
-
+  </Card>
+  <Card title="Prepare skill distillation" href="/guides/skill-distillation">
     Save a namespace for the intended automatic skill learning flow without
     changing request routing.
-
-    [Skill Distillation](skill_distillation.md)
-
-- **Understand the system**
-
-    See how clients, routing policy, model backends, and operations fit
-    together.
-
-    [Architecture](architecture.md)
-
-- **Operate the proxy**
-
+  </Card>
+  <Card title="Understand the system" href="/concepts/architecture">
+    See how clients, routing policy, model backends, and operations fit together.
+  </Card>
+  <Card title="Operate the proxy" href="/operations/context-window-handling">
     Understand context-window overflow handling and fallback behavior.
-
-    [Context-Window Handling](operations/context_window.md)
-
-</div>
+  </Card>
+</Cards>
 
 ## Configuration Model
 
@@ -124,21 +110,21 @@ switchyard --routing-profiles routes.yaml -- configure
 ```
 
 Profile ids, direct targets, legacy launcher compatibility, and persistence are
-covered in [Routing Overview](routing_algorithms/overview.md).
+covered in [Routing Overview](/routing/overview).
 
 ## Routing Reference
 
 | Need | Read |
 |---|---|
-| Fixed strong/weak traffic split for baselines or A/B tests | [Random Routing](routing_algorithms/random_routing.md) |
-| Per-request strong/weak decisions from a classifier model | [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md) |
-| Signal-driven weak/strong escalation with optional classifier fallback | [Stage-Router Routing](routing_algorithms/stage_router_routing.md) |
-| Conversation-level affinity for cache reuse | [Sticky Routing](routing_algorithms/sticky_routing.md) |
+| Fixed strong/weak traffic split for baselines or A/B tests | [Random Routing](/routing/random-routing) |
+| Per-request strong/weak decisions from a classifier model | [LLM Classifier Routing](/routing/llm-classifier-routing) |
+| Signal-driven weak/strong escalation with optional classifier fallback | [Stage-Router Routing](/routing/stage-router-routing) |
+| Conversation-level affinity for cache reuse | [Sticky Routing](/routing/sticky-routing) |
 
 ## Operations and Reference
 
 | Topic | Read |
 |---|---|
-| Known limitations and workarounds for 0.1.0 | [Known Issues](known_issues.md) |
-| CLI syntax, flags, resolution rules, and environment variables | [CLI Reference](cli_reference.md) |
-| Context-window overflow retry and fallback behavior | [Context-Window Handling](operations/context_window.md) |
+| Known limitations and workarounds for 0.1.0 | [Known Issues](/get-started/known-issues-in-0-1-0) |
+| CLI syntax, flags, resolution rules, and environment variables | [CLI Reference](/reference/cli-reference) |
+| Context-window overflow retry and fallback behavior | [Context-Window Handling](/operations/context-window-handling) |

@@ -1,25 +1,19 @@
-.PHONY: env html publish live clean help
+.PHONY: check preview clean help
 
-REPO_ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))..
+FERN_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))fern
+FERN_VERSION := $(shell jq -r .version $(FERN_DIR)/fern.config.json)
+FERN := npx -y fern-api@$(FERN_VERSION)
 
 help:
-	@echo "make env      : sync the docs dependency group via uv"
-	@echo "make html     : build HTML site (incremental)"
-	@echo "make publish  : build HTML site (strict, fails on warnings)"
-	@echo "make live     : live-reload server at http://127.0.0.1:8000"
-	@echo "make clean    : remove build artefacts"
+	@echo "make check   : validate Fern configuration and content"
+	@echo "make preview : serve a local Fern preview"
+	@echo "make clean   : remove local Fern build artifacts"
 
-env:
-	cd $(REPO_ROOT) && uv sync --only-group docs
+check:
+	cd $(FERN_DIR) && $(FERN) check
 
-html: env
-	cd $(REPO_ROOT) && uv run --only-group docs mkdocs build
-
-publish: env
-	cd $(REPO_ROOT) && uv run --only-group docs mkdocs build --strict
-
-live: env
-	cd $(REPO_ROOT) && uv run --only-group docs mkdocs serve
+preview:
+	cd $(FERN_DIR) && $(FERN) docs dev
 
 clean:
-	rm -rf $(REPO_ROOT)/site
+	rm -rf $(FERN_DIR)/.fern $(FERN_DIR)/node_modules

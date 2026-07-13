@@ -1,10 +1,13 @@
-# Core Concepts
-
+---
+title: "Core Concepts"
+description: "Learn NeMo Switchyard endpoints, targets, profiles, routing tiers, model IDs, and format translation."
+position: 1
+---
 This page explains the vocabulary the rest of the documentation takes for
 granted. Read it once and the configuration examples elsewhere will make sense.
 It is not a setup guide: to install and run Switchyard, see
-[Getting Started](getting_started.md), and to follow a request through the
-system, see [Architecture](architecture.md).
+[Getting Started with Switchyard](/get-started/getting-started), and to follow a request through the
+system, see [Switchyard Architecture](/concepts/architecture).
 
 ## How it fits together
 
@@ -41,7 +44,7 @@ policy apart. Three terms carry most of the weight.
 
 The three nest. An endpoint is reused by targets, and targets are referenced by
 profiles. You set credentials in one place, add a model once, and build as many
-policies on top as you need. The [Routing Overview](routing_algorithms/overview.md)
+policies on top as you need. The [Routing Overview](/routing/overview)
 has a complete, runnable config and the full schema.
 
 ## Model IDs
@@ -65,20 +68,21 @@ A profile's `type` sets the strategy. `passthrough` sends everything to one
 target with no routing. `random-routing` splits traffic on a fixed probability.
 `llm-routing` asks a classifier model to pick a tier for each turn. `stage_router`
 escalates from weak to strong when request signals call for it. The
-[Routing Overview](routing_algorithms/overview.md) covers when to use each and
+[Routing Overview](/routing/overview) covers when to use each and
 how to tune it.
 
-!!! warning "There is no `type: model`"
-    The current profile config does not have a `type: model`. To expose a single
-    model, point clients at a target ID directly, or add a `passthrough` profile
-    when you want a second name for it. `type: model` survives only in the
-    deprecated `--routing-profiles` bundles used by the launcher compatibility
-    path.
+<Warning title="There is no type: model">
+The current profile config does not have a `type: model`. To expose a single
+model, point clients at a target ID directly, or add a `passthrough` profile
+when you want a second name for it. `type: model` survives only in the
+deprecated `--routing-profiles` bundles used by the launcher compatibility
+path.
+</Warning>
 
 Session affinity, or sticky routing, pins a conversation to one tier so later
 turns reuse it instead of being classified again. It belongs to `llm-routing`
 and is not a strategy of its own; random and stage-router routing decide every
-request on its own merits. [Sticky Routing](routing_algorithms/sticky_routing.md)
+request on its own merits. [Sticky Routing](/routing/sticky-routing)
 covers it in full.
 
 ## Formats and translation
@@ -91,13 +95,13 @@ the request on the way out and the response on the way back.
 
 That translation is what lets Claude Code, which speaks Anthropic Messages, run
 against an OpenAI-compatible model, and the reverse. The
-[Architecture](architecture.md) page documents every backend format, the `auto`
+[Switchyard Architecture](/concepts/architecture) page documents every backend format, the `auto`
 probe, and the neutral representation used to convert between them.
 
 ## Where to go next
 
-- [Getting Started](getting_started.md) to install and send a first request.
-- [Routing Overview](routing_algorithms/overview.md) to choose and tune a strategy.
-- [Agent Launchers](guides/agent_launchers.md) to run Claude Code, Codex, or OpenClaw.
-- [Architecture](architecture.md) to see a request travel end to end.
-- [CLI Reference](cli_reference.md) for flags and environment variables.
+- [Getting Started with Switchyard](/get-started/getting-started) to install and send a first request.
+- [Routing Overview](/routing/overview) to choose and tune a strategy.
+- [Agent Launchers](/guides/agent-launchers) to run Claude Code, Codex, or OpenClaw.
+- [Switchyard Architecture](/concepts/architecture) to see a request travel end to end.
+- [CLI Reference](/reference/cli-reference) for flags and environment variables.

@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+instances:
+  - url: nemo-switchyard.docs.buildwithfern.com/nemo/switchyard
+    custom-domain: docs.nvidia.com/nemo/switchyard
+    multi-source: true
+
+title: NVIDIA NeMo Switchyard
+
+global-theme: nvidia
+
+logo:
+  href: /nemo/switchyard/home
+  right-text: NeMo Switchyard
+
+navbar-links:
+  - type: github
+    value: https://github.com/NVIDIA-NeMo/Switchyard
+
+versions:
+  - display-name: nightly
+    path: versions/nightly.yml
+    slug: nightly
+
+redirects:
+  # Root URLs from the former GitHub Pages site.
+  - source: "/nemo/switchyard/index.html"
+    destination: "/nemo/switchyard/home"
+  - source: "/nemo/switchyard/index"
+    destination: "/nemo/switchyard/home"
+
+  # Section landing URLs from the initial Fern preview. Sections are now
+  # label-only so every authored page has a stable /section/page route.
+  - source: "/nemo/switchyard/get-started"
+    destination: "/nemo/switchyard/get-started/getting-started"
+  - source: "/nemo/switchyard/guides"
+    destination: "/nemo/switchyard/guides/agent-launchers"
+  - source: "/nemo/switchyard/concepts"
+    destination: "/nemo/switchyard/concepts/core-concepts"
+  - source: "/nemo/switchyard/routing"
+    destination: "/nemo/switchyard/routing/overview"
+  - source: "/nemo/switchyard/operations"
+    destination: "/nemo/switchyard/operations/context-window-handling"
+  - source: "/nemo/switchyard/reference"
+    destination: "/nemo/switchyard/reference/cli-reference"
+
+  # Exact mappings from MkDocs directory URLs to Fern navigation slugs.
+  - source: "/nemo/switchyard/getting_started"
+    destination: "/nemo/switchyard/get-started/getting-started"
+  - source: "/nemo/switchyard/getting_started/index.html"
+    destination: "/nemo/switchyard/get-started/getting-started"
+  - source: "/nemo/switchyard/known_issues"
+    destination: "/nemo/switchyard/get-started/known-issues-in-0-1-0"
+  - source: "/nemo/switchyard/known_issues/index.html"
+    destination: "/nemo/switchyard/get-started/known-issues-in-0-1-0"
+  - source: "/nemo/switchyard/guides/agent_launchers"
+    destination: "/nemo/switchyard/guides/agent-launchers"
+  - source: "/nemo/switchyard/guides/agent_launchers/index.html"
+    destination: "/nemo/switchyard/guides/agent-launchers"
+  - source: "/nemo/switchyard/skill_distillation"
+    destination: "/nemo/switchyard/guides/skill-distillation"
+  - source: "/nemo/switchyard/skill_distillation/index.html"
+    destination: "/nemo/switchyard/guides/skill-distillation"
+  - source: "/nemo/switchyard/core_concepts"
+    destination: "/nemo/switchyard/concepts/core-concepts"
+  - source: "/nemo/switchyard/core_concepts/index.html"
+    destination: "/nemo/switchyard/concepts/core-concepts"
+  - source: "/nemo/switchyard/architecture"
+    destination: "/nemo/switchyard/concepts/architecture"
+  - source: "/nemo/switchyard/architecture/index.html"
+    destination: "/nemo/switchyard/concepts/architecture"
+  - source: "/nemo/switchyard/routing_algorithms/overview"
+    destination: "/nemo/switchyard/routing/overview"
+  - source: "/nemo/switchyard/routing_algorithms/overview/index.html"
+    destination: "/nemo/switchyard/routing/overview"
+  - source: "/nemo/switchyard/routing_algorithms/random_routing"
+    destination: "/nemo/switchyard/routing/random-routing"
+  - source: "/nemo/switchyard/routing_algorithms/random_routing/index.html"
+    destination: "/nemo/switchyard/routing/random-routing"
+  - source: "/nemo/switchyard/routing_algorithms/llm_classifier_routing"
+    destination: "/nemo/switchyard/routing/llm-classifier-routing"
+  - source: "/nemo/switchyard/routing_algorithms/llm_classifier_routing/index.html"
+    destination: "/nemo/switchyard/routing/llm-classifier-routing"
+  - source: "/nemo/switchyard/routing_algorithms/sticky_routing"
+    destination: "/nemo/switchyard/routing/sticky-routing"
+  - source: "/nemo/switchyard/routing_algorithms/sticky_routing/index.html"
+    destination: "/nemo/switchyard/routing/sticky-routing"
+  - source: "/nemo/switchyard/routing_algorithms/stage_router_routing"
+    destination: "/nemo/switchyard/routing/stage-router-routing"
+  - source: "/nemo/switchyard/routing_algorithms/stage_router_routing/index.html"
+    destination: "/nemo/switchyard/routing/stage-router-routing"
+  - source: "/nemo/switchyard/operations/context_window"
+    destination: "/nemo/switchyard/operations/context-window-handling"
+  - source: "/nemo/switchyard/operations/context_window/index.html"
+    destination: "/nemo/switchyard/operations/context-window-handling"
+  - source: "/nemo/switchyard/cli_reference"
+    destination: "/nemo/switchyard/reference/cli-reference"
+  - source: "/nemo/switchyard/cli_reference/index.html"
+    destination: "/nemo/switchyard/reference/cli-reference"

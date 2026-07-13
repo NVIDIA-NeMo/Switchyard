@@ -1,5 +1,8 @@
-# Routing Overview
-
+---
+title: "Overview"
+description: "Choose and configure passthrough, random, classifier, stage-router, and sticky routing behavior."
+position: 1
+---
 Switchyard profile configs register profiles and targets as model IDs that
 clients can select through OpenAI Chat Completions, Anthropic Messages, or
 OpenAI Responses API requests. Start a profile config with:
@@ -15,11 +18,11 @@ for configuration and tuning.
 
 | Strategy | Use it when | Profile `type` |
 |---|---|---|
-| [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random-routing` |
-| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm-routing` |
-| [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Random Routing](/routing/random-routing) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random-routing` |
+| [LLM Classifier Routing](/routing/llm-classifier-routing) | Request content should decide whether a turn needs the weak or strong tier. | `llm-routing` |
+| [Stage-Router Routing](/routing/stage-router-routing) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
 
-[Session Affinity (Sticky Routing)](sticky_routing.md) is an opt-in feature of
+[Session Affinity (Sticky Routing)](/routing/sticky-routing) is an opt-in feature of
 LLM classifier routing, not a standalone routing strategy. The classifier
 integrates the pin into its decision path. See
 [How session affinity composes](#how-session-affinity-composes) for the exact
@@ -147,13 +150,14 @@ call.
 
 Pins use a bounded in-process LRU keyed from the stable conversation prefix.
 They are not shared across workers or restarts. See
-[Sticky Routing](sticky_routing.md) for configuration and key derivation.
+[Sticky Routing](/routing/sticky-routing) for configuration and key derivation.
 
 Random and stage-router routing do not expose session-affinity settings; they
 continue to make a routing decision for each request.
 
-!!! note "CLI schema availability"
-    The CLI currently accepts these settings in a `deterministic` entry in a
-    `routes:` bundle loaded with `--routing-profiles`. The Rust `llm-routing`
-    profile loaded by `switchyard serve --config` does not yet expose
-    session-affinity fields.
+<Note title="CLI schema availability">
+The CLI currently accepts these settings in a `deterministic` entry in a
+`routes:` bundle loaded with `--routing-profiles`. The Rust `llm-routing`
+profile loaded by `switchyard serve --config` does not yet expose
+session-affinity fields.
+</Note>

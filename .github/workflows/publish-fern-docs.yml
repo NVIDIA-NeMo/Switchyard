@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Publishes the Fern site for docs/v* tags or a manual workflow dispatch.
+# Required configuration: organization secret DOCS_FERN_TOKEN.
+
+name: Publish Fern Docs
+
+on:
+  push:
+    tags:
+      - "docs/v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install pinned Fern CLI
+        run: npm install -g fern-api@$(jq -r .version docs/fern/fern.config.json)
+
+      - name: Publish docs
+        env:
+          FERN_TOKEN: ${{ secrets.DOCS_FERN_TOKEN }}
+        working-directory: ./docs/fern
+        run: fern generate --docs
+
+      - name: Verify custom-domain publication
+        run: |
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error --location --max-time 20 \
+              --output /dev/null https://docs.nvidia.com/nemo/switchyard/home; then
+              exit 0
+            fi
+            echo "Custom domain is not ready (attempt ${attempt}/12); retrying in 10 seconds."
+            sleep 10
+          done
+          echo "::error::Fern published, but the custom domain did not become ready."
+          exit 1
+
+      - name: Generate legacy GitHub Pages redirects
+        run: python docs/fern/generate_legacy_redirect_site.py --output legacy-docs-site
+
+      - name: Deploy legacy redirects to GitHub Pages
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./legacy-docs-site
+          keep_files: false
+          full_commit_message: "docs: redirect GitHub Pages to Fern"

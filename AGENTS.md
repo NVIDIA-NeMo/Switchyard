@@ -249,7 +249,7 @@ export OPENAI_API_KEY="sk-..."       # or NVIDIA_API_KEY / ANTHROPIC_API_KEY whe
 export OPENROUTER_API_KEY="sk-or-..." # pass with --api-key or save via configure
 
 # Serve a profile config (passthrough, random-routing, llm-routing, stage_router).
-# Endpoints, targets, and profiles live in the YAML; see docs/routing_algorithms/overview.md.
+# Endpoints, targets, and profiles live in the YAML; see docs/routing_algorithms/overview.mdx.
 switchyard serve --config profiles.yaml --port 4000
 switchyard serve --config profiles.yaml --inbound anthropic --port 4000
 
@@ -361,7 +361,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 - Export new public classes from `switchyard/__init__.py` with `__all__`.
 - Write unit tests for new roles and bug fixes.
 - Use `ProxyContext.metadata` for cross-component state within a request.
-- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/context_window.md).
+- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/operations/context_window.mdx).
 
 ### Ask first
 - Modifying `pyproject.toml` dependencies.

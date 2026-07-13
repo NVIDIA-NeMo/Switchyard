@@ -1,12 +1,15 @@
-# Random Routing
-
+---
+title: "Random Routing"
+description: "Split traffic between strong and weak model targets with a fixed probability."
+position: 2
+---
 Random routing sends a fixed percentage of traffic to a `strong` model and the
 rest to a `weak` model. It does not inspect the prompt.
 
 Use it for A/B tests, benchmark baselines, and gradual traffic ramps. If routing
 should depend on task difficulty, use
-[LLM Classifier Routing](llm_classifier_routing.md) or
-[Stage-Router Routing](stage_router_routing.md).
+[LLM Classifier Routing](/routing/llm-classifier-routing) or
+[Stage-Router Routing](/routing/stage-router-routing).
 
 ## Algorithm
 
@@ -25,7 +28,7 @@ repeatable sequence for tests or benchmarks.
 
 Random routing is per request. A multi-turn conversation can move between
 models from turn to turn. If you need conversation-level stickiness, use
-[Sticky Routing](sticky_routing.md) where it is supported, or select a direct
+[Sticky Routing](/routing/sticky-routing) where it is supported, or select a direct
 tier model instead of the routing model.
 
 ## Enable It

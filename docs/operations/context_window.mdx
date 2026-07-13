@@ -1,5 +1,8 @@
-# Context-Window Handling
-
+---
+title: "Context-Window Handling"
+description: "Handle upstream context-window overflows with target eviction, fallback routing, and one retry."
+position: 1
+---
 When an upstream rejects a request because the prompt exceeds the model's
 context window, Switchyard evicts that target for the current request,
 reroutes to the configured fallback target, and retries once. If the fallback
