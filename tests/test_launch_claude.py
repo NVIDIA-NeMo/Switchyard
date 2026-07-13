@@ -83,6 +83,9 @@ def test_bootstrap_persists_selected_env_provider_base_url(monkeypatch, tmp_path
     monkeypatch.setenv("NVIDIA_BASE_URL", "https://nvidia.test/v1")
     monkeypatch.setattr("switchyard.cli.launch_command.is_interactive_terminal", lambda: True)
     monkeypatch.setattr("switchyard.cli.launch_command.load_secrets", lambda: {})
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal", lambda: False
+    )
 
     args = argparse.Namespace(
         reconfigure=True,
