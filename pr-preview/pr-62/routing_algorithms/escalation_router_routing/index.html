@@ -901,10 +901,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#confirmation-policy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Confirmation policy
       
     </span>
   </a>
@@ -912,10 +912,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#repeated-trial-benchmarking-k1" class="md-nav__link">
+  <a href="#configure-an-escalation-route" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Repeated-trial benchmarking (k&gt;1)
+        Configure an escalation route
       
     </span>
   </a>
@@ -923,10 +923,54 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#known-limits-and-v2-levers" class="md-nav__link">
+  <a href="#useful-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Known limits and v2 levers
+        Useful options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Observability
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repeated-benchmark-trials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repeated benchmark trials
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-not-to-use-escalation-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When not to use escalation routing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related
       
     </span>
   </a>
@@ -1163,10 +1207,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#confirmation-policy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Confirmation policy
       
     </span>
   </a>
@@ -1174,10 +1218,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#repeated-trial-benchmarking-k1" class="md-nav__link">
+  <a href="#configure-an-escalation-route" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Repeated-trial benchmarking (k&gt;1)
+        Configure an escalation route
       
     </span>
   </a>
@@ -1185,10 +1229,54 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#known-limits-and-v2-levers" class="md-nav__link">
+  <a href="#useful-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Known limits and v2 levers
+        Useful options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Observability
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repeated-benchmark-trials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repeated benchmark trials
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-not-to-use-escalation-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When not to use escalation routing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related
       
     </span>
   </a>
@@ -1216,41 +1304,72 @@
 
 
 <h1 id="escalation-router-routing">Escalation-Router Routing<a class="headerlink" href="#escalation-router-routing" title="Permanent link">&para;</a></h1>
-<p>The escalation router starts every conversation on the cheap <strong>weak</strong> tier. An
-LLM <strong>judge</strong> watches the trajectory each turn and, when the run shows a clear
-pattern of trouble (repeated errors, loops, false progress, drift, giving up),
-escalates the conversation to the <strong>strong</strong> tier — one-way for the rest of
-the task. A new conversation starts weak again.</p>
-<p>Unlike <a href="../llm_classifier_routing/">LLM Classifier Routing</a>, which predicts
-per-turn difficulty from request content, the escalation router judges whether
-the work is <em>going well</em>. Hard-but-smooth runs stay on the weak tier; runs the
-weak tier is fumbling get rescued by the strong tier.</p>
+<p>Escalation-router routing starts each conversation on a cheaper <code>weak</code> model.
+An LLM judge watches how the work progresses and moves the conversation to a
+more capable <code>strong</code> model when it detects sustained, recoverable trouble.
+After escalation, the conversation stays on the strong tier for the rest of
+the task.</p>
+<p>Use it for multi-turn agent workloads where a weak model can handle routine
+work but may need rescue after repeated errors, loops, drift, false progress,
+or premature completion. Unlike
+<a href="../llm_classifier_routing/">LLM Classifier Routing</a>, which predicts how
+difficult a request looks, escalation routing judges whether the run is
+actually going well.</p>
 <h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>Per turn, the <code>EscalationJudgeRequestProcessor</code>:</p>
+<p>The router keeps one state value per conversation: whether that conversation
+has escalated. Conversations are identified from the stable system prompt and
+first user message, using the same bounded in-memory store described in
+<a href="../sticky_routing/">Sticky Routing</a>.</p>
+<p>For each turn, Switchyard:</p>
 <ol>
-<li>Checks the session-affinity latch. A pinned conversation routes strong with
-   no judge call — the latch is one-way per task.</li>
-<li>Otherwise routes weak. From <code>judge.min_turn</code> on (default 3), it sends the
-   judge a condensed transcript: the system + first-user anchors (individually
-   capped so harness boilerplate cannot crowd out the evidence), the last
-   <code>judge.recent_turn_window</code> messages (head/tail-truncated), and a coverage
-   header stating how much history is not shown.</li>
-<li>The judge returns <code>{"escalate": bool, "reason": "&lt;one sentence&gt;"}</code>. On
-   <code>escalate: true</code> the conversation is pinned to strong, effective the same
-   turn. The reason is logged and stamped into the request metadata
-   (<code>_escalation_verdict</code>) as the audit record.</li>
-<li>Any judge failure — timeout, error, invalid JSON — fails open to the weak
-   tier and never pins. A judge outage costs quality risk, never money.</li>
+<li>Checks the conversation latch. A latched conversation routes to <code>strong</code>
+   without calling the judge again.</li>
+<li>Routes an unlatched conversation to <code>weak</code>. Before <code>judge.min_turn</code>
+   (default <code>3</code>), it skips the judge because there is too little trajectory to
+   assess.</li>
+<li>Gives the judge a bounded summary containing the system and first-user
+   anchors, recent messages, and a coverage note for omitted history.</li>
+<li>Parses the judge's structured <code>escalate</code> decision. When the configured
+   confirmation policy is satisfied, Switchyard pins the conversation to
+   <code>strong</code> and uses the strong model for the current turn.</li>
+<li>Fails open to <code>weak</code> when the judge times out, errors, or returns invalid
+   output. A judge failure never creates a strong-tier pin.</li>
 </ol>
-<p>The latch reuses the <a href="../sticky_routing/">session-affinity</a> store: conversations
-are keyed on the stable prefix (system prompt + first user message), so a new
-task gets a fresh key and resets to weak automatically. The weak tier is never
-pinned — "not pinned" means weak-and-still-watching.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>The CLI accepts <code>type: escalation_router</code> in a <code>routes:</code> bundle loaded with
-<code>--routing-profiles</code> (same path the <code>deterministic</code> router uses):</p>
+<p>The routing decision for one turn is:</p>
+<pre class="mermaid"><code>%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
+flowchart LR
+    t["turn"] --&gt; p{"strong tier pinned?"}
+    p --&gt;|yes| s["route strong; skip judge"]
+    p --&gt;|no| m{"turn &gt;= min_turn?"}
+    m --&gt;|no| w["route weak"]
+    m --&gt;|yes| j["judge recent trajectory"]
+    j --&gt;|stay / fail open| w
+    j --&gt;|not yet confirmed| w
+    j --&gt;|confirmed escalation| l["pin and route strong"]
+
+    classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
+    class t,p,s,m,w,j,l box;</code></pre>
+<h2 id="confirmation-policy">Confirmation policy<a class="headerlink" href="#confirmation-policy" title="Permanent link">&para;</a></h2>
+<p><code>judge.confirmations</code> controls how many positive verdicts are required before
+the strong-tier latch fires:</p>
+<ul>
+<li><code>confirmations: 1</code> is the default and escalates on the first positive
+  verdict.</li>
+<li><code>confirmations: 2</code> with <code>confirmation_window: 1</code> requires positive verdicts
+  on consecutive judged turns.</li>
+<li>A larger <code>confirmation_window</code> allows recurring trouble to confirm even when
+  negative verdicts occur between positive ones. A positive verdict remains
+  live across at most <code>confirmation_window - 1</code> intervening negative verdicts.</li>
+</ul>
+<p>A judge failure provides no evidence either way: it routes the turn to weak
+without clearing an existing confirmation streak.</p>
+<h2 id="configure-an-escalation-route">Configure an escalation route<a class="headerlink" href="#configure-an-escalation-route" title="Permanent link">&para;</a></h2>
+<p>Escalation routing is currently available through the legacy <code>routes:</code> bundle
+used by <code>--routing-profiles</code>. This path remains necessary for launcher-owned
+routing; route bundles and <code>--routing-profiles</code> are otherwise deprecated in
+favor of <code>switchyard serve --config</code> profiles.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">switchyard</span><span class="p">:</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">agent-escalation</span><span class="p">:</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">escalation_router</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">judge</span><span class="p">:</span>
@@ -1258,117 +1377,156 @@ pinned — "not pinned" means weak-and-still-watching.</p>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">      </span><span class="nt">timeout_secs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5.0</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">      </span><span class="nt">min_turn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">               </span><span class="c1"># first turn the judge runs on</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">      </span><span class="nt">recent_turn_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">14</span><span class="w">    </span><span class="c1"># trailing messages shown to the judge</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">anthropic/claude-opus-4.7</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">deepseek/deepseek-v4-pro</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">      </span><span class="nt">min_turn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">      </span><span class="nt">confirmations</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">      </span><span class="nt">confirmation_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">      </span><span class="nt">recent_turn_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">14</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">moonshotai/kimi-k2.6</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">anthropic/claude-opus-4.7</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
 </span></code></pre></div>
+<p>Run the route as a standalone proxy:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span></code></pre></div>
+<p>Or use the same bundle with an agent launcher:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
+</span></code></pre></div>
+<p>The route ID (<code>agent-escalation</code>) is the model ID clients select to use the
+router. The strong and weak model IDs are also registered as direct
+passthrough choices. The judge is internal to the route and is not exposed as
+a client-selectable model.</p>
+<p>If the selected tier exceeds its context window, Switchyard retries once on
+<code>fallback_target_on_evict</code>, which must be <code>strong</code> or <code>weak</code>. See
+<a href="../../operations/context_window/">Context-Window Handling</a>.</p>
+<h2 id="useful-options">Useful options<a class="headerlink" href="#useful-options" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Key</th>
+<th>Option</th>
 <th>Default</th>
-<th>Meaning</th>
+<th>Use it when</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>judge.model</code> / <code>api_key</code> / <code>base_url</code></td>
-<td>required</td>
-<td>Judge LLM target. Pick something small and fast — it sits on the request path of every pre-escalation turn.</td>
-</tr>
-<tr>
 <td><code>judge.timeout_secs</code></td>
 <td><code>5.0</code></td>
-<td>Judge wall-clock ceiling; fails open to weak.</td>
+<td>The judge needs a different wall-clock limit. Timeouts fail open to weak.</td>
 </tr>
 <tr>
 <td><code>judge.min_turn</code></td>
 <td><code>3</code></td>
-<td>First conversation turn the judge runs on. Earlier turns have no trajectory to judge.</td>
+<td>The judge should start earlier or wait for more trajectory evidence.</td>
+</tr>
+<tr>
+<td><code>judge.confirmations</code></td>
+<td><code>1</code></td>
+<td>One positive verdict is too eager and escalation should require repeated evidence.</td>
+</tr>
+<tr>
+<td><code>judge.confirmation_window</code></td>
+<td><code>1</code></td>
+<td>Intermittent trouble should remain eligible for confirmation across negative verdicts.</td>
+</tr>
+<tr>
+<td><code>judge.disable_reasoning</code></td>
+<td><code>true</code></td>
+<td>Set to <code>false</code> when a reasoning judge benefits from thinking despite the added latency.</td>
 </tr>
 <tr>
 <td><code>judge.recent_turn_window</code></td>
 <td><code>14</code></td>
-<td>Trailing messages shown to the judge. Loops longer than the window are invisible — widen before concluding the judge misses them.</td>
+<td>The judge needs a wider or narrower trailing-message window.</td>
 </tr>
 <tr>
-<td><code>judge.prompt</code></td>
-<td>built-in</td>
-<td>Judge system-prompt override.</td>
+<td><code>judge.window_message_chars</code></td>
+<td><code>300</code></td>
+<td>More tool-output detail should survive per-message truncation.</td>
 </tr>
 <tr>
 <td><code>judge.max_request_chars</code></td>
 <td><code>12000</code></td>
-<td>Cap on the judge transcript; oldest window messages are dropped first.</td>
+<td>The complete judge request needs a different character budget. Oldest recent messages are dropped first.</td>
 </tr>
 <tr>
-<td><code>fallback_target_on_evict</code></td>
-<td>required</td>
-<td><code>strong</code> or <code>weak</code>; context-window-eviction reroute target.</td>
-</tr>
-<tr>
-<td><code>session_key_depth</code></td>
-<td><code>0</code></td>
-<td>See <a href="#repeated-trial-benchmarking">Repeated-trial benchmarking</a> below.</td>
+<td><code>judge.prompt</code></td>
+<td>built-in</td>
+<td>A deployment needs a custom escalation rubric.</td>
 </tr>
 <tr>
 <td><code>tier_timeout_s</code></td>
 <td><code>600</code></td>
-<td>Default per-call timeout for strong/weak targets without their own <code>timeout_secs</code>.</td>
+<td>Strong or weak targets without their own <code>timeout_secs</code> need a different call timeout.</td>
+</tr>
+<tr>
+<td><code>enable_stats</code></td>
+<td><code>true</code></td>
+<td>Set to <code>false</code> only when route-level usage statistics are not needed.</td>
 </tr>
 <tr>
 <td><code>affinity_max_sessions</code></td>
 <td><code>10000</code></td>
-<td>LRU capacity of the escalation latch.</td>
+<td>A long-lived process needs a different in-memory latch capacity.</td>
+</tr>
+<tr>
+<td><code>session_key_depth</code></td>
+<td><code>0</code></td>
+<td>Repeated benchmark trials with identical task prefixes need separate latches; keep <code>0</code> for normal traffic.</td>
 </tr>
 </tbody>
 </table>
-<p>In Python, build it from the exported config pair:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">EscalationRouterConfig</span><span class="p">,</span> <span class="n">EscalationRouterProfileConfig</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">profile</span> <span class="o">=</span> <span class="n">EscalationRouterProfileConfig</span><span class="o">.</span><span class="n">from_config</span><span class="p">(</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">EscalationRouterConfig</span><span class="o">.</span><span class="n">model_validate</span><span class="p">({</span><span class="o">...</span><span class="p">})</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+<h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
+<p>Read the standard routing stats endpoint:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/routing/stats
 </span></code></pre></div>
-<h2 id="repeated-trial-benchmarking-k1">Repeated-trial benchmarking (k&gt;1)<a class="headerlink" href="#repeated-trial-benchmarking-k1" title="Permanent link">&para;</a></h2>
-<p>The session key is a content hash of the system prompt + first user message,
-so <strong>k repeated trials of the same task against one long-lived server share
-one latch</strong>: trial 1's escalation makes trials 2..k start on strong from turn
-1, silently corrupting pass@k and cost numbers. Two ways to keep trials
-independent:</p>
+<p>The snapshot reports per-model calls, tokens, latency, and cost for the strong
+and weak tiers. Judge calls are recorded in the classifier stats bucket so
+their token cost, latency, and errors remain visible as routing overhead.</p>
+<p>Each judged turn also writes an <code>escalation_verdict={...}</code> JSON line to server
+stderr. The record includes the decision, reason, turn, confirmation state,
+and judge latency. After the latch fires, later turns skip the judge and report
+the pinned routing source in request metadata.</p>
+<h2 id="repeated-benchmark-trials">Repeated benchmark trials<a class="headerlink" href="#repeated-benchmark-trials" title="Permanent link">&para;</a></h2>
+<p>By default, the session key is derived from the system prompt and first user
+message. Repeated trials of the same task against one long-lived server can
+therefore share a latch: if the first trial escalates, later trials may start
+on strong.</p>
+<p>Use one of these isolation strategies:</p>
 <ul>
-<li><strong>Run-level isolation (zero config):</strong> run each trial set as a separate
-  <code>benchmark/run-baseline.sh</code> invocation. Each run gets a fresh Switchyard
-  container; latch state cannot survive between runs.</li>
-<li><strong><code>session_key_depth: N</code> (within-run k&gt;1):</strong> extends the session key with
-  the first <code>N</code> post-first-user messages. With nonzero sampling temperature,
-  trials diverge in their early model responses and get distinct keys. The
-  prefix of a conversation never changes as it grows, so the key stays stable
-  within a trial; until the prefix is complete, affinity is untouched.
-  Caveats: useless at temperature 0 (identical trajectories still collide),
-  and mid-session history rewrites (context compaction) change the key and
-  silently drop the latch — keep <code>0</code> outside benchmarks.</li>
+<li>Start a fresh Switchyard process for each trial set.</li>
+<li>Set <code>session_key_depth: N</code> to extend the key with the first <code>N</code> messages
+  after the initial user message. This only separates trials when those early
+  trajectories differ, so it requires nonzero sampling temperature.</li>
 </ul>
-<p>Also set Harbor <code>--max-retries 0</code> for escalation-router runs: a retry re-runs
-the failed task against the same warm server, and failed attempts are exactly
-the ones likely to have escalated, so the retry would warm-start on strong.</p>
-<h2 id="known-limits-and-v2-levers">Known limits and v2 levers<a class="headerlink" href="#known-limits-and-v2-levers" title="Permanent link">&para;</a></h2>
+<p>Keep <code>session_key_depth: 0</code> for normal traffic. Context compaction or other
+mid-session prefix rewrites can change a deep key and lose the existing latch.</p>
+<h2 id="when-not-to-use-escalation-routing">When not to use escalation routing<a class="headerlink" href="#when-not-to-use-escalation-routing" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Blocking judge:</strong> the judge call adds ~100–300 ms to each pre-escalation
-  turn. If benchmarks show latency pain, the designed successor is running the
-  judge concurrently with the weak call and applying the verdict next turn.</li>
-<li><strong>Window-bounded loop detection:</strong> a repeat cycle longer than
-  <code>recent_turn_window</code> is invisible. The designed successor is a per-turn
-  trajectory digest distilled from the whole history.</li>
-<li><strong>No difficulty prediction:</strong> this router rescues struggling runs; it does
-  not predict hard ones. Composing it with the LLM classifier is future work.</li>
+<li><strong>One-shot requests.</strong> There is no trajectory to judge. Use
+  <a href="../llm_classifier_routing/">LLM Classifier Routing</a> when the initial request
+  should determine the tier.</li>
+<li><strong>Fixed traffic experiments.</strong> Use
+  <a href="../random_routing/">Random Routing</a> for A/B splits and gradual traffic ramps.</li>
+<li><strong>Per-turn stage optimization.</strong> Use
+  <a href="../stage_router_routing/">Stage-Router Routing</a> when tool-result signals
+  should move individual turns in both directions.</li>
+<li><strong>Latency-critical traffic.</strong> Eligible unlatched turns wait for the judge
+  before the selected backend call.</li>
+<li><strong>Long-range failure cycles.</strong> The judge only sees a bounded recent window;
+  cycles longer than that window may be missed.</li>
+</ul>
+<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../overview/">Routing Overview</a>: compare all supported routing strategies.</li>
+<li><a href="../sticky_routing/">Sticky Routing</a>: session-key derivation and affinity
+  behavior.</li>
+<li><a href="../../architecture/">Architecture</a>: the end-to-end request lifecycle and
+  system boundaries.</li>
 </ul>
 
 
