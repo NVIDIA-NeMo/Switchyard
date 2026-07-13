@@ -742,6 +742,35 @@ fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
     Ok(())
 }
 
+// Verifies Dynamo-owned Responses schemas accept Anthropic-style tool choice modes.
+#[test]
+fn responses_object_tool_choice_mode_survives_to_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "description": "Lookup data",
+            "parameters": {"type": "object"}
+        }],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["tool_choice"], "auto");
+    Ok(())
+}
+
 // Verifies Responses JSON schema text format maps to Chat response_format shape.
 #[test]
 fn responses_json_schema_text_format_maps_to_chat_response_format() -> TestResult {

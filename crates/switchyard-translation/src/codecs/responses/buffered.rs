@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::codecs::common::{provider_extensions, reasoning_text_from_blocks, text_from_blocks};
@@ -26,6 +27,9 @@ use crate::util::{
     exact_preserved_request, exact_preserved_response, json_string, push_lossy, stable_id,
     string_value, validate_request_capabilities,
 };
+use dynamo_protocols::types::responses::{
+    CreateResponse as OpenAiResponsesRequest, InputParam, Tool, ToolChoiceParam,
+};
 
 /// Format codec for OpenAI Responses payloads.
 pub struct OpenAiResponsesCodec;
@@ -36,7 +40,13 @@ impl FormatCodec for OpenAiResponsesCodec {
     }
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
+        // Dynamo owns relaxed Responses request parsing, including object-form
+        // tool_choice modes and input items that upstream OpenAI schemas reject.
+        let typed = serde_json::from_value::<OpenAiResponsesRequest>(body.clone()).ok();
         let body = crate::util::object(body, "$")?;
+        if let Some(typed) = typed {
+            return decode_responses_request_typed(&typed, body, policy);
+        }
         let mut diagnostics = Vec::new();
         let mut request = ConversationRequest {
             model: body
@@ -260,6 +270,118 @@ impl FormatCodec for OpenAiResponsesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+fn decode_responses_request_typed(
+    schema: &OpenAiResponsesRequest,
+    raw: &Map<String, Value>,
+    policy: &TranslationPolicy,
+) -> Result<DecodedRequest> {
+    let mut diagnostics = Vec::new();
+    let mut request = ConversationRequest {
+        model: schema
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned),
+        output: OutputParams {
+            max_output_tokens: schema.max_output_tokens.map(u64::from),
+            response_format: schema
+                .text
+                .as_ref()
+                .and_then(|text| decode_responses_text_format(Some(&typed_value(text)))),
+        },
+        reasoning: ReasoningParams {
+            effort: schema.reasoning.as_ref().and_then(typed_reasoning_effort),
+            raw: schema.reasoning.as_ref().map(typed_value),
+        },
+        sampling: SamplingParams {
+            temperature: schema.temperature.map(f64::from),
+            top_p: schema.top_p.map(f64::from),
+            top_k: None,
+        },
+        stream: schema.stream.unwrap_or(false),
+        preservation: capture_request_preservation(
+            WireFormat::OpenAiResponses,
+            &Value::Object(raw.clone()),
+            policy,
+        ),
+        ..ConversationRequest::default()
+    };
+    if let Some(instructions) = schema
+        .instructions
+        .as_deref()
+        .filter(|instructions| !instructions.is_empty())
+    {
+        request.instructions.push(crate::ir::InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: instructions.to_string(),
+            }],
+        });
+    }
+    request.messages = decode_responses_input_typed(&schema.input, &mut diagnostics, policy)?;
+    request.tools = schema
+        .tools
+        .as_deref()
+        .map(decode_responses_tools_typed)
+        .unwrap_or_default();
+    request.tool_choice = schema
+        .tool_choice
+        .as_ref()
+        .and_then(decode_responses_tool_choice_typed);
+    request.extensions.fields = responses_request_extensions(raw);
+    Ok(DecodedRequest {
+        request,
+        diagnostics,
+    })
+}
+
+fn responses_request_extensions(body: &Map<String, Value>) -> Map<String, Value> {
+    provider_extensions(
+        body,
+        &[
+            "model",
+            "instructions",
+            "input",
+            "tools",
+            "tool_choice",
+            "max_output_tokens",
+            "text",
+            "reasoning",
+            "temperature",
+            "top_p",
+            "stream",
+        ],
+    )
+}
+
+fn typed_value<T: Serialize + ?Sized>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+fn typed_reasoning_effort<T: Serialize>(reasoning: &T) -> Option<String> {
+    typed_value(reasoning)
+        .as_object()
+        .and_then(|object| object.get("effort"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn decode_responses_input_typed(
+    input: &InputParam,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Message>> {
+    decode_responses_input(&typed_value(input), diagnostics, policy)
+}
+
+fn decode_responses_tools_typed(tools: &[Tool]) -> Vec<ToolDefinition> {
+    decode_responses_tools(Some(&Value::Array(tools.iter().map(typed_value).collect())))
+}
+
+fn decode_responses_tool_choice_typed(choice: &ToolChoiceParam) -> Option<ToolChoice> {
+    decode_responses_tool_choice(&typed_value(choice))
 }
 
 // Decodes Responses `input` into ordered normalized messages.
