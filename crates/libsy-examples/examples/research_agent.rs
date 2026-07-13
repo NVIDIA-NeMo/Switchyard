@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, Context, LlmClient, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, RoutedRequest,
+    response_text, text_request, text_response, Algorithm, Context, LlmClient, LlmTarget,
+    LlmTargetSet, Request, Response, RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 
@@ -41,10 +41,7 @@ impl LlmClient for StubClient {
             format!("answer from {model}")
         };
         Ok(Response {
-            llm_response: LlmResponse {
-                completion,
-                raw_response: None,
-            },
+            llm_response: text_response(completion),
             metadata: None,
         })
     }
@@ -73,16 +70,13 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
-                    inbound_model_name: "auto".to_string(),
-                    prompt: step,
-                },
+                llm_request: text_request("auto", step),
                 raw_request: None,
                 metadata: None,
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(response.llm_response.completion);
+            notes.push(response_text(&response.llm_response));
         }
         Ok(notes.join("\n"))
     }

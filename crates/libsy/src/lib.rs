@@ -63,6 +63,9 @@ use std::{error::Error, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use switchyard_translation::{
+    ContentBlock, ConversationRequest, ConversationResponse, Message, ResponseOutput, Role,
+};
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 
@@ -93,18 +96,8 @@ pub struct Metadata {
     pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// The normalized model request an algorithm reasons over and hands to a target.
-///
-/// Deliberately minimal: a target model name and the user prompt. The full
-/// provider-shaped request (messages, params, tools) rides on
-/// [`Request::raw_request`] when a host needs to forward it losslessly.
-#[derive(Clone)]
-pub struct LlmRequest {
-    /// The model to call. Algorithms rewrite this as they route.
-    pub inbound_model_name: String,
-    /// The user prompt an algorithm inspects (e.g. to classify) and sends.
-    pub prompt: String,
-}
+/// Semantic request view algorithms inspect and hand to targets.
+pub type LlmRequest = ConversationRequest;
 
 /// A request entering the orchestrator: the normalized [`LlmRequest`] plus the
 /// original provider payload and correlation [`Metadata`].
@@ -112,8 +105,7 @@ pub struct LlmRequest {
 pub struct Request {
     /// The normalized request an algorithm routes.
     pub llm_request: LlmRequest,
-    /// The original provider-shaped request body, if the host wants to forward it
-    /// verbatim (e.g. a proxy preserving messages/params). libsy does not read it.
+    /// Optional source provider body, carried only for hosts that need exact fidelity.
     pub raw_request: Option<serde_json::Value>,
     /// Correlation metadata carried through the request.
     pub metadata: Option<Metadata>,
@@ -127,16 +119,8 @@ pub struct Request {
 #[derive(Clone)]
 pub struct Signals {}
 
-/// The neutral model response returned by a target.
-#[derive(Clone)]
-pub struct LlmResponse {
-    /// The model's completion text — what an algorithm inspects (e.g. a
-    /// classifier score) or returns.
-    pub completion: String,
-    /// Optional raw provider response body, so a host (e.g. a proxy) can forward
-    /// the upstream response losslessly instead of rebuilding it from `completion`.
-    pub raw_response: Option<serde_json::Value>,
-}
+/// Semantic response view algorithms inspect and return.
+pub type LlmResponse = ConversationResponse;
 
 /// A response leaving the orchestrator: the neutral [`LlmResponse`] plus optional
 /// correlation [`Metadata`].
@@ -146,6 +130,71 @@ pub struct Response {
     pub llm_response: LlmResponse,
     /// Correlation metadata carried through the response.
     pub metadata: Option<Metadata>,
+}
+
+/// Build a text-only request for examples and algorithm-generated subcalls.
+pub fn text_request(model: impl Into<String>, prompt: impl Into<String>) -> LlmRequest {
+    text_request_with_model(Some(model.into()), prompt)
+}
+
+/// Build a text-only request with an optional inbound model name.
+pub fn text_request_with_model(model: Option<String>, prompt: impl Into<String>) -> LlmRequest {
+    LlmRequest {
+        model,
+        messages: vec![Message::text(Role::User, prompt)],
+        ..LlmRequest::default()
+    }
+}
+
+/// Build a text-only assistant response for examples and simple clients.
+pub fn text_response(completion: impl Into<String>) -> LlmResponse {
+    LlmResponse {
+        outputs: vec![ResponseOutput {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: completion.into(),
+            }],
+            stop_reason: None,
+        }],
+        ..LlmResponse::default()
+    }
+}
+
+/// Concatenate text-like request content for algorithms that need a prompt view.
+pub fn request_text(request: &LlmRequest) -> String {
+    let mut parts = Vec::new();
+    for instruction in &request.instructions {
+        collect_text(&instruction.content, &mut parts);
+    }
+    for message in &request.messages {
+        collect_text(&message.content, &mut parts);
+    }
+    parts.join("\n")
+}
+
+/// Concatenate text-like response content for algorithms that need a completion view.
+pub fn response_text(response: &LlmResponse) -> String {
+    let mut parts = Vec::new();
+    for output in &response.outputs {
+        collect_text(&output.content, &mut parts);
+    }
+    parts.join("\n")
+}
+
+fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
+    for block in content {
+        match block {
+            ContentBlock::Text { text }
+            | ContentBlock::Refusal { text }
+            | ContentBlock::Reasoning { text, .. } => parts.push(text.clone()),
+            ContentBlock::Unknown { raw, .. } => {
+                if let Some(text) = raw.as_str() {
+                    parts.push(text.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A decision/trace object produced by an algorithm.
@@ -169,12 +218,11 @@ pub trait Decision: Send + Sync {
 ///
 /// The two model identifiers live in separate, unambiguous places: the model to
 /// call is [`decision.selected_model()`](Decision::selected_model), while
-/// `request.llm_request.inbound_model_name` is the *inbound* name the agent asked
-/// for (libsy never overwrites it). A client maps `selected_model()` to the
-/// provider model id it hits.
+/// `request.llm_request.model` is the inbound name the agent asked for. A client
+/// maps `selected_model()` to the provider model id it hits.
 #[derive(Clone)]
 pub struct RoutedRequest {
-    /// The request to serve; its `inbound_model_name` is the agent's original name.
+    /// The request to serve; its `model` is the agent's original inbound model.
     pub request: Request,
     /// The routing decision behind this call; `selected_model()` is the model to hit.
     pub decision: Arc<dyn Decision>,
@@ -266,7 +314,7 @@ impl Driver {
     /// default client into a [`RoutedRequest`], then publish it (see
     /// [`call_llm`](Self::call_llm)). The convenience most algorithms use;
     /// `decision.selected_model()` names the model to hit, and `request`'s
-    /// `inbound_model_name` is left untouched.
+    /// inbound `model` is left untouched.
     pub async fn call_llm_target(
         &self,
         target: &LlmTarget,
@@ -308,7 +356,7 @@ impl Driver {
                 .map_err(|_| "driver: info payload was not a Decision".into()),
             DriverStep::Done(payload) => payload
                 .downcast::<Response>()
-                .map(|response| Step::ReturnToAgent(*response))
+                .map(Step::ReturnToAgent)
                 .map_err(|_| "driver: done payload was not a Response".into()),
         })
     }
@@ -343,7 +391,7 @@ pub enum Step {
     /// happens (rather than collected into a trace returned at the end).
     Decision(Arc<dyn Decision>),
     /// The algorithm finished with its final response — the last step of a run.
-    ReturnToAgent(Response),
+    ReturnToAgent(Box<Response>),
 }
 
 /// Performs the actual model call for a target. This is the one piece of I/O
@@ -355,8 +403,8 @@ pub trait LlmClient: Send + Sync {
     /// Serve `routed`, returning the model's response. Call the model named by
     /// [`routed.decision.selected_model()`](Decision::selected_model) — the target
     /// the algorithm routed to — mapping it to whatever provider model id this
-    /// client hits. `routed.request.llm_request.inbound_model_name` is the agent's
-    /// original name, carried through for reference, not a call target.
+    /// client hits. `routed.request.llm_request.model` is the agent's original
+    /// inbound name, carried through for reference, not a call target.
     async fn call(&self, request: RoutedRequest) -> Result<Response, Box<dyn Error + Send + Sync>>;
 }
 
@@ -533,10 +581,7 @@ mod tests {
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
-                llm_response: LlmResponse {
-                    completion: routed.decision.selected_model().to_string(),
-                    raw_response: None,
-                },
+                llm_response: text_response(routed.decision.selected_model()),
                 metadata: None,
             })
         }
@@ -600,10 +645,7 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            llm_request: LlmRequest {
-                inbound_model_name: "auto".to_string(),
-                prompt: "hi".to_string(),
-            },
+            llm_request: text_request("auto", "hi"),
             raw_request: None,
             metadata: None,
         }
@@ -640,10 +682,7 @@ mod tests {
                     assert_eq!(call.get_decision().selected_model(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
-                        llm_response: LlmResponse {
-                            completion: "fulfilled".to_string(),
-                            raw_response: None,
-                        },
+                        llm_response: text_response("fulfilled"),
                         metadata: None,
                     }))?;
                 }
@@ -651,7 +690,7 @@ mod tests {
                     assert_eq!(decision.selected_model(), "offload/model");
                 }
                 Step::ReturnToAgent(response) => {
-                    final_completion = Some(response.llm_response.completion);
+                    final_completion = Some(response_text(&response.llm_response));
                 }
             }
         }
@@ -687,7 +726,7 @@ mod tests {
                 }
                 Step::Decision(_) => {}
                 Step::ReturnToAgent(response) => {
-                    final_completion = Some(response.llm_response.completion);
+                    final_completion = Some(response_text(&response.llm_response));
                 }
             }
         }
@@ -706,7 +745,7 @@ mod tests {
             .run(Context::default(), request())
             .await?;
         // TestAlgo calls the first target; EchoClient echoes its name.
-        assert_eq!(response.llm_response.completion, "direct/model");
+        assert_eq!(response_text(&response.llm_response), "direct/model");
         assert_eq!(trace[0].selected_model(), "direct/model");
         Ok(())
     }
@@ -746,10 +785,7 @@ mod tests {
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 self.barrier.wait().await;
                 Ok(Response {
-                    llm_response: LlmResponse {
-                        completion: routed.decision.selected_model().to_string(),
-                        raw_response: None,
-                    },
+                    llm_response: text_response(routed.decision.selected_model()),
                     metadata: None,
                 })
             }
@@ -771,7 +807,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 algo.run(Context::default(), request())
                     .await
-                    .map(|(_, response)| response.llm_response.completion)
+                    .map(|(_, response)| response_text(&response.llm_response))
             }));
         }
 

@@ -16,7 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use libsy::{
-    Algorithm, Context, Decision, Driver, LlmRequest, LlmTargetSet, Request, Response, Signals,
+    request_text, response_text, text_request_with_model, Algorithm, Context, Decision, Driver,
+    LlmTargetSet, Request, Response, Signals,
 };
 
 /// Preamble prepended to the user prompt when asking the classifier target for a
@@ -105,19 +106,19 @@ impl Algorithm for LlmClassifierOrchAlgo {
         driver: Driver,
         request: Request,
     ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-        let user_prompt = request.llm_request.prompt.clone();
+        let user_prompt = request_text(&request.llm_request);
         // The agent's inbound name rides through unchanged on every sub-call; the
         // model each sub-call actually hits is carried by its decision instead.
-        let inbound = request.llm_request.inbound_model_name.clone();
+        let inbound = request.llm_request.model.clone();
 
         // 1. Classify: call the classifier target with the score-eliciting prompt.
         let classifier_target = self.target_set.get_target(&self.classifier_model)?;
         let classify_request = Request {
-            llm_request: LlmRequest {
-                inbound_model_name: inbound.clone(),
-                prompt: format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
-            },
-            raw_request: request.raw_request.clone(),
+            llm_request: text_request_with_model(
+                inbound.clone(),
+                format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
+            ),
+            raw_request: None,
             metadata: request.metadata.clone(),
         };
         let classify_decision: Arc<dyn Decision> = Arc::new(ClassifierDecision {
@@ -130,9 +131,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
         let classify_response = driver
             .call_llm_target(&classifier_target, classify_request, classify_decision)
             .await?;
-        let score = classify_response
-            .llm_response
-            .completion
+        let score = response_text(&classify_response.llm_response)
             .trim()
             .parse::<f64>()
             .ok();
@@ -155,10 +154,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
             tier: Some(tier),
         });
         let routed_request = Request {
-            llm_request: LlmRequest {
-                inbound_model_name: inbound,
-                prompt: user_prompt,
-            },
+            llm_request: text_request_with_model(inbound, user_prompt),
             raw_request: request.raw_request,
             metadata: request.metadata,
         };
@@ -180,7 +176,9 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmRequest, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{
+        request_text, text_request, text_response, LlmClient, LlmTarget, Response, RoutedRequest,
+    };
     use std::sync::Mutex;
 
     /// Returns `score` for the classifier target, an answer tagged with the model
@@ -209,10 +207,7 @@ mod tests {
                 .map_err(|_| "lock poisoned")?
                 .push(routed.request);
             Ok(Response {
-                llm_response: LlmResponse {
-                    completion,
-                    raw_response: None,
-                },
+                llm_response: text_response(completion),
                 metadata: None,
             })
         }
@@ -247,10 +242,7 @@ mod tests {
 
     fn request(prompt: &str) -> Request {
         Request {
-            llm_request: LlmRequest {
-                inbound_model_name: "auto".to_string(),
-                prompt: prompt.to_string(),
-            },
+            llm_request: text_request("auto", prompt),
             raw_request: None,
             metadata: None,
         }
@@ -278,7 +270,7 @@ mod tests {
             .run(Context::default(), request("solve this proof"))
             .await?;
         assert_eq!(
-            response.llm_response.completion,
+            response_text(&response.llm_response),
             "answer from frontier/model"
         );
         // Trace: [classify, route].
@@ -296,7 +288,10 @@ mod tests {
         let (trace, response) = orch(algo)
             .run(Context::default(), request("say hello"))
             .await?;
-        assert_eq!(response.llm_response.completion, "answer from cheap/model");
+        assert_eq!(
+            response_text(&response.llm_response),
+            "answer from cheap/model"
+        );
         let routed = as_classifier(&trace[1])?;
         assert_eq!(routed.tier, Some(ClassifierTier::Weak));
         assert_eq!(routed.score, Some(0.2));
@@ -311,7 +306,7 @@ mod tests {
             .run(Context::default(), request("borderline"))
             .await?;
         assert_eq!(
-            response.llm_response.completion,
+            response_text(&response.llm_response),
             "answer from frontier/model"
         );
         Ok(())
@@ -322,7 +317,7 @@ mod tests {
         let (algo, _) = algo(0.5, "not-a-number");
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
-            response.llm_response.completion,
+            response_text(&response.llm_response),
             "answer from frontier/model"
         );
         let routed = as_classifier(&trace[1])?;
@@ -341,9 +336,9 @@ mod tests {
         let seen = seen.lock().map_err(|_| "lock poisoned")?;
         // Two calls: the classifier (preamble + user text), then the routed model.
         assert_eq!(seen.len(), 2);
-        assert!(seen[0].llm_request.prompt.contains("prove it"));
-        assert!(seen[0].llm_request.prompt.contains("frontier model"));
-        assert_eq!(seen[1].llm_request.prompt, "prove it");
+        assert!(request_text(&seen[0].llm_request).contains("prove it"));
+        assert!(request_text(&seen[0].llm_request).contains("frontier model"));
+        assert_eq!(request_text(&seen[1].llm_request), "prove it");
         Ok(())
     }
 }

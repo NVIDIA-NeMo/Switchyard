@@ -856,6 +856,7 @@ dependencies = [
  "async-trait",
  "futures",
  "serde_json",
+ "switchyard-translation",
  "tokio",
  "tokio-stream",
 ]

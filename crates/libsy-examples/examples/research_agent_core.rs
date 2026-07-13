@@ -13,8 +13,8 @@ use std::error::Error;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, Context, Decision, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Step,
+    response_text, text_request, text_response, Algorithm, Context, Decision, LlmTarget,
+    LlmTargetSet, Request, Response, Step,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use tokio_stream::StreamExt;
@@ -34,10 +34,7 @@ async fn call_model(model: &str) -> Response {
         format!("answer from {model}")
     };
     Response {
-        llm_response: LlmResponse {
-            completion,
-            raw_response: None,
-        },
+        llm_response: text_response(completion),
         metadata: None,
     }
 }
@@ -65,10 +62,7 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
-                    inbound_model_name: "auto".to_string(),
-                    prompt: step,
-                },
+                llm_request: text_request("auto", step),
                 raw_request: None,
                 metadata: None,
             };
@@ -84,7 +78,7 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(response.llm_response.completion);
+                        notes.push(response_text(&response.llm_response));
                     }
                 }
             }
