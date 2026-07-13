@@ -368,6 +368,15 @@ class LatencyServiceLLMBackend(LLMBackend):
     # -- Request processing (hot path — no Latency Service call) ------------
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        """Serve *request* on the best healthy endpoint, failing over on error.
+
+        Candidates are ordered by health and observed latency (with optional
+        session affinity); every upstream attempt is stamped with the
+        spend-logs metadata header, and the attempt that succeeds records its
+        route selection on *ctx* (see :data:`CTX_ROUTE_SELECTION`). Exhausting
+        all candidates re-raises the last upstream error, annotated for the
+        client-facing error envelope.
+        """
         # This backend records its own per-attempt ``outcome_metrics`` counters
         # below (one per failover attempt). Claim attempt accounting for this
         # request so the endpoint-layer fallback in ``dispatch`` /
@@ -675,21 +684,33 @@ class LatencyServiceLLMBackend(LLMBackend):
         body: dict[str, object],
         extra_headers: dict[str, str],
     ) -> object:
-        # ``extra_headers`` rides the client wrapper's ``**kwargs`` into the
-        # OpenAI SDK's per-request header merge (over ``default_headers``).
-        # A passthrough body may itself carry an SDK-style ``extra_headers``
-        # field (shape-preserving translation keeps unknown keys); merge it
-        # under ours rather than letting it collide with the keyword — it used
-        # to ride ``**body`` into the same SDK parameter, and the spend-logs
-        # header must win a name conflict so callers can't spoof it. A
-        # non-mapping value is dropped: it could only ever have broken the
-        # SDK call.
+        """Make one upstream SDK call with the protected *extra_headers* stamped on.
+
+        ``extra_headers`` rides the client wrapper's ``**kwargs`` into the
+        OpenAI SDK's per-request header merge (over ``default_headers``). A
+        passthrough body may itself carry an SDK-style ``extra_headers`` field
+        (shape-preserving translation keeps unknown keys); it is still
+        forwarded — it used to ride ``**body`` into the same SDK parameter —
+        but the protected headers must win the merge so callers can't spoof
+        them, and header names are case-insensitive on the wire while dict
+        keys are not, so every case variant of a protected name is stripped
+        from the client mapping (a client-cased duplicate would otherwise
+        reach the wire alongside ours and win first-match parsing on the
+        receiving proxy). A non-mapping value is dropped: it could only ever
+        have broken the SDK call.
+        """
         client_extra = body.pop("extra_headers", None)
+        protected = {name.lower() for name in extra_headers}
         headers: dict[str, object] = (
-            {**client_extra, **extra_headers}
+            {
+                name: value
+                for name, value in client_extra.items()
+                if not (isinstance(name, str) and name.lower() in protected)
+            }
             if isinstance(client_extra, Mapping)
-            else dict(extra_headers)
+            else {}
         )
+        headers.update(extra_headers)
         if target_request_type == ChatRequestType.OPENAI_RESPONSES:
             return await self._clients[model_id].aresponses(
                 api_key=api_key,

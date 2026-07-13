@@ -151,6 +151,7 @@ class _OpenAICompatStub:
             protocol_version = "HTTP/1.1"
 
             def do_POST(self) -> None:
+                """Record the request (path, body, headers) and pop the queued reply."""
                 length = int(self.headers.get("content-length", "0"))
                 raw = self.rfile.read(length)
                 body = json.loads(raw.decode("utf-8"))

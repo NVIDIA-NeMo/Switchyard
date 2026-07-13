@@ -74,6 +74,7 @@ class AnthropicMessagesEndpoint(NemoSwitchyardEndpoint):
             request: Request,
             body: Annotated[dict[str, Any], Body(...)],
         ) -> Response:
+            """Anthropic-compatible Messages endpoint."""
             obj = request.app.state.switchyard
             _strip_unsupported_output_config(body)
             model = str(body.get("model", "<none>"))

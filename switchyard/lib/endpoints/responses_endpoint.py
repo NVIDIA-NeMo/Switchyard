@@ -57,6 +57,7 @@ class ResponsesEndpoint(NemoSwitchyardEndpoint):
             request: Request,
             body: Annotated[dict[str, Any], Body(...)],
         ) -> Response:
+            """OpenAI-compatible Responses endpoint."""
             obj = request.app.state.switchyard
             model = str(body.get("model", "<none>"))
             stream = bool(body.get("stream"))

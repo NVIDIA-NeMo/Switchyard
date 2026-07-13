@@ -73,6 +73,7 @@ class OpenAIChatEndpoint(NemoSwitchyardEndpoint):
             request: Request,
             body: Annotated[dict[str, Any], Body(...)],
         ) -> Response:
+            """OpenAI-compatible Chat Completions endpoint."""
             obj = request.app.state.switchyard
             chat_request = ChatRequest.openai_chat(body)
             # Reject semantically invalid input (e.g. empty messages) at the

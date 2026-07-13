@@ -23,11 +23,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from typing import Any
-from unittest.mock import patch
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pytest import fixture
+from pytest_mock import MockerFixture
 
 from switchyard.lib.backends.health_poller import HealthPoller
 from switchyard.lib.backends.latency_service_llm_backend import (
@@ -57,6 +58,7 @@ UPSTREAM_MODEL = "openai/openai/test-model"
 
 
 def _selection(**overrides: object) -> dict[str, object]:
+    """Selection record as the latency backend writes it, with *overrides* applied."""
     payload: dict[str, object] = {
         "router_model": ROUTE_MODEL,
         "router_strategy": "latency",
@@ -75,10 +77,14 @@ def _selection(**overrides: object) -> dict[str, object]:
 
 
 class TestRouteSelectionHeaders:
+    """Mapping of the ctx selection record to ``x-switchyard-*`` headers."""
+
     def test_empty_without_selection(self) -> None:
+        """A ctx without a recorded selection yields no headers."""
         assert route_selection_headers(ProxyContext()) == {}
 
     def test_maps_selection_to_response_headers(self) -> None:
+        """Every exposed selection field maps to its response header."""
         ctx = ProxyContext()
         ctx.metadata[CTX_ROUTE_SELECTION] = _selection()
 
@@ -90,6 +96,7 @@ class TestRouteSelectionHeaders:
         }
 
     def test_skips_absent_fields_instead_of_stamping_placeholders(self) -> None:
+        """An absent field is skipped — never stamped as a placeholder value."""
         ctx = ProxyContext()
         ctx.metadata[CTX_ROUTE_SELECTION] = _selection(router_model=None)
 
@@ -99,6 +106,7 @@ class TestRouteSelectionHeaders:
         assert headers[SELECTED_MODEL_HEADER] == UPSTREAM_MODEL
 
     def test_ignores_non_mapping_value(self) -> None:
+        """A malformed (non-mapping) ctx record yields no headers."""
         ctx = ProxyContext()
         ctx.metadata[CTX_ROUTE_SELECTION] = "bogus"
 
@@ -127,11 +135,15 @@ class TestRouteSelectionHeaders:
 
 
 class TestSerializeChainResultHeaders:
+    """``serialize_chain_result`` stamps the selection on every branch."""
+
     @staticmethod
     async def _sse_iter(_result: Any) -> Any:
+        """Minimal SSE iterator satisfying the serializer signature."""
         yield "data: {}\n\n"
 
     def test_json_response_carries_selection_headers(self) -> None:
+        """A JSON-serialized result carries the selection headers."""
         ctx = ProxyContext()
         ctx.metadata[CTX_ROUTE_SELECTION] = _selection()
 
@@ -146,9 +158,14 @@ class TestSerializeChainResultHeaders:
         )
 
     def test_streaming_response_carries_selection_headers(self) -> None:
-        # The backend call completes before the StreamingResponse is built, so
-        # the selection is final by the time SSE headers are committed.
+        """The SSE branch stamps the headers too.
+
+        The backend call completes before the StreamingResponse is built, so
+        the selection is final by the time SSE headers are committed.
+        """
         class _EmptyStream:
+            """Async iterator yielding nothing, standing in for a backend stream."""
+
             def __aiter__(self) -> _EmptyStream:
                 return self
 
@@ -166,14 +183,44 @@ class TestSerializeChainResultHeaders:
         assert response.headers[ROUTER_MODEL_HEADER] == ROUTE_MODEL
 
     def test_selection_free_ctx_no_selection_headers(self) -> None:
+        """A selection-free ctx adds no ``x-switchyard-*`` headers."""
         response = serialize_chain_result(
             {"ok": True}, stream=False, sse_iter=self._sse_iter, ctx=ProxyContext()
         )
 
         assert ROUTER_CORRELATION_ID_HEADER not in response.headers
 
+    def test_prebuilt_response_passes_through_with_selection_merged(self) -> None:
+        """A result that is already a ``Response`` gains the selection headers.
+
+        No current chain path yields a pre-built Response after a billed
+        upstream success, but the serializer contract — a recorded selection
+        is never dropped — must hold on that branch too, with the response's
+        own status, body, and headers preserved.
+        """
+        ctx = ProxyContext()
+        ctx.metadata[CTX_ROUTE_SELECTION] = _selection()
+        prebuilt = JSONResponse(
+            content={"ok": True}, status_code=404, headers={"x-existing": "1"}
+        )
+
+        response = serialize_chain_result(
+            prebuilt, stream=False, sse_iter=self._sse_iter, ctx=ctx
+        )
+
+        assert response is prebuilt
+        assert response.status_code == 404
+        assert response.headers["x-existing"] == "1"
+        assert json.loads(response.body) == {"ok": True}
+        assert response.headers[SELECTED_MODEL_HEADER] == UPSTREAM_MODEL
+        assert response.headers[ROUTER_CORRELATION_ID_HEADER] == (
+            "11111111-2222-3333-4444-555555555555"
+        )
+
 
 class TestErrorPathSelectionHeaders:
+    """``handle_chain_exception`` keeps a billed selection on error responses."""
+
     def test_failure_after_billed_success_keeps_selection_headers(self) -> None:
         """A post-backend failure must still expose the billed selection.
 
@@ -199,6 +246,7 @@ class TestErrorPathSelectionHeaders:
         assert response.headers[SELECTED_MODEL_HEADER] == UPSTREAM_MODEL
 
     def test_failure_without_selection_has_no_selection_headers(self) -> None:
+        """No billed success → the error response claims no selection."""
         response = handle_chain_exception(
             RuntimeError("backend never succeeded"),
             ProxyContext(),
@@ -216,7 +264,7 @@ class TestErrorPathSelectionHeaders:
 
 
 @fixture
-def latency_app() -> Iterator[tuple[FastAPI, _OpenAICompatStub]]:
+def latency_app(mocker: MockerFixture) -> Iterator[tuple[FastAPI, _OpenAICompatStub]]:
     """Latency-service app whose single endpoint targets a loopback stub.
 
     The backend uses the real ``OpenAILLMClient``/OpenAI SDK, so the stub
@@ -236,13 +284,14 @@ def latency_app() -> Iterator[tuple[FastAPI, _OpenAICompatStub]]:
                 ),
             ],
         )
-        with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
-            switchyard = ProfileSwitchyard(
-                LatencyServiceProfileConfig.from_config(config)
-                .build()
-                .with_runtime_components(enable_stats=config.enable_stats)
-            )
-            yield build_switchyard_app(switchyard), stub
+        mocker.patch.object(HealthPoller, "start")
+        mocker.patch.object(HealthPoller, "stop")
+        switchyard = ProfileSwitchyard(
+            LatencyServiceProfileConfig.from_config(config)
+            .build()
+            .with_runtime_components(enable_stats=config.enable_stats)
+        )
+        yield build_switchyard_app(switchyard), stub
 
 
 def _wire_spend_logs_payload(stub: _OpenAICompatStub) -> dict[str, object]:
@@ -257,6 +306,7 @@ def _wire_spend_logs_payload(stub: _OpenAICompatStub) -> dict[str, object]:
 def test_chat_completion_roundtrips_selection_and_correlation_id(
     latency_app: tuple[FastAPI, _OpenAICompatStub],
 ) -> None:
+    """The wire spend-logs header and the response headers share one selection."""
     app, stub = latency_app
     stub.respond_json(_backend_payload(content="hello", model=UPSTREAM_MODEL))
 
@@ -286,6 +336,7 @@ def test_chat_completion_roundtrips_selection_and_correlation_id(
 def test_streaming_chat_completion_carries_selection_headers(
     latency_app: tuple[FastAPI, _OpenAICompatStub],
 ) -> None:
+    """A streaming completion returns the same selection headers before the body."""
     app, stub = latency_app
     stub.respond_sse(_sse_body([_stream_chunk(content="hel"), _stream_chunk(finish="stop")]))
 
@@ -415,7 +466,8 @@ def test_client_body_extra_headers_forwarded_not_collided(
 
     Pre-spend-logs it rode ``**body`` into the SDK's header kwarg; it must
     still reach the wire — and must not be able to spoof the spend-logs
-    header, which wins the name conflict.
+    header under any key casing, since header names are case-insensitive on
+    the wire.
     """
     app, stub = latency_app
     stub.respond_json(_backend_payload(content="hello", model=UPSTREAM_MODEL))
@@ -429,6 +481,7 @@ def test_client_body_extra_headers_forwarded_not_collided(
                 "extra_headers": {
                     "x-client-tag": "42",
                     SPEND_LOGS_METADATA_HEADER: "spoofed",
+                    "X-LiteLLM-Spend-Logs-Metadata": "spoofed-cased",
                 },
             },
         )

@@ -1012,6 +1012,7 @@ class TestRouteSelectionSpendLogs:
     """
 
     async def test_outbound_header_carries_route_selection(self):
+        """The outbound header records the full selection for the chosen endpoint."""
         config = LatencyServiceBackendConfig(
             latency_service_url=LATENCY_SERVICE_URL,
             endpoints=[
@@ -1040,6 +1041,7 @@ class TestRouteSelectionSpendLogs:
         uuid.UUID(str(payload["router_correlation_id"]))
 
     async def test_ctx_records_selection_matching_outbound_header(self):
+        """ctx records exactly the payload the wire header carried."""
         backend = _make_backend(_config("model-A"))
         backend._clients["model-A"].acompletion = AsyncMock(
             return_value=_make_completion()
@@ -1055,6 +1057,7 @@ class TestRouteSelectionSpendLogs:
         assert payload["router_selected_provider"] == "model-A"
 
     async def test_failover_restamps_selection_and_keeps_correlation_id(self):
+        """Each attempt is stamped with its own endpoint under one correlation id."""
         backend = _make_backend(_config("model-A", "model-B"))
         _set_health(
             backend,
@@ -1082,6 +1085,7 @@ class TestRouteSelectionSpendLogs:
         assert ctx.metadata[CTX_ROUTE_SELECTION] == second
 
     async def test_correlation_id_is_fresh_per_request(self):
+        """Two client requests never share a correlation id."""
         backend = _make_backend(_config("model-A"))
         mock = AsyncMock(return_value=_make_completion())
         backend._clients["model-A"].acompletion = mock
@@ -1094,6 +1098,7 @@ class TestRouteSelectionSpendLogs:
         assert first["router_correlation_id"] != second["router_correlation_id"]
 
     async def test_router_model_falls_back_to_configured_route_model(self):
+        """A model-less client body attributes to the configured route id."""
         backend = _make_backend(
             _config("model-A", route_model="nvidia/switchyard/gpt-5.5")
         )
@@ -1108,6 +1113,7 @@ class TestRouteSelectionSpendLogs:
         assert payload["router_model"] == "nvidia/switchyard/gpt-5.5"
 
     async def test_no_selection_recorded_when_all_attempts_fail(self):
+        """No billed success → no selection recorded on ctx."""
         backend = _make_backend(_config("model-A"))
         backend._clients["model-A"].acompletion = AsyncMock(
             side_effect=_api_status_error(401),
@@ -1120,6 +1126,7 @@ class TestRouteSelectionSpendLogs:
         assert CTX_ROUTE_SELECTION not in ctx.metadata
 
     async def test_responses_surface_is_stamped_too(self):
+        """The Responses-API surface is stamped like the Chat surface."""
         backend = _make_backend(_config("model-A", request_type="openai_responses"))
         backend._clients["model-A"].aresponses = AsyncMock(
             return_value={"id": "resp-test", "object": "response", "output": []}
@@ -1133,6 +1140,34 @@ class TestRouteSelectionSpendLogs:
         payload = _spend_logs_payload(backend._clients["model-A"].aresponses)
         assert payload["router_selected_endpoint"] == "model-A"
         assert payload["router_strategy"] == "latency"
+
+    async def test_cased_spoof_of_spend_logs_header_is_stripped(self):
+        """A differently-cased spoof key cannot ride client extra_headers to the wire.
+
+        Header names are case-insensitive on the wire while dict merges are
+        not: exactly one instance of the protected header — ours — may reach
+        the SDK, while benign client headers still pass through.
+        """
+        backend = _make_backend(_config("model-A"))
+        mock = AsyncMock(return_value=_make_completion())
+        backend._clients["model-A"].acompletion = mock
+
+        await backend.call(
+            ProxyContext(),
+            _openai_request(
+                extra_headers={
+                    "X-LiteLLM-Spend-Logs-Metadata": "spoofed",
+                    "x-client-tag": "42",
+                },
+            ),
+        )
+
+        headers = mock.call_args.kwargs["extra_headers"]
+        spoof_keys = [k for k in headers if k.lower() == SPEND_LOGS_METADATA_HEADER]
+        assert spoof_keys == [SPEND_LOGS_METADATA_HEADER]
+        payload = _spend_logs_payload(mock)
+        assert payload["router_selected_endpoint"] == "model-A"
+        assert headers["x-client-tag"] == "42"
 
 
 # ---------------------------------------------------------------------------

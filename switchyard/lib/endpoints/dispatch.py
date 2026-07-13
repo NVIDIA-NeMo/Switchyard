@@ -101,16 +101,22 @@ def serialize_chain_result(
 ) -> Response:
     """Serialize a chain result to the appropriate HTTP response.
 
-    Returns the result as-is if it is already a ``Response``, wraps it in a
+    Returns the result itself if it is already a ``Response``, wraps it in a
     ``StreamingResponse`` when streaming is requested, or JSON-serializes it.
     Any route selection recorded on *ctx* is stamped as ``x-switchyard-*``
-    response headers (streaming included — the backend call completed before
-    the response object is built, so the selection is final). ``ctx`` is
-    required so a new endpoint cannot silently opt out of spend attribution.
+    response headers on every branch, pre-built responses included (streaming
+    too — the backend call completed before the response object is built, so
+    the selection is final). ``ctx`` is required so a new endpoint cannot
+    silently opt out of spend attribution.
     """
-    if isinstance(result, Response):
-        return result
     headers = route_selection_headers(ctx)
+    if isinstance(result, Response):
+        # Merge rather than pass through untouched: no current chain path
+        # yields a pre-built Response after a billed upstream success, but if
+        # one ever does, dropping the recorded selection here would silently
+        # break spend attribution.
+        result.headers.update(headers)
+        return result
     if stream and hasattr(result, "__aiter__"):
         return StreamingResponse(
             sse_iter(result), media_type="text/event-stream", headers=headers
