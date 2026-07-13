@@ -287,7 +287,11 @@ _ESCALATION_JUDGE_KEYS = frozenset({
     "timeout",
     "timeout_secs",
     "min_turn",
+    "confirmations",
+    "confirmation_window",
+    "disable_reasoning",
     "recent_turn_window",
+    "window_message_chars",
     "prompt",
     "max_request_chars",
 })
@@ -1070,6 +1074,9 @@ def _escalation_router_switchyard(
           base_url: https://openrouter.ai/api/v1
           timeout_secs: 5.0
           min_turn: 3               # first turn the judge runs on
+          confirmations: 1          # consecutive escalate verdicts to latch
+          confirmation_window: 1    # >1 tolerates declines between fires
+          disable_reasoning: true   # false lets a reasoning judge think
           recent_turn_window: 14    # trailing messages shown to the judge
         strong:
           model: anthropic/claude-opus-4.7
@@ -1135,8 +1142,20 @@ def _escalation_router_switchyard(
         },
         "fallback_target_on_evict": fallback_target_on_evict,
         "judge_min_turn": _optional_int(judge.get("min_turn"), default=3),
+        "judge_escalate_confirmations": _optional_int(
+            judge.get("confirmations"), default=1,
+        ),
+        "judge_confirmation_window": _optional_int(
+            judge.get("confirmation_window"), default=1,
+        ),
+        "judge_disable_reasoning": _optional_bool(
+            judge.get("disable_reasoning"), default=True,
+        ),
         "judge_recent_turn_window": _optional_int(
             judge.get("recent_turn_window"), default=14,
+        ),
+        "judge_window_message_chars": _optional_int(
+            judge.get("window_message_chars"), default=300,
         ),
         "judge_system_prompt": _optional_str(judge.get("prompt")),
         "judge_timeout_s": _optional_float(judge.get("timeout_secs"), default=5.0),

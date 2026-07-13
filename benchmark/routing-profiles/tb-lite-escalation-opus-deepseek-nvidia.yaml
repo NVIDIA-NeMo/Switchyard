@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Escalation-router Opus/DeepSeek profile for Harbor Terminal-Bench Lite on
+# the NVIDIA Inference Hub. Every conversation starts on DeepSeek V4 Pro; a
+# DeepSeek V4 Flash judge watches the trajectory and latches the session to
+# Claude Opus 4.8 on a clear pattern of trouble.
+#
+# All three tiers use https://inference-api.nvidia.com/v1, which requires a
+# LiteLLM virtual key (sk-...), not an nvapi- key. Export the same key for
+# all three vars (they are the ones run-baseline.sh forwards into the
+# Switchyard container):
+#   export SWITCHYARD_STRONG_API_KEY=sk-...
+#   export SWITCHYARD_WEAK_API_KEY=sk-...
+#   export SWITCHYARD_CLASSIFIER_API_KEY=sk-...
+#
+# Run with:
+#   benchmark/run-baseline.sh \
+#     --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
+#     --routing-profiles benchmark/routing-profiles/tb-lite-escalation-opus-deepseek-nvidia.yaml \
+#     --model switchyard
+
+routes:
+  switchyard:
+    type: escalation_router
+    enable_stats: true
+    fallback_target_on_evict: strong
+    # Distinguish k>1 repeated-task trials against one shared server: the
+    # session key includes the first 2 post-task messages, so trials diverge
+    # via early model responses instead of sharing an escalation latch.
+    # Requires nonzero sampling temperature; keep 0 outside benchmarks.
+    session_key_depth: 2
+    strong:
+      model: aws/anthropic/bedrock-claude-opus-4-8
+      api_key: ${SWITCHYARD_STRONG_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: openai
+      timeout_secs: 600
+    weak:
+      # The evals- batch-gateway variant (nvidia/deepseek-ai/evals-deepseek-v4-pro)
+      # avoids the regular gateway's 6-min timeout under high concurrency, but
+      # its upstream host is currently failing TLS verification; switch back
+      # once it probes clean.
+      model: nvidia/deepseek-ai/deepseek-v4-pro
+      api_key: ${SWITCHYARD_WEAK_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: openai
+      timeout_secs: 600
+      # Explicit extra_body overrides the DeepSeek default of
+      # enable_thinking: false; the X-Inference-Priority: batch header is
+      # still injected (headers merge independently of the body).
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: true
+    judge:
+      model: nvidia/deepseek-ai/deepseek-v4-flash
+      api_key: ${SWITCHYARD_CLASSIFIER_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      # Hub Flash latency is ~4-8s on small judge calls (and the profile
+      # build pins DeepSeek judges to the X-Inference-Priority: batch
+      # gateway); the 5s default used with Gemini Flash would fail-open
+      # (stay weak) on most turns here.
+      timeout_secs: 30
+      min_turn: 3
+      # Require a second consecutive escalate verdict before latching:
+      # round-2 traces showed one-shot eager verdicts (single failed
+      # command at turn 4-9) causing regressions on tasks the weak tier
+      # solves; real loops persist across turns and still latch.
+      confirmations: 2
+      recent_turn_window: 14

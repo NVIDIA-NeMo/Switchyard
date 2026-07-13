@@ -37,8 +37,18 @@ class EscalationRouterConfig(BaseModel):
             eviction (context-window overflow). Must match ``strong.id`` or
             ``weak.id``; the judge target is not a routing candidate.
         judge_min_turn: First conversation turn on which the judge runs.
+        judge_escalate_confirmations: Consecutive escalate verdicts required
+            before the strong latch fires (``1`` pins on the first verdict).
+        judge_confirmation_window: Judged turns an escalate verdict stays
+            live for confirmation; ``N > 1`` tolerates up to ``N - 1``
+            intervening declines (recurring intermittent trouble confirms).
+        judge_disable_reasoning: Send the thinking-off template hint on judge
+            calls (default). ``False`` lets a reasoning judge model think,
+            trading per-turn latency for rubric adherence.
         judge_recent_turn_window: Trailing messages shown to the judge on top
             of the system + first-user anchors.
+        judge_window_message_chars: Per-message truncation cap inside the
+            trailing window (larger keeps more tool-output detail per turn).
         judge_max_request_chars: Cap on the assembled judge transcript.
         judge_system_prompt: Optional judge prompt override. ``None`` uses the
             built-in prompt.
@@ -64,7 +74,11 @@ class EscalationRouterConfig(BaseModel):
     judge: LlmTarget
     fallback_target_on_evict: str
     judge_min_turn: int = Field(default=3, ge=1)
+    judge_escalate_confirmations: int = Field(default=1, ge=1)
+    judge_confirmation_window: int = Field(default=1, ge=1)
+    judge_disable_reasoning: bool = True
     judge_recent_turn_window: int = Field(default=14, ge=1)
+    judge_window_message_chars: int = Field(default=300, ge=50)
     judge_max_request_chars: int = Field(default=12_000, ge=1_000)
     judge_system_prompt: str | None = Field(default=None, min_length=1)
     judge_timeout_s: float = Field(default=5.0, gt=0.0)

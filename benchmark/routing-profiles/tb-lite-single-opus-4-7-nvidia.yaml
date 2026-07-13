@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Serve-backed single-model Opus 4.7 profile on the NVIDIA Inference Hub —
+# strong-only baseline for the escalation-router comparison.
+# Requires a LiteLLM virtual key (sk-...):
+#   export SWITCHYARD_STRONG_API_KEY=sk-...
+# Run with:
+#   benchmark/run-baseline.sh \
+#     --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
+#     --routing-profiles benchmark/routing-profiles/tb-lite-single-opus-4-7-nvidia.yaml \
+#     --model tb-lite-single-opus-4-7-nvidia
+
+defaults:
+  api_key: ${SWITCHYARD_STRONG_API_KEY}
+  base_url: https://inference-api.nvidia.com/v1
+  timeout_secs: 600.0
+
+routes:
+  tb-lite-single-opus-4-7-nvidia:
+    type: model
+    target:
+      model: aws/anthropic/bedrock-claude-opus-4-7
+      format: openai

@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import sys
+import time
+from collections import OrderedDict
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,13 +28,19 @@ from switchyard.lib.processors.llm_classifier.request_processor import (
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.session_affinity import CTX_SESSION_KEY, SessionAffinity
+from switchyard.lib.session_key import session_key_from_body
+from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 
 log = logging.getLogger(__name__)
 
 #: ``ProxyContext.metadata`` key holding the audit record of the judge's
-#: decision for this turn: ``{"escalate", "reason", "turn", "source"}``.
+#: decision for this turn: ``{"escalate", "reason", "turn", "source",
+#: "session", "streak", "confirmed"}`` (the last three only on judged turns).
 CTX_ESCALATION_VERDICT = "_escalation_verdict"
+
+#: LRU cap on the consecutive-escalate streak store.
+_MAX_STREAK_SESSIONS = 10_000
 
 #: Tier labels stamped into ``CTX_DETERMINISTIC_ROUTING_TIER``; must match the
 #: labels the profile registers on ``DeterministicRoutingLLMBackend``.
@@ -39,21 +49,69 @@ TIER_WEAK = "weak"
 
 ESCALATION_JUDGE_SYSTEM_PROMPT = """\
 You are an escalation judge inside an agentic coding router. The session
-started on the EFFICIENT tier (a cheap but top-class 2026 model). Your
-job is to detect when the run is genuinely in trouble so the router can
-escalate the rest of the task to the STRONG tier (frontier, expensive).
+started on the EFFICIENT tier (a cheap but capable general-purpose
+model). Your job is to detect when the run is genuinely in trouble so
+the router can escalate the rest of the session to the STRONG tier
+(frontier, expensive). Sessions range from single autonomous tasks to
+long interactive collaborations where the user steers across several
+sub-tasks — the same trouble signals apply to both.
 
 You see a condensed view of one session: the task framing (system prompt
-+ first user message) and the most recent turns of activity (assistant
-messages and tool results). Judge the *trajectory* — is the agent making
-real progress toward the stated task — not the difficulty of the task
-itself. Return exactly one JSON object:
++ first user message) and the most recent turns of activity. Those
+recent turns include assistant messages, tool results, and any later
+user messages — a user message in the recent window is the user
+steering the session (a new instruction, a correction, an answer), and
+is the most current statement of what the agent should be doing. Judge
+the *trajectory* — is the agent making real progress toward what the
+user currently wants — not the difficulty of the task itself. Return
+exactly one JSON object:
 
 {"escalate": boolean, "reason": "one short sentence naming the pattern"}
 
-Escalation is one-way for the rest of the task and expensive. Escalate
-only on a clear PATTERN of trouble, never on a single failed command.
-When the evidence is thin or ambiguous, return {"escalate": false}.
+Escalation is one-way for the rest of the session and expensive.
+Escalate only on a clear PATTERN of trouble, never on a single failed
+command. When the evidence is thin or ambiguous, return
+{"escalate": false}.
+
+The bar is not "is there friction" — agentic coding is full of friction
+the efficient tier works through on its own. The bar is "is this run
+likely DOOMED without intervention": the agent is stuck in place and
+its recent behavior shows no mechanism by which the next few turns
+would look different.
+
+# Is the stuck point beyond the efficient tier?
+
+Escalation pays only when the trouble is the KIND the strong tier is
+better at. The efficient tier handles routine coding, file
+exploration, single-file edits, normal debugging, dependency and
+environment setup, and most refactors on its own — being stuck on
+those is usually temporary. Weigh the kind of stuck point:
+
+Escalate sooner — the stuck point exceeds the efficient tier's
+capability, and a stronger model would likely break the loop:
+- Cross-module or cross-codebase synthesis: the fix requires learning
+  a convention, contract, or invariant from elsewhere in the codebase
+  and applying it consistently — even when the edit itself is
+  single-file.
+- Subtle invariants: plausible-looking fixes keep failing the same
+  test because the root cause hinges on a behavior contract none of
+  the attempts have touched.
+- Root causes genuinely spanning modules, or multi-step algorithmic /
+  formal reasoning the agent keeps getting almost-right.
+
+Hold weak — the efficient tier resolves these with iteration:
+- Procedural or mechanical friction: tool availability, installs,
+  service startup, recipe-following scaffolding, localized one-file
+  test fixes.
+
+Hold weak — no model can fix these, so escalation is pure waste:
+- The blocker is external: required data or files that simply do not
+  exist in the environment, a permanently broken or missing service,
+  or requirements the environment contradicts. A stronger model
+  changes nothing about a missing resource. One boundary to respect:
+  when producing, recovering, or decoding that very artifact IS the
+  stated task, its absence is the work itself, not a blocker — judge
+  the trajectory on it like any other work.
 
 # Trouble patterns — escalate when you see these
 
@@ -71,15 +129,26 @@ False progress (looks like progress, is not):
   (test output, exit code, error text) shows failure.
 - Finishing without running the verification the task specifies, when
   the task states how success is checked (e.g. "make the provided
-  tests pass") and running it was possible.
+  tests pass") and running it was possible. (Handing a result back to
+  the user to review, when no verification was specified, is normal —
+  not false progress.)
 - A reproduction or test the agent wrote that passes trivially without
   exercising the actual issue, then building on that false signal.
 - The agent's stated reading of a tool result contradicts what the
   result actually says (treating an error or empty output as success).
 
 Drift and dead ends:
-- Recent activity no longer serves the task in the first user message
-  (e.g. polishing style while the required feature is unstarted).
+- Recent activity no longer serves the goal the user has actually
+  asked for (e.g. polishing style while the required feature is
+  unstarted). Judge against the LATEST instruction the user has given,
+  not only the opening request: in an interactive session the user may
+  have redirected, narrowed, or added a new sub-task, and following
+  that redirection is correct behavior, not drift. A debugging detour
+  that plausibly unblocks the goal — fixing the environment, starting a
+  required service, investigating an error in a dependency — is NOT
+  drift; call drift only when the detour has produced nothing useful
+  for many turns AND the real work of the current goal remains
+  untouched.
 - Violating an explicit task constraint (modifying files the task says
   not to touch, changing the tests instead of the code under test).
 - Editing or reasoning about code without ever having opened the files
@@ -88,11 +157,13 @@ Drift and dead ends:
   the session (forgetting its own findings).
 - Many turns elapsed with nothing durable produced (no successful
   writes, no passing checks) and no visible narrowing of the problem —
-  the run is on pace to exhaust its turn budget.
+  effort continues but the problem is not getting smaller.
 
 Desperation:
-- Giving up: declaring the task impossible, asking to stop, or drifting
-  into restating the problem instead of acting on it.
+- Giving up: declaring the task impossible, or drifting into restating
+  the problem instead of acting on it. (A genuine clarifying question to
+  the user, or handing back a decision only the user can make, is normal
+  collaboration in an interactive session — not desperation.)
 - Destructive flailing: rm -rf, wholesale reinstalls, chmod -R, or
   reverting everything as a reaction to being stuck rather than a
   reasoned step.
@@ -108,12 +179,29 @@ Agentic coding is full of failures that are part of healthy work:
   reading a file that turns out to be irrelevant) while the agent is
   still orienting.
 - A missing tool handled adaptively (tries `rg`, falls back to `grep`).
+- Sequential alternatives: trying a DIFFERENT library, tool, or
+  approach after one fails is adaptation, not a loop — even when
+  several alternatives fail in a row. The loop pattern requires the
+  SAME approach retried without material change.
+- A service that is unreachable or not yet running (server not
+  started, port closed, connection refused) while the agent is still
+  actively working to start, configure, or replace it.
+- Planning activity: todo-list and plan updates (TodoWrite,
+  update_plan) are routine agent workflow — planning is neither drift
+  nor struggle, and harness-injected skill/instruction reading early
+  in a session is orientation, not off-task work.
+- Zero-count summaries: "0 failed", "0 errors", "0 warnings" are
+  CLEAN results. Read failure keywords together with their counts —
+  only a nonzero count is a failure.
 - A long-running command (build, install, test suite) that simply has
   not finished, or the agent waiting on information it asked for.
 
 The distinguishing question: is each failure producing new information
 that changes the next action? Failing forward is fine; failing in place
-is trouble.
+is trouble. Also weigh the session's own recovery record: if this same
+session already shows friction the agent subsequently cleared (a failure
+followed by a verified fix or passing check), lean toward holding — a
+session that has recovered before will usually recover again.
 
 # Worked examples (none drawn from any benchmark task set)
 
@@ -143,6 +231,14 @@ is trouble.
   passing test. -> {"escalate": false}
 * `npm install` has been running for one turn with no output yet. ->
   {"escalate": false} — slow command, not a stall.
+* Four different serialization libraries failed to import; the agent
+  is now writing the converter with a fifth approach it has not tried
+  before. -> {"escalate": false} — sequential alternatives are
+  adaptation, even when none has succeeded yet.
+* Task: tune a slow batch pipeline. The agent is investigating why
+  the message broker fails to start, since the pipeline cannot be
+  measured without it. -> {"escalate": false} — unblocking
+  verification serves the task.
 
 Do not emit markdown, commentary, or chain-of-thought — only the JSON
 object.
@@ -181,9 +277,40 @@ class EscalationJudgeConfig(BaseModel):
     disable_reasoning: bool = True
     extra_headers: dict[str, str] | None = None
 
+    dump_verdicts_to_stderr: bool = True
+    """Emit one ``escalation_verdict={...}`` JSON line to ``sys.stderr`` per
+    judge call (verdict or fail-open).
+
+    Written directly (not via the logging module) so it lands in the
+    benchmark server's captured log regardless of uvicorn's logger config —
+    mirrors :attr:`LLMClassifierConfig.dump_signals_to_stderr`. Grep
+    ``escalation_verdict=`` to reconstruct per-turn judge decisions and
+    escalation timing for a run. Disable for callers that share stderr
+    with an interactive TUI."""
+
     min_judge_turn: int = Field(default=3, ge=1)
     """First conversation turn on which the judge runs. Earlier turns have no
     trajectory to judge and always route weak."""
+
+    escalate_confirmations: int = Field(default=1, ge=1)
+    """Consecutive ``escalate`` verdicts required before the latch fires.
+
+    ``1`` (default) pins on the first escalate verdict. ``2`` requires the
+    judge to confirm on the next judged turn, filtering one-shot eager
+    verdicts (a single failed command misread as a pattern) while keeping
+    recall on real trouble, which by definition persists across turns. A
+    non-escalate verdict resets the streak; a fail-open leaves it
+    unchanged (no evidence either way)."""
+
+    confirmation_window: int = Field(default=1, ge=1)
+    """How many judged turns an escalate verdict stays live for
+    confirmation purposes.
+
+    ``1`` (default) keeps the strict-consecutive behaviour: any decline
+    resets the streak. ``N > 1`` lets a later escalate verdict confirm an
+    earlier one across up to ``N - 1`` intervening declines — trouble that
+    keeps *recurring* is trouble, even when a quiet turn separates the
+    flare-ups."""
 
     recent_turn_window: int = Field(default=14, ge=1)
     """Trailing messages shown to the judge on top of the anchors. Wider than
@@ -227,12 +354,20 @@ class EscalationJudgeRequestProcessor:
         affinity: SessionAffinity,
         client: LLMClassifierClient | None = None,
         session_key_depth: int = 0,
+        stats_accumulator: StatsAccumulator | None = None,
     ) -> None:
         if session_key_depth < 0:
             raise ValueError("session_key_depth must be >= 0")
         self._config = config
         self._affinity = affinity
         self._session_key_depth = session_key_depth
+        # Also attached post-construction by the profile chain's
+        # ``with_runtime_components`` (same hook as the LLM classifier).
+        self._stats_accumulator = stats_accumulator
+        # Per-conversation (streak, declines_since_last_fire), only consulted
+        # when ``escalate_confirmations > 1``. LRU-capped alongside the
+        # affinity store so a long-lived server cannot grow it unbounded.
+        self._escalate_streaks: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._client = client or OpenAIChatLLMClassifierClient(
             OpenAILLMClient(
                 api_key=config.api_key,
@@ -272,7 +407,11 @@ class EscalationJudgeRequestProcessor:
         if not affinity_ready or turn < self._config.min_judge_turn:
             return request
 
+        # Present when session_key_depth > 0; lets verdict-dump consumers
+        # group per-turn judge decisions by conversation.
+        session = ctx.metadata.get(CTX_SESSION_KEY)
         summary = _summarize_for_judge(request, turn=turn, config=self._config)
+        started_at = time.perf_counter()
         try:
             completion = await self._client.classify(
                 model=self._config.model,
@@ -289,21 +428,55 @@ class EscalationJudgeRequestProcessor:
                 "EscalationJudgeRequestProcessor: judge failed; staying on weak tier: %s",
                 exc,
             )
+            if self._stats_accumulator is not None:
+                # Record the failure into the classifier bucket so
+                # ``/v1/routing/stats`` exposes the judge fail-open rate;
+                # a silently failing judge reads as "router never
+                # escalates" to the benchmark observer.
+                await self._stats_accumulator.record_classifier_error(self._config.model)
             ctx.metadata[CTX_ESCALATION_VERDICT] = {
                 "escalate": False,
                 "reason": f"fail_open: {str(exc)[:200]}",
                 "turn": turn,
                 "source": "fail_open",
+                "session": session,
             }
+            self._dump_verdict(
+                ctx.metadata[CTX_ESCALATION_VERDICT],
+                latency_ms=(time.perf_counter() - started_at) * 1000,
+                request=request,
+            )
             return request
+
+        if self._stats_accumulator is not None:
+            await self._record_judge_call(
+                usage=completion.usage,
+                latency_ms=(time.perf_counter() - started_at) * 1000,
+            )
+
+        if verdict.escalate:
+            streak = self._bump_streak(ctx, request)
+            confirmed = streak >= self._config.escalate_confirmations
+        else:
+            streak = 0
+            confirmed = False
+            self._reset_streak(ctx, request)
 
         ctx.metadata[CTX_ESCALATION_VERDICT] = {
             "escalate": verdict.escalate,
             "reason": verdict.reason,
             "turn": turn,
             "source": "judge",
+            "session": session,
+            "streak": streak,
+            "confirmed": confirmed,
         }
-        if verdict.escalate:
+        self._dump_verdict(
+            ctx.metadata[CTX_ESCALATION_VERDICT],
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+            request=request,
+        )
+        if confirmed:
             log.info(
                 "EscalationJudgeRequestProcessor: escalating to strong tier "
                 "(turn %d): %s",
@@ -313,6 +486,102 @@ class EscalationJudgeRequestProcessor:
             await self._affinity.pin(ctx, request, TIER_STRONG)
             ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = TIER_STRONG
         return request
+
+    def _streak_key(self, ctx: ProxyContext, request: ChatRequest) -> str:
+        """Conversation key for streak bookkeeping (seeded deep key or Rust default)."""
+        cached = ctx.metadata.get(CTX_SESSION_KEY)
+        if isinstance(cached, str):
+            return cached
+        return session_key_from_body(request.body)
+
+    def _bump_streak(self, ctx: ProxyContext, request: ChatRequest) -> int:
+        """Record one escalate verdict for this conversation; return the streak."""
+        if self._config.escalate_confirmations <= 1:
+            # Single-verdict latch: no bookkeeping needed, streak is per-call.
+            return 1
+        key = self._streak_key(ctx, request)
+        streak, _ = self._escalate_streaks.get(key, (0, 0))
+        streak += 1
+        self._escalate_streaks[key] = (streak, 0)
+        self._escalate_streaks.move_to_end(key)
+        while len(self._escalate_streaks) > _MAX_STREAK_SESSIONS:
+            self._escalate_streaks.popitem(last=False)
+        return streak
+
+    def _reset_streak(self, ctx: ProxyContext, request: ChatRequest) -> None:
+        """Register a non-escalate verdict against the streak.
+
+        With ``confirmation_window == 1`` any decline clears the streak
+        (strict-consecutive). A larger window tolerates up to
+        ``window - 1`` intervening declines before the streak expires, so
+        recurring intermittent trouble can still confirm.
+        """
+        if self._config.escalate_confirmations <= 1:
+            return
+        key = self._streak_key(ctx, request)
+        entry = self._escalate_streaks.get(key)
+        if entry is None:
+            return
+        streak, declines = entry
+        declines += 1
+        if declines >= self._config.confirmation_window:
+            self._escalate_streaks.pop(key, None)
+        else:
+            self._escalate_streaks[key] = (streak, declines)
+            self._escalate_streaks.move_to_end(key)
+
+    def _dump_verdict(
+        self,
+        verdict: dict[str, Any],
+        *,
+        latency_ms: float,
+        request: ChatRequest | None = None,
+    ) -> None:
+        """Write one ``escalation_verdict={...}`` JSON line to stderr.
+
+        Direct stderr (not the logging module) so benchmark server logs
+        capture it — see :attr:`EscalationJudgeConfig.dump_verdicts_to_stderr`.
+        Includes a short first-user-message snippet (``task_hint``) so
+        offline analysis can attribute per-turn verdicts to tasks exactly,
+        instead of guessing from overlapping trial time windows.
+        """
+        if not self._config.dump_verdicts_to_stderr:
+            return
+        payload = dict(verdict)
+        payload["latency_ms"] = round(latency_ms, 1)
+        if request is not None:
+            hint = _first_user_text(request)
+            if hint:
+                payload["task_hint"] = hint[:48]
+        sys.stderr.write(f"escalation_verdict={json.dumps(payload, sort_keys=True)}\n")
+        sys.stderr.flush()
+
+    async def _record_judge_call(self, *, usage: Any, latency_ms: float) -> None:
+        """Record judge token spend and latency into the classifier stats bucket.
+
+        The judge is a routing-overhead call, exactly like the LLM
+        classifier: keeping it in the classifier bucket stops its spend
+        from merging with a same-named tier model and keeps
+        ``routing_stats_final.json`` cost math honest for the
+        escalation-router benchmark.
+        """
+        assert self._stats_accumulator is not None
+        prompt = 0
+        completion = 0
+        cached = 0
+        if usage is not None:
+            prompt = getattr(usage, "prompt_tokens", 0) or 0
+            completion = getattr(usage, "completion_tokens", 0) or 0
+            ptd = getattr(usage, "prompt_tokens_details", None)
+            if ptd is not None:
+                cached = getattr(ptd, "cached_tokens", 0) or 0
+        await self._stats_accumulator.record_classifier_usage(
+            model=self._config.model,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cached_tokens=cached,
+            latency_ms=latency_ms,
+        )
 
     def _seed_session_key(self, ctx: ProxyContext, request: ChatRequest) -> bool:
         """Seed the deep session key when configured; return whether affinity is usable.
@@ -330,6 +599,37 @@ class EscalationJudgeRequestProcessor:
             return False
         ctx.metadata[CTX_SESSION_KEY] = key
         return True
+
+
+def _first_user_text(request: ChatRequest) -> str:
+    """Flatten the first user message's task text for verdict dumps.
+
+    Harness wrappers (``<system-reminder>``/``<environment_context>``
+    blocks injected ahead of the actual task statement) are skipped so the
+    snippet identifies the task rather than repeating boilerplate shared
+    by every conversation.
+    """
+    body = getattr(request, "body", None)
+    if not isinstance(body, dict):
+        return ""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        messages = body.get("input")
+    if not isinstance(messages, list):
+        return ""
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "user":
+            text = _message_text(m).strip()
+            while True:
+                for tag in ("system-reminder", "environment_context"):
+                    if text.startswith(f"<{tag}>"):
+                        end = text.find(f"</{tag}>")
+                        if end >= 0:
+                            text = text[end + len(tag) + 3 :].lstrip()
+                            break
+                else:
+                    return text
+    return ""
 
 
 def _deep_session_key(request: ChatRequest, depth: int) -> str | None:
