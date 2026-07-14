@@ -105,7 +105,7 @@ tokio::pin!(stream);
 while let Some(step) = stream.next().await {
     match step? {
         Step::CallLlm(call) => {
-            let routed = call.get_routed()?.clone();                 // which target, and its default client
+            let routed = call.get_routed().clone();                  // which target, and its default client
             let response = call_model(routed.decision.selected_model(), &routed.request).await;  // your real call
             call.respond(Ok(response))?;                             // or Err(..) to propagate a failure
         }

@@ -193,30 +193,37 @@ pub struct RoutedRequest {
 /// [`Driver::call_llm`] on the other side.
 pub struct CallLlmRequest {
     inner: DriverRequest,
+    routed: RoutedRequest,
 }
 
 impl CallLlmRequest {
-    /// Wrap a driver request whose payload is a [`RoutedRequest`].
+    /// Wrap a driver request whose payload is a [`RoutedRequest`]. Caches an owned copy
+    /// so the accessors are plain field reads.
     fn new(inner: DriverRequest) -> Self {
-        Self { inner }
+        // The payload is always a `RoutedRequest` (set by `Driver::call_llm`); a
+        // mismatch would be a libsy bug, not a runtime condition.
+        let routed = match inner.request::<RoutedRequest>() {
+            Ok(routed) => routed.clone(),
+            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
+        };
+        Self { inner, routed }
     }
 
     /// The routed request the host should serve. Its
     /// [`default_client`](RoutedRequest::default_client) serves the call by default,
-    /// and its `decision.selected_model()` names the model to hit. Errors if the
-    /// promise payload was not a [`RoutedRequest`].
-    pub fn get_routed(&self) -> Result<&RoutedRequest, BoxErr> {
-        self.inner.request::<RoutedRequest>()
+    /// and its `decision.selected_model()` names the model to hit.
+    pub fn get_routed(&self) -> &RoutedRequest {
+        &self.routed
     }
 
     /// The model request to perform (the [`Request`] inside the routed request).
-    pub fn get_request(&self) -> Result<&Request, BoxErr> {
-        Ok(&self.get_routed()?.request)
+    pub fn get_request(&self) -> &Request {
+        &self.get_routed().request
     }
 
     /// The decision that led to this call — its `selected_model()` is the model to hit.
-    pub fn get_decision(&self) -> Result<&dyn Decision, BoxErr> {
-        Ok(self.get_routed()?.decision.as_ref())
+    pub fn get_decision(&self) -> &dyn Decision {
+        self.get_routed().decision.as_ref()
     }
 
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
@@ -465,7 +472,7 @@ pub trait Algorithm: Send + Sync + 'static {
         // call is forwarded to the algorithm via `respond`; this errors only on an
         // infrastructure failure (no default client, or the promise was dropped).
         async fn serve(call: CallLlmRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
-            let routed = call.get_routed()?.clone();
+            let routed = call.get_routed().clone();
             let client = routed.default_client.clone().ok_or_else(|| {
                 format!(
                     "run: target '{}' has no client to serve the call",
@@ -630,7 +637,7 @@ mod tests {
                 Step::CallLlm(call) => {
                     saw_call = true;
                     // The decision rode along with the promise.
-                    assert_eq!(call.get_decision()?.selected_model(), "offload/model");
+                    assert_eq!(call.get_decision().selected_model(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
                         llm_response: LlmResponse {
@@ -670,7 +677,7 @@ mod tests {
         while let Some(step) = stream.next().await {
             match step? {
                 Step::CallLlm(call) => {
-                    let routed = call.get_routed()?.clone();
+                    let routed = call.get_routed().clone();
                     let client = routed
                         .default_client
                         .clone()
