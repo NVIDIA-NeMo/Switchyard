@@ -722,12 +722,12 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
     async fn requests_are_processed_in_parallel() -> Result<(), Box<dyn Error + Send + Sync>> {
         use std::time::Duration;
         use tokio::sync::Barrier;
 
-        const N: usize = 4;
+        const N: usize = 12;
 
         // A client that blocks until all N concurrent calls have arrived. If
         // requests were serialized (one algorithm behind a `Mutex`), only one
@@ -812,6 +812,145 @@ mod tests {
         }
 
         assert!(saw_error, "expected an error step");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_caps_concurrent_calls() -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use tokio::sync::{mpsc, Semaphore};
+
+        // Mirrors `run`'s private `MAX_CONCURRENT_CALLS`. The algorithm fans out more
+        // calls than the cap; only `CAP` should ever be in flight, the rest wait.
+        const CAP: usize = 10;
+        const TOTAL_CALLS: usize = CAP + 5;
+
+        // Records peak concurrency and holds each call open until the gate is released,
+        // so calls pile up and the cap can be observed.
+        struct ProbeClient {
+            current: Arc<AtomicUsize>,
+            max: Arc<AtomicUsize>,
+            entered: mpsc::UnboundedSender<()>,
+            gate: Arc<Semaphore>,
+        }
+
+        #[async_trait]
+        impl LlmClient for ProbeClient {
+            async fn call(
+                &self,
+                routed: RoutedRequest,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max.fetch_max(now, Ordering::SeqCst);
+                let _ = self.entered.send(());
+                // Block until the test opens the gate.
+                let permit = self.gate.acquire().await.map_err(|e| e.to_string())?;
+                drop(permit);
+                self.current.fetch_sub(1, Ordering::SeqCst);
+                Ok(Response {
+                    llm_response: LlmResponse {
+                        completion: routed.decision.selected_model().to_string(),
+                        raw_response: None,
+                    },
+                    metadata: None,
+                })
+            }
+        }
+
+        // Fans out `n` concurrent calls to one target.
+        struct FanOut {
+            n: usize,
+            target: LlmTarget,
+        }
+
+        #[async_trait]
+        impl Algorithm for FanOut {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let calls = (0..self.n).map(|i| {
+                    let driver = driver.clone();
+                    let target = self.target.clone();
+                    async move {
+                        let decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                            model: format!("m{i}"),
+                        });
+                        driver.call_llm_target(&target, request(), decision).await
+                    }
+                });
+                futures::future::join_all(calls).await;
+                Ok(Response {
+                    llm_response: LlmResponse {
+                        completion: "done".to_string(),
+                        raw_response: None,
+                    },
+                    metadata: None,
+                })
+            }
+
+            async fn process_signals(
+                self: Arc<Self>,
+                _signals: Signals,
+            ) -> Result<(), Box<dyn Error + Send + Sync>> {
+                Ok(())
+            }
+        }
+
+        let current = Arc::new(AtomicUsize::new(0));
+        let max = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let gate = Arc::new(Semaphore::new(0)); // starts closed
+
+        let client = Arc::new(ProbeClient {
+            current: current.clone(),
+            max: max.clone(),
+            entered: entered_tx,
+            gate: gate.clone(),
+        }) as Arc<dyn LlmClient>;
+        let target = LlmTarget {
+            semantic_name: "m".to_string(),
+            llm_client: Some(client),
+        };
+
+        let algo: Arc<dyn Algorithm> = Arc::new(FanOut {
+            n: TOTAL_CALLS,
+            target,
+        });
+        let handle = tokio::spawn(async move { algo.run(Context::default(), request()).await });
+
+        // Exactly `CAP` calls should enter; each `recv` times out into an error if the
+        // run dispatched fewer than the cap.
+        for _ in 0..CAP {
+            tokio::time::timeout(Duration::from_secs(5), entered_rx.recv())
+                .await
+                .map_err(|_| "timed out waiting for a call to enter")?;
+        }
+        assert_eq!(
+            current.load(Ordering::SeqCst),
+            CAP,
+            "exactly the cap should be in flight"
+        );
+        // No further call enters while the cap is saturated — extra steps wait for capacity.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), entered_rx.recv())
+                .await
+                .is_err(),
+            "a call beyond the cap entered while {CAP} were already in flight"
+        );
+
+        // Release the gate; every call completes and the run finishes.
+        gate.add_permits(TOTAL_CALLS);
+        let (_trace, response) = tokio::time::timeout(Duration::from_secs(5), handle).await???;
+        assert_eq!(response.llm_response.completion, "done");
+        assert_eq!(
+            max.load(Ordering::SeqCst),
+            CAP,
+            "peak in-flight should equal the cap"
+        );
         Ok(())
     }
 }
