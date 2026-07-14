@@ -22,6 +22,7 @@ Launchers skip the parser and construct a :class:`RouteBundle` directly so
 argparse-driven and YAML-driven assembly share one builder.
 """
 
+import logging
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -57,6 +58,8 @@ from switchyard.lib.route_table_builders import (
     build_tier_passthrough_switchyard,
 )
 from switchyard.lib.stats_accumulator import StatsAccumulator
+
+logger = logging.getLogger(__name__)
 
 
 def _default_discovery_fn(base_url: str, api_key: str) -> list[str]:
@@ -159,6 +162,7 @@ _TARGET_KEYS = _TARGET_DEFAULT_KEYS | frozenset({
     "id",
     "model",
     "tuning",
+    "token_capture_engine",
 })
 _TARGET_DEFAULT_ROUTE_KEYS = _TARGET_DEFAULT_KEYS | frozenset({"defaults"})
 _MODEL_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
@@ -418,6 +422,7 @@ def load_route_bundle_table(
     stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
+    token_capture_enabled: bool = False,
 ) -> RouteTable:
     """Load *path* and return a table keyed by route model id.
 
@@ -430,12 +435,17 @@ def load_route_bundle_table(
     ``pre_routing_request_processors`` / ``extra_response_processors`` let
     callers attach process-level components such as Intake telemetry to every
     YAML-declared route.
+
+    ``token_capture_enabled`` honors targets' ``token_capture_engine`` declarations
+    (deriving token-capture request params); when ``False`` the key is ignored
+    with a warning so clients never receive token fields nobody will capture.
     """
     return build_route_bundle_table(
         parse_routing_profiles_file(path),
         stats_accumulator=stats_accumulator,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
+        token_capture_enabled=token_capture_enabled,
     )
 
 
@@ -444,6 +454,7 @@ def build_route_bundle_table(
     stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
+    token_capture_enabled: bool = False,
 ) -> RouteTable:
     """Parse *raw* dict and build a :class:`RouteTable`.
 
@@ -452,6 +463,8 @@ def build_route_bundle_table(
     then delegates to :func:`build_table_from_bundle`. Optional
     ``stats_accumulator`` overrides the parsed bundle's default ``None``.
     """
+    if not token_capture_enabled:
+        raw = _strip_token_capture_engine(raw)
     bundle = _parse_route_bundle_dict(raw)
     if stats_accumulator is not None:
         bundle = replace(bundle, stats_accumulator=stats_accumulator)
@@ -460,6 +473,71 @@ def build_route_bundle_table(
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
     )
+
+
+def route_bundle_declares_token_capture(raw_or_path: object) -> bool:
+    """True when the bundle declares ``token_capture_engine`` on any target.
+
+    Accepts either a path to a routing-profiles YAML file or an
+    already-parsed bundle dict. Token capture activates under
+    ``--enable-rl-logging`` when at least one target opts in via
+    ``token_capture_engine``. A bundle that cannot be parsed reports ``False`` —
+    the real table load surfaces the parse error.
+    """
+    if raw_or_path is None:
+        return False
+    raw: object
+    if isinstance(raw_or_path, str | Path):
+        try:
+            raw = parse_routing_profiles_file(raw_or_path)
+        except RouteBundleConfigError:
+            return False
+    else:
+        raw = raw_or_path
+
+    def _walk(node: object) -> bool:
+        if isinstance(node, Mapping):
+            return "token_capture_engine" in node or any(_walk(value) for value in node.values())
+        if isinstance(node, list):
+            return any(_walk(item) for item in node)
+        return False
+
+    return _walk(raw)
+
+
+def _strip_token_capture_engine(raw: object) -> object:
+    """Drop ``token_capture_engine`` keys when token capture is disabled.
+
+    The field derives token-capture request params into the target's
+    ``extra_body`` (see ``llm_target_with_token_capture``); honoring it while
+    RL logging is off would make clients receive token fields that nothing
+    captures. Warns once so the config mismatch is visible.
+    """
+
+    stripped = 0
+
+    def _walk(node: object) -> object:
+        nonlocal stripped
+        if isinstance(node, Mapping):
+            out: dict[str, object] = {}
+            for key, value in node.items():
+                if key == "token_capture_engine":
+                    stripped += 1
+                    continue
+                out[key] = _walk(value)
+            return out
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    result = _walk(raw)
+    if stripped:
+        logger.warning(
+            "route bundle declares token_capture_engine on %d target(s) but token "
+            "capture is disabled; ignoring (enable with --enable-rl-logging)",
+            stripped,
+        )
+    return result
 
 
 def _parse_route_bundle_dict(raw: object) -> RouteBundle:
@@ -1506,5 +1584,6 @@ __all__ = [
     "build_route_bundle_table",
     "load_route_bundle_table",
     "parse_routing_profiles_file",
+    "route_bundle_declares_token_capture",
     "routing_profile_model_ids",
 ]
