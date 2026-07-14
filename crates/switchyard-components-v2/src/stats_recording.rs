@@ -29,6 +29,9 @@ pub(crate) fn record_usage_or_wrap_stream(
     backend_latency_ms: f64,
     response: ChatResponse,
 ) -> Result<ChatResponse> {
+    // We report time-to-first-token as latency. Otherwise in streaming case we'd be including
+    // the client's processing time.
+    let total_latency_ms = profile_started_at.elapsed().as_millis() as f64;
     match response {
         ChatResponse::OpenAiCompletion(_)
         | ChatResponse::OpenAiResponsesCompletion(_)
@@ -38,7 +41,7 @@ pub(crate) fn record_usage_or_wrap_stream(
                 stats,
                 model,
                 tier,
-                profile_started_at,
+                total_latency_ms,
                 backend_latency_ms,
                 usage,
             )?;
@@ -49,7 +52,7 @@ pub(crate) fn record_usage_or_wrap_stream(
             stats.clone(),
             model.to_string(),
             tier.map(str::to_string),
-            profile_started_at,
+            total_latency_ms,
             backend_latency_ms,
         ))),
         ChatResponse::OpenAiResponsesStream(stream) => {
@@ -58,7 +61,7 @@ pub(crate) fn record_usage_or_wrap_stream(
                 stats.clone(),
                 model.to_string(),
                 tier.map(str::to_string),
-                profile_started_at,
+                total_latency_ms,
                 backend_latency_ms,
             )))
         }
@@ -67,18 +70,24 @@ pub(crate) fn record_usage_or_wrap_stream(
             stats.clone(),
             model.to_string(),
             tier.map(str::to_string),
-            profile_started_at,
+            total_latency_ms,
             backend_latency_ms,
         ))),
     }
 }
 
+/// Wraps an OpenAI chat completions stream to record usage stats.
+///
+/// Usage is typically only present in the last JSON SSE chunk, but we only
+/// record the first instance to avoid double counting in case of middle-box weirdness.
+///
+/// Pass-through, no buffering or dropping.
 fn wrap_openai_chat(
     mut stream: BoxResponseStream,
     stats: StatsAccumulator,
     model: String,
     tier: Option<String>,
-    profile_started_at: Instant,
+    total_latency_ms: f64,
     backend_latency_ms: f64,
 ) -> BoxResponseStream {
     Box::pin(try_stream! {
@@ -92,7 +101,7 @@ fn wrap_openai_chat(
                             &stats,
                             &model,
                             tier.as_deref(),
-                            profile_started_at,
+                            total_latency_ms,
                             backend_latency_ms,
                             usage,
                         ),
@@ -106,12 +115,13 @@ fn wrap_openai_chat(
     })
 }
 
+/// Wraps an OpenAI responses stream to record usage stats.
 fn wrap_openai_responses(
     mut stream: BoxResponseStream,
     stats: StatsAccumulator,
     model: String,
     tier: Option<String>,
-    profile_started_at: Instant,
+    total_latency_ms: f64,
     backend_latency_ms: f64,
 ) -> BoxResponseStream {
     Box::pin(try_stream! {
@@ -125,7 +135,7 @@ fn wrap_openai_responses(
                             &stats,
                             &model,
                             tier.as_deref(),
-                            profile_started_at,
+                            total_latency_ms,
                             backend_latency_ms,
                             usage,
                         ),
@@ -139,12 +149,13 @@ fn wrap_openai_responses(
     })
 }
 
+/// Wraps an Anthropic messages stream to record usage stats.
 fn wrap_anthropic(
     mut stream: BoxResponseStream,
     stats: StatsAccumulator,
     model: String,
     tier: Option<String>,
-    profile_started_at: Instant,
+    total_latency_ms: f64,
     backend_latency_ms: f64,
 ) -> BoxResponseStream {
     Box::pin(try_stream! {
@@ -157,7 +168,7 @@ fn wrap_anthropic(
                         &stats,
                         &model,
                         tier.as_deref(),
-                        profile_started_at,
+                        total_latency_ms,
                         backend_latency_ms,
                         usage,
                     ),
@@ -173,11 +184,10 @@ fn record_usage(
     stats: &StatsAccumulator,
     model: &str,
     tier: Option<&str>,
-    profile_started_at: Instant,
+    total_latency_ms: f64,
     backend_latency_ms: f64,
     usage: TokenUsage,
 ) -> Result<()> {
-    let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
     let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
     stats.record_usage_after_success_attribution(
         model.to_string(),
