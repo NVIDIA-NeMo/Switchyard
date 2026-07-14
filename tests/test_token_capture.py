@@ -344,6 +344,36 @@ async def test_real_api_key_never_becomes_session_id(tmp_path: Path) -> None:
     assert list(tmp_path.rglob("*.json")) == []
 
 
+async def test_session_id_from_body_field(tmp_path: Path) -> None:
+    ctx = ProxyContext()
+    request = ChatRequest.openai_chat({"model": "m", "messages": [], "proxy_x_session_id": "abc123"})
+    await _run(tmp_path, _vllm_completion(), ctx=ctx, request=request)
+
+    # The session field never reaches the upstream body.
+    assert "proxy_x_session_id" not in dict(request.body)
+    record = _read_only_record(tmp_path / "sessions" / "abc123")
+    assert record["session_id"] == "abc123"
+
+
+async def test_header_session_wins_over_body_field(tmp_path: Path) -> None:
+    request = ChatRequest.openai_chat({"model": "m", "messages": [], "proxy_x_session_id": "from-body"})
+    await _run(tmp_path, _vllm_completion(), session_id="from-header", request=request)
+
+    assert "proxy_x_session_id" not in dict(request.body)
+    record = _read_only_record(tmp_path / "sessions" / "from-header")
+    assert record["session_id"] == "from-header"
+
+
+async def test_non_string_body_session_ignored_but_stripped(tmp_path: Path) -> None:
+    ctx = ProxyContext()
+    request = ChatRequest.openai_chat({"model": "m", "messages": [], "proxy_x_session_id": 123})
+    await _run(tmp_path, _vllm_completion(), ctx=ctx, request=request)
+
+    # Ignored as a session, but still never forwarded upstream.
+    assert "proxy_x_session_id" not in dict(request.body)
+    assert list(tmp_path.rglob("*.json")) == []
+
+
 # ---------------------------------------------------------------------------
 # Response processor: unified record
 # ---------------------------------------------------------------------------

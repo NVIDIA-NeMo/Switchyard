@@ -31,6 +31,12 @@ CTX_TOKEN_CAPTURE_ORIGINAL_STREAM = "_token_capture_original_stream"
 #: mistaken for a session id and leak into record files / directory names.
 _LAUNCHER_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+-\d{13}-[0-9a-f]{8}$")
 
+#: Top-level request-body key carrying the capture session for harness clients
+#: with no custom-header or API-key surface (e.g. clients whose only reachable
+#: knob is extra JSON body fields). Always stripped before the request is
+#: forwarded upstream, captured or not.
+BODY_SESSION_KEY = "proxy_x_session_id"
+
 #: Caller-supplied sampling params stripped so the target's derived
 #: token-capture ``extra_body`` params (see ``llm_target_with_token_capture``)
 #: always win.
@@ -54,14 +60,18 @@ class TokenCaptureRequestProcessor:
 
     async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
         """Resolve the session; strip caller params and flip ``stream`` off."""
-        session_id = _resolve_session_id(ctx)
+        body = dict(request.body)
+        mutated = BODY_SESSION_KEY in body
+        body_session = body.pop(BODY_SESSION_KEY, None)
+
+        session_id = _resolve_session_id(ctx, body_session)
         if session_id is None:
             logger.debug("token capture: no session id on request; forwarding uncaptured")
+            if mutated:
+                request.replace_body(body)
             return request
         ctx.metadata[CTX_TOKEN_CAPTURE_SESSION] = session_id
 
-        body = dict(request.body)
-        mutated = False
         for key in _CALLER_PARAM_KEYS:
             if key in body:
                 del body[key]
@@ -77,11 +87,15 @@ class TokenCaptureRequestProcessor:
         return request
 
 
-def _resolve_session_id(ctx: ProxyContext) -> str | None:
+def _resolve_session_id(ctx: ProxyContext, body_session: object) -> str | None:
     metadata = ctx.metadata.get(CTX_REQUEST_METADATA)
     session_id = getattr(metadata, "session_id", None)
     if isinstance(session_id, str) and session_id:
         return session_id
+    # Clients whose only reachable knob is extra JSON body fields ride the
+    # session id on a top-level body key (stripped by the caller above).
+    if isinstance(body_session, str) and body_session:
+        return body_session
     # Harnesses with no custom-header surface (OpenClaw) ride the session id
     # on their API key instead; the launcher substitutes it for the opaque
     # placeholder when capture is on.
