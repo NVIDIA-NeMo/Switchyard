@@ -112,6 +112,14 @@ Hold weak — no model can fix these, so escalation is pure waste:
   when producing, recovering, or decoding that very artifact IS the
   stated task, its absence is the work itself, not a blocker — judge
   the trajectory on it like any other work.
+  Impossibility is grounds for HOLDING, never for escalating: if the
+  honest summary of the stuck point is "no model could fix this", the
+  verdict is {"escalate": false}. An escalate reason must name
+  something a stronger model could plausibly do differently — never
+  cite a model-independent blocker as the reason to escalate. With an
+  external blocker, the pattern to watch is whether the agent adapts
+  AROUND it (an alternative source, tool, or route); escalate only if
+  that adaptation itself shows a trouble pattern.
 
 # Trouble patterns — escalate when you see these
 
@@ -123,6 +131,12 @@ Repetition and loops (the most common way agent runs die):
 - Fighting the environment: repeatedly invoking a missing executable,
   retrying installs that fail the same way, or trying variations of a
   command the environment has already rejected, instead of adapting.
+  Early setup grind is not yet this pattern: a few failed install or
+  setup attempts in a row are normal, and it becomes fighting only
+  when the same blocker persists across multiple DISTINCT remedies
+  (a different installer or channel, an isolated environment, building
+  from source, switching tools) — not merely across retries of one
+  remedy the agent is still varying.
 
 False progress (looks like progress, is not):
 - Declaring success or moving on while the latest visible evidence
@@ -157,7 +171,8 @@ Drift and dead ends:
   the session (forgetting its own findings).
 - Many turns elapsed with nothing durable produced (no successful
   writes, no passing checks) and no visible narrowing of the problem —
-  effort continues but the problem is not getting smaller.
+  effort continues but the problem is not getting smaller, and the
+  recent attempts repeat prior probes rather than vary them.
 
 Desperation:
 - Giving up: declaring the task impossible, or drifting into restating
@@ -195,6 +210,12 @@ Agentic coding is full of failures that are part of healthy work:
   only a nonzero count is a failure.
 - A long-running command (build, install, test suite) that simply has
   not finished, or the agent waiting on information it asked for.
+- Extended exploration or experimentation in analysis-heavy work:
+  probing data, running varied experiments, or reading widely IS the
+  work while the probes vary and keep returning new information —
+  absence of a written artifact is not by itself a stall. A genuine
+  stall repeats the SAME probe and gets the SAME result; when calling
+  a loop, name the unchanged error or result.
 
 The distinguishing question: is each failure producing new information
 that changes the next action? Failing forward is fine; failing in place
