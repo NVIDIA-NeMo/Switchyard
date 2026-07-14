@@ -1,6 +1,6 @@
 ---
 name: switchyard-docs
-description: Use when adding or editing published Switchyard Fern pages under `docs/**/*.mdx`, changing Fern configuration or navigation, debugging `fern check`, previewing or publishing docs, or reviewing the Fern GitHub Actions workflows.
+description: Use when adding or editing Switchyard docs or contributor guidance under `docs/`, changing Fern configuration or navigation, debugging `fern check`, previewing or publishing docs, or reviewing the Fern GitHub Actions workflows.
 ---
 
 # Switchyard Fern Docs
@@ -9,6 +9,10 @@ description: Use when adding or editing published Switchyard Fern pages under `d
 
 Published documentation is authored as MDX at the top level of `docs/`. Fern infrastructure lives
 under `docs/fern/`; do not put nightly content under `docs/fern/versions/nightly/pages/`.
+
+`docs/README.md` is the contributor entry point. Scoped instructions live in `docs/AGENTS.md` and
+`docs/fern/AGENTS.md`; neither guidance file is published. Keep those files synchronized with this
+skill when the authoring, validation, redirect, or publishing workflow changes.
 
 The public page set, order, and labels come from `docs/fern/versions/nightly.yml`. Markdown files
 under `docs/internal/` are intentionally unpublished design and operations notes. Do not add them to
@@ -34,6 +38,9 @@ pinned in `docs/fern/fern.config.json`.
 
 - **Published content** → `docs/**/*.mdx`, excluding `docs/fern/`.
 - **Unpublished notes** → `docs/internal/**/*.md`.
+- **Docs contributor guide and scoped instructions** → `docs/README.md` and `docs/AGENTS.md`.
+- **Fern infrastructure guide and scoped instructions** → `docs/fern/README.md` and
+  `docs/fern/AGENTS.md`.
 - **Site and product configuration** → `docs/fern/docs.yml`.
 - **Nightly navigation** → `docs/fern/versions/nightly.yml`.
 - **Fern CLI pin** → `docs/fern/fern.config.json`.
@@ -142,6 +149,7 @@ secret. Do not collapse the trusted and untrusted preview phases or use `pull_re
 ## Anti-Patterns
 
 - Adding unpublished design notes to navigation because they happen to live under `docs/`.
+- Adding `README.md` or `AGENTS.md` contributor guidance to published navigation.
 - Recreating `docs/fern/versions/nightly/pages/`; nightly content is authored at `docs/*.mdx`.
 - Deriving links from filenames instead of the navigation title/slug.
 - Assigning the same MDX file to a section `path` and one of its child pages.
@@ -154,6 +162,10 @@ secret. Do not collapse the trusted and untrusted preview phases or use `pull_re
 ## References
 
 - `docs/fern/docs.yml` — Fern instance, theme, versions, and redirects.
+- `docs/README.md` — contributor entry point for docs content.
+- `docs/AGENTS.md` — scoped instructions for the full docs tree.
+- `docs/fern/README.md` — Fern infrastructure and CI guide.
+- `docs/fern/AGENTS.md` — scoped instructions for Fern configuration and redirects.
 - `docs/fern/versions/nightly.yml` — public navigation and authored-page paths.
 - `docs/fern/fern.config.json` — Fern CLI pin.
 - `docs/Makefile` — local check and preview commands.
