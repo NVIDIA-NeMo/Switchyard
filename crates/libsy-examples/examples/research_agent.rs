@@ -9,17 +9,17 @@
 //! multi-step routing (classify -> route) happens inside the classifier algorithm; the
 //! agent never sees it. To drive the step stream yourself instead, use
 //! `Algorithm::run_stream`. Run with:
-//!   cargo run -p libsy --example research_agent
+//!   cargo run -p libsy-examples --example research_agent
 
 use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, Context, LlmClient, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, RoutedRequest,
+    Algorithm, Context, LlmClient, LlmTarget, LlmTargetSet, Request, Response, RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
+use libsy_protocol::{completion_text, text_request, text_response};
 
 const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
@@ -41,10 +41,7 @@ impl LlmClient for StubClient {
             format!("answer from {model}")
         };
         Ok(Response {
-            llm_response: LlmResponse {
-                completion,
-                raw_response: None,
-            },
+            llm_response: text_response(None, completion),
             metadata: None,
         })
     }
@@ -73,16 +70,13 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
-                    inbound_model_name: "auto".to_string(),
-                    prompt: step,
-                },
+                llm_request: text_request(Some("auto".to_string()), step),
                 raw_request: None,
                 metadata: None,
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(response.llm_response.completion);
+            notes.push(completion_text(&response.llm_response));
         }
         Ok(notes.join("\n"))
     }

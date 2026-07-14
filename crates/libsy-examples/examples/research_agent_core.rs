@@ -7,16 +7,14 @@
 //! surfaces as a `CallLlm` step. The agent makes the "real" model call itself and
 //! fulfills the promise — this is the offload/streaming path ("ask, don't call").
 //! The classifier's two steps show up as two `model call:` lines. Run with:
-//!   cargo run -p libsy --example research_agent_core
+//!   cargo run -p libsy-examples --example research_agent_core
 
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{
-    Algorithm, Context, Decision, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Step,
-};
+use libsy::{Algorithm, Context, Decision, LlmTarget, LlmTargetSet, Request, Response, Step};
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
+use libsy_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
 
 const CLASSIFIER: &str = "classifier/model";
@@ -34,10 +32,7 @@ async fn call_model(model: &str) -> Response {
         format!("answer from {model}")
     };
     Response {
-        llm_response: LlmResponse {
-            completion,
-            raw_response: None,
-        },
+        llm_response: text_response(None, completion),
         metadata: None,
     }
 }
@@ -65,10 +60,7 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
-                    inbound_model_name: "auto".to_string(),
-                    prompt: step,
-                },
+                llm_request: text_request(Some("auto".to_string()), step),
                 raw_request: None,
                 metadata: None,
             };
@@ -84,7 +76,7 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(response.llm_response.completion);
+                        notes.push(completion_text(&response.llm_response));
                     }
                 }
             }

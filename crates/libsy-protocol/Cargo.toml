@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "libsy-examples"
+name = "libsy-protocol"
 version = "0.1.0"
-description = "Reference algorithms and runnable agents built on libsy"
-publish = false
+description = "Switchyard's neutral conversation IR and wire-format identifiers"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,10 +12,5 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-libsy = { path = "../libsy" }
-libsy-protocol = { path = "../libsy-protocol" }
-async-trait = "0.1"
-rand = "0.8"
-futures = "0.3"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
