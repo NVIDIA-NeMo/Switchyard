@@ -172,27 +172,22 @@ pub struct RoutedRequest {
 /// [`Driver::call_llm`] on the other side.
 pub struct CallLlmRequest {
     inner: DriverRequest,
-    routed: RoutedRequest,
 }
 
 impl CallLlmRequest {
-    /// Wrap a driver request whose payload is a [`RoutedRequest`]. Caches an owned copy
-    /// so the accessors are plain field reads.
+    /// Wrap a driver request whose payload is a [`RoutedRequest`].
     fn new(inner: DriverRequest) -> Self {
-        // The payload is always a `RoutedRequest` (set by `Driver::call_llm`); a
-        // mismatch would be a libsy bug, not a runtime condition.
-        let routed = match inner.request::<RoutedRequest>() {
-            Ok(routed) => routed.clone(),
-            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
-        };
-        Self { inner, routed }
+        Self { inner }
     }
 
     /// The routed request the host should serve. Its
     /// [`default_client`](RoutedRequest::default_client) serves the call by default,
     /// and its `decision.selected_model()` names the model to hit.
     pub fn get_routed(&self) -> &RoutedRequest {
-        &self.routed
+        match self.inner.request::<RoutedRequest>() {
+            Ok(routed) => routed,
+            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
+        }
     }
 
     /// The model request to perform (the [`Request`] inside the routed request).
@@ -481,7 +476,7 @@ pub trait Algorithm: Send + Sync + 'static {
                             Step::CallLlm(call) => in_flight.push(serve(call)),
                             Step::Decision(decision) => trace.push(decision),
                             Step::ReturnToAgent(response) => {
-                                final_response = Some(response);
+                                final_response = Some(*response);
                                 stream_open = false;
                             }
                         },
@@ -830,8 +825,14 @@ mod tests {
                 self.current.fetch_sub(1, Ordering::SeqCst);
                 Ok(Response {
                     llm_response: LlmResponse {
-                        completion: routed.decision.selected_model().to_string(),
-                        raw_response: None,
+                        outputs: vec![LlmResponseOutput {
+                            role: LlmRole::Assistant,
+                            content: vec![LlmContentBlock::Text {
+                                text: routed.decision.selected_model().to_string(),
+                            }],
+                            stop_reason: None,
+                        }],
+                        ..LlmResponse::default()
                     },
                     metadata: None,
                 })
@@ -865,8 +866,14 @@ mod tests {
                 futures::future::join_all(calls).await;
                 Ok(Response {
                     llm_response: LlmResponse {
-                        completion: "done".to_string(),
-                        raw_response: None,
+                        outputs: vec![LlmResponseOutput {
+                            role: LlmRole::Assistant,
+                            content: vec![LlmContentBlock::Text {
+                                text: "done".to_string(),
+                            }],
+                            stop_reason: None,
+                        }],
+                        ..LlmResponse::default()
                     },
                     metadata: None,
                 })
@@ -925,7 +932,15 @@ mod tests {
         // Release the gate; every call completes and the run finishes.
         gate.add_permits(TOTAL_CALLS);
         let (_trace, response) = tokio::time::timeout(Duration::from_secs(5), handle).await???;
-        assert_eq!(response.llm_response.completion, "done");
+        assert_eq!(
+            response
+                .llm_response
+                .first_output()
+                .and_then(|output| output.content.first()),
+            Some(&LlmContentBlock::Text {
+                text: "done".to_string()
+            })
+        );
         assert_eq!(
             max.load(Ordering::SeqCst),
             CAP,
