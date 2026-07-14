@@ -11,15 +11,14 @@ use crate::codecs::common::{
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
-use crate::conversation::{
-    ContentBlock, ConversationRequest, ConversationResponse, FileSource, ImageSource,
-    InstructionBlock, MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams,
-    ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition,
-    ToolResult, Usage,
-};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
+use crate::llm::{
+    ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest, LlmResponse, MediaSource,
+    Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+};
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
@@ -38,7 +37,7 @@ impl FormatCodec for OpenAiChatCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let mut request = ConversationRequest {
+        let mut request = LlmRequest {
             model: body
                 .get("model")
                 .and_then(Value::as_str)
@@ -69,7 +68,7 @@ impl FormatCodec for OpenAiChatCodec {
                 &Value::Object(body.clone()),
                 policy,
             ),
-            ..ConversationRequest::default()
+            ..LlmRequest::default()
         };
 
         if let Some(messages) = body.get("messages").and_then(Value::as_array) {
@@ -174,7 +173,7 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn encode_request(
         &self,
-        request: &ConversationRequest,
+        request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         if let Some(body) =
@@ -247,7 +246,7 @@ impl FormatCodec for OpenAiChatCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
-        let mut response = ConversationResponse {
+        let mut response = LlmResponse {
             id: object
                 .get("id")
                 .and_then(Value::as_str)
@@ -314,7 +313,7 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn encode_response(
         &self,
-        response: &ConversationResponse,
+        response: &LlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =

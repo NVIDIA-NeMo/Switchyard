@@ -15,7 +15,7 @@ rust-version.workspace = true
 async-trait = "0.1"
 serde_json = "1"
 futures = "0.3"
-switchyard-protocol = { path = "../switchyard-protocol" }
+libsy-protocol = { path = "../libsy-protocol" }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 

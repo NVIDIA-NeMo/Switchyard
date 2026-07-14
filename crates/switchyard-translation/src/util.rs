@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
-use crate::conversation::{ContentBlock, ConversationRequest, Message, PreservationMetadata};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
+use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -122,7 +122,7 @@ pub fn compact_text_blocks<'a>(
 
 /// Checks a request against declared target capabilities.
 pub fn validate_request_capabilities(
-    request: &ConversationRequest,
+    request: &LlmRequest,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<()> {

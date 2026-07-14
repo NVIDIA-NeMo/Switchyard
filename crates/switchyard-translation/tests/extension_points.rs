@@ -13,7 +13,7 @@ use switchyard_translation::util::{
     exact_preserved_response,
 };
 use switchyard_translation::{
-    ConversationRequest, ConversationResponse, ConversationStreamEvent, FormatId, FormatRegistry,
+    ConversationStreamEvent, FormatId, FormatRegistry, LlmRequest, LlmResponse,
     LossyConversionPolicy, Message, PreservationPolicy, ResponseOutput, Role, StreamCodec,
     StreamCodecRegistry, StreamTranslationState, TargetCapabilities, TranslationEngine,
     TranslationPolicy, Usage, WireFormat,
@@ -133,7 +133,7 @@ impl FormatCodec for MinimalCustomCodec {
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<DecodedRequest> {
         Ok(DecodedRequest {
-            request: ConversationRequest {
+            request: LlmRequest {
                 model: body
                     .get("model")
                     .and_then(Value::as_str)
@@ -145,7 +145,7 @@ impl FormatCodec for MinimalCustomCodec {
                         .unwrap_or_default(),
                 )],
                 preservation: capture_request_preservation(self.format(), body, policy),
-                ..ConversationRequest::default()
+                ..LlmRequest::default()
             },
             diagnostics: Vec::new(),
         })
@@ -153,7 +153,7 @@ impl FormatCodec for MinimalCustomCodec {
 
     fn encode_request(
         &self,
-        request: &ConversationRequest,
+        request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<EncodedRequest> {
         if let Some(body) = exact_preserved_request(&request.preservation, self.format(), policy) {
@@ -181,7 +181,7 @@ impl FormatCodec for MinimalCustomCodec {
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<DecodedResponse> {
         Ok(DecodedResponse {
-            response: ConversationResponse {
+            response: LlmResponse {
                 id: body
                     .get("id")
                     .and_then(Value::as_str)
@@ -203,7 +203,7 @@ impl FormatCodec for MinimalCustomCodec {
                 }],
                 usage: Usage::default(),
                 preservation: capture_response_preservation(self.format(), body, policy),
-                ..ConversationResponse::default()
+                ..LlmResponse::default()
             },
             diagnostics: Vec::new(),
         })
@@ -211,7 +211,7 @@ impl FormatCodec for MinimalCustomCodec {
 
     fn encode_response(
         &self,
-        response: &ConversationResponse,
+        response: &LlmResponse,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<EncodedResponse> {
         if let Some(body) = exact_preserved_response(&response.preservation, self.format(), policy)

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "switchyard-protocol"
+name = "libsy-protocol"
 version = "0.1.0"
 description = "Provider-neutral LLM protocol types for Switchyard"
 authors.workspace = true

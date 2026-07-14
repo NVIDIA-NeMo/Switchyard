@@ -66,9 +66,7 @@ use futures::{Stream, StreamExt};
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 
-pub use switchyard_protocol::{
-    ContentBlock, ConversationRequest, ConversationResponse, Message, ResponseOutput, Role,
-};
+pub use libsy_protocol::{ContentBlock, LlmRequest, LlmResponse, Message, ResponseOutput, Role};
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
@@ -97,12 +95,12 @@ pub struct Metadata {
     pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// A request entering the orchestrator: the normalized [`ConversationRequest`] plus the
+/// A request entering the orchestrator: the normalized [`LlmRequest`] plus the
 /// original provider payload and correlation [`Metadata`].
 #[derive(Clone)]
 pub struct Request {
     /// The normalized request an algorithm routes.
-    pub llm_request: ConversationRequest,
+    pub llm_request: LlmRequest,
     /// Optional source provider body, carried only for hosts that need exact fidelity.
     pub raw_request: Option<serde_json::Value>,
     /// Correlation metadata carried through the request.
@@ -117,12 +115,12 @@ pub struct Request {
 #[derive(Clone)]
 pub struct Signals {}
 
-/// A response leaving the orchestrator: the neutral [`ConversationResponse`] plus optional
+/// A response leaving the orchestrator: the neutral [`LlmResponse`] plus optional
 /// correlation [`Metadata`].
 #[derive(Clone)]
 pub struct Response {
     /// The neutral model response.
-    pub llm_response: ConversationResponse,
+    pub llm_response: LlmResponse,
     /// Correlation metadata carried through the response.
     pub metadata: Option<Metadata>,
 }
@@ -506,9 +504,9 @@ mod tests {
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
-                llm_response: ConversationResponse {
+                llm_response: LlmResponse {
                     model: Some(routed.decision.selected_model().to_string()),
-                    ..ConversationResponse::default()
+                    ..LlmResponse::default()
                 },
                 metadata: None,
             })
@@ -573,10 +571,10 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            llm_request: ConversationRequest {
+            llm_request: LlmRequest {
                 model: Some("auto".to_string()),
                 messages: vec![Message::text(Role::User, "hi")],
-                ..ConversationRequest::default()
+                ..LlmRequest::default()
             },
             raw_request: None,
             metadata: None,
@@ -614,9 +612,9 @@ mod tests {
                     assert_eq!(call.get_decision().selected_model(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
-                        llm_response: ConversationResponse {
+                        llm_response: LlmResponse {
                             model: Some("fulfilled".to_string()),
-                            ..ConversationResponse::default()
+                            ..LlmResponse::default()
                         },
                         metadata: None,
                     }))?;
@@ -720,9 +718,9 @@ mod tests {
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 self.barrier.wait().await;
                 Ok(Response {
-                    llm_response: ConversationResponse {
+                    llm_response: LlmResponse {
                         model: Some(routed.decision.selected_model().to_string()),
-                        ..ConversationResponse::default()
+                        ..LlmResponse::default()
                     },
                     metadata: None,
                 })
@@ -823,7 +821,7 @@ mod tests {
                 drop(permit);
                 self.current.fetch_sub(1, Ordering::SeqCst);
                 Ok(Response {
-                    llm_response: ConversationResponse {
+                    llm_response: LlmResponse {
                         outputs: vec![ResponseOutput {
                             role: Role::Assistant,
                             content: vec![ContentBlock::Text {
@@ -831,7 +829,7 @@ mod tests {
                             }],
                             stop_reason: None,
                         }],
-                        ..ConversationResponse::default()
+                        ..LlmResponse::default()
                     },
                     metadata: None,
                 })
@@ -864,7 +862,7 @@ mod tests {
                 });
                 futures::future::join_all(calls).await;
                 Ok(Response {
-                    llm_response: ConversationResponse {
+                    llm_response: LlmResponse {
                         outputs: vec![ResponseOutput {
                             role: Role::Assistant,
                             content: vec![ContentBlock::Text {
@@ -872,7 +870,7 @@ mod tests {
                             }],
                             stop_reason: None,
                         }],
-                        ..ConversationResponse::default()
+                        ..LlmResponse::default()
                     },
                     metadata: None,
                 })

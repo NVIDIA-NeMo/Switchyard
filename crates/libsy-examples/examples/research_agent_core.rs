@@ -13,8 +13,8 @@ use std::error::Error;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ContentBlock, Context, ConversationRequest, ConversationResponse, Decision,
-    LlmTarget, LlmTargetSet, Message, Request, Response, ResponseOutput, Role, Step,
+    Algorithm, ContentBlock, Context, Decision, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet,
+    Message, Request, Response, ResponseOutput, Role, Step,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use tokio_stream::StreamExt;
@@ -34,13 +34,13 @@ async fn call_model(model: &str) -> Response {
         format!("answer from {model}")
     };
     Response {
-        llm_response: ConversationResponse {
+        llm_response: LlmResponse {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text { text: completion }],
                 stop_reason: None,
             }],
-            ..ConversationResponse::default()
+            ..LlmResponse::default()
         },
         metadata: None,
     }
@@ -69,10 +69,10 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: ConversationRequest {
+                llm_request: LlmRequest {
                     model: Some("auto".to_string()),
                     messages: vec![Message::text(Role::User, step)],
-                    ..ConversationRequest::default()
+                    ..LlmRequest::default()
                 },
                 raw_request: None,
                 metadata: None,

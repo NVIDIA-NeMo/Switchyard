@@ -14,14 +14,14 @@ use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
-use crate::conversation::{
-    ContentBlock, ConversationRequest, ConversationResponse, MediaSource, Message, OutputParams,
-    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
-};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
+use crate::llm::{
+    ContentBlock, LlmRequest, LlmResponse, MediaSource, Message, OutputParams, ProviderExtensions,
+    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
+    ToolDefinition, ToolResult, Usage,
+};
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
@@ -40,7 +40,7 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let mut request = ConversationRequest {
+        let mut request = LlmRequest {
             model: body
                 .get("model")
                 .and_then(Value::as_str)
@@ -70,18 +70,16 @@ impl FormatCodec for OpenAiResponsesCodec {
                 &Value::Object(body.clone()),
                 policy,
             ),
-            ..ConversationRequest::default()
+            ..LlmRequest::default()
         };
         if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
             if !instructions.is_empty() {
-                request
-                    .instructions
-                    .push(crate::conversation::InstructionBlock {
-                        role: Role::System,
-                        content: vec![ContentBlock::Text {
-                            text: instructions.to_string(),
-                        }],
-                    });
+                request.instructions.push(crate::llm::InstructionBlock {
+                    role: Role::System,
+                    content: vec![ContentBlock::Text {
+                        text: instructions.to_string(),
+                    }],
+                });
             }
         }
         request.messages = decode_responses_input(
@@ -117,7 +115,7 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn encode_request(
         &self,
-        request: &ConversationRequest,
+        request: &LlmRequest,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         if let Some(body) =
@@ -202,7 +200,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 stop_reason: Some(StopReason::EndTurn),
             });
         }
-        let response = ConversationResponse {
+        let response = LlmResponse {
             id: body
                 .get("id")
                 .and_then(Value::as_str)
@@ -233,7 +231,7 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn encode_response(
         &self,
-        response: &ConversationResponse,
+        response: &LlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =

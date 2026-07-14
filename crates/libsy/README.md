@@ -12,7 +12,7 @@ Build a target set, pick an algorithm, run a request:
 
 ```rust
 use libsy::{
-    Algorithm, ContentBlock, Context, ConversationRequest, LlmClient, LlmTarget, LlmTargetSet,
+    Algorithm, ContentBlock, Context, LlmRequest, LlmClient, LlmTarget, LlmTargetSet,
     Message, Request, Role,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
@@ -28,10 +28,10 @@ let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
 ));
 
 let req = Request {
-    llm_request: ConversationRequest {
+    llm_request: LlmRequest {
         model: Some("auto".into()),
         messages: vec![Message::text(Role::User, "explain tail latency")],
-        ..ConversationRequest::default()
+        ..LlmRequest::default()
     },
     raw_request: None,
     metadata: None,
@@ -46,18 +46,18 @@ Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in t
 
 ```rust
 pub struct Request {
-    pub llm_request: ConversationRequest,
+    pub llm_request: LlmRequest,
     pub raw_request: Option<serde_json::Value>, // optional original provider body for exact-fidelity hosts
     pub metadata: Option<Metadata>,             // correlation: session / agent / task / correlation_id / extra
 }
 
 pub struct Response {
-    pub llm_response: ConversationResponse,
+    pub llm_response: LlmResponse,
     pub metadata: Option<Metadata>,
 }
 ```
 
-`switchyard-protocol` owns `ConversationRequest`, `ConversationResponse`, `Message`,
+`libsy-protocol` owns `LlmRequest`, `LlmResponse`, `Message`,
 `ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports those canonical types
 unchanged. Construct and inspect the conversation model directly so tools, sampling
 parameters, reasoning, and provider extensions remain visible instead of being hidden
@@ -82,13 +82,13 @@ impl LlmClient for MyClient {
         // ... POST to your endpoint, read the completion ...
         let completion = String::from("provider response text");
         Ok(Response {
-            llm_response: ConversationResponse {
+            llm_response: LlmResponse {
                 outputs: vec![ResponseOutput {
                     role: Role::Assistant,
                     content: vec![ContentBlock::Text { text: completion }],
                     stop_reason: None,
                 }],
-                ..ConversationResponse::default()
+                ..LlmResponse::default()
             },
             metadata: None,
         })

@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, ContentBlock, Context, ConversationRequest, ConversationResponse, LlmClient,
-    LlmTarget, LlmTargetSet, Message, Request, Response, ResponseOutput, Role, RoutedRequest,
+    Algorithm, ContentBlock, Context, LlmClient, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet,
+    Message, Request, Response, ResponseOutput, Role, RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 
@@ -41,13 +41,13 @@ impl LlmClient for StubClient {
             format!("answer from {model}")
         };
         Ok(Response {
-            llm_response: ConversationResponse {
+            llm_response: LlmResponse {
                 outputs: vec![ResponseOutput {
                     role: Role::Assistant,
                     content: vec![ContentBlock::Text { text: completion }],
                     stop_reason: None,
                 }],
-                ..ConversationResponse::default()
+                ..LlmResponse::default()
             },
             metadata: None,
         })
@@ -77,10 +77,10 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: ConversationRequest {
+                llm_request: LlmRequest {
                     model: Some("auto".to_string()),
                     messages: vec![Message::text(Role::User, step)],
-                    ..ConversationRequest::default()
+                    ..LlmRequest::default()
                 },
                 raw_request: None,
                 metadata: None,

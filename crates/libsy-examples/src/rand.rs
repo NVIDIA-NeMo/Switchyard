@@ -97,8 +97,7 @@ impl Algorithm for RandomOrchAlgo {
 mod tests {
     use super::*;
     use libsy::{
-        ConversationRequest, ConversationResponse, LlmClient, LlmTarget, Message, Response, Role,
-        RoutedRequest,
+        LlmClient, LlmRequest, LlmResponse, LlmTarget, Message, Response, Role, RoutedRequest,
     };
     use std::collections::HashSet;
 
@@ -113,9 +112,9 @@ mod tests {
             routed: RoutedRequest,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             Ok(Response {
-                llm_response: ConversationResponse {
+                llm_response: LlmResponse {
                     model: Some(routed.decision.selected_model().to_string()),
-                    ..ConversationResponse::default()
+                    ..LlmResponse::default()
                 },
                 metadata: None,
             })
@@ -124,10 +123,10 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            llm_request: ConversationRequest {
+            llm_request: LlmRequest {
                 model: Some("auto".to_string()),
                 messages: vec![Message::text(Role::User, "hi")],
-                ..ConversationRequest::default()
+                ..LlmRequest::default()
             },
             raw_request: None,
             metadata: None,

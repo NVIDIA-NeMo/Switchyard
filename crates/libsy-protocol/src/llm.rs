@@ -206,7 +206,7 @@ pub struct PreservationMetadata {
 
 /// Normalized request representation shared by Switchyard components.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConversationRequest {
+pub struct LlmRequest {
     pub model: Option<String>,
     pub instructions: Vec<InstructionBlock>,
     pub messages: Vec<Message>,
@@ -250,7 +250,7 @@ pub struct ResponseOutput {
 
 /// Normalized response representation shared by Switchyard components.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConversationResponse {
+pub struct LlmResponse {
     pub id: Option<String>,
     pub model: Option<String>,
     pub outputs: Vec<ResponseOutput>,
@@ -259,7 +259,7 @@ pub struct ConversationResponse {
     pub preservation: PreservationMetadata,
 }
 
-impl ConversationResponse {
+impl LlmResponse {
     /// Returns the first output item when a response has any output.
     pub fn first_output(&self) -> Option<&ResponseOutput> {
         self.outputs.first()

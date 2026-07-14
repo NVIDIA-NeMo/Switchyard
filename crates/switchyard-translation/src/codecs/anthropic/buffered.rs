@@ -10,15 +10,14 @@ use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
-use crate::conversation::{
-    ContentBlock, ConversationRequest, ConversationResponse, FileSource, ImageSource,
-    InstructionBlock, MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams,
-    ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition,
-    ToolResult, Usage,
-};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
+use crate::llm::{
+    ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest, LlmResponse, MediaSource,
+    Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+};
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::sanitize_anthropic_tool_use_id;
 use crate::util::{
@@ -40,7 +39,7 @@ impl FormatCodec for AnthropicMessagesCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let mut request = ConversationRequest {
+        let mut request = LlmRequest {
             model: body
                 .get("model")
                 .and_then(Value::as_str)
@@ -70,7 +69,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 &Value::Object(body.clone()),
                 policy,
             ),
-            ..ConversationRequest::default()
+            ..LlmRequest::default()
         };
         if let Some(system) = body.get("system") {
             if let Some(content) = decode_anthropic_system(system, &mut diagnostics, policy)? {
@@ -148,7 +147,7 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn encode_request(
         &self,
-        request: &ConversationRequest,
+        request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         if let Some(body) =
@@ -253,7 +252,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 text: String::new(),
             });
         }
-        let response = ConversationResponse {
+        let response = LlmResponse {
             id: body
                 .get("id")
                 .and_then(Value::as_str)
@@ -298,7 +297,7 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn encode_response(
         &self,
-        response: &ConversationResponse,
+        response: &LlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) = exact_preserved_response(
