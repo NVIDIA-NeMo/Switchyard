@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use libsy::{
-    Algorithm, Context, Decision, Driver, LlmRequest, LlmTargetSet, Request, Response, Signals,
+    Algorithm, ContentBlock, Context, Decision, Driver, LlmRequest, LlmTargetSet, Message, Request,
+    Response, Role, Signals,
 };
 
 /// Which step of the ensemble flow produced a decision.
@@ -184,12 +185,7 @@ impl EnsembleOrchAlgo {
             phase: EnsemblePhase::Committed,
         });
         let routed = Request {
-            llm_request: LlmRequest {
-                // The agent's inbound name rides through; the committed model is on
-                // the decision, not stamped onto the request.
-                inbound_model_name: request.llm_request.inbound_model_name,
-                prompt: request.llm_request.prompt,
-            },
+            llm_request: request.llm_request,
             raw_request: request.raw_request,
             metadata: request.metadata,
         };
@@ -206,10 +202,27 @@ impl EnsembleOrchAlgo {
         driver: &Driver,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
-        let user_prompt = request.llm_request.prompt.clone();
-        // The agent's inbound name rides through every sub-call unchanged; the model
-        // each call hits is carried by its decision, not stamped onto the request.
-        let inbound = request.llm_request.inbound_model_name.clone();
+        let user_prompt = request
+            .llm_request
+            .instructions
+            .iter()
+            .flat_map(|instruction| instruction.content.iter())
+            .chain(
+                request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.iter()),
+            )
+            .filter_map(|block| match block {
+                ContentBlock::Text { text }
+                | ContentBlock::Refusal { text }
+                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                ContentBlock::Unknown { raw, .. } => raw.as_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
         // Fan out to all candidates concurrently with the same user prompt. Each
         // call is annotated with its own candidate decision so the caller can see
@@ -225,10 +238,7 @@ impl EnsembleOrchAlgo {
             });
             candidate_decisions.push(decision.clone());
             let call_request = Request {
-                llm_request: LlmRequest {
-                    inbound_model_name: inbound.clone(),
-                    prompt: user_prompt.clone(),
-                },
+                llm_request: request.llm_request.clone(),
                 raw_request: request.raw_request.clone(),
                 metadata: request.metadata.clone(),
             };
@@ -273,17 +283,32 @@ impl EnsembleOrchAlgo {
             });
             let judge_request = Request {
                 llm_request: LlmRequest {
-                    inbound_model_name: inbound.clone(),
-                    prompt: judge_prompt,
+                    model: request.llm_request.model.clone(),
+                    messages: vec![Message::text(Role::User, judge_prompt)],
+                    ..LlmRequest::default()
                 },
-                raw_request: request.raw_request.clone(),
+                raw_request: None,
                 metadata: request.metadata.clone(),
             };
             let judge_response = driver
                 .call_llm_target(&judge_target, judge_request, judge_decision.clone())
                 .await?;
             // Fail open: an unparseable pick falls back to the first response.
-            let choice = parse_choice(&judge_response.llm_response.completion, survivors.len());
+            let judge_text = judge_response
+                .llm_response
+                .outputs
+                .iter()
+                .flat_map(|output| output.content.iter())
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text }
+                    | ContentBlock::Refusal { text }
+                    | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                    ContentBlock::Unknown { raw, .. } => raw.as_str(),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let choice = parse_choice(&judge_text, survivors.len());
             let (model, response) = survivors
                 .into_iter()
                 .nth(choice)
@@ -328,11 +353,21 @@ fn build_judge_prompt(user_prompt: &str, survivors: &[(String, Response)]) -> St
     prompt.push_str(user_prompt);
     prompt.push_str("\n\n");
     for (i, (_model, response)) in survivors.iter().enumerate() {
-        prompt.push_str(&format!(
-            "Response {}:\n{}\n\n",
-            i + 1,
-            response.llm_response.completion
-        ));
+        let candidate_text = response
+            .llm_response
+            .outputs
+            .iter()
+            .flat_map(|output| output.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text }
+                | ContentBlock::Refusal { text }
+                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                ContentBlock::Unknown { raw, .. } => raw.as_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        prompt.push_str(&format!("Response {}:\n{}\n\n", i + 1, candidate_text));
     }
     prompt.push_str(&format!(
         "Reply with only the number (1-{}) of the best response.",
@@ -395,7 +430,7 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmRequest, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, ResponseOutput, RoutedRequest};
     use std::sync::Mutex as StdMutex;
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
@@ -420,14 +455,21 @@ mod tests {
                 .map_err(|_| "lock poisoned")?
                 .push(name.clone());
             let completion = if name == self.judge_model {
-                judge_pick(&routed.request.llm_request.prompt, &self.prefer)
+                let prompt = routed.request.llm_request.messages[0]
+                    .text_content("\n")
+                    .unwrap_or_default();
+                judge_pick(&prompt, &self.prefer)
             } else {
                 format!("answer from {name}")
             };
             Ok(Response {
                 llm_response: LlmResponse {
-                    completion,
-                    raw_response: None,
+                    outputs: vec![ResponseOutput {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text { text: completion }],
+                        stop_reason: None,
+                    }],
+                    ..LlmResponse::default()
                 },
                 metadata: None,
             })
@@ -506,8 +548,9 @@ mod tests {
     fn request(prompt: &str) -> Request {
         Request {
             llm_request: LlmRequest {
-                inbound_model_name: "auto".to_string(),
-                prompt: prompt.to_string(),
+                model: Some("auto".to_string()),
+                messages: vec![Message::text(Role::User, prompt)],
+                ..LlmRequest::default()
             },
             raw_request: None,
             metadata: None,
@@ -536,7 +579,12 @@ mod tests {
         let (trace, response) = orch(algo)
             .run(Context::default(), request("solve it"))
             .await?;
-        assert_eq!(response.llm_response.completion, "answer from b/model");
+        assert_eq!(
+            response.llm_response.outputs[0].content,
+            vec![ContentBlock::Text {
+                text: "answer from b/model".to_string()
+            }]
+        );
 
         // Both candidates and the judge were called.
         let calls = calls.lock().map_err(|_| "lock poisoned")?;
@@ -576,7 +624,12 @@ mod tests {
         // Third request: committed fast path — routes straight to b/model with no
         // fan-out to a/model and no judge call.
         let (trace, response) = orch.clone().run(Context::default(), request("t3")).await?;
-        assert_eq!(response.llm_response.completion, "answer from b/model");
+        assert_eq!(
+            response.llm_response.outputs[0].content,
+            vec![ContentBlock::Text {
+                text: "answer from b/model".to_string()
+            }]
+        );
         assert_eq!(trace.len(), 1);
         let decision = as_ensemble(&trace[0])?;
         assert_eq!(decision.phase, EnsemblePhase::Committed);
@@ -594,7 +647,12 @@ mod tests {
     async fn single_candidate_skips_the_judge() -> Result<(), Box<dyn Error + Send + Sync>> {
         let (algo, calls) = algo(&["only/model"], "judge/haiku", "only/model", 100);
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
-        assert_eq!(response.llm_response.completion, "answer from only/model");
+        assert_eq!(
+            response.llm_response.outputs[0].content,
+            vec![ContentBlock::Text {
+                text: "answer from only/model".to_string()
+            }]
+        );
         // No judge call for a lone candidate.
         assert!(!calls
             .lock()
@@ -710,7 +768,10 @@ mod tests {
                 let name = routed.decision.selected_model().to_string();
                 let completion = if name == self.judge_model {
                     // Judge runs after the barrier releases; it must not wait.
-                    judge_pick(&routed.request.llm_request.prompt, &self.prefer)
+                    let prompt = routed.request.llm_request.messages[0]
+                        .text_content("\n")
+                        .unwrap_or_default();
+                    judge_pick(&prompt, &self.prefer)
                 } else {
                     // Hold every candidate call until all sessions have fanned out.
                     self.barrier.wait().await;
@@ -718,8 +779,12 @@ mod tests {
                 };
                 Ok(Response {
                     llm_response: LlmResponse {
-                        completion,
-                        raw_response: None,
+                        outputs: vec![ResponseOutput {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::Text { text: completion }],
+                            stop_reason: None,
+                        }],
+                        ..LlmResponse::default()
                     },
                     metadata: None,
                 })
@@ -755,7 +820,18 @@ mod tests {
                 session
                     .run(Context::default(), request(prompt))
                     .await
-                    .map(|(_, response)| response.llm_response.completion)
+                    .map(|(_, response)| {
+                        match response
+                            .llm_response
+                            .outputs
+                            .into_iter()
+                            .next()
+                            .and_then(|output| output.content.into_iter().next())
+                        {
+                            Some(ContentBlock::Text { text }) => text,
+                            _ => String::new(),
+                        }
+                    })
             })
         };
         let handle_a = run(session_a, "from A");
@@ -801,10 +877,17 @@ mod tests {
                     .and_then(|d| d.as_any().downcast_ref::<EnsembleDecision>())
                     .map(|d| d.phase)
                     .ok_or("missing final decision")?;
-                Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((
-                    response.llm_response.completion,
-                    phase,
-                ))
+                let completion = match response
+                    .llm_response
+                    .outputs
+                    .into_iter()
+                    .next()
+                    .and_then(|output| output.content.into_iter().next())
+                {
+                    Some(ContentBlock::Text { text }) => text,
+                    _ => String::new(),
+                };
+                Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((completion, phase))
             })
         };
         // The two sessions run in parallel; each committed independently.

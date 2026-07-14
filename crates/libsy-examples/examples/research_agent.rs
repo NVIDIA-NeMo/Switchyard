@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, Context, LlmClient, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, RoutedRequest,
+    Algorithm, ContentBlock, Context, LlmClient, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet,
+    Message, Request, Response, ResponseOutput, Role, RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 
@@ -42,8 +42,12 @@ impl LlmClient for StubClient {
         };
         Ok(Response {
             llm_response: LlmResponse {
-                completion,
-                raw_response: None,
+                outputs: vec![ResponseOutput {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text { text: completion }],
+                    stop_reason: None,
+                }],
+                ..LlmResponse::default()
             },
             metadata: None,
         })
@@ -74,15 +78,31 @@ impl ResearchAgent {
         for step in self.plan(question) {
             let request = Request {
                 llm_request: LlmRequest {
-                    inbound_model_name: "auto".to_string(),
-                    prompt: step,
+                    model: Some("auto".to_string()),
+                    messages: vec![Message::text(Role::User, step)],
+                    ..LlmRequest::default()
                 },
                 raw_request: None,
                 metadata: None,
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(response.llm_response.completion);
+            notes.push(
+                response
+                    .llm_response
+                    .outputs
+                    .iter()
+                    .flat_map(|output| output.content.iter())
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text }
+                        | ContentBlock::Refusal { text }
+                        | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                        ContentBlock::Unknown { raw, .. } => raw.as_str(),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
         }
         Ok(notes.join("\n"))
     }

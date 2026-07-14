@@ -11,17 +11,17 @@ pub mod codecs;
 pub mod diagnostic;
 pub mod engine;
 pub mod error;
-pub mod format;
-pub mod ir;
 pub mod policy;
 pub mod stream;
 pub mod util;
+
+pub use libsy_protocol::{format, llm};
 
 pub use diagnostic::*;
 pub use engine::*;
 pub use error::*;
 pub use format::*;
-pub use ir::*;
+pub use llm::*;
 pub use policy::*;
 pub use stream::*;
 pub use util::{

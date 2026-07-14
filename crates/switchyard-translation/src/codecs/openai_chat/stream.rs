@@ -6,11 +6,11 @@
 use serde_json::{json, Map, Value};
 
 use crate::codecs::stream::{
-    record_source_identity, source_model_or_unknown, state_source_is, string_field,
-    ConversationStreamEvent, StreamCodec, StreamTranslationState,
+    record_source_identity, source_model_or_unknown, state_source_is, string_field, StreamCodec,
+    StreamTranslationState,
 };
 use crate::format::{FormatId, WireFormat};
-use crate::ir::Usage;
+use crate::llm::{LlmStreamEvent, Usage};
 
 /// Stream codec for OpenAI Chat Completions chunks.
 pub struct OpenAiChatStreamCodec;
@@ -24,14 +24,14 @@ impl StreamCodec for OpenAiChatStreamCodec {
         &self,
         state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<ConversationStreamEvent> {
+    ) -> Vec<LlmStreamEvent> {
         decode_openai_chat_stream(state, event)
     }
 
     fn encode_event(
         &self,
         state: &mut StreamTranslationState,
-        event: ConversationStreamEvent,
+        event: LlmStreamEvent,
     ) -> Vec<Value> {
         encode_openai_chat_stream(state, event)
     }
@@ -45,9 +45,9 @@ impl StreamCodec for OpenAiChatStreamCodec {
 fn decode_openai_chat_stream(
     state: &mut StreamTranslationState,
     event: &Value,
-) -> Vec<ConversationStreamEvent> {
+) -> Vec<LlmStreamEvent> {
     let Some(object) = event.as_object() else {
-        return vec![ConversationStreamEvent::Error {
+        return vec![LlmStreamEvent::Error {
             message: "OpenAI stream event is not an object".to_string(),
         }];
     };
@@ -61,7 +61,7 @@ fn decode_openai_chat_stream(
         if let Some(id) = string_field(object, "id") {
             state.message_id = Some(id);
         }
-        out.push(ConversationStreamEvent::MessageStart {
+        out.push(LlmStreamEvent::MessageStart {
             id: state.message_id.clone(),
             model: state.model.clone(),
         });
@@ -72,7 +72,7 @@ fn decode_openai_chat_stream(
         capture_openai_usage_extras(state, object.get("usage"));
         state.usage = usage.clone();
         state.saw_backend_usage = true;
-        out.push(ConversationStreamEvent::Usage(usage));
+        out.push(LlmStreamEvent::Usage(usage));
     }
 
     for choice in object
@@ -87,7 +87,7 @@ fn decode_openai_chat_stream(
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
                 if !text.is_empty() {
-                    out.push(ConversationStreamEvent::TextDelta {
+                    out.push(LlmStreamEvent::TextDelta {
                         index: 0,
                         text: text.to_string(),
                     });
@@ -96,7 +96,7 @@ fn decode_openai_chat_stream(
             for reasoning_key in ["reasoning_content", "reasoning"] {
                 if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str) {
                     if !text.is_empty() {
-                        out.push(ConversationStreamEvent::ReasoningDelta {
+                        out.push(LlmStreamEvent::ReasoningDelta {
                             index: 0,
                             text: text.to_string(),
                         });
@@ -107,7 +107,7 @@ fn decode_openai_chat_stream(
                 for tool_call in tool_calls {
                     if let Some(tool_call) = tool_call.as_object() {
                         let function = tool_call.get("function").and_then(Value::as_object);
-                        out.push(ConversationStreamEvent::ToolCallDelta {
+                        out.push(LlmStreamEvent::ToolCallDelta {
                             index: tool_call.get("index").and_then(Value::as_u64).unwrap_or(0)
                                 as usize,
                             id: tool_call
@@ -128,7 +128,7 @@ fn decode_openai_chat_stream(
             }
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-            out.push(ConversationStreamEvent::MessageStop {
+            out.push(LlmStreamEvent::MessageStop {
                 reason: Some(reason.to_string()),
             });
         }
@@ -139,10 +139,10 @@ fn decode_openai_chat_stream(
 // Encodes neutral streaming events into OpenAI Chat chunks.
 fn encode_openai_chat_stream(
     state: &mut StreamTranslationState,
-    event: ConversationStreamEvent,
+    event: LlmStreamEvent,
 ) -> Vec<Value> {
     match event {
-        ConversationStreamEvent::MessageStart { id, model } => {
+        LlmStreamEvent::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             if state.emitted_message_start
                 || (!state_source_is(state, WireFormat::AnthropicMessages)
@@ -159,7 +159,7 @@ fn encode_openai_chat_stream(
                 )]
             }
         }
-        ConversationStreamEvent::TextDelta { text, .. } => {
+        LlmStreamEvent::TextDelta { text, .. } => {
             vec![openai_stream_chunk(
                 state,
                 json!({"content": text}),
@@ -167,7 +167,7 @@ fn encode_openai_chat_stream(
                 None,
             )]
         }
-        ConversationStreamEvent::ReasoningDelta { text, .. } => {
+        LlmStreamEvent::ReasoningDelta { text, .. } => {
             vec![openai_stream_chunk(
                 state,
                 json!({"reasoning_content": text}),
@@ -175,7 +175,7 @@ fn encode_openai_chat_stream(
                 None,
             )]
         }
-        ConversationStreamEvent::ToolCallDelta {
+        LlmStreamEvent::ToolCallDelta {
             index,
             id,
             name,
@@ -187,12 +187,12 @@ fn encode_openai_chat_stream(
             name,
             arguments_delta,
         )],
-        ConversationStreamEvent::Usage(usage) => {
+        LlmStreamEvent::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
             Vec::new()
         }
-        ConversationStreamEvent::MessageStop { reason } => {
+        LlmStreamEvent::MessageStop { reason } => {
             if state.finished {
                 return Vec::new();
             }
@@ -204,7 +204,7 @@ fn encode_openai_chat_stream(
                 Some(openai_usage_value(state)),
             )]
         }
-        ConversationStreamEvent::Error { message } => vec![json!({"error": {"message": message}})],
+        LlmStreamEvent::Error { message } => vec![json!({"error": {"message": message}})],
     }
 }
 

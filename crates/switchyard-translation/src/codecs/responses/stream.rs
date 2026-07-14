@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 
 use crate::codecs::stream::{
     record_source_identity, target_message_id_or_source_message_id, target_model_or_source_model,
-    ConversationStreamEvent, StreamCodec, StreamTranslationState,
+    StreamCodec, StreamTranslationState,
 };
 use crate::format::{FormatId, WireFormat};
-use crate::ir::Usage;
+use crate::llm::{LlmStreamEvent, Usage};
 
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;
@@ -24,14 +24,14 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         &self,
         state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<ConversationStreamEvent> {
+    ) -> Vec<LlmStreamEvent> {
         decode_responses_stream(state, event)
     }
 
     fn encode_event(
         &self,
         state: &mut StreamTranslationState,
-        event: ConversationStreamEvent,
+        event: LlmStreamEvent,
     ) -> Vec<Value> {
         encode_responses_stream(state, event)
     }
@@ -45,7 +45,7 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
 fn decode_responses_stream(
     state: &mut StreamTranslationState,
     event: &Value,
-) -> Vec<ConversationStreamEvent> {
+) -> Vec<LlmStreamEvent> {
     let event_type = event
         .get("type")
         .or_else(|| event.get("event"))
@@ -66,7 +66,7 @@ fn decode_responses_stream(
             {
                 state.message_id = Some(id.to_string());
             }
-            vec![ConversationStreamEvent::MessageStart {
+            vec![LlmStreamEvent::MessageStart {
                 id: state.message_id.clone(),
                 model: state.model.clone(),
             }]
@@ -75,7 +75,7 @@ fn decode_responses_stream(
             .get("delta")
             .and_then(Value::as_str)
             .map(|text| {
-                vec![ConversationStreamEvent::TextDelta {
+                vec![LlmStreamEvent::TextDelta {
                     index: event
                         .get("output_index")
                         .and_then(Value::as_u64)
@@ -90,7 +90,7 @@ fn decode_responses_stream(
                 .or_else(|| event.get("text"))
                 .and_then(Value::as_str)
                 .map(|text| {
-                    vec![ConversationStreamEvent::ReasoningDelta {
+                    vec![LlmStreamEvent::ReasoningDelta {
                         index: event
                             .get("output_index")
                             .and_then(Value::as_u64)
@@ -110,7 +110,7 @@ fn decode_responses_stream(
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(|delta| {
-                    vec![ConversationStreamEvent::ToolCallDelta {
+                    vec![LlmStreamEvent::ToolCallDelta {
                         index: output_index as usize,
                         id: None,
                         name: None,
@@ -131,12 +131,12 @@ fn decode_responses_stream(
                 let usage = responses_usage(usage);
                 state.usage = usage.clone();
                 state.saw_backend_usage = true;
-                out.push(ConversationStreamEvent::Usage(usage));
+                out.push(LlmStreamEvent::Usage(usage));
             }
-            out.push(ConversationStreamEvent::MessageStop { reason: None });
+            out.push(LlmStreamEvent::MessageStop { reason: None });
             out
         }
-        Some("error") => vec![ConversationStreamEvent::Error {
+        Some("error") => vec![LlmStreamEvent::Error {
             message: event
                 .get("message")
                 .and_then(Value::as_str)
@@ -150,33 +150,33 @@ fn decode_responses_stream(
 // Encodes neutral streaming events into OpenAI Responses events.
 fn encode_responses_stream(
     state: &mut StreamTranslationState,
-    event: ConversationStreamEvent,
+    event: LlmStreamEvent,
 ) -> Vec<Value> {
     match event {
-        ConversationStreamEvent::MessageStart { id, model } => {
+        LlmStreamEvent::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             ensure_responses_created(state)
         }
-        ConversationStreamEvent::TextDelta { text, .. } => encode_responses_text_delta(state, text),
-        ConversationStreamEvent::ReasoningDelta { text, .. } => {
+        LlmStreamEvent::TextDelta { text, .. } => encode_responses_text_delta(state, text),
+        LlmStreamEvent::ReasoningDelta { text, .. } => {
             encode_responses_reasoning_delta(state, text)
         }
-        ConversationStreamEvent::ToolCallDelta {
+        LlmStreamEvent::ToolCallDelta {
             index,
             id,
             name,
             arguments_delta,
         } => encode_responses_tool_delta(state, index, id, name, arguments_delta),
-        ConversationStreamEvent::Usage(usage) => {
+        LlmStreamEvent::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
             Vec::new()
         }
-        ConversationStreamEvent::MessageStop { reason } => {
+        LlmStreamEvent::MessageStop { reason } => {
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        ConversationStreamEvent::Error { message } => {
+        LlmStreamEvent::Error { message } => {
             vec![json!({"type": "error", "message": message})]
         }
     }
@@ -295,7 +295,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Responses function-call item creation into a neutral tool-call delta.
-fn decode_responses_output_item_added(event: &Value) -> Vec<ConversationStreamEvent> {
+fn decode_responses_output_item_added(event: &Value) -> Vec<LlmStreamEvent> {
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -306,7 +306,7 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<ConversationStreamEv
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
-    vec![ConversationStreamEvent::ToolCallDelta {
+    vec![LlmStreamEvent::ToolCallDelta {
         index,
         id: item
             .get("call_id")
@@ -329,7 +329,7 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<ConversationStreamEv
 fn decode_responses_output_item_done(
     event: &Value,
     state: &StreamTranslationState,
-) -> Vec<ConversationStreamEvent> {
+) -> Vec<LlmStreamEvent> {
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -348,7 +348,7 @@ fn decode_responses_output_item_done(
             .map(|tool| tool.arguments.as_str())
             .unwrap_or("");
         if !arguments.is_empty() && arguments != existing {
-            return vec![ConversationStreamEvent::ToolCallDelta {
+            return vec![LlmStreamEvent::ToolCallDelta {
                 index,
                 id: None,
                 name: None,

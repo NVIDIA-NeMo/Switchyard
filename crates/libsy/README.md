@@ -11,8 +11,11 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use libsy::llm_class::LlmClassifierOrchAlgo;
-use libsy::{Algorithm, Context, LlmClient, LlmRequest, LlmTarget, LlmTargetSet, Request};
+use libsy::{
+    Algorithm, ContentBlock, Context, LlmRequest, LlmClient, LlmTarget, LlmTargetSet,
+    Message, Request, Role,
+};
+use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use std::sync::Arc;
 
 // Targets the algorithm routes among, each backed by your LlmClient (see below).
@@ -25,7 +28,11 @@ let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
 ));
 
 let req = Request {
-    llm_request: LlmRequest { inbound_model_name: "auto".into(), prompt: "explain tail latency".into() },
+    llm_request: LlmRequest {
+        model: Some("auto".into()),
+        messages: vec![Message::text(Role::User, "explain tail latency")],
+        ..LlmRequest::default()
+    },
     raw_request: None,
     metadata: None,
 };
@@ -39,16 +46,23 @@ Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in t
 
 ```rust
 pub struct Request {
-    pub llm_request: LlmRequest,                // normalized:  { inbound_model_name, prompt }
-    pub raw_request: Option<serde_json::Value>, // original provider body, forwarded verbatim if present
+    pub llm_request: LlmRequest,
+    pub raw_request: Option<serde_json::Value>, // optional original provider body for exact-fidelity hosts
     pub metadata: Option<Metadata>,             // correlation: session / agent / task / correlation_id / extra
 }
 
 pub struct Response {
-    pub llm_response: LlmResponse,              // normalized:  { completion, raw_response? }
+    pub llm_response: LlmResponse,
     pub metadata: Option<Metadata>,
 }
 ```
+
+`libsy-protocol` owns `LlmRequest`, `LlmResponse`, `Message`,
+`ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports those canonical types
+unchanged. Construct and inspect the conversation model directly so tools, sampling
+parameters, reasoning, and provider extensions remain visible instead of being hidden
+behind a second convenience API. `raw_request` remains available when a host needs exact
+source-body fidelity.
 
 ## Targets and clients
 
@@ -64,9 +78,20 @@ impl LlmClient for MyClient {
     async fn call(&self, routed: RoutedRequest)
         -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         let model = routed.decision.selected_model();   // the routed target — map it to a provider id
-        // routed.request.llm_request.inbound_model_name is the agent's original name (not a call target)
+        // routed.request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
-        Ok(Response { llm_response: LlmResponse { completion, raw_response: None }, metadata: None })
+        let completion = String::from("provider response text");
+        Ok(Response {
+            llm_response: LlmResponse {
+                outputs: vec![ResponseOutput {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text { text: completion }],
+                    stop_reason: None,
+                }],
+                ..LlmResponse::default()
+            },
+            metadata: None,
+        })
     }
 }
 ```
@@ -153,8 +178,16 @@ impl Algorithm for LlmClassifierOrchAlgo {
         // 1. Classify: ask the classifier target for a score.
         let classifier = self.target_set.get_target(&self.classifier_model)?;
         driver.info(classify_decision.clone()).await?;
-        let score = driver.call_llm_target(&classifier, classify_req, classify_decision).await?
-            .llm_response.completion.trim().parse::<f64>().ok();
+        let classify_response =
+            driver.call_llm_target(&classifier, classify_req, classify_decision).await?;
+        // Abbreviated: this assumes a text score in the first output block. The full
+        // implementation scans all outputs and text-like blocks.
+        let score = classify_response.llm_response.first_output()
+            .and_then(|output| output.content.first())
+            .and_then(|block| match block {
+                ContentBlock::Text { text } => text.trim().parse::<f64>().ok(),
+                _ => None,
+            });
 
         // 2. Route: strong if score >= threshold, else weak (fail open on None).
         let model = if score.map_or(true, |s| s >= self.threshold) { &self.strong_model } else { &self.weak_model };

@@ -5,7 +5,15 @@
 
 use serde_json::{Map, Value};
 
-use crate::ir::ContentBlock;
+use crate::llm::ContentBlock;
+
+/// Returns whether a role name is recognized by a supported provider API.
+pub(crate) fn is_known_role_name(name: &str) -> bool {
+    matches!(
+        name,
+        "system" | "developer" | "user" | "assistant" | "tool" | "function"
+    )
+}
 
 /// Extracts text-like blocks and joins them for text-only provider fields.
 pub(crate) fn text_from_blocks(content: &[ContentBlock], separator: &str) -> String {

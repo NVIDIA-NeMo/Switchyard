@@ -15,7 +15,7 @@ use crate::codecs::responses::OpenAiResponsesStreamCodec;
 use crate::engine::{FormatRegistry, TranslationEngine};
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
-use crate::ir::Usage;
+use crate::llm::{LlmStreamEvent, Usage};
 
 /// Mutable state accumulated while translating one streaming response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -83,36 +83,6 @@ impl StreamTranslationState {
     }
 }
 
-/// Provider-neutral event used between stream decoders and encoders.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum ConversationStreamEvent {
-    MessageStart {
-        id: Option<String>,
-        model: Option<String>,
-    },
-    TextDelta {
-        index: usize,
-        text: String,
-    },
-    ReasoningDelta {
-        index: usize,
-        text: String,
-    },
-    ToolCallDelta {
-        index: usize,
-        id: Option<String>,
-        name: Option<String>,
-        arguments_delta: Option<String>,
-    },
-    Usage(Usage),
-    MessageStop {
-        reason: Option<String>,
-    },
-    Error {
-        message: String,
-    },
-}
-
 /// Registry-backed streaming translator.
 #[derive(Default)]
 pub struct StreamTranslationEngine {
@@ -129,14 +99,11 @@ pub trait StreamCodec: Send + Sync {
         &self,
         state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<ConversationStreamEvent>;
+    ) -> Vec<LlmStreamEvent>;
 
     /// Encodes one neutral event into zero or more provider events.
-    fn encode_event(
-        &self,
-        state: &mut StreamTranslationState,
-        event: ConversationStreamEvent,
-    ) -> Vec<Value>;
+    fn encode_event(&self, state: &mut StreamTranslationState, event: LlmStreamEvent)
+        -> Vec<Value>;
 
     /// Emits any terminal provider events needed after the source stream ends.
     ///
@@ -230,13 +197,13 @@ pub fn decode_stream_event(
     state: &mut StreamTranslationState,
     source: impl Into<FormatId>,
     event: &Value,
-) -> Vec<ConversationStreamEvent> {
+) -> Vec<LlmStreamEvent> {
     let source = source.into();
     StreamCodecRegistry::with_builtins()
         .codec(source)
         .map(|codec| codec.decode_event(state, event))
         .unwrap_or_else(|error| {
-            vec![ConversationStreamEvent::Error {
+            vec![LlmStreamEvent::Error {
                 message: error.to_string(),
             }]
         })
@@ -246,7 +213,7 @@ pub fn decode_stream_event(
 pub fn encode_stream_event(
     state: &mut StreamTranslationState,
     target: impl Into<FormatId>,
-    event: ConversationStreamEvent,
+    event: LlmStreamEvent,
 ) -> Vec<Value> {
     StreamCodecRegistry::with_builtins()
         .codec(target)

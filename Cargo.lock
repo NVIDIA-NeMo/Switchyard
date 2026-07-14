@@ -855,6 +855,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "libsy-protocol",
  "serde_json",
  "tokio",
  "tokio-stream",
@@ -870,6 +871,14 @@ dependencies = [
  "rand 0.8.6",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "libsy-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1684,6 +1693,7 @@ dependencies = [
 name = "switchyard-translation"
 version = "0.1.0"
 dependencies = [
+ "libsy-protocol",
  "pretty_assertions",
  "serde",
  "serde_json",

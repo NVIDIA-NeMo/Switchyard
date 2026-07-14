@@ -13,8 +13,8 @@ use std::error::Error;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, Context, Decision, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Step,
+    Algorithm, ContentBlock, Context, Decision, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet,
+    Message, Request, Response, ResponseOutput, Role, Step,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use tokio_stream::StreamExt;
@@ -35,8 +35,12 @@ async fn call_model(model: &str) -> Response {
     };
     Response {
         llm_response: LlmResponse {
-            completion,
-            raw_response: None,
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: completion }],
+                stop_reason: None,
+            }],
+            ..LlmResponse::default()
         },
         metadata: None,
     }
@@ -66,8 +70,9 @@ impl ResearchAgent {
         for step in self.plan(question) {
             let request = Request {
                 llm_request: LlmRequest {
-                    inbound_model_name: "auto".to_string(),
-                    prompt: step,
+                    model: Some("auto".to_string()),
+                    messages: vec![Message::text(Role::User, step)],
+                    ..LlmRequest::default()
                 },
                 raw_request: None,
                 metadata: None,
@@ -84,7 +89,22 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(response.llm_response.completion);
+                        notes.push(
+                            response
+                                .llm_response
+                                .outputs
+                                .iter()
+                                .flat_map(|output| output.content.iter())
+                                .filter_map(|block| match block {
+                                    ContentBlock::Text { text }
+                                    | ContentBlock::Refusal { text }
+                                    | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                                    ContentBlock::Unknown { raw, .. } => raw.as_str(),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        );
                     }
                 }
             }

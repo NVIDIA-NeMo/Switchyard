@@ -13,10 +13,10 @@ use switchyard_translation::util::{
     exact_preserved_response,
 };
 use switchyard_translation::{
-    ConversationRequest, ConversationResponse, ConversationStreamEvent, FormatId, FormatRegistry,
-    LossyConversionPolicy, Message, PreservationPolicy, ResponseOutput, Role, StreamCodec,
-    StreamCodecRegistry, StreamTranslationState, TargetCapabilities, TranslationEngine,
-    TranslationPolicy, Usage, WireFormat,
+    FormatId, FormatRegistry, LlmRequest, LlmResponse, LlmStreamEvent, LossyConversionPolicy,
+    Message, PreservationPolicy, ResponseOutput, Role, StreamCodec, StreamCodecRegistry,
+    StreamTranslationState, TargetCapabilities, TranslationEngine, TranslationPolicy, Usage,
+    WireFormat,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -133,7 +133,7 @@ impl FormatCodec for MinimalCustomCodec {
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<DecodedRequest> {
         Ok(DecodedRequest {
-            request: ConversationRequest {
+            request: LlmRequest {
                 model: body
                     .get("model")
                     .and_then(Value::as_str)
@@ -145,7 +145,7 @@ impl FormatCodec for MinimalCustomCodec {
                         .unwrap_or_default(),
                 )],
                 preservation: capture_request_preservation(self.format(), body, policy),
-                ..ConversationRequest::default()
+                ..LlmRequest::default()
             },
             diagnostics: Vec::new(),
         })
@@ -153,7 +153,7 @@ impl FormatCodec for MinimalCustomCodec {
 
     fn encode_request(
         &self,
-        request: &ConversationRequest,
+        request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<EncodedRequest> {
         if let Some(body) = exact_preserved_request(&request.preservation, self.format(), policy) {
@@ -181,7 +181,7 @@ impl FormatCodec for MinimalCustomCodec {
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<DecodedResponse> {
         Ok(DecodedResponse {
-            response: ConversationResponse {
+            response: LlmResponse {
                 id: body
                     .get("id")
                     .and_then(Value::as_str)
@@ -203,7 +203,7 @@ impl FormatCodec for MinimalCustomCodec {
                 }],
                 usage: Usage::default(),
                 preservation: capture_response_preservation(self.format(), body, policy),
-                ..ConversationResponse::default()
+                ..LlmResponse::default()
             },
             diagnostics: Vec::new(),
         })
@@ -211,7 +211,7 @@ impl FormatCodec for MinimalCustomCodec {
 
     fn encode_response(
         &self,
-        response: &ConversationResponse,
+        response: &LlmResponse,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<EncodedResponse> {
         if let Some(body) = exact_preserved_response(&response.preservation, self.format(), policy)
@@ -254,9 +254,9 @@ impl StreamCodec for CustomStreamCodec {
         &self,
         _state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<ConversationStreamEvent> {
+    ) -> Vec<LlmStreamEvent> {
         match event.get("kind").and_then(Value::as_str) {
-            Some("start") => vec![ConversationStreamEvent::MessageStart {
+            Some("start") => vec![LlmStreamEvent::MessageStart {
                 id: event
                     .get("id")
                     .and_then(Value::as_str)
@@ -270,7 +270,7 @@ impl StreamCodec for CustomStreamCodec {
                 .get("text")
                 .and_then(Value::as_str)
                 .map(|text| {
-                    vec![ConversationStreamEvent::TextDelta {
+                    vec![LlmStreamEvent::TextDelta {
                         index: 0,
                         text: text.to_string(),
                     }]
@@ -283,10 +283,10 @@ impl StreamCodec for CustomStreamCodec {
     fn encode_event(
         &self,
         _state: &mut StreamTranslationState,
-        event: ConversationStreamEvent,
+        event: LlmStreamEvent,
     ) -> Vec<Value> {
         match event {
-            ConversationStreamEvent::TextDelta { text, .. } => {
+            LlmStreamEvent::TextDelta { text, .. } => {
                 vec![json!({"kind": "delta", "text": text})]
             }
             _ => Vec::new(),
