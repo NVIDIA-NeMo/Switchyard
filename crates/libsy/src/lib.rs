@@ -457,30 +457,56 @@ pub trait Algorithm: Send + Sync + 'static {
         ctx: Context,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
+        // Serve up to this many offloaded calls concurrently, so an algorithm that
+        // fans out (e.g. an ensemble) isn't serialized on the client.
+        const MAX_CONCURRENT_CALLS: usize = 10;
+
+        // Serve one offloaded call with its target's default client. A failed *model*
+        // call is forwarded to the algorithm via `respond`; this errors only on an
+        // infrastructure failure (no default client, or the promise was dropped).
+        async fn serve(call: CallLlmRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
+            let routed = call.get_routed()?.clone();
+            let client = routed.default_client.clone().ok_or_else(|| {
+                format!(
+                    "run: target '{}' has no client to serve the call",
+                    routed.decision.selected_model()
+                )
+            })?;
+            call.respond(client.call(routed).await)
+        }
+
         let stream = self.run_stream(ctx, request);
         tokio::pin!(stream);
+
         let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
-        while let Some(item) = stream.next().await {
-            match item? {
-                Step::CallLlm(call) => {
-                    // Serve the call with the target's default client, or error if the
-                    // routed target had none.
-                    let routed = call.get_routed()?.clone();
-                    let client = routed.default_client.clone().ok_or_else(|| {
-                        format!(
-                            "run: target '{}' has no client to serve the call",
-                            routed.decision.selected_model()
-                        )
-                    })?;
-                    call.respond(client.call(routed).await)?;
+        let mut in_flight = futures::stream::FuturesUnordered::new();
+        let mut final_response: Option<Response> = None;
+        let mut stream_open = true;
+
+        while stream_open || !in_flight.is_empty() {
+            tokio::select! {
+                // Surface a failed serve as soon as it completes.
+                Some(result) = in_flight.next(), if !in_flight.is_empty() => result?,
+                // Pull the next step, unless the stream ended or we're at the cap.
+                step = stream.next(), if stream_open && in_flight.len() < MAX_CONCURRENT_CALLS => {
+                    match step {
+                        None => stream_open = false,
+                        Some(item) => match item? {
+                            Step::CallLlm(call) => in_flight.push(serve(call)),
+                            Step::Decision(decision) => trace.push(decision),
+                            Step::ReturnToAgent(response) => {
+                                final_response = Some(response);
+                                stream_open = false;
+                            }
+                        },
+                    }
                 }
-                Step::Decision(decision) => trace.push(decision),
-                // The terminal step: return as soon as the algorithm finishes, rather
-                // than draining the stream until it closes.
-                Step::ReturnToAgent(response) => return Ok((trace, response)),
             }
         }
-        Err("run: stream ended without a final response".into())
+
+        final_response
+            .map(|response| (trace, response))
+            .ok_or_else(|| "run: stream ended without a final response".into())
     }
 }
 
