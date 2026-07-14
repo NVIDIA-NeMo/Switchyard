@@ -193,30 +193,37 @@ pub struct RoutedRequest {
 /// [`Driver::call_llm`] on the other side.
 pub struct CallLlmRequest {
     inner: DriverRequest,
+    routed: RoutedRequest,
 }
 
 impl CallLlmRequest {
-    /// Wrap a driver request whose payload is a [`RoutedRequest`].
+    /// Wrap a driver request whose payload is a [`RoutedRequest`]. Caches an owned copy
+    /// so the accessors are plain field reads.
     fn new(inner: DriverRequest) -> Self {
-        Self { inner }
+        // The payload is always a `RoutedRequest` (set by `Driver::call_llm`); a
+        // mismatch would be a libsy bug, not a runtime condition.
+        let routed = match inner.request::<RoutedRequest>() {
+            Ok(routed) => routed.clone(),
+            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
+        };
+        Self { inner, routed }
     }
 
     /// The routed request the host should serve. Its
     /// [`default_client`](RoutedRequest::default_client) serves the call by default,
-    /// and its `decision.selected_model()` names the model to hit. Errors if the
-    /// promise payload was not a [`RoutedRequest`].
-    pub fn get_routed(&self) -> Result<&RoutedRequest, BoxErr> {
-        self.inner.request::<RoutedRequest>()
+    /// and its `decision.selected_model()` names the model to hit.
+    pub fn get_routed(&self) -> &RoutedRequest {
+        &self.routed
     }
 
     /// The model request to perform (the [`Request`] inside the routed request).
-    pub fn get_request(&self) -> Result<&Request, BoxErr> {
-        Ok(&self.get_routed()?.request)
+    pub fn get_request(&self) -> &Request {
+        &self.get_routed().request
     }
 
     /// The decision that led to this call — its `selected_model()` is the model to hit.
-    pub fn get_decision(&self) -> Result<&dyn Decision, BoxErr> {
-        Ok(self.get_routed()?.decision.as_ref())
+    pub fn get_decision(&self) -> &dyn Decision {
+        self.get_routed().decision.as_ref()
     }
 
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
@@ -457,30 +464,56 @@ pub trait Algorithm: Send + Sync + 'static {
         ctx: Context,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
+        // Serve up to this many offloaded calls concurrently, so an algorithm that
+        // fans out (e.g. an ensemble) isn't serialized on the client.
+        const MAX_CONCURRENT_CALLS: usize = 10;
+
+        // Serve one offloaded call with its target's default client. A failed *model*
+        // call is forwarded to the algorithm via `respond`; this errors only on an
+        // infrastructure failure (no default client, or the promise was dropped).
+        async fn serve(call: CallLlmRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
+            let routed = call.get_routed().clone();
+            let client = routed.default_client.clone().ok_or_else(|| {
+                format!(
+                    "run: target '{}' has no client to serve the call",
+                    routed.decision.selected_model()
+                )
+            })?;
+            call.respond(client.call(routed).await)
+        }
+
         let stream = self.run_stream(ctx, request);
         tokio::pin!(stream);
+
         let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
-        while let Some(item) = stream.next().await {
-            match item? {
-                Step::CallLlm(call) => {
-                    // Serve the call with the target's default client, or error if the
-                    // routed target had none.
-                    let routed = call.get_routed()?.clone();
-                    let client = routed.default_client.clone().ok_or_else(|| {
-                        format!(
-                            "run: target '{}' has no client to serve the call",
-                            routed.decision.selected_model()
-                        )
-                    })?;
-                    call.respond(client.call(routed).await)?;
+        let mut in_flight = futures::stream::FuturesUnordered::new();
+        let mut final_response: Option<Response> = None;
+        let mut stream_open = true;
+
+        while stream_open || !in_flight.is_empty() {
+            tokio::select! {
+                // Surface a failed serve as soon as it completes.
+                Some(result) = in_flight.next(), if !in_flight.is_empty() => result?,
+                // Pull the next step, unless the stream ended or we're at the cap.
+                step = stream.next(), if stream_open && in_flight.len() < MAX_CONCURRENT_CALLS => {
+                    match step {
+                        None => stream_open = false,
+                        Some(item) => match item? {
+                            Step::CallLlm(call) => in_flight.push(serve(call)),
+                            Step::Decision(decision) => trace.push(decision),
+                            Step::ReturnToAgent(response) => {
+                                final_response = Some(response);
+                                stream_open = false;
+                            }
+                        },
+                    }
                 }
-                Step::Decision(decision) => trace.push(decision),
-                // The terminal step: return as soon as the algorithm finishes, rather
-                // than draining the stream until it closes.
-                Step::ReturnToAgent(response) => return Ok((trace, response)),
             }
         }
-        Err("run: stream ended without a final response".into())
+
+        final_response
+            .map(|response| (trace, response))
+            .ok_or_else(|| "run: stream ended without a final response".into())
     }
 }
 
@@ -604,7 +637,7 @@ mod tests {
                 Step::CallLlm(call) => {
                     saw_call = true;
                     // The decision rode along with the promise.
-                    assert_eq!(call.get_decision()?.selected_model(), "offload/model");
+                    assert_eq!(call.get_decision().selected_model(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
                         llm_response: LlmResponse {
@@ -644,7 +677,7 @@ mod tests {
         while let Some(step) = stream.next().await {
             match step? {
                 Step::CallLlm(call) => {
-                    let routed = call.get_routed()?.clone();
+                    let routed = call.get_routed().clone();
                     let client = routed
                         .default_client
                         .clone()
@@ -689,12 +722,12 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
     async fn requests_are_processed_in_parallel() -> Result<(), Box<dyn Error + Send + Sync>> {
         use std::time::Duration;
         use tokio::sync::Barrier;
 
-        const N: usize = 4;
+        const N: usize = 12;
 
         // A client that blocks until all N concurrent calls have arrived. If
         // requests were serialized (one algorithm behind a `Mutex`), only one
@@ -779,6 +812,145 @@ mod tests {
         }
 
         assert!(saw_error, "expected an error step");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_caps_concurrent_calls() -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use tokio::sync::{mpsc, Semaphore};
+
+        // Mirrors `run`'s private `MAX_CONCURRENT_CALLS`. The algorithm fans out more
+        // calls than the cap; only `CAP` should ever be in flight, the rest wait.
+        const CAP: usize = 10;
+        const TOTAL_CALLS: usize = CAP + 5;
+
+        // Records peak concurrency and holds each call open until the gate is released,
+        // so calls pile up and the cap can be observed.
+        struct ProbeClient {
+            current: Arc<AtomicUsize>,
+            max: Arc<AtomicUsize>,
+            entered: mpsc::UnboundedSender<()>,
+            gate: Arc<Semaphore>,
+        }
+
+        #[async_trait]
+        impl LlmClient for ProbeClient {
+            async fn call(
+                &self,
+                routed: RoutedRequest,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max.fetch_max(now, Ordering::SeqCst);
+                let _ = self.entered.send(());
+                // Block until the test opens the gate.
+                let permit = self.gate.acquire().await.map_err(|e| e.to_string())?;
+                drop(permit);
+                self.current.fetch_sub(1, Ordering::SeqCst);
+                Ok(Response {
+                    llm_response: LlmResponse {
+                        completion: routed.decision.selected_model().to_string(),
+                        raw_response: None,
+                    },
+                    metadata: None,
+                })
+            }
+        }
+
+        // Fans out `n` concurrent calls to one target.
+        struct FanOut {
+            n: usize,
+            target: LlmTarget,
+        }
+
+        #[async_trait]
+        impl Algorithm for FanOut {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let calls = (0..self.n).map(|i| {
+                    let driver = driver.clone();
+                    let target = self.target.clone();
+                    async move {
+                        let decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                            model: format!("m{i}"),
+                        });
+                        driver.call_llm_target(&target, request(), decision).await
+                    }
+                });
+                futures::future::join_all(calls).await;
+                Ok(Response {
+                    llm_response: LlmResponse {
+                        completion: "done".to_string(),
+                        raw_response: None,
+                    },
+                    metadata: None,
+                })
+            }
+
+            async fn process_signals(
+                self: Arc<Self>,
+                _signals: Signals,
+            ) -> Result<(), Box<dyn Error + Send + Sync>> {
+                Ok(())
+            }
+        }
+
+        let current = Arc::new(AtomicUsize::new(0));
+        let max = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let gate = Arc::new(Semaphore::new(0)); // starts closed
+
+        let client = Arc::new(ProbeClient {
+            current: current.clone(),
+            max: max.clone(),
+            entered: entered_tx,
+            gate: gate.clone(),
+        }) as Arc<dyn LlmClient>;
+        let target = LlmTarget {
+            semantic_name: "m".to_string(),
+            llm_client: Some(client),
+        };
+
+        let algo: Arc<dyn Algorithm> = Arc::new(FanOut {
+            n: TOTAL_CALLS,
+            target,
+        });
+        let handle = tokio::spawn(async move { algo.run(Context::default(), request()).await });
+
+        // Exactly `CAP` calls should enter; each `recv` times out into an error if the
+        // run dispatched fewer than the cap.
+        for _ in 0..CAP {
+            tokio::time::timeout(Duration::from_secs(5), entered_rx.recv())
+                .await
+                .map_err(|_| "timed out waiting for a call to enter")?;
+        }
+        assert_eq!(
+            current.load(Ordering::SeqCst),
+            CAP,
+            "exactly the cap should be in flight"
+        );
+        // No further call enters while the cap is saturated — extra steps wait for capacity.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), entered_rx.recv())
+                .await
+                .is_err(),
+            "a call beyond the cap entered while {CAP} were already in flight"
+        );
+
+        // Release the gate; every call completes and the run finishes.
+        gate.add_permits(TOTAL_CALLS);
+        let (_trace, response) = tokio::time::timeout(Duration::from_secs(5), handle).await???;
+        assert_eq!(response.llm_response.completion, "done");
+        assert_eq!(
+            max.load(Ordering::SeqCst),
+            CAP,
+            "peak in-flight should equal the cap"
+        );
         Ok(())
     }
 }

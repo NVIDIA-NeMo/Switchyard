@@ -78,7 +78,7 @@ impl ResearchAgent {
                 match update? {
                     Step::CallLlm(call) => {
                         // Perform the model call the algorithm asked for, then fulfill.
-                        let response = call_model(call.get_decision()?.selected_model()).await;
+                        let response = call_model(call.get_decision().selected_model()).await;
                         call.respond(Ok(response))?;
                     }
                     // Decisions stream in as the algorithm makes them.

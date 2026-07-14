@@ -689,13 +689,12 @@ mod tests {
         use std::time::Duration;
         use tokio::sync::Barrier;
 
-        // Candidate calls block on a shared barrier; judge calls do not. Each session
-        // serves its offloaded candidate calls one at a time (the step stream is
-        // bounded), so a session has exactly one candidate call in flight at once. The
-        // two sessions run concurrently, so the barrier releases only when both have a
-        // candidate call pending. If the sessions were serialized, at most one call
-        // could be pending, the barrier would never reach 2, and the test would time
-        // out instead of passing.
+        // Candidate calls block on a shared barrier; judge calls do not. `run` serves
+        // offloaded calls concurrently, so each session has both its candidate calls in
+        // flight at once — 2 sessions x 2 candidates = 4 concurrent candidate calls. The
+        // barrier releases only when all four have arrived; if calls were serialized
+        // (within a session or across sessions), it would never reach 4 and the test
+        // would time out instead of passing.
         struct BarrierClient {
             barrier: Arc<Barrier>,
             judge_model: String,
@@ -727,8 +726,9 @@ mod tests {
             }
         }
 
+        const CANDIDATES_PER_SESSION: usize = 2;
         const SESSIONS: usize = 2;
-        let barrier = Arc::new(Barrier::new(SESSIONS));
+        let barrier = Arc::new(Barrier::new(CANDIDATES_PER_SESSION * SESSIONS));
         let client = Arc::new(BarrierClient {
             barrier: barrier.clone(),
             judge_model: "judge/haiku".to_string(),
