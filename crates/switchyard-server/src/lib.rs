@@ -594,18 +594,26 @@ fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> Str
     push_line(&mut output, format!("    curl -s {local_url}/health"));
     push_line(&mut output, format!("    curl -s {local_url}/v1/models"));
     if let Some(entry) = entries.first() {
-        let payload = json!({
+        let chat_payload = json!({
             "model": entry.id.as_str(),
-            "messages": [{"role": "user", "content": "Say ok"}],
+            "messages": [{"role": "user", "content": "Say OK"}],
             "max_tokens": 256, // Space for thinking tokens
         });
         push_line(
             &mut output,
-            format!(
-                "    curl -s {local_url}/v1/chat/completions -H 'content-type: application/json' -d '{}'",
-                payload
-            ),
+            format!("    curl -s {local_url}/v1/chat/completions -H 'content-type: application/json' -d '{chat_payload}'")
         );
+        push_line(
+            &mut output,
+            format!("    curl -s {local_url}/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -d '{chat_payload}'")
+        );
+
+        let responses_payload = json!({
+            "model": entry.id.as_str(),
+            "max_output_tokens": 256,
+            "input": "Say OK",
+        });
+        push_line(&mut output, format!("    curl -s {local_url}/v1/responses -H 'content-type: application/json' -d '{responses_payload}'"));
     }
     if options.is_tls() {
         push_line(
