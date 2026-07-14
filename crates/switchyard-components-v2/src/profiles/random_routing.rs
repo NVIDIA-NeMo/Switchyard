@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use switchyard_components::request_processors::{
     RandomRoutingDecision, RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier,
 };
-use switchyard_components::stats::usage_from_body;
 use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result, SwitchyardError};
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats_recording::record_usage_or_wrap_stream;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -167,15 +167,13 @@ impl Profile for RandomRoutingProfile {
             Some(backend_latency_ms),
             Some(decision.tier.as_str()),
         )?;
-        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-        let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
+        let response = record_usage_or_wrap_stream(
+            &self.stats,
             decision.selected_model.as_str(),
-            usage,
-            Some(total_latency_ms),
-            Some(routing_overhead_ms),
             Some(decision.tier.as_str()),
+            profile_started_at,
+            backend_latency_ms,
+            response,
         )?;
         let response = self.rprocess(&processed, response).await?;
         Ok(ProfileResponse::with_routing_metadata(
@@ -195,8 +193,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use futures_util::StreamExt;
     use serde_json::{json, Value};
-    use switchyard_core::{BackendFormat, ChatRequest, LlmTargetId, ModelId, SwitchyardError};
+    use switchyard_core::{
+        BackendFormat, ChatRequest, LlmTargetId, ModelId, StreamEvent, SwitchyardError,
+    };
 
     use crate::backend::{ProfileBackend, TargetBackend};
     use crate::RequestMetadata;
@@ -213,6 +214,8 @@ mod tests {
         name: &'static str,
         calls: Arc<Mutex<Vec<ObservedCall>>>,
     }
+
+    struct StreamingUsageBackend;
 
     #[async_trait]
     impl ProfileBackend for TestBackend {
@@ -232,6 +235,27 @@ mod tests {
                     "completion_tokens": 7,
                 },
             })))
+        }
+    }
+
+    #[async_trait]
+    impl ProfileBackend for StreamingUsageBackend {
+        async fn call(&self, _request: &ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse::OpenAiStream(Box::pin(
+                futures_util::stream::iter([
+                    Ok(StreamEvent::Json(json!({
+                        "choices": [{"delta": {"content": "ok"}}],
+                    }))),
+                    Ok(StreamEvent::Json(json!({
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 3,
+                            "completion_tokens": 4,
+                            "total_tokens": 7,
+                        },
+                    }))),
+                ]),
+            )))
         }
     }
 
@@ -382,6 +406,60 @@ mod tests {
             .ok_or_else(|| SwitchyardError::Other("strong tier stats should be present".into()))?;
         assert_eq!(tier.calls, 1);
         assert_eq!(tier.model, "frontier/model");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_records_streaming_usage_with_selected_random_tier() -> Result<()> {
+        let strong = target("strong", "frontier/model")?;
+        let weak = target("weak", "cheap/model")?;
+        let router_config = RandomRoutingProcessorConfig::new(strong.clone(), weak.clone())
+            .with_strong_probability(0.0)?
+            .with_rng_seed(Some(7));
+        let profile = RandomRoutingProfile {
+            router: RandomRoutingEngine::new(router_config)?,
+            strong_backend: TargetBackend::new(
+                strong,
+                Arc::new(TestBackend {
+                    name: "strong-backend",
+                    calls: Arc::new(Mutex::new(Vec::new())),
+                }),
+            ),
+            weak_backend: TargetBackend::new(weak, Arc::new(StreamingUsageBackend)),
+            stats: StatsAccumulator::new(),
+        };
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [],
+                "stream": true,
+            }))))
+            .await?;
+        let ChatResponse::OpenAiStream(mut stream) = response.response else {
+            return Err(SwitchyardError::Other("expected streaming response".into()));
+        };
+        while let Some(event) = stream.next().await {
+            event?;
+        }
+
+        let snapshot = profile.stats.snapshot()?;
+        assert_eq!(snapshot.total_requests, 1);
+        assert_eq!(snapshot.total_tokens.prompt, 3);
+        assert_eq!(snapshot.total_tokens.completion, 4);
+        assert_eq!(snapshot.total_tokens.total, 7);
+        let model = snapshot
+            .models
+            .get("cheap/model")
+            .ok_or_else(|| SwitchyardError::Other("weak model stats should be present".into()))?;
+        assert_eq!(model.calls, 1);
+        assert_eq!(model.tier.as_deref(), Some("weak"));
+        assert_eq!(model.total_tokens, 7);
+        let tier = snapshot
+            .tiers
+            .get("weak")
+            .ok_or_else(|| SwitchyardError::Other("weak tier stats should be present".into()))?;
+        assert_eq!(tier.total_tokens, 7);
         Ok(())
     }
 

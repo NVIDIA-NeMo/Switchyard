@@ -13,6 +13,7 @@ mod config;
 mod profile;
 pub mod profiles;
 mod stats;
+mod stats_recording;
 
 pub use config::{
     parse_profile_config_path, parse_profile_config_str, parse_profile_config_str_with_env_lookup,

@@ -1585,8 +1585,10 @@ dependencies = [
 name = "switchyard-components-v2"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "futures-core",
+ "futures-util",
  "parking_lot",
  "rand 0.8.6",
  "reqwest",

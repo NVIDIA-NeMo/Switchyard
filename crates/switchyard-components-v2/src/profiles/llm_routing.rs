@@ -17,6 +17,7 @@ use switchyard_core::{
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats_recording::record_usage_or_wrap_stream;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -421,25 +422,23 @@ impl LlmRoutingProfile {
     fn record_success(
         &self,
         decision: &LlmRoutingDecision,
-        response: &ChatResponse,
-        total_latency_ms: f64,
+        response: ChatResponse,
+        profile_started_at: Instant,
         backend_latency_ms: f64,
-    ) -> Result<()> {
+    ) -> Result<ChatResponse> {
         self.stats.record_success(
             decision.selected_model.as_str(),
             Some(backend_latency_ms),
             Some(decision.tier.as_str()),
         )?;
-        let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
+        record_usage_or_wrap_stream(
+            &self.stats,
             decision.selected_model.as_str(),
-            usage,
-            Some(total_latency_ms),
-            Some(routing_overhead_ms),
             Some(decision.tier.as_str()),
-        )?;
-        Ok(())
+            profile_started_at,
+            backend_latency_ms,
+            response,
+        )
     }
 
     fn record_error(&self, decision: &LlmRoutingDecision) -> Result<()> {
@@ -489,11 +488,10 @@ impl Profile for LlmRoutingProfile {
         let (first_result, first_backend_latency_ms) = self.call_selected(&processed).await;
         match first_result {
             Ok(response) => {
-                let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                self.record_success(
+                let response = self.record_success(
                     &processed.decision,
-                    &response,
-                    total_latency_ms,
+                    response,
+                    profile_started_at,
                     first_backend_latency_ms,
                 )?;
                 let response = self.rprocess(&processed, response).await?;
@@ -507,11 +505,10 @@ impl Profile for LlmRoutingProfile {
                 let (retry_result, retry_backend_latency_ms) = self.call_selected(&retry).await;
                 match retry_result {
                     Ok(response) => {
-                        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                        self.record_success(
+                        let response = self.record_success(
                             &retry.decision,
-                            &response,
-                            total_latency_ms,
+                            response,
+                            profile_started_at,
                             retry_backend_latency_ms,
                         )?;
                         let response = self.rprocess(&retry, response).await?;
