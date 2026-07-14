@@ -17,6 +17,7 @@ use switchyard_core::{ChatRequest, ChatResponse, LlmTarget, LlmTargetId, Result,
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats_recording::record_usage_or_wrap_stream;
 use crate::{
     profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse,
     RoutingMetadata,
@@ -483,27 +484,26 @@ impl StageRouterProfile {
     fn record_success(
         &self,
         decision: &StageRouterDecision,
-        response: &ChatResponse,
-        total_latency_ms: f64,
+        response: ChatResponse,
+        profile_started_at: Instant,
         backend_latency_ms: f64,
-    ) -> Result<()> {
-        if let Some(stats) = self.stats_handle() {
-            stats.record_success(
-                decision.selected_model.as_str(),
-                Some(backend_latency_ms),
-                Some(decision.tier.as_str()),
-            )?;
-            let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-            let usage = response.body().map(usage_from_body).unwrap_or_default();
-            stats.record_usage_after_success_attribution(
-                decision.selected_model.as_str(),
-                usage,
-                Some(total_latency_ms),
-                Some(routing_overhead_ms),
-                Some(decision.tier.as_str()),
-            )?;
-        }
-        Ok(())
+    ) -> Result<ChatResponse> {
+        let Some(stats) = self.stats_handle() else {
+            return Ok(response);
+        };
+        stats.record_success(
+            decision.selected_model.as_str(),
+            Some(backend_latency_ms),
+            Some(decision.tier.as_str()),
+        )?;
+        record_usage_or_wrap_stream(
+            stats,
+            decision.selected_model.as_str(),
+            Some(decision.tier.as_str()),
+            profile_started_at,
+            backend_latency_ms,
+            response,
+        )
     }
 
     fn record_error(&self, decision: &StageRouterDecision) -> Result<()> {
@@ -561,11 +561,10 @@ impl Profile for StageRouterProfile {
         let (first_result, first_backend_latency_ms) = self.call_selected(&processed).await;
         match first_result {
             Ok(response) => {
-                let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                self.record_success(
+                let response = self.record_success(
                     &processed.decision,
-                    &response,
-                    total_latency_ms,
+                    response,
+                    profile_started_at,
                     first_backend_latency_ms,
                 )?;
                 let response = self.rprocess(&processed, response).await?;
@@ -579,11 +578,10 @@ impl Profile for StageRouterProfile {
                 let (retry_result, retry_backend_latency_ms) = self.call_selected(&retry).await;
                 match retry_result {
                     Ok(response) => {
-                        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-                        self.record_success(
+                        let response = self.record_success(
                             &retry.decision,
-                            &response,
-                            total_latency_ms,
+                            response,
+                            profile_started_at,
                             retry_backend_latency_ms,
                         )?;
                         let response = self.rprocess(&retry, response).await?;

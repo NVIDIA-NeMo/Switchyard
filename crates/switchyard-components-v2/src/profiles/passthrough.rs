@@ -6,12 +6,12 @@
 use std::time::Instant;
 
 use async_trait::async_trait;
-use switchyard_components::stats::usage_from_body;
 use switchyard_components::StatsAccumulator;
 use switchyard_core::{ChatResponse, LlmTarget, Result};
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
+use crate::stats_recording::record_usage_or_wrap_stream;
 use crate::{profile_config, Profile, ProfileConfig, ProfileHooks, ProfileInput, ProfileResponse};
 
 /// Config for the flatter passthrough profile.
@@ -85,15 +85,13 @@ impl Profile for PassthroughProfile {
         let backend_latency_ms = backend_started_at.elapsed().as_secs_f64() * 1000.0;
         self.stats
             .record_success(target_model.to_string(), Some(backend_latency_ms), None)?;
-        let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
-        let routing_overhead_ms = (total_latency_ms - backend_latency_ms).max(0.0);
-        let usage = response.body().map(usage_from_body).unwrap_or_default();
-        self.stats.record_usage_after_success_attribution(
-            target_model.to_string(),
-            usage,
-            Some(total_latency_ms),
-            Some(routing_overhead_ms),
+        let response = record_usage_or_wrap_stream(
+            &self.stats,
+            target_model.as_str(),
             None,
+            profile_started_at,
+            backend_latency_ms,
+            response,
         )?;
         let response = self.rprocess(&processed, response).await?;
         Ok(ProfileResponse::from(response))
