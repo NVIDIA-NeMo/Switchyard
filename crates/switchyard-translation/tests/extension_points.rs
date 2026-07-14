@@ -13,10 +13,10 @@ use switchyard_translation::util::{
     exact_preserved_response,
 };
 use switchyard_translation::{
-    ConversationStreamEvent, FormatId, FormatRegistry, LlmRequest, LlmResponse,
-    LossyConversionPolicy, Message, PreservationPolicy, ResponseOutput, Role, StreamCodec,
-    StreamCodecRegistry, StreamTranslationState, TargetCapabilities, TranslationEngine,
-    TranslationPolicy, Usage, WireFormat,
+    FormatId, FormatRegistry, LlmRequest, LlmResponse, LlmStreamEvent, LossyConversionPolicy,
+    Message, PreservationPolicy, ResponseOutput, Role, StreamCodec, StreamCodecRegistry,
+    StreamTranslationState, TargetCapabilities, TranslationEngine, TranslationPolicy, Usage,
+    WireFormat,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -254,9 +254,9 @@ impl StreamCodec for CustomStreamCodec {
         &self,
         _state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<ConversationStreamEvent> {
+    ) -> Vec<LlmStreamEvent> {
         match event.get("kind").and_then(Value::as_str) {
-            Some("start") => vec![ConversationStreamEvent::MessageStart {
+            Some("start") => vec![LlmStreamEvent::MessageStart {
                 id: event
                     .get("id")
                     .and_then(Value::as_str)
@@ -270,7 +270,7 @@ impl StreamCodec for CustomStreamCodec {
                 .get("text")
                 .and_then(Value::as_str)
                 .map(|text| {
-                    vec![ConversationStreamEvent::TextDelta {
+                    vec![LlmStreamEvent::TextDelta {
                         index: 0,
                         text: text.to_string(),
                     }]
@@ -283,10 +283,10 @@ impl StreamCodec for CustomStreamCodec {
     fn encode_event(
         &self,
         _state: &mut StreamTranslationState,
-        event: ConversationStreamEvent,
+        event: LlmStreamEvent,
     ) -> Vec<Value> {
         match event {
-            ConversationStreamEvent::TextDelta { text, .. } => {
+            LlmStreamEvent::TextDelta { text, .. } => {
                 vec![json!({"kind": "delta", "text": text})]
             }
             _ => Vec::new(),

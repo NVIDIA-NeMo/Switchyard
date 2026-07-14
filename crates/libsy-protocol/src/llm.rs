@@ -229,6 +229,36 @@ pub struct Usage {
     pub reasoning_tokens: Option<u64>,
 }
 
+/// Provider-neutral event used between stream decoders and encoders.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum LlmStreamEvent {
+    MessageStart {
+        id: Option<String>,
+        model: Option<String>,
+    },
+    TextDelta {
+        index: usize,
+        text: String,
+    },
+    ReasoningDelta {
+        index: usize,
+        text: String,
+    },
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments_delta: Option<String>,
+    },
+    Usage(Usage),
+    MessageStop {
+        reason: Option<String>,
+    },
+    Error {
+        message: String,
+    },
+}
+
 /// Normalized reason a model stopped producing output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum StopReason {
