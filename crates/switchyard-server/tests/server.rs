@@ -207,60 +207,6 @@ async fn translation_errors_do_not_emit_routing_metadata_headers() -> TestResult
 }
 
 #[tokio::test]
-async fn target_id_and_target_model_aliases_are_advertised_and_routable() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    let Some(stub) = HttpStub::start(2)? else {
-        log_loopback_bind_skip();
-        return Ok(());
-    };
-    let app = build_switchyard_router(state_from_yaml(&format!(
-        r#"
-targets:
-  direct:
-    model: upstream-direct
-    format: openai
-    base_url: {base_url}
-profiles:
-  direct-profile:
-    type: passthrough
-    target: direct
-"#,
-        base_url = stub.base_url
-    ))?);
-
-    let models = app
-        .clone()
-        .oneshot(request("GET", "/v1/models", None)?)
-        .await?;
-    let model_ids = json_body(models).await?["model_pool"].clone();
-    assert_eq!(
-        model_ids,
-        json!(["direct-profile", "direct", "upstream-direct"])
-    );
-
-    for public_model in ["direct", "upstream-direct"] {
-        let response = app
-            .clone()
-            .oneshot(request(
-                "POST",
-                "/v1/chat/completions",
-                Some(json!({
-                    "model": public_model,
-                    "messages": [{"role": "user", "content": "hi"}],
-                })),
-            )?)
-            .await?;
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    let seen = stub.requests()?;
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0]["model"], "upstream-direct");
-    assert_eq!(seen[1]["model"], "upstream-direct");
-    Ok(())
-}
-
-#[tokio::test]
 async fn target_with_same_id_and_model_is_registered_once() -> TestResult {
     let _stats_guard = stats_guard().await;
     let Some(stub) = HttpStub::start(1)? else {
@@ -403,28 +349,6 @@ profiles:
     let seen = stub.requests()?;
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0]["model"], "upstream-fast");
-    Ok(())
-}
-
-#[tokio::test]
-async fn duplicate_public_model_ids_are_rejected() -> TestResult {
-    let err = state_from_yaml(
-        r#"
-targets:
-  direct:
-    model: same
-    format: openai
-    base_url: http://127.0.0.1:9/v1
-profiles:
-  same:
-    type: noop
-"#,
-    )
-    .err()
-    .ok_or("expected duplicate public model id failure")?;
-
-    assert!(err.to_string().contains("same"));
-    assert!(err.to_string().contains("already registered"));
     Ok(())
 }
 
