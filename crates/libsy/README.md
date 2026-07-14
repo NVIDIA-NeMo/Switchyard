@@ -80,6 +80,7 @@ impl LlmClient for MyClient {
         let model = routed.decision.selected_model();   // the routed target — map it to a provider id
         // routed.request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
+        let completion = String::from("provider response text");
         Ok(Response {
             llm_response: ConversationResponse {
                 outputs: vec![ResponseOutput {
@@ -179,6 +180,8 @@ impl Algorithm for LlmClassifierOrchAlgo {
         driver.info(classify_decision.clone()).await?;
         let classify_response =
             driver.call_llm_target(&classifier, classify_req, classify_decision).await?;
+        // Abbreviated: this assumes a text score in the first output block. The full
+        // implementation scans all outputs and text-like blocks.
         let score = classify_response.llm_response.first_output()
             .and_then(|output| output.content.first())
             .and_then(|block| match block {
