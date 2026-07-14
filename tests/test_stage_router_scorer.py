@@ -5,13 +5,19 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from switchyard.lib.processors.stage_router.dimensions import (
     CodingAgentDimensions,
     from_signal,
 )
-from switchyard.lib.processors.stage_router.scorer import DEFAULT_WEIGHTS, score
+from switchyard.lib.processors.stage_router.scorer import (
+    _SCORE_GAIN,
+    DEFAULT_WEIGHTS,
+    score,
+)
 from switchyard_rust.components import DimensionCollector
 from switchyard_rust.core import ChatRequest, ProxyContext
 
@@ -45,24 +51,61 @@ def test_critical_severity_pushes_toward_capable():
     assert result.confidence == abs(result.score)
 
 
-def test_tests_passed_pushes_toward_efficient():
+def test_tests_passed_is_not_scored():
+    """tests_passed is routed to the picker's default tier, not scored here."""
     dims = _zero_dimensions()
     dims = CodingAgentDimensions(**{**dims.__dict__, "tests_passed": 1.0})
     result = score(dims)
-    assert result.score < 0
+    assert result.score == 0.0
 
 
-def test_score_is_clipped_to_unit_interval():
-    """Out-of-range weighted sums must be clamped to [-1, 1]."""
+def test_progress_signal_points_efficient():
+    """A progress signal scores negative (→EFFICIENT), picker-independent."""
+    dims = CodingAgentDimensions(
+        **{**_zero_dimensions().__dict__, "recent_write_intensity": 1.0}
+    )
+    assert score(dims).score < 0
+
+
+def test_wrong_signal_points_capable():
+    """A wrong signal scores positive (→CAPABLE), picker-independent."""
+    dims = CodingAgentDimensions(
+        **{**_zero_dimensions().__dict__, "stuck_exploring": 1.0}
+    )
+    assert score(dims).score > 0
+
+
+def test_tanh_spread_and_monotonic_confidence():
+    """Raw sum is tanh-squashed: one signal spreads into the range, more agreeing
+    signals raise confidence monotonically, and realistic turns never saturate.
+    """
+    one = score(
+        CodingAgentDimensions(**{**_zero_dimensions().__dict__, "stuck_exploring": 1.0})
+    )
+    assert one.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))  # tanh(gain*unit)
+    assert one.score > 0                          # wrong signal → CAPABLE
+
+    two = score(
+        CodingAgentDimensions(**{
+            **_zero_dimensions().__dict__,
+            "recent_write_intensity": 1.0,
+            "pure_bash_intensity": 1.0,
+        })
+    )
+    assert two.confidence > one.confidence        # more signals → more confident
+    assert two.score < 0                          # progress → EFFICIENT
+    assert abs(two.score) < 1.0                   # realistic turns never saturate
+
+
+def test_extreme_weights_saturate_via_tanh():
+    """A large raw sum saturates smoothly to ±1 through tanh (no hard clip)."""
     dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    # Force overflow on both sides: a 5.0-magnitude weight × 1.0 dimension
-    # yields raw ±5.0, which must clip to ±1.0 with confidence 1.0.
-    high = score(dims, weights={"severity": 5.0})
-    assert high.score == 1.0
-    assert high.confidence == 1.0
+    high = score(dims, weights={"severity": 5.0})   # raw 5.0 → tanh(25) ≈ 1.0
+    assert high.score == pytest.approx(1.0)
+    assert high.confidence == pytest.approx(1.0)
     low = score(dims, weights={"severity": -5.0})
-    assert low.score == -1.0
-    assert low.confidence == 1.0
+    assert low.score == pytest.approx(-1.0)
+    assert low.confidence == pytest.approx(1.0)
 
 
 def test_custom_weights_can_invert_decision():
@@ -74,22 +117,23 @@ def test_custom_weights_can_invert_decision():
     assert inverted.score < 0
 
 
-def test_contributions_sum_matches_unclipped_score():
-    """When no clipping fires, ``sum(contributions) == score`` exactly."""
-    dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "tests_passed": 1.0})
+def test_contributions_are_raw_presquash():
+    """``contributions`` are pre-squash: they sum to raw, score = tanh(gain*raw)."""
+    dims = CodingAgentDimensions(
+        **{**_zero_dimensions().__dict__, "recent_write_intensity": 0.5}
+    )
     result = score(dims)
-    expected = sum(result.contributions.values())
-    assert abs(expected - result.score) < 1e-9
+    raw = sum(result.contributions.values())
+    assert result.score == pytest.approx(math.tanh(_SCORE_GAIN * raw))
 
 
-def test_contributions_can_exceed_clipped_score():
-    """When clipping fires, ``sum(contributions)`` may exceed ``|score|``."""
+def test_contributions_exceed_squashed_score():
+    """A large raw sum stays unsquashed in contributions while score saturates."""
     dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    # Raw = 5.0 → clipped to 1.0; contributions remain unclipped.
     result = score(dims, weights={"severity": 5.0})
     raw = sum(result.contributions.values())
     assert raw == 5.0
-    assert result.score == 1.0
+    assert result.score == pytest.approx(1.0)
     assert raw > result.score
 
 

@@ -46,19 +46,31 @@ class CodingAgentDimensions:
 def from_signal(signal: ToolResultSignal) -> CodingAgentDimensions:
     """Project a :class:`ToolResultSignal` onto the normalised dimension space.
 
-    Note: `read_count` and `turn_depth` are still read from `signal` for the
-    `stuck_exploring` / `no_progress` boolean gates, but their normalised
-    intensities aren't exposed as separate dimensions because nothing in
+    Note: `turn_depth`, `recent_read_count`, `recent_write_count`, `write_count`,
+    and `edit_count` are read from `signal` for the `stuck_exploring` /
+    `no_progress` boolean gates, but their normalised intensities aren't
+    exposed as separate dimensions because nothing in
     :data:`DEFAULT_WEIGHTS` keys off them.
     """
     total_tool_ops = signal.write_count + signal.edit_count + signal.read_count
     recent_tool_ops = signal.recent_write_count + signal.recent_edit_count + signal.recent_read_count
+    # stuck_exploring: a *recent* read-stall — spinning on reads without writing
+    # in the recent window. Windowed, so it drops the moment a write lands.
     stuck = (
         signal.turn_depth >= 8
-        and signal.write_count <= 1
-        and signal.read_count >= 5
+        and signal.recent_write_count == 0
+        and signal.recent_read_count >= 2
     )
-    no_progress = signal.turn_depth > 60 and signal.write_count == 0
+    # no_progress: a *whole-task* dead-end — deep into the run having produced
+    # nothing at all (no write or edit ever). Distinct from stuck_exploring (which
+    # only looks at the recent window), so the two are independent corroborating
+    # signals rather than the same condition counted twice. Cumulative by
+    # necessity to capture "the whole task", but self-releases on the first write.
+    no_progress = (
+        signal.turn_depth > 30
+        and signal.write_count == 0
+        and signal.edit_count == 0
+    )
     return CodingAgentDimensions(
         severity=float(signal.severity),
         no_error_streak_intensity=_saturating(signal.no_error_streak, scale=3.0),

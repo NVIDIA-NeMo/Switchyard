@@ -31,10 +31,6 @@ CAPABLE: int = 1
 # diverges across deployments.
 #: Force CAPABLE when the latest tool result hit a CRITICAL severity pattern.
 SEVERITY_CRITICAL: float = 1.0
-#: Force EFFICIENT when `tests_passed` AND the agent has been working long enough
-#: (turn_depth) with few writes — interpreted as the run already settled.
-CLEAN_TESTS_MIN_TURN_DEPTH: int = 10
-CLEAN_TESTS_MAX_WRITES: int = 1
 
 
 async def pick_capable_first(
@@ -93,7 +89,15 @@ async def _pick(
     if override is not None:
         return _record(ctx, decision_log, "override", override)
 
+    # Settled run: a recent test-pass backed by a recent code change (write or
+    # edit) is safe to run on the cheap tier — EFFICIENT for both pickers.
+    # Windowed, so it lapses once the run moves on.
+    if signal.tests_passed and (signal.recent_write_count + signal.recent_edit_count) >= 1:
+        return _record(ctx, decision_log, "tests_passed", EFFICIENT)
+
     dimensions = from_signal(signal)
+    # Fixed weights; confidence_threshold is the corroboration dial
+    # (signals-to-clear = threshold / signal unit).
     result = score(dimensions, weights=weights)
     if result.confidence >= confidence_threshold:
         tier = CAPABLE if result.score > 0 else EFFICIENT
@@ -127,15 +131,13 @@ def _record(
 
 
 def _apply_overrides(signal: "ToolResultSignal") -> int | None:
-    """Non-negotiable, signal-derived shortcuts that bypass the scorer."""
+    """Non-negotiable, signal-derived shortcuts that bypass the scorer.
+
+    A CRITICAL severity always forces CAPABLE; it outranks the settled-run
+    (`tests_passed`) shortcut handled in :func:`_pick`.
+    """
     if signal.severity >= SEVERITY_CRITICAL:
         return CAPABLE
-    if (
-        signal.tests_passed
-        and signal.turn_depth >= CLEAN_TESTS_MIN_TURN_DEPTH
-        and signal.write_count <= CLEAN_TESTS_MAX_WRITES
-    ):
-        return EFFICIENT
     return None
 
 

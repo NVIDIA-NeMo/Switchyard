@@ -89,11 +89,14 @@ async def test_critical_severity_overrides_to_capable():
 
 
 @pytest.mark.asyncio
-async def test_tests_passed_with_edits_drops_to_efficient():
+async def test_tests_passed_with_edits_routes_to_efficient():
+    """A settled run (recent test-pass + recent edit) is safe on the cheap tier."""
     messages = [_msg_tool_call("Edit")] * 3 + [_msg_tool_result("all tests passed")] * 3
     messages += [{"role": "user", "content": "ok continue"}] * 12
     ctx = await _ctx(messages)
     assert await pick_capable_first(ctx, confidence_threshold=0.7) == EFFICIENT
+    ctx = await _ctx(messages)
+    assert await pick_efficient_first(ctx, confidence_threshold=0.7) == EFFICIENT
 
 
 @pytest.mark.asyncio
@@ -147,27 +150,34 @@ async def test_threshold_zero_skips_classifier_entirely():
 
 @pytest.mark.asyncio
 async def test_dimensions_branch_routes_by_scorer_sign():
-    """Confident scorer verdict (≥ threshold) bypasses the classifier.
+    """A corroborated scorer verdict (≥ threshold) bypasses the classifier.
 
-    A single TodoWrite in the recent window pushes ``planning_active`` to
-    1.0 (weight -0.70) — that alone clears the 0.7 confidence threshold,
-    so ``_pick`` takes the dimensions branch and returns EFFICIENT by sign
-    without consulting the classifier.
+    No single signal clears threshold (weights are corroborative). A long,
+    write-free read spree maxes three wrong signals at once — ``stuck_exploring``,
+    ``no_progress`` (turn_depth > 60), and ``severity`` (the last result errors) —
+    which together clear the threshold, so ``_pick`` takes the dimensions branch
+    and routes to CAPABLE by sign without consulting the classifier.
     """
     log = StageRouterDecisionLog()
-    classifier = _stub_classifier(tier="capable")  # would push CAPABLE if reached
-    ctx = await _ctx([
-        _msg_tool_call("TodoWrite"),
-        _msg_tool_result("ok"),
-        {"role": "user", "content": "next"},
-    ])
+    classifier = _stub_classifier(tier="efficient")  # would push EFFICIENT if reached
+    read_spree = []
+    for i in range(40):
+        read_spree.append(_msg_tool_call("Read"))
+        read_spree.append(_msg_tool_result(
+            "bash: foo: command not found" if i == 39 else "file contents"
+        ))
+    read_spree.append({"role": "user", "content": "next"})
+    ctx = await _ctx(read_spree)
     tier = await pick_capable_first(
-        ctx, confidence_threshold=0.7, classifier=classifier, decision_log=log,
+        ctx, confidence_threshold=0.20, classifier=classifier, decision_log=log,
     )
     assert ctx.metadata[CONTEXT_KEY] == "dimensions"
-    assert tier == EFFICIENT  # negative score → EFFICIENT regardless of capable-first fallback
+    assert tier == CAPABLE  # wrong signals → CAPABLE by sign, regardless of picker
     assert classifier._client.calls == 0  # type: ignore[attr-defined]
     assert log.snapshot()["dimensions"] == 1
+    # efficient_first routes the same corroborated wrong verdict to CAPABLE too.
+    ctx = await _ctx(read_spree)
+    assert await pick_efficient_first(ctx, confidence_threshold=0.20) == CAPABLE
 
 
 @pytest.mark.asyncio
