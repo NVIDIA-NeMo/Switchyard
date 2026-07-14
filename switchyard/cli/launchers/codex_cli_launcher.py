@@ -47,6 +47,7 @@ from switchyard.cli.launchers.codex_model_catalog import (
 from switchyard.cli.launchers.launch_intake_config import (
     LaunchIntakeConfig,
     build_launch_capture_processors,
+    capture_session_headers,
     print_intake_warning,
 )
 from switchyard.cli.launchers.launcher_runtime import (
@@ -69,6 +70,7 @@ from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.launchers.session_summary import print_session_summary
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
+    route_bundle_declares_token_capture,
 )
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.processors.model_rewrite_request_processor import (
@@ -222,6 +224,7 @@ def _provider_overrides(
     port: int, *,
     intake: LaunchIntakeConfig | None = None,
     model_catalog_json: str | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the ``-c key=value`` argv pairs that point codex at the proxy.
 
@@ -264,6 +267,11 @@ def _provider_overrides(
         overrides.extend([
             "-c", f"model_providers.{_PROVIDER_ID}.http_headers={headers_toml}",
         ])
+    elif capture_headers:
+        headers_toml = _format_codex_http_headers(capture_headers)
+        overrides.extend([
+            "-c", f"model_providers.{_PROVIDER_ID}.http_headers={headers_toml}",
+        ])
     return overrides
 
 
@@ -283,11 +291,17 @@ def _codex_command(
     model: str,
     intake: LaunchIntakeConfig | None = None,
     model_catalog_json: str | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the exact Codex argv for the transient Switchyard provider."""
     return [
         codex_bin,
-        *_provider_overrides(port, intake=intake, model_catalog_json=model_catalog_json),
+        *_provider_overrides(
+            port,
+            intake=intake,
+            model_catalog_json=model_catalog_json,
+            capture_headers=capture_headers,
+        ),
         "-m",
         model,
         *codex_args,
@@ -301,6 +315,7 @@ def _supervise_codex(
     model: str,
     intake: LaunchIntakeConfig | None = None,
     model_catalog_json: str | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> int:
     """Run ``codex`` with proxy provider injected; return its exit code.
 
@@ -335,6 +350,7 @@ def _supervise_codex(
                 model,
                 intake=intake,
                 model_catalog_json=model_catalog_json,
+                capture_headers=capture_headers,
             ),
             env=_codex_env(intake=intake),
             check=False,
@@ -353,6 +369,7 @@ def _run_codex_with_switchyard(
     intake: LaunchIntakeConfig | None = None,
     codex_model_catalog: Sequence[CodexModelCatalogEntry] = (),
     strategy_summary: str | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> int:
     """Chain-agnostic supervisor: host ``switchyard`` then spawn codex."""
     codex_bin = _find_codex_binary()
@@ -413,6 +430,7 @@ def _run_codex_with_switchyard(
                     display_model,
                     intake=intake,
                     model_catalog_json=model_catalog_json,
+                    capture_headers=capture_headers,
                 ),
                 footer_fn=footer.as_footer_fn(),
                 footer_height=lambda: footer.height,
@@ -422,6 +440,7 @@ def _run_codex_with_switchyard(
         return _supervise_codex(
             codex_bin, codex_args, resolved_port, display_model,
             intake=intake, model_catalog_json=model_catalog_json,
+            capture_headers=capture_headers,
         )
     finally:
         print_session_summary(stats)
@@ -461,7 +480,12 @@ def launch_codex(
     binary wasn't found, ``130`` on Ctrl-C).
     """
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
+    # Token capture activates when RL logging is on AND the bundle declares an
+    # token_capture_engine target; the capture pair replaces the rl-logging pair.
+    capture = rl_log_dir is not None and route_bundle_declares_token_capture(routing_profiles)
+    intake_request, intake_response = build_launch_capture_processors(
+        intake, rl_log_dir, token_capture=capture,
+    )
     switchyard = _build_switchyard(
         model,
         api_key,
@@ -493,6 +517,7 @@ def launch_codex(
             stats_accumulator=stats,
             pre_routing_request_processors=intake_request,
             extra_response_processors=intake_response,
+            token_capture_enabled=rl_log_dir is not None,
         )
         for sub_model, sub_chain, sub_metadata in yaml_table.items():
             table.register(sub_model, sub_chain, metadata=sub_metadata)
@@ -524,6 +549,7 @@ def launch_codex(
         intake=intake,
         codex_model_catalog=codex_model_catalog,
         strategy_summary=strategy_summary,
+        capture_headers=capture_session_headers(intake, capture, "codex"),
     )
 
 
@@ -589,7 +615,9 @@ def launch_codex_deterministic_routing(
         return fetch_model_ids(base_url, api_key)
 
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
+    intake_request, intake_response = build_launch_capture_processors(
+        intake, rl_log_dir,
+    )
     switchyard = build_deterministic_routing_switchyard(
         config,
         stats,
@@ -639,4 +667,5 @@ def launch_codex_deterministic_routing(
         intake=intake,
         codex_model_catalog=codex_model_catalog,
         strategy_summary=deterministic_strategy_summary(config),
+        capture_headers=capture_session_headers(intake, False, "codex"),
     )
