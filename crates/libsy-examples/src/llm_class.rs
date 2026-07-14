@@ -208,9 +208,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{
-        LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest,
-    };
+    use libsy::{LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest};
     use std::sync::Mutex;
 
     /// Returns `score` for the classifier target, an answer tagged with the model

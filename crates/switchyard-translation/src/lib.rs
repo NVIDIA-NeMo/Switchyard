@@ -11,11 +11,11 @@ pub mod codecs;
 pub mod diagnostic;
 pub mod engine;
 pub mod error;
-pub mod format;
-pub mod ir;
 pub mod policy;
 pub mod stream;
 pub mod util;
+
+pub use switchyard_protocol::{format, ir};
 
 pub use diagnostic::*;
 pub use engine::*;

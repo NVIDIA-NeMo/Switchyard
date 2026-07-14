@@ -3,7 +3,7 @@
 
 //! LLM-facing type names used by libsy algorithms and clients.
 
-pub use switchyard_translation::{
+pub use switchyard_protocol::{
     ContentBlock as LlmContentBlock, ConversationRequest as LlmRequest,
     ConversationResponse as LlmResponse, Message as LlmMessage,
     ResponseOutput as LlmResponseOutput, Role as LlmRole,

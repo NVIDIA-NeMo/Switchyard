@@ -5,7 +5,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::codecs::common::{provider_extensions, text_from_blocks};
+use crate::codecs::common::{is_known_role_name, provider_extensions, text_from_blocks};
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -14,10 +14,10 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::ir::{
-    is_known_role_name, ContentBlock, ConversationRequest, ConversationResponse, FileSource,
-    ImageSource, InstructionBlock, MediaSource, Message, OutputParams, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage,
+    ContentBlock, ConversationRequest, ConversationResponse, FileSource, ImageSource,
+    InstructionBlock, MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams,
+    ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition,
+    ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::sanitize_anthropic_tool_use_id;

@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Neutral conversation IR used for loss-aware provider translation.
+//! Neutral conversation IR shared by routing, clients, and translation.
 
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::format::FormatId;
@@ -18,20 +18,6 @@ pub enum Role {
     User,
     Assistant,
     Tool,
-}
-
-/// Returns true when `name` is a message role recognized by at least one
-/// supported provider API (OpenAI Chat, OpenAI Responses, or Anthropic
-/// Messages). Codecs use this to distinguish a genuinely-unsupported role —
-/// which is rejected on request decode to preserve the provider contract —
-/// from a known role that a given codec maps to a default. `function` is
-/// included because it is a legacy OpenAI Chat role that older clients may
-/// still send and which has always been coerced to `user` here.
-pub(crate) fn is_known_role_name(name: &str) -> bool {
-    matches!(
-        name,
-        "system" | "developer" | "user" | "assistant" | "tool" | "function"
-    )
 }
 
 /// Instruction content separated from normal conversation messages.
@@ -218,7 +204,7 @@ pub struct PreservationMetadata {
     pub responses: BTreeMap<FormatId, Value>,
 }
 
-/// Normalized request representation used between decoder and encoder.
+/// Normalized request representation shared by Switchyard components.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConversationRequest {
     pub model: Option<String>,
@@ -262,7 +248,7 @@ pub struct ResponseOutput {
     pub stop_reason: Option<StopReason>,
 }
 
-/// Normalized response representation used between decoder and encoder.
+/// Normalized response representation shared by Switchyard components.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConversationResponse {
     pub id: Option<String>,

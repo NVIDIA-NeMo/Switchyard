@@ -430,9 +430,7 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{
-        LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest,
-    };
+    use libsy::{LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest};
     use std::sync::Mutex as StdMutex;
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
