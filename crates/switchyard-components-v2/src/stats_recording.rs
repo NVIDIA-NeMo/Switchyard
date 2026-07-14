@@ -31,7 +31,7 @@ pub(crate) fn record_usage_or_wrap_stream(
 ) -> Result<ChatResponse> {
     // We report time-to-first-token as latency. Otherwise in streaming case we'd be including
     // the client's processing time.
-    let total_latency_ms = profile_started_at.elapsed().as_millis() as f64;
+    let total_latency_ms = profile_started_at.elapsed().as_secs_f64() * 1000.0;
     match response {
         ChatResponse::OpenAiCompletion(_)
         | ChatResponse::OpenAiResponsesCompletion(_)
