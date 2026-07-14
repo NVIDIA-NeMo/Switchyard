@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use libsy::{
-    Algorithm, Context, Decision, Driver, LlmContentBlock, LlmMessage, LlmRequest, LlmRole,
-    LlmTargetSet, Request, Response, Signals,
+    Algorithm, ContentBlock, Context, ConversationRequest, Decision, Driver, LlmTargetSet, Message,
+    Request, Response, Role, Signals,
 };
 
 /// Which step of the ensemble flow produced a decision.
@@ -215,10 +215,10 @@ impl EnsembleOrchAlgo {
                     .flat_map(|message| message.content.iter()),
             )
             .filter_map(|block| match block {
-                LlmContentBlock::Text { text }
-                | LlmContentBlock::Refusal { text }
-                | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                ContentBlock::Text { text }
+                | ContentBlock::Refusal { text }
+                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                ContentBlock::Unknown { raw, .. } => raw.as_str(),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -282,10 +282,10 @@ impl EnsembleOrchAlgo {
                 phase: EnsemblePhase::Judge,
             });
             let judge_request = Request {
-                llm_request: LlmRequest {
+                llm_request: ConversationRequest {
                     model: request.llm_request.model.clone(),
-                    messages: vec![LlmMessage::text(LlmRole::User, judge_prompt)],
-                    ..LlmRequest::default()
+                    messages: vec![Message::text(Role::User, judge_prompt)],
+                    ..ConversationRequest::default()
                 },
                 raw_request: None,
                 metadata: request.metadata.clone(),
@@ -300,10 +300,10 @@ impl EnsembleOrchAlgo {
                 .iter()
                 .flat_map(|output| output.content.iter())
                 .filter_map(|block| match block {
-                    LlmContentBlock::Text { text }
-                    | LlmContentBlock::Refusal { text }
-                    | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                    LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                    ContentBlock::Text { text }
+                    | ContentBlock::Refusal { text }
+                    | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                    ContentBlock::Unknown { raw, .. } => raw.as_str(),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -359,10 +359,10 @@ fn build_judge_prompt(user_prompt: &str, survivors: &[(String, Response)]) -> St
             .iter()
             .flat_map(|output| output.content.iter())
             .filter_map(|block| match block {
-                LlmContentBlock::Text { text }
-                | LlmContentBlock::Refusal { text }
-                | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                ContentBlock::Text { text }
+                | ContentBlock::Refusal { text }
+                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                ContentBlock::Unknown { raw, .. } => raw.as_str(),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -430,7 +430,9 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest};
+    use libsy::{
+        ConversationResponse, LlmClient, LlmTarget, Response, ResponseOutput, RoutedRequest,
+    };
     use std::sync::Mutex as StdMutex;
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
@@ -463,13 +465,13 @@ mod tests {
                 format!("answer from {name}")
             };
             Ok(Response {
-                llm_response: LlmResponse {
-                    outputs: vec![LlmResponseOutput {
-                        role: LlmRole::Assistant,
-                        content: vec![LlmContentBlock::Text { text: completion }],
+                llm_response: ConversationResponse {
+                    outputs: vec![ResponseOutput {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text { text: completion }],
                         stop_reason: None,
                     }],
-                    ..LlmResponse::default()
+                    ..ConversationResponse::default()
                 },
                 metadata: None,
             })
@@ -547,10 +549,10 @@ mod tests {
 
     fn request(prompt: &str) -> Request {
         Request {
-            llm_request: LlmRequest {
+            llm_request: ConversationRequest {
                 model: Some("auto".to_string()),
-                messages: vec![LlmMessage::text(LlmRole::User, prompt)],
-                ..LlmRequest::default()
+                messages: vec![Message::text(Role::User, prompt)],
+                ..ConversationRequest::default()
             },
             raw_request: None,
             metadata: None,
@@ -581,7 +583,7 @@ mod tests {
             .await?;
         assert_eq!(
             response.llm_response.outputs[0].content,
-            vec![LlmContentBlock::Text {
+            vec![ContentBlock::Text {
                 text: "answer from b/model".to_string()
             }]
         );
@@ -626,7 +628,7 @@ mod tests {
         let (trace, response) = orch.clone().run(Context::default(), request("t3")).await?;
         assert_eq!(
             response.llm_response.outputs[0].content,
-            vec![LlmContentBlock::Text {
+            vec![ContentBlock::Text {
                 text: "answer from b/model".to_string()
             }]
         );
@@ -649,7 +651,7 @@ mod tests {
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
             response.llm_response.outputs[0].content,
-            vec![LlmContentBlock::Text {
+            vec![ContentBlock::Text {
                 text: "answer from only/model".to_string()
             }]
         );
@@ -778,13 +780,13 @@ mod tests {
                     format!("answer from {name}")
                 };
                 Ok(Response {
-                    llm_response: LlmResponse {
-                        outputs: vec![LlmResponseOutput {
-                            role: LlmRole::Assistant,
-                            content: vec![LlmContentBlock::Text { text: completion }],
+                    llm_response: ConversationResponse {
+                        outputs: vec![ResponseOutput {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::Text { text: completion }],
                             stop_reason: None,
                         }],
-                        ..LlmResponse::default()
+                        ..ConversationResponse::default()
                     },
                     metadata: None,
                 })
@@ -828,7 +830,7 @@ mod tests {
                             .next()
                             .and_then(|output| output.content.into_iter().next())
                         {
-                            Some(LlmContentBlock::Text { text }) => text,
+                            Some(ContentBlock::Text { text }) => text,
                             _ => String::new(),
                         }
                     })
@@ -884,7 +886,7 @@ mod tests {
                     .next()
                     .and_then(|output| output.content.into_iter().next())
                 {
-                    Some(LlmContentBlock::Text { text }) => text,
+                    Some(ContentBlock::Text { text }) => text,
                     _ => String::new(),
                 };
                 Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((completion, phase))

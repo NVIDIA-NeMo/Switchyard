@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Neutral conversation IR shared by routing, clients, and translation.
+//! Provider-neutral conversation types shared by routing, clients, and translation.
 
 use std::collections::BTreeMap;
 
@@ -95,7 +95,7 @@ pub enum ContentBlock {
     },
 }
 
-/// Image payload forms supported by the neutral IR.
+/// Image payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ImageSource {
     Url {
@@ -109,7 +109,7 @@ pub enum ImageSource {
     Raw(Value),
 }
 
-/// File payload forms supported by the neutral IR.
+/// File payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FileSource {
     FileId(String),
@@ -120,7 +120,7 @@ pub enum FileSource {
     Raw(Value),
 }
 
-/// Audio and video payload forms supported by the neutral IR.
+/// Audio and video payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MediaSource {
     Url {
@@ -191,7 +191,7 @@ pub struct ReasoningParams {
     pub raw: Option<Value>,
 }
 
-/// Provider-specific fields that do not have first-class IR slots.
+/// Provider-specific fields that do not have first-class conversation fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderExtensions {
     pub fields: Map<String, Value>,

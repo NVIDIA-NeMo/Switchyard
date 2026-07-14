@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, Context, LlmClient, LlmContentBlock, LlmMessage, LlmRequest, LlmResponse,
-    LlmResponseOutput, LlmRole, LlmTarget, LlmTargetSet, Request, Response, RoutedRequest,
+    Algorithm, ContentBlock, Context, ConversationRequest, ConversationResponse, LlmClient,
+    LlmTarget, LlmTargetSet, Message, Request, Response, ResponseOutput, Role, RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 
@@ -41,13 +41,13 @@ impl LlmClient for StubClient {
             format!("answer from {model}")
         };
         Ok(Response {
-            llm_response: LlmResponse {
-                outputs: vec![LlmResponseOutput {
-                    role: LlmRole::Assistant,
-                    content: vec![LlmContentBlock::Text { text: completion }],
+            llm_response: ConversationResponse {
+                outputs: vec![ResponseOutput {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text { text: completion }],
                     stop_reason: None,
                 }],
-                ..LlmResponse::default()
+                ..ConversationResponse::default()
             },
             metadata: None,
         })
@@ -77,10 +77,10 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
+                llm_request: ConversationRequest {
                     model: Some("auto".to_string()),
-                    messages: vec![LlmMessage::text(LlmRole::User, step)],
-                    ..LlmRequest::default()
+                    messages: vec![Message::text(Role::User, step)],
+                    ..ConversationRequest::default()
                 },
                 raw_request: None,
                 metadata: None,
@@ -94,10 +94,10 @@ impl ResearchAgent {
                     .iter()
                     .flat_map(|output| output.content.iter())
                     .filter_map(|block| match block {
-                        LlmContentBlock::Text { text }
-                        | LlmContentBlock::Refusal { text }
-                        | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                        LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                        ContentBlock::Text { text }
+                        | ContentBlock::Refusal { text }
+                        | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                        ContentBlock::Unknown { raw, .. } => raw.as_str(),
                         _ => None,
                     })
                     .collect::<Vec<_>>()

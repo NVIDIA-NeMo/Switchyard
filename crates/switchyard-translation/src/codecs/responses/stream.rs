@@ -9,8 +9,8 @@ use crate::codecs::stream::{
     record_source_identity, target_message_id_or_source_message_id, target_model_or_source_model,
     ConversationStreamEvent, StreamCodec, StreamTranslationState,
 };
+use crate::conversation::Usage;
 use crate::format::{FormatId, WireFormat};
-use crate::ir::Usage;
 
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;

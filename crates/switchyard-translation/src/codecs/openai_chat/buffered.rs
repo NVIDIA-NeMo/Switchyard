@@ -11,15 +11,15 @@ use crate::codecs::common::{
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
-use crate::diagnostic::TranslationDiagnostic;
-use crate::error::{Result, TranslationError};
-use crate::format::{FormatId, WireFormat};
-use crate::ir::{
+use crate::conversation::{
     ContentBlock, ConversationRequest, ConversationResponse, FileSource, ImageSource,
     InstructionBlock, MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams,
     ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition,
     ToolResult, Usage,
 };
+use crate::diagnostic::TranslationDiagnostic;
+use crate::error::{Result, TranslationError};
+use crate::format::{FormatId, WireFormat};
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,

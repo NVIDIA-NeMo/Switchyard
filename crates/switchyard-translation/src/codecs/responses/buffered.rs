@@ -14,14 +14,14 @@ use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
-use crate::diagnostic::TranslationDiagnostic;
-use crate::error::{Result, TranslationError};
-use crate::format::{FormatId, WireFormat};
-use crate::ir::{
+use crate::conversation::{
     ContentBlock, ConversationRequest, ConversationResponse, MediaSource, Message, OutputParams,
     ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
     ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
+use crate::diagnostic::TranslationDiagnostic;
+use crate::error::{Result, TranslationError};
+use crate::format::{FormatId, WireFormat};
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
@@ -74,12 +74,14 @@ impl FormatCodec for OpenAiResponsesCodec {
         };
         if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
             if !instructions.is_empty() {
-                request.instructions.push(crate::ir::InstructionBlock {
-                    role: Role::System,
-                    content: vec![ContentBlock::Text {
-                        text: instructions.to_string(),
-                    }],
-                });
+                request
+                    .instructions
+                    .push(crate::conversation::InstructionBlock {
+                        role: Role::System,
+                        content: vec![ContentBlock::Text {
+                            text: instructions.to_string(),
+                        }],
+                    });
             }
         }
         request.messages = decode_responses_input(

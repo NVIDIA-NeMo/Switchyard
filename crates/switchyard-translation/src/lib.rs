@@ -15,13 +15,13 @@ pub mod policy;
 pub mod stream;
 pub mod util;
 
-pub use switchyard_protocol::{format, ir};
+pub use switchyard_protocol::{conversation, format};
 
+pub use conversation::*;
 pub use diagnostic::*;
 pub use engine::*;
 pub use error::*;
 pub use format::*;
-pub use ir::*;
 pub use policy::*;
 pub use stream::*;
 pub use util::{

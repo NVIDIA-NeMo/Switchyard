@@ -13,10 +13,10 @@ use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
 use crate::codecs::stream::{StreamCodecRegistry, StreamTranslationState};
 use crate::codecs::FormatCodec;
+use crate::conversation::{ConversationRequest, ConversationResponse};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
-use crate::ir::{ConversationRequest, ConversationResponse};
 use crate::policy::TranslationPolicy;
 
 /// Encoded translation result with any diagnostics emitted along the way.

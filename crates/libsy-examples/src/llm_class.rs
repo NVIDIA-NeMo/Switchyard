@@ -16,8 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use libsy::{
-    Algorithm, Context, Decision, Driver, LlmContentBlock, LlmMessage, LlmRequest, LlmRole,
-    LlmTargetSet, Request, Response, Signals,
+    Algorithm, ContentBlock, Context, ConversationRequest, Decision, Driver, LlmTargetSet, Message,
+    Request, Response, Role, Signals,
 };
 
 /// Preamble prepended to the user prompt when asking the classifier target for a
@@ -119,10 +119,10 @@ impl Algorithm for LlmClassifierOrchAlgo {
                     .flat_map(|message| message.content.iter()),
             )
             .filter_map(|block| match block {
-                LlmContentBlock::Text { text }
-                | LlmContentBlock::Refusal { text }
-                | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                ContentBlock::Text { text }
+                | ContentBlock::Refusal { text }
+                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                ContentBlock::Unknown { raw, .. } => raw.as_str(),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -131,13 +131,13 @@ impl Algorithm for LlmClassifierOrchAlgo {
         // 1. Classify: call the classifier target with the score-eliciting prompt.
         let classifier_target = self.target_set.get_target(&self.classifier_model)?;
         let classify_request = Request {
-            llm_request: LlmRequest {
+            llm_request: ConversationRequest {
                 model: request.llm_request.model.clone(),
-                messages: vec![LlmMessage::text(
-                    LlmRole::User,
+                messages: vec![Message::text(
+                    Role::User,
                     format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
                 )],
-                ..LlmRequest::default()
+                ..ConversationRequest::default()
             },
             raw_request: None,
             metadata: request.metadata.clone(),
@@ -158,10 +158,10 @@ impl Algorithm for LlmClassifierOrchAlgo {
             .iter()
             .flat_map(|output| output.content.iter())
             .filter_map(|block| match block {
-                LlmContentBlock::Text { text }
-                | LlmContentBlock::Refusal { text }
-                | LlmContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                LlmContentBlock::Unknown { raw, .. } => raw.as_str(),
+                ContentBlock::Text { text }
+                | ContentBlock::Refusal { text }
+                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                ContentBlock::Unknown { raw, .. } => raw.as_str(),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -208,7 +208,9 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmResponseOutput, LlmTarget, Response, RoutedRequest};
+    use libsy::{
+        ConversationResponse, LlmClient, LlmTarget, Response, ResponseOutput, RoutedRequest,
+    };
     use std::sync::Mutex;
 
     /// Returns `score` for the classifier target, an answer tagged with the model
@@ -228,9 +230,9 @@ mod tests {
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             let name = routed.decision.selected_model().to_string();
             let outputs = if name == self.classifier_model {
-                vec![LlmResponseOutput {
-                    role: LlmRole::Assistant,
-                    content: vec![LlmContentBlock::Text {
+                vec![ResponseOutput {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
                         text: self.score.clone(),
                     }],
                     stop_reason: None,
@@ -243,10 +245,10 @@ mod tests {
                 .map_err(|_| "lock poisoned")?
                 .push(routed.request);
             Ok(Response {
-                llm_response: LlmResponse {
+                llm_response: ConversationResponse {
                     model: Some(name),
                     outputs,
-                    ..LlmResponse::default()
+                    ..ConversationResponse::default()
                 },
                 metadata: None,
             })
@@ -282,10 +284,10 @@ mod tests {
 
     fn request(prompt: &str) -> Request {
         Request {
-            llm_request: LlmRequest {
+            llm_request: ConversationRequest {
                 model: Some("auto".to_string()),
-                messages: vec![LlmMessage::text(LlmRole::User, prompt)],
-                ..LlmRequest::default()
+                messages: vec![Message::text(Role::User, prompt)],
+                ..ConversationRequest::default()
             },
             raw_request: None,
             metadata: None,

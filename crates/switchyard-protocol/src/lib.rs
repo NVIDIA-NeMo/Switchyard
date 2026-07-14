@@ -3,8 +3,8 @@
 
 //! Provider-neutral LLM protocol types shared across Switchyard crates.
 
+pub mod conversation;
 pub mod format;
-pub mod ir;
 
+pub use conversation::*;
 pub use format::*;
-pub use ir::*;

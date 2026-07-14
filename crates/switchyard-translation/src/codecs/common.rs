@@ -5,7 +5,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::ir::ContentBlock;
+use crate::conversation::ContentBlock;
 
 /// Returns whether a role name is recognized by a supported provider API.
 pub(crate) fn is_known_role_name(name: &str) -> bool {

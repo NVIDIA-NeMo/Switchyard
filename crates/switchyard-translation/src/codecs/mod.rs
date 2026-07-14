@@ -11,10 +11,10 @@ pub mod stream;
 
 use serde_json::Value;
 
+use crate::conversation::{ConversationRequest, ConversationResponse};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::Result;
 use crate::format::FormatId;
-use crate::ir::{ConversationRequest, ConversationResponse};
 use crate::policy::TranslationPolicy;
 
 /// Result of decoding a request into neutral IR.

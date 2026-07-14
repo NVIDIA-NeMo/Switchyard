@@ -11,11 +11,11 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use libsy::llm_class::LlmClassifierOrchAlgo;
 use libsy::{
-    Algorithm, Context, LlmClient, LlmContentBlock, LlmMessage, LlmRequest, LlmResponse,
-    LlmResponseOutput, LlmRole, LlmTarget, LlmTargetSet, Request,
+    Algorithm, ContentBlock, Context, ConversationRequest, LlmClient, LlmTarget, LlmTargetSet,
+    Message, Request, Role,
 };
+use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use std::sync::Arc;
 
 // Targets the algorithm routes among, each backed by your LlmClient (see below).
@@ -28,10 +28,10 @@ let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
 ));
 
 let req = Request {
-    llm_request: LlmRequest {
+    llm_request: ConversationRequest {
         model: Some("auto".into()),
-        messages: vec![LlmMessage::text(LlmRole::User, "explain tail latency")],
-        ..LlmRequest::default()
+        messages: vec![Message::text(Role::User, "explain tail latency")],
+        ..ConversationRequest::default()
     },
     raw_request: None,
     metadata: None,
@@ -46,23 +46,23 @@ Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in t
 
 ```rust
 pub struct Request {
-    pub llm_request: LlmRequest,                // type alias for ConversationRequest
+    pub llm_request: ConversationRequest,
     pub raw_request: Option<serde_json::Value>, // optional original provider body for exact-fidelity hosts
     pub metadata: Option<Metadata>,             // correlation: session / agent / task / correlation_id / extra
 }
 
 pub struct Response {
-    pub llm_response: LlmResponse,              // type alias for ConversationResponse
+    pub llm_response: ConversationResponse,
     pub metadata: Option<Metadata>,
 }
 ```
 
-`LlmRequest` and `LlmResponse` are semantic aliases over Switchyard's shared
-conversation IR. Construct and inspect the IR directly so tools, sampling parameters,
-reasoning, and provider extensions remain visible instead of being hidden behind a
-second convenience API. `raw_request` remains available when a host needs exact
-source-body fidelity. The related `LlmMessage`, `LlmContentBlock`, `LlmResponseOutput`,
-and `LlmRole` aliases live in `libsy::types` and are also re-exported from `libsy`.
+`switchyard-protocol` owns `ConversationRequest`, `ConversationResponse`, `Message`,
+`ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports those canonical types
+unchanged. Construct and inspect the conversation model directly so tools, sampling
+parameters, reasoning, and provider extensions remain visible instead of being hidden
+behind a second convenience API. `raw_request` remains available when a host needs exact
+source-body fidelity.
 
 ## Targets and clients
 
@@ -81,13 +81,13 @@ impl LlmClient for MyClient {
         // routed.request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
         Ok(Response {
-            llm_response: LlmResponse {
-                outputs: vec![LlmResponseOutput {
-                    role: LlmRole::Assistant,
-                    content: vec![LlmContentBlock::Text { text: completion }],
+            llm_response: ConversationResponse {
+                outputs: vec![ResponseOutput {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text { text: completion }],
                     stop_reason: None,
                 }],
-                ..LlmResponse::default()
+                ..ConversationResponse::default()
             },
             metadata: None,
         })
@@ -182,7 +182,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
         let score = classify_response.llm_response.first_output()
             .and_then(|output| output.content.first())
             .and_then(|block| match block {
-                LlmContentBlock::Text { text } => text.trim().parse::<f64>().ok(),
+                ContentBlock::Text { text } => text.trim().parse::<f64>().ok(),
                 _ => None,
             });
 

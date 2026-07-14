@@ -9,8 +9,8 @@ use crate::codecs::stream::{
     record_source_identity, source_model_or_unknown, state_source_is, string_field,
     ConversationStreamEvent, StreamCodec, StreamTranslationState,
 };
+use crate::conversation::Usage;
 use crate::format::{FormatId, WireFormat};
-use crate::ir::Usage;
 
 /// Stream codec for OpenAI Chat Completions chunks.
 pub struct OpenAiChatStreamCodec;

@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
+use crate::conversation::{ContentBlock, ConversationRequest, Message, PreservationMetadata};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
-use crate::ir::{ContentBlock, ConversationRequest, Message, PreservationMetadata};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
