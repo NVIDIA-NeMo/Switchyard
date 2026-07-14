@@ -45,12 +45,13 @@ def coerce_llm_target(value: object, *, default_id: str) -> LlmTarget:
     timeout_secs = data.pop("timeout_secs", data.pop("timeout", None))
     extra_body = data.pop("extra_body", None)
     extra_headers = data.pop("extra_headers", None)
+    token_capture_engine = data.pop("token_capture_engine", None)
     data.pop("tuning", None)
     if data:
         unknown = ", ".join(sorted(data))
         raise ValueError(f"unknown LlmTarget fields: {unknown}")
 
-    return LlmTarget(
+    target = LlmTarget(
         id=target_id,
         model=model,
         format=target_format,
@@ -61,6 +62,11 @@ def coerce_llm_target(value: object, *, default_id: str) -> LlmTarget:
         extra_body=extra_body,
         extra_headers=extra_headers,
     )
+    if token_capture_engine is not None:
+        # Declaring the serving engine opts the target into token-capture
+        # request params (pairs with `--enable-rl-logging` on the server).
+        target = llm_target_with_token_capture(target, str(token_capture_engine))
+    return target
 
 
 def llm_target_with_format(target: LlmTarget, target_format: BackendFormat) -> LlmTarget:
@@ -96,6 +102,38 @@ def _should_disable_thinking(model: str) -> bool:
     return any(fragment in normalized for fragment in _DISABLE_THINKING_MODEL_FRAGMENTS)
 
 
+_TOKEN_CAPTURE_ENGINE_PARAMS: dict[str, dict[str, Any]] = {
+    # vLLM: `return_token_ids` emits `response.prompt_token_ids` + `choice.token_ids`;
+    # `top_logprobs` must be non-None for `logprobs.content[]` to populate given
+    # `logprobs=true` (0 returns just the sampled token's logprob).
+    "vllm": {"logprobs": True, "return_token_ids": True, "top_logprobs": 0},
+}
+
+
+def llm_target_with_token_capture(target: LlmTarget, token_capture_engine: str) -> LlmTarget:
+    """Return ``target`` with the engine's token-capture request params in ``extra_body``.
+
+    These params must ride ``extra_body`` (merged after request translation in the
+    backend) — request-side injection is dropped by the translation allowlist for
+    cross-format traffic. Explicit ``extra_body`` keys on the target win over derived
+    params; harness-side conflicts are resolved caller-wins at request time.
+    """
+    params = _TOKEN_CAPTURE_ENGINE_PARAMS.get(token_capture_engine)
+    if params is None:
+        supported = ", ".join(sorted(_TOKEN_CAPTURE_ENGINE_PARAMS))
+        raise ValueError(
+            f"unknown token_capture_engine {token_capture_engine!r} for token capture; supported: {supported}"
+        )
+    return LlmTarget(
+        id=target.id,
+        model=target.model,
+        format=target.format,
+        endpoint=target.endpoint,
+        extra_body={**params, **(target.extra_body or {})},
+        extra_headers=target.extra_headers,
+    )
+
+
 __all__ = [
     "BackendFormat",
     "EndpointConfig",
@@ -103,4 +141,5 @@ __all__ = [
     "coerce_llm_target",
     "llm_target_with_format",
     "llm_target_with_runtime_defaults",
+    "llm_target_with_token_capture",
 ]
