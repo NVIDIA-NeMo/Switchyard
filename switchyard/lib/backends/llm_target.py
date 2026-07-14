@@ -122,7 +122,8 @@ def llm_target_with_token_capture(target: LlmTarget, token_capture_engine: str) 
     if params is None:
         supported = ", ".join(sorted(_TOKEN_CAPTURE_ENGINE_PARAMS))
         raise ValueError(
-            f"unknown token_capture_engine {token_capture_engine!r} for token capture; supported: {supported}"
+            f"unknown token_capture_engine {token_capture_engine!r} for token "
+            f"capture; supported: {supported}"
         )
     return LlmTarget(
         id=target.id,

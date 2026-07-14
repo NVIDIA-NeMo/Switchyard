@@ -664,8 +664,18 @@ async def test_retrieval_skips_torn_record_and_serves_the_rest(tmp_path: Path) -
 def test_retrieval_endpoint_unknown_session_is_404(tmp_path: Path) -> None:
     client = _retrieval_client(tmp_path)
     assert client.get("/v1/sessions/nope/completions").status_code == 404
-    # Traversal-shaped ids must not escape the capture dir.
-    assert client.get("/v1/sessions/../completions").status_code == 404
+
+
+def test_retrieval_endpoint_rejects_path_traversal(tmp_path: Path) -> None:
+    # A sentinel record one level above sessions/ — a vulnerable join would
+    # surface it. Encoded ".." reaches the handler un-normalized (plain "../"
+    # is collapsed by the client before routing, so it only proves routing).
+    (tmp_path / "secret.json").write_text('{"leaked": true}')
+    client = _retrieval_client(tmp_path)
+
+    resp = client.get("/v1/sessions/%2E%2E/completions")
+    assert resp.status_code == 404
+    assert "leaked" not in resp.text
 
 
 def test_retrieval_endpoint_registers_once() -> None:

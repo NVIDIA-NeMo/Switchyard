@@ -907,11 +907,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Write per-turn RL training traces (message_history JSON, one "
-            "file per request/response pair) for `launch` sessions. When the "
-            "route bundle declares an `token_capture_engine` target, traces are "
-            "token-level capture records grouped by session and served via "
-            "GET /v1/sessions. Global flag — place it before the subcommand, "
-            "e.g. switchyard --enable-rl-logging launch claude."
+            "file per request/response pair) for `launch` and `serve` sessions. "
+            "When the route bundle declares a `token_capture_engine` target, "
+            "traces are token-level capture records grouped by session and "
+            "served via GET /v1/sessions. Global flag — place it before the "
+            "subcommand, e.g. switchyard --enable-rl-logging launch claude."
         ),
     )
     parser.add_argument(

@@ -263,6 +263,7 @@ def _synthesize_stream(body: JsonObject) -> ChatResponse:
         ChoiceDeltaToolCall,
         ChoiceDeltaToolCallFunction,
     )
+    from pydantic import ValidationError
 
     from switchyard.lib.chat_response.openai_chat import ResponseStream
 
@@ -295,7 +296,14 @@ def _synthesize_stream(body: JsonObject) -> ChatResponse:
         ]
 
     usage = body.get("usage")
-    final_usage = CompletionUsage.model_validate(usage) if isinstance(usage, dict) else None
+    final_usage = None
+    if isinstance(usage, dict):
+        # A malformed usage block must not abort the client-facing stream —
+        # drop it rather than raise from model_validate.
+        try:
+            final_usage = CompletionUsage.model_validate(usage)
+        except ValidationError as exc:
+            logger.warning("token capture: dropping malformed usage in synthesized stream: %s", exc)
     finish_reason = cast(Any, choice.get("finish_reason") or "stop")
 
     async def _chunks() -> AsyncIterator[ChatCompletionChunk]:

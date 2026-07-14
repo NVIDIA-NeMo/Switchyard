@@ -55,13 +55,17 @@ class TestLlmTargetWithTokenCapture:
         assert target.extra_body["chat_template_kwargs"] == {"enable_thinking": False}
         assert target.extra_body["return_token_ids"] is True
 
-    def test_target_identity_fields_preserved(self) -> None:
+    def test_target_identity_and_connection_fields_preserved(self) -> None:
         source = _target()
         target = llm_target_with_token_capture(source, "vllm")
 
         assert target.id == source.id
         assert target.model == source.model
         assert target.format == source.format
+        # Connection settings live on ``endpoint`` and must survive the rewrap.
+        assert target.endpoint.base_url == source.endpoint.base_url
+        assert target.endpoint.api_key == source.endpoint.api_key
+        assert target.endpoint.timeout_secs == source.endpoint.timeout_secs
 
     def test_unknown_engine_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown token_capture_engine 'tgi'"):

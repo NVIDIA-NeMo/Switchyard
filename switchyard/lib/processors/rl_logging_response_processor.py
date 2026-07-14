@@ -190,6 +190,7 @@ def format_trace_tools(raw_tools: object) -> list[JsonObject]:
 
 
 def format_trace_tool_choice(tool_choice: object) -> str:
+    """Extract the tool-choice ``type`` string, defaulting to ``"auto"``."""
     if isinstance(tool_choice, str):
         return tool_choice
     if isinstance(tool_choice, dict):
