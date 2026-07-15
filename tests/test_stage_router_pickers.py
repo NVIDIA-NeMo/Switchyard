@@ -100,6 +100,30 @@ async def test_tests_passed_with_edits_routes_to_efficient():
 
 
 @pytest.mark.asyncio
+async def test_efficient_first_escalates_on_any_error():
+    """efficient_first escalates to CAPABLE on any wrong signal — even a low-confidence
+    one that would otherwise fall through to the EFFICIENT default — so a failing turn
+    never stays on the weak tier. capable_first is unaffected (already CAPABLE-default)."""
+    log = StageRouterDecisionLog()
+    ctx = await _ctx([
+        _msg_tool_call("Bash"),
+        _msg_tool_result("bash: foo: command not found"),
+        {"role": "user", "content": "retry"},
+    ])
+    # a single soft error is below the confidence bar, yet ef still escalates
+    assert await pick_efficient_first(ctx, confidence_threshold=0.30, decision_log=log) == CAPABLE
+    assert ctx.metadata[CONTEXT_KEY] == "ef_escalate"
+    # the bias is one-sided: capable_first keeps its own path, still CAPABLE
+    ctx = await _ctx([
+        _msg_tool_call("Bash"),
+        _msg_tool_result("bash: foo: command not found"),
+        {"role": "user", "content": "retry"},
+    ])
+    assert await pick_capable_first(ctx, confidence_threshold=0.30) == CAPABLE
+    assert ctx.metadata[CONTEXT_KEY] != "ef_escalate"
+
+
+@pytest.mark.asyncio
 async def test_no_signal_returns_default_tier():
     ctx = ProxyContext()  # signal not stamped
     assert await pick_capable_first(ctx, confidence_threshold=0.7) == CAPABLE

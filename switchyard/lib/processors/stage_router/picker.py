@@ -96,6 +96,19 @@ async def _pick(
         return _record(ctx, decision_log, "tests_passed", EFFICIENT)
 
     dimensions = from_signal(signal)
+    # efficient_first is weak-by-default, so it escalates to CAPABLE on ANY wrong
+    # signal (error / stuck / no-progress) before scoring. Without this, a soft
+    # error — or an error diluted by a co-occurring progress signal (a write-heavy
+    # turn that also errored nets to ~0) — falls below the confidence bar and drops
+    # to the EFFICIENT default, leaving a failing turn on the weak tier. capable_first
+    # already defaults to CAPABLE, so it needs no such bias.
+    if default_tier == EFFICIENT and (
+        dimensions.severity > 0.0
+        or dimensions.stuck_exploring > 0.0
+        or dimensions.no_progress > 0.0
+    ):
+        return _record(ctx, decision_log, "ef_escalate", CAPABLE)
+
     # Fixed weights; confidence_threshold is the corroboration dial
     # (signals-to-clear = threshold / signal unit).
     result = score(dimensions, weights=weights)
