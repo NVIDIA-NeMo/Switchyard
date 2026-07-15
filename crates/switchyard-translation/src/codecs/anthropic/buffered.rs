@@ -14,8 +14,8 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest, LlmResponse, MediaSource,
-    Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
     SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
@@ -252,7 +252,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 text: String::new(),
             });
         }
-        let response = LlmResponse {
+        let response = AggLlmResponse {
             id: body
                 .get("id")
                 .and_then(Value::as_str)
@@ -297,7 +297,7 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn encode_response(
         &self,
-        response: &LlmResponse,
+        response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) = exact_preserved_response(

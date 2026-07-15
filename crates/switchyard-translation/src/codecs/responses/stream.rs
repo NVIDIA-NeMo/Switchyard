@@ -10,7 +10,8 @@ use crate::codecs::stream::{
     StreamCodec, StreamTranslationState,
 };
 use crate::format::{FormatId, WireFormat};
-use crate::llm::{LlmStreamEvent, Usage};
+use crate::llm::Usage;
+use crate::LlmResponseChunk;
 
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;
@@ -24,14 +25,14 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         &self,
         state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<LlmStreamEvent> {
+    ) -> Vec<LlmResponseChunk> {
         decode_responses_stream(state, event)
     }
 
     fn encode_event(
         &self,
         state: &mut StreamTranslationState,
-        event: LlmStreamEvent,
+        event: LlmResponseChunk,
     ) -> Vec<Value> {
         encode_responses_stream(state, event)
     }
@@ -45,7 +46,7 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
 fn decode_responses_stream(
     state: &mut StreamTranslationState,
     event: &Value,
-) -> Vec<LlmStreamEvent> {
+) -> Vec<LlmResponseChunk> {
     let event_type = event
         .get("type")
         .or_else(|| event.get("event"))
@@ -66,7 +67,7 @@ fn decode_responses_stream(
             {
                 state.message_id = Some(id.to_string());
             }
-            vec![LlmStreamEvent::MessageStart {
+            vec![LlmResponseChunk::MessageStart {
                 id: state.message_id.clone(),
                 model: state.model.clone(),
             }]
@@ -75,7 +76,7 @@ fn decode_responses_stream(
             .get("delta")
             .and_then(Value::as_str)
             .map(|text| {
-                vec![LlmStreamEvent::TextDelta {
+                vec![LlmResponseChunk::TextDelta {
                     index: event
                         .get("output_index")
                         .and_then(Value::as_u64)
@@ -90,7 +91,7 @@ fn decode_responses_stream(
                 .or_else(|| event.get("text"))
                 .and_then(Value::as_str)
                 .map(|text| {
-                    vec![LlmStreamEvent::ReasoningDelta {
+                    vec![LlmResponseChunk::ReasoningDelta {
                         index: event
                             .get("output_index")
                             .and_then(Value::as_u64)
@@ -110,7 +111,7 @@ fn decode_responses_stream(
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(|delta| {
-                    vec![LlmStreamEvent::ToolCallDelta {
+                    vec![LlmResponseChunk::ToolCallDelta {
                         index: output_index as usize,
                         id: None,
                         name: None,
@@ -131,12 +132,12 @@ fn decode_responses_stream(
                 let usage = responses_usage(usage);
                 state.usage = usage.clone();
                 state.saw_backend_usage = true;
-                out.push(LlmStreamEvent::Usage(usage));
+                out.push(LlmResponseChunk::Usage(usage));
             }
-            out.push(LlmStreamEvent::MessageStop { reason: None });
+            out.push(LlmResponseChunk::MessageStop { reason: None });
             out
         }
-        Some("error") => vec![LlmStreamEvent::Error {
+        Some("error") => vec![LlmResponseChunk::Error {
             message: event
                 .get("message")
                 .and_then(Value::as_str)
@@ -150,33 +151,33 @@ fn decode_responses_stream(
 // Encodes neutral streaming events into OpenAI Responses events.
 fn encode_responses_stream(
     state: &mut StreamTranslationState,
-    event: LlmStreamEvent,
+    event: LlmResponseChunk,
 ) -> Vec<Value> {
     match event {
-        LlmStreamEvent::MessageStart { id, model } => {
+        LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             ensure_responses_created(state)
         }
-        LlmStreamEvent::TextDelta { text, .. } => encode_responses_text_delta(state, text),
-        LlmStreamEvent::ReasoningDelta { text, .. } => {
+        LlmResponseChunk::TextDelta { text, .. } => encode_responses_text_delta(state, text),
+        LlmResponseChunk::ReasoningDelta { text, .. } => {
             encode_responses_reasoning_delta(state, text)
         }
-        LlmStreamEvent::ToolCallDelta {
+        LlmResponseChunk::ToolCallDelta {
             index,
             id,
             name,
             arguments_delta,
         } => encode_responses_tool_delta(state, index, id, name, arguments_delta),
-        LlmStreamEvent::Usage(usage) => {
+        LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
             Vec::new()
         }
-        LlmStreamEvent::MessageStop { reason } => {
+        LlmResponseChunk::MessageStop { reason } => {
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        LlmStreamEvent::Error { message } => {
+        LlmResponseChunk::Error { message } => {
             vec![json!({"type": "error", "message": message})]
         }
     }
@@ -295,7 +296,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Responses function-call item creation into a neutral tool-call delta.
-fn decode_responses_output_item_added(event: &Value) -> Vec<LlmStreamEvent> {
+fn decode_responses_output_item_added(event: &Value) -> Vec<LlmResponseChunk> {
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -306,7 +307,7 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<LlmStreamEvent> {
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
-    vec![LlmStreamEvent::ToolCallDelta {
+    vec![LlmResponseChunk::ToolCallDelta {
         index,
         id: item
             .get("call_id")
@@ -329,7 +330,7 @@ fn decode_responses_output_item_added(event: &Value) -> Vec<LlmStreamEvent> {
 fn decode_responses_output_item_done(
     event: &Value,
     state: &StreamTranslationState,
-) -> Vec<LlmStreamEvent> {
+) -> Vec<LlmResponseChunk> {
     let Some(item) = event.get("item").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -348,7 +349,7 @@ fn decode_responses_output_item_done(
             .map(|tool| tool.arguments.as_str())
             .unwrap_or("");
         if !arguments.is_empty() && arguments != existing {
-            return vec![LlmStreamEvent::ToolCallDelta {
+            return vec![LlmResponseChunk::ToolCallDelta {
                 index,
                 id: None,
                 name: None,

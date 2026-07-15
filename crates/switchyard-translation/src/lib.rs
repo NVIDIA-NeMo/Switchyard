@@ -15,6 +15,7 @@ pub mod policy;
 pub mod stream;
 pub mod util;
 
+pub use switchyard_protocol::stream::LlmResponseChunk;
 pub use switchyard_protocol::{format, llm};
 
 pub use diagnostic::*;

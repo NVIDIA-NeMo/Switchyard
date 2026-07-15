@@ -7,16 +7,16 @@
 //! surfaces as a `CallLlm` step. The agent makes the "real" model call itself and
 //! fulfills the promise — this is the offload/streaming path ("ask, don't call").
 //! The classifier's two steps show up as two `model call:` lines. Run with:
-//!   cargo run -p libsy --example research_agent_core
+//!   cargo run -p libsy-examples --example research_agent_core
 
 use std::error::Error;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ContentBlock, Context, Decision, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet,
-    Message, Request, Response, ResponseOutput, Role, Step,
+    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
+use switchyard_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
 
 const CLASSIFIER: &str = "classifier/model";
@@ -34,14 +34,7 @@ async fn call_model(model: &str) -> Response {
         format!("answer from {model}")
     };
     Response {
-        llm_response: LlmResponse {
-            outputs: vec![ResponseOutput {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Text { text: completion }],
-                stop_reason: None,
-            }],
-            ..LlmResponse::default()
-        },
+        llm_response: LlmResponse::Agg(text_response(None, completion)),
         metadata: None,
     }
 }
@@ -69,11 +62,7 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
-                    model: Some("auto".to_string()),
-                    messages: vec![Message::text(Role::User, step)],
-                    ..LlmRequest::default()
-                },
+                llm_request: text_request(Some("auto".to_string()), step),
                 raw_request: None,
                 metadata: None,
             };
@@ -92,18 +81,9 @@ impl ResearchAgent {
                         notes.push(
                             response
                                 .llm_response
-                                .outputs
-                                .iter()
-                                .flat_map(|output| output.content.iter())
-                                .filter_map(|block| match block {
-                                    ContentBlock::Text { text }
-                                    | ContentBlock::Refusal { text }
-                                    | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                                    ContentBlock::Unknown { raw, .. } => raw.as_str(),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n"),
+                                .agg()
+                                .map(completion_text)
+                                .unwrap_or_default(),
                         );
                     }
                 }

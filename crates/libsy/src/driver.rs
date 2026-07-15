@@ -52,6 +52,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::Context;
+
 use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -139,7 +141,7 @@ impl TypeErasedDriver {
     /// Enqueue `req` as a [`DriverStep::Request`], await the consumer's response, and
     /// downcast it to `RES`. Errors if the stream is closed, the promise is dropped
     /// unfulfilled, the consumer responded with `Err`, or the response was not a `RES`.
-    pub async fn fulfill_request<REQ, RES>(&self, req: REQ) -> Result<RES, BoxErr>
+    pub async fn fulfill_request<REQ, RES>(&self, _ctx: Context, req: REQ) -> Result<RES, BoxErr>
     where
         REQ: Any + Send + 'static,
         RES: Any + Send + 'static,
@@ -170,7 +172,7 @@ impl TypeErasedDriver {
     /// Push a fire-and-forget [`DriverStep::Info`] payload; there is no promise to
     /// await for a response. Awaits channel capacity (the consumer pacing the stream)
     /// and errors only if the stream is closed.
-    pub async fn info<INFO>(&self, info: INFO) -> Result<(), BoxErr>
+    pub async fn info<INFO>(&self, _ctx: Context, info: INFO) -> Result<(), BoxErr>
     where
         INFO: Any + Send + 'static,
     {
@@ -185,7 +187,7 @@ impl TypeErasedDriver {
     /// stream (that happens when every `TypeErasedDriver` clone drops); the consumer treats it
     /// as the last meaningful step. Awaits channel capacity and errors only if the
     /// stream is closed.
-    pub async fn done<T>(&self, payload: T) -> Result<(), BoxErr>
+    pub async fn done<T>(&self, _ctx: Context, payload: T) -> Result<(), BoxErr>
     where
         T: Any + Send + 'static,
     {
@@ -200,7 +202,7 @@ impl TypeErasedDriver {
     /// failure to the consumer (mirrors how the crate's `run_stream` yields an `Err`
     /// step). Awaits channel capacity and errors only if the stream is
     /// already closed.
-    pub async fn fail(&self, err: BoxErr) -> Result<(), BoxErr> {
+    pub async fn fail(&self, _ctx: Context, err: BoxErr) -> Result<(), BoxErr> {
         self.inner
             .step_tx
             .send(Err(err))
@@ -244,8 +246,11 @@ mod tests {
 
         // Producer asks for a u32 -> String on its own task.
         let producer = driver.clone();
-        let handle =
-            tokio::spawn(async move { producer.fulfill_request::<u32, String>(7u32).await });
+        let handle = tokio::spawn(async move {
+            producer
+                .fulfill_request::<u32, String>(Context::default(), 7u32)
+                .await
+        });
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -265,7 +270,7 @@ mod tests {
     async fn info_pushes_a_typed_payload() -> Result<(), BoxErr> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
-        driver.info(42u64).await?;
+        driver.info(Context::default(), 42u64).await?;
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -282,7 +287,9 @@ mod tests {
     async fn done_emits_the_terminal_payload() -> Result<(), BoxErr> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
-        driver.done("finished".to_string()).await?;
+        driver
+            .done(Context::default(), "finished".to_string())
+            .await?;
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -303,7 +310,11 @@ mod tests {
         let stream = driver.stream();
 
         let producer = driver.clone();
-        let handle = tokio::spawn(async move { producer.fulfill_request::<u32, u32>(1u32).await });
+        let handle = tokio::spawn(async move {
+            producer
+                .fulfill_request::<u32, u32>(Context::default(), 1u32)
+                .await
+        });
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -329,8 +340,11 @@ mod tests {
 
         // Producer expects a String back.
         let producer = driver.clone();
-        let handle =
-            tokio::spawn(async move { producer.fulfill_request::<u32, String>(1u32).await });
+        let handle = tokio::spawn(async move {
+            producer
+                .fulfill_request::<u32, String>(Context::default(), 1u32)
+                .await
+        });
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -356,7 +370,11 @@ mod tests {
         let stream = driver.stream();
 
         let producer = driver.clone();
-        let handle = tokio::spawn(async move { producer.fulfill_request::<u32, u32>(5u32).await });
+        let handle = tokio::spawn(async move {
+            producer
+                .fulfill_request::<u32, u32>(Context::default(), 5u32)
+                .await
+        });
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -378,9 +396,12 @@ mod tests {
         // Drop the consumer stream (and its receiver) before producing anything.
         drop(driver.stream());
 
-        assert!(driver.fulfill_request::<u32, u32>(1u32).await.is_err());
-        assert!(driver.info(1u32).await.is_err());
-        assert!(driver.done(1u32).await.is_err());
+        assert!(driver
+            .fulfill_request::<u32, u32>(Context::default(), 1u32)
+            .await
+            .is_err());
+        assert!(driver.info(Context::default(), 1u32).await.is_err());
+        assert!(driver.done(Context::default(), 1u32).await.is_err());
         Ok(())
     }
 
@@ -390,7 +411,11 @@ mod tests {
         let stream = driver.stream();
 
         let producer = driver.clone();
-        let handle = tokio::spawn(async move { producer.fulfill_request::<u32, u32>(1u32).await });
+        let handle = tokio::spawn(async move {
+            producer
+                .fulfill_request::<u32, u32>(Context::default(), 1u32)
+                .await
+        });
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no step")?? {
@@ -415,7 +440,11 @@ mod tests {
             let producer = driver.clone();
             handles.push((
                 i,
-                tokio::spawn(async move { producer.fulfill_request::<usize, usize>(i).await }),
+                tokio::spawn(async move {
+                    producer
+                        .fulfill_request::<usize, usize>(Context::default(), i)
+                        .await
+                }),
             ));
         }
 
@@ -460,7 +489,7 @@ mod tests {
     async fn fail_surfaces_an_error_item_on_the_stream() -> Result<(), BoxErr> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
-        driver.fail("kaboom".into()).await?;
+        driver.fail(Context::default(), "kaboom".into()).await?;
 
         tokio::pin!(stream);
         match stream.next().await.ok_or("no item")? {
@@ -484,7 +513,7 @@ mod tests {
         let producer = driver.clone();
         let handle = tokio::spawn(async move {
             let mut sent = 0usize;
-            while producer.info(sent).await.is_ok() {
+            while producer.info(Context::default(), sent).await.is_ok() {
                 sent += 1;
             }
             sent
