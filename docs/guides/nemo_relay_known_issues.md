@@ -53,11 +53,16 @@ few tokens).
 call *error* propagates and kills the run, so the whole request falls back
 instead of routing strong.
 
-### S4. Classifier prompt includes system boilerplate (libsy-examples, minor)
+### S4. Classifier scores system boilerplate, not the user's question (libsy-examples)
 
-The scoring prompt flattens all text in the request, so agent system content
-(billing headers, system reminders) precedes the user's question. Does not
-fail, but skews scores.
+`LlmClassifierOrchAlgo` builds its scoring prompt by flattening instructions
+and all messages of every role, so agent system content (billing headers,
+system reminders) precedes the user's question. Captured in a live session:
+the prompt opens with Claude Code's billing header rather than the request
+being scored. The preexisting Python classifier
+(`routellm_request_processor.py`) scores only the latest user message; this
+is a behavior change introduced with the rewrite. Requests do not fail, but
+every routing score is computed over the wrong text.
 
 ## NeMo Relay improvements
 
