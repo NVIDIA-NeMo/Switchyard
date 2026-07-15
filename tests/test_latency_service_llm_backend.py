@@ -3,9 +3,11 @@
 
 """Unit tests for :class:`LatencyServiceLLMBackend` (usage case)."""
 
+import json
 import random
 import threading
 import time
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -22,6 +24,7 @@ from switchyard.lib.backends.health_poller import (
     HealthPoller,
 )
 from switchyard.lib.backends.latency_service_llm_backend import (
+    SPEND_LOGS_METADATA_HEADER,
     LatencyServiceLLMBackend,
 )
 from switchyard.lib.config.latency_service_backend_config import (
@@ -30,6 +33,7 @@ from switchyard.lib.config.latency_service_backend_config import (
 )
 from switchyard.lib.proxy_context import (
     CTX_ERROR_SOURCE,
+    CTX_ROUTE_SELECTION,
     CTX_UPSTREAM_HTTP_STATUS,
     CTX_UPSTREAM_MODEL,
     ProxyContext,
@@ -981,6 +985,189 @@ class TestCall:
 
         call_kwargs = backend._clients["openai/gpt-5.5"].acompletion.call_args.kwargs
         assert call_kwargs["model"] == "openai/gpt-5.5"
+
+
+# ---------------------------------------------------------------------------
+# Route-selection spend-logs metadata (tokenomics attribution)
+# ---------------------------------------------------------------------------
+
+
+def _spend_logs_payload(mock: AsyncMock, call_index: int = -1) -> dict[str, object]:
+    """Parse the spend-logs metadata header stamped on one recorded SDK call."""
+    call_kwargs = mock.call_args_list[call_index].kwargs
+    header_value = call_kwargs["extra_headers"][SPEND_LOGS_METADATA_HEADER]
+    payload = json.loads(header_value)
+    assert isinstance(payload, dict)
+    return payload
+
+
+class TestRouteSelectionSpendLogs:
+    """Every upstream attempt is stamped with route-selection metadata.
+
+    The ``x-litellm-spend-logs-metadata`` request header ties a LiteLLM
+    provider spend-log row back to the Switchyard route that selected it, and
+    the successful attempt's selection is recorded on
+    ``ctx.metadata[CTX_ROUTE_SELECTION]`` so the endpoint layer can return the
+    matching ``x-switchyard-*`` response headers.
+    """
+
+    async def test_outbound_header_carries_route_selection(self):
+        """The outbound header records the full selection for the chosen endpoint."""
+        config = LatencyServiceBackendConfig(
+            latency_service_url=LATENCY_SERVICE_URL,
+            endpoints=[
+                LatencyServiceEndpoint(
+                    model="openai/gpt-5.5",
+                    upstream_model="openai/openai/gpt-5.5",
+                    base_url="https://inference-api.test/v1",
+                    api_key="k",
+                ),
+            ],
+        )
+        backend = _make_backend(config)
+        backend._clients["openai/gpt-5.5"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+
+        await backend.call(ProxyContext(), _openai_request(model="nvidia/switchyard/gpt-5.5"))
+
+        payload = _spend_logs_payload(backend._clients["openai/gpt-5.5"].acompletion)
+        assert payload["router_model"] == "nvidia/switchyard/gpt-5.5"
+        assert payload["router_strategy"] == "latency"
+        assert payload["router_selected_endpoint"] == "openai/gpt-5.5"
+        assert payload["router_selected_model"] == "openai/openai/gpt-5.5"
+        assert payload["router_selected_provider"] == "openai"
+        # Must parse as a UUID — the join key between spend-log rows.
+        uuid.UUID(str(payload["router_correlation_id"]))
+
+    async def test_ctx_records_selection_matching_outbound_header(self):
+        """ctx records exactly the payload the wire header carried."""
+        backend = _make_backend(_config("model-A"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+
+        ctx = ProxyContext()
+        await backend.call(ctx, _openai_request())
+
+        payload = _spend_logs_payload(backend._clients["model-A"].acompletion)
+        assert ctx.metadata[CTX_ROUTE_SELECTION] == payload
+        # Endpoint id without a provider prefix: the provider segment
+        # degenerates to the whole id (split on the first "/").
+        assert payload["router_selected_provider"] == "model-A"
+
+    async def test_failover_restamps_selection_and_keeps_correlation_id(self):
+        """Each attempt is stamped with its own endpoint under one correlation id."""
+        backend = _make_backend(_config("model-A", "model-B"))
+        _set_health(
+            backend,
+            {
+                "model-A": EndpointHealthStatus.HEALTHY,
+                "model-B": EndpointHealthStatus.DEGRADED,
+            },
+        )
+        failing = AsyncMock(side_effect=_api_status_error(500))
+        succeeding = AsyncMock(return_value=_make_completion())
+        backend._clients["model-A"].acompletion = failing
+        backend._clients["model-B"].acompletion = succeeding
+
+        ctx = ProxyContext()
+        await backend.call(ctx, _openai_request())
+
+        first = _spend_logs_payload(failing)
+        second = _spend_logs_payload(succeeding)
+        # Each attempt records the endpoint it actually hit…
+        assert first["router_selected_endpoint"] == "model-A"
+        assert second["router_selected_endpoint"] == "model-B"
+        # …while sharing one correlation id per client request.
+        assert first["router_correlation_id"] == second["router_correlation_id"]
+        # ctx carries the selection that served the request, not the failure.
+        assert ctx.metadata[CTX_ROUTE_SELECTION] == second
+
+    async def test_correlation_id_is_fresh_per_request(self):
+        """Two client requests never share a correlation id."""
+        backend = _make_backend(_config("model-A"))
+        mock = AsyncMock(return_value=_make_completion())
+        backend._clients["model-A"].acompletion = mock
+
+        await backend.call(ProxyContext(), _openai_request())
+        await backend.call(ProxyContext(), _openai_request())
+
+        first = _spend_logs_payload(mock, call_index=0)
+        second = _spend_logs_payload(mock, call_index=1)
+        assert first["router_correlation_id"] != second["router_correlation_id"]
+
+    async def test_router_model_falls_back_to_configured_route_model(self):
+        """A model-less client body attributes to the configured route id."""
+        backend = _make_backend(
+            _config("model-A", route_model="nvidia/switchyard/gpt-5.5")
+        )
+        backend._clients["model-A"].acompletion = AsyncMock(
+            return_value=_make_completion()
+        )
+
+        body: dict = {"messages": [{"role": "user", "content": "hi"}]}
+        await backend.call(ProxyContext(), ChatRequest.openai_chat(body))
+
+        payload = _spend_logs_payload(backend._clients["model-A"].acompletion)
+        assert payload["router_model"] == "nvidia/switchyard/gpt-5.5"
+
+    async def test_no_selection_recorded_when_all_attempts_fail(self):
+        """No billed success → no selection recorded on ctx."""
+        backend = _make_backend(_config("model-A"))
+        backend._clients["model-A"].acompletion = AsyncMock(
+            side_effect=_api_status_error(401),
+        )
+
+        ctx = ProxyContext()
+        with pytest.raises(openai.APIStatusError):
+            await backend.call(ctx, _openai_request())
+
+        assert CTX_ROUTE_SELECTION not in ctx.metadata
+
+    async def test_responses_surface_is_stamped_too(self):
+        """The Responses-API surface is stamped like the Chat surface."""
+        backend = _make_backend(_config("model-A", request_type="openai_responses"))
+        backend._clients["model-A"].aresponses = AsyncMock(
+            return_value={"id": "resp-test", "object": "response", "output": []}
+        )
+
+        await backend.call(
+            ProxyContext(),
+            ChatRequest.openai_responses({"model": "incoming-model", "input": "hi"}),
+        )
+
+        payload = _spend_logs_payload(backend._clients["model-A"].aresponses)
+        assert payload["router_selected_endpoint"] == "model-A"
+        assert payload["router_strategy"] == "latency"
+
+    async def test_cased_spoof_of_spend_logs_header_is_stripped(self):
+        """A differently-cased spoof key cannot ride client extra_headers to the wire.
+
+        Header names are case-insensitive on the wire while dict merges are
+        not: exactly one instance of the protected header — ours — may reach
+        the SDK, while benign client headers still pass through.
+        """
+        backend = _make_backend(_config("model-A"))
+        mock = AsyncMock(return_value=_make_completion())
+        backend._clients["model-A"].acompletion = mock
+
+        await backend.call(
+            ProxyContext(),
+            _openai_request(
+                extra_headers={
+                    "X-LiteLLM-Spend-Logs-Metadata": "spoofed",
+                    "x-client-tag": "42",
+                },
+            ),
+        )
+
+        headers = mock.call_args.kwargs["extra_headers"]
+        spoof_keys = [k for k in headers if k.lower() == SPEND_LOGS_METADATA_HEADER]
+        assert spoof_keys == [SPEND_LOGS_METADATA_HEADER]
+        payload = _spend_logs_payload(mock)
+        assert payload["router_selected_endpoint"] == "model-A"
+        assert headers["x-client-tag"] == "42"
 
 
 # ---------------------------------------------------------------------------

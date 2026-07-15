@@ -151,11 +151,18 @@ class _OpenAICompatStub:
             protocol_version = "HTTP/1.1"
 
             def do_POST(self) -> None:
+                """Record the request (path, body, headers) and pop the queued reply."""
                 length = int(self.headers.get("content-length", "0"))
                 raw = self.rfile.read(length)
                 body = json.loads(raw.decode("utf-8"))
                 with owner._lock:
-                    owner._requests.append({"path": self.path, "body": body})
+                    # Header names lower-cased so tests can look them up
+                    # without caring how the client cased them on the wire.
+                    owner._requests.append({
+                        "path": self.path,
+                        "body": body,
+                        "headers": {k.lower(): v for k, v in self.headers.items()},
+                    })
                     if owner._responses:
                         status, content, content_type = owner._responses.pop(0)
                     else:
@@ -174,7 +181,13 @@ class _OpenAICompatStub:
                 return None
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # ``shutdown()`` blocks up to serve_forever's poll interval; the 0.5s
+        # default adds half a second of idle teardown to every test using the
+        # stub, so poll frequently.
+        server = self._server
+        self._thread = threading.Thread(
+            target=lambda: server.serve_forever(poll_interval=0.05), daemon=True
+        )
         self._thread.start()
         return self
 
