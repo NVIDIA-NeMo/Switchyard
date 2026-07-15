@@ -118,7 +118,8 @@ passthrough choices. The judge is internal to the route and is not exposed as
 a client-selectable model.
 
 If the selected tier exceeds its context window, Switchyard retries once on
-`fallback_target_on_evict`, which must be `strong` or `weak`. See
+`fallback_target_on_evict`, which must match one of the configured tier ids
+(`strong` / `weak` unless the targets set their own `id`). See
 [Context-Window Handling](../operations/context_window.md).
 
 ## Useful options
@@ -130,7 +131,7 @@ If the selected tier exceeds its context window, Switchyard retries once on
 | `judge.confirmations` | `1` | One positive verdict is too eager and escalation should require repeated evidence. |
 | `judge.confirmation_window` | `1` | Intermittent trouble should remain eligible for confirmation across negative verdicts. |
 | `judge.disable_reasoning` | `true` | Set to `false` when a reasoning judge benefits from thinking despite the added latency. The thinking-off hint is only sent to models that accept it (Claude/Bedrock judges never receive it). |
-| `judge.max_completion_tokens` | auto | The judge's completion budget needs an explicit value. The default follows the reasoning mode: `128` with thinking off, `4096` with thinking on (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn). |
+| `judge.max_completion_tokens` | auto | The judge's completion budget needs an explicit value. The default follows the reasoning mode: `128` when the thinking-off hint is sent, `4096` otherwise (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn). Judges that never accept the hint (Claude/Bedrock) also get the larger ceiling — it is a cap, not spend. |
 | `judge.dump_verdicts` | `false` | Benchmark runs need per-turn `escalation_verdict=` stderr lines (includes a first-user `task_hint` snippet). Keep off in production; routing telemetry flows through the stats endpoints. |
 | `judge.recent_turn_window` | `14` | The judge needs a wider or narrower trailing-message window. |
 | `judge.window_message_chars` | `300` | More tool-output detail should survive per-message truncation. |
@@ -158,10 +159,11 @@ The snapshot reports per-model calls, tokens, latency, and cost for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket so
 their token cost, latency, and errors remain visible as routing overhead.
 
-Each judged turn also writes an `escalation_verdict={...}` JSON line to server
-stderr. The record includes the decision, reason, turn, confirmation state,
-and judge latency. After the latch fires, later turns skip the judge and report
-the pinned routing source in request metadata.
+With `judge.dump_verdicts: true` (off by default), each judged turn also
+writes an `escalation_verdict={...}` JSON line to server stderr. The record
+includes the decision, reason, turn, confirmation state, and judge latency.
+After the latch fires, later turns skip the judge and report the pinned
+routing source in request metadata.
 
 ## Repeated benchmark trials
 
