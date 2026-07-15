@@ -192,35 +192,39 @@ fn attributes_match<'a>(
         .all(|(key, value)| present.iter().any(|(k, v)| k == key && v == value))
 }
 
+/// Latest (max) value for a `libsy`-scoped metric across snapshots, with
+/// `extract` pulling the matching data points' values out of one metric's
+/// aggregated data. Counters and histogram counts are cumulative, so the max
+/// across snapshots is the most recent value.
+fn latest_metric_value(
+    snapshots: &[ResourceMetrics],
+    name: &str,
+    extract: impl Fn(&AggregatedMetrics) -> Vec<u64>,
+) -> Option<u64> {
+    snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.scope_metrics())
+        .filter(|scope| scope.scope().name() == "libsy")
+        .flat_map(|scope| scope.metrics())
+        .filter(|metric| metric.name() == name)
+        .flat_map(|metric| extract(metric.data()))
+        .max()
+}
+
 /// Latest cumulative value of a `u64` counter for the given attribute set.
 fn u64_counter_value(
     snapshots: &[ResourceMetrics],
     name: &str,
     wanted: &[(&str, &str)],
 ) -> Option<u64> {
-    let mut latest = None;
-    for snapshot in snapshots {
-        for scope in snapshot.scope_metrics() {
-            if scope.scope().name() != "libsy" {
-                continue;
-            }
-            for metric in scope.metrics() {
-                if metric.name() != name {
-                    continue;
-                }
-                if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
-                    for point in sum.data_points() {
-                        if attributes_match(point.attributes(), wanted) {
-                            // Cumulative counters only grow; max = most recent.
-                            latest =
-                                Some(latest.map_or(point.value(), |v: u64| v.max(point.value())));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    latest
+    latest_metric_value(snapshots, name, |data| match data {
+        AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+            .data_points()
+            .filter(|point| attributes_match(point.attributes(), wanted))
+            .map(|point| point.value())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// Latest cumulative sample count of an `f64` histogram for the attribute set.
@@ -229,28 +233,14 @@ fn f64_histogram_count(
     name: &str,
     wanted: &[(&str, &str)],
 ) -> Option<u64> {
-    let mut latest = None;
-    for snapshot in snapshots {
-        for scope in snapshot.scope_metrics() {
-            if scope.scope().name() != "libsy" {
-                continue;
-            }
-            for metric in scope.metrics() {
-                if metric.name() != name {
-                    continue;
-                }
-                if let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = metric.data() {
-                    for point in histogram.data_points() {
-                        if attributes_match(point.attributes(), wanted) {
-                            latest =
-                                Some(latest.map_or(point.count(), |v: u64| v.max(point.count())));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    latest
+    latest_metric_value(snapshots, name, |data| match data {
+        AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
+            .data_points()
+            .filter(|point| attributes_match(point.attributes(), wanted))
+            .map(|point| point.count())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// Decision with a fixed model and reasoning string.
