@@ -51,18 +51,17 @@ few tokens).
 
 `LlmClassifierOrchAlgo` fails open only on an unparseable score. A classifier
 call *error* propagates and kills the run, so the whole request falls back
-instead of routing strong.
+instead of routing strong. The previous `llm-routing` profile failed open on
+classifier errors by default (`classifier_fail_open`).
 
-### S4. Classifier scores system boilerplate, not the user's question (libsy-examples)
+### S4. Classifier input is flattened and untrimmed (libsy-examples)
 
-`LlmClassifierOrchAlgo` builds its scoring prompt by flattening instructions
-and all messages of every role, so agent system content (billing headers,
-system reminders) precedes the user's question. Captured in a live session:
-the prompt opens with Claude Code's billing header rather than the request
-being scored. The preexisting Python classifier
-(`routellm_request_processor.py`) scores only the latest user message; this
-is a behavior change introduced with the rewrite. Requests do not fail, but
-every routing score is computed over the wrong text.
+`LlmClassifierOrchAlgo` flattens instructions and all messages of every role
+into one string, and includes the full conversation on every score. The
+previous `llm-routing` classifier sent a structured, trimmed selection
+(system messages, first user message, recent turns) with a task-specific
+prompt and structured output. Requests do not fail, but scores are computed
+over unstructured, unbounded input.
 
 ## NeMo Relay improvements
 
