@@ -592,10 +592,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#launching-claude-code-tested-and-where-it-breaks" class="md-nav__link">
+  <a href="#launching-claude-code-the-end-to-end-we-want" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Launching Claude Code (tested), and where it breaks
+        Launching Claude Code: the end-to-end we want
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-against-libsy-main-verified-2026-07-15-fresh-public-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status against libsy main (verified 2026-07-15, fresh public checkout)
       
     </span>
   </a>
@@ -1218,10 +1229,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#launching-claude-code-tested-and-where-it-breaks" class="md-nav__link">
+  <a href="#launching-claude-code-the-end-to-end-we-want" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Launching Claude Code (tested), and where it breaks
+        Launching Claude Code: the end-to-end we want
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-against-libsy-main-verified-2026-07-15-fresh-public-checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status against libsy main (verified 2026-07-15, fresh public checkout)
       
     </span>
   </a>
@@ -1262,7 +1284,7 @@
 <h1 id="nemo-relay-recipe">NeMo Relay Recipe<a class="headerlink" href="#nemo-relay-recipe" title="Permanent link">&para;</a></h1>
 <p>This recipe shows how to run Switchyard <strong>as a library</strong> inside
 <a href="https://github.com/NVIDIA/NeMo-Relay">NeMo Relay</a>, so routing decisions are
-made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/31f4f71677be0f88afe672e32af9c83700a46dd5/crates/libsy/README.md">libsy</a>
+made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9c94239640f0e2d4e02663386d8adbe7322b1daa/crates/libsy/README.md">libsy</a>
 while Relay keeps ownership of the actual LLM calls. No <code>switchyard serve</code>
 process is involved.</p>
 <blockquote>
@@ -1370,20 +1392,83 @@ through Relay dispatch.</p>
 </span></code></pre></div>
 <p>To point at real providers, replace the target <code>base_url</code> / <code>model</code> values and
 supply credentials with per-target <code>headers</code> / <code>header_env</code>.</p>
-<h2 id="launching-claude-code-tested-and-where-it-breaks">Launching Claude Code (tested), and where it breaks<a class="headerlink" href="#launching-claude-code-tested-and-where-it-breaks" title="Permanent link">&para;</a></h2>
-<p>From a project directory containing the two config files below,
-<code>nemo-relay claude</code> opens the normal interactive Claude Code TUI with the
-plugin active. Verified end to end on 2026-07-15 with Relay branch
-<code>feat/libsy-decision-backend</code> (<a href="https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend">fork</a>).</p>
-<p><code>.nemo-relay/config.toml</code>:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[agents.claude]</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude&quot;</span>
+<h2 id="launching-claude-code-the-end-to-end-we-want">Launching Claude Code: the end-to-end we want<a class="headerlink" href="#launching-claude-code-the-end-to-end-we-want" title="Permanent link">&para;</a></h2>
+<p>The target experience: from a project directory with the two files below,
+<code>nemo-relay claude</code> opens the normal interactive Claude Code TUI, and every
+LLM call the agent makes is scored by the classifier and routed strong/weak
+in-process, with the full decision trail in ATOF events. Everything here is
+copy-pasteable; the only unmet dependency is libsy streaming (see the status
+table).</p>
+<p>Build Relay with the plugin (reference branch:
+<a href="https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend">feat/libsy-decision-backend</a>):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span>feat/libsy-decision-backend<span class="w"> </span>https://github.com/ryan-lempka/NeMo-Relay.git
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nb">cd</span><span class="w"> </span>NeMo-Relay
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nv">RUSTUP_TOOLCHAIN</span><span class="o">=</span><span class="m">1</span>.96.1<span class="w"> </span>cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>nemo-relay-cli<span class="w"> </span>--features<span class="w"> </span>switchyard
 </span></code></pre></div>
-<p><code>.nemo-relay/plugins.toml</code>: the libsy component config above, with
-Anthropic-protocol targets (e.g. a Haiku classifier routing between Opus and
-Sonnet) plus an <code>observability</code> component with a <code>file</code> ATOF sink to see
-routing events.</p>
-<p>What works today, against libsy <code>main</code>:</p>
+<p><code>.nemo-relay/config.toml</code>:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[agents.claude]</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude&quot;</span>
+</span></code></pre></div>
+<p><code>.nemo-relay/plugins.toml</code> (complete; Haiku scores each request, at or above
+0.5 routes to Opus, below routes to Sonnet; Claude Code's own auth headers
+pass through to Anthropic):</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">[[components]]</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="k">[components.config]</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;enforce&quot;</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">decision_backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;libsy&quot;</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">request_materialization</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;summary_only&quot;</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="n">context_mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;payload_only&quot;</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="n">enabled_inbound_profiles</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;anthropic_messages&quot;</span><span class="p">]</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="k">[components.config.libsy]</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="n">algorithm</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="n">threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="k">[components.config.default_targets]</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="n">anthropic_messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a><span class="k">[components.config.targets.classifier]</span>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-haiku-4-5-20251001&quot;</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="n">protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic_messages&quot;</span>
+</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/v1/messages&quot;</span>
+</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.anthropic.com&quot;</span>
+</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>
+</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a><span class="k">[components.config.targets.strong]</span>
+</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-4-8&quot;</span>
+</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a><span class="n">protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic_messages&quot;</span>
+</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/v1/messages&quot;</span>
+</span><span id="__span-5-34"><a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.anthropic.com&quot;</span>
+</span><span id="__span-5-35"><a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a>
+</span><span id="__span-5-36"><a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a><span class="k">[components.config.targets.weak]</span>
+</span><span id="__span-5-37"><a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-sonnet-5&quot;</span>
+</span><span id="__span-5-38"><a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a><span class="n">protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic_messages&quot;</span>
+</span><span id="__span-5-39"><a id="__codelineno-5-39" name="__codelineno-5-39" href="#__codelineno-5-39"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/v1/messages&quot;</span>
+</span><span id="__span-5-40"><a id="__codelineno-5-40" name="__codelineno-5-40" href="#__codelineno-5-40"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.anthropic.com&quot;</span>
+</span><span id="__span-5-41"><a id="__codelineno-5-41" name="__codelineno-5-41" href="#__codelineno-5-41"></a>
+</span><span id="__span-5-42"><a id="__codelineno-5-42" name="__codelineno-5-42" href="#__codelineno-5-42"></a><span class="k">[[components]]</span>
+</span><span id="__span-5-43"><a id="__codelineno-5-43" name="__codelineno-5-43" href="#__codelineno-5-43"></a><span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;observability&quot;</span>
+</span><span id="__span-5-44"><a id="__codelineno-5-44" name="__codelineno-5-44" href="#__codelineno-5-44"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-5-45"><a id="__codelineno-5-45" name="__codelineno-5-45" href="#__codelineno-5-45"></a>
+</span><span id="__span-5-46"><a id="__codelineno-5-46" name="__codelineno-5-46" href="#__codelineno-5-46"></a><span class="k">[components.config.atof]</span>
+</span><span id="__span-5-47"><a id="__codelineno-5-47" name="__codelineno-5-47" href="#__codelineno-5-47"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-5-48"><a id="__codelineno-5-48" name="__codelineno-5-48" href="#__codelineno-5-48"></a>
+</span><span id="__span-5-49"><a id="__codelineno-5-49" name="__codelineno-5-49" href="#__codelineno-5-49"></a><span class="k">[[components.config.atof.sinks]]</span>
+</span><span id="__span-5-50"><a id="__codelineno-5-50" name="__codelineno-5-50" href="#__codelineno-5-50"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;file&quot;</span>
+</span><span id="__span-5-51"><a id="__codelineno-5-51" name="__codelineno-5-51" href="#__codelineno-5-51"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;append&quot;</span>
+</span></code></pre></div>
+<p>Launch and inspect:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/debug/nemo-relay<span class="w"> </span>claude<span class="w">          </span><span class="c1"># interactive TUI</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>grep<span class="w"> </span>switchyard.routing<span class="w"> </span>nemo-relay-events-*.jsonl
+</span></code></pre></div>
+<h2 id="status-against-libsy-main-verified-2026-07-15-fresh-public-checkout">Status against libsy <code>main</code> (verified 2026-07-15, fresh public checkout)<a class="headerlink" href="#status-against-libsy-main-verified-2026-07-15-fresh-public-checkout" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
@@ -1392,6 +1477,10 @@ routing events.</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>Fresh clone builds hermetically; <code>run-libsy-e2e.sh</code> passes</td>
+<td>works</td>
+</tr>
 <tr>
 <td>TUI launches; all traffic flows through the gateway and plugin</td>
 <td>works</td>
@@ -1410,16 +1499,22 @@ routing events.</p>
 </tr>
 </tbody>
 </table>
-<p>The break is in libsy's response contract, not in Relay:
+<p>The break, demonstrated with the same prompt sent both ways through the demo
+stack:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>buffered &quot;This is a hard problem: ...&quot;  -&gt; classifier scored 0.9 -&gt; served by strong-model
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>streamed &quot;This is a hard problem: ...&quot;  -&gt; no classifier call    -&gt; served by weak-model (trusted fallback)
+</span></code></pre></div>
+<p>The wrong model answers the streamed request purely because of transport
+framing. The cause is libsy's response contract on <code>main</code>:
 <code>CallLlmRequest::respond</code> and <code>Step::ReturnToAgent</code> carry only buffered
 responses, so no host can pass a live token stream through an algorithm.
-Because Claude Code streams its interactive calls, those requests emit
+Claude Code streams its interactive calls, so those requests emit
 <code>switchyard.routing.error</code> (<code>libsy_stream</code>) and dispatch the trusted
-per-protocol fallback (<code>switchyard.routing.fallback</code>,
-<code>libsy_streaming_unsupported</code>) instead of a libsy decision. Streaming support
-exists on the unmerged <code>grclark/simple-proxy</code> branch (<code>LlmResponse</code> becomes
-buffered-or-stream); once it lands on <code>main</code>, the Relay plugin can fulfill
-promises with live streams and this table's last row flips.</p>
+per-protocol fallback (<code>libsy_streaming_unsupported</code>) instead of a libsy
+decision. Streaming support exists on the unmerged <code>grclark/simple-proxy</code>
+branch (<code>LlmResponse</code> becomes buffered-or-stream); when it lands on <code>main</code>,
+the Relay plugin can fulfill promises with live streams and the last table
+row flips without config changes.</p>
 <h2 id="the-embedding-contract">The embedding contract<a class="headerlink" href="#the-embedding-contract" title="Permanent link">&para;</a></h2>
 <p>The host (Relay) needs exactly three things from libsy:</p>
 <ul>
@@ -1430,7 +1525,7 @@ promises with live streams and this table's last row flips.</p>
 <li>The conversation IR (<code>LlmRequest</code> / <code>LlmResponse</code> from <code>libsy-protocol</code>),
   which Relay's plugin already speaks through <code>switchyard-translation</code>.</li>
 </ul>
-<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/31f4f71677be0f88afe672e32af9c83700a46dd5/crates/libsy/README.md">libsy README</a>
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9c94239640f0e2d4e02663386d8adbe7322b1daa/crates/libsy/README.md">libsy README</a>
 for the full API walkthrough.</p>
 
 
