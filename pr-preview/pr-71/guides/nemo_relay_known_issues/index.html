@@ -11,28 +11,28 @@
       
       
       
-        <link rel="prev" href="../core_concepts/">
+        <link rel="prev" href="../nemo_relay/">
       
       
-        <link rel="next" href="../routing_algorithms/overview/">
+        <link rel="next" href="../../skill_distillation/">
       
       
         
       
       
-      <link rel="icon" href="../assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>Architecture - Switchyard</title>
+        <title>NeMo Relay: Known Issues - Switchyard</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,9 +51,9 @@
       
     
     
-      <link rel="stylesheet" href="../stylesheets/nvidia.css">
+      <link rel="stylesheet" href="../../stylesheets/nvidia.css">
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#switchyard-architecture" class="md-skip">
+        <a href="#nemo-relay-known-issues" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +94,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="Switchyard" class="md-header__button md-logo" aria-label="Switchyard" data-md-component="logo">
+    <a href="../.." title="Switchyard" class="md-header__button md-logo" aria-label="Switchyard" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Architecture
+              NeMo Relay: Known Issues
             
           </span>
         </div>
@@ -232,7 +232,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="Switchyard" class="md-nav__button md-logo" aria-label="Switchyard" data-md-component="logo">
+    <a href="../.." title="Switchyard" class="md-nav__button md-logo" aria-label="Switchyard" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -262,7 +262,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -341,7 +341,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../getting_started/" class="md-nav__link">
+      <a href="../../getting_started/" class="md-nav__link">
         
   
   
@@ -369,7 +369,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../known_issues/" class="md-nav__link">
+      <a href="../../known_issues/" class="md-nav__link">
         
   
   
@@ -377,177 +377,6 @@
     
   
     Known Issues in 0.1.0
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
-        
-          
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Guides
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_3">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Guides
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../guides/agent_launchers/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent Launchers
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../guides/nemo_relay/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    NeMo Relay
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../guides/nemo_relay_known_issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    NeMo Relay: Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../skill_distillation/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Skill Distillation
   
 
     
@@ -590,17 +419,17 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
             
   
   
   <span class="md-ellipsis">
     
   
-    Concepts
+    Guides
   
 
     
@@ -611,12 +440,12 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Concepts
+    Guides
   
 
           </label>
@@ -629,14 +458,42 @@
   
   
     <li class="md-nav__item">
-      <a href="../core_concepts/" class="md-nav__link">
+      <a href="../agent_launchers/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Core Concepts
+    Agent Launchers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../nemo_relay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    NeMo Relay
   
 
     
@@ -673,7 +530,7 @@
   <span class="md-ellipsis">
     
   
-    Architecture
+    NeMo Relay: Known Issues
   
 
     
@@ -691,7 +548,7 @@
   <span class="md-ellipsis">
     
   
-    Architecture
+    NeMo Relay: Known Issues
   
 
     
@@ -719,10 +576,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#system-context" class="md-nav__link">
+  <a href="#1-libsy-has-no-streaming-response-path" class="md-nav__link">
     <span class="md-ellipsis">
       
-        System Context
+        1. libsy has no streaming response path
       
     </span>
   </a>
@@ -730,10 +587,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#request-lifecycle" class="md-nav__link">
+  <a href="#2-classifier-scoring-call-rejected-upstream-http-400" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Request Lifecycle
+        2. Classifier scoring call rejected upstream (HTTP 400)
       
     </span>
   </a>
@@ -741,38 +598,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#backend-wire-format" class="md-nav__link">
+  <a href="#3-no-fail-open-on-classifier-call-errors" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Backend Wire Format
+        3. No fail-open on classifier call errors
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Backend Wire Format">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#auto-decision-tree" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AUTO Decision Tree
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#related-documentation" class="md-nav__link">
+  <a href="#4-provider-errors-are-opaque-in-routing-events" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Related Documentation
+        4. Provider errors are opaque in routing events
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toolchain-note" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Toolchain note
       
     </span>
   </a>
@@ -783,6 +634,149 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../skill_distillation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Distillation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core_concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -854,7 +848,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/overview/" class="md-nav__link">
+      <a href="../../routing_algorithms/overview/" class="md-nav__link">
         
   
   
@@ -882,7 +876,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/random_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/random_routing/" class="md-nav__link">
         
   
   
@@ -910,7 +904,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
         
   
   
@@ -938,7 +932,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/sticky_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/sticky_routing/" class="md-nav__link">
         
   
   
@@ -966,7 +960,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
+      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
   
@@ -1053,7 +1047,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../operations/context_window/" class="md-nav__link">
+      <a href="../../operations/context_window/" class="md-nav__link">
         
   
   
@@ -1140,7 +1134,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cli_reference/" class="md-nav__link">
+      <a href="../../cli_reference/" class="md-nav__link">
         
   
   
@@ -1197,10 +1191,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#system-context" class="md-nav__link">
+  <a href="#1-libsy-has-no-streaming-response-path" class="md-nav__link">
     <span class="md-ellipsis">
       
-        System Context
+        1. libsy has no streaming response path
       
     </span>
   </a>
@@ -1208,10 +1202,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#request-lifecycle" class="md-nav__link">
+  <a href="#2-classifier-scoring-call-rejected-upstream-http-400" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Request Lifecycle
+        2. Classifier scoring call rejected upstream (HTTP 400)
       
     </span>
   </a>
@@ -1219,38 +1213,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#backend-wire-format" class="md-nav__link">
+  <a href="#3-no-fail-open-on-classifier-call-errors" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Backend Wire Format
+        3. No fail-open on classifier call errors
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Backend Wire Format">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#auto-decision-tree" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AUTO Decision Tree
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#related-documentation" class="md-nav__link">
+  <a href="#4-provider-errors-are-opaque-in-routing-events" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Related Documentation
+        4. Provider errors are opaque in routing events
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toolchain-note" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Toolchain note
       
     </span>
   </a>
@@ -1277,116 +1265,80 @@
   
 
 
-<h1 id="switchyard-architecture">Switchyard Architecture<a class="headerlink" href="#switchyard-architecture" title="Permanent link">&para;</a></h1>
-<p>Switchyard is an LLM traffic proxy that sits between clients and model
-backends. It keeps the client-facing API stable while applying routing policy,
-translating provider formats, and handling configured fallbacks.</p>
-<h2 id="system-context">System Context<a class="headerlink" href="#system-context" title="Permanent link">&para;</a></h2>
-<pre class="mermaid"><code>flowchart TB
-    clients["Clients&lt;br/&gt;Coding agents, SDKs, applications"]
-    switchyard["Switchyard&lt;br/&gt;Local proxy, shared service, or embedded runtime"]
-    backends["Model backends&lt;br/&gt;Hosted providers, private endpoints, local models"]
-
-    clients &lt;--&gt;|"OpenAI and Anthropic API formats"| switchyard
-    switchyard &lt;--&gt;|"Provider-compatible requests and responses"| backends</code></pre>
-<p>Clients connect using supported OpenAI or Anthropic API formats. Switchyard can
-route a request to a backend with a different native format and still return the
-response shape expected by the client.</p>
-<h2 id="request-lifecycle">Request Lifecycle<a class="headerlink" href="#request-lifecycle" title="Permanent link">&para;</a></h2>
-<pre class="mermaid"><code>flowchart TB
-    request["1. Receive&lt;br/&gt;Accept the client API format"]
-    normalize["2. Normalize&lt;br/&gt;Prepare a provider-independent request"]
-    route["3. Route&lt;br/&gt;Apply policy and select a model endpoint"]
-    execute["4. Execute&lt;br/&gt;Call the backend and apply configured fallback"]
-    respond["5. Return&lt;br/&gt;Translate the response or stream for the client"]
-
-    request --&gt; normalize --&gt; route --&gt; execute --&gt; respond</code></pre>
-<p>Routing policy determines which model or endpoint receives a request. Depending
-on the selected strategy, that decision can use fixed weights, a classifier,
-request signals, or conversation affinity. See the
-<a href="../routing_algorithms/overview/">Routing Overview</a> for the available strategies.</p>
-<h2 id="backend-wire-format">Backend Wire Format<a class="headerlink" href="#backend-wire-format" title="Permanent link">&para;</a></h2>
-<p><code>BackendFormat</code> controls the upstream endpoint Switchyard calls. Explicit
-formats select an endpoint directly and do not run capability probes.</p>
+<h1 id="nemo-relay-known-issues">NeMo Relay: Known Issues<a class="headerlink" href="#nemo-relay-known-issues" title="Permanent link">&para;</a></h1>
+<p>What stands between the <a href="../nemo_relay/">NeMo Relay Recipe</a> and a fully routed
+interactive Claude Code session. Status verified 2026-07-15 against libsy
+<code>main</code> from a fresh public checkout.</p>
 <table>
 <thead>
 <tr>
-<th>Format</th>
-<th>Upstream behavior</th>
-<th>Use when</th>
+<th>Step</th>
+<th>Status</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>ANTHROPIC</code></td>
-<td>Always sends to <code>/v1/messages</code>. No probe.</td>
-<td>You know the upstream is Anthropic-native (Anthropic API, NIM Claude routes).</td>
+<td>Fresh clone builds hermetically; Path A e2e passes</td>
+<td>works</td>
 </tr>
 <tr>
-<td><code>RESPONSES</code></td>
-<td>Always sends to <code>/v1/responses</code>. No probe.</td>
-<td>You know the upstream supports the OpenAI Responses API. Fails on NIM / non-OpenAI upstreams.</td>
+<td>Claude Code TUI launches; all traffic flows through the gateway and plugin</td>
+<td>works</td>
 </tr>
 <tr>
-<td><code>OPENAI</code></td>
-<td>Always sends to <code>/v1/chat/completions</code>. No probe.</td>
-<td>You know the upstream is OpenAI-compatible (NIM, OpenRouter, etc). Safe universal choice.</td>
+<td>Requests carrying <code>cache_control</code> reach the router</td>
+<td>works</td>
 </tr>
 <tr>
-<td><code>AUTO</code></td>
-<td>Probes at startup, picks best format (see below).</td>
-<td>Upstream is unknown or varies across deployments. Used by Claude Code and Codex launchers. OpenClaw is intentionally pinned to <code>OPENAI</code>.</td>
+<td>Buffered requests routed by the libsy classifier</td>
+<td>works</td>
 </tr>
 <tr>
-<td><em>(omitted)</em></td>
-<td>Defaults to <code>OPENAI</code> — no probe, no fast-path. Silently uses Chat Completions, which is wrong for Anthropic/Bedrock models. Always set <code>format:</code> explicitly.</td>
-<td></td>
+<td>Streamed requests routed by libsy</td>
+<td><strong>breaks</strong></td>
 </tr>
 <tr>
-<td>Claude Code and Codex launchers use <code>AUTO</code> for their single-model targets.</td>
-<td></td>
-<td></td>
-</tr>
-<tr>
-<td>OpenClaw is intentionally pinned to <code>OPENAI</code> for its equivalent target.</td>
-<td></td>
-<td></td>
+<td>Classifier scoring call accepted by Anthropic</td>
+<td><strong>breaks</strong></td>
 </tr>
 </tbody>
 </table>
-<h3 id="auto-decision-tree">AUTO Decision Tree<a class="headerlink" href="#auto-decision-tree" title="Permanent link">&para;</a></h3>
-<pre class="mermaid"><code>flowchart TB
-    auto["BackendFormat.AUTO"]
-    messages{"/v1/messages works?"}
-    anthropic["ANTHROPIC&lt;br/&gt;/v1/messages"]
-    responses{"/v1/responses works?"}
-    responses_format["RESPONSES&lt;br/&gt;/v1/responses"]
-    openai["OPENAI&lt;br/&gt;/v1/chat/completions fallback"]
-
-    auto --&gt;|"Probe /v1/messages"| messages
-    messages --&gt;|"Yes"| anthropic
-    messages --&gt;|"No: probe /v1/responses"| responses
-    responses --&gt;|"Yes"| responses_format
-    responses --&gt;|"No"| openai</code></pre>
-<p>Supported inbound and response formats are handled automatically.
-<code>TranslationEngine</code> converts the client's request to the resolved backend
-format and translates the backend response back to the client's expected
-format. When a cross-format conversion is required, both directions decode to
-and re-encode from the neutral conversation IR. This lets Claude Code, Codex,
-OpenClaw, and SDK clients use their native wire format with any supported
-upstream format.</p>
-<blockquote>
-<p>Prefer an explicit format for controlled deployments. It skips capability
-probes and makes the upstream contract clear. Use <code>AUTO</code> when provider
-capabilities are unknown or vary across deployments.</p>
-</blockquote>
-<h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="../getting_started/">Getting Started</a>: install Switchyard and run a first request</li>
-<li><a href="../guides/agent_launchers/">Agent Launchers</a>: run coding agents through a local proxy</li>
-<li><a href="../routing_algorithms/overview/">Routing Overview</a>: choose and configure a routing strategy</li>
-<li><a href="../cli_reference/">CLI Reference</a>: configure and operate Switchyard from the command line</li>
-</ul>
+<h2 id="1-libsy-has-no-streaming-response-path">1. libsy has no streaming response path<a class="headerlink" href="#1-libsy-has-no-streaming-response-path" title="Permanent link">&para;</a></h2>
+<p><code>CallLlmRequest::respond</code> and <code>Step::ReturnToAgent</code> carry only buffered
+responses, so no host can pass a live token stream through an algorithm.
+Claude Code streams its interactive calls, so those requests emit
+<code>switchyard.routing.error</code> (<code>libsy_stream</code>) and dispatch the trusted
+per-protocol fallback (<code>libsy_streaming_unsupported</code>) instead of a libsy
+decision. Demonstrated with the same prompt sent both ways through Path A:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>buffered &quot;This is a hard problem: ...&quot;  -&gt; classifier scored 0.9 -&gt; served by strong-model
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>streamed &quot;This is a hard problem: ...&quot;  -&gt; no classifier call    -&gt; served by weak-model (trusted fallback)
+</span></code></pre></div>
+<p><strong>Owner:</strong> libsy. Streaming support exists on the unmerged
+<code>grclark/simple-proxy</code> branch (<code>LlmResponse</code> becomes buffered-or-stream); when
+it lands on <code>main</code>, the Relay plugin can fulfill promises with live streams
+and no recipe config changes are needed.</p>
+<h2 id="2-classifier-scoring-call-rejected-upstream-http-400">2. Classifier scoring call rejected upstream (HTTP 400)<a class="headerlink" href="#2-classifier-scoring-call-rejected-upstream-http-400" title="Permanent link">&para;</a></h2>
+<p>In a live TUI session, Claude Code's buffered utility calls reached libsy and
+produced classifier decisions, but the scoring call to Anthropic failed with
+<code>invalid_request:http_400</code>. Leading suspect: <code>LlmClassifierOrchAlgo</code> builds
+its request with <code>..LlmRequest::default()</code> (no output params) and the
+Anthropic encoder defaults <code>max_tokens</code> to 128,000 when unset, above Haiku's
+output ceiling.</p>
+<p><strong>Owner:</strong> switchyard-translation (encoder default) and/or libsy reference
+algorithms (set explicit output params on synthesized calls).</p>
+<h2 id="3-no-fail-open-on-classifier-call-errors">3. No fail-open on classifier call errors<a class="headerlink" href="#3-no-fail-open-on-classifier-call-errors" title="Permanent link">&para;</a></h2>
+<p><code>LlmClassifierOrchAlgo</code> fails open only on an unparseable score. A classifier
+call <em>error</em> propagates and kills the run, so the whole request falls back
+(<code>decision_error</code>) instead of routing strong.</p>
+<p><strong>Owner:</strong> libsy reference algorithms.</p>
+<h2 id="4-provider-errors-are-opaque-in-routing-events">4. Provider errors are opaque in routing events<a class="headerlink" href="#4-provider-errors-are-opaque-in-routing-events" title="Permanent link">&para;</a></h2>
+<p>The Relay plugin condenses upstream failures to summaries like
+<code>invalid_request:http_400</code>, discarding the response body. Issue 2 had to be
+root-caused from source instead of logs.</p>
+<p><strong>Owner:</strong> Relay plugin (include a bounded body snippet in error marks).</p>
+<h2 id="toolchain-note">Toolchain note<a class="headerlink" href="#toolchain-note" title="Permanent link">&para;</a></h2>
+<p>Relay pins rustc 1.93.0; Switchyard's MSRV is 1.96.1. Until the toolchains
+converge, prefix Relay builds with <code>RUSTUP_TOOLCHAIN=1.96.1</code>.</p>
 
 
 
@@ -1446,10 +1398,10 @@ capabilities are unknown or vary across deployments.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
