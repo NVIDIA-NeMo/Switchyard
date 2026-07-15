@@ -1,16 +1,75 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Streaming half of the neutral IR: incremental response chunks. The streamed
-//! response itself (a live stream *or* the terminal aggregate) is libsy's
-//! `LlmResponse`, defined there since it owns a `futures::Stream` and error channel.
+//! Streaming half of the neutral IR: incremental response chunks ([`LlmResponseChunk`])
+//! and the streamed response ([`LlmResponse`]) that carries either a live stream of them
+//! or the terminal [`AggLlmResponse`].
 
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::pin::Pin;
 
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ir::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage};
+
+/// Boxed, thread-safe error carried by a stream item.
+type BoxError = Box<dyn Error + Send + Sync>;
+
+/// A boxed, `Send` stream of [`LlmResponseChunk`]s — the token-by-token output of a
+/// streaming backend. Each item may fail independently mid-stream.
+pub type LlmResponseStream = Pin<Box<dyn Stream<Item = Result<LlmResponseChunk, BoxError>> + Send>>;
+
+/// A model response: either a live [`Stream`](LlmResponse::Stream) of chunks or the
+/// terminal buffered [`Agg`](LlmResponse::Agg)regate.
+///
+/// Not `Clone` — the `Stream` variant owns a single-consumption stream. A buffered
+/// backend returns `Agg` directly; a streaming one returns `Stream` and the consumer
+/// drives it, folding to an [`AggLlmResponse`] when it needs the whole response.
+pub enum LlmResponse {
+    Stream(LlmResponseStream),
+    Agg(AggLlmResponse),
+}
+
+impl LlmResponse {
+    /// Borrow the aggregate; `None` while this is still a stream.
+    pub fn agg(&self) -> Option<&AggLlmResponse> {
+        match self {
+            LlmResponse::Agg(agg) => Some(agg),
+            LlmResponse::Stream(_) => None,
+        }
+    }
+
+    /// Consume into the aggregate; `None` while this is still a stream.
+    pub fn into_agg(self) -> Option<AggLlmResponse> {
+        match self {
+            LlmResponse::Agg(agg) => Some(agg),
+            LlmResponse::Stream(_) => None,
+        }
+    }
+
+    /// Reduce to the buffered aggregate: return an `Agg` unchanged, or drive a `Stream`
+    /// to completion, folding its chunks into an [`AggLlmResponse`] via
+    /// [`ResponseAccumulator`]. A stream item error, or an in-band
+    /// [`LlmResponseChunk::Error`], aborts with `Err`.
+    pub async fn aggregate(self) -> Result<AggLlmResponse, BoxError> {
+        match self {
+            LlmResponse::Agg(agg) => Ok(agg),
+            LlmResponse::Stream(mut stream) => {
+                let mut accumulator = ResponseAccumulator::new();
+                while let Some(item) = stream.next().await {
+                    match item? {
+                        LlmResponseChunk::Error { message } => return Err(message.into()),
+                        chunk => accumulator.push(chunk),
+                    }
+                }
+                Ok(accumulator.finish())
+            }
+        }
+    }
+}
 
 /// One provider-neutral streaming event — the normalized counterpart to
 /// [`AggLlmResponse`](crate::AggLlmResponse), sitting between stream decoders and

@@ -65,104 +65,23 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 
 /// The request/response protocol types, re-exported from [`libsy_protocol`].
-/// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered
-/// response; [`LlmResponseChunk`] is one streaming event. The [`LlmResponse`] that
-/// combines a stream of chunks with the terminal aggregate is defined below.
-pub use libsy_protocol::{AggLlmResponse, LlmRequest, LlmResponseChunk};
+/// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered response;
+/// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
+/// (a live [`LlmResponseStream`] or the terminal aggregate).
+pub use libsy_protocol::{
+    AggLlmResponse, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, Metadata,
+    Request, Response,
+};
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
 
-/// A boxed, `Send` stream of [`LlmResponseChunk`]s — the token-by-token output of a
-/// streaming backend. Each item may fail independently mid-stream.
-pub type LlmResponseStream = Pin<Box<dyn Stream<Item = Result<LlmResponseChunk, BoxErr>> + Send>>;
-
-/// A model response: either a live [`Stream`](LlmResponse::Stream) of chunks or the
-/// terminal buffered [`Agg`](LlmResponse::Agg)regate.
-///
-/// Not `Clone` — the `Stream` variant owns a single-consumption stream. A buffered
-/// backend returns `Agg` directly; a streaming one returns `Stream` and the consumer
-/// drives it, folding to an [`AggLlmResponse`] when it needs the whole response.
-pub enum LlmResponse {
-    Stream(LlmResponseStream),
-    Agg(AggLlmResponse),
-}
-
-impl LlmResponse {
-    /// Borrow the aggregate; `None` while this is still a stream.
-    pub fn agg(&self) -> Option<&AggLlmResponse> {
-        match self {
-            LlmResponse::Agg(agg) => Some(agg),
-            LlmResponse::Stream(_) => None,
-        }
-    }
-
-    /// Consume into the aggregate; `None` while this is still a stream.
-    pub fn into_agg(self) -> Option<AggLlmResponse> {
-        match self {
-            LlmResponse::Agg(agg) => Some(agg),
-            LlmResponse::Stream(_) => None,
-        }
-    }
-
-    /// Reduce to the buffered aggregate: return an `Agg` unchanged, or drive a
-    /// `Stream` to completion, folding its chunks into an [`AggLlmResponse`]. A
-    /// stream item error, or an in-band [`LlmResponseChunk::Error`], aborts with `Err`.
-    pub async fn aggregate(self) -> Result<AggLlmResponse, BoxErr> {
-        match self {
-            LlmResponse::Agg(agg) => Ok(agg),
-            LlmResponse::Stream(mut stream) => {
-                let mut accumulator = libsy_protocol::ResponseAccumulator::new();
-                while let Some(item) = stream.next().await {
-                    match item? {
-                        LlmResponseChunk::Error { message } => return Err(message.into()),
-                        chunk => accumulator.push(chunk),
-                    }
-                }
-                Ok(accumulator.finish())
-            }
-        }
-    }
-}
-
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step, BoxErr>> + Send>>;
-
-/// Correlation and routing metadata attached to a request or response.
-///
-/// All fields are optional; algorithms and observers use whichever are present
-/// (e.g. to key per-session state or emit correlated telemetry). `extra_metadata`
-/// is a free-form escape hatch for host-specific keys.
-#[derive(Clone)]
-pub struct Metadata {
-    /// Stable id for a multi-request session/conversation.
-    pub session_id: Option<String>,
-    /// Id of the agent making the request.
-    pub agent_id: Option<String>,
-    /// Id of the task the request belongs to.
-    pub task_id: Option<String>,
-    /// External trace/request id for joining with the host's telemetry.
-    pub correlation_id: Option<String>,
-    /// Arbitrary host-defined key/value metadata.
-    pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
-}
-
-/// A request entering the orchestrator: the normalized [`LlmRequest`] plus the
-/// original provider payload and correlation [`Metadata`].
-#[derive(Clone)]
-pub struct Request {
-    /// The normalized request an algorithm routes.
-    pub llm_request: LlmRequest,
-    /// The original provider-shaped request body, if the host wants to forward it
-    /// verbatim (e.g. a proxy preserving messages/params). libsy does not read it.
-    pub raw_request: Option<serde_json::Value>,
-    /// Correlation metadata carried through the request.
-    pub metadata: Option<Metadata>,
-}
 
 /// Agentic-stack events fed to an algorithm out of band via
 /// [`Algorithm::process_signals`] (e.g. tool results, budget updates).
@@ -171,17 +90,6 @@ pub struct Request {
 /// enum grows without changing the orchestrator contract.
 #[derive(Clone)]
 pub struct Signals {}
-
-/// A response leaving the orchestrator: the [`LlmResponse`] (streamed or aggregate)
-/// plus optional correlation [`Metadata`].
-///
-/// Not `Clone` — `llm_response` may own a live stream.
-pub struct Response {
-    /// The neutral model response — a chunk stream or the buffered aggregate.
-    pub llm_response: LlmResponse,
-    /// Correlation metadata carried through the response.
-    pub metadata: Option<Metadata>,
-}
 
 /// A decision/trace object produced by an algorithm.
 ///

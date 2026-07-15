@@ -6,8 +6,9 @@
 //!
 //! This crate owns Switchyard's neutral conversation IR: [`LlmRequest`] (model, messages,
 //! tools, sampling, …), the buffered [`AggLlmResponse`] (outputs, usage, …), and its
-//! streaming counterpart [`LlmResponseChunk`] — plus the wire-[`format`] identifiers
-//! translation keys off. `switchyard-translation` re-exports these under its own
+//! streaming counterpart [`LlmResponseChunk`]; the [`Request`]/[`Response`] envelope that
+//! pairs them with correlation [`Metadata`]; plus the wire-[`format`] identifiers
+//! translation keys off. `switchyard-translation` re-exports the IR types under its own
 //! `ConversationRequest` / `ConversationResponse` / `ConversationStreamEvent` names. The IR
 //! carries no bare `prompt`/`completion`; the [`text_request`] / [`prompt_text`] /
 //! [`text_response`] / [`completion_text`] helpers bridge to and from plain text for the
@@ -19,10 +20,12 @@
 //!
 //! [`Algorithm`]: https://docs.rs/libsy
 
+pub mod envelope;
 pub mod format;
 pub mod ir;
 pub mod stream;
 
+pub use envelope::*;
 pub use format::*;
 pub use ir::*;
 pub use stream::*;

@@ -856,7 +856,6 @@ dependencies = [
  "async-trait",
  "futures",
  "libsy-protocol",
- "serde_json",
  "tokio",
  "tokio-stream",
 ]
@@ -878,6 +877,7 @@ dependencies = [
 name = "libsy-protocol"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "serde",
  "serde_json",
 ]
