@@ -155,8 +155,8 @@ continue to make a routing decision for each request.
 
 The escalation router uses the same affinity store with the opposite policy:
 affinity is always on (the pin *is* the escalation latch), only the strong
-tier is ever pinned, and the judge keeps running every turn until the latch
-fires. See
+tier is ever pinned, and once the judge starts (a configurable minimum turn),
+it keeps running each judged turn until the latch fires. See
 [Escalation-Router Routing](escalation_router_routing.md).
 
 !!! note "CLI schema availability"
