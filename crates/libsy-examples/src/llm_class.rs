@@ -184,8 +184,8 @@ impl Algorithm for LlmClassifierOrchAlgo {
 mod tests {
     use super::*;
     use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
-    use switchyard_protocol::text_response;
     use std::sync::Mutex;
+    use switchyard_protocol::text_response;
 
     /// Returns `score` for the classifier target, an answer tagged with the model
     /// otherwise; records the requests it saw so a test can inspect the classifier
