@@ -109,6 +109,7 @@ def test_build_threads_judge_settings() -> None:
             judge_recent_turn_window=20,
             judge_window_message_chars=500,
             judge_disable_reasoning=False,
+            judge_timeout_s=12.0,
             session_key_depth=2,
         ),
     ).build()
@@ -119,6 +120,7 @@ def test_build_threads_judge_settings() -> None:
     assert judge._config.recent_turn_window == 20
     assert judge._config.window_message_chars == 500
     assert judge._config.disable_reasoning is False
+    assert judge._config.timeout_s == 12.0
     assert judge._config.system_prompt == ESCALATION_JUDGE_SYSTEM_PROMPT
     assert judge._session_key_depth == 2
     assert judge._affinity.enabled
