@@ -25,6 +25,7 @@ from switchyard.lib.processors.escalation_judge_request_processor import (
 from switchyard.lib.processors.reasoning_effort_normalizer import (
     ReasoningEffortNormalizer,
 )
+from switchyard.lib.processors.reasoning_hint import model_accepts_reasoning_hint
 from switchyard.lib.profiles.chain import ComponentChainProfile
 from switchyard.lib.profiles.deterministic_routing_profile_config import (
     _apply_deepseek_overrides,
@@ -73,7 +74,14 @@ class EscalationRouterProfileConfig:
             min_judge_turn=config.judge_min_turn,
             escalate_confirmations=config.judge_escalate_confirmations,
             confirmation_window=config.judge_confirmation_window,
-            disable_reasoning=config.judge_disable_reasoning,
+            # Claude/Bedrock judges reject the vLLM-only chat_template_kwargs
+            # hint outright — every judged turn would fail open to weak — so
+            # the hint is only sent to models that tolerate it (same gate as
+            # the classifier presets and the stage router).
+            disable_reasoning=(
+                config.judge_disable_reasoning
+                and model_accepts_reasoning_hint(judge_target.model)
+            ),
             recent_turn_window=config.judge_recent_turn_window,
             window_message_chars=config.judge_window_message_chars,
             max_request_chars=config.judge_max_request_chars,
