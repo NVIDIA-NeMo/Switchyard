@@ -233,3 +233,30 @@ async def test_overflow_reroutes_to_custom_strong_id_through_full_profile() -> N
     assert cheap.calls == 1
     assert frontier.calls == 1
     assert response.body["choices"][0]["message"]["content"] == "ok"
+
+
+def test_claude_judge_skips_reasoning_hint() -> None:
+    """Claude/Bedrock judges must not receive the vLLM-only thinking hint."""
+    profile = EscalationRouterProfileConfig.from_config(
+        _config(
+            judge=LlmTarget(
+                id="judge",
+                model="anthropic/claude-sonnet-5",
+                base_url="https://judge.invalid/v1",
+                api_key="sk-judge",
+            ),
+        ),
+    ).build()
+
+    judge = profile._request_processors[1]
+    assert isinstance(judge, EscalationJudgeRequestProcessor)
+    assert judge._config.disable_reasoning is False
+
+
+def test_vllm_judge_keeps_reasoning_hint() -> None:
+    """Non-Anthropic judge models keep the default thinking-off hint."""
+    profile = EscalationRouterProfileConfig.from_config(_config()).build()
+
+    judge = profile._request_processors[1]
+    assert isinstance(judge, EscalationJudgeRequestProcessor)
+    assert judge._config.disable_reasoning is True
