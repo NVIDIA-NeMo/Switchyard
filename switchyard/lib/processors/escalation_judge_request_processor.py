@@ -50,8 +50,10 @@ CTX_ESCALATION_VERDICT = "_escalation_verdict"
 #: LRU cap on the consecutive-escalate streak store.
 _MAX_STREAK_SESSIONS = 10_000
 
-#: Tier labels stamped into ``CTX_DETERMINISTIC_ROUTING_TIER``; must match the
-#: labels the profile registers on ``DeterministicRoutingLLMBackend``.
+#: Default tier labels stamped into ``CTX_DETERMINISTIC_ROUTING_TIER``. The
+#: labels must match what the profile registers on
+#: ``DeterministicRoutingLLMBackend`` — profiles with custom target ids pass
+#: their own via ``strong_tier`` / ``weak_tier``.
 TIER_STRONG = "strong"
 TIER_WEAK = "weak"
 
@@ -182,12 +184,21 @@ class EscalationJudgeRequestProcessor:
         client: LLMClassifierClient | None = None,
         session_key_depth: int = 0,
         stats_accumulator: StatsAccumulator | None = None,
+        strong_tier: str = TIER_STRONG,
+        weak_tier: str = TIER_WEAK,
     ) -> None:
         if session_key_depth < 0:
             raise ValueError("session_key_depth must be >= 0")
+        if strong_tier == weak_tier:
+            raise ValueError("strong_tier and weak_tier must differ")
         self._config = config
         self._affinity = affinity
         self._session_key_depth = session_key_depth
+        # The labels this processor stamps and pins; they key the tier dict on
+        # the downstream DeterministicRoutingLLMBackend, so both must match
+        # what the owning profile registered there.
+        self._strong_tier = strong_tier
+        self._weak_tier = weak_tier
         # Also attached post-construction by the profile chain's
         # ``with_runtime_components`` (same hook as the LLM classifier).
         self._stats_accumulator = stats_accumulator
@@ -225,8 +236,8 @@ class EscalationJudgeRequestProcessor:
 
         if affinity_ready:
             pinned = await self._affinity.pinned(ctx, request)
-            if pinned == TIER_STRONG:
-                ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = TIER_STRONG
+            if pinned == self._strong_tier:
+                ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = self._strong_tier
                 ctx.metadata[CTX_ESCALATION_VERDICT] = {
                     "escalate": True,
                     "reason": "",
@@ -235,7 +246,7 @@ class EscalationJudgeRequestProcessor:
                 }
                 return request
 
-        ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = TIER_WEAK
+        ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = self._weak_tier
         if not affinity_ready or turn < self._config.min_judge_turn:
             return request
 
@@ -315,8 +326,8 @@ class EscalationJudgeRequestProcessor:
                 turn,
                 verdict.reason,
             )
-            await self._affinity.pin(ctx, request, TIER_STRONG)
-            ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = TIER_STRONG
+            await self._affinity.pin(ctx, request, self._strong_tier)
+            ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = self._strong_tier
         return request
 
     def _streak_key(self, ctx: ProxyContext, request: ChatRequest) -> str:

@@ -34,9 +34,6 @@ from switchyard.lib.profiles.escalation_router_config import EscalationRouterCon
 from switchyard.lib.profiles.table import profile_config
 from switchyard.lib.session_affinity import SessionAffinity
 
-_TIER_STRONG = "strong"
-_TIER_WEAK = "weak"
-
 
 @profile_config("escalation_router")
 class EscalationRouterProfileConfig:
@@ -82,12 +79,21 @@ class EscalationRouterProfileConfig:
             max_request_chars=config.judge_max_request_chars,
             extra_headers=judge_target.extra_headers or None,
         )
+        # Tier labels are the configured target ids ("strong"/"weak" unless
+        # overridden). The judge stamps them, the backend keys its tier dict
+        # by them, and the chain's evict-and-retry rewrites selected_target to
+        # fallback_target_on_evict — which the config validates against these
+        # same ids — so an overflow reroute always lands on a registered tier.
+        strong_id = config.strong.id
+        weak_id = config.weak.id
         request_processors: list[Any] = [
             ReasoningEffortNormalizer(),
             EscalationJudgeRequestProcessor(
                 judge_config,
                 affinity=affinity,
                 session_key_depth=config.session_key_depth,
+                strong_tier=strong_id,
+                weak_tier=weak_id,
             ),
         ]
 
@@ -115,12 +121,12 @@ class EscalationRouterProfileConfig:
 
         backend = DeterministicRoutingLLMBackend(
             tiers={
-                _TIER_STRONG: (strong_backend, strong_target.model),
-                _TIER_WEAK: (weak_backend, weak_target.model),
+                strong_id: (strong_backend, strong_target.model),
+                weak_id: (weak_backend, weak_target.model),
             },
             # Weak is the resting state; the judge processor stamps a tier on
             # every turn, so the default only covers malformed metadata.
-            default_tier=_TIER_WEAK,
+            default_tier=weak_id,
         )
         return ComponentChainProfile(
             request_processors=request_processors,
