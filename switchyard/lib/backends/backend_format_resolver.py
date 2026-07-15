@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -85,6 +86,17 @@ class BackendFormatResolver:
 
         timeout_s = tier.endpoint.timeout_secs or _DEFAULT_TIMEOUT_S
 
+        # Chat Completions is probed first: it is the most widely supported
+        # format and the universal fallback. Separate a fast negative (e.g. a
+        # 404 — the endpoint answered "no Chat Completions here") from a
+        # transport timeout (the endpoint is reachable but slow, e.g. a cold
+        # NVCF/Azure deployment). On a timeout, assume Chat Completions rather
+        # than serially probing the rarer /v1/messages and /v1/responses
+        # routes — each of those would stack another timeout and turn one slow
+        # startup into several seconds. Anthropic-native and Responses-only
+        # endpoints answer the Chat Completions probe with a fast 404, so they
+        # still fall through to the probes below.
+        chat_started = time.perf_counter()
         if probe_openai_chat_completions_support_sync(
             base_url=tier.endpoint.base_url,
             api_key=tier.endpoint.api_key,
@@ -94,6 +106,11 @@ class BackendFormatResolver:
             return BackendFormatResolution(
                 format=BackendFormat.OPENAI,
                 reason="upstream /v1/chat/completions probe succeeded",
+            )
+        if time.perf_counter() - chat_started >= timeout_s:
+            return BackendFormatResolution(
+                format=BackendFormat.OPENAI,
+                reason="chat-completions probe timed out; assuming Chat Completions",
             )
 
         if probe_anthropic_messages_support_sync(

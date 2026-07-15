@@ -217,6 +217,41 @@ def test_auto_falls_back_to_openai_when_all_probes_fail(
     assert resolution.format is BackendFormat.OPENAI
 
 
+def test_auto_chat_completions_timeout_assumes_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Chat Completions probe that times out (not a fast 404) resolves to
+    OPENAI without stacking the slower /v1/messages and /v1/responses probes."""
+    import time as _time
+
+    def slow_then_false(**_: object) -> bool:
+        # Simulate a transport timeout: consume more than the 0.05 s probe
+        # budget below, then report the route as unavailable (what httpx
+        # returns on ReadTimeout).
+        _time.sleep(0.06)
+        return False
+
+    monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync",
+                        slow_then_false)
+    monkeypatch.setattr(resolver_mod, "probe_anthropic_messages_support_sync",
+                        _no_probe("anthropic"))
+    monkeypatch.setattr(resolver_mod, "probe_openai_responses_support_sync",
+                        _no_probe("responses"))
+
+    resolution = resolver_mod.BackendFormatResolver.resolve(
+        LlmTarget(
+            model="slow-endpoint-model",
+            format=BackendFormat.AUTO,
+            base_url="https://slow.test/v1",
+            api_key="sk-test",  # pragma: allowlist secret
+            timeout_secs=0.05,
+        ),
+    )
+
+    assert resolution.format is BackendFormat.OPENAI
+    assert "timed out" in resolution.reason
+
+
 # ---------------------------------------------------------------------------
 # Missing inputs
 # ---------------------------------------------------------------------------
