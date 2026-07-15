@@ -21,11 +21,8 @@ a neutral IR, so all (inbound, backend) combinations are valid regardless of
 which format the client uses.
 """
 
-from __future__ import annotations
-
 import json
 import logging
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -87,30 +84,30 @@ class BackendFormatResolver:
         timeout_s = tier.endpoint.timeout_secs or _DEFAULT_TIMEOUT_S
 
         # Chat Completions is probed first: it is the most widely supported
-        # format and the universal fallback. Separate a fast negative (e.g. a
-        # 404 — the endpoint answered "no Chat Completions here") from a
-        # transport timeout (the endpoint is reachable but slow, e.g. a cold
-        # NVCF/Azure deployment). On a timeout, assume Chat Completions rather
-        # than serially probing the rarer /v1/messages and /v1/responses
-        # routes — each of those would stack another timeout and turn one slow
-        # startup into several seconds. Anthropic-native and Responses-only
-        # endpoints answer the Chat Completions probe with a fast 404, so they
-        # still fall through to the probes below.
-        chat_started = time.perf_counter()
-        if probe_openai_chat_completions_support_sync(
-            base_url=tier.endpoint.base_url,
-            api_key=tier.endpoint.api_key,
-            model=tier.model,
-            timeout_s=timeout_s,
-        ):
-            return BackendFormatResolution(
-                format=BackendFormat.OPENAI,
-                reason="upstream /v1/chat/completions probe succeeded",
+        # format and the universal fallback. A transport timeout (the endpoint
+        # is reachable but slow, e.g. a cold NVCF/Azure deployment) is a
+        # different signal from a fast "not wired" 404. On a timeout, assume
+        # Chat Completions rather than serially probing the rarer /v1/messages
+        # and /v1/responses routes — each of those would stack another timeout
+        # and turn one slow startup into several seconds. A 404 (even a slow
+        # one) still falls through to the probes below, so Anthropic-native and
+        # Responses-only endpoints are detected as before.
+        try:
+            chat_supported = probe_openai_chat_completions_support_sync(
+                base_url=tier.endpoint.base_url,
+                api_key=tier.endpoint.api_key,
+                model=tier.model,
+                timeout_s=timeout_s,
             )
-        if time.perf_counter() - chat_started >= timeout_s:
+        except httpx.TimeoutException:
             return BackendFormatResolution(
                 format=BackendFormat.OPENAI,
                 reason="chat-completions probe timed out; assuming Chat Completions",
+            )
+        if chat_supported:
+            return BackendFormatResolution(
+                format=BackendFormat.OPENAI,
+                reason="upstream /v1/chat/completions probe succeeded",
             )
 
         if probe_anthropic_messages_support_sync(
@@ -170,6 +167,12 @@ def probe_openai_chat_completions_support_sync(
     Sends a minimal-body probe POST with Bearer auth.  A 404 means the
     Chat Completions endpoint is not wired — the caller should probe
     Anthropic Messages or Responses next.
+
+    Raises ``httpx.TimeoutException`` on a transport timeout. A timeout means
+    the endpoint is reachable but slow (e.g. a cold NVCF/Azure deployment),
+    which is a different signal from a fast "not wired" 404: the resolver
+    stops probing and assumes Chat Completions instead of stacking the slower
+    ``/v1/messages`` and ``/v1/responses`` probes.
     """
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
@@ -181,6 +184,8 @@ def probe_openai_chat_completions_support_sync(
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.post(url, headers=headers, json=req_body)
+    except httpx.TimeoutException:
+        raise
     except httpx.RequestError as e:
         log.warning(
             "OpenAI /v1/chat/completions probe failed (%s); "

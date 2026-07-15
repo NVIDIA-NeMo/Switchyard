@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
+import httpx
 import pytest
 
 from switchyard.lib.backends import (
@@ -220,19 +219,15 @@ def test_auto_falls_back_to_openai_when_all_probes_fail(
 def test_auto_chat_completions_timeout_assumes_openai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Chat Completions probe that times out (not a fast 404) resolves to
-    OPENAI without stacking the slower /v1/messages and /v1/responses probes."""
-    import time as _time
-
-    def slow_then_false(**_: object) -> bool:
-        # Simulate a transport timeout: consume more than the 0.05 s probe
-        # budget below, then report the route as unavailable (what httpx
-        # returns on ReadTimeout).
-        _time.sleep(0.06)
-        return False
+    """A Chat Completions probe that times out (raises, not a fast 404) resolves
+    to OPENAI without stacking the slower /v1/messages and /v1/responses probes.
+    A 404 returns False and still falls through — that path is covered by
+    test_auto_resolves_to_anthropic_when_chat_completions_unavailable."""
+    def timed_out(**_: object) -> bool:
+        raise httpx.ReadTimeout("probe timed out")
 
     monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync",
-                        slow_then_false)
+                        timed_out)
     monkeypatch.setattr(resolver_mod, "probe_anthropic_messages_support_sync",
                         _no_probe("anthropic"))
     monkeypatch.setattr(resolver_mod, "probe_openai_responses_support_sync",

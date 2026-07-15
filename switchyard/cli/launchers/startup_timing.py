@@ -22,11 +22,10 @@ module-level list because a launch is a single, short-lived process — there is
 one launch per ``switchyard`` invocation.
 """
 
-from __future__ import annotations
-
 import os
 import sys
 import time
+from typing import TextIO
 
 _ENV_VAR = "SWITCHYARD_STARTUP_TIMING"
 _FALSEY = {"", "0", "false", "no"}
@@ -46,7 +45,7 @@ def mark(label: str) -> None:
         _marks.append((label, time.perf_counter()))
 
 
-def dump(stream: object = None) -> None:
+def dump(stream: TextIO | None = None) -> None:
     """Print the per-stage breakdown to stderr, then reset. No-op when disabled.
 
     Each line is the time between consecutive marks; the last line is the total
@@ -64,5 +63,5 @@ def dump(stream: object = None) -> None:
         prev = stamp
     lines.append(f"  {'-' * 8}")
     lines.append(f"  {(prev - start) * 1000:8.1f} ms  total (launch invoked -> child spawn)")
-    print("\n".join(lines), file=out)  # type: ignore[arg-type]
+    print("\n".join(lines), file=out)
     _marks.clear()
