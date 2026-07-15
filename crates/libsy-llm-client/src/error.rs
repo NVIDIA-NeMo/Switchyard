@@ -9,6 +9,7 @@
 //! so the small, self-contained logic is vendored here.
 
 use serde_json::Value;
+use switchyard_translation::WireFormat;
 use thiserror::Error;
 
 /// Result alias for LLM client operations.
@@ -20,6 +21,15 @@ pub enum LlmClientError {
     /// The resolved model name has no entry in the client's backend map.
     #[error("no backend configured for model {0:?}")]
     UnknownModel(String),
+
+    /// The model exists but has no backend configured for the requested format.
+    #[error("model {model:?} has no backend for format {format}")]
+    UnknownModelFormat {
+        /// Model that was resolved.
+        model: String,
+        /// Wire format requested for the call.
+        format: WireFormat,
+    },
 
     /// Neither an explicit `model_name` nor a model on the request was given.
     #[error("no model given: pass model_name or set request.llm_request.model")]

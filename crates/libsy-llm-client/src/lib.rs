@@ -3,8 +3,8 @@
 
 //! HTTP LLM client that speaks Switchyard's neutral IR directly.
 //!
-//! [`LlmModelClient`] maps a model name to a [`Backend`], encodes a
-//! [`libsy_protocol::Request`] to that backend's wire format via
+//! [`LlmModelClient`] maps a model name and wire format to a [`Backend`],
+//! encodes a [`libsy_protocol::Request`] to that backend's wire format via
 //! `switchyard-translation`, applies auth and forwards caller headers, makes the
 //! HTTP call with a shared [`reqwest::Client`], and decodes the wire response
 //! back to a [`libsy_protocol::Response`] — supporting both buffered and

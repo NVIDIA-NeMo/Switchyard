@@ -8,6 +8,7 @@ members = [
     "crates/libsy-examples",
     "crates/libsy-llm-client",
     "crates/libsy-protocol",
+    "crates/libsy-proxy",
     "crates/switchyard-components",
     "crates/switchyard-components-v2",
     "crates/switchyard-components-v2-macros",

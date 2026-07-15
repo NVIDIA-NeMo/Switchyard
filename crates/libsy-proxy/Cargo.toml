@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "libsy-proxy"
+version = "0.1.0"
+description = "Minimal axum proxy exposing LLM wire APIs over libsy-llm-client"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libsy-protocol = { path = "../libsy-protocol" }
+libsy-llm-client = { path = "../libsy-llm-client" }
+switchyard-translation = { path = "../switchyard-translation" }
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+async-stream = "0.3"
+futures-util = "0.3"
+serde_json = "1"
+
+[dev-dependencies]
+wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
