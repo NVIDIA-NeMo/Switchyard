@@ -9,7 +9,9 @@ description: Use when modifying, debugging, reviewing, refactoring, renaming, re
 > `crates/switchyard-core`, `crates/switchyard-components`,
 > `crates/switchyard-server`, `crates/switchyard-translation`,
 > `crates/switchyard-py`, and `crates/*/tests`
-> directly when a change touches Rust.
+> directly when a change touches Rust. The libsy algorithm layer lives in
+> `crates/libsy` (core + `observability.rs` telemetry), `crates/libsy-protocol`
+> (conversation IR), and `crates/libsy-examples` (reference algorithms).
 > Direct PyO3 bindings for concrete components live under
 > `crates/switchyard-py/src/component_bindings/` with Python lazy exports in
 > `switchyard_rust/components.py`.

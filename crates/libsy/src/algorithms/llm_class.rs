@@ -139,6 +139,10 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
 
 #[async_trait]
 impl Algorithm for LlmClassifier {
+    fn name(&self) -> &str {
+        "llm_classifier"
+    }
+
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,

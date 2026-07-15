@@ -64,14 +64,14 @@ pub enum LlmResponse {
 
 `switchyard-protocol` owns the conversation IR: `LlmRequest`, the buffered
 `AggLlmResponse`, the streaming `LlmResponseChunk`, and the building blocks `Message`,
-`ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports the envelope
+`ContentBlock`, `ResponseOutput`, `Usage`, and `Role`. `libsy` re-exports the envelope
 (`Request`/`Response`/`Metadata`) plus `LlmRequest`, `LlmResponse`, `AggLlmResponse`,
-`LlmResponseChunk`, and `LlmResponseStream`; import the rest (`Message`, `Role`, …) and the
-`text_request` / `text_response` / `completion_text` helpers from `switchyard_protocol`.
-Construct and inspect the conversation model directly so tools, sampling parameters,
-reasoning, and provider extensions stay visible instead of being hidden behind a second
-convenience API. `raw_request` remains available when a host needs exact source-body
-fidelity.
+`LlmResponseChunk`, `LlmResponseStream`, and `Usage`; import the rest (`Message`, `Role`, …)
+and the `text_request` / `text_response` / `completion_text` helpers from
+`switchyard_protocol`. Construct and inspect the conversation model directly so tools,
+sampling parameters, reasoning, and provider extensions stay visible instead of being hidden
+behind a second convenience API. `raw_request` remains available when a host needs exact
+source-body fidelity.
 
 ## Targets and clients
 
@@ -199,6 +199,8 @@ model and *why*.
 ```rust
 #[async_trait]
 pub trait Algorithm: Send + Sync + 'static {
+    // Stable telemetry label: the `algorithm` attribute on libsy's spans/metrics/logs.
+    fn name(&self) -> &str;
     // `self: Arc<Self>` (not `&mut`): one algorithm serves requests concurrently — use
     // interior mutability for state. Offload calls/decisions on `driver`.
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
@@ -249,6 +251,29 @@ impl Algorithm for LlmClassifier {
 }
 ```
 
+## Observability
+
+libsy instruments every algorithm at the core — the `Decision` hook plus the offload
+boundary — so algorithms carry no telemetry code beyond `Algorithm::name()`, the
+`algorithm` attribute everything below is keyed by.
+
+- **Spans** (`tracing`): one `libsy.run` per request, carrying the `Metadata`
+  correlation ids and the outcome, with one child `libsy.llm_call` per model call
+  (selected model, outcome, token counts, latency).
+- **Structured logs** (`tracing`, target `libsy`): an info event per published
+  `Decision` (selected model + reasoning), warn events for failed calls and runs.
+- **Metrics** (OpenTelemetry, scope `libsy`, via the global meter provider): counters
+  `libsy.runs`, `libsy.llm_calls`, `libsy.decisions`, `libsy.input_tokens`,
+  `libsy.output_tokens`, `libsy.total_tokens`, `libsy.reasoning_tokens`; histograms
+  `libsy.run_duration_ms`, `libsy.llm_call_duration_ms`. Attributes are `algorithm`,
+  `selected_model`, and `outcome` (`ok`/`error`) — failure rates are the
+  `outcome="error"` share of runs/calls.
+
+libsy owns no exporter. The host installs an OpenTelemetry SDK meter provider
+(`opentelemetry::global::set_meter_provider`) and a `tracing` subscriber (bridge spans
+into OTel with `tracing-opentelemetry` if desired); with neither installed, all
+instrumentation is a no-op.
+
 ## Explore
 
 The core crate includes uniform random routing and naive LLM classifier. Runnable
@@ -277,5 +302,4 @@ agents live in [`examples`](examples/) folder.
 
 - **`Signals` events** — `process_signals` / `Signals` exist but carry nothing yet.
 - **`Context` fields** — the per-request state carrier is an empty placeholder today.
-- **Observability** — spans + a metrics sink (`Decision` is the hook).
 - **Config-driven construction**, **typed errors** (vs `Box<dyn Error>`), **weighted random**.

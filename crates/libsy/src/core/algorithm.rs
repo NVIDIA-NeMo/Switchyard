@@ -5,10 +5,11 @@
 //! routing/optimization algorithm implements, and the offload channel it makes model
 //! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
 
-use std::{error::Error, pin::Pin, sync::Arc};
+use std::{error::Error, pin::Pin, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use tracing::Instrument;
 
 /// The request/response protocol types, re-exported from [`switchyard_protocol`].
 /// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered response;
@@ -16,10 +17,11 @@ use futures::{Stream, StreamExt};
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals,
+    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals, Usage,
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
+use crate::observability;
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
@@ -112,24 +114,47 @@ impl CallLlmRequest {
 #[derive(Clone)]
 pub struct Driver {
     driver: TypeErasedDriver,
+    /// Name of the algorithm this driver serves — the `algorithm` attribute on
+    /// the telemetry emitted for its calls and decisions.
+    algorithm: Arc<str>,
 }
 
 impl Driver {
-    /// Build an empty driver with its step channel ready. Created per call by
+    /// Build an empty driver with its step channel ready, labeled with the name
+    /// of the algorithm it serves. Created per call by
     /// [`run_stream`](Algorithm::run_stream).
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(algorithm: &str) -> Self {
         Self {
             driver: TypeErasedDriver::new(),
+            algorithm: Arc::from(algorithm),
         }
     }
 
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
     /// consumer's [`Response`]. The call's context travels inside
     /// [`routed.ctx`](RoutedRequest::ctx). Errors if the stream is closed or the call failed.
+    /// The await is wrapped in a `libsy.llm_call` span, and the call's latency,
+    /// outcome, and token usage are recorded when it resolves.
     pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
-        self.driver
-            .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
-            .await
+        let selected_model = routed.decision.selected_model().to_string();
+        let span = observability::llm_call_span(&self.algorithm, &selected_model);
+        async {
+            let started = Instant::now();
+            let result = self
+                .driver
+                .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
+                .await;
+            observability::record_llm_call(
+                &self.algorithm,
+                &selected_model,
+                started.elapsed(),
+                &result,
+                &tracing::Span::current(),
+            );
+            result
+        }
+        .instrument(span)
+        .await
     }
 
     /// Offload a call to `target`: pair `request` with `decision` and the target's
@@ -154,7 +179,9 @@ impl Driver {
     }
 
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
+    /// Each published decision is counted and logged with its reasoning.
     pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
+        observability::record_decision(&self.algorithm, decision.as_ref());
         self.driver.info(ctx, decision).await
     }
 
@@ -187,12 +214,6 @@ impl Driver {
                 .map(Step::ReturnToAgent)
                 .map_err(|_| "driver: done payload was not a Response".into()),
         })
-    }
-}
-
-impl Default for Driver {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -280,6 +301,12 @@ pub trait Algorithm<S = ()>: Send + Sync + 'static
 where
     S: Clone + Send + Sync + 'static,
 {
+    /// Stable, low-cardinality name identifying this algorithm — the
+    /// `algorithm` attribute on every span, metric, and log line the crate
+    /// emits for its runs (see the crate docs' Observability section).
+    fn name(&self) -> &str;
+
+
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
     /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
@@ -306,12 +333,30 @@ where
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
     fn run_stream(self: Arc<Self>, ctx: Context<S>, request: Request) -> StepStream {
-        let driver = Driver::new();
+        let driver = Driver::new(self.name());
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
         let stream = task_driver.stream();
-        let handle =
-            tokio::spawn(async move { self.create_run_task(task_ctx, task_driver, request).await });
+        // One `libsy.run` span covers the whole algorithm task; the driver's
+        // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
+        // contextual parenting.
+        let span = observability::run_span(self.name(), request.metadata.as_ref());
+        let handle = tokio::spawn(
+            async move {
+                let started = Instant::now();
+                let outcome = self
+                    .create_run_task(task_ctx, task_driver.clone(), request)
+                    .await;
+                observability::record_run(
+                    &task_driver.algorithm,
+                    started.elapsed(),
+                    &outcome,
+                    &tracing::Span::current(),
+                );
+                outcome
+            }
+            .instrument(span),
+        );
         // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
         let abort_guard = AbortOnDrop(handle.abort_handle());
 
@@ -448,6 +493,10 @@ mod tests {
 
     #[async_trait]
     impl Algorithm for TestAlgo {
+        fn name(&self) -> &str {
+            "test"
+        }
+
         async fn create_run_task(
             self: Arc<Self>,
             ctx: Context,
@@ -827,6 +876,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for StuckAlgo {
+            fn name(&self) -> &str {
+                "stuck"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -869,6 +922,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for Panicky {
+            fn name(&self) -> &str {
+                "panicky"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -907,6 +964,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for Panicky {
+            fn name(&self) -> &str {
+                "panicky"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -950,6 +1011,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for StuckAlgo {
+            fn name(&self) -> &str {
+                "stuck"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -1053,6 +1118,10 @@ mod tests {
 
     #[async_trait]
     impl Algorithm for Hedge {
+        fn name(&self) -> &str {
+            "hedge"
+        }
+
         async fn create_run_task(
             self: Arc<Self>,
             ctx: Context,
@@ -1176,6 +1245,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for FanOutThenError {
+            fn name(&self) -> &str {
+                "fan_out_then_error"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 ctx: Context,
