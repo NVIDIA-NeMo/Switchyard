@@ -1,0 +1,58 @@
+# NeMo Relay plugin config: in-process libsy LLM-classifier routing.
+# Place at .nemo-relay/plugins.toml in the project you launch from.
+#
+# Haiku scores each request; at or above the threshold routes to Opus,
+# below it routes to Sonnet. Claude Code's own auth headers pass through
+# to Anthropic, so no keys are needed here. The observability component
+# writes routing events to nemo-relay-events-*.jsonl in the working dir.
+version = 1
+
+[[components]]
+kind = "switchyard"
+enabled = true
+
+[components.config]
+mode = "enforce"
+decision_backend = "libsy"
+request_materialization = "summary_only"
+context_mode = "payload_only"
+enabled_inbound_profiles = ["anthropic_messages"]
+
+[components.config.libsy]
+algorithm = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+threshold = 0.5
+
+[components.config.default_targets]
+anthropic_messages = "strong"
+
+[components.config.targets.classifier]
+model = "claude-haiku-4-5-20251001"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://api.anthropic.com"
+
+[components.config.targets.strong]
+model = "claude-opus-4-8"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://api.anthropic.com"
+
+[components.config.targets.weak]
+model = "claude-sonnet-5"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://api.anthropic.com"
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+mode = "append"
