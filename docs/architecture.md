@@ -58,17 +58,22 @@ OpenClaw is intentionally pinned to `OPENAI` for its equivalent target.
 ```mermaid
 flowchart TB
     auto["BackendFormat.AUTO"]
+    chat{"/v1/chat/completions works?"}
+    openai_chat["OPENAI<br/>/v1/chat/completions"]
     messages{"/v1/messages works?"}
     anthropic["ANTHROPIC<br/>/v1/messages"]
     responses{"/v1/responses works?"}
     responses_format["RESPONSES<br/>/v1/responses"]
-    openai["OPENAI<br/>/v1/chat/completions fallback"]
+    openai_fallback["OPENAI<br/>/v1/chat/completions fallback"]
 
-    auto -->|"Probe /v1/messages"| messages
+    auto -->|"Probe /v1/chat/completions"| chat
+    chat -->|"Timeout: assume Chat Completions"| openai_chat
+    chat -->|"Yes"| openai_chat
+    chat -->|"No (fast 404): probe /v1/messages"| messages
     messages -->|"Yes"| anthropic
     messages -->|"No: probe /v1/responses"| responses
     responses -->|"Yes"| responses_format
-    responses -->|"No"| openai
+    responses -->|"No"| openai_fallback
 ```
 
 Supported inbound and response formats are handled automatically.
