@@ -31,14 +31,20 @@ branch; when it lands, this fixes with no recipe changes.
 
 ## 2. Classifier scoring call rejected upstream (HTTP 400)
 
-In a live TUI session, buffered calls reached libsy and produced classifier
-decisions, but the scoring call to Anthropic failed with
-`invalid_request:http_400`. Leading suspect: `LlmClassifierOrchAlgo` sets no
-output params and the Anthropic encoder defaults `max_tokens` to 128,000,
-above Haiku's output ceiling. Not yet proven; see issue 4.
+Root cause proven by capturing the request the plugin sends:
+`LlmClassifierOrchAlgo` sets no output params (`..LlmRequest::default()`,
+`llm_class.rs`), and the Anthropic encoder injects a hardcoded default of
+`max_tokens: 128000` when unset (`codecs/anthropic/buffered.rs:207`). Haiku
+4.5's output ceiling is 64,000, so Anthropic rejects the scoring call with
+HTTP 400 and the whole request falls back (via issue 3).
 
-**Owner:** switchyard-translation (encoder default) and libsy reference
-algorithms (set explicit output params on synthesized calls).
+```json
+{"model": "claude-haiku-4-5-20251001", "max_tokens": 128000, "messages": [...]}
+```
+
+**Owner:** switchyard-translation (remove or clamp the 128k default) and libsy
+reference algorithms (set explicit small output params; a score needs a few
+tokens). Not a Relay issue.
 
 ## 3. No fail-open on classifier call errors
 
@@ -50,11 +56,19 @@ instead of routing strong.
 
 ## 4. Provider errors are opaque in routing events
 
-The Relay plugin condenses upstream failures to summaries like
-`invalid_request:http_400`, discarding the response body. Issue 2 had to be
-root-caused from source instead of logs.
+The Relay plugin's `provider_error_summary` formats upstream failures as
+`class:http_status` and discards the response body. Issue 2 had to be
+root-caused by capturing the request instead of reading the logs.
 
-**Owner:** Relay plugin.
+**Owner:** Relay plugin. Not a libsy issue.
+
+## 5. Classifier prompt includes system boilerplate (minor)
+
+`LlmClassifierOrchAlgo` builds its scoring prompt by flattening all text in
+the request, so agent system content (billing headers, system reminders)
+precedes the user's question. Does not fail, but skews scores.
+
+**Owner:** libsy reference algorithms.
 
 ## Toolchain note
 
