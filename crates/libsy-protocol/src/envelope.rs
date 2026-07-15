@@ -23,7 +23,7 @@ pub struct Metadata {
     pub correlation_id: Option<String>,
     /// Arbitrary host-defined key/value metadata.
     pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
-    // http headers
+    /// HTTP headers to attach when forwarding the request/response, if any.
     pub http_headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
