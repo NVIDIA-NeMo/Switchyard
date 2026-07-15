@@ -581,10 +581,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
+  <a href="#quick-start-validated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick start
+        Quick start (validated)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launching-an-agent-partial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launching an agent (partial)
       
     </span>
   </a>
@@ -1196,10 +1207,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
+  <a href="#quick-start-validated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick start
+        Quick start (validated)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launching-an-agent-partial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launching an agent (partial)
       
     </span>
   </a>
@@ -1244,8 +1266,10 @@ made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/tree/main/
 while Relay keeps ownership of the actual LLM calls. No <code>switchyard serve</code>
 process is involved.</p>
 <blockquote>
-<p><strong>Status:</strong> work in progress. Steps marked <em>validated</em> have been run end to
-end; everything else is the intended shape and may change.</p>
+<p><strong>Status:</strong> the buffered request path is validated end to end against
+NeMo Relay's <code>feat/libsy-decision-backend</code> branch (classifier call and
+routed call both fulfilled by Relay dispatch). Streaming requests are not
+yet routed by libsy; they dispatch Relay's trusted per-protocol fallback.</p>
 </blockquote>
 <h2 id="two-ways-to-pair-switchyard-with-relay">Two ways to pair Switchyard with Relay<a class="headerlink" href="#two-ways-to-pair-switchyard-with-relay" title="Permanent link">&para;</a></h2>
 <table>
@@ -1268,13 +1292,14 @@ end; everything else is the intended shape and may change.</p>
 <td>Library (this recipe)</td>
 <td>Relay calls libsy in-process</td>
 <td>None</td>
-<td>libsy embedded in Relay's Switchyard plugin</td>
+<td><code>decision_backend = "libsy"</code> in Relay's Switchyard plugin</td>
 </tr>
 </tbody>
 </table>
-<p>Relay's Switchyard plugin already anticipates this: its README notes that a
-future in-process decision provider may replace the HTTP Decision API call
-without changing Relay-owned dispatch and observability.</p>
+<p>Relay's Switchyard plugin README anticipated this: a future in-process
+decision provider replacing the HTTP Decision API call without changing
+Relay-owned dispatch and observability. <code>decision_backend = "libsy"</code> is that
+provider.</p>
 <h2 id="how-the-pieces-fit">How the pieces fit<a class="headerlink" href="#how-the-pieces-fit" title="Permanent link">&para;</a></h2>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>agent (e.g. Claude Code)
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>   │  Anthropic / OpenAI wire protocol
@@ -1284,55 +1309,75 @@ without changing Relay-owned dispatch and observability.</p>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>   ▼
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>LLM execution intercept (Relay&#39;s Switchyard plugin)
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>   │
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>   ├─ libsy Algorithm decides which model to call
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>   ├─ libsy Algorithm decides which target to call
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>   │     Step::CallLlm ──▶ Relay fulfills via next(request) ──▶ provider
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>   │     Step::Decision ──▶ routing trace / observability
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>   │     Step::Decision ──▶ switchyard.routing.decision mark events
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>   │     Step::ReturnToAgent ──▶ final response
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>   ▼
 </span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>response translated back to the inbound protocol
 </span></code></pre></div>
 <p>libsy never performs a network call. Each offloaded <code>CallLlm</code> promise is
 fulfilled by Relay's own dispatch chain (<code>next(request)</code>), and the result is
-handed back with <code>CallLlmRequest::respond(Ok/Err)</code>. This keeps provider
-credentials, retries, and telemetry entirely on the Relay side.</p>
+handed back with <code>CallLlmRequest::respond(Ok/Err)</code>. The classifier's scoring
+call is a Relay-managed provider call like any other, so it shows up in
+Relay's observability. libsy's semantic target names (<code>"strong"</code>, <code>"weak"</code>,
+<code>"classifier"</code>) map onto the plugin's existing <code>TargetBinding</code> table, which
+binds each name to a Relay-owned backend URL, model, and protocol.</p>
 <h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Rust 1.96.1 (both repos pin their toolchain)</li>
-<li>A Switchyard checkout on <code>main</code> (libsy landed in
-  <a href="https://github.com/NVIDIA-NeMo/Switchyard/pull/17">PR #17</a>)</li>
-<li>A NeMo Relay checkout</li>
-<li>Provider credentials for at least two models (a strong and a weak target)</li>
+<li>Rust 1.96.1 (Switchyard's MSRV; note Relay pins 1.93.0, so build Relay with
+  <code>RUSTUP_TOOLCHAIN=1.96.1</code> until the toolchains converge)</li>
+<li>NeMo Relay checkout on the <code>feat/libsy-decision-backend</code> branch</li>
+<li>Provider credentials for your targets (the demo below needs none)</li>
 </ul>
-<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<p><em>(to be validated; commands will firm up as the integration lands)</em></p>
-<ol>
-<li>Build Relay with the Switchyard feature:</li>
-</ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>nemo-relay-cli<span class="w"> </span>--features<span class="w"> </span>switchyard
+<h2 id="quick-start-validated">Quick start (validated)<a class="headerlink" href="#quick-start-validated" title="Permanent link">&para;</a></h2>
+<p>Run the self-contained demo from a NeMo Relay checkout:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">RUSTUP_TOOLCHAIN</span><span class="o">=</span><span class="m">1</span>.96.1<span class="w"> </span>./examples/switchyard/run-libsy-e2e.sh
 </span></code></pre></div>
-<ol>
-<li>Configure the Switchyard component for library-mode decisions in
-   <code>plugins.toml</code>, selecting a libsy algorithm (the LLM classifier routes
-   strong/weak based on a classifier model's difficulty score):</li>
-</ol>
+<p>This starts a deterministic fake provider and Relay with the libsy backend,
+then verifies an easy prompt routes to the weak model and a hard prompt
+routes to the strong model, with the classifier and routed calls both flowing
+through Relay dispatch.</p>
+<p>The plugin configuration (<code>examples/switchyard/libsy-plugins.toml</code>):</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[[components]]</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">[components.config]</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># decision_backend = &quot;libsy&quot;   # in-process, no decision_api_url needed</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># algorithm = &quot;llm_classifier&quot;</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;enforce&quot;</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">decision_backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;libsy&quot;</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">request_materialization</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;summary_only&quot;</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">context_mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;payload_only&quot;</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">enabled_inbound_profiles</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai_chat&quot;</span><span class="p">]</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">[components.config.libsy]</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">algorithm</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="n">threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="k">[components.config.default_targets]</span>
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">openai_chat</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="k">[components.config.targets.classifier]</span>
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;classifier-model&quot;</span>
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="n">protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/v1/chat/completions&quot;</span>
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;http://127.0.0.1:4102&quot;</span>
+</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>
+</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="c1"># targets.strong and targets.weak follow the same shape</span>
 </span></code></pre></div>
-<ol>
-<li>Launch an agent through Relay:</li>
-</ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>nemo-relay<span class="w"> </span>claude<span class="w"> </span>--<span class="w"> </span><span class="s2">&quot;Summarize this repository.&quot;</span>
-</span></code></pre></div>
-<ol>
-<li>Inspect routing decisions in Relay's ATOF output
-   (<code>.nemo-relay/atof/events.jsonl</code>) and mark events
-   (<code>switchyard.routing.decision</code>).</li>
-</ol>
+<p>To point at real providers, replace the target <code>base_url</code> / <code>model</code> values and
+supply credentials with per-target <code>headers</code> / <code>header_env</code>.</p>
+<h2 id="launching-an-agent-partial">Launching an agent (partial)<a class="headerlink" href="#launching-an-agent-partial" title="Permanent link">&para;</a></h2>
+<p><code>nemo-relay claude -- "..."</code> launches Claude Code through the Relay gateway
+with this plugin active. Buffered requests are routed by libsy; streaming
+requests (most of Claude Code's interactive traffic) currently dispatch the
+trusted per-protocol fallback instead of a libsy decision. Closing the
+streaming gap is the top open item: libsy's <code>CallLlmRequest::respond</code> accepts
+a buffered <code>Response</code>, so the final routed hop has no way to stream back to
+the agent yet.</p>
 <h2 id="the-embedding-contract">The embedding contract<a class="headerlink" href="#the-embedding-contract" title="Permanent link">&para;</a></h2>
 <p>The host (Relay) needs exactly three things from libsy:</p>
 <ul>
