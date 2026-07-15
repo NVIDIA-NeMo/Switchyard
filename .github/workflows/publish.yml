@@ -16,6 +16,16 @@ on:
         required: true
         type: boolean
         default: false
+      package_rust_crates:
+        description: "Run cargo publish --dry-run for public Rust crates and upload .crate artifacts."
+        required: true
+        type: boolean
+        default: false
+      publish_rust_crates:
+        description: "Publish public Rust crates to crates.io from main. Requires environment approval."
+        required: true
+        type: boolean
+        default: false
       dev_version:
         description: "PEP 440 .dev version for the dev wheel."
         required: true
@@ -32,12 +42,14 @@ permissions:
 jobs:
   # OSS-style split:
   # - Root vMAJOR.MINOR.PATCH tags run validation, build the complete matrix, publish to
-  #   PyPI, and create a GitHub Release.
+  #   crates.io and PyPI, and create a GitHub Release.
   # - Manual dev builds create artifacts only. They are useful for branch validation but never
   #   publish to PyPI.
+  # - Manual Rust crate publishing is allowed only from main and still requires the protected
+  #   crates-io environment.
   #
-  # This deliberately keeps release publishing on the public GitHub/PyPI path. Manual
-  # branch builds only produce artifacts; tag builds publish through PyPI Trusted Publishing.
+  # This deliberately keeps release publishing on the public GitHub/PyPI/crates.io path. Manual
+  # branch builds only produce artifacts; tag builds publish through trusted/secret-backed paths.
   validate-release-ref:
     name: Validate release ref
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
@@ -66,6 +78,14 @@ jobs:
               )
           print(f"release tag {tag} matches pyproject version {package_version}")
           PY
+      - name: Check manual Rust crate publish ref
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_rust_crates }}
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Rust crate publishing from workflow_dispatch must run from main, got ${GITHUB_REF}" >&2
+            exit 1
+          fi
 
   python-release-checks:
     name: Release Python checks (${{ matrix.python-version }})
@@ -104,6 +124,33 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace -- --test-threads=1
+
+  rust-crate-package:
+    name: Rust crate package dry-run
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && (inputs.build_dev_matrix || inputs.package_rust_crates || inputs.publish_rust_crates)) }}
+    needs: [validate-release-ref]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package public Rust crates
+        run: python scripts/release/publish_crates.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: switchyard-rust-crates
+          path: target/package/*.crate
+
+  publish-rust-crates:
+    name: Publish Rust crates
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_rust_crates) }}
+    needs: [rust-crate-package]
+    runs-on: ubuntu-latest
+    environment: crates-io
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish public Rust crates
+        run: python scripts/release/publish_crates.py --publish
 
   source-dist:
     name: Source distribution
@@ -422,7 +469,7 @@ jobs:
   publish:
     name: Publish distributions
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [source-dist, wheels]
+    needs: [source-dist, wheels, publish-rust-crates]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

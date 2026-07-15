@@ -7,6 +7,8 @@ version = "0.1.0"
 description = "Experimental flatter Switchyard component profile runtime"
 authors.workspace = true
 edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -20,9 +22,9 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-switchyard-components = { path = "../switchyard-components" }
-switchyard-components-v2-macros = { path = "../switchyard-components-v2-macros" }
-switchyard-core = { path = "../switchyard-core" }
+switchyard-components = { path = "../switchyard-components", version = "0.1.0" }
+switchyard-components-v2-macros = { path = "../switchyard-components-v2-macros", version = "0.1.0" }
+switchyard-core = { path = "../switchyard-core", version = "0.1.0" }
 toml = "0.8"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 yaml_serde = "0.10"
