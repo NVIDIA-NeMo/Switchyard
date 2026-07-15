@@ -35,6 +35,21 @@ _L2_BREAKER_COOLDOWN_S = 10.0
 CTX_SESSION_KEY = "_session_affinity_key"
 
 
+def resolve_session_key(ctx: ProxyContext, request: ChatRequest) -> str:
+    """Derive the conversation key once per request, memoized on ``ctx``.
+
+    Components that pre-seed a custom key into ``CTX_SESSION_KEY`` (e.g. the
+    escalation judge's deep benchmark key) are respected: the seeded value
+    wins over re-derivation.
+    """
+    cached = ctx.metadata.get(CTX_SESSION_KEY)
+    if isinstance(cached, str):
+        return cached
+    key = session_key_from_body(request.body)
+    ctx.metadata[CTX_SESSION_KEY] = key
+    return key
+
+
 class SessionAffinity:
     """Pins a routing decision per conversation and reuses it on later turns.
 
@@ -238,16 +253,11 @@ class SessionAffinity:
 
     def _session_key(self, ctx: ProxyContext, request: ChatRequest) -> str:
         """Derive the conversation key once per request, memoized on ``ctx``."""
-        cached = ctx.metadata.get(CTX_SESSION_KEY)
-        if isinstance(cached, str):
-            return cached
-        key = session_key_from_body(request.body)
-        ctx.metadata[CTX_SESSION_KEY] = key
-        return key
+        return resolve_session_key(ctx, request)
 
     def _is_warmup_turn(self, request: ChatRequest) -> bool:
         """Return whether this request is still inside the no-stick warmup."""
         return conversation_turn_number(request) <= self._warmup_turns
 
 
-__all__ = ["CTX_SESSION_KEY", "SessionAffinity"]
+__all__ = ["CTX_SESSION_KEY", "SessionAffinity", "resolve_session_key"]

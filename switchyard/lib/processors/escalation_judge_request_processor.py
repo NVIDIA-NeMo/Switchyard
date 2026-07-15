@@ -28,8 +28,11 @@ from switchyard.lib.processors.llm_classifier.request_processor import (
     _trim_messages,
 )
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.session_affinity import CTX_SESSION_KEY, SessionAffinity
-from switchyard.lib.session_key import session_key_from_body
+from switchyard.lib.session_affinity import (
+    CTX_SESSION_KEY,
+    SessionAffinity,
+    resolve_session_key,
+)
 from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest
 
@@ -309,10 +312,7 @@ class EscalationJudgeRequestProcessor:
 
     def _streak_key(self, ctx: ProxyContext, request: ChatRequest) -> str:
         """Conversation key for streak bookkeeping (seeded deep key or Rust default)."""
-        cached = ctx.metadata.get(CTX_SESSION_KEY)
-        if isinstance(cached, str):
-            return cached
-        return session_key_from_body(request.body)
+        return resolve_session_key(ctx, request)
 
     def _bump_streak(self, ctx: ProxyContext, request: ChatRequest) -> int:
         """Record one escalate verdict for this conversation; return the streak."""
