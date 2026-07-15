@@ -15,7 +15,7 @@ pub mod policy;
 pub mod stream;
 pub mod util;
 
-pub use libsy_protocol::{format, llm};
+pub use switchyard_protocol::{format, llm};
 
 pub use diagnostic::*;
 pub use engine::*;
