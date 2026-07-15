@@ -129,7 +129,9 @@ If the selected tier exceeds its context window, Switchyard retries once on
 | `judge.min_turn` | `3` | The judge should start earlier or wait for more trajectory evidence. |
 | `judge.confirmations` | `1` | One positive verdict is too eager and escalation should require repeated evidence. |
 | `judge.confirmation_window` | `1` | Intermittent trouble should remain eligible for confirmation across negative verdicts. |
-| `judge.disable_reasoning` | `true` | Set to `false` when a reasoning judge benefits from thinking despite the added latency. |
+| `judge.disable_reasoning` | `true` | Set to `false` when a reasoning judge benefits from thinking despite the added latency. The thinking-off hint is only sent to models that accept it (Claude/Bedrock judges never receive it). |
+| `judge.max_completion_tokens` | auto | The judge's completion budget needs an explicit value. The default follows the reasoning mode: `128` with thinking off, `4096` with thinking on (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn). |
+| `judge.dump_verdicts` | `false` | Benchmark runs need per-turn `escalation_verdict=` stderr lines (includes a first-user `task_hint` snippet). Keep off in production; routing telemetry flows through the stats endpoints. |
 | `judge.recent_turn_window` | `14` | The judge needs a wider or narrower trailing-message window. |
 | `judge.window_message_chars` | `300` | More tool-output detail should survive per-message truncation. |
 | `judge.max_request_chars` | `12000` | The complete judge request needs a different character budget. Oldest recent messages are dropped first. |
@@ -138,6 +140,10 @@ If the selected tier exceeds its context window, Switchyard retries once on
 | `tier_timeout_s` | `600` | Strong or weak targets without their own `timeout_secs` need a different call timeout. |
 | `enable_stats` | `true` | Set to `false` only when route-level usage statistics are not needed. |
 | `affinity_max_sessions` | `10000` | A long-lived process needs a different in-memory latch capacity. |
+| `affinity_store` | `memory` | Set to `redis` to share the escalation latch across workers and keep it across pod churn; with `memory`, a worker change silently restarts an escalated conversation on weak. Best-effort — a store error never fails a request. |
+| `affinity_store_url` | — | Connection URL for the shared latch store (e.g. `redis://host:6379/0`); required with `affinity_store: redis`. |
+| `affinity_store_ttl_seconds` | `3600` | A shared latch entry should expire on a different horizon. |
+| `affinity_key_prefix` | `swyd:esc:` | Multiple deployments share one Redis and need namespaced keys. |
 | `session_key_depth` | `0` | Repeated benchmark trials with identical task prefixes need separate latches; keep `0` for normal traffic. |
 
 ## Observability
