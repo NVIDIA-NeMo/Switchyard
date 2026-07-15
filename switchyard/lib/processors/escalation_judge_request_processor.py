@@ -23,8 +23,13 @@ from switchyard.lib.llm_client import OpenAILLMClient
 from switchyard.lib.processors.llm_classifier.request_processor import (
     LLMClassifierClient,
     OpenAIChatLLMClassifierClient,
-    _strip_markdown_fence,
-    _trim_messages,
+)
+from switchyard.lib.processors.message_condensing import (
+    content_text,
+    message_text,
+    strip_markdown_fence,
+    trim_messages,
+    truncate_middle,
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.session_affinity import (
@@ -246,7 +251,7 @@ class EscalationJudgeRequestProcessor:
                 request_summary=summary,
             )
             verdict = EscalationVerdict.model_validate_json(
-                _strip_markdown_fence(completion.content),
+                strip_markdown_fence(completion.content),
             )
         except Exception as exc:
             # Fail open to the current (weak) tier and never pin: a judge
@@ -425,7 +430,7 @@ def _first_user_text(request: ChatRequest) -> str:
         return ""
     for m in messages:
         if isinstance(m, dict) and m.get("role") == "user":
-            text = _message_text(m).strip()
+            text = message_text(m).strip()
             while True:
                 for tag in ("system-reminder", "environment_context"):
                     if text.startswith(f"<{tag}>"):
@@ -461,7 +466,7 @@ def _summarize_for_judge(
         if isinstance(raw, list):
             messages = raw
 
-    trimmed = _trim_messages(messages, recent_turn_window=config.recent_turn_window)
+    trimmed = trim_messages(messages, recent_turn_window=config.recent_turn_window)
 
     anchor_lines: list[str] = []
     window_lines: list[str] = []
@@ -469,22 +474,26 @@ def _summarize_for_judge(
         top_system = body.get("system")
         if isinstance(top_system, str | list):
             anchor_lines.append(
-                "[system] " + _truncate(_content_text(top_system), config.system_chars)
+                "[system] " + truncate_middle(content_text(top_system), config.system_chars)
             )
     first_user_seen = False
     for m in trimmed:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
-        text = _message_text(m)
+        text = message_text(m)
         if role in ("system", "developer"):
-            anchor_lines.append(f"[{role}] " + _truncate(text, config.system_chars))
+            anchor_lines.append(f"[{role}] " + truncate_middle(text, config.system_chars))
         elif role == "user" and not first_user_seen:
             first_user_seen = True
-            anchor_lines.append("[user (task)] " + _truncate(text, config.first_user_chars))
+            anchor_lines.append(
+                "[user (task)] " + truncate_middle(text, config.first_user_chars)
+            )
         else:
             label = role or m.get("type") or "message"
-            window_lines.append(f"[{label}] " + _truncate(text, config.window_message_chars))
+            window_lines.append(
+                f"[{label}] " + truncate_middle(text, config.window_message_chars)
+            )
 
     n_shown = len(window_lines)
     header = (
@@ -504,66 +513,6 @@ def _summarize_for_judge(
     if len(text) > config.max_request_chars:
         text = text[: config.max_request_chars - 15] + "...<truncated>"
     return text
-
-
-def _message_text(message: dict[str, Any]) -> str:
-    """Flatten a chat message (or Responses item) to plain text, tool calls included."""
-    parts: list[str] = []
-    content = message.get("content")
-    if isinstance(content, str | list):
-        text = _content_text(content)
-        if text:
-            parts.append(text)
-    # OpenAI chat tool calls: the command shapes the judge needs for loop detection.
-    tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list):
-        for call in tool_calls:
-            if not isinstance(call, dict):
-                continue
-            fn = call.get("function")
-            if isinstance(fn, dict):
-                parts.append(f"tool_call {fn.get('name')}({fn.get('arguments', '')})")
-    # OpenAI Responses items carry their payloads in type-specific fields.
-    if message.get("type") == "function_call":
-        parts.append(f"tool_call {message.get('name')}({message.get('arguments', '')})")
-    output = message.get("output")
-    if isinstance(output, str | list):
-        text = _content_text(output)
-        if text:
-            parts.append(text)
-    return " ".join(parts)
-
-
-def _content_text(content: str | list[Any]) -> str:
-    """Flatten string-or-content-block message content to text."""
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, str):
-            parts.append(block)
-            continue
-        if not isinstance(block, dict):
-            continue
-        text = block.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-            continue
-        inner = block.get("content")
-        if isinstance(inner, str | list):
-            parts.append(_content_text(inner))
-    return " ".join(p for p in parts if p)
-
-
-def _truncate(text: str, limit: int) -> str:
-    """Keep the head and tail of ``text`` within ``limit`` chars."""
-    if len(text) <= limit:
-        return text
-    marker = " ...[trimmed] "
-    keep = max(limit - len(marker), 20)
-    head = (keep * 2) // 3
-    tail = keep - head
-    return text[:head] + marker + text[-tail:]
 
 
 __all__ = [
