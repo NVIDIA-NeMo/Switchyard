@@ -129,7 +129,11 @@ impl Algorithm for LlmClassifierOrchAlgo {
         let classify_response = driver
             .call_llm_target(&classifier_target, classify_request, classify_decision)
             .await?;
-        let score = completion_text(&classify_response.llm_response)
+        let score = classify_response
+            .llm_response
+            .agg()
+            .map(completion_text)
+            .unwrap_or_default()
             .trim()
             .parse::<f64>()
             .ok();
@@ -174,7 +178,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
     use libsy_protocol::text_response;
     use std::sync::Mutex;
 
@@ -204,7 +208,7 @@ mod tests {
                 .map_err(|_| "lock poisoned")?
                 .push(routed.request);
             Ok(Response {
-                llm_response: text_response(None, completion),
+                llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,
             })
         }
@@ -267,7 +271,11 @@ mod tests {
             .run(Context::default(), request("solve this proof"))
             .await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from frontier/model"
         );
         // Trace: [classify, route].
@@ -286,7 +294,11 @@ mod tests {
             .run(Context::default(), request("say hello"))
             .await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from cheap/model"
         );
         let routed = as_classifier(&trace[1])?;
@@ -303,7 +315,11 @@ mod tests {
             .run(Context::default(), request("borderline"))
             .await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from frontier/model"
         );
         Ok(())
@@ -314,7 +330,11 @@ mod tests {
         let (algo, _) = algo(0.5, "not-a-number");
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from frontier/model"
         );
         let routed = as_classifier(&trace[1])?;

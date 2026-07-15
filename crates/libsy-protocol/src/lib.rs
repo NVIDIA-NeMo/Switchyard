@@ -5,20 +5,27 @@
 //! over, decoupled from libsy's orchestration.
 //!
 //! This crate owns Switchyard's neutral conversation IR: [`LlmRequest`] (model, messages,
-//! tools, sampling, …) and [`LlmResponse`] (outputs, usage, …), plus the wire-[`format`]
-//! identifiers translation keys off. `switchyard-translation` re-exports these — notably
-//! [`LlmRequest`]/[`LlmResponse`] under its own `ConversationRequest`/`ConversationResponse`
-//! names. The IR carries no bare `prompt`/`completion`; the [`text_request`] /
-//! [`prompt_text`] / [`text_response`] / [`completion_text`] helpers bridge to and from
-//! plain text for the common single-turn case.
+//! tools, sampling, …), the buffered [`AggLlmResponse`] (outputs, usage, …), and its
+//! streaming counterpart [`LlmResponseChunk`] — plus the wire-[`format`] identifiers
+//! translation keys off. `switchyard-translation` re-exports these under its own
+//! `ConversationRequest` / `ConversationResponse` / `ConversationStreamEvent` names. The IR
+//! carries no bare `prompt`/`completion`; the [`text_request`] / [`prompt_text`] /
+//! [`text_response`] / [`completion_text`] helpers bridge to and from plain text for the
+//! common single-turn case.
+//!
+//! The streamed-response type itself — a live stream of chunks *or* the terminal
+//! aggregate — is libsy's `LlmResponse`; it lives there because it owns a `futures::Stream`
+//! and an error channel, keeping this crate pure data.
 //!
 //! [`Algorithm`]: https://docs.rs/libsy
 
 pub mod format;
 pub mod ir;
+pub mod stream;
 
 pub use format::*;
 pub use ir::*;
+pub use stream::*;
 
 /// Build a single-turn request: one user message carrying `prompt`, for `model`.
 pub fn text_request(model: Option<String>, prompt: impl Into<String>) -> LlmRequest {
@@ -42,8 +49,8 @@ pub fn prompt_text(request: &LlmRequest) -> String {
 }
 
 /// Build a single-turn response: one assistant message carrying `completion`, for `model`.
-pub fn text_response(model: Option<String>, completion: impl Into<String>) -> LlmResponse {
-    LlmResponse {
+pub fn text_response(model: Option<String>, completion: impl Into<String>) -> AggLlmResponse {
+    AggLlmResponse {
         model,
         outputs: vec![ResponseOutput {
             role: Role::Assistant,
@@ -52,13 +59,13 @@ pub fn text_response(model: Option<String>, completion: impl Into<String>) -> Ll
             }],
             stop_reason: None,
         }],
-        ..LlmResponse::default()
+        ..AggLlmResponse::default()
     }
 }
 
 /// The assistant's completion text — the text blocks of the first output, concatenated.
 /// Empty when the response has no textual output.
-pub fn completion_text(response: &LlmResponse) -> String {
+pub fn completion_text(response: &AggLlmResponse) -> String {
     response
         .outputs
         .first()
@@ -95,6 +102,6 @@ mod tests {
     #[test]
     fn empty_text_helpers_are_empty_strings() {
         assert_eq!(prompt_text(&LlmRequest::default()), "");
-        assert_eq!(completion_text(&LlmResponse::default()), "");
+        assert_eq!(completion_text(&AggLlmResponse::default()), "");
     }
 }

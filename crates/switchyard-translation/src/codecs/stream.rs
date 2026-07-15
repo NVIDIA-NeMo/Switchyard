@@ -83,35 +83,10 @@ impl StreamTranslationState {
     }
 }
 
-/// Provider-neutral event used between stream decoders and encoders.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum ConversationStreamEvent {
-    MessageStart {
-        id: Option<String>,
-        model: Option<String>,
-    },
-    TextDelta {
-        index: usize,
-        text: String,
-    },
-    ReasoningDelta {
-        index: usize,
-        text: String,
-    },
-    ToolCallDelta {
-        index: usize,
-        id: Option<String>,
-        name: Option<String>,
-        arguments_delta: Option<String>,
-    },
-    Usage(Usage),
-    MessageStop {
-        reason: Option<String>,
-    },
-    Error {
-        message: String,
-    },
-}
+/// Provider-neutral event used between stream decoders and encoders. Defined in
+/// `libsy-protocol` as `LlmResponseChunk`; re-exported here under its long-standing
+/// translation name.
+pub use libsy_protocol::LlmResponseChunk as ConversationStreamEvent;
 
 /// Registry-backed streaming translator.
 #[derive(Default)]

@@ -277,7 +277,11 @@ impl EnsembleOrchAlgo {
                 .await?;
             // Fail open: an unparseable pick falls back to the first response.
             let choice = parse_choice(
-                &completion_text(&judge_response.llm_response),
+                &judge_response
+                    .llm_response
+                    .agg()
+                    .map(completion_text)
+                    .unwrap_or_default(),
                 survivors.len(),
             );
             let (model, response) = survivors
@@ -327,7 +331,11 @@ fn build_judge_prompt(user_prompt: &str, survivors: &[(String, Response)]) -> St
         prompt.push_str(&format!(
             "Response {}:\n{}\n\n",
             i + 1,
-            completion_text(&response.llm_response)
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default()
         ));
     }
     prompt.push_str(&format!(
@@ -391,7 +399,7 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
     use libsy_protocol::text_response;
     use std::sync::Mutex as StdMutex;
 
@@ -422,7 +430,7 @@ mod tests {
                 format!("answer from {name}")
             };
             Ok(Response {
-                llm_response: text_response(None, completion),
+                llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,
             })
         }
@@ -528,7 +536,11 @@ mod tests {
             .run(Context::default(), request("solve it"))
             .await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from b/model"
         );
 
@@ -571,7 +583,11 @@ mod tests {
         // fan-out to a/model and no judge call.
         let (trace, response) = orch.clone().run(Context::default(), request("t3")).await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from b/model"
         );
         assert_eq!(trace.len(), 1);
@@ -592,7 +608,11 @@ mod tests {
         let (algo, calls) = algo(&["only/model"], "judge/haiku", "only/model", 100);
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
-            completion_text(&response.llm_response),
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
             "answer from only/model"
         );
         // No judge call for a lone candidate.
@@ -717,7 +737,7 @@ mod tests {
                     format!("answer from {name}")
                 };
                 Ok(Response {
-                    llm_response: text_response(None, completion),
+                    llm_response: LlmResponse::Agg(text_response(None, completion)),
                     metadata: None,
                 })
             }
@@ -752,7 +772,13 @@ mod tests {
                 session
                     .run(Context::default(), request(prompt))
                     .await
-                    .map(|(_, response)| completion_text(&response.llm_response))
+                    .map(|(_, response)| {
+                        response
+                            .llm_response
+                            .agg()
+                            .map(completion_text)
+                            .unwrap_or_default()
+                    })
             })
         };
         let handle_a = run(session_a, "from A");
@@ -799,7 +825,11 @@ mod tests {
                     .map(|d| d.phase)
                     .ok_or("missing final decision")?;
                 Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((
-                    completion_text(&response.llm_response),
+                    response
+                        .llm_response
+                        .agg()
+                        .map(completion_text)
+                        .unwrap_or_default(),
                     phase,
                 ))
             })

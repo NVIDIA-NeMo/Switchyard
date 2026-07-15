@@ -96,7 +96,7 @@ impl Algorithm for RandomOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
     use libsy_protocol::{completion_text, text_request, text_response};
     use std::collections::HashSet;
 
@@ -111,7 +111,10 @@ mod tests {
             routed: RoutedRequest,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             Ok(Response {
-                llm_response: text_response(None, routed.decision.selected_model()),
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    routed.decision.selected_model(),
+                )),
                 metadata: None,
             })
         }
@@ -146,7 +149,14 @@ mod tests {
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let orch = orch(&["only/model"]);
         let (trace, response) = orch.clone().run(Context::default(), request()).await?;
-        assert_eq!(completion_text(&response.llm_response), "only/model");
+        assert_eq!(
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "only/model"
+        );
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].selected_model(), "only/model");
         Ok(())
@@ -159,7 +169,11 @@ mod tests {
         let orch = orch(&names);
         for _ in 0..50 {
             let (trace, response) = orch.clone().run(Context::default(), request()).await?;
-            let selected = completion_text(&response.llm_response);
+            let selected = response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default();
             assert!(
                 names.contains(&selected.as_str()),
                 "selected {selected} not in target set"
@@ -177,7 +191,13 @@ mod tests {
         let mut seen = HashSet::new();
         for _ in 0..100 {
             let (_, response) = orch.clone().run(Context::default(), request()).await?;
-            seen.insert(completion_text(&response.llm_response));
+            seen.insert(
+                response
+                    .llm_response
+                    .agg()
+                    .map(completion_text)
+                    .unwrap_or_default(),
+            );
         }
         // 100 uniform draws over two targets: both should appear (miss ~ 2^-99).
         assert_eq!(

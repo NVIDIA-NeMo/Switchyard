@@ -12,7 +12,9 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, Context, Decision, LlmTarget, LlmTargetSet, Request, Response, Step};
+use libsy::{
+    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
+};
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use libsy_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
@@ -32,7 +34,7 @@ async fn call_model(model: &str) -> Response {
         format!("answer from {model}")
     };
     Response {
-        llm_response: text_response(None, completion),
+        llm_response: LlmResponse::Agg(text_response(None, completion)),
         metadata: None,
     }
 }
@@ -76,7 +78,13 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(completion_text(&response.llm_response));
+                        notes.push(
+                            response
+                                .llm_response
+                                .agg()
+                                .map(completion_text)
+                                .unwrap_or_default(),
+                        );
                     }
                 }
             }

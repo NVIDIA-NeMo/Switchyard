@@ -11,7 +11,7 @@
 
 pub use libsy_protocol::ir::*;
 pub use libsy_protocol::ir::{
-    LlmRequest as ConversationRequest, LlmResponse as ConversationResponse,
+    AggLlmResponse as ConversationResponse, LlmRequest as ConversationRequest,
 };
 
 /// Returns true when `name` is a message role recognized by at least one
