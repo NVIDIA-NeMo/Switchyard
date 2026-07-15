@@ -3,11 +3,12 @@
 
 import pytest
 
-from switchyard.cli.launchers import startup_timing
+from switchyard.lib import startup_timing
 
 
 def _reset() -> None:
     startup_timing._marks.clear()
+    startup_timing._forced = False
 
 
 def test_disabled_records_nothing_and_prints_nothing(
@@ -36,24 +37,39 @@ def test_falsey_value_is_disabled(
     assert capsys.readouterr().err == ""
 
 
-def test_enabled_prints_per_stage_breakdown_and_resets(
+def test_env_var_enables_per_stage_breakdown_and_resets(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("SWITCHYARD_STARTUP_TIMING", "1")
     _reset()
 
     startup_timing.mark("launch invoked")
-    startup_timing.mark("chain built (incl. backend-format probe)")
+    startup_timing.mark("probe: /v1/chat/completions")
     startup_timing.mark("child agent spawned")
     startup_timing.dump()
 
     err = capsys.readouterr().err
     assert "switchyard startup timing" in err
-    assert "chain built (incl. backend-format probe)" in err
+    assert "probe: /v1/chat/completions" in err
     assert "child agent spawned" in err
     assert "total (launch invoked -> child spawn)" in err
     # dump() resets so a second launch in the same process starts clean.
     assert startup_timing._marks == []
+
+
+def test_flag_enables_without_env_var(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The --startup-timing flag calls enable(); it must work with no env var set.
+    monkeypatch.delenv("SWITCHYARD_STARTUP_TIMING", raising=False)
+    _reset()
+
+    startup_timing.enable()
+    startup_timing.mark("launch invoked")
+    startup_timing.mark("child agent spawned")
+    startup_timing.dump()
+
+    assert "switchyard startup timing" in capsys.readouterr().err
 
 
 def test_dump_needs_at_least_two_marks(

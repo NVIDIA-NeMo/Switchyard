@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 
+from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import (
     BackendFormat,
     LlmTarget,
@@ -83,6 +84,10 @@ class BackendFormatResolver:
 
         timeout_s = tier.endpoint.timeout_secs or _DEFAULT_TIMEOUT_S
 
+        # startup_timing marks let `switchyard launch --startup-timing` show each
+        # probe as its own line, so a slow AUTO detection names which route stalled.
+        startup_timing.mark("chain init")
+
         # Chat Completions is probed first: it is the most widely supported
         # format and the universal fallback. A transport timeout (the endpoint
         # is reachable but slow, e.g. a cold NVCF/Azure deployment) is a
@@ -100,33 +105,39 @@ class BackendFormatResolver:
                 timeout_s=timeout_s,
             )
         except httpx.TimeoutException:
+            startup_timing.mark("probe: /v1/chat/completions (timed out)")
             return BackendFormatResolution(
                 format=BackendFormat.OPENAI,
                 reason="chat-completions probe timed out; assuming Chat Completions",
             )
+        startup_timing.mark("probe: /v1/chat/completions")
         if chat_supported:
             return BackendFormatResolution(
                 format=BackendFormat.OPENAI,
                 reason="upstream /v1/chat/completions probe succeeded",
             )
 
-        if probe_anthropic_messages_support_sync(
+        anthropic_supported = probe_anthropic_messages_support_sync(
             base_url=tier.endpoint.base_url,
             api_key=tier.endpoint.api_key,
             model=tier.model,
             timeout_s=timeout_s,
-        ):
+        )
+        startup_timing.mark("probe: /v1/messages")
+        if anthropic_supported:
             return BackendFormatResolution(
                 format=BackendFormat.ANTHROPIC,
                 reason="upstream /v1/messages probe succeeded; Chat Completions not available",
             )
 
-        if probe_openai_responses_support_sync(
+        responses_supported = probe_openai_responses_support_sync(
             base_url=tier.endpoint.base_url,
             api_key=tier.endpoint.api_key,
             model=tier.model,
             timeout_s=timeout_s,
-        ):
+        )
+        startup_timing.mark("probe: /v1/responses")
+        if responses_supported:
             return BackendFormatResolution(
                 format=BackendFormat.RESPONSES,
                 reason="upstream /v1/responses probe succeeded; Chat Completions not available",

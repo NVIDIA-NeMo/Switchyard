@@ -28,7 +28,6 @@ from switchyard.cli.config.user_config import (
 )
 from switchyard.cli.configure_command import cmd_configure
 from switchyard.cli.intake_cli_config import IntakeCliConfig
-from switchyard.cli.launchers import startup_timing
 from switchyard.cli.launchers.launch_intake_config import LaunchIntakeConfig
 from switchyard.cli.output import format_dry_run
 from switchyard.cli.routing import (
@@ -36,6 +35,7 @@ from switchyard.cli.routing import (
     build_deterministic_routing_config,
     require_route_model,
 )
+from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import BackendFormat
 from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
@@ -481,6 +481,8 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
 
     Random / latency-aware routing live in the YAML schema.
     """
+    if getattr(args, "startup_timing", False):
+        startup_timing.enable()
     startup_timing.mark("launch invoked")
     if args.routing_profiles and getattr(args, "smoke", False):
         raise SystemExit(

@@ -42,7 +42,6 @@ from typing import Any
 
 import uvicorn
 
-from switchyard.cli.launchers import startup_timing
 from switchyard.cli.launchers.claude_alias import claude_alias_for, de_claude_alias
 from switchyard.cli.launchers.launch_intake_config import (
     LaunchIntakeConfig,
@@ -70,6 +69,7 @@ from switchyard.cli.launchers.session_summary import print_session_summary
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
 )
+from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import (
     BackendFormat,
     LlmTarget,
@@ -317,7 +317,7 @@ def _run_claude_with_switchyard(
     Returns the ``claude`` process's exit code (or ``127`` if the
     binary wasn't found, ``130`` on Ctrl-C).
     """
-    startup_timing.mark("chain built (incl. backend-format probe)")
+    startup_timing.mark("chain assembled")
     # Expose every table entry under a `claude-` prefixed alias so Claude
     # Code's gateway-discovery filter accepts the full listing. Originals stay
     # registered for direct-id callers; aliases share the same chain object.
