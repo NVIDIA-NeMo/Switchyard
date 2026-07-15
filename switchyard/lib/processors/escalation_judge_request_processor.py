@@ -106,16 +106,18 @@ class EscalationJudgeConfig(BaseModel):
     disable_reasoning: bool = True
     extra_headers: dict[str, str] | None = None
 
-    dump_verdicts_to_stderr: bool = True
+    dump_verdicts_to_stderr: bool = False
     """Emit one ``escalation_verdict={...}`` JSON line to ``sys.stderr`` per
     judge call (verdict or fail-open).
 
-    Written directly (not via the logging module) so it lands in the
-    benchmark server's captured log regardless of uvicorn's logger config —
-    mirrors :attr:`LLMClassifierConfig.dump_signals_to_stderr`. Grep
-    ``escalation_verdict=`` to reconstruct per-turn judge decisions and
-    escalation timing for a run. Disable for callers that share stderr
-    with an interactive TUI."""
+    Benchmark-only diagnostics, **opt-in**: the payload includes a short
+    first-user snippet (``task_hint``) and the line interferes with agent
+    TUIs sharing stderr, so shipping profiles keep it off and production
+    routing telemetry flows through the normal stats path. When enabled it
+    is written directly (not via the logging module) so it lands in the
+    benchmark server's captured log regardless of uvicorn's logger config.
+    Grep ``escalation_verdict=`` to reconstruct per-turn judge decisions
+    and escalation timing for a run."""
 
     min_judge_turn: int = Field(default=3, ge=1)
     """First conversation turn on which the judge runs. Earlier turns have no

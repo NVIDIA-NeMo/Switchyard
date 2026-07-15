@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Self
 
+from switchyard.lib.affinity_pin_store import AffinityPinStore
 from switchyard.lib.backends.anthropic_cache_breakpoint_backend import (
     maybe_wrap_anthropic_cache,
 )
@@ -54,17 +55,28 @@ class EscalationRouterProfileConfig:
         # The affinity store IS the escalation latch, so it is always on.
         # Warmup gating lives in the judge processor (min_judge_turn), not
         # here — affinity warmup would delay a decided escalation from
-        # taking effect, not just from being decided.
+        # taking effect, not just from being decided. The optional Redis L2
+        # keeps the latch across workers and pod churn; without it a worker
+        # change silently restarts an escalated conversation on weak.
         affinity = SessionAffinity(
             enabled=True,
             max_sessions=config.affinity_max_sessions,
             warmup_turns=0,
+            l2=_build_affinity_l2(config),
         )
 
         # DeepSeek judges get the same benchmark-gateway defaults as DeepSeek
         # tiers (``X-Inference-Priority: batch``) so their calls land on the
         # relaxed-timeout gateway alongside the routed tier traffic.
         judge_target = _apply_deepseek_overrides(config.judge)
+        # Claude/Bedrock judges reject the vLLM-only chat_template_kwargs
+        # hint outright — every judged turn would fail open to weak — so
+        # the hint is only sent to models that tolerate it (same gate as
+        # the classifier presets and the stage router).
+        judge_disable_reasoning = (
+            config.judge_disable_reasoning
+            and model_accepts_reasoning_hint(judge_target.model)
+        )
         judge_config = EscalationJudgeConfig(
             model=judge_target.model,
             api_key=judge_target.api_key,
@@ -74,14 +86,16 @@ class EscalationRouterProfileConfig:
             min_judge_turn=config.judge_min_turn,
             escalate_confirmations=config.judge_escalate_confirmations,
             confirmation_window=config.judge_confirmation_window,
-            # Claude/Bedrock judges reject the vLLM-only chat_template_kwargs
-            # hint outright — every judged turn would fail open to weak — so
-            # the hint is only sent to models that tolerate it (same gate as
-            # the classifier presets and the stage router).
-            disable_reasoning=(
-                config.judge_disable_reasoning
-                and model_accepts_reasoning_hint(judge_target.model)
+            disable_reasoning=judge_disable_reasoning,
+            # Reasoning tokens and the JSON verdict share one budget: a
+            # thinking judge needs the classifier's larger ceiling or it
+            # truncates mid-reasoning and silently fails open every turn.
+            max_completion_tokens=(
+                config.judge_max_completion_tokens
+                if config.judge_max_completion_tokens is not None
+                else (128 if judge_disable_reasoning else 4096)
             ),
+            dump_verdicts_to_stderr=config.judge_dump_verdicts,
             recent_turn_window=config.judge_recent_turn_window,
             window_message_chars=config.judge_window_message_chars,
             max_request_chars=config.judge_max_request_chars,
@@ -141,6 +155,25 @@ class EscalationRouterProfileConfig:
             backend=backend,
             fallback_target_on_evict=config.fallback_target_on_evict,
         )
+
+
+def _build_affinity_l2(config: EscalationRouterConfig) -> AffinityPinStore | None:
+    """Build the optional shared L2 latch store (``None`` = L1-only).
+
+    Mirrors the latency route's ``affinity_store`` semantics; ``"redis"``
+    imports :class:`RedisPinStore` lazily so the ``redis`` dependency stays
+    optional. Config validation guarantees a URL when the store is Redis.
+    """
+    if config.affinity_store != "redis":
+        return None
+    from switchyard.lib.redis_pin_store import RedisPinStore
+
+    assert config.affinity_store_url is not None  # enforced by config validator
+    return RedisPinStore(
+        config.affinity_store_url,
+        ttl_seconds=config.affinity_store_ttl_seconds,
+        key_prefix=config.affinity_key_prefix,
+    )
 
 
 __all__ = ["EscalationRouterProfileConfig"]

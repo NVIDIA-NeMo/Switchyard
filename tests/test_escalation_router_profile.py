@@ -260,3 +260,59 @@ def test_vllm_judge_keeps_reasoning_hint() -> None:
     judge = profile._request_processors[1]
     assert isinstance(judge, EscalationJudgeRequestProcessor)
     assert judge._config.disable_reasoning is True
+
+
+def test_judge_completion_budget_follows_reasoning_mode() -> None:
+    """A thinking judge gets the classifier-sized budget; explicit value wins."""
+    default = EscalationRouterProfileConfig.from_config(_config()).build()
+    assert default._request_processors[1]._config.max_completion_tokens == 128
+
+    thinking = EscalationRouterProfileConfig.from_config(
+        _config(judge_disable_reasoning=False),
+    ).build()
+    assert thinking._request_processors[1]._config.max_completion_tokens == 4096
+
+    explicit = EscalationRouterProfileConfig.from_config(
+        _config(judge_disable_reasoning=False, judge_max_completion_tokens=512),
+    ).build()
+    assert explicit._request_processors[1]._config.max_completion_tokens == 512
+
+
+def test_verdict_dump_is_opt_in() -> None:
+    default = EscalationRouterProfileConfig.from_config(_config()).build()
+    assert default._request_processors[1]._config.dump_verdicts_to_stderr is False
+
+    opted_in = EscalationRouterProfileConfig.from_config(
+        _config(judge_dump_verdicts=True),
+    ).build()
+    assert opted_in._request_processors[1]._config.dump_verdicts_to_stderr is True
+
+
+def test_redis_affinity_store_requires_url() -> None:
+    with pytest.raises(ValidationError) as exc:
+        _config(affinity_store="redis")
+    assert "affinity_store_url" in str(exc.value)
+
+
+def test_redis_affinity_store_wires_l2_latch() -> None:
+    from switchyard.lib.redis_pin_store import RedisPinStore
+
+    profile = EscalationRouterProfileConfig.from_config(
+        _config(
+            affinity_store="redis",
+            affinity_store_url="redis://cache:6379/0",
+            affinity_store_ttl_seconds=120,
+        ),
+    ).build()
+
+    judge = profile._request_processors[1]
+    assert isinstance(judge, EscalationJudgeRequestProcessor)
+    assert isinstance(judge._affinity._l2, RedisPinStore)
+
+
+def test_default_affinity_store_is_l1_only() -> None:
+    profile = EscalationRouterProfileConfig.from_config(_config()).build()
+
+    judge = profile._request_processors[1]
+    assert isinstance(judge, EscalationJudgeRequestProcessor)
+    assert judge._affinity._l2 is None
