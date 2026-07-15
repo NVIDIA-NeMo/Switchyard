@@ -17,13 +17,23 @@ use switchyard_translation::{
 use crate::sse::{frame_stream, BoxError, SseFrameStream};
 
 /// Encodes a buffered aggregate response into the target wire format's JSON body.
+///
+/// `requested_model` (when present) overwrites the body's `model` field so the
+/// client sees the model it asked for — the proxy's served name — rather than
+/// the upstream id `encode_response` fills in. This mirrors the streaming path,
+/// which exposes the requested model via the stream state's `target_model`.
 pub(crate) fn encode_buffered(
     engine: &TranslationEngine,
     policy: &TranslationPolicy,
     agg: &AggLlmResponse,
     target: WireFormat,
+    requested_model: Option<&str>,
 ) -> Result<Value, TranslationError> {
-    Ok(engine.encode_response(target, agg, policy)?.body)
+    let mut body = engine.encode_response(target, agg, policy)?.body;
+    if let (Some(model), Value::Object(object)) = (requested_model, &mut body) {
+        object.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    Ok(body)
 }
 
 /// Encodes a stream of IR chunks into a framed SSE response in the target format.

@@ -55,10 +55,12 @@ pub struct LlmModelClient {
 impl LlmModelClient {
     /// Builds a client over the given model→format→backend map, with a fresh
     /// shared HTTP client and the built-in translation codecs.
-    pub fn new(model_name_to_config: HashMap<String, HashMap<WireFormat, Backend>>) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(|error| LlmClientError::Transport(format!("failed to build HTTP client: {error}")))?;
+    pub fn new(
+        model_name_to_config: HashMap<String, HashMap<WireFormat, Backend>>,
+    ) -> Result<Self> {
+        let client = reqwest::Client::builder().build().map_err(|error| {
+            LlmClientError::Transport(format!("failed to build HTTP client: {error}"))
+        })?;
         Ok(Self {
             model_name_to_config,
             client,
@@ -145,7 +147,10 @@ impl LlmModelClient {
                 .await
                 .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
-                return Err(LlmClientError::ContextWindowExceeded { model, message: body });
+                return Err(LlmClientError::ContextWindowExceeded {
+                    model,
+                    message: body,
+                });
             }
             return Err(LlmClientError::UpstreamHttp {
                 status: status.as_u16(),
@@ -156,10 +161,9 @@ impl LlmModelClient {
         let llm_response = if streaming {
             LlmResponse::Stream(decode_stream(http_response, wire_format))
         } else {
-            let body = http_response
-                .json::<Value>()
-                .await
-                .map_err(|error| LlmClientError::Transport(format!("invalid upstream JSON: {error}")))?;
+            let body = http_response.json::<Value>().await.map_err(|error| {
+                LlmClientError::Transport(format!("invalid upstream JSON: {error}"))
+            })?;
             let decoded = self
                 .engine
                 .decode_response(wire_format, &body, &self.policy)
@@ -175,7 +179,10 @@ impl LlmModelClient {
 }
 
 // Forwards caller-supplied metadata headers, skipping the reserved set.
-fn forward_metadata_headers(mut builder: RequestBuilder, metadata: Option<&Metadata>) -> RequestBuilder {
+fn forward_metadata_headers(
+    mut builder: RequestBuilder,
+    metadata: Option<&Metadata>,
+) -> RequestBuilder {
     let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
         return builder;
     };
@@ -339,7 +346,11 @@ mod tests {
     async fn unknown_model_errors() {
         let client = LlmModelClient::new(HashMap::new()).unwrap();
         let Err(error) = client
-            .call(request_for(Some("gpt"), false), None, WireFormat::OpenAiChat)
+            .call(
+                request_for(Some("gpt"), false),
+                None,
+                WireFormat::OpenAiChat,
+            )
             .await
         else {
             panic!("expected an error");
@@ -383,7 +394,11 @@ mod tests {
         let client = LlmModelClient::new(HashMap::new()).unwrap();
         // Arg "b" is looked up (and reported), not the request's "a".
         let Err(error) = client
-            .call(request_for(Some("a"), false), Some("b"), WireFormat::OpenAiChat)
+            .call(
+                request_for(Some("a"), false),
+                Some("b"),
+                WireFormat::OpenAiChat,
+            )
             .await
         else {
             panic!("expected an error");
@@ -412,7 +427,11 @@ mod tests {
         let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let response = client
-            .call(request_for(Some("gpt"), false), None, WireFormat::OpenAiChat)
+            .call(
+                request_for(Some("gpt"), false),
+                None,
+                WireFormat::OpenAiChat,
+            )
             .await
             .unwrap();
         let agg = response.llm_response.into_agg().expect("buffered response");
@@ -437,7 +456,11 @@ mod tests {
         let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
         // Inbound model differs from the map key / resolved model.
         client
-            .call(request_for(Some("switchyard"), false), Some("gpt"), WireFormat::OpenAiChat)
+            .call(
+                request_for(Some("switchyard"), false),
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
             .await
             .unwrap();
         // The body_partial_json matcher asserts the upstream saw model "gpt".
@@ -477,12 +500,19 @@ mod tests {
         let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let Err(error) = client
-            .call(request_for(Some("gpt"), false), None, WireFormat::OpenAiChat)
+            .call(
+                request_for(Some("gpt"), false),
+                None,
+                WireFormat::OpenAiChat,
+            )
             .await
         else {
             panic!("expected an error");
         };
-        assert!(matches!(error, LlmClientError::UpstreamHttp { status: 500, .. }));
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp { status: 500, .. }
+        ));
     }
 
     #[tokio::test]
@@ -498,7 +528,11 @@ mod tests {
         let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let Err(error) = client
-            .call(request_for(Some("gpt"), false), None, WireFormat::OpenAiChat)
+            .call(
+                request_for(Some("gpt"), false),
+                None,
+                WireFormat::OpenAiChat,
+            )
             .await
         else {
             panic!("expected an error");

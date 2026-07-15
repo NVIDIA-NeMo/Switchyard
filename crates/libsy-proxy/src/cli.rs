@@ -134,9 +134,7 @@ pub async fn run(args: Args) -> Result<(), String> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|error| format!("failed to bind {addr}: {error}"))?;
-    let bound = listener
-        .local_addr()
-        .map_err(|error| error.to_string())?;
+    let bound = listener.local_addr().map_err(|error| error.to_string())?;
     eprintln!("{}", banner(bound, &base_url, &model_name, &available));
 
     axum::serve(listener, build_router(state))

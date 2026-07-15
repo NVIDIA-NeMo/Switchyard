@@ -82,9 +82,17 @@ async fn mock_chat(server: &MockServer, template: ResponseTemplate) {
 #[tokio::test]
 async fn buffered_same_format_chat() {
     let server = MockServer::start().await;
-    mock_chat(&server, ResponseTemplate::new(200).set_body_json(chat_completion_body())).await;
+    mock_chat(
+        &server,
+        ResponseTemplate::new(200).set_body_json(chat_completion_body()),
+    )
+    .await;
 
-    let state = state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat], None);
+    let state = state(
+        &format!("{}/v1", server.uri()),
+        &[WireFormat::OpenAiChat],
+        None,
+    );
     let (status, body) = post(
         state,
         "/v1/chat/completions",
@@ -95,13 +103,19 @@ async fn buffered_same_format_chat() {
     assert_eq!(status, StatusCode::OK);
     let value: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(value["choices"][0]["message"]["content"], "Hi there");
+    // The response echoes the requested model, not the upstream id.
+    assert_eq!(value["model"], "switchyard");
 }
 
 #[tokio::test]
 async fn buffered_cross_format_messages_to_chat() {
     // Inbound Anthropic, OpenAI-Chat upstream → response re-encoded to Anthropic.
     let server = MockServer::start().await;
-    mock_chat(&server, ResponseTemplate::new(200).set_body_json(chat_completion_body())).await;
+    mock_chat(
+        &server,
+        ResponseTemplate::new(200).set_body_json(chat_completion_body()),
+    )
+    .await;
 
     // OpenAI-only credentials + fallback, so inbound Anthropic routes to the
     // OpenAI-Chat upstream and the response is re-encoded to Anthropic.
@@ -119,13 +133,18 @@ async fn buffered_cross_format_messages_to_chat() {
 
     assert_eq!(status, StatusCode::OK);
     let value: Value = serde_json::from_str(&body).unwrap();
-    // Anthropic-shaped response.
+    // Anthropic-shaped response, echoing the requested model.
     assert_eq!(value["type"], "message");
     assert_eq!(value["content"][0]["text"], "Hi there");
+    assert_eq!(value["model"], "switchyard");
 }
 
 fn state_openai_only(base_url: &str) -> ProxyState {
-    state(base_url, &[WireFormat::OpenAiChat, WireFormat::OpenAiResponses], None)
+    state(
+        base_url,
+        &[WireFormat::OpenAiChat, WireFormat::OpenAiResponses],
+        None,
+    )
 }
 
 // OpenAI-only credentials with an OpenAI-chat fallback, so inbound Anthropic
@@ -145,7 +164,11 @@ async fn streaming_messages_ends_with_message_stop() {
          data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n\
          data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
          data: [DONE]\n\n";
-    mock_chat(&server, ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")).await;
+    mock_chat(
+        &server,
+        ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"),
+    )
+    .await;
 
     let (status, body) = post(
         state_with_fallback(&format!("{}/v1", server.uri())),
@@ -162,7 +185,10 @@ async fn streaming_messages_ends_with_message_stop() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("event: message_start"), "body: {body}");
     assert!(body.contains("event: message_stop"), "body: {body}");
-    assert!(!body.contains("[DONE]"), "anthropic stream must not send [DONE]: {body}");
+    assert!(
+        !body.contains("[DONE]"),
+        "anthropic stream must not send [DONE]: {body}"
+    );
 }
 
 #[tokio::test]
@@ -171,10 +197,18 @@ async fn streaming_chat_ends_with_done() {
     let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
          data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
          data: [DONE]\n\n";
-    mock_chat(&server, ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")).await;
+    mock_chat(
+        &server,
+        ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"),
+    )
+    .await;
 
     let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat], None),
+        state(
+            &format!("{}/v1", server.uri()),
+            &[WireFormat::OpenAiChat],
+            None,
+        ),
         "/v1/chat/completions",
         json!({
             "model": "switchyard",
@@ -185,7 +219,10 @@ async fn streaming_chat_ends_with_done() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("[DONE]"), "openai stream must send [DONE]: {body}");
+    assert!(
+        body.contains("[DONE]"),
+        "openai stream must send [DONE]: {body}"
+    );
 }
 
 #[tokio::test]
@@ -194,7 +231,11 @@ async fn upstream_500_passes_status_through() {
     mock_chat(&server, ResponseTemplate::new(500).set_body_string("boom")).await;
 
     let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat], None),
+        state(
+            &format!("{}/v1", server.uri()),
+            &[WireFormat::OpenAiChat],
+            None,
+        ),
         "/v1/chat/completions",
         json!({"model": "switchyard", "messages": [{"role": "user", "content": "hi"}]}),
     )
@@ -222,9 +263,18 @@ async fn no_backend_for_inbound_without_fallback_is_400() {
 #[tokio::test]
 async fn models_lists_served_model() {
     let server = MockServer::start().await;
-    let router = build_router(state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat], None));
+    let router = build_router(state(
+        &format!("{}/v1", server.uri()),
+        &[WireFormat::OpenAiChat],
+        None,
+    ));
     let response = router
-        .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -236,9 +286,18 @@ async fn models_lists_served_model() {
 #[tokio::test]
 async fn health_ok() {
     let server = MockServer::start().await;
-    let router = build_router(state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat], None));
+    let router = build_router(state(
+        &format!("{}/v1", server.uri()),
+        &[WireFormat::OpenAiChat],
+        None,
+    ));
     let response = router
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

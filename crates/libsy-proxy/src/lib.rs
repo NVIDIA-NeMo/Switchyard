@@ -23,8 +23,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use libsy_protocol::{LlmResponse, Metadata, Request};
 use libsy_llm_client::{LlmClientError, LlmModelClient};
+use libsy_protocol::{LlmResponse, Metadata, Request};
 use serde_json::{json, Value};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
@@ -122,7 +122,12 @@ async fn dispatch(
 }
 
 // Decode inbound → call upstream → encode back to the inbound format.
-async fn handle(state: ProxyState, headers: HeaderMap, body: Value, inbound: WireFormat) -> Response {
+async fn handle(
+    state: ProxyState,
+    headers: HeaderMap,
+    body: Value,
+    inbound: WireFormat,
+) -> Response {
     let decoded = match state.engine.decode_request(inbound, &body, &state.policy) {
         Ok(decoded) => decoded,
         Err(error) => return bad_request(format!("failed to decode {inbound} request: {error}")),
@@ -160,7 +165,13 @@ async fn handle(state: ProxyState, headers: HeaderMap, body: Value, inbound: Wir
     };
 
     match response.llm_response {
-        LlmResponse::Agg(agg) => match encode_buffered(&state.engine, &state.policy, &agg, inbound) {
+        LlmResponse::Agg(agg) => match encode_buffered(
+            &state.engine,
+            &state.policy,
+            &agg,
+            inbound,
+            requested_model.as_deref(),
+        ) {
             Ok(body) => Json(body).into_response(),
             Err(error) => server_error(format!("failed to encode {inbound} response: {error}")),
         },
@@ -213,15 +224,17 @@ fn map_client_error(error: LlmClientError) -> Response {
             format!("no backend configured for model {model:?}"),
             "model_not_found",
         ),
-        LlmClientError::UnknownModelFormat { .. } => {
-            server_error(error.to_string())
-        }
-        LlmClientError::MissingModel | LlmClientError::Translation(_) => {
-            error_body(StatusCode::BAD_REQUEST, error.to_string(), "invalid_request_error")
-        }
-        LlmClientError::ContextWindowExceeded { .. } => {
-            error_body(StatusCode::BAD_REQUEST, error.to_string(), "context_window_exceeded")
-        }
+        LlmClientError::UnknownModelFormat { .. } => server_error(error.to_string()),
+        LlmClientError::MissingModel | LlmClientError::Translation(_) => error_body(
+            StatusCode::BAD_REQUEST,
+            error.to_string(),
+            "invalid_request_error",
+        ),
+        LlmClientError::ContextWindowExceeded { .. } => error_body(
+            StatusCode::BAD_REQUEST,
+            error.to_string(),
+            "context_window_exceeded",
+        ),
         LlmClientError::UpstreamHttp { status, body } => error_body(
             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
             body,

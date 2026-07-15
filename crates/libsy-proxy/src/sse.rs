@@ -73,9 +73,8 @@ fn frame_event(target_format: WireFormat, value: Value) -> Result<Event, BoxErro
 // Builds a terminal error frame in the target format's shape.
 fn error_event(target_format: WireFormat, message: String) -> Event {
     match target_format {
-        WireFormat::OpenAiChat => Event::default().data(
-            json!({"error": {"message": message, "type": "proxy_error"}}).to_string(),
-        ),
+        WireFormat::OpenAiChat => Event::default()
+            .data(json!({"error": {"message": message, "type": "proxy_error"}}).to_string()),
         WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
             Event::default().event("error").data(
                 json!({"type": "error", "error": {"message": message, "type": "proxy_error"}})

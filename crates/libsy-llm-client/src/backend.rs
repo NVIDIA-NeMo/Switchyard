@@ -227,9 +227,8 @@ mod tests {
     #[test]
     fn openai_detects_canonical_and_wrapped_overflow() {
         let backend = Backend::OpenAiChat(config("x"));
-        assert!(backend.is_context_overflow(
-            r#"{"error":{"code":"context_length_exceeded","message":"x"}}"#
-        ));
+        assert!(backend
+            .is_context_overflow(r#"{"error":{"code":"context_length_exceeded","message":"x"}}"#));
         // NVIDIA/LiteLLM message wrap with no structured code.
         assert!(backend.is_context_overflow(
             r#"{"error":{"message":"the model's context length is only 131072 tokens"}}"#

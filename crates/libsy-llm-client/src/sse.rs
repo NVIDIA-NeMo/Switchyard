@@ -36,7 +36,9 @@ pub(crate) fn drain_next_sse_frame(buffer: &mut Vec<u8>) -> Result<Option<String
 pub(crate) fn decode_sse_frame(frame: &[u8]) -> Result<String> {
     std::str::from_utf8(frame)
         .map(str::to_string)
-        .map_err(|error| LlmClientError::Stream(format!("stream emitted invalid UTF-8 frame: {error}")))
+        .map_err(|error| {
+            LlmClientError::Stream(format!("stream emitted invalid UTF-8 frame: {error}"))
+        })
 }
 
 /// Returns whether the buffer has any non-whitespace bytes.
@@ -45,7 +47,10 @@ pub(crate) fn has_non_whitespace_bytes(buffer: &[u8]) -> bool {
 }
 
 /// Parses data lines from one SSE frame into JSON, terminal, or empty states.
-pub(crate) fn parse_json_sse_frame(frame: &str, done_marker: Option<&str>) -> Result<ParsedSseFrame> {
+pub(crate) fn parse_json_sse_frame(
+    frame: &str,
+    done_marker: Option<&str>,
+) -> Result<ParsedSseFrame> {
     let mut data_lines = Vec::new();
     for line in frame.lines() {
         // SSE comments and blank lines do not contribute data.
@@ -66,8 +71,9 @@ pub(crate) fn parse_json_sse_frame(frame: &str, done_marker: Option<&str>) -> Re
         return Ok(ParsedSseFrame::Done);
     }
 
-    let value = serde_json::from_str::<Value>(&data)
-        .map_err(|error| LlmClientError::Stream(format!("stream emitted invalid JSON frame: {error}")))?;
+    let value = serde_json::from_str::<Value>(&data).map_err(|error| {
+        LlmClientError::Stream(format!("stream emitted invalid JSON frame: {error}"))
+    })?;
     Ok(ParsedSseFrame::Json(value))
 }
 
@@ -107,10 +113,14 @@ mod tests {
         buffer.extend_from_slice(b"\"}\n\n");
 
         let Some(frame) = drain_next_sse_frame(&mut buffer)? else {
-            return Err(LlmClientError::Stream("complete SSE frame should be drained".to_string()));
+            return Err(LlmClientError::Stream(
+                "complete SSE frame should be drained".to_string(),
+            ));
         };
         let ParsedSseFrame::Json(value) = parse_json_sse_frame(&frame, None)? else {
-            return Err(LlmClientError::Stream("SSE frame should parse as JSON".to_string()));
+            return Err(LlmClientError::Stream(
+                "SSE frame should parse as JSON".to_string(),
+            ));
         };
         assert_eq!(value, json!({"text": "é"}));
         assert!(buffer.is_empty());
