@@ -28,9 +28,9 @@ from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     ProfileSwitchyard,
 )
-from switchyard.lib.profiles.deterministic_routing_profile_config import (
-    _apply_deepseek_overrides,
-    _apply_default_tier_timeout,
+from switchyard.lib.profiles.tier_target_builders import (
+    apply_deepseek_overrides,
+    apply_default_tier_timeout,
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.route_table_builders import deterministic_routing_virtual_model_id
@@ -332,7 +332,7 @@ class TestDeepSeekOverrides:
             api_key="k",
             base_url="https://e/v1",
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
     def test_deepseek_gets_batch_priority_header(self) -> None:
@@ -343,7 +343,7 @@ class TestDeepSeekOverrides:
             api_key="k",
             base_url="https://e/v1",
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_headers == {"X-Inference-Priority": "batch"}
 
     def test_non_deepseek_passes_through_unchanged(self) -> None:
@@ -354,7 +354,7 @@ class TestDeepSeekOverrides:
             api_key="k",
             base_url="https://e/v1",
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out is target  # no rebuild needed
 
     def test_caller_supplied_extras_win(self) -> None:
@@ -367,7 +367,7 @@ class TestDeepSeekOverrides:
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
             extra_headers={"X-Inference-Priority": "interactive"},
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_body == {"chat_template_kwargs": {"enable_thinking": True}}
         assert out.extra_headers == {"X-Inference-Priority": "interactive"}
 
@@ -380,7 +380,7 @@ class TestDeepSeekOverrides:
             base_url="https://e/v1",
             extra_body={},
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_body == {}
 
 
@@ -396,7 +396,7 @@ class TestTierTimeoutDefaults:
             base_url="https://e/v1",
         )
 
-        out = _apply_default_tier_timeout(target, 123.0)
+        out = apply_default_tier_timeout(target, 123.0)
 
         assert out.endpoint.timeout_secs == 123.0
 
@@ -410,7 +410,7 @@ class TestTierTimeoutDefaults:
             timeout_secs=45.0,
         )
 
-        out = _apply_default_tier_timeout(target, 123.0)
+        out = apply_default_tier_timeout(target, 123.0)
 
         assert out is target
         assert out.endpoint.timeout_secs == 45.0
@@ -424,7 +424,7 @@ class TestTierTimeoutDefaults:
             base_url="https://e/v1",
         )
 
-        out = _apply_default_tier_timeout(target, None)
+        out = apply_default_tier_timeout(target, None)
 
         assert out is target
         assert out.endpoint.timeout_secs is None
