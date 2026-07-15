@@ -147,7 +147,11 @@ where = ["."]
 include = ["switchyard*"]
 
 [tool.setuptools.package-data]
-switchyard = ["py.typed", "lib/processors/stage_router/prompts/*.md"]
+switchyard = [
+    "py.typed",
+    "lib/processors/prompts/*.md",
+    "lib/processors/stage_router/prompts/*.md",
+]
 switchyard_rust = ["py.typed", "*.pyi"]
 
 [tool.maturin]

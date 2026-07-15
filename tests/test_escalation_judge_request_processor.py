@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,6 +15,7 @@ from switchyard.lib.backends.deterministic_routing_llm_backend import (
 )
 from switchyard.lib.processors.escalation_judge_request_processor import (
     CTX_ESCALATION_VERDICT,
+    ESCALATION_JUDGE_SYSTEM_PROMPT,
     EscalationJudgeConfig,
     EscalationJudgeRequestProcessor,
 )
@@ -412,3 +414,22 @@ async def test_escalation_latch_isolated_by_deep_key() -> None:
     await processor.process(ctx2, _trial("trial two path"))
     assert ctx2.metadata[CTX_DETERMINISTIC_ROUTING_TIER] == "weak"
     assert len(fake.calls) == 2
+
+
+def test_default_system_prompt_is_the_line_of_record() -> None:
+    """Pin the packaged default prompt byte-exact.
+
+    The prompt is loaded from ``prompts/escalation_judge.md`` package data
+    and is the benchmark-validated line of record. If this test fails, the
+    file changed: either revert, or re-validate the new prompt on a full
+    benchmark run and update the digest deliberately.
+    """
+    digest = hashlib.sha256(
+        ESCALATION_JUDGE_SYSTEM_PROMPT.encode("utf-8")
+    ).hexdigest()
+    assert digest == (
+        "69610eeecbac59fc20c7933ef57fa21029fa80c374b3a399b1f1a9557a6de234"
+    )
+    # Loader must not normalize: the wire bytes are part of the record.
+    assert ESCALATION_JUDGE_SYSTEM_PROMPT.endswith("\n")
+    assert not ESCALATION_JUDGE_SYSTEM_PROMPT.startswith("\n")

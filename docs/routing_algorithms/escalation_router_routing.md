@@ -67,7 +67,8 @@ routes:
 | `judge.timeout_secs` | `5.0` | Judge wall-clock ceiling; fails open to weak. |
 | `judge.min_turn` | `3` | First conversation turn the judge runs on. Earlier turns have no trajectory to judge. |
 | `judge.recent_turn_window` | `14` | Trailing messages shown to the judge. Loops longer than the window are invisible — widen before concluding the judge misses them. |
-| `judge.prompt` | built-in | Judge system-prompt override. |
+| `judge.prompt` | built-in | Judge system-prompt override, inlined in the YAML. |
+| `judge.prompt_path` | built-in | Judge system-prompt override read from a file; mutually exclusive with `judge.prompt`. Relative paths resolve against the server's working directory. |
 | `judge.max_request_chars` | `12000` | Cap on the judge transcript; oldest window messages are dropped first. |
 | `fallback_target_on_evict` | required | `strong` or `weak`; context-window-eviction reroute target. |
 | `session_key_depth` | `0` | See [Repeated-trial benchmarking](#repeated-trial-benchmarking) below. |
