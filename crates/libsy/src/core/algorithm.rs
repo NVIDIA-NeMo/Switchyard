@@ -179,10 +179,12 @@ impl Driver {
     }
 
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
-    /// Each published decision is counted and logged with its reasoning.
+    /// Each successfully published decision is counted and logged with its
+    /// reasoning; a decision the stream never accepted is not recorded.
     pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
+        self.driver.info(ctx, decision.clone()).await?;
         observability::record_decision(&self.algorithm, decision.as_ref());
-        self.driver.info(ctx, decision).await
+        Ok(())
     }
 
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
