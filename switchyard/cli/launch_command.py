@@ -28,6 +28,7 @@ from switchyard.cli.config.user_config import (
 )
 from switchyard.cli.configure_command import cmd_configure
 from switchyard.cli.intake_cli_config import IntakeCliConfig
+from switchyard.cli.launchers import startup_timing
 from switchyard.cli.launchers.launch_intake_config import LaunchIntakeConfig
 from switchyard.cli.output import format_dry_run
 from switchyard.cli.routing import (
@@ -480,6 +481,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
 
     Random / latency-aware routing live in the YAML schema.
     """
+    startup_timing.mark("launch invoked")
     if args.routing_profiles and getattr(args, "smoke", False):
         raise SystemExit(
             "launch claude: --smoke and --routing-profiles cannot be combined. "
@@ -626,6 +628,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     intake = resolve_launch_intake_config(
         args, target="claude", default_app="claude-code-switchyard",
     )
+    startup_timing.mark("config + credentials resolved")
 
     if deterministic:
         primary_connectivity = require_launch_tier_key(
