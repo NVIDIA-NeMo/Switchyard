@@ -261,7 +261,11 @@ boundary — so algorithms carry no telemetry code beyond `Algorithm::name()`, t
 
 - **Spans** (`tracing`): one `libsy.run` per request, carrying the `Metadata`
   correlation ids and the outcome, with one child `libsy.llm_call` per model call
-  (selected model, outcome, token counts, latency).
+  (selected model, outcome, token counts; measures *fulfillment* as the algorithm
+  observes it, host serving included — a streamed response resolves when its stream
+  handle arrives). When `run` serves a call via the target's default client, the
+  actual API call gets its own `libsy.client_call` span — hosts serving calls over
+  their own transport should span their `RoutedLlmClient` equivalently.
 - **Structured logs** (`tracing`, target `libsy`): an info event per published
   `Decision` (selected model + reasoning), warn events for failed calls and runs.
 - **Metrics** (OpenTelemetry, scope `libsy`, via the global meter provider): counters

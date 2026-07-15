@@ -143,9 +143,38 @@ pub(crate) async fn observe_llm_call(
     .await
 }
 
+/// Span covering one *actual* provider API call the crate itself performs —
+/// the default-client serve path inside [`Algorithm::run`](crate::Algorithm::run).
+/// `libsy.llm_call` measures fulfillment as the algorithm observes it; this
+/// span isolates the client call that fulfills it. A host serving calls over
+/// its own transport should emit an equivalent span in its `LlmClient`.
+pub(crate) fn client_call_span(ctx: &Context, selected_model: &str) -> Span {
+    tracing::info_span!(
+        target: SCOPE,
+        "libsy.client_call",
+        algorithm = algorithm_label(ctx),
+        selected_model,
+        outcome = tracing::field::Empty,
+        error = tracing::field::Empty,
+    )
+}
+
+/// Records the outcome fields on the enclosing `libsy.client_call` span. The
+/// failure itself is not logged here — it propagates to the algorithm, where
+/// the `libsy.llm_call` recording logs it once.
+pub(crate) fn record_client_call(result: &Result<Response, BoxErr>) {
+    let span = Span::current();
+    span.record("outcome", outcome_value(result));
+    if let Err(error) = result {
+        span.record("error", tracing::field::display(error));
+    }
+}
+
 /// Span covering one offloaded model call, a child of the surrounding
-/// `libsy.run` span. `outcome`, `error`, and the token-count fields are filled
-/// in by [`record_llm_call`] when the call resolves.
+/// `libsy.run` span. It measures *fulfillment* as the algorithm observes it —
+/// host queueing and serving included, not just the provider call. `outcome`,
+/// `error`, and the token-count fields are filled in by [`record_llm_call`]
+/// when the call resolves.
 fn llm_call_span(algorithm: &str, selected_model: &str) -> Span {
     tracing::info_span!(
         target: SCOPE,

@@ -451,6 +451,17 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> Result<(), B
         Some("ok")
     );
 
+    // The default-client serve inside `run` gets its own client-call span.
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("algorithm").map(String::as_str),
+        Some(ALGO)
+    );
+    assert_eq!(
+        client_span.fields.get("outcome").map(String::as_str),
+        Some("ok")
+    );
+
     let call_span = find_span(&spans, "libsy.llm_call", "selected_model", MODEL);
     assert_eq!(call_span.parent.as_deref(), Some("libsy.run"));
     assert_eq!(
