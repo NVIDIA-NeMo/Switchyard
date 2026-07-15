@@ -278,6 +278,10 @@ _ESCALATION_ROUTE_KEYS = (
         "tier_timeout_s",
         "session_key_depth",
         "affinity_max_sessions",
+        "affinity_store",
+        "affinity_store_url",
+        "affinity_store_ttl_seconds",
+        "affinity_key_prefix",
     })
 )
 _ESCALATION_JUDGE_KEYS = frozenset({
@@ -290,6 +294,8 @@ _ESCALATION_JUDGE_KEYS = frozenset({
     "confirmations",
     "confirmation_window",
     "disable_reasoning",
+    "max_completion_tokens",
+    "dump_verdicts",
     "recent_turn_window",
     "window_message_chars",
     "prompt",
@@ -1146,43 +1152,39 @@ def _escalation_router_switchyard(
             ),
         },
         "fallback_target_on_evict": fallback_target_on_evict,
-        "judge_min_turn": _optional_int(judge.get("min_turn"), default=3),
-        "judge_escalate_confirmations": _optional_int(
-            judge.get("confirmations"), default=1,
-        ),
-        "judge_confirmation_window": _optional_int(
-            judge.get("confirmation_window"), default=1,
-        ),
-        "judge_disable_reasoning": _optional_bool(
-            judge.get("disable_reasoning"), default=True,
-        ),
-        "judge_recent_turn_window": _optional_int(
-            judge.get("recent_turn_window"), default=14,
-        ),
-        "judge_window_message_chars": _optional_int(
-            judge.get("window_message_chars"), default=300,
-        ),
         "judge_system_prompt": _judge_prompt_value(judge, model_id),
         "judge_timeout_s": _optional_float(judge.get("timeout_secs"), default=5.0),
-        "enable_stats": _optional_bool(route.get("enable_stats"), default=True),
     }
-    if "max_request_chars" in judge:
-        config_data["judge_max_request_chars"] = _optional_int(
-            judge.get("max_request_chars"), default=12_000,
-        )
-    if "tier_timeout_s" in route:
-        config_data["tier_timeout_s"] = _optional_float(
-            route.get("tier_timeout_s"),
-            default=None,
-        )
-    if "session_key_depth" in route:
-        config_data["session_key_depth"] = _optional_int(
-            route.get("session_key_depth"), default=0
-        )
-    if "affinity_max_sessions" in route:
-        config_data["affinity_max_sessions"] = _optional_int(
-            route.get("affinity_max_sessions"), default=10_000
-        )
+    # Optional knobs are forwarded verbatim and only when present, so
+    # ``EscalationRouterConfig`` stays the single owner of every default and
+    # of value validation; re-declaring defaults here is exactly the config
+    # drift this compatibility path must not accumulate.
+    judge_key_map = {
+        "min_turn": "judge_min_turn",
+        "confirmations": "judge_escalate_confirmations",
+        "confirmation_window": "judge_confirmation_window",
+        "disable_reasoning": "judge_disable_reasoning",
+        "max_completion_tokens": "judge_max_completion_tokens",
+        "dump_verdicts": "judge_dump_verdicts",
+        "recent_turn_window": "judge_recent_turn_window",
+        "window_message_chars": "judge_window_message_chars",
+        "max_request_chars": "judge_max_request_chars",
+    }
+    for source_key, config_key in judge_key_map.items():
+        if judge.get(source_key) is not None:
+            config_data[config_key] = judge[source_key]
+    for route_key in (
+        "enable_stats",
+        "tier_timeout_s",
+        "session_key_depth",
+        "affinity_max_sessions",
+        "affinity_store",
+        "affinity_store_url",
+        "affinity_store_ttl_seconds",
+        "affinity_key_prefix",
+    ):
+        if route.get(route_key) is not None:
+            config_data[route_key] = route[route_key]
 
     config = EscalationRouterConfig.model_validate(config_data)
     return ProfileSwitchyard(

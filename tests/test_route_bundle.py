@@ -828,6 +828,46 @@ class TestEscalationRouterRouteType:
         assert judge._config.timeout_s == 5.0
         assert judge._session_key_depth == 2
 
+    def test_defaults_come_from_the_config_model(self):
+        """Omitted keys inherit EscalationRouterConfig defaults, owned once."""
+        from switchyard.cli.route_bundle import build_route_bundle_table
+        from switchyard.lib.processors.escalation_judge_request_processor import (
+            EscalationJudgeRequestProcessor,
+        )
+        table = build_route_bundle_table(self._bundle())
+        switchyard = table.lookup_switchyard("myrouter/escalation")
+        judge = next(
+            c for c in switchyard.iter_components()
+            if isinstance(c, EscalationJudgeRequestProcessor)
+        )
+        assert judge._config.escalate_confirmations == 1
+        assert judge._config.window_message_chars == 300
+        assert judge._config.dump_verdicts_to_stderr is False
+        assert judge._config.max_completion_tokens == 128
+        assert judge._affinity._l2 is None
+
+    def test_benchmark_knobs_and_redis_latch_thread_through(self):
+        from switchyard.cli.route_bundle import build_route_bundle_table
+        from switchyard.lib.processors.escalation_judge_request_processor import (
+            EscalationJudgeRequestProcessor,
+        )
+        from switchyard.lib.redis_pin_store import RedisPinStore
+        bundle = self._bundle()
+        route = bundle["routes"]["myrouter/escalation"]
+        route["judge"]["dump_verdicts"] = True
+        route["judge"]["max_completion_tokens"] = 2048
+        route["affinity_store"] = "redis"
+        route["affinity_store_url"] = "redis://cache:6379/0"
+        table = build_route_bundle_table(bundle)
+        switchyard = table.lookup_switchyard("myrouter/escalation")
+        judge = next(
+            c for c in switchyard.iter_components()
+            if isinstance(c, EscalationJudgeRequestProcessor)
+        )
+        assert judge._config.dump_verdicts_to_stderr is True
+        assert judge._config.max_completion_tokens == 2048
+        assert isinstance(judge._affinity._l2, RedisPinStore)
+
     def test_judge_prompt_path_reads_file(self, tmp_path):
         from switchyard.cli.route_bundle import build_route_bundle_table
         from switchyard.lib.processors.escalation_judge_request_processor import (
