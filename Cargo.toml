@@ -6,6 +6,7 @@ resolver = "2"
 members = [
     "crates/libsy",
     "crates/libsy-examples",
+    "crates/libsy-llm-client",
     "crates/libsy-protocol",
     "crates/switchyard-components",
     "crates/switchyard-components-v2",
