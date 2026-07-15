@@ -114,19 +114,14 @@ impl CallLlmRequest {
 #[derive(Clone)]
 pub struct Driver {
     driver: TypeErasedDriver,
-    /// Name of the algorithm this driver serves — the `algorithm` attribute on
-    /// the telemetry emitted for its calls and decisions.
-    algorithm: Arc<str>,
 }
 
 impl Driver {
-    /// Build an empty driver with its step channel ready, labeled with the name
-    /// of the algorithm it serves. Created per call by
+    /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream).
-    pub(crate) fn new(algorithm: &str) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             driver: TypeErasedDriver::new(),
-            algorithm: Arc::from(algorithm),
         }
     }
 
@@ -136,8 +131,10 @@ impl Driver {
     /// The await is wrapped in a `libsy.llm_call` span, and the call's latency,
     /// outcome, and token usage are recorded when it resolves.
     pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
+        let ctx = routed.ctx.clone();
         let selected_model = routed.decision.selected_model().to_string();
-        let span = observability::llm_call_span(&self.algorithm, &selected_model);
+        let span =
+            observability::llm_call_span(observability::algorithm_label(&ctx), &selected_model);
         async {
             let started = Instant::now();
             let result = self
@@ -145,7 +142,7 @@ impl Driver {
                 .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
                 .await;
             observability::record_llm_call(
-                &self.algorithm,
+                observability::algorithm_label(&ctx),
                 &selected_model,
                 started.elapsed(),
                 &result,
@@ -182,8 +179,8 @@ impl Driver {
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
     pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
-        self.driver.info(ctx, decision.clone()).await?;
-        observability::record_decision(&self.algorithm, decision.as_ref());
+        self.driver.info(ctx.clone(), decision.clone()).await?;
+        observability::record_decision(observability::algorithm_label(&ctx), decision.as_ref());
         Ok(())
     }
 
@@ -216,6 +213,12 @@ impl Driver {
                 .map(Step::ReturnToAgent)
                 .map_err(|_| "driver: done payload was not a Response".into()),
         })
+    }
+}
+
+impl Default for Driver {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -308,11 +311,11 @@ where
     /// emits for its runs (see the crate docs' Observability section).
     fn name(&self) -> &str;
 
-
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
     /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
-    /// drive it. `ctx` carries the request's cross-cutting values and per-session `state`.
+    /// drive it. `ctx` carries the request's cross-cutting values (today: the
+    /// algorithm's telemetry label in [`Context::values`]) and per-session `state`.
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context<S>,
@@ -335,7 +338,14 @@ where
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
     fn run_stream(self: Arc<Self>, ctx: Context<S>, request: Request) -> StepStream {
-        let driver = Driver::new(self.name());
+        // Stamp the algorithm's telemetry label into the request context; the
+        // context rides on every driver call, so its telemetry is attributed.
+        let mut ctx = ctx;
+        ctx.values.insert(
+            observability::ALGORITHM_KEY.to_string(),
+            self.name().to_string(),
+        );
+        let driver = Driver::new();
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
         let stream = task_driver.stream();
@@ -347,10 +357,10 @@ where
             async move {
                 let started = Instant::now();
                 let outcome = self
-                    .create_run_task(task_ctx, task_driver.clone(), request)
+                    .create_run_task(task_ctx.clone(), task_driver, request)
                     .await;
                 observability::record_run(
-                    &task_driver.algorithm,
+                    observability::algorithm_label(&task_ctx),
                     started.elapsed(),
                     &outcome,
                     &tracing::Span::current(),

@@ -32,13 +32,25 @@ use opentelemetry::metrics::Meter;
 use opentelemetry::{global, KeyValue};
 use tracing::Span;
 
-use crate::{Decision, Metadata, Response};
+use crate::{Context, Decision, Metadata, Response};
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
 /// Instrumentation scope for every libsy meter, span, and log line.
 const SCOPE: &str = "libsy";
+
+/// [`Context::values`] key under which `run_stream` stamps the algorithm's
+/// telemetry label ([`Algorithm::name`](crate::Algorithm::name)).
+pub(crate) const ALGORITHM_KEY: &str = "algorithm";
+
+/// The algorithm label carried by a request context; empty until stamped.
+pub(crate) fn algorithm_label<S>(ctx: &Context<S>) -> &str {
+    ctx.values
+        .get(ALGORITHM_KEY)
+        .map(String::as_str)
+        .unwrap_or("")
+}
 
 /// The `libsy`-scoped meter from the globally installed provider.
 fn meter() -> Meter {
