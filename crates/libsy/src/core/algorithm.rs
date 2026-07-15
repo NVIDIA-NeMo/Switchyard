@@ -5,7 +5,7 @@
 //! routing/optimization algorithm implements, and the offload channel it makes model
 //! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
 
-use std::{error::Error, pin::Pin, sync::Arc, time::Instant};
+use std::{error::Error, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -133,24 +133,12 @@ impl Driver {
     pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
         let ctx = routed.ctx.clone();
         let selected_model = routed.decision.selected_model().to_string();
-        let span =
-            observability::llm_call_span(observability::algorithm_label(&ctx), &selected_model);
-        async {
-            let started = Instant::now();
-            let result = self
-                .driver
-                .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
-                .await;
-            observability::record_llm_call(
-                observability::algorithm_label(&ctx),
-                &selected_model,
-                started.elapsed(),
-                &result,
-                &tracing::Span::current(),
-            );
-            result
-        }
-        .instrument(span)
+        observability::observe_llm_call(
+            &ctx,
+            &selected_model,
+            self.driver
+                .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed),
+        )
         .await
     }
 
@@ -180,7 +168,7 @@ impl Driver {
     /// reasoning; a decision the stream never accepted is not recorded.
     pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
         self.driver.info(ctx.clone(), decision.clone()).await?;
-        observability::record_decision(observability::algorithm_label(&ctx), decision.as_ref());
+        observability::record_decision(&ctx, decision.as_ref());
         Ok(())
     }
 
@@ -355,17 +343,11 @@ where
         let span = observability::run_span(self.name(), request.metadata.as_ref());
         let handle = tokio::spawn(
             async move {
-                let started = Instant::now();
-                let outcome = self
-                    .create_run_task(task_ctx.clone(), task_driver, request)
-                    .await;
-                observability::record_run(
-                    observability::algorithm_label(&task_ctx),
-                    started.elapsed(),
-                    &outcome,
-                    &tracing::Span::current(),
-                );
-                outcome
+                observability::observe_run(
+                    task_ctx.clone(),
+                    self.create_run_task(task_ctx, task_driver, request),
+                )
+                .await
             }
             .instrument(span),
         );
