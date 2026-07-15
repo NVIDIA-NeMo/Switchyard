@@ -5,21 +5,18 @@ routing decisions are made in-process by [libsy](../../crates/libsy/README.md)
 while Relay owns the proxy, dispatch, credentials, and observability. No
 `switchyard serve` process is involved.
 
-| Mode | Decision path | Switchyard process |
-|---|---|---|
-| Server (`topic/nemo-relay-integration`) | Relay POSTs to the HTTP Decision API | required |
-| Library (this recipe) | Relay calls libsy in-process | none |
-
 libsy never performs a network call: each offloaded `CallLlm` promise is
 fulfilled by Relay's dispatch chain and answered with
 `CallLlmRequest::respond(Ok/Err)`. libsy's semantic target names map onto the
 Relay plugin's `TargetBinding` table, which binds each name to a backend URL,
 model, and protocol.
 
+Current gaps are tracked separately in
+[NeMo Relay: Known Issues](nemo_relay_known_issues.md).
+
 ## Prerequisites
 
-- Rust 1.96.1 (Switchyard's MSRV; Relay pins 1.93.0, so prefix builds with
-  `RUSTUP_TOOLCHAIN=1.96.1` until the toolchains converge)
+- Rust 1.96.1
 - Claude Code, for the agent launcher path
 
 ## Install
@@ -52,15 +49,20 @@ to Anthropic. Verify with:
 ## Path A: Gateway mode
 
 Runs Relay's gateway with libsy routing and a deterministic fake provider; no
-credentials needed. This is the self-contained e2e shipped on the Relay branch:
+credentials needed:
 
 ```bash
 RUSTUP_TOOLCHAIN=1.96.1 ./examples/switchyard/run-libsy-e2e.sh
 ```
 
-It verifies an easy prompt routes weak, a hard prompt routes strong, and the
-classifier and routed calls both flow through Relay dispatch. Test by hand
-with curl against `http://127.0.0.1:4042/v1/chat/completions`.
+Expected receipt:
+
+```text
+ok: easy prompt routes weak
+ok: hard prompt routes strong
+ok: classifier and routed calls both flowed through Relay dispatch (4 upstream calls)
+libsy in-process routing e2e passed
+```
 
 ## Path B: Agent launcher
 
@@ -71,37 +73,26 @@ From the directory containing `.nemo-relay/`:
 ```
 
 This opens the normal interactive Claude Code TUI through the Relay gateway.
-Inspect routing decisions afterwards:
+
+## Validate
+
+Routing decisions land in `nemo-relay-events-*.jsonl` in the working
+directory. One line per decision:
 
 ```bash
-grep switchyard.routing nemo-relay-events-*.jsonl
+grep -h switchyard.routing.decision nemo-relay-events-*.jsonl
 ```
 
-## Status against libsy `main` (verified 2026-07-15)
+Expected receipt: `switchyard.routing.decision` marks naming the classifier
+step and the routed target, e.g.
 
-| Step | Status |
-|---|---|
-| Fresh clone builds hermetically; Path A e2e passes | works |
-| TUI launches; all traffic flows through the gateway and plugin | works |
-| Requests carrying `cache_control` reach the router | works |
-| Buffered requests routed by the libsy classifier | works |
-| Streamed requests routed by libsy | **breaks** |
-
-The break, demonstrated with the same prompt sent both ways through Path A:
-
-```text
-buffered "This is a hard problem: ..."  -> classifier scored 0.9 -> served by strong-model
-streamed "This is a hard problem: ..."  -> no classifier call    -> served by weak-model (trusted fallback)
+```json
+{"backend_id": "classifier", "reason_summary": "classifying request via classifier", ...}
+{"backend_id": "weak", "target_model": "claude-sonnet-5", ...}
 ```
 
-The cause is libsy's response contract on `main`: `CallLlmRequest::respond`
-and `Step::ReturnToAgent` carry only buffered responses, so no host can pass
-a live token stream through an algorithm. Claude Code streams its interactive
-calls, so those requests emit `switchyard.routing.error` (`libsy_stream`) and
-dispatch the trusted per-protocol fallback (`libsy_streaming_unsupported`)
-instead of a libsy decision. Streaming support exists on the unmerged
-`grclark/simple-proxy` branch; when it lands, the last table row flips with no
-config changes.
+A decision naming `weak` or `strong` is the proof: libsy scored the request
+in-process and Relay dispatched the routed call.
 
 ## The embedding contract
 
