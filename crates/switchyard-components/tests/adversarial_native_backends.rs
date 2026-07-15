@@ -669,9 +669,9 @@ fn anthropic_backend_is_anthropic_only() -> Result<()> {
     Ok(())
 }
 
-// Non-streaming Anthropic calls should strip incompatible fields and stamp context.
+// Non-streaming native Anthropic calls forward the body verbatim and stamp context.
 #[tokio::test]
-async fn anthropic_non_streaming_strips_incompatible_fields_and_records_context() -> Result<()> {
+async fn anthropic_native_passthrough_forwards_body_verbatim() -> Result<()> {
     let server = OneShotServer::json(
         200,
         json!({
@@ -731,16 +731,22 @@ async fn anthropic_non_streaming_strips_incompatible_fields_and_records_context(
     );
     assert_eq!(request.body["model"], "target-claude");
     assert_eq!(request.body["messages"][0]["content"], "hello");
-    assert!(request.body.get("reasoning_effort").is_none());
-    assert!(request.body.get("context_management").is_none());
+    // Native Anthropic is a verbatim passthrough: client fields are preserved,
+    // not stripped (only the model id is rewritten for routing). Stripping these
+    // belongs to the translated path, not a real /v1/messages request.
+    assert_eq!(request.body["reasoning_effort"], "high");
+    assert_eq!(
+        request.body["context_management"],
+        json!({"strategy": "auto"})
+    );
     assert_eq!(request.body["made_up_beta_field"], json!({"kept": true}));
     assert_eq!(request.body["extra_body"], json!({"caller": "value"}));
     Ok(())
 }
 
-// Anthropic-native calls should downgrade Opus-4.8-style system turns for legacy targets.
+// Native Anthropic passthrough must NOT relocate message-level system/developer turns.
 #[tokio::test]
-async fn anthropic_lifts_message_level_system_roles_before_native_call() -> Result<()> {
+async fn anthropic_native_passthrough_does_not_lift_system_messages() -> Result<()> {
     let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
     let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
     let mut ctx = ProxyContext::new();
@@ -767,28 +773,24 @@ async fn anthropic_lifts_message_level_system_roles_before_native_call() -> Resu
         .await?;
     let request = server.captured()?;
 
-    assert_eq!(request.body["system"], "System rules.\n\nDeveloper rules.");
-    let messages = request.body["messages"]
-        .as_array()
-        .ok_or_else(|| SwitchyardError::Other("messages should be an array".to_string()))?;
-    let roles = messages
-        .iter()
-        .map(|message| {
-            message
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("<missing>")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(roles, vec!["user", "assistant"]);
-    assert_eq!(messages[0]["content"], "hello");
-    assert_eq!(messages[1]["content"], "ready");
+    // Verbatim: no top-level system is synthesized, and the system/developer
+    // turns stay exactly where the client put them.
+    assert!(request.body.get("system").is_none());
+    assert_eq!(
+        request.body["messages"],
+        json!([
+            {"role": "system", "content": "System rules."},
+            {"role": "user", "content": "hello"},
+            {"role": "developer", "content": [{"type": "text", "text": "Developer rules."}]},
+            {"role": "assistant", "content": "ready"}
+        ])
+    );
     Ok(())
 }
 
-// Interleaved system turns should preserve encounter order after lifting.
+// Interleaved system/developer turns are preserved in place (no lifting) on passthrough.
 #[tokio::test]
-async fn anthropic_lifts_multiple_interleaved_system_messages_in_order() -> Result<()> {
+async fn anthropic_native_passthrough_preserves_interleaved_system_messages() -> Result<()> {
     let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
     let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
     let mut ctx = ProxyContext::new();
@@ -813,24 +815,25 @@ async fn anthropic_lifts_multiple_interleaved_system_messages_in_order() -> Resu
         .await?;
     let request = server.captured()?;
 
-    assert_eq!(
-        request.body["system"],
-        "Top-level rules.\n\nFirst lifted system.\n\nSecond lifted system.\n\nDeveloper lifted system."
-    );
+    // Verbatim: top-level system unchanged, all message-level turns preserved in place.
+    assert_eq!(request.body["system"], "Top-level rules.");
     assert_eq!(
         request.body["messages"],
         json!([
+            {"role": "system", "content": "First lifted system."},
             {"role": "user", "content": "first user"},
+            {"role": "system", "content": "Second lifted system."},
             {"role": "assistant", "content": "assistant reply"},
+            {"role": "developer", "content": "Developer lifted system."},
             {"role": "user", "content": "second user"}
         ])
     );
     Ok(())
 }
 
-// Existing structured Anthropic system prompts should keep their shape when lifted text is added.
+// Structured system prompt and message-level system (incl. non-text blocks) pass through untouched.
 #[tokio::test]
-async fn anthropic_lifts_message_level_system_into_existing_system_blocks() -> Result<()> {
+async fn anthropic_native_passthrough_preserves_structured_system_and_messages() -> Result<()> {
     let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
     let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
     let mut ctx = ProxyContext::new();
@@ -858,16 +861,25 @@ async fn anthropic_lifts_message_level_system_into_existing_system_blocks() -> R
         .await?;
     let request = server.captured()?;
 
+    // Verbatim: structured system kept as-is; the message-level system turn
+    // (including its image block) is preserved, not downgraded into system.
     assert_eq!(
         request.body["system"],
-        json!([
-            {"type": "text", "text": "Existing system."},
-            {"type": "text", "text": "Lifted system.\n\nLifted input text."}
-        ])
+        json!([{"type": "text", "text": "Existing system."}])
     );
     assert_eq!(
         request.body["messages"],
-        json!([{"role": "user", "content": "hello"}])
+        json!([
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "Lifted system."},
+                    {"type": "image", "source": {"type": "url", "url": "https://example.test/a.png"}},
+                    {"type": "input_text", "text": "Lifted input text."}
+                ]
+            },
+            {"role": "user", "content": "hello"}
+        ])
     );
     Ok(())
 }
@@ -898,9 +910,9 @@ async fn anthropic_translates_responses_requests_with_default_max_tokens() -> Re
     Ok(())
 }
 
-// Invalid Anthropic tool-use IDs should be sanitized consistently with results.
+// Native Anthropic passthrough preserves client tool-use IDs verbatim (no sanitization).
 #[tokio::test]
-async fn anthropic_sanitizes_invalid_tool_use_ids_and_matching_results() -> Result<()> {
+async fn anthropic_native_passthrough_preserves_tool_use_ids() -> Result<()> {
     let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
     let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
     let mut ctx = ProxyContext::new();
@@ -936,8 +948,10 @@ async fn anthropic_sanitizes_invalid_tool_use_ids_and_matching_results() -> Resu
         .await?;
     let request = server.captured()?;
 
+    // Verbatim: the client's tool-use id is forwarded unchanged (sanitization
+    // belongs to the translated path; a real Anthropic client sends valid ids).
     let tool_use_id = &request.body["messages"][1]["content"][0]["id"];
-    assert_eq!(tool_use_id, "toolu_01_bad_id");
+    assert_eq!(tool_use_id, "toolu_01*bad:id");
     assert_eq!(
         &request.body["messages"][2]["content"][0]["tool_use_id"],
         tool_use_id
@@ -945,9 +959,9 @@ async fn anthropic_sanitizes_invalid_tool_use_ids_and_matching_results() -> Resu
     Ok(())
 }
 
-// Unsigned synthetic thinking blocks should be removed before Anthropic replay.
+// Native Anthropic passthrough preserves thinking blocks verbatim (no stripping).
 #[tokio::test]
-async fn anthropic_strips_unsigned_thinking_blocks_before_native_call() -> Result<()> {
+async fn anthropic_native_passthrough_preserves_thinking_blocks() -> Result<()> {
     let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
     let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
     let mut ctx = ProxyContext::new();
@@ -985,15 +999,22 @@ async fn anthropic_strips_unsigned_thinking_blocks_before_native_call() -> Resul
         .await?;
     let request = server.captured()?;
 
+    // Verbatim: thinking blocks (signed or not) are preserved; the upstream API
+    // decides what to accept. Stripping unsigned blocks belongs to the translated
+    // path, where they are synthetic translation artifacts.
     assert_eq!(
         request.body["messages"][0]["content"]
             .as_array()
             .ok_or_else(|| SwitchyardError::Other("content should be an array".to_string()))?
             .len(),
-        1
+        2
     );
     assert_eq!(
         request.body["messages"][0]["content"][0]["type"],
+        "thinking"
+    );
+    assert_eq!(
+        request.body["messages"][0]["content"][1]["type"],
         "tool_use"
     );
     assert_eq!(
@@ -1004,7 +1025,10 @@ async fn anthropic_strips_unsigned_thinking_blocks_before_native_call() -> Resul
         request.body["messages"][1]["content"][0]["thinking"],
         "real"
     );
-    assert_eq!(request.body["messages"][2]["content"], "");
+    assert_eq!(
+        request.body["messages"][2]["content"],
+        json!([{"type": "thinking", "thinking": "only synthetic"}])
+    );
     Ok(())
 }
 

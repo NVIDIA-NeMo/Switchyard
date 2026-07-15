@@ -1388,6 +1388,152 @@ class TestPlanExecuteRouteType:
         assert not any(isinstance(c, StatsResponseProcessor) for c in components)
 
 
+class TestAdvisorRouteType:
+    """`type: advisor` wires the executor + advisor chain via YAML (strategy-selected)."""
+
+    def _bundle(self) -> dict:
+        return {
+            "routes": {
+                "myrouter/advisor": {
+                    "type": "advisor",
+                    "executor": {
+                        "model": "aws/anthropic/bedrock-claude-opus-4-7",
+                        "api_key": "",
+                        "base_url": "https://exec.invalid/v1",
+                        "format": "anthropic",
+                        "extra_headers": {"Authorization": "Bearer sk-exec"},
+                    },
+                    "advisor": {
+                        "model": "aws/anthropic/bedrock-claude-opus-4-8",
+                        "api_key": "sk-adv",
+                        "base_url": "https://adv.invalid/v1",
+                        "format": "anthropic",
+                    },
+                },
+            },
+        }
+
+    def test_registers_under_route_key(self):
+        table = build_route_bundle_table(self._bundle())
+        assert table.registered_models() == ["myrouter/advisor"]
+
+    def test_metadata_records_advisor_profile(self):
+        table = build_route_bundle_table(self._bundle())
+        _, _, metadata = next(iter(table.items()))
+        assert metadata["switchyard"]["profile"] == "advisor"
+
+    def test_backend_defaults_to_tool_call(self):
+        from switchyard.lib.backends.advisor_tool_call_backend import (
+            AdvisorToolCallBackend,
+        )
+
+        table = build_route_bundle_table(self._bundle())
+        components = list(table.iter_components())
+        assert any(isinstance(c, AdvisorToolCallBackend) for c in components)
+
+    def test_review_gate_strategy_selects_loop_backend(self):
+        from switchyard.lib.backends.advisor_loop_backend import AdvisorLoopBackend
+
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/advisor"]["strategy"] = "review_gate"
+        table = build_route_bundle_table(bundle)
+        components = list(table.iter_components())
+        assert any(isinstance(c, AdvisorLoopBackend) for c in components)
+
+    def test_review_gate_on_openai_wire_with_custom_redo_prefix(self):
+        from switchyard.lib.backends.advisor_loop_backend import AdvisorLoopBackend
+        from switchyard_rust.core import ChatRequestType
+
+        bundle = {
+            "routes": {
+                "myrouter/advisor-gate-oss": {
+                    "type": "advisor",
+                    "strategy": "review_gate",
+                    "redo_feedback_prefix": "REVIEWER SAYS: ",
+                    "executor": {
+                        "model": "qwen/qwen3-max",
+                        "api_key": "sk-exec",
+                        "base_url": "https://exec.invalid/v1",
+                        "format": "openai",
+                    },
+                    "advisor": {
+                        "model": "aws/anthropic/bedrock-claude-opus-4-8",
+                        "api_key": "sk-adv",
+                        "base_url": "https://adv.invalid/v1",
+                        "format": "anthropic",
+                    },
+                },
+            },
+        }
+        table = build_route_bundle_table(bundle)
+        backend = next(
+            c for c in table.iter_components() if isinstance(c, AdvisorLoopBackend)
+        )
+        assert backend.supported_request_types == [ChatRequestType.OPENAI_CHAT]
+        assert backend._config.redo_feedback_prefix == "REVIEWER SAYS: "
+
+    def test_rejects_unknown_route_key(self):
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/advisor"]["bogus_field"] = 1
+        with pytest.raises(RouteBundleConfigError) as exc:
+            build_route_bundle_table(bundle)
+        assert "bogus_field" in str(exc.value)
+
+    def test_enable_stats_false_disables_stats_processors(self):
+        from switchyard.lib.processors.stats_request_processor import (
+            StatsRequestProcessor,
+        )
+        from switchyard.lib.processors.stats_response_processor_accumulator import (
+            StatsResponseProcessor,
+        )
+
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/advisor"]["enable_stats"] = False
+        table = build_route_bundle_table(bundle)
+        components = list(table.iter_components())
+        assert not any(isinstance(c, StatsRequestProcessor) for c in components)
+        assert not any(isinstance(c, StatsResponseProcessor) for c in components)
+
+    def test_openai_tiers_build_on_openai_wire(self):
+        """OSS executor + advisor pairs (format: openai) are first-class."""
+        from switchyard.lib.backends.advisor_tool_call_backend import (
+            AdvisorToolCallBackend,
+        )
+        from switchyard_rust.core import ChatRequestType
+
+        bundle = {
+            "routes": {
+                "myrouter/advisor-oss": {
+                    "type": "advisor",
+                    "executor": {
+                        "model": "qwen/qwen3-max",
+                        "api_key": "sk-exec",
+                        "base_url": "https://exec.invalid/v1",
+                        "format": "openai",
+                    },
+                    "advisor": {
+                        "model": "deepseek/deepseek-r2",
+                        "api_key": "sk-adv",
+                        "base_url": "https://adv.invalid/v1",
+                        "format": "openai",
+                    },
+                },
+            },
+        }
+        table = build_route_bundle_table(bundle)
+        backend = next(
+            c for c in table.iter_components()
+            if isinstance(c, AdvisorToolCallBackend)
+        )
+        assert backend.supported_request_types == [ChatRequestType.OPENAI_CHAT]
+
+    def test_responses_format_rejected(self):
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/advisor"]["executor"]["format"] = "responses"
+        with pytest.raises(Exception, match="responses"):
+            build_route_bundle_table(bundle)
+
+
 def test_stage_router_route_hydrates_tier_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

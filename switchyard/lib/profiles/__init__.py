@@ -3,6 +3,9 @@
 
 """Python profile abstractions matching the components-v2 design."""
 
+from switchyard.lib.profiles.advisor import AdvisorProfileConfig
+from switchyard.lib.profiles.advisor_config import AdvisorConfig
+from switchyard.lib.profiles.advisor_presets import AdvisorPresets
 from switchyard.lib.profiles.deterministic_routing_config import (
     DeterministicRoutingConfig,
 )
@@ -56,6 +59,9 @@ from switchyard.lib.profiles.table import (
 from switchyard.lib.profiles.translate_profile_config import TranslateProfileConfig
 
 __all__ = [
+    "AdvisorConfig",
+    "AdvisorPresets",
+    "AdvisorProfileConfig",
     "StageRouterProfileConfig",
     "StageRouterConfig",
     "ClassifierConfig",

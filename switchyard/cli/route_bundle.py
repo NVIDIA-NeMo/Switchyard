@@ -36,6 +36,7 @@ from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEnd
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
 from switchyard.lib.profiles import (
+    AdvisorProfileConfig,
     DeterministicRoutingProfileConfig,
     LatencyServiceProfileConfig,
     PlanExecuteProfileConfig,
@@ -43,6 +44,7 @@ from switchyard.lib.profiles import (
     RouteLLMProfileConfig,
     StageRouterProfileConfig,
 )
+from switchyard.lib.profiles.advisor_config import AdvisorConfig
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
@@ -264,6 +266,29 @@ _PLAN_EXECUTE_ROUTE_KEYS = (
         "fallback_target_on_evict",
     })
 )
+_ADVISOR_ROUTE_KEYS = (
+    _ROUTE_METADATA_KEYS
+    | _TARGET_DEFAULT_ROUTE_KEYS
+    | frozenset({
+        "executor",
+        "advisor",
+        "strategy",
+        "advisor_tool_name",
+        "max_uses",
+        "inject_steering",
+        "executor_steering",
+        "advisor_length_line",
+        "advisor_system_prompt",
+        "advisor_tool_description",
+        "reviewer_system_prompt",
+        "redo_feedback_prefix",
+        "advisor_max_tokens",
+        "advisor_temperature",
+        "transcript_max_chars",
+        "fail_open",
+        "enable_stats",
+    })
+)
 _DETERMINISTIC_CLASSIFIER_KEYS = frozenset({
     "model",
     "api_key",
@@ -300,6 +325,7 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
     "plan_execute": _PLAN_EXECUTE_ROUTE_KEYS,
+    "advisor": _ADVISOR_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
@@ -311,6 +337,7 @@ _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
     "plan_execute": _TARGET_DEFAULT_KEYS,
+    "advisor": _TARGET_DEFAULT_KEYS,
 }
 
 # Shipping planner/executor model ids for `type: plan_execute` routes, so an
@@ -856,6 +883,16 @@ def _build_switchyard_for_route(
             extra_response_processors=extra_response_processors,
         )
 
+    if route_type == "advisor":
+        return _advisor_switchyard(
+            model_id,
+            route,
+            target_defaults=target_defaults,
+            stats=stats,
+            pre_routing_request_processors=pre_routing_request_processors,
+            extra_response_processors=extra_response_processors,
+        )
+
     raise RouteBundleConfigError(f"unsupported route type {route_type!r}")
 
 
@@ -1101,6 +1138,44 @@ def _plan_execute_switchyard(
     config = PlanExecuteConfig.model_validate(config_data)
     return ProfileSwitchyard(
         PlanExecuteProfileConfig.from_config(config)
+        .build()
+        .with_runtime_components(
+            stats_accumulator=stats,
+            enable_stats=config.enable_stats,
+            pre_request_processors=pre_routing_request_processors,
+            response_processors=extra_response_processors,
+        )
+    )
+
+
+def _advisor_switchyard(
+    model_id: str,  # noqa: ARG001 - kept for dispatch-call symmetry with siblings
+    route: Mapping[str, object],
+    *,
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime:
+    """Build an executor + advisor chain from a ``type: advisor`` route.
+
+    Mirrors :func:`_plan_execute_switchyard`: the ``executor`` / ``advisor``
+    tiers and scalar fields go through the shared ``_route_config`` →
+    :meth:`AdvisorConfig.model_validate` path. Both tiers are required, and
+    each tier's ``format`` selects its wire independently — ``anthropic``
+    (native ``/v1/messages``; the executor passthrough preserves prompt
+    caching) or ``openai`` (``/chat/completions``; Qwen/DeepSeek/vLLM/NIM/
+    OpenAI endpoints). ``responses`` targets are rejected at validation.
+    ``strategy`` selects the advisor mode: ``tool_call`` (default) offers the
+    executor a proxy-intercepted ``advisor`` tool; ``review_gate`` gates the
+    executor with a once-per-session advisor review. Both strategies work on
+    either wire.
+    """
+    config = AdvisorConfig.model_validate(
+        _route_config(route, target_defaults, ("executor", "advisor"))
+    )
+    return ProfileSwitchyard(
+        AdvisorProfileConfig.from_config(config)
         .build()
         .with_runtime_components(
             stats_accumulator=stats,
@@ -1358,6 +1433,7 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "stage_router_routing": "stage_router",
         "plan": "plan_execute",
         "plan_execute": "plan_execute",
+        "advisor": "advisor",
     }
     try:
         return aliases[normalized]

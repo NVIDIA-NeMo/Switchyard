@@ -167,6 +167,8 @@ switchyard/
 │   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
 │   │   ├── openai_native_backend.py        # OpenAiNativeBackend
 │   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
+│   │   ├── advisor_tool_call_backend.py    # AdvisorToolCallBackend (advisor tool_call strategy)
+│   │   ├── advisor_loop_backend.py         # AdvisorLoopBackend (advisor review_gate strategy)
 │   │   ├── latency_service_llm_backend.py  # LatencyServiceLLMBackend
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
 │   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
