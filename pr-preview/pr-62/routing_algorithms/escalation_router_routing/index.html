@@ -1401,7 +1401,8 @@ router. The strong and weak model IDs are also registered as direct
 passthrough choices. The judge is internal to the route and is not exposed as
 a client-selectable model.</p>
 <p>If the selected tier exceeds its context window, Switchyard retries once on
-<code>fallback_target_on_evict</code>, which must be <code>strong</code> or <code>weak</code>. See
+<code>fallback_target_on_evict</code>, which must match one of the configured tier ids
+(<code>strong</code> / <code>weak</code> unless the targets set their own <code>id</code>). See
 <a href="../../operations/context_window/">Context-Window Handling</a>.</p>
 <h2 id="useful-options">Useful options<a class="headerlink" href="#useful-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1441,7 +1442,7 @@ a client-selectable model.</p>
 <tr>
 <td><code>judge.max_completion_tokens</code></td>
 <td>auto</td>
-<td>The judge's completion budget needs an explicit value. The default follows the reasoning mode: <code>128</code> with thinking off, <code>4096</code> with thinking on (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn).</td>
+<td>The judge's completion budget needs an explicit value. The default follows the reasoning mode: <code>128</code> when the thinking-off hint is sent, <code>4096</code> otherwise (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn). Judges that never accept the hint (Claude/Bedrock) also get the larger ceiling — it is a cap, not spend.</td>
 </tr>
 <tr>
 <td><code>judge.dump_verdicts</code></td>
@@ -1522,10 +1523,11 @@ a client-selectable model.</p>
 <p>The snapshot reports per-model calls, tokens, latency, and cost for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket so
 their token cost, latency, and errors remain visible as routing overhead.</p>
-<p>Each judged turn also writes an <code>escalation_verdict={...}</code> JSON line to server
-stderr. The record includes the decision, reason, turn, confirmation state,
-and judge latency. After the latch fires, later turns skip the judge and report
-the pinned routing source in request metadata.</p>
+<p>With <code>judge.dump_verdicts: true</code> (off by default), each judged turn also
+writes an <code>escalation_verdict={...}</code> JSON line to server stderr. The record
+includes the decision, reason, turn, confirmation state, and judge latency.
+After the latch fires, later turns skip the judge and report the pinned
+routing source in request metadata.</p>
 <h2 id="repeated-benchmark-trials">Repeated benchmark trials<a class="headerlink" href="#repeated-benchmark-trials" title="Permanent link">&para;</a></h2>
 <p>By default, the session key is derived from the system prompt and first user
 message. Repeated trials of the same task against one long-lived server can
