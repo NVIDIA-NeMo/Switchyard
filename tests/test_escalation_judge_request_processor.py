@@ -338,6 +338,39 @@ async def test_global_cap_drops_oldest_window_messages_first() -> None:
     assert "attempt 5" not in summary
 
 
+async def test_judge_transcript_renders_anthropic_tool_use() -> None:
+    """Anthropic tool_use turns must not flatten to empty transcript lines."""
+    processor, fake, _ = _processor(_verdict_json(False, ""))
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": [{"type": "text", "text": "fix the failing tests"}]},
+    ]
+    for i in range(3):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": f"tu_{i}", "name": "bash",
+                 "input": {"command": "pytest -x"}},
+            ],
+        })
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"tu_{i}", "content": "1 failed"},
+            ],
+        })
+    request = ChatRequest.anthropic(cast(Any, {
+        "model": "claude-test",
+        "max_tokens": 128,
+        "messages": messages,
+    }))
+
+    await processor.process(ProxyContext(), request)
+
+    summary = fake.calls[0]["request_summary"]
+    assert 'tool_call bash({"command": "pytest -x"})' in summary
+    assert "1 failed" in summary
+
+
 async def test_deep_session_key_diverges_on_early_responses() -> None:
     processor, _, _ = _processor(_verdict_json(False, ""), session_key_depth=2)
 

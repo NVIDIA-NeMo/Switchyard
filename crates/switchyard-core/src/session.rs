@@ -94,6 +94,17 @@ fn flatten_message_text(item: &Value) -> String {
     if !content.is_empty() {
         parts.push(content);
     }
+    // Anthropic tool_use blocks carry their payload in name/input rather than
+    // text/content, so the plain content flatten yields nothing for them.
+    if let Some(Value::Array(blocks)) = item.get("content") {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+                let input = block.get("input").map(Value::to_string).unwrap_or_default();
+                parts.push(format!("tool_call {name}({input})"));
+            }
+        }
+    }
     if let Some(Value::Array(calls)) = item.get("tool_calls") {
         for call in calls {
             if let Some(function) = call.get("function").and_then(Value::as_object) {
@@ -398,6 +409,26 @@ mod tests {
         assert_ne!(
             session_key_from_body_with_depth(&trial("{\"path\": \"a.rs\"}"), 1),
             session_key_from_body_with_depth(&trial("{\"path\": \"b.rs\"}"), 1)
+        );
+    }
+
+    #[test]
+    fn deep_key_sees_anthropic_tool_use() {
+        // Anthropic assistant turns whose divergence lives in tool_use blocks
+        // (no text content) must still separate the trials.
+        let trial = |command: &str| {
+            json!({
+                "messages": [
+                    {"role": "user", "content": "task"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "name": "bash", "input": {"command": command}},
+                    ]},
+                ],
+            })
+        };
+        assert_ne!(
+            session_key_from_body_with_depth(&trial("ls tests/"), 1),
+            session_key_from_body_with_depth(&trial("cat README.md"), 1)
         );
     }
 
