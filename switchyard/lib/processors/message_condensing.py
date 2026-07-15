@@ -13,6 +13,7 @@ consistently instead of each keeping a private copy.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -117,7 +118,14 @@ def message_text(message: dict[str, Any]) -> str:
 
 
 def content_text(content: str | list[Any]) -> str:
-    """Flatten string-or-content-block message content to text."""
+    """Flatten string-or-content-block message content to text.
+
+    Handles plain strings, OpenAI/Anthropic text blocks, nested
+    ``tool_result`` content, and Anthropic ``tool_use`` blocks — the last
+    carry their payload in ``name``/``input`` rather than ``text``/``content``
+    and would otherwise flatten to nothing, erasing exactly the
+    repeated-command signal a trajectory judge relies on.
+    """
     if isinstance(content, str):
         return content
     parts: list[str] = []
@@ -126,6 +134,12 @@ def content_text(content: str | list[Any]) -> str:
             parts.append(block)
             continue
         if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use":
+            arguments = json.dumps(
+                block.get("input", {}), ensure_ascii=False, sort_keys=True, default=str
+            )
+            parts.append(f"tool_call {block.get('name')}({arguments})")
             continue
         text = block.get("text")
         if isinstance(text, str):
