@@ -30,6 +30,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast, overload
 
+from pydantic import ValidationError
+
 from switchyard.cli.model_catalog.model_discovery import fetch_model_ids
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEndpoint
@@ -1146,20 +1148,16 @@ def _escalation_router_switchyard(
             "base_url": _required_str(
                 judge.get("base_url"), f"{model_id}.judge.base_url"
             ),
-            "timeout_secs": _optional_float(
-                judge.get("timeout_secs"),
-                default=5.0,
-            ),
         },
         "fallback_target_on_evict": fallback_target_on_evict,
         "judge_system_prompt": _judge_prompt_value(judge, model_id),
-        "judge_timeout_s": _optional_float(judge.get("timeout_secs"), default=5.0),
     }
     # Optional knobs are forwarded verbatim and only when present, so
     # ``EscalationRouterConfig`` stays the single owner of every default and
     # of value validation; re-declaring defaults here is exactly the config
     # drift this compatibility path must not accumulate.
     judge_key_map = {
+        "timeout_secs": "judge_timeout_s",
         "min_turn": "judge_min_turn",
         "confirmations": "judge_escalate_confirmations",
         "confirmation_window": "judge_confirmation_window",
@@ -1186,7 +1184,15 @@ def _escalation_router_switchyard(
         if route.get(route_key) is not None:
             config_data[route_key] = route[route_key]
 
-    config = EscalationRouterConfig.model_validate(config_data)
+    try:
+        config = EscalationRouterConfig.model_validate(config_data)
+    except ValidationError as exc:
+        # Surface config mistakes as the CLI's one-line diagnostic instead of
+        # a raw pydantic traceback (see the RouteBundleConfigError handler in
+        # switchyard_cli.main).
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: invalid escalation_router config: {exc}"
+        ) from exc
     return ProfileSwitchyard(
         EscalationRouterProfileConfig.from_config(config)
         .build()

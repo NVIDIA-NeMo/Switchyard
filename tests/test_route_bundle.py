@@ -834,7 +834,9 @@ class TestEscalationRouterRouteType:
         from switchyard.lib.processors.escalation_judge_request_processor import (
             EscalationJudgeRequestProcessor,
         )
-        table = build_route_bundle_table(self._bundle())
+        bundle = self._bundle()
+        del bundle["routes"]["myrouter/escalation"]["judge"]["timeout_secs"]
+        table = build_route_bundle_table(bundle)
         switchyard = table.lookup_switchyard("myrouter/escalation")
         judge = next(
             c for c in switchyard.iter_components()
@@ -844,7 +846,20 @@ class TestEscalationRouterRouteType:
         assert judge._config.window_message_chars == 300
         assert judge._config.dump_verdicts_to_stderr is False
         assert judge._config.max_completion_tokens == 128
+        assert judge._config.timeout_s == 5.0
         assert judge._affinity._l2 is None
+
+    def test_invalid_value_is_a_one_line_config_error(self):
+        """Pydantic rejections surface as RouteBundleConfigError, not a traceback."""
+        from switchyard.cli.route_bundle import (
+            RouteBundleConfigError,
+            build_route_bundle_table,
+        )
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/escalation"]["session_key_depth"] = "two"
+        with pytest.raises(RouteBundleConfigError) as exc:
+            build_route_bundle_table(bundle)
+        assert "session_key_depth" in str(exc.value)
 
     def test_benchmark_knobs_and_redis_latch_thread_through(self):
         from switchyard.cli.route_bundle import build_route_bundle_table
