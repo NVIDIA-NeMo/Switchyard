@@ -11,7 +11,7 @@ use switchyard_core::{BoxResponseStream, ChatResponse, ProxyContext, Result};
 
 use crate::intake::{
     now_millis, HttpIntakeSink, IntakePayloadBuilder, IntakePayloadContext, IntakeRequestState,
-    IntakeSink, IntakeSinkConfig, IntakeStreamCapture, IntakeStreamFormat,
+    IntakeSink, IntakeSinkConfig, IntakeStreamCapture, IntakeStreamFormat, SubModelCalls,
 };
 
 /// Response processor that converts completed responses into intake payloads.
@@ -57,6 +57,12 @@ impl IntakeResponseProcessor {
             return Ok(response);
         }
 
+        // Routing sub-model records don't depend on the response body — the
+        // router already made its call at request time — so emit them here,
+        // gated by the same opt-in, instead of threading through the
+        // buffered/streaming split below.
+        self.emit_submodel_records(ctx, Arc::clone(&self.sink)).await;
+
         match response {
             ChatResponse::OpenAiCompletion(_)
             | ChatResponse::OpenAiResponsesCompletion(_)
@@ -100,6 +106,21 @@ impl IntakeResponseProcessor {
 }
 
 impl IntakeResponseProcessor {
+    /// Emits one anonymous record per routing sub-model call stashed on context.
+    async fn emit_submodel_records(&self, ctx: &ProxyContext, sink: Arc<dyn IntakeSink>) {
+        // Clone the calls out before the await so no context borrow is held
+        // across it.
+        let calls = match ctx.get::<SubModelCalls>() {
+            Some(calls) if !calls.0.is_empty() => calls.0.clone(),
+            _ => return,
+        };
+        let payload_ctx = IntakePayloadContext::from_proxy_context(ctx, Some(now_millis()));
+        for (index, call) in calls.iter().enumerate() {
+            let payload = self.builder.build_submodel_record(&payload_ctx, call, index);
+            enqueue_payload(Arc::clone(&sink), payload).await;
+        }
+    }
+
     /// Builds a payload for a buffered response using request state from context.
     fn buffered_payload(
         &self,

@@ -16,7 +16,7 @@ use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use crate::backends::BackendSelection;
 use crate::intake::config::IntakeSinkConfig;
-use crate::intake::context::{IntakeRequestState, RequestMetadata};
+use crate::intake::context::{IntakeRequestState, RequestMetadata, SubModelCall};
 use crate::request_processors::RandomRoutingDecision;
 use crate::stats::{estimate_model_cost, usage_from_body, StatsRouteLabel};
 use crate::telemetry::switchyard_version;
@@ -124,7 +124,7 @@ impl IntakePayloadBuilder {
     ) -> Result<Value> {
         let openai_request = self.translate_request_to_openai(request_snapshot)?;
         let openai_response = self.translate_response_to_openai(response)?;
-        self.build_from_openai(ctx, openai_request, openai_response, stream)
+        self.build_from_openai(ctx, openai_request, openai_response, stream, None)
     }
 
     /// Builds a payload from an already-normalized OpenAI Chat response body.
@@ -136,16 +136,65 @@ impl IntakePayloadBuilder {
         stream: bool,
     ) -> Result<Value> {
         let openai_request = self.translate_request_to_openai(request_snapshot)?;
-        self.build_from_openai(ctx, openai_request, openai_response, stream)
+        self.build_from_openai(ctx, openai_request, openai_response, stream, None)
+    }
+
+    /// Builds an anonymous intake record for one routing-strategy sub-model call.
+    ///
+    /// The record carries only the router's own model, token usage, and route
+    /// label — never message content. It reuses the turn's session, task, and
+    /// timestamps but overrides the routing label with this call's own. `index`
+    /// yields a per-call id suffix so several calls in one turn stay distinct as
+    /// separate NVDataflow documents instead of overwriting one another.
+    pub fn build_submodel_record(
+        &self,
+        ctx: &IntakePayloadContext,
+        call: &SubModelCall,
+        index: usize,
+    ) -> Result<Value> {
+        let openai_request = json!({ "model": call.model });
+        let openai_response = json!({
+            "model": call.model,
+            "object": "chat.completion",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": call.prompt_tokens,
+                "completion_tokens": call.completion_tokens,
+                "total_tokens": call.prompt_tokens.saturating_add(call.completion_tokens),
+                "prompt_tokens_details": { "cached_tokens": call.cached_tokens },
+            },
+        });
+        let mut call_ctx = ctx.clone();
+        call_ctx.routing = Some(IntakeRoutingMetadata {
+            router_type: call.router_type.clone(),
+            routed_to: call.routed_to.clone(),
+        });
+        // A routing call's latency isn't the turn's, so drop the start stamp:
+        // no misleading latency_ms is derived and created_at falls back to the
+        // turn end (≈ now), matching the Python record this replaces.
+        call_ctx.started_at_ms = None;
+        let discriminator = format!("{}-{index}", call.routed_to);
+        self.build_from_openai(
+            &call_ctx,
+            openai_request,
+            openai_response,
+            false,
+            Some(&discriminator),
+        )
     }
 
     /// Assembles the final intake API JSON payload.
+    ///
+    /// `id_discriminator` makes an NVDataflow document's `_id` unique among
+    /// records built for the same turn (same session + timestamp); the primary
+    /// per-turn record passes `None`.
     fn build_from_openai(
         &self,
         ctx: &IntakePayloadContext,
         openai_request: Value,
         openai_response: Value,
         stream: bool,
+        id_discriminator: Option<&str>,
     ) -> Result<Value> {
         let mut request_entry = object_from_value(openai_request, "OpenAI intake request")?;
         normalize_logged_stream_request(&mut request_entry, stream);
@@ -185,7 +234,11 @@ impl IntakePayloadBuilder {
         );
         let payload = Value::Object(payload);
         if self.config().nvdataflow_project.is_some() {
-            return Ok(to_nvdataflow_document(&payload, ctx.ended_at_ms));
+            return Ok(to_nvdataflow_document(
+                &payload,
+                ctx.ended_at_ms,
+                id_discriminator,
+            ));
         }
         Ok(payload)
     }
@@ -862,7 +915,11 @@ fn anthropic_stop_reason_to_openai(reason: Value) -> Value {
 /// (`s_`/`l_`/`f_`/`b_`/`text_`) NVDataflow document, since NVDataflow only
 /// indexes top-level fields. The raw record is kept in
 /// `text_switchyard_record_json`.
-pub fn to_nvdataflow_document(payload: &Value, ts_created_ms: Option<i64>) -> Value {
+pub fn to_nvdataflow_document(
+    payload: &Value,
+    ts_created_ms: Option<i64>,
+    id_discriminator: Option<&str>,
+) -> Value {
     let request = payload.get("request");
     let response = payload.get("response");
     let switchyard = request.and_then(|value| value.get("switchyard"));
@@ -875,6 +932,12 @@ pub fn to_nvdataflow_document(payload: &Value, ts_created_ms: Option<i64>) -> Va
     let id = match session_id {
         Some(session_id) => format!("{session_id}-{ts}"),
         None => format!("switchyard-{ts}"),
+    };
+    // Several records can share one session + timestamp (the primary turn plus
+    // each routing sub-model call); the discriminator keeps their `_id`s unique.
+    let id = match id_discriminator {
+        Some(discriminator) => format!("{id}-{discriminator}"),
+        None => id,
     };
     doc.insert("_id".to_string(), Value::String(id));
     doc.insert("ts_created".to_string(), Value::from(ts));

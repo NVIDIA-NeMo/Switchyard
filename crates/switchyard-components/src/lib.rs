@@ -25,7 +25,7 @@ pub use dimension_collector::{
 };
 pub use intake::{
     HttpIntakeSink, IntakePayloadBuilder, IntakeQueueFullPolicy, IntakeRequestMetadata,
-    IntakeRequestState, IntakeSink, IntakeSinkConfig, RequestMetadata,
+    IntakeRequestState, IntakeSink, IntakeSinkConfig, RequestMetadata, SubModelCall, SubModelCalls,
 };
 pub use request_processors::{
     DimensionCollector, IntakeRequestProcessor, RandomRoutingDecision, RandomRoutingEngine,

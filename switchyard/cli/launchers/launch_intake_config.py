@@ -19,8 +19,6 @@ env vars through both seams. CLI parsing lives in
 ``switchyard.cli.launch_command``.
 """
 
-from __future__ import annotations
-
 import re
 import secrets
 import sys
@@ -89,7 +87,7 @@ class LaunchIntakeConfig:
         user_id: str | None = None,
         nvdataflow_project: str | None = None,
         target: str,
-    ) -> LaunchIntakeConfig:
+    ) -> "LaunchIntakeConfig":
         """Resolve any blank fields and return the immutable config.
 
         ``session_id`` defaults to ``<target>-<unix-ms>-<uuid4-short>`` so each
@@ -126,7 +124,7 @@ class LaunchIntakeConfig:
             "proxy_x_session_id": self.session_id,
         }
 
-    def to_sink_config(self) -> IntakeSinkConfig:
+    def to_sink_config(self) -> "IntakeSinkConfig":
         """Build the server-side intake sink config for this launch."""
         from switchyard.lib.config import IntakeSinkConfig
 
@@ -150,7 +148,10 @@ def build_intake_processors(
     from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 
     config = intake.to_sink_config()
-    return [IntakeRequestProcessor()], [IntakeResponseProcessor(config)]
+    return (
+        [IntakeRequestProcessor()],
+        [IntakeResponseProcessor(config)],
+    )
 
 
 def build_launch_capture_processors(

@@ -11,8 +11,8 @@ pub mod payload;
 pub use client::{HttpIntakeSink, IntakeSink};
 pub use config::{IntakeQueueFullPolicy, IntakeSinkConfig};
 pub use context::{
-    IntakeRequestMetadata, IntakeRequestState, RequestMetadata, INTAKE_APP_HEADER,
-    INTAKE_ENABLED_HEADER, INTAKE_TASK_HEADER, PROXY_SESSION_ID_HEADER,
+    IntakeRequestMetadata, IntakeRequestState, RequestMetadata, SubModelCall, SubModelCalls,
+    INTAKE_APP_HEADER, INTAKE_ENABLED_HEADER, INTAKE_TASK_HEADER, PROXY_SESSION_ID_HEADER,
 };
 pub use payload::{
     anthropic_response_from_stream, now_millis, openai_chat_response_from_stream,

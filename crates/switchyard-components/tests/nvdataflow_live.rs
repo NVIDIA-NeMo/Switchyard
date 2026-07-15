@@ -98,7 +98,7 @@ async fn posts_flat_documents_to_nvdataflow_sandbox() -> Result<()> {
         samples.iter().enumerate()
     {
         let chat = sample_chat_payload(session, served, routed_to, *prompt, *completion, *cost);
-        let doc = to_nvdataflow_document(&chat, Some(base_ts + index as i64));
+        let doc = to_nvdataflow_document(&chat, Some(base_ts + index as i64), None);
         sink.enqueue(doc).await?;
     }
     sink.shutdown().await?;

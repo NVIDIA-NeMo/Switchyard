@@ -8,7 +8,7 @@ mod support;
 use serde_json::{json, Value};
 use switchyard_components::{
     IntakePayloadBuilder, IntakeRequestMetadata, IntakeRequestState, IntakeSinkConfig,
-    RandomRoutingDecision, RandomRoutingTier, RequestMetadata, StatsRouteLabel,
+    RandomRoutingDecision, RandomRoutingTier, RequestMetadata, StatsRouteLabel, SubModelCall,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, LlmTargetId, ModelId, ProxyContext, Result};
 
@@ -407,6 +407,77 @@ fn payload_builds_flat_nvdataflow_document_when_project_set() -> Result<()> {
     assert_eq!(payload["l_switchyard_latency_ms"], 1840);
     assert!(payload["f_switchyard_cost_usd"].is_number());
     assert!(payload["text_switchyard_record_json"].is_string());
+    Ok(())
+}
+
+// Sub-model routing records reuse the turn's context but carry the router's own
+// model/usage/route, and each gets a distinct NVDataflow _id so the primary
+// record and every routing call coexist instead of overwriting one another.
+#[test]
+fn submodel_records_get_distinct_nvdataflow_ids_and_router_fields() -> Result<()> {
+    let builder = IntakePayloadBuilder::new(IntakeSinkConfig {
+        user_id: "0badf00d".to_string(),
+        nvdataflow_project: Some("sandbox-switchyard".to_string()),
+        ..IntakeSinkConfig::default()
+    });
+    let request = openai_chat_request("openai/openai/gpt-5.2");
+    let mut ctx = ProxyContext::new();
+    record_backend_selection(&mut ctx, ModelId::from_static("openai/openai/gpt-5.2"));
+    ctx.insert(IntakeRequestState {
+        started_at_ms: 1_700_000_000_000,
+        inbound_format: ChatRequestType::OpenAiChat,
+        session_id: Some("sess-1".to_string()),
+        skip: false,
+        request_snapshot: Some(request.clone()),
+    });
+    let payload_ctx = switchyard_components::intake::IntakePayloadContext::from_proxy_context(
+        &ctx,
+        Some(1_700_000_001_840),
+    );
+
+    // Primary turn record and two routing calls share one session + timestamp.
+    let primary = builder.build(
+        &payload_ctx,
+        &request,
+        &completion_with_usage(
+            "chatcmpl-test",
+            "openai/openai/gpt-5.2",
+            "hello",
+            Some(json!({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})),
+        ),
+        false,
+    )?;
+    let call = SubModelCall {
+        model: "gcp/google/gemini-3.5-flash".to_string(),
+        prompt_tokens: 1200,
+        completion_tokens: 80,
+        cached_tokens: 0,
+        router_type: "deterministic".to_string(),
+        routed_to: "classifier".to_string(),
+    };
+    let first = builder.build_submodel_record(&payload_ctx, &call, 0)?;
+    let second = builder.build_submodel_record(&payload_ctx, &call, 1)?;
+
+    // Distinct _id per record so nothing overwrites another in the data lake.
+    assert_eq!(primary["_id"], "sess-1-1700000001840");
+    assert_eq!(first["_id"], "sess-1-1700000001840-classifier-0");
+    assert_eq!(second["_id"], "sess-1-1700000001840-classifier-1");
+
+    // The routing record carries the router's own model, usage, and route label.
+    assert_eq!(
+        first["s_switchyard_requested_model"],
+        "gcp/google/gemini-3.5-flash"
+    );
+    assert_eq!(
+        first["s_switchyard_served_model"],
+        "gcp/google/gemini-3.5-flash"
+    );
+    assert_eq!(first["s_switchyard_router_type"], "deterministic");
+    assert_eq!(first["s_switchyard_routed_to"], "classifier");
+    assert_eq!(first["l_switchyard_input_tokens"], 1200);
+    assert_eq!(first["l_switchyard_output_tokens"], 80);
+    // Start stamp is dropped for routing calls, so no turn-wide latency leaks in.
+    assert!(first.get("l_switchyard_latency_ms").is_none());
     Ok(())
 }
 

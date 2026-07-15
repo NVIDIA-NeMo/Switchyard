@@ -233,7 +233,10 @@ def _resolve_intake_processors(
     intake = _resolve_intake_config(args)
     if intake is None:
         return [], []
-    return [IntakeRequestProcessor()], [IntakeResponseProcessor(intake)]
+    return (
+        [IntakeRequestProcessor()],
+        [IntakeResponseProcessor(intake)],
+    )
 
 
 def _add_intake_args(parser: argparse.ArgumentParser) -> None:
