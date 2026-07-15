@@ -18,9 +18,6 @@ from switchyard.lib.profiles.deterministic_routing_config import (
 from switchyard.lib.profiles.table import profile_config
 from switchyard.lib.profiles.tier_target_builders import build_tier_backend
 
-_TIER_STRONG = "strong"
-_TIER_WEAK = "weak"
-
 
 @profile_config("deterministic")
 class DeterministicRoutingProfileConfig:
@@ -48,9 +45,17 @@ class DeterministicRoutingProfileConfig:
         from switchyard.lib.session_affinity import SessionAffinity
 
         config = self.config
+        # Tier labels are the configured target ids ("strong"/"weak" unless
+        # overridden). The tier selector stamps them, the backend keys its
+        # tier dict by them, and the chain's evict-and-retry rewrites
+        # selected_target to fallback_target_on_evict — which the config
+        # validates against these same ids — so an overflow reroute always
+        # lands on a registered tier.
+        strong_id = config.strong.id
+        weak_id = config.weak.id
         profile = PROFILE_FACTORIES[config.profile_name](
-            weak=_TIER_WEAK,
-            strong=_TIER_STRONG,
+            weak=weak_id,
+            strong=strong_id,
         )
 
         request_processors: list[Any] = [ReasoningEffortNormalizer()]
@@ -102,10 +107,10 @@ class DeterministicRoutingProfileConfig:
 
         backend = DeterministicRoutingLLMBackend(
             tiers={
-                _TIER_STRONG: (strong_backend, strong_target.model),
-                _TIER_WEAK: (weak_backend, weak_target.model),
+                strong_id: (strong_backend, strong_target.model),
+                weak_id: (weak_backend, weak_target.model),
             },
-            default_tier=_TIER_STRONG,
+            default_tier=strong_id,
         )
         return ComponentChainProfile(
             request_processors=request_processors,
