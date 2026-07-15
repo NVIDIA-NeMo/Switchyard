@@ -106,12 +106,23 @@ base_url = "http://127.0.0.1:4102"
 To point at real providers, replace the target `base_url` / `model` values and
 supply credentials with per-target `headers` / `header_env`.
 
-## Launching Claude Code (tested), and where it breaks
+## Launching Claude Code: the end-to-end we want
 
-From a project directory containing the two config files below,
-`nemo-relay claude` opens the normal interactive Claude Code TUI with the
-plugin active. Verified end to end on 2026-07-15 with Relay branch
-`feat/libsy-decision-backend` ([fork](https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend)).
+The target experience: from a project directory with the two files below,
+`nemo-relay claude` opens the normal interactive Claude Code TUI, and every
+LLM call the agent makes is scored by the classifier and routed strong/weak
+in-process, with the full decision trail in ATOF events. Everything here is
+copy-pasteable; the only unmet dependency is libsy streaming (see the status
+table).
+
+Build Relay with the plugin (reference branch:
+[feat/libsy-decision-backend](https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend)):
+
+```bash
+git clone -b feat/libsy-decision-backend https://github.com/ryan-lempka/NeMo-Relay.git
+cd NeMo-Relay
+RUSTUP_TOOLCHAIN=1.96.1 cargo build -p nemo-relay-cli --features switchyard
+```
 
 `.nemo-relay/config.toml`:
 
@@ -120,30 +131,100 @@ plugin active. Verified end to end on 2026-07-15 with Relay branch
 command = "claude"
 ```
 
-`.nemo-relay/plugins.toml`: the libsy component config above, with
-Anthropic-protocol targets (e.g. a Haiku classifier routing between Opus and
-Sonnet) plus an `observability` component with a `file` ATOF sink to see
-routing events.
+`.nemo-relay/plugins.toml` (complete; Haiku scores each request, at or above
+0.5 routes to Opus, below routes to Sonnet; Claude Code's own auth headers
+pass through to Anthropic):
 
-What works today, against libsy `main`:
+```toml
+version = 1
+
+[[components]]
+kind = "switchyard"
+enabled = true
+
+[components.config]
+mode = "enforce"
+decision_backend = "libsy"
+request_materialization = "summary_only"
+context_mode = "payload_only"
+enabled_inbound_profiles = ["anthropic_messages"]
+
+[components.config.libsy]
+algorithm = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+threshold = 0.5
+
+[components.config.default_targets]
+anthropic_messages = "strong"
+
+[components.config.targets.classifier]
+model = "claude-haiku-4-5-20251001"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://api.anthropic.com"
+
+[components.config.targets.strong]
+model = "claude-opus-4-8"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://api.anthropic.com"
+
+[components.config.targets.weak]
+model = "claude-sonnet-5"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://api.anthropic.com"
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+mode = "append"
+```
+
+Launch and inspect:
+
+```bash
+./target/debug/nemo-relay claude          # interactive TUI
+grep switchyard.routing nemo-relay-events-*.jsonl
+```
+
+## Status against libsy `main` (verified 2026-07-15, fresh public checkout)
 
 | Step | Status |
 |---|---|
+| Fresh clone builds hermetically; `run-libsy-e2e.sh` passes | works |
 | TUI launches; all traffic flows through the gateway and plugin | works |
 | Requests carrying `cache_control` reach the router (same-protocol passthrough) | works |
 | Buffered requests routed by the libsy classifier | works |
 | Streamed requests routed by libsy | **breaks** |
 
-The break is in libsy's response contract, not in Relay:
+The break, demonstrated with the same prompt sent both ways through the demo
+stack:
+
+```text
+buffered "This is a hard problem: ..."  -> classifier scored 0.9 -> served by strong-model
+streamed "This is a hard problem: ..."  -> no classifier call    -> served by weak-model (trusted fallback)
+```
+
+The wrong model answers the streamed request purely because of transport
+framing. The cause is libsy's response contract on `main`:
 `CallLlmRequest::respond` and `Step::ReturnToAgent` carry only buffered
 responses, so no host can pass a live token stream through an algorithm.
-Because Claude Code streams its interactive calls, those requests emit
+Claude Code streams its interactive calls, so those requests emit
 `switchyard.routing.error` (`libsy_stream`) and dispatch the trusted
-per-protocol fallback (`switchyard.routing.fallback`,
-`libsy_streaming_unsupported`) instead of a libsy decision. Streaming support
-exists on the unmerged `grclark/simple-proxy` branch (`LlmResponse` becomes
-buffered-or-stream); once it lands on `main`, the Relay plugin can fulfill
-promises with live streams and this table's last row flips.
+per-protocol fallback (`libsy_streaming_unsupported`) instead of a libsy
+decision. Streaming support exists on the unmerged `grclark/simple-proxy`
+branch (`LlmResponse` becomes buffered-or-stream); when it lands on `main`,
+the Relay plugin can fulfill promises with live streams and the last table
+row flips without config changes.
 
 ## The embedding contract
 
