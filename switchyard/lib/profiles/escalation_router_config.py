@@ -102,6 +102,17 @@ class EscalationRouterConfig(BaseModel):
             raise ValueError("target.model must be a non-empty string")
         return tier
 
+    @field_validator("weak")
+    @classmethod
+    def _tier_ids_distinct(cls, value: LlmTarget, info: ValidationInfo) -> LlmTarget:
+        strong = info.data.get("strong")
+        if isinstance(strong, LlmTarget) and strong.id == value.id:
+            raise ValueError(
+                f"strong.id and weak.id must differ (both are {value.id!r}); "
+                "they key the routing tiers"
+            )
+        return value
+
     @field_validator("judge_system_prompt", mode="before")
     @classmethod
     def _blank_judge_prompt_is_unset(cls, value: object) -> object:
