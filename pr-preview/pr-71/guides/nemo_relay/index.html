@@ -1262,7 +1262,7 @@
 <h1 id="nemo-relay-recipe">NeMo Relay Recipe<a class="headerlink" href="#nemo-relay-recipe" title="Permanent link">&para;</a></h1>
 <p>This recipe shows how to run Switchyard <strong>as a library</strong> inside
 <a href="https://github.com/NVIDIA/NeMo-Relay">NeMo Relay</a>, so routing decisions are
-made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/tree/main/crates/libsy">libsy</a>
+made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c7a99167fc6732bf03171d56280692e701ea9704/crates/libsy/README.md">libsy</a>
 while Relay keeps ownership of the actual LLM calls. No <code>switchyard serve</code>
 process is involved.</p>
 <blockquote>
@@ -1388,7 +1388,7 @@ the agent yet.</p>
 <li>The conversation IR (<code>LlmRequest</code> / <code>LlmResponse</code> from <code>libsy-protocol</code>),
   which Relay's plugin already speaks through <code>switchyard-translation</code>.</li>
 </ul>
-<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/tree/main/crates/libsy">libsy README</a>
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c7a99167fc6732bf03171d56280692e701ea9704/crates/libsy/README.md">libsy README</a>
 for the full API walkthrough.</p>
 
 
