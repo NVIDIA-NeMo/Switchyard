@@ -828,6 +828,53 @@ class TestEscalationRouterRouteType:
         assert judge._config.timeout_s == 5.0
         assert judge._session_key_depth == 2
 
+    def test_judge_prompt_path_reads_file(self, tmp_path):
+        from switchyard.cli.route_bundle import build_route_bundle_table
+        from switchyard.lib.processors.escalation_judge_request_processor import (
+            EscalationJudgeRequestProcessor,
+        )
+        prompt_file = tmp_path / "judge_prompt.md"
+        prompt_file.write_text("file-based judge prompt\n", encoding="utf-8")
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/escalation"]["judge"]["prompt_path"] = (
+            str(prompt_file)
+        )
+        table = build_route_bundle_table(bundle)
+        switchyard = table.lookup_switchyard("myrouter/escalation")
+        judge = next(
+            c for c in switchyard.iter_components()
+            if isinstance(c, EscalationJudgeRequestProcessor)
+        )
+        assert judge._config.system_prompt == "file-based judge prompt\n"
+
+    def test_judge_prompt_and_prompt_path_are_mutually_exclusive(self, tmp_path):
+        from switchyard.cli.route_bundle import (
+            RouteBundleConfigError,
+            build_route_bundle_table,
+        )
+        prompt_file = tmp_path / "judge_prompt.md"
+        prompt_file.write_text("file prompt", encoding="utf-8")
+        bundle = self._bundle()
+        judge = bundle["routes"]["myrouter/escalation"]["judge"]
+        judge["prompt"] = "inline prompt"
+        judge["prompt_path"] = str(prompt_file)
+        with pytest.raises(RouteBundleConfigError) as exc:
+            build_route_bundle_table(bundle)
+        assert "mutually exclusive" in str(exc.value)
+
+    def test_judge_prompt_path_missing_file_is_a_config_error(self, tmp_path):
+        from switchyard.cli.route_bundle import (
+            RouteBundleConfigError,
+            build_route_bundle_table,
+        )
+        bundle = self._bundle()
+        bundle["routes"]["myrouter/escalation"]["judge"]["prompt_path"] = (
+            str(tmp_path / "nope.md")
+        )
+        with pytest.raises(RouteBundleConfigError) as exc:
+            build_route_bundle_table(bundle)
+        assert "prompt_path" in str(exc.value)
+
     def test_rejects_missing_judge_block(self):
         from switchyard.cli.route_bundle import (
             RouteBundleConfigError,

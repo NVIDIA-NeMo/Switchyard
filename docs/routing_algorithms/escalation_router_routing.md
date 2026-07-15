@@ -133,7 +133,8 @@ If the selected tier exceeds its context window, Switchyard retries once on
 | `judge.recent_turn_window` | `14` | The judge needs a wider or narrower trailing-message window. |
 | `judge.window_message_chars` | `300` | More tool-output detail should survive per-message truncation. |
 | `judge.max_request_chars` | `12000` | The complete judge request needs a different character budget. Oldest recent messages are dropped first. |
-| `judge.prompt` | built-in | A deployment needs a custom escalation rubric. |
+| `judge.prompt` | built-in | A deployment needs a custom escalation rubric inlined in the YAML. |
+| `judge.prompt_path` | built-in | The custom rubric lives in a file (mutually exclusive with `judge.prompt`; relative paths resolve against the server's working directory). |
 | `tier_timeout_s` | `600` | Strong or weak targets without their own `timeout_secs` need a different call timeout. |
 | `enable_stats` | `true` | Set to `false` only when route-level usage statistics are not needed. |
 | `affinity_max_sessions` | `10000` | A long-lived process needs a different in-memory latch capacity. |

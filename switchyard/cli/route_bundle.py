@@ -293,6 +293,7 @@ _ESCALATION_JUDGE_KEYS = frozenset({
     "recent_turn_window",
     "window_message_chars",
     "prompt",
+    "prompt_path",
     "max_request_chars",
 })
 _DETERMINISTIC_CLASSIFIER_KEYS = frozenset({
@@ -1051,6 +1052,31 @@ def _deterministic_switchyard(
     )
 
 
+def _judge_prompt_value(judge: Mapping[str, object], model_id: str) -> str | None:
+    """Resolve the judge prompt override from ``prompt`` or ``prompt_path``.
+
+    ``prompt`` inlines the text; ``prompt_path`` reads it from a file
+    (relative paths resolve against the server's working directory).
+    ``None`` keeps the built-in default.
+    """
+    inline = _optional_str(judge.get("prompt"))
+    path = _optional_str(judge.get("prompt_path"))
+    if inline is not None and path is not None:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: judge.prompt and judge.prompt_path are "
+            "mutually exclusive",
+        )
+    if path is None:
+        return inline
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: judge.prompt_path {path!r}: cannot read: "
+            f"{_format_exception_one_line(exc)}"
+        ) from exc
+
+
 def _escalation_router_switchyard(
     model_id: str,
     route: Mapping[str, object],
@@ -1157,7 +1183,7 @@ def _escalation_router_switchyard(
         "judge_window_message_chars": _optional_int(
             judge.get("window_message_chars"), default=300,
         ),
-        "judge_system_prompt": _optional_str(judge.get("prompt")),
+        "judge_system_prompt": _judge_prompt_value(judge, model_id),
         "judge_timeout_s": _optional_float(judge.get("timeout_secs"), default=5.0),
         "enable_stats": _optional_bool(route.get("enable_stats"), default=True),
     }
