@@ -90,6 +90,7 @@ from switchyard.lib.backends.advisor_loop_backend import (
     AdvisorCaller,
     _blocks_text,
     _build_advisor_caller,
+    _consume_openai_stream,
     _ev,
     _replay_events,
     _usage_tokens,
@@ -788,73 +789,6 @@ def _with_length_line(
 # ----------------------------------------------------------------------
 # OpenAI-wire helpers
 # ----------------------------------------------------------------------
-
-
-async def _consume_openai_stream(
-    stream: Any,
-) -> tuple[list[Any], dict[str, Any], dict[str, int]]:
-    """Buffer an OpenAI Chat stream; reassemble the assistant message and usage.
-
-    Events are the ``chat.completion.chunk`` dicts the native backend's SSE
-    parser yields (``[DONE]`` is consumed upstream and never appears; the
-    backend force-injects ``stream_options.include_usage`` so a final usage
-    chunk normally arrives). ``delta.tool_calls`` fragments merge by ``index``:
-    non-empty ``id``/``name`` replace, ``arguments`` fragments concatenate.
-    """
-    events: list[Any] = []
-    text_parts: list[str] = []
-    slots: dict[int, dict[str, str]] = {}
-    usage = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
-    async for event in stream:
-        events.append(event)
-        chunk_usage = _ev(event, "usage")
-        if isinstance(chunk_usage, dict):
-            usage["input_tokens"] = int(chunk_usage.get("prompt_tokens") or 0)
-            usage["output_tokens"] = int(chunk_usage.get("completion_tokens") or 0)
-            details = chunk_usage.get("prompt_tokens_details") or {}
-            usage["cached_tokens"] = int(details.get("cached_tokens") or 0)
-        choices = _ev(event, "choices") or []
-        delta = _ev(choices[0], "delta") if choices else None
-        if delta is None:
-            continue
-        piece = _ev(delta, "content")
-        if isinstance(piece, str):
-            text_parts.append(piece)
-        for fragment in _ev(delta, "tool_calls") or []:
-            index = int(_ev(fragment, "index") or 0)
-            slot = slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
-            fragment_id = _ev(fragment, "id")
-            if isinstance(fragment_id, str) and fragment_id:
-                slot["id"] = fragment_id
-            function = _ev(fragment, "function") or {}
-            name = _ev(function, "name")
-            if isinstance(name, str) and name:
-                slot["name"] = name
-            arguments = _ev(function, "arguments")
-            if isinstance(arguments, str):
-                slot["arguments"] += arguments
-
-    message: dict[str, Any] = {
-        "role": "assistant",
-        "content": "".join(text_parts) or None,
-    }
-    if slots:
-        message["tool_calls"] = [
-            {
-                # A missing id (some OSS servers omit it in deltas) gets a
-                # synthesized one so the tool result can reference it.
-                "id": slot["id"] or f"call_switchyard_{index}",
-                "type": "function",
-                "function": {
-                    "name": slot["name"],
-                    # Empty arguments become "{}" so strict endpoints accept
-                    # the replayed history.
-                    "arguments": slot["arguments"] or "{}",
-                },
-            }
-            for index, slot in sorted(slots.items())
-        ]
-    return events, message, usage
 
 
 def _openai_advisor_calls(

@@ -281,6 +281,7 @@ _ADVISOR_ROUTE_KEYS = (
         "advisor_system_prompt",
         "advisor_tool_description",
         "reviewer_system_prompt",
+        "redo_feedback_prefix",
         "advisor_max_tokens",
         "advisor_temperature",
         "transcript_max_chars",
@@ -1166,9 +1167,9 @@ def _advisor_switchyard(
     caching) or ``openai`` (``/chat/completions``; Qwen/DeepSeek/vLLM/NIM/
     OpenAI endpoints). ``responses`` targets are rejected at validation.
     ``strategy`` selects the advisor mode: ``tool_call`` (default) offers the
-    executor a proxy-intercepted ``advisor`` tool; ``review_gate``
-    (Anthropic-executor-only) gates the executor with a once-per-session
-    advisor review.
+    executor a proxy-intercepted ``advisor`` tool; ``review_gate`` gates the
+    executor with a once-per-session advisor review. Both strategies work on
+    either wire.
     """
     config = AdvisorConfig.model_validate(
         _route_config(route, target_defaults, ("executor", "advisor"))

@@ -1440,6 +1440,38 @@ class TestAdvisorRouteType:
         components = list(table.iter_components())
         assert any(isinstance(c, AdvisorLoopBackend) for c in components)
 
+    def test_review_gate_on_openai_wire_with_custom_redo_prefix(self):
+        from switchyard.lib.backends.advisor_loop_backend import AdvisorLoopBackend
+        from switchyard_rust.core import ChatRequestType
+
+        bundle = {
+            "routes": {
+                "myrouter/advisor-gate-oss": {
+                    "type": "advisor",
+                    "strategy": "review_gate",
+                    "redo_feedback_prefix": "REVIEWER SAYS: ",
+                    "executor": {
+                        "model": "qwen/qwen3-max",
+                        "api_key": "sk-exec",
+                        "base_url": "https://exec.invalid/v1",
+                        "format": "openai",
+                    },
+                    "advisor": {
+                        "model": "aws/anthropic/bedrock-claude-opus-4-8",
+                        "api_key": "sk-adv",
+                        "base_url": "https://adv.invalid/v1",
+                        "format": "anthropic",
+                    },
+                },
+            },
+        }
+        table = build_route_bundle_table(bundle)
+        backend = next(
+            c for c in table.iter_components() if isinstance(c, AdvisorLoopBackend)
+        )
+        assert backend.supported_request_types == [ChatRequestType.OPENAI_CHAT]
+        assert backend._config.redo_feedback_prefix == "REVIEWER SAYS: "
+
     def test_rejects_unknown_route_key(self):
         bundle = self._bundle()
         bundle["routes"]["myrouter/advisor"]["bogus_field"] = 1

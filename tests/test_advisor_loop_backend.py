@@ -32,9 +32,16 @@ from switchyard.lib.backends.advisor_loop_backend import (
 )
 from switchyard.lib.backends.llm_target import coerce_llm_target
 from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
+from switchyard.lib.chat_response.openai_chat import ResponseStream as OpenAIResponseStream
 from switchyard.lib.profiles.advisor_config import AdvisorConfig
 from switchyard.lib.proxy_context import ProxyContext
-from switchyard_rust.core import ChatRequest, ChatResponse, ChatResponseType, response_type_matches
+from switchyard_rust.core import (
+    ChatRequest,
+    ChatRequestType,
+    ChatResponse,
+    ChatResponseType,
+    response_type_matches,
+)
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -250,6 +257,106 @@ async def test_streaming_tool_use_passes_through() -> None:
     resp = await _backend(_config(), exec_b, adv).call(ProxyContext(), _request(stream=True))
     assert adv.advise.await_count == 0
     assert response_type_matches(resp, ChatResponseType.ANTHROPIC_STREAM)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-wire gate (executor format: openai)
+# ---------------------------------------------------------------------------
+
+
+def _openai_config(**overrides) -> AdvisorConfig:
+    base: dict = {
+        "strategy": "review_gate",
+        "executor": {"model": "qwen/qwen3-max", "base_url": "http://exec.test",
+                     "api_key": "k", "format": "openai"},
+        "advisor": {"model": "adv-model", "base_url": "http://adv.test", "api_key": "k",
+                    "format": "anthropic"},
+    }
+    base.update(overrides)
+    return AdvisorConfig(**base)
+
+
+def _openai_completion_resp(*, text=None, tool_calls=False) -> ChatResponse:
+    message: dict = {"role": "assistant", "content": text}
+    if tool_calls:
+        message["tool_calls"] = [{"id": "b1", "type": "function",
+                                  "function": {"name": "bash", "arguments": "{}"}}]
+    body = {
+        "id": "chatcmpl-x", "object": "chat.completion", "model": "exec-model",
+        "choices": [{"index": 0, "message": message,
+                     "finish_reason": "tool_calls" if tool_calls else "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+    }
+    return ChatResponse.openai_completion(body)
+
+
+def _openai_request(**overrides) -> ChatRequest:
+    body: dict = {"model": "incoming",
+                  "messages": [{"role": "system", "content": "sys"},
+                               {"role": "user", "content": "build X"}]}
+    body.update(overrides)
+    return ChatRequest.openai_chat(body)  # type: ignore[arg-type]
+
+
+def test_openai_gate_advertises_openai_wire() -> None:
+    backend = _backend(_openai_config(), _exec_backend(), _reviewer())
+    assert backend.supported_request_types == [ChatRequestType.OPENAI_CHAT]
+
+
+async def test_openai_tool_call_turn_passes_through_unreviewed() -> None:
+    exec_b = _exec_backend(_openai_completion_resp(tool_calls=True))
+    adv = _reviewer()
+    resp = await _backend(_openai_config(), exec_b, adv).call(ProxyContext(), _openai_request())
+    assert resp.to_body()["choices"][0]["finish_reason"] == "tool_calls"
+    assert adv.advise.await_count == 0
+
+
+async def test_openai_terminal_turn_approved_returns_as_is() -> None:
+    exec_b = _exec_backend(_openai_completion_resp(text="done, all good"))
+    adv = _reviewer("APPROVE")
+    resp = await _backend(_openai_config(), exec_b, adv).call(ProxyContext(), _openai_request())
+    assert resp.to_body()["choices"][0]["message"]["content"] == "done, all good"
+    assert adv.advise.await_count == 1
+
+
+async def test_openai_redo_uses_configured_prefix_and_wire() -> None:
+    exec_b = _exec_backend(
+        _openai_completion_resp(text="I think I'm done"),
+        _openai_completion_resp(text="continuing", tool_calls=True),
+    )
+    adv = _reviewer("REDO: verify the output file exists")
+    config = _openai_config(redo_feedback_prefix="REVIEWER SAYS: ")
+    resp = await _backend(config, exec_b, adv).call(ProxyContext(), _openai_request())
+
+    assert exec_b.call.await_count == 2
+    redo_request = exec_b.call.await_args_list[1].args[1]
+    assert redo_request.request_type == ChatRequestType.OPENAI_CHAT
+    redo_msgs = redo_request.to_body()["messages"]
+    assert redo_msgs[-1]["role"] == "user"
+    assert redo_msgs[-1]["content"].startswith("REVIEWER SAYS: verify the output file")
+    assert redo_msgs[-2] == {"role": "assistant", "content": "I think I'm done"}
+    assert resp.to_body()["choices"][0]["finish_reason"] == "tool_calls"
+
+
+async def test_openai_streaming_terminal_approved_replays() -> None:
+    events = [
+        {"id": "c", "object": "chat.completion.chunk",
+         "choices": [{"index": 0, "delta": {"role": "assistant", "content": "done"},
+                      "finish_reason": None}]},
+        {"id": "c", "object": "chat.completion.chunk",
+         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    exec_b = _exec_backend(
+        ChatResponse.openai_stream(OpenAIResponseStream(_agen(list(events)))),
+    )
+    adv = _reviewer("APPROVE")
+    resp = await _backend(_openai_config(), exec_b, adv).call(
+        ProxyContext(), _openai_request(stream=True),
+    )
+    assert adv.advise.await_count == 1
+    assert response_type_matches(resp, ChatResponseType.OPENAI_STREAM)
+    replayed = [e async for e in resp.stream]
+    assert replayed == events
 
 
 # ---------------------------------------------------------------------------

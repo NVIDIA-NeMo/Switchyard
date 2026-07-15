@@ -20,17 +20,16 @@ stronger **advisor**. ``strategy`` selects how the advisor participates:
   ``switchyard/lib/backends/advisor_loop_backend.py``.
 
 Both tiers are ordinary targets; each tier's ``format`` selects its wire
-independently. ``anthropic`` targets are served native Anthropic-Messages with
-the body passed through verbatim (the client's prompt caching survives);
-``openai`` targets (Qwen, DeepSeek, vLLM/NIM, OpenAI) are served OpenAI Chat
-Completions, likewise verbatim. Tiers mix freely under ``tool_call``;
-``review_gate`` supports native-Anthropic executors only, and ``responses``
-targets are rejected (the advisor loop is Chat-shaped).
+independently and tiers mix freely under either strategy. ``anthropic``
+targets are served native Anthropic-Messages with the body passed through
+verbatim (the client's prompt caching survives); ``openai`` targets (Qwen,
+DeepSeek, vLLM/NIM, OpenAI) are served OpenAI Chat Completions, likewise
+verbatim. ``responses`` targets are rejected (the advisor loop is Chat-shaped).
 """
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -38,7 +37,6 @@ from pydantic import (
     Field,
     ValidationInfo,
     field_validator,
-    model_validator,
 )
 
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget, coerce_llm_target
@@ -47,6 +45,7 @@ from switchyard.lib.profiles.advisor_prompts import (
     ADVISOR_SYSTEM_PROMPT,
     ADVISOR_TOOL_DESCRIPTION,
     EXECUTOR_STEERING,
+    REDO_FEEDBACK_PREFIX,
     REVIEWER_SYSTEM_PROMPT,
 )
 
@@ -86,6 +85,10 @@ class AdvisorConfig(BaseModel):
 
         reviewer_system_prompt: (review_gate) System prompt for the advisor's
             review call; instructs the APPROVE / REDO contract.
+        redo_feedback_prefix: (review_gate) Prepended to the advisor's REDO
+            plan when it is injected back to the executor as a user turn.
+            Tune per executor family (e.g. append "continue using tool calls
+            only" for small OSS executors).
 
         advisor_max_tokens: Cap on the advisor's output per call (the doc's
             recommended starting point is 2048).
@@ -120,6 +123,7 @@ class AdvisorConfig(BaseModel):
 
     # review_gate strategy
     reviewer_system_prompt: str = REVIEWER_SYSTEM_PROMPT
+    redo_feedback_prefix: str = REDO_FEEDBACK_PREFIX
 
     # shared
     advisor_max_tokens: int = Field(default=2048, ge=1)
@@ -150,21 +154,5 @@ class AdvisorConfig(BaseModel):
                 "profile (the loop is Chat-shaped); use 'openai' or 'anthropic'"
             )
         return tier
-
-    @model_validator(mode="after")
-    def _review_gate_requires_anthropic_executor(self) -> Self:
-        # AUTO is allowed here: it resolves to a concrete format at build time,
-        # where AdvisorLoopBackend's Anthropic-only wiring is the backstop.
-        if self.strategy == "review_gate" and self.executor.format not in (
-            BackendFormat.ANTHROPIC,
-            BackendFormat.AUTO,
-        ):
-            raise ValueError(
-                "strategy 'review_gate' supports only native-Anthropic executors "
-                "(set executor.format: anthropic); use strategy 'tool_call' for "
-                "OpenAI-compatible executors"
-            )
-        return self
-
 
 __all__ = ["AdvisorConfig"]

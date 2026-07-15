@@ -31,21 +31,28 @@ This is a near-superset of solo behavior — identical to the bare executor unti
 "done", plus one quality gate — so it is downside-protected (≈ baseline if the
 advisor always approves) while catching premature convergence.
 
-The executor is **native Anthropic** (``/v1/messages``, Bearer auth): it is
-called by delegating verbatim to an :class:`AnthropicNativeBackend`, so the
-client's ``cache_control`` breakpoints reach the upstream unchanged and prompt
-caching is honored (``AdvisorConfig`` validation rejects non-Anthropic
-executors for this strategy). The gate reads the executor's tool use from the
-Anthropic ``stop_reason``/``tool_use`` content blocks. The advisor tier is
-format-dispatched (``_build_advisor_caller``): Anthropic Messages or OpenAI
-Chat Completions.
+The executor's wire is selected by ``config.executor.format``: ``anthropic``
+executors are delegated verbatim to an :class:`AnthropicNativeBackend`
+(``/v1/messages`` — the client's ``cache_control`` breakpoints reach the
+upstream unchanged, so prompt caching is honored); ``openai`` executors
+(Qwen, DeepSeek, vLLM/NIM, OpenAI) are delegated verbatim to an
+:class:`OpenAiNativeBackend` (``/chat/completions``). Tool use is read from
+the wire's native shape (Anthropic ``stop_reason``/``tool_use`` blocks, or
+OpenAI ``tool_calls``/``finish_reason``); the REDO feedback is plain-string
+assistant/user turns, valid on both wires, with a config-tunable prefix
+(``redo_feedback_prefix``). The advisor tier is likewise format-dispatched
+(``_build_advisor_caller``): Anthropic Messages or OpenAI Chat Completions.
+Because the gate's trigger is proxy-side (the first no-tool-call turn), it
+fires regardless of the executor's own tool-use discipline — the property
+that distinguishes it from the executor-triggered tool-call strategy on weak
+executors.
 
 Chain integration::
 
     [RequestProcessor*] → AdvisorLoopBackend → [ResponseProcessor*] → TranslationEngine
 
-Declares ``supported_request_types = [ANTHROPIC]`` and normalizes inbound
-OpenAI / Responses via the TranslationEngine, mirroring
+Declares ``supported_request_types`` for the executor's wire so the
+TranslationEngine normalizes any inbound format to it once, mirroring
 :class:`LatencyServiceLLMBackend`. The outer chain's ``StatsResponseProcessor``
 records executor token usage (including cache reads) from the returned response;
 this backend additionally records the advisor review's usage into the planner
@@ -70,19 +77,24 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
 
-from switchyard.lib.backends.multi_llm_backend import build_native_backend
+from switchyard.lib.backends.llm_target import BackendFormat
+from switchyard.lib.backends.multi_llm_backend import (
+    build_native_backend,
+    resolve_llm_target,
+)
 from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
+from switchyard.lib.chat_response.openai_chat import ResponseStream
 from switchyard.lib.profiles.advisor_config import AdvisorConfig
-from switchyard.lib.profiles.advisor_prompts import REDO_FEEDBACK_PREFIX
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.core import (
     ChatRequestType,
     ChatResponse,
     ChatResponseType,
+    request_type_enum,
     request_type_matches,
     request_with_type,
 )
@@ -134,8 +146,20 @@ class AdvisorLoopBackend(LLMBackend):
         # Sessions already reviewed (once-per-session), keyed by conversation
         # prefix hash. In-process; a task's turns share one switchyard pod.
         self._reviewed: set[str] = set()
-        # The executor is delegated to verbatim so cache_control passes through.
-        self._executor_backend = executor_backend or build_native_backend(config.executor)
+        # Resolve format: auto before wire selection; injected fakes must pin
+        # a concrete format (probing a fake's endpoint makes no sense).
+        executor_target = (
+            config.executor if executor_backend is not None
+            else resolve_llm_target(config.executor)
+        )
+        self._request_type_name = _gate_request_type(executor_target.format)
+        self._request_type = cast(
+            "ChatRequestType", request_type_enum(self._request_type_name),
+        )
+        self._is_openai = self._request_type_name == "openai_chat"
+        # The executor is delegated to verbatim so caching survives
+        # (cache_control breakpoints on Anthropic; prefix stability on OpenAI).
+        self._executor_backend = executor_backend or build_native_backend(executor_target)
         self._advisor_caller = advisor_caller or _build_advisor_caller(config)
 
     async def startup(self) -> None:
@@ -146,16 +170,17 @@ class AdvisorLoopBackend(LLMBackend):
 
     @property
     def supported_request_types(self) -> list[ChatRequestType]:
-        """Executor + gate are native Anthropic Messages."""
-        return [ChatRequestType.ANTHROPIC]
+        """The executor's native wire; inbound formats are normalized to it."""
+        return [self._request_type]
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
         normalized = self._translation.request_to_any_of(
             request, self.supported_request_types,
         )
-        if not request_type_matches(normalized, ChatRequestType.ANTHROPIC):
+        if not request_type_matches(normalized, self._request_type):
             raise TypeError(
-                "AdvisorLoopBackend expected an Anthropic request after translation"
+                "AdvisorLoopBackend expected a "
+                f"{self._request_type_name} request after translation"
             )
 
         body = dict(normalized.body)
@@ -184,13 +209,16 @@ class AdvisorLoopBackend(LLMBackend):
         # REDO: feed the optimized plan back and re-invoke so the executor keeps
         # working instead of stopping. The session is now reviewed, so the redo
         # turn (and everything after it) is plain passthrough.
+        # Plain-string assistant/user turns are valid on both wires, so the
+        # feedback shape needs no dialect. The prefix is config-tunable
+        # (``redo_feedback_prefix``) for per-executor-family steering.
         redo_messages = [
             *messages,
             {"role": "assistant", "content": turn.content or ""},
-            {"role": "user", "content": REDO_FEEDBACK_PREFIX + plan},
+            {"role": "user", "content": self._config.redo_feedback_prefix + plan},
         ]
         redo_body = {**body, "messages": redo_messages}
-        redo_request = request_with_type("anthropic", redo_body)
+        redo_request = request_with_type(self._request_type_name, redo_body)
         return await self._passthrough(ctx, redo_request)
 
     # ------------------------------------------------------------------
@@ -217,8 +245,19 @@ class AdvisorLoopBackend(LLMBackend):
                 latency_ms=latency_ms,
                 stream_events=events,
             )
+        if response.response_type == ChatResponseType.OPENAI_STREAM:
+            events, message, _usage = await _consume_openai_stream(response.stream)
+            return _ExecTurn(
+                has_tool_use=bool(message.get("tool_calls")),
+                content=message.get("content") or None,
+                latency_ms=latency_ms,
+                stream_events=events,
+            )
         body = response.to_body()
-        has_tool_use, content = _completion_tool_use(body)
+        if self._is_openai:
+            has_tool_use, content = _openai_completion_tool_use(body)
+        else:
+            has_tool_use, content = _completion_tool_use(body)
         return _ExecTurn(
             has_tool_use=has_tool_use,
             content=content,
@@ -242,9 +281,15 @@ class AdvisorLoopBackend(LLMBackend):
         """Record stats, stamp ctx, and rebuild the buffered turn as a response."""
         await self._stamp(ctx, turn.latency_ms)
         if turn.stream_events is not None:
+            if self._is_openai:
+                return ChatResponse.openai_stream(
+                    ResponseStream(_replay_events(turn.stream_events))
+                )
             return ChatResponse.anthropic_stream(
                 AnthropicResponseStream(_replay_events(turn.stream_events))
             )
+        if self._is_openai:
+            return ChatResponse.openai_completion(turn.completion_body)
         return ChatResponse.anthropic_completion(turn.completion_body)
 
     async def _stamp(self, ctx: ProxyContext, latency_ms: float) -> None:
@@ -475,6 +520,109 @@ def _completion_tool_use(body: Any) -> tuple[bool, str | None]:
         isinstance(b, dict) and b.get("type") == "tool_use" for b in content
     )
     return has_tool_use, (_blocks_text(content) or None)
+
+
+def _openai_completion_tool_use(body: Any) -> tuple[bool, str | None]:
+    """Read (has_tool_use, assistant_text) from an OpenAI chat.completion body.
+
+    Detection is by ``tool_calls`` presence with ``finish_reason`` as a
+    fallback — some OSS servers mislabel tool-call turns as ``stop``.
+    """
+    if not isinstance(body, dict):
+        return False, None
+    choices = body.get("choices") or [{}]
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") or {}
+    has_tool_use = bool(message.get("tool_calls")) or choice.get("finish_reason") == "tool_calls"
+    return has_tool_use, (message.get("content") or None)
+
+
+def _gate_request_type(fmt: BackendFormat) -> str:
+    """Map a resolved executor format to its ``request_with_type`` discriminator."""
+    if fmt == BackendFormat.ANTHROPIC:
+        return "anthropic"
+    if fmt == BackendFormat.OPENAI:
+        return "openai_chat"
+    if fmt == BackendFormat.RESPONSES:
+        # Backstop for format: auto resolving to a Responses endpoint; the
+        # config validator rejects an explicit responses format earlier.
+        raise ValueError(
+            "the advisor strategies are Chat-shaped and do not support "
+            "Responses executors; use format 'openai' or 'anthropic'"
+        )
+    raise ValueError(
+        f"advisor executor format {fmt!r} must be resolved before constructing "
+        "the backend (pin format: 'openai' or 'anthropic' when supplying "
+        "executor_backend)"
+    )
+
+
+async def _consume_openai_stream(
+    stream: Any,
+) -> tuple[list[Any], dict[str, Any], dict[str, int]]:
+    """Buffer an OpenAI Chat stream; reassemble the assistant message and usage.
+
+    Events are the ``chat.completion.chunk`` dicts the native backend's SSE
+    parser yields (``[DONE]`` is consumed upstream and never appears; the
+    backend force-injects ``stream_options.include_usage`` so a final usage
+    chunk normally arrives). ``delta.tool_calls`` fragments merge by ``index``:
+    non-empty ``id``/``name`` replace, ``arguments`` fragments concatenate.
+    Shared by both advisor strategies.
+    """
+    events: list[Any] = []
+    text_parts: list[str] = []
+    slots: dict[int, dict[str, str]] = {}
+    usage = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+    async for event in stream:
+        events.append(event)
+        chunk_usage = _ev(event, "usage")
+        if isinstance(chunk_usage, dict):
+            usage["input_tokens"] = int(chunk_usage.get("prompt_tokens") or 0)
+            usage["output_tokens"] = int(chunk_usage.get("completion_tokens") or 0)
+            details = chunk_usage.get("prompt_tokens_details") or {}
+            usage["cached_tokens"] = int(details.get("cached_tokens") or 0)
+        choices = _ev(event, "choices") or []
+        delta = _ev(choices[0], "delta") if choices else None
+        if delta is None:
+            continue
+        piece = _ev(delta, "content")
+        if isinstance(piece, str):
+            text_parts.append(piece)
+        for fragment in _ev(delta, "tool_calls") or []:
+            index = int(_ev(fragment, "index") or 0)
+            slot = slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
+            fragment_id = _ev(fragment, "id")
+            if isinstance(fragment_id, str) and fragment_id:
+                slot["id"] = fragment_id
+            function = _ev(fragment, "function") or {}
+            name = _ev(function, "name")
+            if isinstance(name, str) and name:
+                slot["name"] = name
+            arguments = _ev(function, "arguments")
+            if isinstance(arguments, str):
+                slot["arguments"] += arguments
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(text_parts) or None,
+    }
+    if slots:
+        message["tool_calls"] = [
+            {
+                # A missing id (some OSS servers omit it in deltas) gets a
+                # synthesized one so the tool result can reference it.
+                "id": slot["id"] or f"call_switchyard_{index}",
+                "type": "function",
+                "function": {
+                    "name": slot["name"],
+                    # Empty arguments become "{}" so strict endpoints accept
+                    # the replayed history.
+                    "arguments": slot["arguments"] or "{}",
+                },
+            }
+            for index, slot in sorted(slots.items())
+        ]
+    return events, message, usage
 
 
 def _ev(event: Any, key: str) -> Any:
