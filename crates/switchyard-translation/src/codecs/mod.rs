@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::Result;
 use crate::format::FormatId;
-use crate::llm::{LlmRequest, LlmResponse};
+use crate::llm::{AggLlmResponse, LlmRequest};
 use crate::policy::TranslationPolicy;
 
 /// Result of decoding a request into neutral IR.
@@ -31,7 +31,7 @@ pub struct EncodedRequest {
 
 /// Result of decoding a response into neutral IR.
 pub struct DecodedResponse {
-    pub response: LlmResponse,
+    pub response: AggLlmResponse,
     pub diagnostics: Vec<TranslationDiagnostic>,
 }
 
@@ -62,7 +62,7 @@ pub trait FormatCodec: Send + Sync {
     /// Encodes a neutral response into provider JSON.
     fn encode_response(
         &self,
-        response: &LlmResponse,
+        response: &AggLlmResponse,
         policy: &TranslationPolicy,
     ) -> Result<EncodedResponse>;
 }

@@ -15,7 +15,8 @@ use crate::codecs::responses::OpenAiResponsesStreamCodec;
 use crate::engine::{FormatRegistry, TranslationEngine};
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
-use crate::llm::{LlmStreamEvent, Usage};
+use crate::llm::Usage;
+use crate::LlmResponseChunk;
 
 /// Mutable state accumulated while translating one streaming response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -99,11 +100,14 @@ pub trait StreamCodec: Send + Sync {
         &self,
         state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<LlmStreamEvent>;
+    ) -> Vec<LlmResponseChunk>;
 
     /// Encodes one neutral event into zero or more provider events.
-    fn encode_event(&self, state: &mut StreamTranslationState, event: LlmStreamEvent)
-        -> Vec<Value>;
+    fn encode_event(
+        &self,
+        state: &mut StreamTranslationState,
+        event: LlmResponseChunk,
+    ) -> Vec<Value>;
 
     /// Emits any terminal provider events needed after the source stream ends.
     ///
@@ -197,13 +201,13 @@ pub fn decode_stream_event(
     state: &mut StreamTranslationState,
     source: impl Into<FormatId>,
     event: &Value,
-) -> Vec<LlmStreamEvent> {
+) -> Vec<LlmResponseChunk> {
     let source = source.into();
     StreamCodecRegistry::with_builtins()
         .codec(source)
         .map(|codec| codec.decode_event(state, event))
         .unwrap_or_else(|error| {
-            vec![LlmStreamEvent::Error {
+            vec![LlmResponseChunk::Error {
                 message: error.to_string(),
             }]
         })
@@ -213,7 +217,7 @@ pub fn decode_stream_event(
 pub fn encode_stream_event(
     state: &mut StreamTranslationState,
     target: impl Into<FormatId>,
-    event: LlmStreamEvent,
+    event: LlmResponseChunk,
 ) -> Vec<Value> {
     StreamCodecRegistry::with_builtins()
         .codec(target)

@@ -57,18 +57,26 @@
 //! Worked implementations — a random router, an LLM classifier, and a stateful
 //! ensemble — plus runnable agents live in the `libsy-examples` crate.
 
+mod common;
 mod driver;
+
+pub use common::Context;
 
 use std::{error::Error, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 
-use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
-
+/// The request/response protocol types, re-exported from [`switchyard_protocol`].
+/// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered response;
+/// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
+/// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    ContentBlock, LlmRequest, LlmResponse, Message, ResponseOutput, Role,
+    AggLlmResponse, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, Metadata,
+    Request, Response,
 };
+
+use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
@@ -78,37 +86,6 @@ type BoxErr = Box<dyn Error + Send + Sync>;
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step, BoxErr>> + Send>>;
 
-/// Correlation and routing metadata attached to a request or response.
-///
-/// All fields are optional; algorithms and observers use whichever are present
-/// (e.g. to key per-session state or emit correlated telemetry). `extra_metadata`
-/// is a free-form escape hatch for host-specific keys.
-#[derive(Clone)]
-pub struct Metadata {
-    /// Stable id for a multi-request session/conversation.
-    pub session_id: Option<String>,
-    /// Id of the agent making the request.
-    pub agent_id: Option<String>,
-    /// Id of the task the request belongs to.
-    pub task_id: Option<String>,
-    /// External trace/request id for joining with the host's telemetry.
-    pub correlation_id: Option<String>,
-    /// Arbitrary host-defined key/value metadata.
-    pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
-}
-
-/// A request entering the orchestrator: the normalized [`LlmRequest`] plus the
-/// original provider payload and correlation [`Metadata`].
-#[derive(Clone)]
-pub struct Request {
-    /// The normalized request an algorithm routes.
-    pub llm_request: LlmRequest,
-    /// Optional source provider body, carried only for hosts that need exact fidelity.
-    pub raw_request: Option<serde_json::Value>,
-    /// Correlation metadata carried through the request.
-    pub metadata: Option<Metadata>,
-}
-
 /// Agentic-stack events fed to an algorithm out of band via
 /// [`Algorithm::process_signals`] (e.g. tool results, budget updates).
 ///
@@ -116,16 +93,6 @@ pub struct Request {
 /// enum grows without changing the orchestrator contract.
 #[derive(Clone)]
 pub struct Signals {}
-
-/// A response leaving the orchestrator: the neutral [`LlmResponse`] plus optional
-/// correlation [`Metadata`].
-#[derive(Clone)]
-pub struct Response {
-    /// The neutral model response.
-    pub llm_response: LlmResponse,
-    /// Correlation metadata carried through the response.
-    pub metadata: Option<Metadata>,
-}
 
 /// A decision/trace object produced by an algorithm.
 ///
@@ -148,11 +115,12 @@ pub trait Decision: Send + Sync {
 ///
 /// The two model identifiers live in separate, unambiguous places: the model to
 /// call is [`decision.selected_model()`](Decision::selected_model), while
-/// `request.llm_request.model` is the inbound name the agent asked for. A client
-/// maps `selected_model()` to the provider model id it hits.
+/// `request.llm_request.model` is the *inbound* name the agent asked for (libsy
+/// never overwrites it). A client maps `selected_model()` to the provider model
+/// id it hits.
 #[derive(Clone)]
 pub struct RoutedRequest {
-    /// The request to serve; its `model` is the agent's original inbound model.
+    /// The request to serve; its `model` is the agent's original name.
     pub request: Request,
     /// The routing decision behind this call; `selected_model()` is the model to hit.
     pub decision: Arc<dyn Decision>,
@@ -171,22 +139,27 @@ pub struct RoutedRequest {
 /// [`Driver::call_llm`] on the other side.
 pub struct CallLlmRequest {
     inner: DriverRequest,
+    routed: RoutedRequest,
 }
 
 impl CallLlmRequest {
-    /// Wrap a driver request whose payload is a [`RoutedRequest`].
+    /// Wrap a driver request whose payload is a [`RoutedRequest`]. Caches an owned copy
+    /// so the accessors are plain field reads.
     fn new(inner: DriverRequest) -> Self {
-        Self { inner }
+        // The payload is always a `RoutedRequest` (set by `Driver::call_llm`); a
+        // mismatch would be a libsy bug, not a runtime condition.
+        let routed = match inner.request::<RoutedRequest>() {
+            Ok(routed) => routed.clone(),
+            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
+        };
+        Self { inner, routed }
     }
 
     /// The routed request the host should serve. Its
     /// [`default_client`](RoutedRequest::default_client) serves the call by default,
     /// and its `decision.selected_model()` names the model to hit.
     pub fn get_routed(&self) -> &RoutedRequest {
-        match self.inner.request::<RoutedRequest>() {
-            Ok(routed) => routed,
-            Err(_) => unreachable!("CallLlmRequest payload is always a RoutedRequest"),
-        }
+        &self.routed
     }
 
     /// The model request to perform (the [`Request`] inside the routed request).
@@ -229,9 +202,9 @@ impl Driver {
 
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
     /// consumer's [`Response`]. Errors if the stream is closed or the call failed.
-    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
+    pub async fn call_llm(&self, ctx: Context, routed: RoutedRequest) -> Result<Response, BoxErr> {
         self.driver
-            .fulfill_request::<RoutedRequest, Response>(routed)
+            .fulfill_request::<RoutedRequest, Response>(ctx, routed)
             .await
     }
 
@@ -239,33 +212,41 @@ impl Driver {
     /// default client into a [`RoutedRequest`], then publish it (see
     /// [`call_llm`](Self::call_llm)). The convenience most algorithms use;
     /// `decision.selected_model()` names the model to hit, and `request`'s
-    /// inbound `model` is left untouched.
+    /// `model` is left untouched.
     pub async fn call_llm_target(
         &self,
+        ctx: Context,
         target: &LlmTarget,
         request: Request,
         decision: Arc<dyn Decision>,
     ) -> Result<Response, BoxErr> {
-        self.call_llm(RoutedRequest {
-            request,
-            decision,
-            default_client: target.llm_client.clone(),
-        })
+        self.call_llm(
+            ctx,
+            RoutedRequest {
+                request,
+                decision,
+                default_client: target.llm_client.clone(),
+            },
+        )
         .await
     }
 
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
-    pub async fn info(&self, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
-        self.driver.info(decision).await
+    pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
+        self.driver.info(ctx, decision).await
     }
 
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
-    pub(crate) async fn finish(&self, result: Result<Response, BoxErr>) -> Result<(), BoxErr> {
+    pub(crate) async fn finish(
+        &self,
+        ctx: Context,
+        result: Result<Response, BoxErr>,
+    ) -> Result<(), BoxErr> {
         match result {
-            Ok(response) => self.driver.done(response).await,
-            Err(err) => self.driver.fail(err).await,
+            Ok(response) => self.driver.done(ctx, response).await,
+            Err(err) => self.driver.fail(ctx, err).await,
         }
     }
 
@@ -274,7 +255,7 @@ impl Driver {
     /// payload that does not match the expected type for its step becomes an `Err` item.
     pub(crate) fn stream(&self) -> impl Stream<Item = Result<Step, BoxErr>> {
         self.driver.stream().map(|item| match item? {
-            DriverStep::Request(req) => Ok(Step::CallLlm(CallLlmRequest::new(req))),
+            DriverStep::Request(req) => Ok(Step::CallLlm(Box::new(CallLlmRequest::new(req)))),
             DriverStep::Info(payload) => payload
                 .downcast::<Arc<dyn Decision>>()
                 .map(|decision| Step::Decision(*decision))
@@ -293,25 +274,12 @@ impl Default for Driver {
     }
 }
 
-/// Per-request state threaded to an algorithm alongside its [`Driver`]. A placeholder
-/// for cross-cutting state (correlation ids, budgets, deadlines) an algorithm will
-/// read; empty today. It does not carry the offload driver, so it is safe to share.
-#[derive(Clone, Default)]
-pub struct Context {}
-
-impl Context {
-    /// Build an empty context.
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
 /// One item in the stream returned by [`Driver::stream`] / [`Algorithm::run_stream`].
 pub enum Step {
     /// The algorithm needs this model call performed. The host serves it (optionally
     /// via [`RoutedRequest::default_client`]) and fulfills it with
-    /// [`CallLlmRequest::respond`].
-    CallLlm(CallLlmRequest),
+    /// [`CallLlmRequest::respond`]. Boxed: it is by far the largest variant.
+    CallLlm(Box<CallLlmRequest>),
     /// A routing decision the algorithm made, published via [`Driver::info`] as it
     /// happens (rather than collected into a trace returned at the end).
     Decision(Arc<dyn Decision>),
@@ -329,7 +297,7 @@ pub trait LlmClient: Send + Sync {
     /// [`routed.decision.selected_model()`](Decision::selected_model) — the target
     /// the algorithm routed to — mapping it to whatever provider model id this
     /// client hits. `routed.request.llm_request.model` is the agent's original
-    /// inbound name, carried through for reference, not a call target.
+    /// name, carried through for reference, not a call target.
     async fn call(&self, request: RoutedRequest) -> Result<Response, Box<dyn Error + Send + Sync>>;
 }
 
@@ -419,8 +387,10 @@ pub trait Algorithm: Send + Sync + 'static {
         let driver = Driver::new();
         let stream = driver.stream();
         tokio::spawn(async move {
-            let outcome = self.create_run_task(ctx, driver.clone(), request).await;
-            let _ = driver.finish(outcome).await;
+            let outcome = self
+                .create_run_task(ctx.clone(), driver.clone(), request)
+                .await;
+            let _ = driver.finish(ctx, outcome).await;
         });
         Box::pin(stream)
     }
@@ -430,8 +400,11 @@ pub trait Algorithm: Send + Sync + 'static {
     /// [`Response`]. Provided: drives [`run_stream`](Self::run_stream) internally,
     /// collecting each [`Step::Decision`]. Use it when the algorithm holds its own model
     /// clients and the host wants the answer (and the decisions behind it); drive
-    /// [`run_stream`](Self::run_stream) instead to serve the calls yourself. Errors
-    /// if a routed target has no client to serve its call, or the algorithm fails.
+    /// [`run_stream`](Self::run_stream) instead to serve the calls yourself. The returned
+    /// [`Response`] is whatever the algorithm produced — a buffered [`LlmResponse::Agg`]
+    /// or a live [`LlmResponse::Stream`]; the caller decides whether to
+    /// [`aggregate`](LlmResponse::aggregate) it or forward its chunks. Errors if a routed
+    /// target has no client to serve its call, or the algorithm fails.
     async fn run(
         self: Arc<Self>,
         ctx: Context,
@@ -472,7 +445,7 @@ pub trait Algorithm: Send + Sync + 'static {
                     match step {
                         None => stream_open = false,
                         Some(item) => match item? {
-                            Step::CallLlm(call) => in_flight.push(serve(call)),
+                            Step::CallLlm(call) => in_flight.push(serve(*call)),
                             Step::Decision(decision) => trace.push(decision),
                             Step::ReturnToAgent(response) => {
                                 final_response = Some(*response);
@@ -484,6 +457,8 @@ pub trait Algorithm: Send + Sync + 'static {
             }
         }
 
+        // Return whatever the algorithm produced — buffered or streamed. The caller
+        // decides whether to aggregate the response or forward its chunks.
         final_response
             .map(|response| (trace, response))
             .ok_or_else(|| "run: stream ended without a final response".into())
@@ -494,6 +469,7 @@ pub trait Algorithm: Send + Sync + 'static {
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use switchyard_protocol::{completion_text, text_request, text_response};
 
     /// Mock client that echoes back the target name it was called with.
     struct EchoClient;
@@ -506,10 +482,10 @@ mod tests {
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
-                llm_response: LlmResponse {
-                    model: Some(routed.decision.selected_model().to_string()),
-                    ..LlmResponse::default()
-                },
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    routed.decision.selected_model().to_string(),
+                )),
                 metadata: None,
             })
         }
@@ -541,7 +517,7 @@ mod tests {
     impl Algorithm for TestAlgo {
         async fn create_run_task(
             self: Arc<Self>,
-            _ctx: Context,
+            ctx: Context,
             driver: Driver,
             request: Request,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
@@ -554,8 +530,10 @@ mod tests {
             let decision: Arc<dyn Decision> = Arc::new(TestDecision {
                 model: target.semantic_name.clone(),
             });
-            driver.info(decision.clone()).await?;
-            driver.call_llm_target(&target, request, decision).await
+            driver.info(ctx.clone(), decision.clone()).await?;
+            driver
+                .call_llm_target(ctx, &target, request, decision)
+                .await
         }
 
         async fn process_signals(
@@ -573,11 +551,7 @@ mod tests {
 
     fn request() -> Request {
         Request {
-            llm_request: LlmRequest {
-                model: Some("auto".to_string()),
-                messages: vec![Message::text(Role::User, "hi")],
-                ..LlmRequest::default()
-            },
+            llm_request: text_request(Some("auto".to_string()), "hi".to_string()),
             raw_request: None,
             metadata: None,
         }
@@ -593,6 +567,90 @@ mod tests {
             })
             .collect();
         LlmTargetSet::new(targets)
+    }
+
+    /// Client that serves a call as a token stream — its `call` returns
+    /// [`LlmResponse::Stream`] replaying `chunks` in order (as `Ok` items).
+    struct StreamingClient {
+        chunks: Vec<LlmResponseChunk>,
+    }
+
+    #[async_trait]
+    impl LlmClient for StreamingClient {
+        async fn call(
+            &self,
+            _routed: RoutedRequest,
+        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            let stream = futures::stream::iter(self.chunks.clone().into_iter().map(Ok)).boxed();
+            Ok(Response {
+                llm_response: LlmResponse::Stream(stream),
+                metadata: None,
+            })
+        }
+    }
+
+    /// Build a single-target algo whose one target streams `chunks`.
+    fn streaming_orch(chunks: Vec<LlmResponseChunk>) -> Arc<dyn Algorithm> {
+        let target = LlmTarget {
+            semantic_name: "stream/model".to_string(),
+            llm_client: Some(Arc::new(StreamingClient { chunks }) as Arc<dyn LlmClient>),
+        };
+        orch(LlmTargetSet::new(vec![target]))
+    }
+
+    #[tokio::test]
+    async fn run_returns_a_streamed_response_the_caller_aggregates(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // A streaming client -> its chunks flow through the promise and `ReturnToAgent`,
+        // and `run` returns the live stream untouched for the caller to fold.
+        let orch = streaming_orch(vec![
+            LlmResponseChunk::MessageStart {
+                id: Some("m1".to_string()),
+                model: Some("stream/model".to_string()),
+            },
+            LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hel".to_string(),
+            },
+            LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "lo".to_string(),
+            },
+            LlmResponseChunk::MessageStop {
+                reason: Some("stop".to_string()),
+            },
+        ]);
+        let (trace, response) = orch.run(Context::default(), request()).await?;
+        // `run` handed back the live stream; the caller folds it to a buffered aggregate.
+        let agg = response.llm_response.aggregate().await?;
+        assert_eq!(completion_text(&agg), "hello");
+        assert_eq!(agg.model.as_deref(), Some("stream/model"));
+        assert_eq!(trace.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aggregating_a_streamed_response_propagates_a_mid_stream_error(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // `run` succeeds and returns the stream; the in-band `Error` chunk surfaces only
+        // when the caller aggregates it.
+        let orch = streaming_orch(vec![
+            LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "partial".to_string(),
+            },
+            LlmResponseChunk::Error {
+                message: "upstream exploded".to_string(),
+            },
+        ]);
+        let (_, response) = orch.run(Context::default(), request()).await?;
+        match response.llm_response.aggregate().await {
+            Ok(_) => Err("expected a mid-stream error, got an aggregate".into()),
+            Err(err) => {
+                assert!(err.to_string().contains("upstream exploded"));
+                Ok(())
+            }
+        }
     }
 
     #[tokio::test]
@@ -614,10 +672,10 @@ mod tests {
                     assert_eq!(call.get_decision().selected_model(), "offload/model");
                     // Fulfilling the promise is the "real" model call the caller makes.
                     call.respond(Ok(Response {
-                        llm_response: LlmResponse {
-                            model: Some("fulfilled".to_string()),
-                            ..LlmResponse::default()
-                        },
+                        llm_response: LlmResponse::Agg(text_response(
+                            None,
+                            "fulfilled".to_string(),
+                        )),
                         metadata: None,
                     }))?;
                 }
@@ -625,7 +683,13 @@ mod tests {
                     assert_eq!(decision.selected_model(), "offload/model");
                 }
                 Step::ReturnToAgent(response) => {
-                    final_completion = response.llm_response.model.clone();
+                    final_completion = Some(
+                        response
+                            .llm_response
+                            .agg()
+                            .map(completion_text)
+                            .unwrap_or_default(),
+                    );
                 }
             }
         }
@@ -661,7 +725,13 @@ mod tests {
                 }
                 Step::Decision(_) => {}
                 Step::ReturnToAgent(response) => {
-                    final_completion = response.llm_response.model.clone();
+                    final_completion = Some(
+                        response
+                            .llm_response
+                            .agg()
+                            .map(completion_text)
+                            .unwrap_or_default(),
+                    );
                 }
             }
         }
@@ -680,7 +750,14 @@ mod tests {
             .run(Context::default(), request())
             .await?;
         // TestAlgo calls the first target; EchoClient echoes its name.
-        assert_eq!(response.llm_response.model.as_deref(), Some("direct/model"));
+        assert_eq!(
+            response
+                .llm_response
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "direct/model"
+        );
         assert_eq!(trace[0].selected_model(), "direct/model");
         Ok(())
     }
@@ -720,10 +797,10 @@ mod tests {
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 self.barrier.wait().await;
                 Ok(Response {
-                    llm_response: LlmResponse {
-                        model: Some(routed.decision.selected_model().to_string()),
-                        ..LlmResponse::default()
-                    },
+                    llm_response: LlmResponse::Agg(text_response(
+                        None,
+                        routed.decision.selected_model().to_string(),
+                    )),
                     metadata: None,
                 })
             }
@@ -745,7 +822,13 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 algo.run(Context::default(), request())
                     .await
-                    .map(|(_, response)| response.llm_response.model.unwrap_or_default())
+                    .map(|(_, response)| {
+                        response
+                            .llm_response
+                            .agg()
+                            .map(completion_text)
+                            .unwrap_or_default()
+                    })
             }));
         }
 
@@ -823,16 +906,10 @@ mod tests {
                 drop(permit);
                 self.current.fetch_sub(1, Ordering::SeqCst);
                 Ok(Response {
-                    llm_response: LlmResponse {
-                        outputs: vec![ResponseOutput {
-                            role: Role::Assistant,
-                            content: vec![ContentBlock::Text {
-                                text: routed.decision.selected_model().to_string(),
-                            }],
-                            stop_reason: None,
-                        }],
-                        ..LlmResponse::default()
-                    },
+                    llm_response: LlmResponse::Agg(text_response(
+                        None,
+                        routed.decision.selected_model().to_string(),
+                    )),
                     metadata: None,
                 })
             }
@@ -848,32 +925,26 @@ mod tests {
         impl Algorithm for FanOut {
             async fn create_run_task(
                 self: Arc<Self>,
-                _ctx: Context,
+                ctx: Context,
                 driver: Driver,
                 _request: Request,
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 let calls = (0..self.n).map(|i| {
                     let driver = driver.clone();
+                    let ctx = ctx.clone();
                     let target = self.target.clone();
                     async move {
                         let decision: Arc<dyn Decision> = Arc::new(TestDecision {
                             model: format!("m{i}"),
                         });
-                        driver.call_llm_target(&target, request(), decision).await
+                        driver
+                            .call_llm_target(ctx, &target, request(), decision)
+                            .await
                     }
                 });
                 futures::future::join_all(calls).await;
                 Ok(Response {
-                    llm_response: LlmResponse {
-                        outputs: vec![ResponseOutput {
-                            role: Role::Assistant,
-                            content: vec![ContentBlock::Text {
-                                text: "done".to_string(),
-                            }],
-                            stop_reason: None,
-                        }],
-                        ..LlmResponse::default()
-                    },
+                    llm_response: LlmResponse::Agg(text_response(None, "done".to_string())),
                     metadata: None,
                 })
             }
@@ -934,11 +1005,10 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .first_output()
-                .and_then(|output| output.content.first()),
-            Some(&ContentBlock::Text {
-                text: "done".to_string()
-            })
+                .agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "done"
         );
         assert_eq!(
             max.load(Ordering::SeqCst),
