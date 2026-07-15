@@ -338,6 +338,10 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
         metadata: Some(Metadata {
             session_id: Some(session_id.to_string()),
             correlation_id: Some(correlation_id.to_string()),
+            extra_metadata: Some(BTreeMap::from([(
+                "tenant".to_string(),
+                "obs-tenant-1".to_string(),
+            )])),
             ..Metadata::default()
         }),
     }
@@ -450,6 +454,11 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> Result<(), B
         run_span.fields.get("outcome").map(String::as_str),
         Some("ok")
     );
+    // Host-defined labels ride in generically via Metadata.extra_metadata.
+    assert!(run_span
+        .fields
+        .get("extra_metadata")
+        .is_some_and(|extra| extra.contains("tenant") && extra.contains("obs-tenant-1")));
 
     // The default-client serve inside `run` gets its own client-call span.
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);

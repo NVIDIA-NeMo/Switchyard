@@ -70,8 +70,10 @@ fn outcome_value<T>(result: &Result<T, BoxErr>) -> &'static str {
 /// Span covering one algorithm run (the whole `create_run_task` execution).
 ///
 /// Correlation ids from the request [`Metadata`] are recorded as span fields
-/// when present; `outcome` and `error` are filled in by [`record_run`] when the
-/// run ends.
+/// when present. `tracing` spans cannot grow field names at runtime, so
+/// arbitrary host labels ride in via [`Metadata::extra_metadata`], recorded
+/// whole into the `extra_metadata` field. `outcome` and `error` are filled in
+/// by [`record_run`] when the run ends.
 pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
     let span = tracing::info_span!(
         target: SCOPE,
@@ -81,6 +83,7 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
         agent_id = tracing::field::Empty,
         task_id = tracing::field::Empty,
         correlation_id = tracing::field::Empty,
+        extra_metadata = tracing::field::Empty,
         outcome = tracing::field::Empty,
         error = tracing::field::Empty,
     );
@@ -94,6 +97,9 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
             if let Some(value) = value {
                 span.record(field, value.as_str());
             }
+        }
+        if let Some(extra) = &metadata.extra_metadata {
+            span.record("extra_metadata", tracing::field::debug(extra));
         }
     }
     span
