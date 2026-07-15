@@ -1088,32 +1088,11 @@ def _escalation_router_switchyard(
     """Build the judge-latched escalation-routing chain for a route.
 
     Every conversation starts on ``weak``; an LLM judge watches the
-    trajectory each turn and, on a clear pattern of trouble, latches the
-    conversation to ``strong`` for the rest of the task.
-
-    YAML schema::
-
-        type: escalation_router
-        judge:
-          model: google/gemini-3.5-flash
-          api_key: ${OPENROUTER_API_KEY}
-          base_url: https://openrouter.ai/api/v1
-          timeout_secs: 5.0
-          min_turn: 3               # first turn the judge runs on
-          confirmations: 1          # consecutive escalate verdicts to latch
-          confirmation_window: 1    # >1 tolerates declines between fires
-          disable_reasoning: true   # false lets a reasoning judge think
-          recent_turn_window: 14    # trailing messages shown to the judge
-        strong:
-          model: anthropic/claude-opus-4.7
-          api_key: ${OPENROUTER_API_KEY}
-          base_url: https://openrouter.ai/api/v1
-        weak:
-          model: deepseek/deepseek-v4-pro
-          api_key: ${OPENROUTER_API_KEY}
-          base_url: https://openrouter.ai/api/v1
-        fallback_target_on_evict: strong
-        session_key_depth: 0        # >0 only for k>1 benchmark trials
+    trajectory and, on a clear pattern of trouble, latches the conversation
+    to ``strong`` for the rest of the task. Requires ``judge``/``strong``/
+    ``weak`` targets plus ``fallback_target_on_evict``; the full YAML schema
+    and knob reference live in ``docs/routing_algorithms/
+    escalation_router_routing.md``.
     """
     judge_raw = route.get("judge")
     if not isinstance(judge_raw, Mapping):
