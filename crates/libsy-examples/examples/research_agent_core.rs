@@ -78,13 +78,7 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(
-                            response
-                                .llm_response
-                                .agg()
-                                .map(completion_text)
-                                .unwrap_or_default(),
-                        );
+                        notes.push(completion_text(&response.llm_response.aggregate().await?));
                     }
                 }
             }

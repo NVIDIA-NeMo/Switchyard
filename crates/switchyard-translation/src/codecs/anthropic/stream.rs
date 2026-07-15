@@ -92,13 +92,21 @@ fn decode_anthropic_stream(
                 .and_then(|delta| delta.get("stop_reason"))
                 .and_then(Value::as_str)
             {
+                // Remember the provider stop reason: Anthropic delivers it here, on
+                // `message_delta`, while the terminal `message_stop` carries none of its own.
+                state.stop_reason = Some(stop_reason.to_string());
                 out.push(LlmResponseChunk::MessageStop {
                     reason: Some(stop_reason.to_string()),
                 });
             }
             out
         }
-        Some("message_stop") => vec![LlmResponseChunk::MessageStop { reason: None }],
+        // Anthropic's terminal `message_stop` carries no reason of its own; replay the one
+        // remembered from `message_delta` so a chunk accumulator keeps the real stop reason
+        // (e.g. `max_tokens`) instead of overwriting it with a reasonless `EndTurn`.
+        Some("message_stop") => vec![LlmResponseChunk::MessageStop {
+            reason: state.stop_reason.clone(),
+        }],
         Some("error") => vec![LlmResponseChunk::Error {
             message: object
                 .get("error")
