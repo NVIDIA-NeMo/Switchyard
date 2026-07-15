@@ -71,7 +71,7 @@ routes:
 | `judge.prompt_path` | built-in | Judge system-prompt override read from a file; mutually exclusive with `judge.prompt`. Relative paths resolve against the server's working directory. |
 | `judge.max_request_chars` | `12000` | Cap on the judge transcript; oldest window messages are dropped first. |
 | `fallback_target_on_evict` | required | `strong` or `weak`; context-window-eviction reroute target. |
-| `session_key_depth` | `0` | See [Repeated-trial benchmarking](#repeated-trial-benchmarking) below. |
+| `session_key_depth` | `0` | See [Repeated-trial benchmarking](#repeated-trial-benchmarking-k1) below. |
 | `tier_timeout_s` | `600` | Default per-call timeout for strong/weak targets without their own `timeout_secs`. |
 | `affinity_max_sessions` | `10000` | LRU capacity of the escalation latch. |
 
