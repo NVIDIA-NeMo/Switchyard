@@ -82,6 +82,14 @@ upstream format.
 > Prefer an explicit format for controlled deployments. It skips capability
 > probes and makes the upstream contract clear. Use `AUTO` when provider
 > capabilities are unknown or vary across deployments.
+>
+> **`AUTO` costs startup latency.** Each probe is a live request to the upstream
+> made before the agent starts, so a slow endpoint adds a round-trip per probe
+> (up to three, tried in order). This is the main reason a launch that uses
+> `AUTO` (Claude Code, Codex) starts slower than one pinned to an explicit
+> format. Set `format:` explicitly to remove the probing entirely. To see the
+> per-probe cost of a launch, run it with `--startup-timing` (or
+> `SWITCHYARD_STARTUP_TIMING=1`), which prints each probe on its own line.
 ## Related Documentation
 
 - [Getting Started](getting_started.md): install Switchyard and run a first request
