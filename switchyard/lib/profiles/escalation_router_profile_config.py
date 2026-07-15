@@ -7,9 +7,32 @@ from __future__ import annotations
 
 from typing import Any, Self
 
+from switchyard.lib.backends.anthropic_cache_breakpoint_backend import (
+    maybe_wrap_anthropic_cache,
+)
+from switchyard.lib.backends.deterministic_routing_llm_backend import (
+    DeterministicRoutingLLMBackend,
+)
+from switchyard.lib.backends.multi_llm_backend import (
+    build_native_backend,
+    resolve_llm_target,
+)
+from switchyard.lib.processors.escalation_judge_request_processor import (
+    ESCALATION_JUDGE_SYSTEM_PROMPT,
+    EscalationJudgeConfig,
+    EscalationJudgeRequestProcessor,
+)
+from switchyard.lib.processors.reasoning_effort_normalizer import (
+    ReasoningEffortNormalizer,
+)
 from switchyard.lib.profiles.chain import ComponentChainProfile
+from switchyard.lib.profiles.deterministic_routing_profile_config import (
+    _apply_deepseek_overrides,
+    _apply_default_tier_timeout,
+)
 from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
 from switchyard.lib.profiles.table import profile_config
+from switchyard.lib.session_affinity import SessionAffinity
 
 _TIER_STRONG = "strong"
 _TIER_WEAK = "weak"
@@ -28,30 +51,6 @@ class EscalationRouterProfileConfig:
 
     def build(self) -> ComponentChainProfile:
         """Build the escalation-router profile runtime."""
-        from switchyard.lib.backends.anthropic_cache_breakpoint_backend import (
-            maybe_wrap_anthropic_cache,
-        )
-        from switchyard.lib.backends.deterministic_routing_llm_backend import (
-            DeterministicRoutingLLMBackend,
-        )
-        from switchyard.lib.backends.multi_llm_backend import (
-            build_native_backend,
-            resolve_llm_target,
-        )
-        from switchyard.lib.processors.escalation_judge_request_processor import (
-            ESCALATION_JUDGE_SYSTEM_PROMPT,
-            EscalationJudgeConfig,
-            EscalationJudgeRequestProcessor,
-        )
-        from switchyard.lib.processors.reasoning_effort_normalizer import (
-            ReasoningEffortNormalizer,
-        )
-        from switchyard.lib.profiles.deterministic_routing_profile_config import (
-            _apply_deepseek_overrides,
-            _apply_default_tier_timeout,
-        )
-        from switchyard.lib.session_affinity import SessionAffinity
-
         config = self.config
 
         # The affinity store IS the escalation latch, so it is always on.
@@ -72,7 +71,7 @@ class EscalationRouterProfileConfig:
             model=judge_target.model,
             api_key=judge_target.api_key,
             base_url=judge_target.base_url,
-            timeout_s=judge_target.endpoint.timeout_secs or 5.0,
+            timeout_s=judge_target.endpoint.timeout_secs or config.judge_timeout_s,
             system_prompt=config.judge_system_prompt or ESCALATION_JUDGE_SYSTEM_PROMPT,
             min_judge_turn=config.judge_min_turn,
             escalate_confirmations=config.judge_escalate_confirmations,
