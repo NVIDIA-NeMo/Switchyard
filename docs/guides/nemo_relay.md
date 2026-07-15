@@ -106,15 +106,44 @@ base_url = "http://127.0.0.1:4102"
 To point at real providers, replace the target `base_url` / `model` values and
 supply credentials with per-target `headers` / `header_env`.
 
-## Launching an agent (partial)
+## Launching Claude Code (tested), and where it breaks
 
-`nemo-relay claude -- "..."` launches Claude Code through the Relay gateway
-with this plugin active. Buffered requests are routed by libsy; streaming
-requests (most of Claude Code's interactive traffic) currently dispatch the
-trusted per-protocol fallback instead of a libsy decision. Closing the
-streaming gap is the top open item: libsy's `CallLlmRequest::respond` accepts
-a buffered `Response`, so the final routed hop has no way to stream back to
-the agent yet.
+From a project directory containing the two config files below,
+`nemo-relay claude` opens the normal interactive Claude Code TUI with the
+plugin active. Verified end to end on 2026-07-15 with Relay branch
+`feat/libsy-decision-backend` ([fork](https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend)).
+
+`.nemo-relay/config.toml`:
+
+```toml
+[agents.claude]
+command = "claude"
+```
+
+`.nemo-relay/plugins.toml`: the libsy component config above, with
+Anthropic-protocol targets (e.g. a Haiku classifier routing between Opus and
+Sonnet) plus an `observability` component with a `file` ATOF sink to see
+routing events.
+
+What works today, against libsy `main`:
+
+| Step | Status |
+|---|---|
+| TUI launches; all traffic flows through the gateway and plugin | works |
+| Requests carrying `cache_control` reach the router (same-protocol passthrough) | works |
+| Buffered requests routed by the libsy classifier | works |
+| Streamed requests routed by libsy | **breaks** |
+
+The break is in libsy's response contract, not in Relay:
+`CallLlmRequest::respond` and `Step::ReturnToAgent` carry only buffered
+responses, so no host can pass a live token stream through an algorithm.
+Because Claude Code streams its interactive calls, those requests emit
+`switchyard.routing.error` (`libsy_stream`) and dispatch the trusted
+per-protocol fallback (`switchyard.routing.fallback`,
+`libsy_streaming_unsupported`) instead of a libsy decision. Streaming support
+exists on the unmerged `grclark/simple-proxy` branch (`LlmResponse` becomes
+buffered-or-stream); once it lands on `main`, the Relay plugin can fulfill
+promises with live streams and this table's last row flips.
 
 ## The embedding contract
 
