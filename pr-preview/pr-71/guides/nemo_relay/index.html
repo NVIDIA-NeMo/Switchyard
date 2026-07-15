@@ -592,10 +592,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#launching-an-agent-partial" class="md-nav__link">
+  <a href="#launching-claude-code-tested-and-where-it-breaks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Launching an agent (partial)
+        Launching Claude Code (tested), and where it breaks
       
     </span>
   </a>
@@ -1218,10 +1218,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#launching-an-agent-partial" class="md-nav__link">
+  <a href="#launching-claude-code-tested-and-where-it-breaks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Launching an agent (partial)
+        Launching Claude Code (tested), and where it breaks
       
     </span>
   </a>
@@ -1262,7 +1262,7 @@
 <h1 id="nemo-relay-recipe">NeMo Relay Recipe<a class="headerlink" href="#nemo-relay-recipe" title="Permanent link">&para;</a></h1>
 <p>This recipe shows how to run Switchyard <strong>as a library</strong> inside
 <a href="https://github.com/NVIDIA/NeMo-Relay">NeMo Relay</a>, so routing decisions are
-made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c7a99167fc6732bf03171d56280692e701ea9704/crates/libsy/README.md">libsy</a>
+made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/31f4f71677be0f88afe672e32af9c83700a46dd5/crates/libsy/README.md">libsy</a>
 while Relay keeps ownership of the actual LLM calls. No <code>switchyard serve</code>
 process is involved.</p>
 <blockquote>
@@ -1370,14 +1370,56 @@ through Relay dispatch.</p>
 </span></code></pre></div>
 <p>To point at real providers, replace the target <code>base_url</code> / <code>model</code> values and
 supply credentials with per-target <code>headers</code> / <code>header_env</code>.</p>
-<h2 id="launching-an-agent-partial">Launching an agent (partial)<a class="headerlink" href="#launching-an-agent-partial" title="Permanent link">&para;</a></h2>
-<p><code>nemo-relay claude -- "..."</code> launches Claude Code through the Relay gateway
-with this plugin active. Buffered requests are routed by libsy; streaming
-requests (most of Claude Code's interactive traffic) currently dispatch the
-trusted per-protocol fallback instead of a libsy decision. Closing the
-streaming gap is the top open item: libsy's <code>CallLlmRequest::respond</code> accepts
-a buffered <code>Response</code>, so the final routed hop has no way to stream back to
-the agent yet.</p>
+<h2 id="launching-claude-code-tested-and-where-it-breaks">Launching Claude Code (tested), and where it breaks<a class="headerlink" href="#launching-claude-code-tested-and-where-it-breaks" title="Permanent link">&para;</a></h2>
+<p>From a project directory containing the two config files below,
+<code>nemo-relay claude</code> opens the normal interactive Claude Code TUI with the
+plugin active. Verified end to end on 2026-07-15 with Relay branch
+<code>feat/libsy-decision-backend</code> (<a href="https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend">fork</a>).</p>
+<p><code>.nemo-relay/config.toml</code>:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[agents.claude]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude&quot;</span>
+</span></code></pre></div>
+<p><code>.nemo-relay/plugins.toml</code>: the libsy component config above, with
+Anthropic-protocol targets (e.g. a Haiku classifier routing between Opus and
+Sonnet) plus an <code>observability</code> component with a <code>file</code> ATOF sink to see
+routing events.</p>
+<p>What works today, against libsy <code>main</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TUI launches; all traffic flows through the gateway and plugin</td>
+<td>works</td>
+</tr>
+<tr>
+<td>Requests carrying <code>cache_control</code> reach the router (same-protocol passthrough)</td>
+<td>works</td>
+</tr>
+<tr>
+<td>Buffered requests routed by the libsy classifier</td>
+<td>works</td>
+</tr>
+<tr>
+<td>Streamed requests routed by libsy</td>
+<td><strong>breaks</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The break is in libsy's response contract, not in Relay:
+<code>CallLlmRequest::respond</code> and <code>Step::ReturnToAgent</code> carry only buffered
+responses, so no host can pass a live token stream through an algorithm.
+Because Claude Code streams its interactive calls, those requests emit
+<code>switchyard.routing.error</code> (<code>libsy_stream</code>) and dispatch the trusted
+per-protocol fallback (<code>switchyard.routing.fallback</code>,
+<code>libsy_streaming_unsupported</code>) instead of a libsy decision. Streaming support
+exists on the unmerged <code>grclark/simple-proxy</code> branch (<code>LlmResponse</code> becomes
+buffered-or-stream); once it lands on <code>main</code>, the Relay plugin can fulfill
+promises with live streams and this table's last row flips.</p>
 <h2 id="the-embedding-contract">The embedding contract<a class="headerlink" href="#the-embedding-contract" title="Permanent link">&para;</a></h2>
 <p>The host (Relay) needs exactly three things from libsy:</p>
 <ul>
@@ -1388,7 +1430,7 @@ the agent yet.</p>
 <li>The conversation IR (<code>LlmRequest</code> / <code>LlmResponse</code> from <code>libsy-protocol</code>),
   which Relay's plugin already speaks through <code>switchyard-translation</code>.</li>
 </ul>
-<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c7a99167fc6732bf03171d56280692e701ea9704/crates/libsy/README.md">libsy README</a>
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/31f4f71677be0f88afe672e32af9c83700a46dd5/crates/libsy/README.md">libsy README</a>
 for the full API walkthrough.</p>
 
 
