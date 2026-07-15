@@ -855,8 +855,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
- "libsy-protocol",
  "serde_json",
+ "switchyard-protocol",
  "tokio",
  "tokio-stream",
 ]
@@ -871,14 +871,6 @@ dependencies = [
  "rand 0.8.6",
  "tokio",
  "tokio-stream",
-]
-
-[[package]]
-name = "libsy-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1637,6 +1629,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "switchyard-py"
 version = "0.1.0"
 dependencies = [
@@ -1693,10 +1693,10 @@ dependencies = [
 name = "switchyard-translation"
 version = "0.1.0"
 dependencies = [
- "libsy-protocol",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "switchyard-protocol",
  "thiserror",
 ]
 

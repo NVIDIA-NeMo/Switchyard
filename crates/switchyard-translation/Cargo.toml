@@ -7,14 +7,19 @@ version = "0.1.0"
 description = "Pure Rust request, response, and stream translation for Switchyard"
 authors.workspace = true
 edition.workspace = true
+homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
 license.workspace = true
+readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
+documentation = "https://docs.rs/switchyard-translation"
+keywords = ["llm", "translation", "openai", "anthropic"]
+publish = ["crates-io"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-libsy-protocol = { path = "../libsy-protocol" }
+switchyard-protocol = { path = "../libsy-protocol", version = "0.1.0" }
 thiserror = "2"
 
 [dev-dependencies]

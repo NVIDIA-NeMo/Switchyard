@@ -57,7 +57,7 @@ pub struct Response {
 }
 ```
 
-`libsy-protocol` owns `LlmRequest`, `LlmResponse`, `Message`,
+`switchyard-protocol` owns `LlmRequest`, `LlmResponse`, `Message`,
 `ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports those canonical types
 unchanged. Construct and inspect the conversation model directly so tools, sampling
 parameters, reasoning, and provider extensions remain visible instead of being hidden

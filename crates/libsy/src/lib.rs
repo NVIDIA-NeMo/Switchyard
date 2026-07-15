@@ -66,7 +66,9 @@ use futures::{Stream, StreamExt};
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 
-pub use libsy_protocol::{ContentBlock, LlmRequest, LlmResponse, Message, ResponseOutput, Role};
+pub use switchyard_protocol::{
+    ContentBlock, LlmRequest, LlmResponse, Message, ResponseOutput, Role,
+};
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
