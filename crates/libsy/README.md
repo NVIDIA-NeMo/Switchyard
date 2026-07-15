@@ -11,11 +11,9 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use libsy::{
-    Algorithm, ContentBlock, Context, LlmRequest, LlmClient, LlmTarget, LlmTargetSet,
-    Message, Request, Role,
-};
+use libsy::{Algorithm, Context, LlmClient, LlmTarget, LlmTargetSet, Request};
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
+use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
 // Targets the algorithm routes among, each backed by your LlmClient (see below).
@@ -28,16 +26,16 @@ let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
 ));
 
 let req = Request {
-    llm_request: LlmRequest {
-        model: Some("auto".into()),
-        messages: vec![Message::text(Role::User, "explain tail latency")],
-        ..LlmRequest::default()
-    },
+    // `text_request` is the single-turn shortcut; build an `LlmRequest` directly for
+    // multi-turn conversations, tools, or sampling parameters.
+    llm_request: text_request(Some("auto".into()), "explain tail latency"),
     raw_request: None,
     metadata: None,
 };
 let (trace, response) = algo.clone().run(Context::default(), req).await?;  // calls in, trace + response out
 println!("routed to {}", trace.last().unwrap().selected_model());
+// `response.llm_response` is buffered or streamed; fold it to the aggregate to read text.
+println!("answer: {}", completion_text(&response.llm_response.aggregate().await?));
 ```
 
 Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in the `libsy-examples` crate).
@@ -51,18 +49,29 @@ pub struct Request {
     pub metadata: Option<Metadata>,             // correlation: session / agent / task / correlation_id / extra
 }
 
+// `Response` is a plain struct. The buffered-or-streamed choice lives one level down,
+// in its `llm_response` — which *is* an enum.
 pub struct Response {
     pub llm_response: LlmResponse,
     pub metadata: Option<Metadata>,
 }
+
+pub enum LlmResponse {
+    Stream(LlmResponseStream), // a live stream of `LlmResponseChunk`s (token-by-token)
+    Agg(AggLlmResponse),       // the buffered aggregate — outputs, usage, stop reason
+}
 ```
 
-`switchyard-protocol` owns `LlmRequest`, `LlmResponse`, `Message`,
-`ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports those canonical types
-unchanged. Construct and inspect the conversation model directly so tools, sampling
-parameters, reasoning, and provider extensions remain visible instead of being hidden
-behind a second convenience API. `raw_request` remains available when a host needs exact
-source-body fidelity.
+`switchyard-protocol` owns the conversation IR: `LlmRequest`, the buffered
+`AggLlmResponse`, the streaming `LlmResponseChunk`, and the building blocks `Message`,
+`ContentBlock`, `ResponseOutput`, and `Role`. `libsy` re-exports the envelope
+(`Request`/`Response`/`Metadata`) plus `LlmRequest`, `LlmResponse`, `AggLlmResponse`,
+`LlmResponseChunk`, and `LlmResponseStream`; import the rest (`Message`, `Role`, …) and the
+`text_request` / `text_response` / `completion_text` helpers from `switchyard_protocol`.
+Construct and inspect the conversation model directly so tools, sampling parameters,
+reasoning, and provider extensions stay visible instead of being hidden behind a second
+convenience API. `raw_request` remains available when a host needs exact source-body
+fidelity.
 
 ## Targets and clients
 
@@ -82,19 +91,18 @@ impl LlmClient for MyClient {
         // ... POST to your endpoint, read the completion ...
         let completion = String::from("provider response text");
         Ok(Response {
-            llm_response: LlmResponse {
-                outputs: vec![ResponseOutput {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text { text: completion }],
-                    stop_reason: None,
-                }],
-                ..LlmResponse::default()
-            },
+            // Buffered: wrap the aggregate in `LlmResponse::Agg`. `text_response` builds a
+            // single-turn `AggLlmResponse`; construct one directly for tool calls, usage, etc.
+            llm_response: LlmResponse::Agg(text_response(None, completion)),
             metadata: None,
         })
     }
 }
 ```
+
+To stream instead, return `LlmResponse::Stream(..)` — a boxed
+`Stream<Item = Result<LlmResponseChunk, _>>` — and emit chunks as they arrive from your
+upstream. See [Streaming responses](#streaming-responses) below.
 
 A `RoutedRequest` bundles the `request` with the routing `decision` and the target's
 `default_client`; the model to call is `decision.selected_model()`, never a mutated
@@ -118,10 +126,51 @@ Under the hood every model call is *offloaded* to the request's `Step` stream; `
 the convenience that serves each one via the target's client. The step stream is bounded,
 so pulling it paces the algorithm; each run is independent, so many run concurrently.
 
-## Streaming — you own the model calls (`run_stream`)
+## Streaming responses
+
+A `Response` carries an `LlmResponse` that is either buffered (`Agg`) or a live token
+stream (`Stream`). An `LlmClient` — or an algorithm — chooses: return
+`LlmResponse::Agg(..)` for a whole answer, or `LlmResponse::Stream(..)` to forward tokens
+as they arrive. libsy never buffers a stream on your behalf; it flows through the algorithm
+untouched, so `run` / `run_stream` hand back whatever was produced and **the caller
+decides**:
+
+```rust
+use futures::StreamExt;
+
+let (_trace, response) = algo.clone().run(Context::default(), req).await?;
+match response.llm_response {
+    // Forward tokens as they arrive — e.g. re-encode each chunk to your client's SSE.
+    LlmResponse::Stream(mut chunks) => {
+        while let Some(chunk) = chunks.next().await {
+            let chunk: LlmResponseChunk = chunk?;   // TextDelta / ToolCallDelta / Usage / MessageStop / ..
+            /* emit chunk */
+        }
+    }
+    // Already buffered — read it directly.
+    LlmResponse::Agg(agg) => println!("{}", completion_text(&agg)),
+}
+```
+
+Need the whole answer regardless of how it arrived? `aggregate()` folds a `Stream` (or
+returns an `Agg` unchanged) into a single `AggLlmResponse`, surfacing any mid-stream error:
+
+```rust
+let agg = response.llm_response.aggregate().await?;   // drives the stream to completion
+println!("{}", completion_text(&agg));
+```
+
+An `LlmResponseChunk` is the provider-neutral streaming event (`MessageStart`, `TextDelta`,
+`ReasoningDelta`, `ToolCallDelta`, `Usage`, `MessageStop`, `Error`); `ResponseAccumulator`
+is the fold behind `aggregate()` if you need to assemble one yourself. Runnable end-to-end
+demo: [`streaming_agent`](../libsy-examples/examples/streaming_agent.rs).
+
+## Driving the calls yourself (`run_stream`)
 
 `run_stream` yields `CallLlm` promises you fulfill with your own transport (or the call's
 `default_client`), streams each `Decision` as it happens, and ends with `ReturnToAgent`.
+This is the *step* stream (one `Step` at a time); it is orthogonal to whether any single
+response is itself streamed — see [Streaming responses](#streaming-responses).
 Runnable: [`research_agent_core`](../libsy-examples/examples/research_agent_core.rs) (in the `libsy-examples` crate).
 
 ```rust
@@ -173,27 +222,27 @@ Example — the LLM classifier (classify, then route; full version in
 ```rust
 #[async_trait]
 impl Algorithm for LlmClassifierOrchAlgo {
-    async fn create_run_task(self: Arc<Self>, _ctx: Context, driver: Driver, request: Request)
+    async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
         -> Result<Response, Box<dyn Error + Send + Sync>> {
+        // Thread `ctx` into every offloaded call and decision — it carries the request's
+        // cross-cutting state (correlation ids, budgets) for observers downstream.
+
         // 1. Classify: ask the classifier target for a score.
         let classifier = self.target_set.get_target(&self.classifier_model)?;
-        driver.info(classify_decision.clone()).await?;
+        driver.info(ctx.clone(), classify_decision.clone()).await?;
         let classify_response =
-            driver.call_llm_target(&classifier, classify_req, classify_decision).await?;
-        // Abbreviated: this assumes a text score in the first output block. The full
-        // implementation scans all outputs and text-like blocks.
-        let score = classify_response.llm_response.first_output()
-            .and_then(|output| output.content.first())
-            .and_then(|block| match block {
-                ContentBlock::Text { text } => text.trim().parse::<f64>().ok(),
-                _ => None,
-            });
+            driver.call_llm_target(ctx.clone(), &classifier, classify_req, classify_decision).await?;
+        // Abbreviated: fold the (buffered or streamed) response to its aggregate and read
+        // the completion text as a score. `.agg()` alone is `None` for an unfolded stream.
+        let score = classify_response.llm_response.aggregate().await
+            .ok()
+            .and_then(|agg| completion_text(&agg).trim().parse::<f64>().ok());
 
         // 2. Route: strong if score >= threshold, else weak (fail open on None).
         let model = if score.map_or(true, |s| s >= self.threshold) { &self.strong_model } else { &self.weak_model };
         let routed = self.target_set.get_target(model)?;
-        driver.info(route_decision.clone()).await?;
-        driver.call_llm_target(&routed, routed_req, route_decision).await
+        driver.info(ctx.clone(), route_decision.clone()).await?;
+        driver.call_llm_target(ctx, &routed, routed_req, route_decision).await
     }
 
     async fn process_signals(self: Arc<Self>, _s: Signals) -> Result<(), Box<dyn Error + Send + Sync>> { Ok(()) }
@@ -220,6 +269,8 @@ tested — `cargo test -p libsy-examples`).
   targets, `run` (libsy makes the calls).
 - [`research_agent_core`](../libsy-examples/examples/research_agent_core.rs) — client-less
   targets, `run_stream` (the agent makes the calls).
+- [`streaming_agent`](../libsy-examples/examples/streaming_agent.rs) — a target that streams
+  its response; the agent forwards each `LlmResponseChunk` to the caller token-by-token.
 
 ## Not yet built
 
