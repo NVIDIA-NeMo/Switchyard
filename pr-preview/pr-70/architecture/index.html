@@ -1301,17 +1301,22 @@ formats select an endpoint directly and do not run capability probes.</p>
 <h3 id="auto-decision-tree">AUTO Decision Tree<a class="headerlink" href="#auto-decision-tree" title="Permanent link">&para;</a></h3>
 <pre class="mermaid"><code>flowchart TB
     auto["BackendFormat.AUTO"]
+    chat{"/v1/chat/completions works?"}
+    openai_chat["OPENAI&lt;br/&gt;/v1/chat/completions"]
     messages{"/v1/messages works?"}
     anthropic["ANTHROPIC&lt;br/&gt;/v1/messages"]
     responses{"/v1/responses works?"}
     responses_format["RESPONSES&lt;br/&gt;/v1/responses"]
-    openai["OPENAI&lt;br/&gt;/v1/chat/completions fallback"]
+    openai_fallback["OPENAI&lt;br/&gt;/v1/chat/completions fallback"]
 
-    auto --&gt;|"Probe /v1/messages"| messages
+    auto --&gt;|"Probe /v1/chat/completions"| chat
+    chat --&gt;|"Timeout: assume Chat Completions"| openai_chat
+    chat --&gt;|"Yes"| openai_chat
+    chat --&gt;|"No (fast 404): probe /v1/messages"| messages
     messages --&gt;|"Yes"| anthropic
     messages --&gt;|"No: probe /v1/responses"| responses
     responses --&gt;|"Yes"| responses_format
-    responses --&gt;|"No"| openai</code></pre>
+    responses --&gt;|"No"| openai_fallback</code></pre>
 <p>Supported inbound and response formats are handled automatically.
 <code>TranslationEngine</code> converts the client's request to the resolved backend
 format and translates the backend response back to the client's expected
