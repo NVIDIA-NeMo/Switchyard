@@ -8,7 +8,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 from switchyard.lib.conversation_turn import conversation_turn_number
 from switchyard.lib.proxy_context import ProxyContext
@@ -35,17 +35,31 @@ _L2_BREAKER_COOLDOWN_S = 10.0
 CTX_SESSION_KEY = "_session_affinity_key"
 
 
-def resolve_session_key(ctx: ProxyContext, request: ChatRequest) -> str:
+@overload
+def resolve_session_key(ctx: ProxyContext, request: ChatRequest) -> str: ...
+
+
+@overload
+def resolve_session_key(ctx: ProxyContext, request: ChatRequest, *, depth: int) -> str | None: ...
+
+
+def resolve_session_key(ctx: ProxyContext, request: ChatRequest, *, depth: int = 0) -> str | None:
     """Derive the conversation key once per request, memoized on ``ctx``.
 
-    Components that pre-seed a custom key into ``CTX_SESSION_KEY`` (e.g. the
-    escalation judge's deep benchmark key) are respected: the seeded value
-    wins over re-derivation.
+    ``depth > 0`` derives the deep key (see
+    :func:`~switchyard.lib.session_key.session_key_from_body`) the escalation
+    judge uses for repeated-trial benchmarking, and returns ``None`` — without
+    memoizing — while the conversation is still shorter than the requested
+    prefix. A key already memoized on ``ctx`` (by an earlier component this
+    request, whatever its depth) wins over re-derivation, so every consumer
+    sees one consistent key per request.
     """
     cached = ctx.metadata.get(CTX_SESSION_KEY)
     if isinstance(cached, str):
         return cached
-    key = session_key_from_body(request.body)
+    key = session_key_from_body(request.body, depth)
+    if key is None:
+        return None
     ctx.metadata[CTX_SESSION_KEY] = key
     return key
 

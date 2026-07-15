@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sys
@@ -209,10 +208,15 @@ class EscalationJudgeRequestProcessor:
     async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
         """Stamp the tier for this turn and maybe escalate. Leaves the request unchanged."""
         turn = conversation_turn_number(request)
-        # With a deep key, affinity is untouchable until the key prefix is
-        # complete — hashing a shorter prefix would produce a key that later
-        # turns of the same conversation no longer match.
-        affinity_ready = self._seed_session_key(ctx, request)
+        # With a deep key (session_key_depth > 0), affinity is untouchable
+        # until the key prefix is complete — hashing a shorter prefix would
+        # produce a key that later turns of the same conversation no longer
+        # match. resolve_session_key returns None (memoizing nothing) until
+        # then; once resolved, the memoized key is what affinity and streak
+        # bookkeeping see for the rest of the request.
+        affinity_ready = (
+            resolve_session_key(ctx, request, depth=self._session_key_depth) is not None
+        )
 
         if affinity_ready:
             pinned = await self._affinity.pinned(ctx, request)
@@ -230,8 +234,8 @@ class EscalationJudgeRequestProcessor:
         if not affinity_ready or turn < self._config.min_judge_turn:
             return request
 
-        # Present when session_key_depth > 0; lets verdict-dump consumers
-        # group per-turn judge decisions by conversation.
+        # Lets verdict-dump consumers group per-turn judge decisions by
+        # conversation.
         session = ctx.metadata.get(CTX_SESSION_KEY)
         summary = _summarize_for_judge(request, turn=turn, config=self._config)
         started_at = time.perf_counter()
@@ -403,24 +407,6 @@ class EscalationJudgeRequestProcessor:
             latency_ms=latency_ms,
         )
 
-    def _seed_session_key(self, ctx: ProxyContext, request: ChatRequest) -> bool:
-        """Seed the deep session key when configured; return whether affinity is usable.
-
-        ``session_key_depth == 0`` keeps the default Rust key (system + first
-        user message) — always usable. Depth ``N`` extends the hash with the
-        first ``N`` post-first-user messages so repeated runs of the same task
-        diverge via early model responses; until those messages exist, the key
-        is not yet stable and affinity must not be read or written.
-        """
-        if self._session_key_depth == 0:
-            return True
-        key = _deep_session_key(request, self._session_key_depth)
-        if key is None:
-            return False
-        ctx.metadata[CTX_SESSION_KEY] = key
-        return True
-
-
 def _first_user_text(request: ChatRequest) -> str:
     """Flatten the first user message's task text for verdict dumps.
 
@@ -450,52 +436,6 @@ def _first_user_text(request: ChatRequest) -> str:
                 else:
                     return text
     return ""
-
-
-def _deep_session_key(request: ChatRequest, depth: int) -> str | None:
-    """Hash system + first user + first ``depth`` later messages, or ``None`` if short.
-
-    Mirrors the anchor semantics of the Rust ``session_key_from_body`` and
-    extends the prefix by ``depth`` messages. The prefix of a conversation
-    never changes as it grows, so the key is stable from the moment it exists.
-    """
-    body = getattr(request, "body", None)
-    if not isinstance(body, dict):
-        return None
-    hasher = hashlib.sha256()
-    top_system = body.get("system")
-    if isinstance(top_system, str | list):
-        hasher.update(_content_text(top_system).encode("utf-8"))
-        hasher.update(b"\x00")
-
-    messages = body.get("messages")
-    if not isinstance(messages, list):
-        messages = body.get("input")
-    if not isinstance(messages, list):
-        return None
-
-    first_user_seen = False
-    tail_taken = 0
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        role = m.get("role")
-        if role in ("system", "developer"):
-            hasher.update(_message_text(m).encode("utf-8"))
-            hasher.update(b"\x00")
-        elif not first_user_seen and role == "user":
-            first_user_seen = True
-            hasher.update(_message_text(m).encode("utf-8"))
-            hasher.update(b"\x00")
-        elif first_user_seen and tail_taken < depth:
-            tail_taken += 1
-            hasher.update(_message_text(m).encode("utf-8"))
-            hasher.update(b"\x00")
-        if first_user_seen and tail_taken >= depth:
-            break
-    if not first_user_seen or tail_taken < depth:
-        return None
-    return hasher.hexdigest()[:16]
 
 
 def _summarize_for_judge(
