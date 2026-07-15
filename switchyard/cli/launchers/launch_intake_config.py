@@ -162,7 +162,7 @@ def build_launch_capture_processors(
 
     The intake sink (``intake``) and the local RL trace logger (``rl_log_dir``)
     are independent: any subset may be active. When ``token_capture`` is set
-    (the route bundle declares an ``token_capture_engine`` target and RL logging is
+    (the route bundle declares ``token_capture_engine`` on a route and RL logging is
     on), the capture pair replaces the rl-logging pair — the unified record
     carries the trace fields, so running both would double-write. Returns
     ``([], [])`` when nothing is active.

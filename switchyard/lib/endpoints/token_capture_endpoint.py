@@ -53,19 +53,16 @@ class TokenCaptureSessionsEndpoint(NemoSwitchyardEndpoint):
 
         async def get_session_completions(session_id: str) -> dict[str, Any]:
             """All captured records for one session, in capture order."""
-            dir_name = session_dir_name(session_id)
-            # The sanitizer passes "." and ".." through; never treat them as
-            # session directories.
-            if dir_name in {".", ".."}:
-                raise HTTPException(status_code=404, detail="unknown session")
-            session_dir = sessions_root(capture_dir) / dir_name
+            # The directory name is a hash of the session id (path-safe by
+            # construction, no traversal possible).
+            session_dir = sessions_root(capture_dir) / session_dir_name(session_id)
             if not session_dir.is_dir():
                 raise HTTPException(status_code=404, detail="unknown session")
 
             completions: list[dict[str, Any]] = []
             for record_path in sorted(session_dir.glob("*.json")):
                 try:
-                    completions.append(json.loads(record_path.read_text()))
+                    record = json.loads(record_path.read_text())
                 except (OSError, json.JSONDecodeError) as exc:
                     # A torn record must not hide the rest of the session.
                     logger.warning(
@@ -73,6 +70,11 @@ class TokenCaptureSessionsEndpoint(NemoSwitchyardEndpoint):
                         record_path,
                         exc,
                     )
+                    continue
+                # Defense in depth: only surface records that actually belong to
+                # the requested session, never a neighbor sharing the directory.
+                if record.get("session_id") == session_id:
+                    completions.append(record)
             completions.sort(
                 key=lambda record: (record.get("captured_at", ""), record.get("uuid", ""))
             )

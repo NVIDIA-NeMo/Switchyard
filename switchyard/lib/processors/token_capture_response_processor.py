@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
-import re
 import uuid as uuid_lib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -38,9 +38,7 @@ logger = logging.getLogger(__name__)
 
 JsonObject = dict[str, Any]
 
-_SESSION_DIR_SAFE = re.compile(r"[^A-Za-z0-9._-]")
-
-#: Records live under ``<rl-log-dir>/sessions/<safe-key>/<uuid>.json`` so token
+#: Records live under ``<rl-log-dir>/sessions/<hashed-key>/<uuid>.json`` so token
 #: capture never collides with flat text traces in the same log directory.
 _SESSIONS_SUBDIR = "sessions"
 
@@ -119,11 +117,13 @@ class TokenCaptureResponseProcessor:
         message = choice.get("message")
         message = message if isinstance(message, dict) else {}
 
+        request_id = body.get("id")
+        model = body.get("model")
         prompt_token_ids = body.get("prompt_token_ids")
         generation_token_ids = choice.get("token_ids")
         generation_log_probs = _extract_log_probs(choice.get("logprobs"))
         problem = _validate_token_fields(
-            prompt_token_ids, generation_token_ids, generation_log_probs, len(choices)
+            request_id, model, prompt_token_ids, generation_token_ids, generation_log_probs, len(choices)
         )
         if problem is not None:
             logger.warning("token capture: storing record with is_valid=false: %s", problem)
@@ -133,8 +133,8 @@ class TokenCaptureResponseProcessor:
             "uuid": str(uuid_lib.uuid4()),
             "session_id": session_id,
             "captured_at": datetime.now(UTC).isoformat(),
-            "request_id": body.get("id"),
-            "model": body.get("model"),
+            "request_id": request_id,
+            "model": model,
             "messages": build_trace_messages(request, message),
             "tools": format_trace_tools(request.get("tools", [])),
             "tool_choice": format_trace_tool_choice(request.get("tool_choice")),
@@ -147,16 +147,7 @@ class TokenCaptureResponseProcessor:
         }
 
     def _write_record(self, session_id: str, record: JsonObject) -> None:
-        dir_name = session_dir_name(session_id)
-        # The sanitizer passes "." and ".." through; never treat them as
-        # session directories.
-        if not dir_name or dir_name in {".", ".."}:
-            logger.warning(
-                "token capture: session id %r is not usable as a directory; skipping record",
-                session_id,
-            )
-            return
-        session_dir = sessions_root(self._capture_dir) / dir_name
+        session_dir = sessions_root(self._capture_dir) / session_dir_name(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
         path = session_dir / f"{record['uuid']}.json"
         # Write-then-rename so the retrieval endpoint never reads a torn record
@@ -207,14 +198,23 @@ def _extract_log_probs(logprobs: object) -> list[Any] | None:
 
 
 def _validate_token_fields(
+    request_id: object,
+    model: object,
     prompt_token_ids: object,
     generation_token_ids: object,
     generation_log_probs: object,
     choice_count: int,
 ) -> str | None:
-    """Reason the token fields are unusable for training, or ``None`` if valid."""
+    """Reason the record is unusable for training, or ``None`` if valid."""
     if choice_count != 1:
         return f"response has {choice_count} choices; multiple-choice capture is unsupported"
+    # Provenance: the design requires request id and model identity. ``model``
+    # is load-bearing — token ids are meaningless without the tokenizer that
+    # produced them — and real vLLM always emits both, so absence is anomalous.
+    if not isinstance(request_id, str) or not request_id:
+        return "request_id is missing or not a non-empty string"
+    if not isinstance(model, str) or not model:
+        return "model is missing or not a non-empty string"
     if not _is_token_id_list(prompt_token_ids):
         return "prompt_token_ids is not a non-empty list of ints"
     if not _is_token_id_list(generation_token_ids):
@@ -342,5 +342,11 @@ def sessions_root(capture_dir: Path) -> Path:
 
 
 def session_dir_name(session_id: str) -> str:
-    """File-safe directory name for a session id (shared by writer and endpoint)."""
-    return _SESSION_DIR_SAFE.sub("_", session_id)
+    """Collision-resistant directory name for a session id (writer + endpoint).
+
+    A hash, not a sanitized form: sanitizing distinct opaque ids to the same
+    safe string (e.g. ``tenant:a`` and ``tenant*a`` → ``tenant_a``) would let
+    one session's records surface under another. The fixed-length hex output is
+    also inherently path-safe, so no traversal guard is needed.
+    """
+    return hashlib.sha256(session_id.encode()).hexdigest()

@@ -162,12 +162,14 @@ _TARGET_KEYS = _TARGET_DEFAULT_KEYS | frozenset({
     "id",
     "model",
     "tuning",
-    "token_capture_engine",
 })
 _TARGET_DEFAULT_ROUTE_KEYS = _TARGET_DEFAULT_KEYS | frozenset({"defaults"})
 _MODEL_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
     "target",
     "model",
+    # Opts this route's single target into token capture. Applied to the target
+    # before coercion.
+    "token_capture_engine",
 })
 _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
     "strong",
@@ -195,7 +197,7 @@ _PASSTHROUGH_SETTING_KEYS = frozenset({
 })
 _PASSTHROUGH_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
-    | frozenset({"defaults", "enable_stats"})
+    | frozenset({"defaults", "enable_stats", "token_capture_engine"})
     | _PASSTHROUGH_SETTING_KEYS
 )
 _LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
@@ -436,7 +438,7 @@ def load_route_bundle_table(
     callers attach process-level components such as Intake telemetry to every
     YAML-declared route.
 
-    ``token_capture_enabled`` honors targets' ``token_capture_engine`` declarations
+    ``token_capture_enabled`` honors routes' ``token_capture_engine`` declarations
     (deriving token-capture request params); when ``False`` the key is ignored
     with a warning so clients never receive token fields nobody will capture.
     """
@@ -476,11 +478,11 @@ def build_route_bundle_table(
 
 
 def route_bundle_declares_token_capture(raw_or_path: object) -> bool:
-    """True when the bundle declares ``token_capture_engine`` on any target.
+    """True when the bundle declares ``token_capture_engine`` on any route.
 
     Accepts either a path to a routing-profiles YAML file or an
     already-parsed bundle dict. Token capture activates under
-    ``--enable-rl-logging`` when at least one target opts in via
+    ``--enable-rl-logging`` when at least one route opts in via
     ``token_capture_engine``. A bundle that cannot be parsed reports ``False`` —
     the real table load surfaces the parse error.
     """
@@ -508,7 +510,7 @@ def route_bundle_declares_token_capture(raw_or_path: object) -> bool:
 def _strip_token_capture_engine(raw: object) -> object:
     """Drop ``token_capture_engine`` keys when token capture is disabled.
 
-    The field derives token-capture request params into the target's
+    The field derives token-capture request params into the route target's
     ``extra_body`` (see ``llm_target_with_token_capture``); honoring it while
     RL logging is off would make clients receive token fields that nothing
     captures. Warns once so the config mismatch is visible.
@@ -533,7 +535,7 @@ def _strip_token_capture_engine(raw: object) -> object:
     result = _walk(raw)
     if stripped:
         logger.warning(
-            "route bundle declares token_capture_engine on %d target(s) but token "
+            "route bundle declares token_capture_engine on %d route(s) but token "
             "capture is disabled; ignoring (enable with --enable-rl-logging)",
             stripped,
         )
@@ -1207,10 +1209,12 @@ def _passthrough_target(
         if route_type == "model":
             raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
         target_raw = model_id
-    return coerce_llm_target(
-        _target_mapping(target_raw, target_defaults, default_id=model_id, where="target"),
-        default_id=model_id,
-    )
+    target = _target_mapping(target_raw, target_defaults, default_id=model_id, where="target")
+    # Apply the route's token_capture_engine to its single target.
+    route_engine = route.get("token_capture_engine")
+    if route_engine is not None:
+        target["token_capture_engine"] = route_engine
+    return coerce_llm_target(target, default_id=model_id)
 
 
 def _latency_service_switchyard(

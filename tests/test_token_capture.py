@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for token-level capture (RL logging + ``token_capture_engine`` targets)."""
+"""Tests for token-level capture (RL logging + ``token_capture_engine`` routes)."""
 
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ async def _run(
 
 
 # ---------------------------------------------------------------------------
-# Activation: --enable-rl-logging + token_capture_engine target
+# Activation: --enable-rl-logging + token_capture_engine route
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +125,8 @@ def test_route_bundle_declares_token_capture_dict() -> None:
         "routes": {
             "m": {
                 "type": "model",
-                "target": {"model": "a", "base_url": "http://x/v1", "token_capture_engine": "vllm"},
+                "target": {"model": "a", "base_url": "http://x/v1"},
+                "token_capture_engine": "vllm",
             },
         },
     }
@@ -148,18 +149,38 @@ def test_route_bundle_declares_token_capture_path(tmp_path: Path) -> None:
         "    target:\n"
         "      model: a\n"
         "      base_url: http://x/v1\n"
-        "      token_capture_engine: vllm\n"
+        "    token_capture_engine: vllm\n"
     )
     assert route_bundle_declares_token_capture(str(profile)) is True
     # An unreadable bundle reports False; the real table load raises.
     assert route_bundle_declares_token_capture(str(tmp_path / "missing.yaml")) is False
 
 
+def test_route_level_token_capture_engine_parses() -> None:
+    """token_capture_engine sits at route level, beside a string target; it must
+    parse and derive the vLLM capture params for the route's single target."""
+    from switchyard.cli.route_bundle import build_route_bundle_table
+
+    raw = {
+        "defaults": {"api_key": "dummy", "base_url": "http://vllm:8000/v1", "format": "openai"},
+        "routes": {
+            "policy-model": {
+                "type": "model",
+                "target": "served-model",
+                "token_capture_engine": "vllm",
+            }
+        },
+    }
+    table = build_route_bundle_table(raw, token_capture_enabled=True)
+    assert "policy-model" in table.registered_models()
+    assert route_bundle_declares_token_capture(raw) is True
+
+
 def test_serve_installs_capture_pair_for_declaring_bundle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """rl-logging on + token_capture_engine target -> capture pair replaces rl pair."""
+    """rl-logging on + token_capture_engine route -> capture pair replaces rl pair."""
     import switchyard.cli.switchyard_cli as cli
 
     profile = tmp_path / "profiles.yaml"
@@ -170,7 +191,7 @@ def test_serve_installs_capture_pair_for_declaring_bundle(
         "    target:\n"
         "      model: a\n"
         "      base_url: http://x/v1\n"
-        "      token_capture_engine: vllm\n"
+        "    token_capture_engine: vllm\n"
     )
     captured: dict[str, list] = {}
 
@@ -322,25 +343,29 @@ async def test_non_streaming_request_left_untouched() -> None:
     assert CTX_TOKEN_CAPTURE_ORIGINAL_STREAM not in ctx.metadata
 
 
-async def test_session_id_falls_back_to_launcher_shaped_caller_key(tmp_path: Path) -> None:
+async def test_session_id_from_marked_caller_key(tmp_path: Path) -> None:
+    from switchyard.lib.processors.token_capture_request_processor import SESSION_API_KEY_MARKER
+    from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
+
+    # OpenClaw rides the session id on the marker-prefixed API key. A custom
+    # (non-launcher-shaped) session id must still resolve.
+    ctx = ProxyContext()
+    ctx.metadata[CTX_CALLER_API_KEY] = SESSION_API_KEY_MARKER + "my-custom-rerun-42"
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+    record = _read_only_record(tmp_path)
+    assert record["session_id"] == "my-custom-rerun-42"
+
+
+async def test_unmarked_api_key_never_becomes_session_id(tmp_path: Path) -> None:
     from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
 
     ctx = ProxyContext()
+    # A real credential (no marker) — even one shaped like an old-style id —
+    # must not become a session or leak to disk.
     ctx.metadata[CTX_CALLER_API_KEY] = "openclaw-1783600121000-a1b2c3d4"
     await _run(tmp_path, _vllm_completion(), ctx=ctx)
 
-    record = _read_only_record(tmp_path / "sessions" / "openclaw-1783600121000-a1b2c3d4")
-    assert record["session_id"] == "openclaw-1783600121000-a1b2c3d4"
-
-
-async def test_real_api_key_never_becomes_session_id(tmp_path: Path) -> None:
-    from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
-
-    ctx = ProxyContext()
-    ctx.metadata[CTX_CALLER_API_KEY] = "sk-real-secret-key-12345"
-    await _run(tmp_path, _vllm_completion(), ctx=ctx)
-
-    # Not launcher-shaped -> no session -> nothing captured, nothing leaked.
     assert list(tmp_path.rglob("*.json")) == []
 
 
@@ -351,7 +376,7 @@ async def test_session_id_from_body_field(tmp_path: Path) -> None:
 
     # The session field never reaches the upstream body.
     assert "proxy_x_session_id" not in dict(request.body)
-    record = _read_only_record(tmp_path / "sessions" / "abc123")
+    record = _read_only_record(tmp_path)
     assert record["session_id"] == "abc123"
 
 
@@ -360,7 +385,7 @@ async def test_header_session_wins_over_body_field(tmp_path: Path) -> None:
     await _run(tmp_path, _vllm_completion(), session_id="from-header", request=request)
 
     assert "proxy_x_session_id" not in dict(request.body)
-    record = _read_only_record(tmp_path / "sessions" / "from-header")
+    record = _read_only_record(tmp_path)
     assert record["session_id"] == "from-header"
 
 
@@ -381,7 +406,7 @@ async def test_non_string_body_session_ignored_but_stripped(tmp_path: Path) -> N
 
 async def test_unified_record_schema(tmp_path: Path) -> None:
     await _run(tmp_path, _vllm_completion(), session_id=_SESSION)
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
 
     import uuid as uuid_lib
     from datetime import datetime
@@ -435,7 +460,7 @@ async def test_misaligned_logprobs_marks_record_invalid(tmp_path: Path) -> None:
         }
     ]
     await _run(tmp_path, _vllm_completion(choices=choices), session_id=_SESSION)
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
 
     assert record["is_valid"] is False
     assert record["generation_token_ids"] == [7, 8]
@@ -460,7 +485,7 @@ async def test_multiple_choices_marks_record_invalid(tmp_path: Path) -> None:
         _vllm_completion(choices=[choice, {**choice, "index": 1}]),
         session_id=_SESSION,
     )
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
     assert record["is_valid"] is False
 
 
@@ -474,9 +499,29 @@ async def test_missing_token_fields_mark_record_invalid(tmp_path: Path) -> None:
         }
     ]
     await _run(tmp_path, _vllm_completion(choices=choices), session_id=_SESSION)
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
     assert record["is_valid"] is False
     assert record["messages"][-1]["content"] == "hi"
+
+
+async def test_missing_model_marks_record_invalid(tmp_path: Path) -> None:
+    # Token ids are meaningless without the tokenizer, so a record with no model
+    # is untrainable — stored, flagged invalid.
+    body = dict(_vllm_completion().body)
+    body.pop("model", None)
+    await _run(tmp_path, ChatResponse.openai_completion(body), session_id=_SESSION)
+    record = _read_only_record(tmp_path)
+    assert record["is_valid"] is False
+    assert record["model"] is None
+
+
+async def test_missing_request_id_marks_record_invalid(tmp_path: Path) -> None:
+    body = dict(_vllm_completion().body)
+    body.pop("id", None)
+    await _run(tmp_path, ChatResponse.openai_completion(body), session_id=_SESSION)
+    record = _read_only_record(tmp_path)
+    assert record["is_valid"] is False
+    assert record["request_id"] is None
 
 
 async def test_non_finite_logprobs_mark_record_invalid(tmp_path: Path) -> None:
@@ -495,7 +540,7 @@ async def test_non_finite_logprobs_mark_record_invalid(tmp_path: Path) -> None:
         }
     ]
     await _run(tmp_path, _vllm_completion(choices=choices), session_id=_SESSION)
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
     assert record["is_valid"] is False
 
 
@@ -515,7 +560,7 @@ async def test_non_int_token_ids_mark_record_invalid(tmp_path: Path) -> None:
         }
     ]
     await _run(tmp_path, _vllm_completion(choices=choices), session_id=_SESSION)
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
     assert record["is_valid"] is False
 
 
@@ -591,7 +636,7 @@ async def test_synthetic_stream_replaces_buffered_response(tmp_path: Path) -> No
     assert ctx.metadata[CTX_TOKEN_CAPTURE_ORIGINAL_STREAM] is True
 
     # The record was still captured from the buffered body.
-    record = _read_only_record(tmp_path / "sessions" / _SESSION)
+    record = _read_only_record(tmp_path)
     assert record["generation_token_ids"] == [7, 8]
 
 
@@ -656,20 +701,26 @@ async def test_retrieval_endpoint_serves_session_records(tmp_path: Path) -> None
     assert payload["completions"][0]["generation_token_ids"] == [7, 8]
 
 
+def _session_dir(tmp_path: Path, session_id: str) -> Path:
+    from switchyard.lib.processors.token_capture_response_processor import (
+        session_dir_name,
+        sessions_root,
+    )
+
+    return sessions_root(tmp_path) / session_dir_name(session_id)
+
+
 def test_retrieval_completions_sorted_by_captured_at_then_uuid(tmp_path: Path) -> None:
-    session_dir = tmp_path / "sessions" / _SESSION
-    session_dir.parent.mkdir(exist_ok=True)
-    session_dir.mkdir()
+    session_dir = _session_dir(tmp_path, _SESSION)
+    session_dir.mkdir(parents=True)
+
+    def _rec(captured_at: str, uuid: str) -> str:
+        return json.dumps({"session_id": _SESSION, "captured_at": captured_at, "uuid": uuid})
+
     # Filenames deliberately reverse the capture order.
-    (session_dir / "z.json").write_text(
-        json.dumps({"captured_at": "2026-01-01T00:00:00+00:00", "uuid": "aaa"})
-    )
-    (session_dir / "a.json").write_text(
-        json.dumps({"captured_at": "2026-01-02T00:00:00+00:00", "uuid": "bbb"})
-    )
-    (session_dir / "m.json").write_text(
-        json.dumps({"captured_at": "2026-01-01T00:00:00+00:00", "uuid": "zzz"})
-    )
+    (session_dir / "z.json").write_text(_rec("2026-01-01T00:00:00+00:00", "aaa"))
+    (session_dir / "a.json").write_text(_rec("2026-01-02T00:00:00+00:00", "bbb"))
+    (session_dir / "m.json").write_text(_rec("2026-01-01T00:00:00+00:00", "zzz"))
     client = _retrieval_client(tmp_path)
 
     payload = client.get(f"/v1/sessions/{_SESSION}/completions").json()
@@ -683,12 +734,31 @@ def test_retrieval_completions_sorted_by_captured_at_then_uuid(tmp_path: Path) -
 async def test_retrieval_skips_torn_record_and_serves_the_rest(tmp_path: Path) -> None:
     await _run(tmp_path, _vllm_completion(), session_id=_SESSION)
     # Simulate a torn/corrupt record alongside the good one.
-    (tmp_path / "sessions" / _SESSION / "0000-torn.json").write_text('{"schema_version": 1, "uuid": ')
+    (_session_dir(tmp_path, _SESSION) / "0000-torn.json").write_text('{"schema_version": 1, "uuid": ')
     client = _retrieval_client(tmp_path)
 
     payload = client.get(f"/v1/sessions/{_SESSION}/completions").json()
     assert len(payload["completions"]) == 1
     assert payload["completions"][0]["generation_token_ids"] == [7, 8]
+
+
+async def test_sessions_with_sanitizer_colliding_ids_stay_isolated(tmp_path: Path) -> None:
+    # These two distinct ids collapse to the same name under a naive sanitizer
+    # (both -> "tenant_a"); the hashed dir keeps them in separate directories so
+    # one session's records never surface under the other.
+    await _run(tmp_path, _vllm_completion(), session_id="tenant:a")
+    await _run(tmp_path, _vllm_completion(choices=[
+        {"index": 0, "message": {"role": "assistant", "content": "other"},
+         "finish_reason": "stop", "token_ids": [9],
+         "logprobs": {"content": [{"token": "other", "logprob": -0.5}]}},
+    ]), session_id="tenant*a")
+    client = _retrieval_client(tmp_path)
+
+    a = client.get("/v1/sessions/tenant:a/completions").json()
+    b = client.get("/v1/sessions/tenant*a/completions").json()
+    assert len(a["completions"]) == 1 and a["completions"][0]["session_id"] == "tenant:a"
+    assert len(b["completions"]) == 1 and b["completions"][0]["session_id"] == "tenant*a"
+    assert a["completions"][0]["generation_token_ids"] != b["completions"][0]["generation_token_ids"]
 
 
 def test_retrieval_endpoint_unknown_session_is_404(tmp_path: Path) -> None:
@@ -728,14 +798,15 @@ def test_token_capture_engine_stripped_when_capture_disabled() -> None:
         "routes": {
             "m1": {
                 "type": "model",
-                "target": {"model": "a", "base_url": "http://x/v1", "token_capture_engine": "vllm"},
+                "target": {"model": "a", "base_url": "http://x/v1"},
+                "token_capture_engine": "vllm",
             },
         },
     }
     stripped = _strip_token_capture_engine(raw)
-    assert "token_capture_engine" not in stripped["routes"]["m1"]["target"]
+    assert "token_capture_engine" not in stripped["routes"]["m1"]
     # Original mapping untouched; other keys intact.
-    assert raw["routes"]["m1"]["target"]["token_capture_engine"] == "vllm"
+    assert raw["routes"]["m1"]["token_capture_engine"] == "vllm"
     assert stripped["routes"]["m1"]["target"]["model"] == "a"
 
 
@@ -792,14 +863,16 @@ def test_capture_session_id_for_api_key_covers_intake_on() -> None:
     assert generated is not None and generated.startswith("openclaw-")
 
 
-def test_openclaw_env_carries_capture_session_id_as_api_key() -> None:
+def test_openclaw_env_carries_marked_capture_session_id_as_api_key() -> None:
     from switchyard.cli.launchers.openclaw_launcher import _openclaw_env
+    from switchyard.lib.processors.token_capture_request_processor import SESSION_API_KEY_MARKER
 
     env = _openclaw_env(
         workspace="/tmp/ws",
         capture_session_id="openclaw-1783600121000-a1b2c3d4",
     )
-    assert env["SWITCHYARD_API_KEY"] == "openclaw-1783600121000-a1b2c3d4"
+    # The session id rides the API key behind the marker the server strips.
+    assert env["SWITCHYARD_API_KEY"] == SESSION_API_KEY_MARKER + "openclaw-1783600121000-a1b2c3d4"
 
     # Without capture, the opaque placeholder is unchanged.
     assert _openclaw_env(workspace="/tmp/ws")["SWITCHYARD_API_KEY"] == "switchyard"

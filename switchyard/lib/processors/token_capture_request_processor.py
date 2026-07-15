@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY, ProxyContext
 from switchyard.lib.request_metadata import CTX_REQUEST_METADATA
@@ -25,11 +24,14 @@ CTX_TOKEN_CAPTURE_SESSION = "_token_capture_session"
 #: by the response processor, which synthesizes the client-facing stream.
 CTX_TOKEN_CAPTURE_ORIGINAL_STREAM = "_token_capture_original_stream"
 
-#: Launcher-generated session ids look like ``<target>-<unix-ms>-<hex8>``
-#: (see ``launch_intake_config._default_session_id``). The caller-key fallback
-#: below only accepts this shape so a real client credential can never be
-#: mistaken for a session id and leak into record files / directory names.
-_LAUNCHER_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+-\d{13}-[0-9a-f]{8}$")
+#: Header-less harnesses (OpenClaw) ride the session id on their API key. The
+#: launcher prefixes it with this marker so the server can recognize a session
+#: id explicitly, rather than guessing from the string shape — a real client
+#: credential (no marker) is therefore never mistaken for a session id and
+#: leaked into record files / directory names. Shared with the launcher, which
+#: applies the prefix (see ``launch_intake_config``). The colon makes an
+#: accidental collision with a real API key effectively impossible.
+SESSION_API_KEY_MARKER = "sycap-session:"
 
 #: Top-level request-body key carrying the capture session for harness clients
 #: with no custom-header or API-key surface (e.g. clients whose only reachable
@@ -96,10 +98,12 @@ def _resolve_session_id(ctx: ProxyContext, body_session: object) -> str | None:
     # session id on a top-level body key (stripped by the caller above).
     if isinstance(body_session, str) and body_session:
         return body_session
-    # Harnesses with no custom-header surface (OpenClaw) ride the session id
-    # on their API key instead; the launcher substitutes it for the opaque
-    # placeholder when capture is on.
+    # Harnesses with no custom-header surface (OpenClaw) ride the session id on
+    # their API key, marker-prefixed by the launcher. Strip the marker to get
+    # the session id; a caller key without the marker is a real credential and
+    # is never treated as a session.
     caller_key = ctx.metadata.get(CTX_CALLER_API_KEY)
-    if isinstance(caller_key, str) and _LAUNCHER_SESSION_ID.fullmatch(caller_key):
-        return caller_key
+    if isinstance(caller_key, str) and caller_key.startswith(SESSION_API_KEY_MARKER):
+        session = caller_key[len(SESSION_API_KEY_MARKER):]
+        return session or None
     return None

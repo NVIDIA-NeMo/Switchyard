@@ -419,7 +419,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
     # Intake sink and local RL trace logging attach as chain processors.
     # Token capture activates when RL logging is on AND the bundle declares
-    # an token_capture_engine target; the capture pair then replaces the
+    # token_capture_engine on a route; the capture pair then replaces the
     # rl-logging pair (the unified record carries the trace fields — running
     # both would double-write).
     saved = None
@@ -908,7 +908,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Write per-turn RL training traces (message_history JSON, one "
             "file per request/response pair) for `launch` and `serve` sessions. "
-            "When the route bundle declares a `token_capture_engine` target, "
+            "When the route bundle declares `token_capture_engine` on a route, "
             "traces are token-level capture records grouped by session and "
             "served via GET /v1/sessions. Global flag — place it before the "
             "subcommand, e.g. switchyard --enable-rl-logging launch claude."

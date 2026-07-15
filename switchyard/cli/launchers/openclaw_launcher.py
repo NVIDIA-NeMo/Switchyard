@@ -84,6 +84,7 @@ from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.processors.model_rewrite_request_processor import (
     ModelRewriteRequestProcessor,
 )
+from switchyard.lib.processors.token_capture_request_processor import SESSION_API_KEY_MARKER
 from switchyard.lib.profiles import (
     DeterministicRoutingConfig,
 )
@@ -346,13 +347,15 @@ def _openclaw_env(
     env["OPENCLAW_HIDE_BANNER"] = "1"
     # OpenClaw has no custom-header surface; when token capture needs a
     # session id, ride the apiKey field instead — OpenClaw echoes it as the
-    # Authorization bearer, and the capture processor's session resolution
-    # falls back to launcher-shaped caller keys.
-    env[_API_KEY_ENV] = capture_session_id or _API_KEY_PLACEHOLDER
+    # Authorization bearer, and the capture processor recognizes the marker
+    # prefix to recover the session id (any id, not only a fixed shape).
+    if capture_session_id:
+        env[_API_KEY_ENV] = SESSION_API_KEY_MARKER + capture_session_id
+        env["SWITCHYARD_SESSION_ID"] = capture_session_id
+    else:
+        env[_API_KEY_ENV] = _API_KEY_PLACEHOLDER
     if intake is not None:
         env["SWITCHYARD_SESSION_ID"] = intake.session_id
-    elif capture_session_id:
-        env["SWITCHYARD_SESSION_ID"] = capture_session_id
     return env
 
 
@@ -542,8 +545,8 @@ def launch_openclaw(
     binary wasn't found, ``130`` on Ctrl-C).
     """
     stats = StatsAccumulator()
-    # Token capture activates when RL logging is on AND the bundle declares an
-    # token_capture_engine target; the capture pair replaces the rl-logging pair.
+    # Token capture activates when RL logging is on AND the bundle declares
+    # token_capture_engine on a route; the capture pair replaces the rl-logging pair.
     capture = rl_log_dir is not None and route_bundle_declares_token_capture(routing_profiles)
     intake_request, intake_response = build_launch_capture_processors(
         intake, rl_log_dir, token_capture=capture,

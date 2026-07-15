@@ -480,8 +480,8 @@ def launch_codex(
     binary wasn't found, ``130`` on Ctrl-C).
     """
     stats = StatsAccumulator()
-    # Token capture activates when RL logging is on AND the bundle declares an
-    # token_capture_engine target; the capture pair replaces the rl-logging pair.
+    # Token capture activates when RL logging is on AND the bundle declares
+    # token_capture_engine on a route; the capture pair replaces the rl-logging pair.
     capture = rl_log_dir is not None and route_bundle_declares_token_capture(routing_profiles)
     intake_request, intake_response = build_launch_capture_processors(
         intake, rl_log_dir, token_capture=capture,
