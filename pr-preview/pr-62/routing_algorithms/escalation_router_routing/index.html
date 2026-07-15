@@ -1456,7 +1456,12 @@ a client-selectable model.</p>
 <tr>
 <td><code>judge.prompt</code></td>
 <td>built-in</td>
-<td>A deployment needs a custom escalation rubric.</td>
+<td>A deployment needs a custom escalation rubric inlined in the YAML.</td>
+</tr>
+<tr>
+<td><code>judge.prompt_path</code></td>
+<td>built-in</td>
+<td>The custom rubric lives in a file (mutually exclusive with <code>judge.prompt</code>; relative paths resolve against the server's working directory).</td>
 </tr>
 <tr>
 <td><code>tier_timeout_s</code></td>
