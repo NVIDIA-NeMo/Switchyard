@@ -8,15 +8,8 @@ from __future__ import annotations
 from typing import Any, Self
 
 from switchyard.lib.affinity_pin_store import AffinityPinStore
-from switchyard.lib.backends.anthropic_cache_breakpoint_backend import (
-    maybe_wrap_anthropic_cache,
-)
 from switchyard.lib.backends.deterministic_routing_llm_backend import (
     DeterministicRoutingLLMBackend,
-)
-from switchyard.lib.backends.multi_llm_backend import (
-    build_native_backend,
-    resolve_llm_target,
 )
 from switchyard.lib.processors.escalation_judge_request_processor import (
     ESCALATION_JUDGE_SYSTEM_PROMPT,
@@ -28,12 +21,12 @@ from switchyard.lib.processors.reasoning_effort_normalizer import (
 )
 from switchyard.lib.processors.reasoning_hint import model_accepts_reasoning_hint
 from switchyard.lib.profiles.chain import ComponentChainProfile
-from switchyard.lib.profiles.deterministic_routing_profile_config import (
-    _apply_deepseek_overrides,
-    _apply_default_tier_timeout,
-)
 from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
 from switchyard.lib.profiles.table import profile_config
+from switchyard.lib.profiles.tier_target_builders import (
+    apply_deepseek_overrides,
+    build_tier_backend,
+)
 from switchyard.lib.session_affinity import SessionAffinity
 
 
@@ -68,7 +61,7 @@ class EscalationRouterProfileConfig:
         # DeepSeek judges get the same benchmark-gateway defaults as DeepSeek
         # tiers (``X-Inference-Priority: batch``) so their calls land on the
         # relaxed-timeout gateway alongside the routed tier traffic.
-        judge_target = _apply_deepseek_overrides(config.judge)
+        judge_target = apply_deepseek_overrides(config.judge)
         # Claude/Bedrock judges reject the vLLM-only chat_template_kwargs
         # hint outright — every judged turn would fail open to weak — so
         # the hint is only sent to models that tolerate it (same gate as
@@ -119,26 +112,11 @@ class EscalationRouterProfileConfig:
             ),
         ]
 
-        # Resolve format='auto' once after tier defaults are applied so
-        # backend selection and Anthropic cache wrapping see the same
-        # concrete target (mirrors the deterministic profile).
-        strong_target = resolve_llm_target(
-            _apply_deepseek_overrides(
-                _apply_default_tier_timeout(config.strong, config.tier_timeout_s),
-            ),
+        strong_target, strong_backend = build_tier_backend(
+            config.strong, config.tier_timeout_s,
         )
-        weak_target = resolve_llm_target(
-            _apply_deepseek_overrides(
-                _apply_default_tier_timeout(config.weak, config.tier_timeout_s),
-            ),
-        )
-        strong_backend = maybe_wrap_anthropic_cache(
-            build_native_backend(strong_target),
-            strong_target,
-        )
-        weak_backend = maybe_wrap_anthropic_cache(
-            build_native_backend(weak_target),
-            weak_target,
+        weak_target, weak_backend = build_tier_backend(
+            config.weak, config.tier_timeout_s,
         )
 
         backend = DeterministicRoutingLLMBackend(

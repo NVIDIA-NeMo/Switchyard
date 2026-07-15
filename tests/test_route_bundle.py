@@ -1101,7 +1101,7 @@ class TestDeterministicRouteType:
             return target
 
         monkeypatch.setattr(
-            "switchyard.lib.profiles.deterministic_routing_profile_config._apply_default_tier_timeout",
+            "switchyard.lib.profiles.tier_target_builders.apply_default_tier_timeout",
             fake_apply_default_tier_timeout,
         )
         bundle = self._bundle()
