@@ -1,0 +1,2494 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+      
+      
+      
+      
+        <link rel="prev" href="../operations/context_window/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CLI Reference - Switchyard</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/nvidia.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Switchyard" class="md-header__button md-logo" aria-label="Switchyard" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Switchyard
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA-NeMo/Switchyard" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA-NeMo/Switchyard
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Switchyard" class="md-nav__button md-logo" aria-label="Switchyard" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Switchyard
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA-NeMo/Switchyard" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA-NeMo/Switchyard
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../known_issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known Issues in 0.1.0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/agent_launchers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Launchers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/nemo_relay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    NeMo Relay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill_distillation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Distillation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core_concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Routing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/random_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Random Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM Classifier Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/sticky_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sticky Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stage-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/context_window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context-Window Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#verbs-at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verbs at a glance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#global-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global flags
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-cutting-flag-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-cutting flag families
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cross-cutting flag families">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#credentials-and-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and endpoint
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-format-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend format selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#intake-sink-serve-and-launchers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intake sink (serve and launchers)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rl-trace-logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RL trace logging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transport-server-verbs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport (server verbs)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resolution-waterfalls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolution waterfalls
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Resolution waterfalls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#api-key-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API-key resolution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#base-url-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base-URL resolution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#secretsjson-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        secrets.json format
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-serve" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard serve
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-launch-claude" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard launch claude
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-launch-codex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard launch codex
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-launch-openclaw" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard launch openclaw
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-configure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard configure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-verify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard verify
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#verbs-at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verbs at a glance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#global-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global flags
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-cutting-flag-families" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-cutting flag families
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cross-cutting flag families">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#credentials-and-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and endpoint
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-format-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend format selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#intake-sink-serve-and-launchers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Intake sink (serve and launchers)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rl-trace-logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RL trace logging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transport-server-verbs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport (server verbs)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resolution-waterfalls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolution waterfalls
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Resolution waterfalls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#api-key-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        API-key resolution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#base-url-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base-URL resolution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#secretsjson-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        secrets.json format
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-serve" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard serve
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-launch-claude" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard launch claude
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-launch-codex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard launch codex
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-launch-openclaw" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard launch openclaw
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-configure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard configure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switchyard-verify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard verify
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
+<p>This page is the canonical reference for every <code>switchyard</code> subcommand. It mirrors the output of <code>switchyard --help</code> and <code>switchyard &lt;verb&gt; --help</code>. If you spot drift, file a docs ticket. Tutorials and recipes live in <a href="../getting_started/">Getting Started</a>; this page is reference material only.</p>
+<h2 id="verbs-at-a-glance">Verbs at a glance<a class="headerlink" href="#verbs-at-a-glance" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Verb</th>
+<th>Audience</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#switchyard-serve"><code>serve</code></a></td>
+<td>Ops</td>
+<td>Long-running proxy server. Serve a v2 profile config with <code>serve --config</code>; each profile id and target id appears on <code>GET /v1/models</code>, and clients select one by setting the request <code>model</code>.</td>
+</tr>
+<tr>
+<td><a href="#switchyard-launch-claude"><code>launch claude</code></a></td>
+<td>Dev</td>
+<td>Spawns Claude Code against a local proxy. Auto-picks a free port, sets <code>ANTHROPIC_*</code> env vars, tears the proxy down when Claude exits. <code>--smoke</code> runs a one-shot harness round-trip and exits.</td>
+</tr>
+<tr>
+<td><a href="#switchyard-launch-codex"><code>launch codex</code></a></td>
+<td>Dev</td>
+<td>Spawns OpenAI Codex CLI against a local proxy and injects a transient <code>switchyard</code> provider via repeated <code>-c</code> flags. <code>--smoke</code> runs a one-shot Codex round-trip.</td>
+</tr>
+<tr>
+<td><a href="#switchyard-launch-openclaw"><code>launch openclaw</code></a></td>
+<td>Dev</td>
+<td>Spawns <code>openclaw chat</code> against a local proxy using a transient <code>openclaw.json</code>; the user's OpenClaw configuration is untouched. <code>--smoke</code> runs a one-shot agent turn.</td>
+</tr>
+<tr>
+<td><a href="#switchyard-configure"><code>configure</code></a></td>
+<td>Both</td>
+<td>Persists user-level defaults under <code>~/.config/switchyard/</code> (provider credentials, per-launcher model defaults, saved routing-profile path). With <code>--show</code>, also prints resolved provider, API-key source, and harness binary paths (and optional <code>GET /models</code> probe via <code>--check</code>). With <code>--list-models</code>, also prints a ranked / searchable list of the backend's models.</td>
+</tr>
+<tr>
+<td><a href="#switchyard-verify"><code>verify</code></a></td>
+<td>Ops</td>
+<td>Sequenced pass/fail checklist for proxy + backend only. K8s readiness probe / CI install gate. No harness binary required. For harness-driven smoke tests, see <code>launch {claude,codex,openclaw} --smoke</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="global-flags">Global flags<a class="headerlink" href="#global-flags" title="Permanent link">&para;</a></h2>
+<p>These apply to the top-level <code>switchyard</code> command, before any verb.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--version</code></td>
+<td>Print the installed Switchyard version (<code>switchyard X.Y.Z</code>) and exit. Reads the version from the installed package metadata.</td>
+</tr>
+<tr>
+<td><code>--routing-profiles PATH</code> / <code>-c PATH</code></td>
+<td>Deprecated legacy <a href="#routing">Routing</a> bundle applied to <code>serve</code>, <code>launch</code>, and <code>configure</code>. Pass before the verb; separate with <code>--</code> for clarity.</td>
+</tr>
+<tr>
+<td><code>--enable-rl-logging</code></td>
+<td>Write local <a href="#rl-trace-logging">RL trace logs</a> (one <code>message_history</code> JSON file per turn) for <code>launch</code> and <code>serve</code> route-bundle sessions. Pass before the verb: <code>switchyard --enable-rl-logging launch claude</code>. Rejected by <code>serve --config</code> (the Rust profile server has no Python processor chain).</td>
+</tr>
+<tr>
+<td><code>--rl-log-dir DIR</code></td>
+<td>Output directory for <code>--enable-rl-logging</code> traces (default: <code>./rl_data</code>). No effect without <code>--enable-rl-logging</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cross-cutting-flag-families">Cross-cutting flag families<a class="headerlink" href="#cross-cutting-flag-families" title="Permanent link">&para;</a></h2>
+<p>Most flags appear on more than one verb. Definitions live here so the per-verb sections can stay short.</p>
+<h3 id="credentials-and-endpoint">Credentials and endpoint<a class="headerlink" href="#credentials-and-endpoint" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--api-key VALUE</code></td>
+<td>API key for the backend. Resolves through the <a href="#api-key-resolution">API-key waterfall</a>.</td>
+</tr>
+<tr>
+<td><code>--base-url URL</code></td>
+<td>Backend base URL. Resolves through the <a href="#base-url-resolution">base-URL waterfall</a>.</td>
+</tr>
+<tr>
+<td><code>--provider ID</code></td>
+<td>Provider id for saved configuration (default: <code>openrouter</code>). Used by <code>configure</code> (setup, <code>--show</code>, and <code>--list-models</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="backend-format-selection">Backend format selection<a class="headerlink" href="#backend-format-selection" title="Permanent link">&para;</a></h3>
+<p>The <code>format</code> field in a target or route configuration controls the API used for
+upstream requests. Configuration files use these lowercase values:</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Upstream behavior</th>
+<th>Use when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>openai</code></td>
+<td>Sends to <code>/v1/chat/completions</code> without probing.</td>
+<td>The upstream is OpenAI-compatible, including NIM and OpenRouter.</td>
+</tr>
+<tr>
+<td><code>anthropic</code></td>
+<td>Sends to <code>/v1/messages</code> without probing.</td>
+<td>The upstream supports the Anthropic Messages API natively.</td>
+</tr>
+<tr>
+<td><code>responses</code></td>
+<td>Sends to <code>/v1/responses</code> without probing.</td>
+<td>The upstream supports the OpenAI Responses API natively.</td>
+</tr>
+<tr>
+<td><code>auto</code></td>
+<td>Probes the upstream and selects a supported format.</td>
+<td>The upstream is unknown or the same configuration must work across providers.</td>
+</tr>
+</tbody>
+</table>
+<p><code>auto</code> resolves formats in this order:</p>
+<ol>
+<li>Probe <code>/v1/messages</code>; use <code>anthropic</code> when supported.</li>
+<li>Probe <code>/v1/responses</code>; use <code>responses</code> when supported.</li>
+<li>Fall back to <code>openai</code> and <code>/v1/chat/completions</code>.</li>
+</ol>
+<p>Single-model Claude Code and Codex launches use <code>auto</code>. OpenClaw is pinned to
+<code>openai</code>. Prefer an explicit format when the upstream contract is known so
+startup does not require capability probes.</p>
+<h3 id="routing">Routing<a class="headerlink" href="#routing" title="Permanent link">&para;</a></h3>
+<p>Legacy routing policies that used to be standalone CLI verbs live in
+routing-profile YAML files. Route bundles are deprecated; use v2 profile
+configs for new <code>serve</code> setups. Two flags drive routing on <code>serve</code> and the
+launchers:</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--model ID</code></td>
+<td>Single-model passthrough. Every request is rewritten to <code>model=ID</code> and forwarded to <code>--base-url</code>.</td>
+</tr>
+<tr>
+<td><code>--routing-profiles PATH</code></td>
+<td>Deprecated path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>stage_router</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
+</tr>
+</tbody>
+</table>
+<p>On the launchers, the two flags are mutually exclusive: pass one or the other, not both.</p>
+<ul>
+<li><code>--model ID</code>: single-model passthrough. Any model id from <code>GET /v1/models</code> is accepted; every request is rewritten to <code>model=ID</code> and forwarded upstream.</li>
+<li><code>--routing-profiles PATH</code>: loads a multi-chain YAML bundle; the first declared route becomes the initial model.</li>
+</ul>
+<p>For legacy route-bundle <code>type: deterministic</code> routes, the <code>classifier:</code> block also accepts:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>Optional classifier system-prompt override. Leave unset or blank to use the selected profile's built-in prompt. <code>${ENV_VAR}</code> references are expanded when the bundle is loaded.</td>
+</tr>
+<tr>
+<td><code>max_request_chars</code></td>
+<td>Optional cap on the serialized request summary sent to the classifier before truncation. Defaults to <code>16000</code>; minimum <code>256</code>.</td>
+</tr>
+<tr>
+<td><code>recent_turn_window</code></td>
+<td>Number of trailing conversation turns included alongside the stable system/first-user anchors. Defaults to <code>4</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Benchmark runs started through <code>benchmark/run-baseline.sh --routing-profiles</code> record the effective classifier prompt, prompt SHA-256, <code>max_request_chars</code>, and <code>recent_turn_window</code> in <code>run_manifest.json</code> under <code>server.classifier_prompts</code>.</p>
+<p><strong>Selecting a v2 profile by id.</strong> A <code>serve --config</code> proxy exposes every profile id (and every target id) as a model on <code>GET /v1/models</code>. There is no separate "profile" flag. A client, or a launcher using <code>--model &lt;profile-id&gt;</code>, selects a profile simply by naming its id as the model. This is the v2 counterpart to picking a route from a bundle. This selection pattern is specific to v2 profile configs; legacy route-bundle configs still use route names as model IDs.</p>
+<h3 id="intake-sink-serve-and-launchers">Intake sink (serve and launchers)<a class="headerlink" href="#intake-sink-serve-and-launchers" title="Permanent link">&para;</a></h3>
+<p><code>serve</code> and launchers share the same Intake sink connection flags. <code>serve</code> wires intake processors into every route in the loaded bundle; requests still opt in with <code>store=true</code> or <code>x-switchyard-intake-enabled=true</code>. Launchers also inject those opt-in headers into the spawned client.</p>
+<blockquote>
+<p><strong>Note:</strong> Switchyard has two independent ways to capture training data. The <strong>Intake sink</strong> (this section) posts live captures to nemo-platform. <strong><code>--enable-rl-logging</code></strong> (a <a href="#global-flags">global flag</a>) writes local <code>message_history</code> JSON traces for <code>launch</code> and <code>serve</code> route-bundle sessions. See <a href="#rl-trace-logging">RL trace logging</a>. Either, both, or neither may be enabled.</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--intake-enabled</code> / <code>--enable-intake</code></td>
+<td>Enable the Intake sink. <code>--enable-intake</code> is a deprecated alias. Defaults to NMP SDK credentials (<code>nmp auth login</code> once).</td>
+</tr>
+<tr>
+<td><code>--intake-base-url URL</code></td>
+<td>Override intake base URL.</td>
+</tr>
+<tr>
+<td><code>--intake-workspace NAME</code></td>
+<td>Override workspace for Intake records.</td>
+</tr>
+<tr>
+<td><code>--intake-api-key VALUE</code></td>
+<td>Override bearer token. Disables the SDK's transparent refresh.</td>
+</tr>
+<tr>
+<td><code>--intake-nvdataflow-project PROJECT</code></td>
+<td>Post flat per-request telemetry to this NVDataflow project instead of chat-completions ingest. Defaults to <code>$SWITCHYARD_NVDATAFLOW_PROJECT</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Launchers additionally accept context fields stamped into each ingested request:</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--intake-app NAME</code></td>
+<td>App name stamped into the chat-completions ingest metadata.</td>
+</tr>
+<tr>
+<td><code>--intake-task NAME</code></td>
+<td>Task name stamped into the chat-completions ingest metadata (default: <code>developer-session</code>).</td>
+</tr>
+<tr>
+<td><code>--intake-session-id ID</code></td>
+<td>Session id stamped on every ingested request.</td>
+</tr>
+<tr>
+<td><code>--intake-user-id ID</code></td>
+<td>Anonymous user id stamped on every ingested request. Defaults to the stable per-machine id at <code>~/.switchyard/user_id</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The Intake sink posts live model-call captures to nemo-platform
+<code>/apis/intake/v2/workspaces/{workspace}/ingest/chat-completions</code>. That endpoint
+derives queryable token fields from <code>response.usage</code> and queryable cost fields
+from top-level <code>cost_usd</code>, <code>cost_input_usd</code>, <code>cost_output_usd</code>, and
+<code>cost_details</code>. Switchyard emits cost fields only when the served model has a
+known pricing entry; <code>routing_stats_final.json</code> remains the run-level source
+for aggregate routing/model cost estimates. When a session ID is present,
+Switchyard also maps the Intake app/task labels into top-level
+<code>evaluation_context.dataset_*</code> and <code>evaluation_context.test_case_id</code> for span
+queries while keeping the original labels under <code>request.switchyard</code>.</p>
+<h3 id="rl-trace-logging">RL trace logging<a class="headerlink" href="#rl-trace-logging" title="Permanent link">&para;</a></h3>
+<p><code>--enable-rl-logging</code> attaches a response-side logger to the proxy chain of any
+<code>launch</code> session or <code>serve --routing-profiles</code> bundle. Each completed turn
+(streaming or not) is written to its own JSON file under <code>--rl-log-dir</code>
+(default <code>./rl_data</code>), named <code>{timestamp}_trace_{id}_{id}.json</code>. The schema
+matches the pre-1.0 trace format:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">&quot;uuid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="err">…</span><span class="w"> </span><span class="kc">full</span><span class="w"> </span><span class="err">reques</span><span class="kc">t</span><span class="w"> </span><span class="err">his</span><span class="kc">t</span><span class="err">ory</span><span class="w"> </span><span class="err">…</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tool_calls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">…</span><span class="p">]}</span><span class="w"> </span><span class="p">],</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">&quot;tools&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;inputSchema&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;jsonSchema&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">…</span><span class="w"> </span><span class="p">}}}</span><span class="w"> </span><span class="p">],</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">&quot;tool_choice&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">&quot;token_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;prompt_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;completion_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;total_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">},</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">&quot;is_valid&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Turns without an assistant choice (e.g. upstream errors) are skipped. The flag
+works on <code>launch</code> and on <code>serve</code> with a route bundle; <code>serve --config</code> (the Rust
+profile server) rejects it, since it has no Python processor chain to attach to.</p>
+<h3 id="transport-server-verbs">Transport (server verbs)<a class="headerlink" href="#transport-server-verbs" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--host HOST</code></td>
+<td>Host to bind to (default: <code>0.0.0.0</code>).</td>
+</tr>
+<tr>
+<td><code>--port PORT</code> / <code>-p PORT</code></td>
+<td>Port to bind to (default: <code>4000</code>, or <code>server.port</code> from <code>secrets.json</code>).</td>
+</tr>
+<tr>
+<td><code>--reload</code></td>
+<td>Enable uvicorn auto-reload.</td>
+</tr>
+<tr>
+<td><code>--workers N</code> / <code>-w N</code></td>
+<td>Number of uvicorn worker processes (default: <code>1</code>, or <code>$SWITCHYARD_WORKERS</code>).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="resolution-waterfalls">Resolution waterfalls<a class="headerlink" href="#resolution-waterfalls" title="Permanent link">&para;</a></h2>
+<h3 id="api-key-resolution">API-key resolution<a class="headerlink" href="#api-key-resolution" title="Permanent link">&para;</a></h3>
+<p>Launcher and verify flows resolve the API key in this order, stopping at the
+first non-empty value:</p>
+<ol>
+<li><code>--api-key</code> on the CLI</li>
+<li><code>$OPENROUTER_API_KEY</code></li>
+<li><code>$NVIDIA_API_KEY</code></li>
+<li><code>$OPENAI_API_KEY</code></li>
+<li><code>$ANTHROPIC_API_KEY</code> (Claude/OpenClaw launchers and verify only)</li>
+<li><code>~/.config/switchyard/credentials.json</code> → the provider entry written by <code>configure</code> (launchers only)</li>
+<li><code>secrets/secrets.json</code> → first provider section with <code>api_key</code> set, with <code>openrouter</code> then <code>nvidia</code> checked first</li>
+</ol>
+<p>For OpenRouter, set <code>OPENROUTER_API_KEY</code>; <code>OPENROUTER_BASE_URL</code> is optional
+because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
+<h3 id="base-url-resolution">Base-URL resolution<a class="headerlink" href="#base-url-resolution" title="Permanent link">&para;</a></h3>
+<ol>
+<li><code>--base-url</code> on the CLI</li>
+<li>The base URL matching the selected environment credential:
+   <code>$OPENROUTER_BASE_URL</code>, <code>$NVIDIA_BASE_URL</code>, or <code>$OPENAI_BASE_URL</code></li>
+<li><code>~/.config/switchyard/config.json</code> → the selected provider written by
+   <code>configure</code> (launchers only)</li>
+<li><code>secrets/secrets.json</code> → same section traversal as the API key</li>
+<li>Default: OpenRouter (<code>https://openrouter.ai/api/v1</code>)</li>
+</ol>
+<h3 id="secretsjson-format"><code>secrets.json</code> format<a class="headerlink" href="#secretsjson-format" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;openrouter&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">&quot;api_key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">&quot;server&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4000</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="p">}</span>
+</span></code></pre></div>
+<p><code>secrets/</code> is gitignored. Never commit this file.</p>
+<h2 id="switchyard-serve"><code>switchyard serve</code><a class="headerlink" href="#switchyard-serve" title="Permanent link">&para;</a></h2>
+<p>Serve a long-running proxy from a Switchyard v2 <strong>profile config</strong>: one YAML/JSON/TOML file declaring <code>endpoints</code>, <code>targets</code>, and <code>profiles</code>. Files whose profiles are all Rust-defined use the Rust profile server. Files that include Python-defined profiles use the Python FastAPI adapter, while keeping the same endpoint paths. Each profile id and each target id is exposed as a model on <code>GET /v1/models</code>, so a client selects a profile by setting the request <code>model</code> to that id.</p>
+<p>The server exposes the OpenAI Chat Completions (<code>/v1/chat/completions</code>), Anthropic Messages (<code>/v1/messages</code>), and OpenAI Responses (<code>/v1/responses</code>) APIs on the same host and port.</p>
+<p><strong>Synopsis</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard [--routing-profiles PATH] serve [--config PATH]
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                 [--host HOST] [--port PORT] [--workers N]
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>                 [--reload] [--inbound FORMAT]
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>                 [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
+</span></code></pre></div>
+<p><strong>Flags</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--routing-profiles PATH</code> / <code>-c PATH</code></td>
+<td>Deprecated legacy <a href="#routing">Routing</a> path. Global flag; pass before <code>serve</code>. Falls back to the saved path from <code>switchyard --routing-profiles PATH -- configure</code>.</td>
+</tr>
+<tr>
+<td><code>--config PATH</code></td>
+<td>Switchyard v2 profile-config YAML/JSON/TOML entrypoint. This is the primary serve path. Mutually exclusive with <code>--routing-profiles</code>.</td>
+</tr>
+<tr>
+<td><code>--host</code>, <code>--port</code>/<code>-p</code>, <code>--reload</code></td>
+<td><a href="#transport-server-verbs">Transport</a>.</td>
+</tr>
+<tr>
+<td><code>--inbound FORMAT</code></td>
+<td>Valid only for legacy route-bundle serve (<code>--routing-profiles</code>); <code>serve --config</code> actively rejects it with an error. For legacy serve, the flag is a no-op — all request APIs are always registered regardless of the value (accepted for backwards compat only).</td>
+</tr>
+<tr>
+<td><code>--workers</code> / <code>-w</code></td>
+<td>uvicorn worker count.</td>
+</tr>
+<tr>
+<td><code>--intake-enabled</code> / <code>--enable-intake</code>, <code>--intake-base-url</code>, <code>--intake-workspace</code>, <code>--intake-api-key</code>, <code>--intake-nvdataflow-project</code></td>
+<td><a href="#intake-sink-serve-and-launchers">Intake sink</a>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Notes</strong></p>
+<ul>
+<li><code>serve</code> always registers <code>POST /v1/chat/completions</code>, <code>POST /v1/messages</code>, <code>POST /v1/responses</code>, <code>GET /v1/models</code>, and <code>GET /health</code>. There is no flag to expose just one request API.</li>
+<li><code>GET /v1/stats</code> and <code>GET /v1/routing/stats</code> are available on both serve paths.</li>
+<li>The deprecated route-bundle path accepts <code>--inbound</code> for compatibility but ignores it; all supported request APIs are always registered.</li>
+<li><code>serve --config</code> does not support <code>--reload</code>, <code>--workers &gt; 1</code>, Intake options, <code>--enable-rl-logging</code>, or any explicit <code>--inbound</code> value.</li>
+<li>Rust-defined and Python-defined profiles use the same profile-config schema. The profile <code>type</code> decides which implementation builds that profile.</li>
+<li>Python-defined profiles are registered via <code>@profile_config</code>; the shipped <code>header-routing</code> profile is an example. A config can mix a Rust-defined profile and a Python-defined profile, and both profile ids are routable on the same served host and port.</li>
+</ul>
+<p><strong>Examples</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># v2 profile config (primary): each profile id + target id is a model on /v1/models</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/profiles.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># select a profile by id (the `model` field):</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>curl<span class="w"> </span>localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart-stage-router&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># mixed Rust/Python profile config on the same request APIs</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/python_profile.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>curl<span class="w"> </span>localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;x-switchyard-tier: strong&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="c1"># Legacy route bundle on port 4000</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="c1"># Use the bundle previously persisted by `switchyard --routing-profiles ... -- configure`</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="c1"># Multi-worker uvicorn (route-bundle path)</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="nv">SWITCHYARD_WORKERS</span><span class="o">=</span><span class="m">4</span><span class="w"> </span>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve
+</span></code></pre></div>
+<h2 id="switchyard-launch-claude"><code>switchyard launch claude</code><a class="headerlink" href="#switchyard-launch-claude" title="Permanent link">&para;</a></h2>
+<p>Start a proxy on a free local port, spawn <code>claude</code> against it, and tear the proxy down when Claude exits.</p>
+<p><strong>Synopsis</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>switchyard [--routing-profiles PATH] launch claude [--model ID]
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>                         [--base-url URL] [--api-key VALUE]
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>                         [--port PORT] [--timeout SECONDS]
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>                         [--intake-enabled [INTAKE OVERRIDES]]
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>                         [--reconfigure] [--dry-run] [--smoke]
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>                         [--no-tui] [--no-model-discovery]
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>                         [-- CLAUDE_ARGS...]
+</span></code></pre></div>
+<p>When neither CLI routing flag is passed, <code>launch claude</code> uses a saved routing bundle
+first, then a saved <code>claude.model</code> as single-model passthrough. The built-in
+LLM-as-classifier route is the default only when neither a bundle nor a single-model
+default is resolved.</p>
+<p><strong>Flags</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--model</code>, <code>--routing-profiles</code></td>
+<td><a href="#routing">Routing</a>.</td>
+</tr>
+<tr>
+<td><code>--api-key</code>, <code>--base-url</code></td>
+<td><a href="#credentials-and-endpoint">Credentials</a>.</td>
+</tr>
+<tr>
+<td><code>--weak-model</code>, <code>--classifier-model</code>, <code>--profile</code>, <code>--classifier-min-confidence</code></td>
+<td>Tier overrides for the built-in LLM-as-classifier route. They are ignored when route resolution selects an explicit or saved bundle or single model.</td>
+</tr>
+<tr>
+<td><code>--intake-enabled</code> and overrides</td>
+<td><a href="#intake-sink-serve-and-launchers">Intake sink</a>.</td>
+</tr>
+<tr>
+<td><code>--port PORT</code></td>
+<td>Proxy port (default: auto-pick free port).</td>
+</tr>
+<tr>
+<td><code>--timeout SECONDS</code></td>
+<td>Request timeout for the backend LLM client.</td>
+</tr>
+<tr>
+<td><code>--reconfigure</code></td>
+<td>Run Claude setup before launching, even if defaults already exist.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>Print resolved launch settings without starting the proxy or Claude.</td>
+</tr>
+<tr>
+<td><code>--smoke</code></td>
+<td>Start the proxy, run one <code>claude -p "&lt;smoke&gt;" --max-turns 1</code> round-trip, assert exit <code>0</code>, and exit. Requires <code>--model</code>; cannot be combined with <code>--routing-profiles</code>.</td>
+</tr>
+<tr>
+<td><code>--no-tui</code></td>
+<td>First-run setup: use plain prompts instead of the TUI selector.</td>
+</tr>
+<tr>
+<td><code>--no-model-discovery</code></td>
+<td>First-run setup: skip <code>GET /models</code> and type the model manually.</td>
+</tr>
+<tr>
+<td><code>CLAUDE_ARGS</code></td>
+<td>Anything after <code>--</code> is forwarded verbatim to <code>claude</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Env vars set on the spawned <code>claude</code> process</strong></p>
+<ul>
+<li><code>ANTHROPIC_BASE_URL</code>: pointed at the local proxy</li>
+<li><code>ANTHROPIC_AUTH_TOKEN</code>: opaque placeholder; skips Console OAuth</li>
+<li><code>ANTHROPIC_API_KEY</code>: set to <code>""</code> to silence the auth-conflict warning</li>
+<li><code>ANTHROPIC_MODEL</code> and <code>ANTHROPIC_SMALL_FAST_MODEL</code>: pre-selected so Claude's <code>/model</code> picker shows your model</li>
+<li><code>ANTHROPIC_CUSTOM_MODEL_OPTION</code>: registers the model in Claude Code's custom model UI entry</li>
+<li><code>CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY</code>: tells Claude Code to call <code>GET /v1/models</code> on the proxy so the full registered route list appears in the picker</li>
+</ul>
+<p><strong>Examples</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Single-model passthrough</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Use a routing bundle</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>~/.config/switchyard/profiles.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># One-shot smoke test</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--smoke<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="c1"># Forward args to the underlying claude binary</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--<span class="w"> </span>--version
+</span></code></pre></div>
+<h2 id="switchyard-launch-codex"><code>switchyard launch codex</code><a class="headerlink" href="#switchyard-launch-codex" title="Permanent link">&para;</a></h2>
+<p>Start a proxy and spawn OpenAI Codex CLI against it. Codex talks to the proxy via
+the OpenAI Responses API (<code>/v1/responses</code>). For single-model launches,
+Switchyard probes the upstream and uses native Anthropic Messages, OpenAI
+Responses, or Chat Completions according to the provider's capabilities.</p>
+<p><strong>Synopsis</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>switchyard [--routing-profiles PATH] launch codex [--model ID]
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>                        [--base-url URL] [--api-key VALUE]
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>                        [--port PORT] [--timeout SECONDS]
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>                        [--intake-enabled [INTAKE OVERRIDES]]
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>                        [--reconfigure] [--dry-run] [--smoke]
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>                        [--no-tui] [--no-model-discovery]
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>                        [-- CODEX_ARGS...]
+</span></code></pre></div>
+<p>When neither CLI routing flag is passed, <code>launch codex</code> uses a saved routing bundle
+first, then a saved <code>codex.model</code> as single-model passthrough. The built-in
+LLM-as-classifier route is the default only when neither a bundle nor a single-model
+default is resolved. <code>--weak-model</code>, <code>--classifier-model</code>, <code>--profile</code>, and
+<code>--classifier-min-confidence</code> tune only that built-in route. <code>CODEX_ARGS</code> are forwarded
+verbatim to <code>codex</code>.</p>
+<p><strong>Provider override on the spawned <code>codex</code> process</strong></p>
+<p><code>launch codex</code> injects a transient <code>switchyard</code> provider into Codex via repeated <code>-c</code> flags. No edits to <code>~/.codex/config.toml</code> are required.</p>
+<p><strong>Examples</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>codex
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w"> </span>--smoke<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--<span class="w"> </span><span class="nb">exec</span><span class="w"> </span><span class="s2">&quot;explain this file&quot;</span>
+</span></code></pre></div>
+<h2 id="switchyard-launch-openclaw"><code>switchyard launch openclaw</code><a class="headerlink" href="#switchyard-launch-openclaw" title="Permanent link">&para;</a></h2>
+<p>For <a href="https://github.com/openclaw/openclaw">OpenClaw</a>. OpenClaw talks to the proxy via OpenAI Chat Completions (<code>/v1/chat/completions</code>); the chain translates as needed for the upstream backend.</p>
+<p><strong>Synopsis</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>switchyard [--routing-profiles PATH] launch openclaw [--model ID]
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>                           [--base-url URL] [--api-key VALUE]
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>                           [--port PORT] [--timeout SECONDS]
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>                           [--intake-enabled [INTAKE OVERRIDES]]
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>                           [--reconfigure] [--dry-run] [--smoke]
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>                           [--no-tui] [--no-model-discovery]
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>                           [-- OPENCLAW_ARGS...]
+</span></code></pre></div>
+<p>When neither CLI routing flag is passed, <code>launch openclaw</code> uses a saved routing bundle
+first, then a saved <code>openclaw.model</code> as single-model passthrough. The built-in
+LLM-as-classifier route is the default only when neither a bundle nor a single-model
+default is resolved. <code>--weak-model</code>, <code>--classifier-model</code>, <code>--profile</code>, and
+<code>--classifier-min-confidence</code> tune only that built-in route.</p>
+<p>The launcher spawns <code>openclaw chat</code>, an alias for <code>openclaw tui --local</code>, which is OpenClaw's interactive local terminal UI bound to the embedded agent runtime. <code>OPENCLAW_ARGS</code> are forwarded after <code>chat</code>, so pass <code>chat</code>-compatible flags (<code>--message</code>, <code>--thinking</code>, <code>--session</code>, etc.). <code>openclaw agent</code> is a non-interactive one-shot turn and is used only by the <code>--smoke</code> path.</p>
+<p><strong>Provider override on the spawned <code>openclaw</code> process</strong></p>
+<p><code>launch openclaw</code> writes a transient <code>openclaw.json</code> to a temporary directory and points OpenClaw at it via <code>OPENCLAW_STATE_DIR</code> / <code>OPENCLAW_HOME</code> / <code>OPENCLAW_CONFIG_PATH</code>. The transient config declares a <code>models.providers.switchyard</code> block with <code>api: "openai-completions"</code>, <code>baseUrl</code> pointing at the proxy, and <code>apiKey: "${SWITCHYARD_API_KEY}"</code> (the launcher sets <code>SWITCHYARD_API_KEY=switchyard</code>, an opaque placeholder; the proxy ignores inbound auth). The user's real <code>~/.openclaw/</code> (sessions, channels, plugins) is <strong>untouched</strong> for the duration of the launch.</p>
+<p>The tempdir is removed when <code>openclaw</code> exits, including on Ctrl-C.</p>
+<p><strong>Examples</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>openclaw
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w"> </span>--smoke<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--<span class="w"> </span>--message<span class="w"> </span><span class="s2">&quot;Hello&quot;</span>
+</span></code></pre></div>
+<h2 id="switchyard-configure"><code>switchyard configure</code><a class="headerlink" href="#switchyard-configure" title="Permanent link">&para;</a></h2>
+<p>Persist user-level Switchyard defaults under <code>~/.config/switchyard/</code>. Credentials are stored separately from non-secret config, with owner-only file permissions.
+Skill distillation config also lives in <code>~/.config/switchyard/config.json</code> under <code>skill_distillation</code> and can be updated without configuring provider credentials.</p>
+<p><strong>Synopsis</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --reset | --list-models]
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>                     [--target {all,provider,claude,codex,openclaw}]
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>                     [--query SUBSTRING] [--limit N]
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>                     [--provider ID]
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>                     [--base-url URL] [--api-key VALUE]
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>                     [--claude-model ID]   [--claude-base-url URL]   [--claude-api-key VALUE]
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>                     [--codex-model ID]    [--codex-base-url URL]    [--codex-api-key VALUE]
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>                     [--openclaw-model ID] [--openclaw-base-url URL] [--openclaw-api-key VALUE]
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>                     [--skill-distillation NAMESPACE] [--disable-skill-distillation]
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>                     [--no-model-discovery] [--no-tui]
+</span></code></pre></div>
+<p><strong>Modes (mutually exclusive)</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(none)</em></td>
+<td>Interactive setup. Prompts for any missing default; runs the model-discovery TUI unless <code>--no-model-discovery</code>.</td>
+</tr>
+<tr>
+<td><code>--show</code></td>
+<td>Print the redacted saved config plus a resolution snapshot: resolved provider, base URL, API-key source, saved Claude / Codex defaults, routing-profile summary, and paths to the <code>claude</code> and <code>codex</code> harness binaries. Pair with <code>--check</code> for a live <code>GET /models</code> probe, or <code>--json</code> to emit only the raw redacted JSON snapshot.</td>
+</tr>
+<tr>
+<td><code>--reset</code></td>
+<td>Delete persisted user config and credentials.</td>
+</tr>
+<tr>
+<td><code>--list-models</code></td>
+<td>Fetch <code>GET /models</code> from the resolved provider and print a ranked, searchable list. Pair with <code>--target {claude,codex}</code> for launcher-targeted ranking, <code>--query</code> to filter by substring, <code>--limit</code> to cap results.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Configuration knobs</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--target</code></td>
+<td>For setup: which defaults to write (<code>all</code> (default), <code>provider</code>, <code>claude</code>, <code>codex</code>, or <code>openclaw</code>). For <code>--list-models</code>: ranking target (<code>all</code>, <code>claude</code>, <code>codex</code>, or <code>openclaw</code>; <code>provider</code> is accepted and treated as <code>all</code>).</td>
+</tr>
+<tr>
+<td><code>--provider</code>, <code>--base-url</code>, <code>--api-key</code></td>
+<td>Provider-level defaults applied to every launcher. Also act as one-off overrides for <code>--show</code> (changes the row that's used to resolve "base URL source" and "API key source") and for the <code>--list-models</code> discovery call.</td>
+</tr>
+<tr>
+<td><code>--claude-*</code> / <code>--codex-*</code> / <code>--openclaw-*</code></td>
+<td>Per-launcher overrides on top of the provider defaults.</td>
+</tr>
+<tr>
+<td><code>--routing-profiles PATH</code></td>
+<td>Global flag; pass before <code>configure</code>. Parses the YAML at <code>PATH</code> and stores the parsed bundle inline in <code>~/.config/switchyard/config.json</code>. Subsequent <code>serve</code> and <code>launch</code> runs use this when no <code>--routing-profiles</code> is on the CLI. Pass an empty string to clear.</td>
+</tr>
+<tr>
+<td><code>--skill-distillation NAMESPACE</code></td>
+<td>Save a namespace for one skill that improves over time. Many sessions or trajectories can contribute to it; the namespace is not a session ID. This release stores only the namespace; session saving, distillation, and launch-time skill loading are separate implementation work.</td>
+</tr>
+<tr>
+<td><code>--disable-skill-distillation</code></td>
+<td>Remove the saved skill distillation config. Cannot be combined with <code>--skill-distillation</code>.</td>
+</tr>
+<tr>
+<td><code>--query</code> / <code>-q SUBSTRING</code></td>
+<td>With <code>--list-models</code>, case-insensitive substring filter.</td>
+</tr>
+<tr>
+<td><code>--limit N</code></td>
+<td>With <code>--list-models</code>, cap on the number of models printed (default: 50; pass <code>0</code> for unlimited).</td>
+</tr>
+<tr>
+<td><code>--no-model-discovery</code></td>
+<td>Skip <code>GET /models</code> and rely on explicit or existing model values during interactive setup.</td>
+</tr>
+<tr>
+<td><code>--no-tui</code></td>
+<td>Use plain text prompts instead of the TUI selector.</td>
+</tr>
+<tr>
+<td><code>--check</code></td>
+<td>With <code>--show</code>, call <code>GET /models</code> against the resolved provider and report pass/fail in the output.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Skill distillation config</strong></p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;skill_distillation&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="nt">&quot;namespace&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tooluniverse-trialqa&quot;</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
+One namespace identifies one skill that improves over time, and many sessions or trajectories can contribute to it. Use a different namespace when you want a separate skill. A namespace is not a session ID; each future launcher run will receive its own internal session ID.
+The top-level key is omitted when skill distillation is not configured. <code>namespace</code> is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.</p>
+<p><strong>Examples</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># First-run interactive setup</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>switchyard<span class="w"> </span>configure
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Save a routing bundle as the default for serve + launchers</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Inspect what&#39;s stored, plus resolved provider / key source / harness paths</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="c1"># Inspect plus live GET /models probe</span>
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--check
+</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>
+</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="c1"># Raw redacted JSON, e.g. for tooling</span>
+</span><span id="__span-12-14"><a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--json
+</span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>
+</span><span id="__span-12-16"><a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a><span class="c1"># One-off override for a probe (without persisting anything)</span>
+</span><span id="__span-12-17"><a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--check
+</span><span id="__span-12-18"><a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a>
+</span><span id="__span-12-19"><a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a><span class="c1"># Browse the backend&#39;s models</span>
+</span><span id="__span-12-20"><a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--list-models<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--query<span class="w"> </span>gpt
+</span><span id="__span-12-21"><a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--list-models<span class="w"> </span>--limit<span class="w"> </span><span class="m">0</span><span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1
+</span><span id="__span-12-22"><a id="__codelineno-12-22" name="__codelineno-12-22" href="#__codelineno-12-22"></a>
+</span><span id="__span-12-23"><a id="__codelineno-12-23" name="__codelineno-12-23" href="#__codelineno-12-23"></a><span class="c1"># Set just the Claude default model non-interactively</span>
+</span><span id="__span-12-24"><a id="__codelineno-12-24" name="__codelineno-12-24" href="#__codelineno-12-24"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--claude-model<span class="w"> </span>openai/gpt-4o-mini<span class="w"> </span>--no-tui
+</span><span id="__span-12-25"><a id="__codelineno-12-25" name="__codelineno-12-25" href="#__codelineno-12-25"></a>
+</span><span id="__span-12-26"><a id="__codelineno-12-26" name="__codelineno-12-26" href="#__codelineno-12-26"></a><span class="c1"># Non-interactive / CI: save provider credentials only (no launcher models required)</span>
+</span><span id="__span-12-27"><a id="__codelineno-12-27" name="__codelineno-12-27" href="#__codelineno-12-27"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span>--provider<span class="w"> </span>openrouter<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-28"><a id="__codelineno-12-28" name="__codelineno-12-28" href="#__codelineno-12-28"></a><span class="w">  </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-29"><a id="__codelineno-12-29" name="__codelineno-12-29" href="#__codelineno-12-29"></a><span class="w">  </span>--no-tui<span class="w"> </span>--no-model-discovery
+</span><span id="__span-12-30"><a id="__codelineno-12-30" name="__codelineno-12-30" href="#__codelineno-12-30"></a>
+</span><span id="__span-12-31"><a id="__codelineno-12-31" name="__codelineno-12-31" href="#__codelineno-12-31"></a><span class="c1"># Save a skill distillation namespace without provider credentials</span>
+</span><span id="__span-12-32"><a id="__codelineno-12-32" name="__codelineno-12-32" href="#__codelineno-12-32"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--skill-distillation<span class="w"> </span>tooluniverse-trialqa
+</span><span id="__span-12-33"><a id="__codelineno-12-33" name="__codelineno-12-33" href="#__codelineno-12-33"></a>
+</span><span id="__span-12-34"><a id="__codelineno-12-34" name="__codelineno-12-34" href="#__codelineno-12-34"></a><span class="c1"># Remove the skill distillation namespace without touching provider credentials</span>
+</span><span id="__span-12-35"><a id="__codelineno-12-35" name="__codelineno-12-35" href="#__codelineno-12-35"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--disable-skill-distillation
+</span><span id="__span-12-36"><a id="__codelineno-12-36" name="__codelineno-12-36" href="#__codelineno-12-36"></a>
+</span><span id="__span-12-37"><a id="__codelineno-12-37" name="__codelineno-12-37" href="#__codelineno-12-37"></a><span class="c1"># Wipe everything</span>
+</span><span id="__span-12-38"><a id="__codelineno-12-38" name="__codelineno-12-38" href="#__codelineno-12-38"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--reset
+</span></code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Non-interactive / CI usage</p>
+<p><strong><code>--target all</code> (the default) requires launcher models in no-TTY mode.</strong> Without a
+TTY or <code>--claude-model</code> / <code>--codex-model</code> / <code>--openclaw-model</code>, the command exits with
+<code>No Claude model configured or discovered</code>. Pass <code>--target provider</code> to save only
+provider credentials, or supply explicit <code>--claude-model</code> / <code>--codex-model</code> / <code>--openclaw-model</code> values.</p>
+<p><strong><code>configure</code> requires an explicit <code>--api-key</code> flag.</strong> It does not read <code>OPENROUTER_API_KEY</code>
+(or any other <code>*_API_KEY</code> environment variable) and does not read <code>api_key</code> from a
+routing-profile bundle (<code>--routing-profiles</code>). Always pass <code>--api-key</code> when running
+non-interactively.</p>
+</div>
+<h2 id="switchyard-verify"><code>switchyard verify</code><a class="headerlink" href="#switchyard-verify" title="Permanent link">&para;</a></h2>
+<p>Sequenced pass/fail checklist that confirms a Switchyard install works end-to-end against a real backend, without spawning a harness binary. Fast (~1–3s on a healthy stack); suitable for K8s readiness probes and pre-deployment smoke tests.</p>
+<p>For harness-driven smoke tests (proxy + spawn <code>claude</code> / <code>codex</code> / <code>openclaw</code> once with a fixed prompt), use <a href="#switchyard-launch-claude"><code>launch claude --smoke</code></a> / <a href="#switchyard-launch-codex"><code>launch codex --smoke</code></a> / <a href="#switchyard-launch-openclaw"><code>launch openclaw --smoke</code></a> instead.</p>
+<p><strong>Synopsis</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>switchyard verify [--model ID] [--base-url URL] [--api-key VALUE]
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>                  [--port PORT] [--timeout SECONDS]
+</span></code></pre></div>
+<p><strong>Example model</strong></p>
+<p><code>openai/gpt-4o-mini</code> is a portable OpenRouter example. Pass <code>--model</code> when
+your provider uses a different model ID.</p>
+<p><strong>Checklist</strong></p>
+<ol>
+<li>Resolve credentials (CLI → env → <code>secrets.json</code>).</li>
+<li>Reach the backend via <code>GET /models</code>.</li>
+<li>Probe <code>/v1/chat/completions</code>, <code>/v1/messages</code>, and <code>/v1/responses</code> support (informational; informs <code>BackendFormat.AUTO</code>).</li>
+<li>Start a proxy on a free port.</li>
+<li>Round-trip a chat completion through the chain.</li>
+<li>Tear the proxy down.</li>
+</ol>
+<p><strong>Exit codes</strong></p>
+<ul>
+<li><code>0</code>: every step passed.</li>
+<li>Non-zero: first failing step; the error message names the source it tried and what to fix.</li>
+</ul>
+<p><strong>Examples</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>switchyard<span class="w"> </span>verify
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1
+</span></code></pre></div>
+<h2 id="environment-variables">Environment variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OPENROUTER_API_KEY</code>, <code>NVIDIA_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code></td>
+<td>Backend credentials. Resolved in this order by launchers and <code>verify</code>; <code>ANTHROPIC_API_KEY</code> is only consulted where Anthropic input is supported.</td>
+</tr>
+<tr>
+<td><code>OPENROUTER_BASE_URL</code>, <code>NVIDIA_BASE_URL</code>, <code>OPENAI_BASE_URL</code></td>
+<td>Backend base URL overrides paired with the selected provider credential.</td>
+</tr>
+<tr>
+<td><code>OPENAI_API_BASE</code></td>
+<td>Legacy alias for <code>OPENAI_BASE_URL</code>. Consulted as a last fallback when neither <code>--base-url</code> nor <code>OPENAI_BASE_URL</code> is set. Prefer <code>OPENAI_BASE_URL</code> for new configurations.</td>
+</tr>
+<tr>
+<td><code>SWITCHYARD_INTAKE_ENABLED</code></td>
+<td>Boolean equivalent of <code>--intake-enabled</code> / <code>--enable-intake</code>. Set to <code>1</code> or <code>true</code> to enable the intake sink without a CLI flag. Precedence: CLI flag first, then this env var.</td>
+</tr>
+<tr>
+<td><code>SWITCHYARD_NVDATAFLOW_PROJECT</code></td>
+<td>NVDataflow project name for the alternate intake sink (paired with <code>--intake-nvdataflow-project</code>). Precedence: CLI flag first, then this env var.</td>
+</tr>
+<tr>
+<td><code>SWITCHYARD_WORKERS</code></td>
+<td>Default uvicorn worker count for <code>serve</code>.</td>
+</tr>
+<tr>
+<td><code>SWITCHYARD_TELEMETRY_OPT_OUT</code></td>
+<td>Disable the <code>X-Switchyard-Version</code> telemetry header on outbound calls. <code>NEMO_SWITCHYARD_TELEMETRY_OPT_OUT</code> is honored for backwards compatibility.</td>
+</tr>
+<tr>
+<td><code>SWITCHYARD_INTAKE_BASE_URL</code>, <code>SWITCHYARD_INTAKE_WORKSPACE</code>, <code>SWITCHYARD_INTAKE_API_KEY</code>, <code>SWITCHYARD_INTAKE_APP</code>, <code>SWITCHYARD_INTAKE_TASK</code>, <code>SWITCHYARD_SESSION_ID</code>, <code>SWITCHYARD_USER_ID</code></td>
+<td>Intake-sink overrides for CI / headless runs. Precedence: the matching CLI flag (e.g. <code>--intake-user-id</code>) first, then the env var, then any persisted / SDK default (e.g. <code>~/.switchyard/user_id</code>).</td>
+</tr>
+<tr>
+<td><code>NMP_ACCESS_TOKEN</code></td>
+<td>Fallback bearer token for the intake sink when the NMP SDK config is not present.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../getting_started/">Getting Started</a>: install Switchyard and run your first request.</li>
+<li><a href="../architecture/">Architecture</a>: system context and end-to-end request flow.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2025-2026 NVIDIA Corporation
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.top", "navigation.sections", "search.suggest", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
