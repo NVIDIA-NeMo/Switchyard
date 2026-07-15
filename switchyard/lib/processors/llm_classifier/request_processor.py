@@ -22,6 +22,7 @@ from switchyard.lib.processors.llm_classifier.signals import (
     RouteSignals,
     RouteTier,
 )
+from switchyard.lib.processors.message_condensing import strip_markdown_fence, trim_messages
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard.lib.stats_accumulator import StatsAccumulator
@@ -453,7 +454,7 @@ def parse_route_decision(
     schema: type[RouteDecision] = RouteSignals,
 ) -> RouteDecision:
     """Parse classifier JSON output against the given decision schema."""
-    stripped = _strip_markdown_fence(raw)
+    stripped = strip_markdown_fence(raw)
     try:
         return schema.model_validate_json(stripped)
     except ValidationError as exc:
@@ -524,11 +525,11 @@ def _condense_body(
 
     messages = body.get("messages")
     if isinstance(messages, list):
-        out["messages"] = _trim_messages(messages, recent_turn_window=recent_turn_window)
+        out["messages"] = trim_messages(messages, recent_turn_window=recent_turn_window)
 
     raw_input = body.get("input")
     if isinstance(raw_input, list):
-        out["input"] = _trim_messages(raw_input, recent_turn_window=recent_turn_window)
+        out["input"] = trim_messages(raw_input, recent_turn_window=recent_turn_window)
     elif isinstance(raw_input, str):
         out["input"] = raw_input
 
@@ -550,78 +551,6 @@ def _condense_tool(tool: Any) -> Any:
     return {k: v for k, v in tool.items() if k != "input_schema"}
 
 
-def _trim_messages(messages: list[Any], *, recent_turn_window: int = 0) -> list[Any]:
-    """Keep system + first-user anchor + a trailing window of messages.
-
-    Anchors retained unconditionally:
-
-    * system / developer messages — global framing the classifier
-      always needs.
-    * the **first** user message — agent frameworks like terminus-2
-      bundle task framing into ``role="user"`` rather than ``system``;
-      losing it leaves the classifier blind to what the agent is
-      working on.
-
-    Trailing window controlled by ``recent_turn_window``:
-
-    * ``0`` (default) — keep only the last user message. Smallest
-      classifier prompt, but blind to recent assistant tool calls and
-      tool results, so signal estimation (``tool_call_count_estimate``,
-      DEBUG-vs-EXPLORATION turn type) must guess from a terse
-      "Continue" echo. Tends to over-escalate on pessimistic
-      classifiers.
-    * ``N >= 1`` — keep the last ``N`` non-anchor messages
-      (assistant / tool / non-first user) in original order. Gives
-      the classifier visibility into recent agent activity. Each new
-      turn appends to a stable prefix the upstream can prompt-cache,
-      so the extra tokens are nearly free on cache-discounted backends
-      (DeepSeek V4 Flash ~98% cache discount).
-    """
-    system_msgs: list[Any] = []
-    first_user: Any = None
-    first_user_idx: int | None = None
-    for idx, m in enumerate(messages):
-        if not isinstance(m, dict):
-            continue
-        role = m.get("role")
-        if role in ("system", "developer"):
-            system_msgs.append(m)
-        elif role == "user" and first_user is None:
-            first_user = m
-            first_user_idx = idx
-
-    if first_user is None:
-        return system_msgs
-
-    # Candidate tail = everything after the first user message that
-    # isn't a system/developer anchor (those are already included).
-    tail_candidates = [
-        m
-        for idx, m in enumerate(messages)
-        if idx > (first_user_idx or 0)
-        and isinstance(m, dict)
-        and m.get("role") not in ("system", "developer")
-    ]
-
-    if recent_turn_window <= 0:
-        # Historical behavior: keep only the last user message.
-        last_user: Any = None
-        for m in tail_candidates:
-            if m.get("role") == "user":
-                last_user = m
-        if last_user is None:
-            return [*system_msgs, first_user]
-        if last_user is first_user:
-            return [*system_msgs, first_user]
-        return [*system_msgs, first_user, last_user]
-
-    window = tail_candidates[-recent_turn_window:]
-    # Filter out the first user (already pinned) to avoid duplicating
-    # it if the window reaches back that far on short conversations.
-    window = [m for m in window if m is not first_user]
-    return [*system_msgs, first_user, *window]
-
-
 def _completion_content(result: Any) -> str:
     choices = getattr(result, "choices", None)
     if not choices:
@@ -632,19 +561,6 @@ def _completion_content(result: Any) -> str:
     if isinstance(content, str) and content.strip():
         return content
     raise LLMClassifierError("classifier completion had empty content")
-
-
-def _strip_markdown_fence(raw: str) -> str:
-    stripped = raw.strip()
-    if not stripped.startswith("```"):
-        return stripped
-
-    lines = stripped.splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
 
 
 __all__ = [
