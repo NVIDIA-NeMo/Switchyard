@@ -1436,7 +1436,17 @@ a client-selectable model.</p>
 <tr>
 <td><code>judge.disable_reasoning</code></td>
 <td><code>true</code></td>
-<td>Set to <code>false</code> when a reasoning judge benefits from thinking despite the added latency.</td>
+<td>Set to <code>false</code> when a reasoning judge benefits from thinking despite the added latency. The thinking-off hint is only sent to models that accept it (Claude/Bedrock judges never receive it).</td>
+</tr>
+<tr>
+<td><code>judge.max_completion_tokens</code></td>
+<td>auto</td>
+<td>The judge's completion budget needs an explicit value. The default follows the reasoning mode: <code>128</code> with thinking off, <code>4096</code> with thinking on (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn).</td>
+</tr>
+<tr>
+<td><code>judge.dump_verdicts</code></td>
+<td><code>false</code></td>
+<td>Benchmark runs need per-turn <code>escalation_verdict=</code> stderr lines (includes a first-user <code>task_hint</code> snippet). Keep off in production; routing telemetry flows through the stats endpoints.</td>
 </tr>
 <tr>
 <td><code>judge.recent_turn_window</code></td>
@@ -1477,6 +1487,26 @@ a client-selectable model.</p>
 <td><code>affinity_max_sessions</code></td>
 <td><code>10000</code></td>
 <td>A long-lived process needs a different in-memory latch capacity.</td>
+</tr>
+<tr>
+<td><code>affinity_store</code></td>
+<td><code>memory</code></td>
+<td>Set to <code>redis</code> to share the escalation latch across workers and keep it across pod churn; with <code>memory</code>, a worker change silently restarts an escalated conversation on weak. Best-effort — a store error never fails a request.</td>
+</tr>
+<tr>
+<td><code>affinity_store_url</code></td>
+<td>—</td>
+<td>Connection URL for the shared latch store (e.g. <code>redis://host:6379/0</code>); required with <code>affinity_store: redis</code>.</td>
+</tr>
+<tr>
+<td><code>affinity_store_ttl_seconds</code></td>
+<td><code>3600</code></td>
+<td>A shared latch entry should expire on a different horizon.</td>
+</tr>
+<tr>
+<td><code>affinity_key_prefix</code></td>
+<td><code>swyd:esc:</code></td>
+<td>Multiple deployments share one Redis and need namespaced keys.</td>
 </tr>
 <tr>
 <td><code>session_key_depth</code></td>
