@@ -404,8 +404,8 @@ impl Algorithm for EnsembleOrchAlgo {
 mod tests {
     use super::*;
     use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
-    use switchyard_protocol::text_response;
     use std::sync::Mutex as StdMutex;
+    use switchyard_protocol::text_response;
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
     /// for the judge model, returns the 1-based number of the response whose

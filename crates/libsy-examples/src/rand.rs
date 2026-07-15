@@ -99,8 +99,8 @@ impl Algorithm for RandomOrchAlgo {
 mod tests {
     use super::*;
     use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
-    use switchyard_protocol::{completion_text, text_request, text_response};
     use std::collections::HashSet;
+    use switchyard_protocol::{completion_text, text_request, text_response};
 
     /// Echoes back the target name it was called with, so a test can tell which
     /// target the algo selected.
