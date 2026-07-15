@@ -620,6 +620,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#5-classifier-prompt-includes-system-boilerplate-minor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Classifier prompt includes system boilerplate (minor)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#toolchain-note" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1235,6 +1246,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#5-classifier-prompt-includes-system-boilerplate-minor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Classifier prompt includes system boilerplate (minor)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#toolchain-note" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1315,23 +1337,32 @@ prompt, sent both ways through Path A:</p>
 <p><strong>Owner:</strong> libsy. Streaming exists on the unmerged <code>grclark/simple-proxy</code>
 branch; when it lands, this fixes with no recipe changes.</p>
 <h2 id="2-classifier-scoring-call-rejected-upstream-http-400">2. Classifier scoring call rejected upstream (HTTP 400)<a class="headerlink" href="#2-classifier-scoring-call-rejected-upstream-http-400" title="Permanent link">&para;</a></h2>
-<p>In a live TUI session, buffered calls reached libsy and produced classifier
-decisions, but the scoring call to Anthropic failed with
-<code>invalid_request:http_400</code>. Leading suspect: <code>LlmClassifierOrchAlgo</code> sets no
-output params and the Anthropic encoder defaults <code>max_tokens</code> to 128,000,
-above Haiku's output ceiling. Not yet proven; see issue 4.</p>
-<p><strong>Owner:</strong> switchyard-translation (encoder default) and libsy reference
-algorithms (set explicit output params on synthesized calls).</p>
+<p>Root cause proven by capturing the request the plugin sends:
+<code>LlmClassifierOrchAlgo</code> sets no output params (<code>..LlmRequest::default()</code>,
+<code>llm_class.rs</code>), and the Anthropic encoder injects a hardcoded default of
+<code>max_tokens: 128000</code> when unset (<code>codecs/anthropic/buffered.rs:207</code>). Haiku
+4.5's output ceiling is 64,000, so Anthropic rejects the scoring call with
+HTTP 400 and the whole request falls back (via issue 3).</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-haiku-4-5-20251001&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;max_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">128000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]}</span>
+</span></code></pre></div>
+<p><strong>Owner:</strong> switchyard-translation (remove or clamp the 128k default) and libsy
+reference algorithms (set explicit small output params; a score needs a few
+tokens). Not a Relay issue.</p>
 <h2 id="3-no-fail-open-on-classifier-call-errors">3. No fail-open on classifier call errors<a class="headerlink" href="#3-no-fail-open-on-classifier-call-errors" title="Permanent link">&para;</a></h2>
 <p><code>LlmClassifierOrchAlgo</code> fails open only on an unparseable score. A classifier
 call <em>error</em> propagates and kills the run, so the whole request falls back
 instead of routing strong.</p>
 <p><strong>Owner:</strong> libsy reference algorithms.</p>
 <h2 id="4-provider-errors-are-opaque-in-routing-events">4. Provider errors are opaque in routing events<a class="headerlink" href="#4-provider-errors-are-opaque-in-routing-events" title="Permanent link">&para;</a></h2>
-<p>The Relay plugin condenses upstream failures to summaries like
-<code>invalid_request:http_400</code>, discarding the response body. Issue 2 had to be
-root-caused from source instead of logs.</p>
-<p><strong>Owner:</strong> Relay plugin.</p>
+<p>The Relay plugin's <code>provider_error_summary</code> formats upstream failures as
+<code>class:http_status</code> and discards the response body. Issue 2 had to be
+root-caused by capturing the request instead of reading the logs.</p>
+<p><strong>Owner:</strong> Relay plugin. Not a libsy issue.</p>
+<h2 id="5-classifier-prompt-includes-system-boilerplate-minor">5. Classifier prompt includes system boilerplate (minor)<a class="headerlink" href="#5-classifier-prompt-includes-system-boilerplate-minor" title="Permanent link">&para;</a></h2>
+<p><code>LlmClassifierOrchAlgo</code> builds its scoring prompt by flattening all text in
+the request, so agent system content (billing headers, system reminders)
+precedes the user's question. Does not fail, but skews scores.</p>
+<p><strong>Owner:</strong> libsy reference algorithms.</p>
 <h2 id="toolchain-note">Toolchain note<a class="headerlink" href="#toolchain-note" title="Permanent link">&para;</a></h2>
 <p>Relay pins rustc 1.93.0; Switchyard's MSRV is 1.96.1. Prefix Relay builds with
 <code>RUSTUP_TOOLCHAIN=1.96.1</code> until the toolchains converge.</p>

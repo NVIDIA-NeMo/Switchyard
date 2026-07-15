@@ -1311,7 +1311,7 @@
 
 <h1 id="nemo-relay-recipe">NeMo Relay Recipe<a class="headerlink" href="#nemo-relay-recipe" title="Permanent link">&para;</a></h1>
 <p>Run Switchyard <strong>as a library</strong> inside <a href="https://github.com/NVIDIA/NeMo-Relay">NeMo Relay</a>:
-routing decisions are made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8def2ed343ece588556fc960f28a96a2e5bdc38d/crates/libsy/README.md">libsy</a>
+routing decisions are made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ddd3fe9d92bd53011a154d89bc46baa4ba36a029/crates/libsy/README.md">libsy</a>
 while Relay owns the proxy, dispatch, credentials, and observability. No
 <code>switchyard serve</code> process is involved.</p>
 <p>libsy never performs a network call: each offloaded <code>CallLlm</code> promise is
@@ -1336,8 +1336,8 @@ model, and protocol.</p>
 <h2 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h2>
 <p>Copy the two example configs into the project you will launch from:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8def2ed343ece588556fc960f28a96a2e5bdc38d/examples/nemo_relay/config.toml">examples/nemo_relay/config.toml</a> → <code>.nemo-relay/config.toml</code></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8def2ed343ece588556fc960f28a96a2e5bdc38d/examples/nemo_relay/plugins.toml">examples/nemo_relay/plugins.toml</a> → <code>.nemo-relay/plugins.toml</code></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ddd3fe9d92bd53011a154d89bc46baa4ba36a029/examples/nemo_relay/config.toml">examples/nemo_relay/config.toml</a> → <code>.nemo-relay/config.toml</code></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ddd3fe9d92bd53011a154d89bc46baa4ba36a029/examples/nemo_relay/plugins.toml">examples/nemo_relay/plugins.toml</a> → <code>.nemo-relay/plugins.toml</code></li>
 </ul>
 <p>The plugin config selects <code>decision_backend = "libsy"</code> with the LLM-classifier
 algorithm: a Haiku target scores each request, and the score routes to an Opus
@@ -1382,7 +1382,7 @@ in-process and Relay dispatched the routed call.</p>
 <li>The conversation IR (<code>LlmRequest</code> / <code>LlmResponse</code> from <code>libsy-protocol</code>),
   which Relay already speaks through <code>switchyard-translation</code>.</li>
 </ul>
-<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8def2ed343ece588556fc960f28a96a2e5bdc38d/crates/libsy/README.md">libsy README</a> for the full API.</p>
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ddd3fe9d92bd53011a154d89bc46baa4ba36a029/crates/libsy/README.md">libsy README</a> for the full API.</p>
 
 
 
