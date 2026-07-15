@@ -621,10 +621,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#s4-classifier-scores-system-boilerplate-not-the-users-question-libsy-examples" class="md-nav__link">
+  <a href="#s4-classifier-input-is-flattened-and-untrimmed-libsy-examples" class="md-nav__link">
     <span class="md-ellipsis">
       
-        S4. Classifier scores system boilerplate, not the user's question (libsy-examples)
+        S4. Classifier input is flattened and untrimmed (libsy-examples)
       
     </span>
   </a>
@@ -1281,10 +1281,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#s4-classifier-scores-system-boilerplate-not-the-users-question-libsy-examples" class="md-nav__link">
+  <a href="#s4-classifier-input-is-flattened-and-untrimmed-libsy-examples" class="md-nav__link">
     <span class="md-ellipsis">
       
-        S4. Classifier scores system boilerplate, not the user's question (libsy-examples)
+        S4. Classifier input is flattened and untrimmed (libsy-examples)
       
     </span>
   </a>
@@ -1419,16 +1419,15 @@ few tokens).</p>
 <h3 id="s3-no-fail-open-on-classifier-call-errors-libsy-examples">S3. No fail-open on classifier call errors (libsy-examples)<a class="headerlink" href="#s3-no-fail-open-on-classifier-call-errors-libsy-examples" title="Permanent link">&para;</a></h3>
 <p><code>LlmClassifierOrchAlgo</code> fails open only on an unparseable score. A classifier
 call <em>error</em> propagates and kills the run, so the whole request falls back
-instead of routing strong.</p>
-<h3 id="s4-classifier-scores-system-boilerplate-not-the-users-question-libsy-examples">S4. Classifier scores system boilerplate, not the user's question (libsy-examples)<a class="headerlink" href="#s4-classifier-scores-system-boilerplate-not-the-users-question-libsy-examples" title="Permanent link">&para;</a></h3>
-<p><code>LlmClassifierOrchAlgo</code> builds its scoring prompt by flattening instructions
-and all messages of every role, so agent system content (billing headers,
-system reminders) precedes the user's question. Captured in a live session:
-the prompt opens with Claude Code's billing header rather than the request
-being scored. The preexisting Python classifier
-(<code>routellm_request_processor.py</code>) scores only the latest user message; this
-is a behavior change introduced with the rewrite. Requests do not fail, but
-every routing score is computed over the wrong text.</p>
+instead of routing strong. The previous <code>llm-routing</code> profile failed open on
+classifier errors by default (<code>classifier_fail_open</code>).</p>
+<h3 id="s4-classifier-input-is-flattened-and-untrimmed-libsy-examples">S4. Classifier input is flattened and untrimmed (libsy-examples)<a class="headerlink" href="#s4-classifier-input-is-flattened-and-untrimmed-libsy-examples" title="Permanent link">&para;</a></h3>
+<p><code>LlmClassifierOrchAlgo</code> flattens instructions and all messages of every role
+into one string, and includes the full conversation on every score. The
+previous <code>llm-routing</code> classifier sent a structured, trimmed selection
+(system messages, first user message, recent turns) with a task-specific
+prompt and structured output. Requests do not fail, but scores are computed
+over unstructured, unbounded input.</p>
 <h2 id="nemo-relay-improvements">NeMo Relay improvements<a class="headerlink" href="#nemo-relay-improvements" title="Permanent link">&para;</a></h2>
 <h3 id="r1-provider-errors-are-opaque-in-routing-events">R1. Provider errors are opaque in routing events<a class="headerlink" href="#r1-provider-errors-are-opaque-in-routing-events" title="Permanent link">&para;</a></h3>
 <p>The plugin's <code>provider_error_summary</code> formats upstream failures as
