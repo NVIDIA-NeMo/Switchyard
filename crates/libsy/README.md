@@ -224,6 +224,8 @@ Example — the LLM classifier (classify, then route; full version in
 ```rust
 #[async_trait]
 impl Algorithm for LlmClassifier {
+    fn name(&self) -> &str { "llm_classifier" }
+
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
         -> Result<Response, Box<dyn Error + Send + Sync>> {
         // Thread `ctx` into every offloaded call and decision — it carries the request's
