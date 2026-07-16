@@ -30,3 +30,6 @@ routes:
       timeout_secs: 5
       min_turn: 3
       recent_turn_window: 14
+      # Verdict dumps became opt-in upstream; the bench harness reads
+      # escalation_verdict= lines from the captured server log.
+      dump_verdicts: true
