@@ -129,47 +129,6 @@ def test_random_route_bundle_registers_model_keys_and_applies_defaults(
     assert route_b.config.strong_probability == 0.2
 
 
-def test_route_bundle_infers_routellm_when_classifier_options_are_present() -> None:
-    table = build_route_bundle_table({
-        "routes": {
-            "A": {
-                "strong": {"model": "strong-a"},
-                "weak": {"model": "weak-a"},
-                "threshold": 0.4,
-                "router_type": "mf",
-                "classifier_model": "shared-classifier",
-                "fallback_target_on_evict": "strong",
-            },
-            "B": {
-                "type": "route-llm",
-                "strong": {"model": "strong-b"},
-                "weak": {"model": "weak-b"},
-                "threshold": 0.6,
-                "router_type": "mf",
-                "classifier_model": "shared-classifier",
-                "fallback_target_on_evict": "strong",
-            },
-        },
-    })
-
-    from switchyard.lib.processors.routellm_request_processor import (
-        RouteLLMRequestProcessor,
-    )
-
-    processors = [
-        component
-        for model in table.registered_models()
-        for component in table.lookup_switchyard(model).iter_components()
-        if isinstance(component, RouteLLMRequestProcessor)
-    ]
-
-    assert len(processors) == 2
-    assert [processor._config.classifier_model for processor in processors] == [
-        "shared-classifier",
-        "shared-classifier",
-    ]
-
-
 def test_route_bundle_rejects_missing_environment_variable() -> None:
     with pytest.raises(RouteBundleConfigError, match="MISSING_ROUTE_KEY"):
         build_route_bundle_table({

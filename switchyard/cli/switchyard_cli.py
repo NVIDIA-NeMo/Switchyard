@@ -50,7 +50,7 @@ Examples::
     switchyard --routing-profiles profiles.yaml -- launch claude -- --no-auto-approve
 
 Legacy routing policies that used to be top-level CLI verbs (``passthrough``,
-``random-routing``, ``routellm``, ``latency-service``) and launcher flags
+``random-routing``, ``latency-service``) and launcher flags
 (``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
 are expressed in deprecated routing-profile YAML files. ``serve`` and
 launchers still parse the YAML into profile-backed runtimes.

@@ -289,7 +289,7 @@ def resolve_config_with_secrets(
 def ensure_openai_api_key_env(api_key: str | None) -> None:
     """Set ``OPENAI_API_KEY`` env var iff unset and *api_key* is provided.
 
-    Some downstream libraries (notably RouteLLM's Controller) read
+    Some downstream libraries read
     ``OPENAI_API_KEY`` directly from the environment, so subcommands
     that resolve credentials from CLI / secrets.json pin them into the
     environment for those libraries to see.
