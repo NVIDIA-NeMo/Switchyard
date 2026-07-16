@@ -369,10 +369,13 @@ pub trait Algorithm: Send + Sync + 'static {
     /// Feed the algorithm agentic-stack events (tool results, budgets, etc.). The
     /// reference algorithms ignore signals; a stateful algorithm updates its own
     /// (interior-mutable) state. Takes `self: Arc<Self>` like the other run methods.
+    #[allow(unused_variables)]
     async fn process_signals(
         self: Arc<Self>,
         signals: Signals,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        Ok(())
+    }
 
     /// Run one request as a stream of [`Step`]s (provided). The algorithm runs on its
     /// own task; drive the stream: serve each [`Step::CallLlm`] (via its
@@ -534,13 +537,6 @@ mod tests {
             driver
                 .call_llm_target(ctx, &target, request, decision)
                 .await
-        }
-
-        async fn process_signals(
-            self: Arc<Self>,
-            _signals: Signals,
-        ) -> Result<(), Box<dyn Error + Send + Sync>> {
-            Ok(())
         }
     }
 
@@ -947,13 +943,6 @@ mod tests {
                     llm_response: LlmResponse::Agg(text_response(None, "done".to_string())),
                     metadata: None,
                 })
-            }
-
-            async fn process_signals(
-                self: Arc<Self>,
-                _signals: Signals,
-            ) -> Result<(), Box<dyn Error + Send + Sync>> {
-                Ok(())
             }
         }
 
