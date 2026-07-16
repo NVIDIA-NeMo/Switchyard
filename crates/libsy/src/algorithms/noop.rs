@@ -10,8 +10,11 @@ use switchyard_protocol::{Request, Response};
 
 use crate::{Algorithm, Context, Decision, Driver, LlmResponse, Signals};
 
+/// A routing algorithm that does not route. It returns a hard-coded response.
 pub struct NoopAlgo {}
 
+/// How [`NoopAlgo`] records which model it chose. This will be the model on the Request if any,
+/// otherwise a hard coded placeholder. Neither is actually used.
 pub struct NoopDecision {
     model: String,
 }
