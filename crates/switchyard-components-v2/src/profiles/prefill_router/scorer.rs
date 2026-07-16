@@ -6,11 +6,203 @@
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use safetensors::{Dtype, SafeTensors};
-use switchyard_core::{Result, SwitchyardError};
+use serde::Deserialize;
+use switchyard_core::{ChatRequest, Result, SwitchyardError};
 
 use super::artifact::InferenceArtifact;
+use super::policy::CostAwareRoutingPolicy;
+
+const ARTIFACT_WAIT_ATTEMPTS: usize = 20;
+const ARTIFACT_WAIT_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Private scalar scorer consumed by the prefill routing profile.
+#[async_trait]
+pub(crate) trait ProbeScorer: Send + Sync {
+    /// Returns `1.0` for weak and `0.0` for strong.
+    async fn score(&self, request: &ChatRequest) -> Result<f64>;
+}
+
+struct CheckpointPrediction {
+    probabilities: Vec<f32>,
+}
+
+impl CheckpointPrediction {
+    fn mapped_probabilities(
+        &self,
+        weak_head_index: usize,
+        strong_head_index: usize,
+    ) -> Result<(f64, f64)> {
+        let weak = self.probabilities.get(weak_head_index).ok_or_else(|| {
+            probe_error(format!(
+                "weak checkpoint head index {weak_head_index} is outside prediction length {}",
+                self.probabilities.len(),
+            ))
+        })?;
+        let strong = self.probabilities.get(strong_head_index).ok_or_else(|| {
+            probe_error(format!(
+                "strong checkpoint head index {strong_head_index} is outside prediction length {}",
+                self.probabilities.len(),
+            ))
+        })?;
+        Ok((f64::from(*weak), f64::from(*strong)))
+    }
+}
+
+struct LearnedRouting {
+    artifact: Arc<InferenceArtifact>,
+    weak_head_index: usize,
+    strong_head_index: usize,
+    policy: CostAwareRoutingPolicy,
+}
+
+impl LearnedRouting {
+    fn score(&self, raw_features: &[f32]) -> Result<f64> {
+        if raw_features.len() != self.artifact.raw_feature_dim() {
+            return Err(probe_error(format!(
+                "hidden-state feature length {} does not match artifact raw_feature_dim {}",
+                raw_features.len(),
+                self.artifact.raw_feature_dim(),
+            )));
+        }
+
+        let projected = self.artifact.project(raw_features)?;
+        let logits = self.artifact.ensemble_logits(&projected)?;
+        let prediction = CheckpointPrediction {
+            probabilities: self.artifact.ensemble_probabilities(&logits)?,
+        };
+        let (weak_probability, strong_probability) =
+            prediction.mapped_probabilities(self.weak_head_index, self.strong_head_index)?;
+        let score = self.policy.score(weak_probability, strong_probability)?;
+        tracing::debug!(score, "prefill router learned score");
+        Ok(score)
+    }
+}
+
+/// Learned scorer backed by a dedicated vLLM hidden-state probe endpoint.
+pub(crate) struct HiddenStateProbeScorer {
+    completions_url: String,
+    model: String,
+    hidden_states_dir: PathBuf,
+    client: reqwest::Client,
+    routing: LearnedRouting,
+}
+
+impl HiddenStateProbeScorer {
+    /// Builds a scorer from startup-validated artifact and policy resources.
+    pub(crate) fn new(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        hidden_states_dir: impl Into<PathBuf>,
+        artifact: Arc<InferenceArtifact>,
+        weak_head_index: usize,
+        strong_head_index: usize,
+        policy: CostAwareRoutingPolicy,
+    ) -> Self {
+        let base_url = base_url.into();
+        Self {
+            completions_url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            model: model.into(),
+            hidden_states_dir: hidden_states_dir.into(),
+            client: reqwest::Client::new(),
+            routing: LearnedRouting {
+                artifact,
+                weak_head_index,
+                strong_head_index,
+                policy,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CompletionResponse {
+    kv_transfer_params: Option<KvTransferParams>,
+}
+
+#[derive(Deserialize)]
+struct KvTransferParams {
+    hidden_states_path: String,
+}
+
+#[async_trait]
+impl ProbeScorer for HiddenStateProbeScorer {
+    async fn score(&self, request: &ChatRequest) -> Result<f64> {
+        let messages = request
+            .body()
+            .as_object()
+            .and_then(|body| body.get("messages"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+        let response = self
+            .client
+            .post(&self.completions_url)
+            .json(&serde_json::json!({
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": 1,
+                "kv_transfer_params": {
+                    "hidden_states_path": self.hidden_states_dir,
+                    "include_output_tokens": false,
+                },
+            }))
+            .send()
+            .await
+            .map_err(|error| probe_error(format!("request failed: {error}")))?;
+
+        if !response.status().is_success() {
+            return Err(probe_error(format!(
+                "endpoint returned HTTP {}",
+                response.status(),
+            )));
+        }
+        let response: CompletionResponse = response
+            .json()
+            .await
+            .map_err(|error| probe_error(format!("response parse failed: {error}")))?;
+        let hidden_states_path = response
+            .kv_transfer_params
+            .ok_or_else(|| {
+                probe_error(
+                    "response missing kv_transfer_params; verify ExampleHiddenStatesConnector",
+                )
+            })?
+            .hidden_states_path;
+        let hidden_states_path = Path::new(&hidden_states_path);
+        wait_for_artifact(hidden_states_path).await?;
+
+        let raw_features = read_and_cleanup_hidden_states(
+            &self.hidden_states_dir,
+            hidden_states_path,
+            HiddenStateLayout::from_artifact(&self.routing.artifact),
+        )?;
+        self.routing.score(&raw_features)
+    }
+}
+
+async fn wait_for_artifact(path: &Path) -> Result<()> {
+    for attempt in 0..ARTIFACT_WAIT_ATTEMPTS {
+        if path.exists() {
+            return Ok(());
+        }
+        if attempt + 1 < ARTIFACT_WAIT_ATTEMPTS {
+            tokio::time::sleep(ARTIFACT_WAIT_INTERVAL).await;
+        }
+    }
+    Err(probe_error(format!(
+        "hidden-state artifact {} did not appear after {} ms",
+        path.display(),
+        ARTIFACT_WAIT_INTERVAL.as_millis() * (ARTIFACT_WAIT_ATTEMPTS - 1) as u128,
+    )))
+}
+
+fn probe_error(message: impl Into<String>) -> SwitchyardError {
+    SwitchyardError::Other(format!("prefill-router probe error: {}", message.into()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HiddenStateLayout {
@@ -318,13 +510,152 @@ fn hidden_state_error(message: impl Into<String>) -> SwitchyardError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+    use std::thread::{self, JoinHandle};
 
     use safetensors::tensor::{serialize, TensorView};
 
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct ObservedRequest {
+        path: String,
+        body: serde_json::Value,
+    }
+
+    struct MockProbeServer {
+        addr: SocketAddr,
+        requests: Arc<Mutex<Vec<ObservedRequest>>>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl MockProbeServer {
+        fn spawn(status: u16, body: serde_json::Value) -> Result<Self> {
+            let body = serde_json::to_vec(&body)
+                .map_err(|error| probe_error(format!("mock response encode failed: {error}")))?;
+            Self::spawn_bytes(status, body)
+        }
+
+        fn spawn_bytes(status: u16, body: Vec<u8>) -> Result<Self> {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .map_err(|error| probe_error(format!("mock bind failed: {error}")))?;
+            let addr = listener
+                .local_addr()
+                .map_err(|error| probe_error(format!("mock local_addr failed: {error}")))?;
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let thread_requests = Arc::clone(&requests);
+            let handle = thread::spawn(move || {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let Ok(request) = read_http_request(&mut stream) else {
+                    return;
+                };
+                if let Ok(mut requests) = thread_requests.lock() {
+                    requests.push(request);
+                }
+                let _ = write_http_response(&mut stream, status, &body);
+            });
+            Ok(Self {
+                addr,
+                requests,
+                handle: Some(handle),
+            })
+        }
+
+        fn base_url(&self) -> String {
+            format!("http://{}/v1", self.addr)
+        }
+
+        fn request(&self) -> Result<ObservedRequest> {
+            self.requests
+                .lock()
+                .map_err(|_| probe_error("mock requests mutex poisoned"))?
+                .first()
+                .cloned()
+                .ok_or_else(|| probe_error("mock server did not observe a request"))
+        }
+    }
+
+    impl Drop for MockProbeServer {
+        fn drop(&mut self) {
+            let _ = TcpStream::connect(self.addr);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> Result<ObservedRequest> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| probe_error(format!("mock read timeout failed: {error}")))?;
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        let header_end = loop {
+            let read = stream
+                .read(&mut buffer)
+                .map_err(|error| probe_error(format!("mock request read failed: {error}")))?;
+            if read == 0 {
+                return Err(probe_error("mock connection closed before headers"));
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break header_end;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let request_line = headers
+            .lines()
+            .next()
+            .ok_or_else(|| probe_error("mock request line missing"))?;
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| probe_error("mock request path missing"))?
+            .to_string();
+        let content_length = headers
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            .ok_or_else(|| probe_error("mock content-length missing"))?;
+        let body_start = header_end + 4;
+        while bytes.len().saturating_sub(body_start) < content_length {
+            let read = stream
+                .read(&mut buffer)
+                .map_err(|error| probe_error(format!("mock body read failed: {error}")))?;
+            if read == 0 {
+                return Err(probe_error("mock connection closed before body"));
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        let body = serde_json::from_slice(&bytes[body_start..body_start + content_length])
+            .map_err(|error| probe_error(format!("mock request decode failed: {error}")))?;
+        Ok(ObservedRequest { path, body })
+    }
+
+    fn write_http_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> Result<()> {
+        let reason = match status {
+            200 => "OK",
+            503 => "Service Unavailable",
+            _ => "Test Response",
+        };
+        let headers = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .and_then(|()| stream.write_all(body))
+            .map_err(|error| probe_error(format!("mock response write failed: {error}")))
+    }
 
     struct TestDirectory {
         path: PathBuf,
@@ -444,6 +775,139 @@ mod tests {
             ],
             None,
         )
+    }
+
+    fn repeated_f32_bytes(value: f32, count: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(count * size_of::<f32>());
+        for _ in 0..count {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn write_router_artifact(
+        directory: &TestDirectory,
+        name: &str,
+        output_biases: [f32; 4],
+    ) -> Result<Arc<InferenceArtifact>> {
+        const PCA_DIM: usize = 200;
+        const HIDDEN_1: usize = 256;
+        const HIDDEN_2: usize = 128;
+        const OUTPUTS: usize = 4;
+        const ENSEMBLE_SIZE: usize = 5;
+        const RAW_DIM: usize = 4;
+
+        let artifact_dir = directory.create_subdirectory(name)?;
+        let metadata = serde_json::json!({
+            "format_version": 1,
+            "training_mode": "single_pca_block",
+            "encoder": "probe/model",
+            "representation": "token_mean_per_layer_concat",
+            "extraction_layer_ids": [0, 1],
+            "hidden_size": 2,
+            "raw_feature_dim": RAW_DIM,
+            "feature_block_count": 1,
+            "pca_dim": PCA_DIM,
+            "pca_whiten": false,
+            "output_names": ["qwen-122b", "nemotron-3-super", "opus-4.7", "gpt-5.5"],
+            "trunk_hidden": [HIDDEN_1, HIDDEN_2],
+            "ensemble_size": ENSEMBLE_SIZE,
+            "probability_link": "independent_sigmoid",
+            "ensemble_reduction": "probability_mean",
+            "tensor_file": "router.safetensors",
+        });
+        let metadata_bytes = serde_json::to_vec(&metadata)
+            .map_err(|error| probe_error(format!("test metadata encode failed: {error}")))?;
+        std::fs::write(artifact_dir.join("router.json"), metadata_bytes)
+            .map_err(|error| probe_error(format!("test metadata write failed: {error}")))?;
+
+        let mut storage = vec![
+            (
+                "transform.scaler_mean".to_string(),
+                vec![RAW_DIM],
+                repeated_f32_bytes(0.0, RAW_DIM),
+            ),
+            (
+                "transform.scaler_scale".to_string(),
+                vec![RAW_DIM],
+                repeated_f32_bytes(1.0, RAW_DIM),
+            ),
+            (
+                "transform.pca_mean".to_string(),
+                vec![RAW_DIM],
+                repeated_f32_bytes(0.0, RAW_DIM),
+            ),
+            (
+                "transform.pca_components".to_string(),
+                vec![PCA_DIM, RAW_DIM],
+                repeated_f32_bytes(0.0, PCA_DIM * RAW_DIM),
+            ),
+        ];
+        for index in 0..ENSEMBLE_SIZE {
+            let prefix = format!("ensemble.{index}");
+            storage.extend([
+                (
+                    format!("{prefix}.linear1.weight"),
+                    vec![HIDDEN_1, PCA_DIM],
+                    repeated_f32_bytes(0.0, HIDDEN_1 * PCA_DIM),
+                ),
+                (
+                    format!("{prefix}.linear1.bias"),
+                    vec![HIDDEN_1],
+                    repeated_f32_bytes(0.0, HIDDEN_1),
+                ),
+                (
+                    format!("{prefix}.linear2.weight"),
+                    vec![HIDDEN_2, HIDDEN_1],
+                    repeated_f32_bytes(0.0, HIDDEN_2 * HIDDEN_1),
+                ),
+                (
+                    format!("{prefix}.linear2.bias"),
+                    vec![HIDDEN_2],
+                    repeated_f32_bytes(0.0, HIDDEN_2),
+                ),
+                (
+                    format!("{prefix}.output.weight"),
+                    vec![OUTPUTS, HIDDEN_2],
+                    repeated_f32_bytes(0.0, OUTPUTS * HIDDEN_2),
+                ),
+                (
+                    format!("{prefix}.output.bias"),
+                    vec![OUTPUTS],
+                    f32_bytes(&output_biases),
+                ),
+            ]);
+        }
+        let views = storage
+            .iter()
+            .map(|(name, shape, bytes)| {
+                TensorView::new(Dtype::F32, shape.clone(), bytes)
+                    .map(|view| (name.as_str(), view))
+                    .map_err(|error| {
+                        probe_error(format!("test router tensor {name} is invalid: {error}"))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let tensor_bytes = serialize(views, &None)
+            .map_err(|error| probe_error(format!("test router encode failed: {error}")))?;
+        std::fs::write(artifact_dir.join("router.safetensors"), tensor_bytes)
+            .map_err(|error| probe_error(format!("test router write failed: {error}")))?;
+
+        Ok(Arc::new(InferenceArtifact::load(
+            artifact_dir,
+            "probe/model",
+        )?))
+    }
+
+    fn test_request() -> ChatRequest {
+        ChatRequest::openai_chat(serde_json::json!({
+            "model": "client/model",
+            "messages": [
+                {"role": "system", "content": "Be concise."},
+                {"role": "user", "content": "Explain the failure."},
+            ],
+            "temperature": 0.2,
+        }))
     }
 
     #[test]
@@ -705,6 +1169,159 @@ mod tests {
 
         assert!(format!("{error}").contains("safetensors parse error"));
         assert!(path.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn learned_probe_forwards_exact_request_and_returns_binary_score() -> Result<()> {
+        let directory = TestDirectory::create()?;
+        let hidden_path = directory.write("probe-hidden.safetensors", &valid_artifact_bytes()?)?;
+        let artifact = write_router_artifact(&directory, "router", [8.0, 2.0, -2.0, -8.0])?;
+        let server = MockProbeServer::spawn(
+            200,
+            serde_json::json!({
+                "kv_transfer_params": {
+                    "hidden_states_path": hidden_path.to_string_lossy(),
+                }
+            }),
+        )?;
+        let scorer = HiddenStateProbeScorer::new(
+            server.base_url(),
+            "probe/model",
+            directory.path(),
+            artifact,
+            1,
+            2,
+            CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
+        );
+        let request = test_request();
+
+        let score = scorer.score(&request).await?;
+
+        assert_eq!(score, 1.0);
+        assert!(!hidden_path.exists());
+        let observed = server.request()?;
+        assert_eq!(observed.path, "/v1/chat/completions");
+        assert_eq!(
+            observed.body,
+            serde_json::json!({
+                "model": "probe/model",
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "Explain the failure."},
+                ],
+                "max_tokens": 1,
+                "kv_transfer_params": {
+                    "hidden_states_path": directory.path(),
+                    "include_output_tokens": false,
+                },
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn probe_response_errors_are_reported_before_artifact_processing() -> Result<()> {
+        let directory = TestDirectory::create()?;
+        let artifact = write_router_artifact(&directory, "router", [8.0, 2.0, -2.0, -8.0])?;
+        let request = test_request();
+
+        let missing_server = MockProbeServer::spawn(200, serde_json::json!({}))?;
+        let missing_scorer = HiddenStateProbeScorer::new(
+            missing_server.base_url(),
+            "probe/model",
+            directory.path(),
+            Arc::clone(&artifact),
+            1,
+            2,
+            CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
+        );
+        let error = missing_scorer
+            .score(&request)
+            .await
+            .err()
+            .ok_or_else(|| probe_error("missing kv_transfer_params should fail"))?;
+        assert!(format!("{error}").contains("missing kv_transfer_params"));
+
+        let malformed_server = MockProbeServer::spawn(
+            200,
+            serde_json::json!({"kv_transfer_params": {"hidden_states_path": 42}}),
+        )?;
+        let malformed_scorer = HiddenStateProbeScorer::new(
+            malformed_server.base_url(),
+            "probe/model",
+            directory.path(),
+            Arc::clone(&artifact),
+            1,
+            2,
+            CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
+        );
+        let error = malformed_scorer
+            .score(&request)
+            .await
+            .err()
+            .ok_or_else(|| probe_error("malformed kv_transfer_params should fail"))?;
+        assert!(format!("{error}").contains("response parse failed"));
+
+        let unavailable_server = MockProbeServer::spawn(503, serde_json::json!({}))?;
+        let unavailable_scorer = HiddenStateProbeScorer::new(
+            unavailable_server.base_url(),
+            "probe/model",
+            directory.path(),
+            artifact,
+            1,
+            2,
+            CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
+        );
+        let error = unavailable_scorer
+            .score(&request)
+            .await
+            .err()
+            .ok_or_else(|| probe_error("non-success probe response should fail"))?;
+        assert!(format!("{error}").contains("endpoint returned HTTP 503"));
+        Ok(())
+    }
+
+    #[test]
+    fn learned_routing_uses_only_mapped_heads_and_preserves_score_direction() -> Result<()> {
+        let directory = TestDirectory::create()?;
+        let first = write_router_artifact(&directory, "router-a", [8.0, 2.0, -2.0, -8.0])?;
+        let second = write_router_artifact(&directory, "router-b", [-8.0, 2.0, -2.0, 8.0])?;
+        let policy = CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?;
+        let first_selected = LearnedRouting {
+            artifact: Arc::clone(&first),
+            weak_head_index: 1,
+            strong_head_index: 2,
+            policy,
+        };
+        let second_selected = LearnedRouting {
+            artifact: second,
+            weak_head_index: 1,
+            strong_head_index: 2,
+            policy,
+        };
+        let reversed = LearnedRouting {
+            artifact: Arc::clone(&first),
+            weak_head_index: 2,
+            strong_head_index: 1,
+            policy,
+        };
+
+        assert_eq!(first_selected.score(&[0.0; 4])?, 1.0);
+        assert_eq!(second_selected.score(&[0.0; 4])?, 1.0);
+        assert_eq!(reversed.score(&[0.0; 4])?, 0.0);
+
+        let invalid = LearnedRouting {
+            artifact: first,
+            weak_head_index: 4,
+            strong_head_index: 1,
+            policy,
+        };
+        let error = invalid
+            .score(&[0.0; 4])
+            .err()
+            .ok_or_else(|| probe_error("out-of-range head index should fail"))?;
+        assert!(format!("{error}").contains("weak checkpoint head index 4"));
         Ok(())
     }
 }
