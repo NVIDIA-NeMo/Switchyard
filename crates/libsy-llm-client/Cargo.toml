@@ -15,6 +15,7 @@ rust-version.workspace = true
 switchyard-protocol = { path = "../libsy-protocol", version = "0.1.0" }
 switchyard-translation = { path = "../switchyard-translation", version = "0.1.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
+async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
 async-stream = "0.3"

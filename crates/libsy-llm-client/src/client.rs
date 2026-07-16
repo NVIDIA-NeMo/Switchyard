@@ -7,10 +7,13 @@
 use std::collections::HashMap;
 
 use async_stream::try_stream;
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::RequestBuilder;
 use serde_json::Value;
-use switchyard_protocol::{LlmResponse, LlmResponseStream, Metadata, Request, Response};
+use switchyard_protocol::{
+    Context, Decision, LlmResponse, LlmResponseStream, Metadata, Request, Response, RoutedLlmClient,
+};
 use switchyard_translation::{
     StreamCodecRegistry, StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
 };
@@ -125,6 +128,7 @@ impl TranslatingLlmClient {
     /// no backend for `format`.
     pub async fn call_rewrite_model(
         &self,
+        _ctx: Context,
         request: Request,
         model_name: Option<&str>,
     ) -> Result<Response> {
@@ -213,6 +217,21 @@ impl TranslatingLlmClient {
             llm_response,
             metadata,
         })
+    }
+}
+
+#[async_trait]
+impl RoutedLlmClient for TranslatingLlmClient {
+    async fn call(
+        &self,
+        ctx: Context,
+        request: Request,
+        decision: std::sync::Arc<dyn Decision>,
+    ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        let model_name = Some(decision.selected_model());
+        self.call_rewrite_model(ctx, request, model_name)
+            .await
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
     }
 }
 
@@ -386,7 +405,7 @@ mod tests {
     async fn missing_model_errors() {
         let client = TranslatingLlmClient::new(&[]).unwrap();
         let Err(error) = client
-            .call_rewrite_model(request_for(None, false), None)
+            .call_rewrite_model(Context::default(), request_for(None, false), None)
             .await
         else {
             panic!("expected an error");
@@ -398,7 +417,7 @@ mod tests {
     async fn unknown_model_errors() {
         let client = TranslatingLlmClient::new(&[]).unwrap();
         let Err(error) = client
-            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -412,6 +431,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1")).unwrap();
         let Err(error) = client
             .call_rewrite_model(
+                Context::default(),
                 request_with_wire_format("gpt", WireFormat::AnthropicMessages),
                 None,
             )
@@ -444,7 +464,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&[]).unwrap();
         // Arg "b" is looked up (and reported), not the request's "a".
         let Err(error) = client
-            .call_rewrite_model(request_for(Some("a"), false), Some("b"))
+            .call_rewrite_model(Context::default(), request_for(Some("a"), false), Some("b"))
             .await
         else {
             panic!("expected an error");
@@ -473,7 +493,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let response = client
-            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
             .await
             .unwrap();
         let agg = response.llm_response.into_agg().expect("buffered response");
@@ -498,7 +518,11 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
         // Inbound model differs from the map key / resolved model.
         client
-            .call_rewrite_model(request_for(Some("switchyard"), false), Some("gpt"))
+            .call_rewrite_model(
+                Context::default(),
+                request_for(Some("switchyard"), false),
+                Some("gpt"),
+            )
             .await
             .unwrap();
         // The body_partial_json matcher asserts the upstream saw model "gpt".
@@ -519,7 +543,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let response = client
-            .call_rewrite_model(request_for(Some("gpt"), true), None)
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
             .await
             .unwrap();
         assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
@@ -538,7 +562,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let Err(error) = client
-            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -562,7 +586,7 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let Err(error) = client
-            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -612,6 +636,55 @@ mod tests {
 
         // Matchers assert forwarded x-request-id survives and reserved
         // authorization is the backend's, not the client's.
-        client.call_rewrite_model(request, None).await.unwrap();
+        client
+            .call_rewrite_model(Context::default(), request, None)
+            .await
+            .unwrap();
+    }
+
+    // Minimal `Decision` for driving the client through the `RoutedLlmClient` trait.
+    struct FixedDecision(&'static str);
+
+    impl Decision for FixedDecision {
+        fn selected_model(&self) -> &str {
+            self.0
+        }
+        fn reasoning(&self) -> Option<&str> {
+            None
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    // Exercises the `RoutedLlmClient` impl: `call` resolves the upstream model from the
+    // decision (the request carries none) and round-trips a buffered response.
+    #[tokio::test]
+    async fn routed_llm_client_serves_the_decision_model() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "routed hi"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
+        // Called through the trait; the request has no model, so "gpt" comes from the decision.
+        let response = client
+            .call(Context::default(), request_for(None, false), decision)
+            .await
+            .unwrap();
+        let agg = response.llm_response.into_agg().expect("buffered response");
+        assert_eq!(completion_text(&agg), "routed hi");
     }
 }

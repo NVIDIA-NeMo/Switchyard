@@ -1722,6 +1722,7 @@ name = "switchyard-llm-client"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "async-trait",
  "futures",
  "futures-util",
  "pretty_assertions",
