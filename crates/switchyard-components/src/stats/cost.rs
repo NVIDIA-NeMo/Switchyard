@@ -189,11 +189,28 @@ fn raw_model_price(model: &str) -> Option<ModelPrice> {
             cached: 0.15,
             cache_write: 1.50,
         },
-        "aws/anthropic/bedrock-claude-opus-4-7"
+        // Nemotron 3 Ultra (550B/55B MoE) — OpenRouter reference list
+        // price, June 2026. evals-N ids are parallel benchmarking-gateway
+        // deployments of the same model.
+        "nvidia/nvidia/nemotron-3-ultra"
+        | "openai/nvidia/nvidia/nemotron-3-ultra"
+        | "nvidia/nvidia/evals-nemotron-ultra"
+        | "nvidia/nvidia/evals-nemotron-ultra-2"
+        | "nvidia/nvidia/evals-nemotron-ultra-3"
+        | "nvidia/nvidia/evals-nemotron-ultra-4" => ModelPrice {
+            input: 0.50,
+            output: 2.20,
+            cached: 0.05,
+            cache_write: 0.50,
+        },
+        "aws/anthropic/bedrock-claude-opus-4-8"
+        | "aws/anthropic/bedrock-claude-opus-4-7"
         | "aws/anthropic/bedrock-claude-opus-4-6"
         | "aws/anthropic/bedrock-claude-opus-4-5"
+        | "azure/anthropic/claude-opus-4-8"
         | "azure/anthropic/claude-opus-4-7"
         | "azure/anthropic/claude-opus-4-6"
+        | "claude-opus-4-8"
         | "claude-opus-4-7"
         | "claude-opus-4-6"
         | "claude-opus-4-5" => ModelPrice {
@@ -204,6 +221,7 @@ fn raw_model_price(model: &str) -> Option<ModelPrice> {
         },
         "aws/anthropic/bedrock-claude-sonnet-4-6"
         | "aws/anthropic/bedrock-claude-sonnet-4-5"
+        | "azure/anthropic/claude-sonnet-4-5"
         | "claude-sonnet-4-6"
         | "claude-sonnet-4-5" => ModelPrice {
             input: 3.00,

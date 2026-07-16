@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Config model for the escalation-router profile (judge-latched strong/weak)."""
+
+from __future__ import annotations
+
+from typing import Literal, Self
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+
+from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
+from switchyard.lib.profiles.deterministic_routing_config import (
+    DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,
+)
+
+
+class EscalationRouterConfig(BaseModel):
+    """Configuration for the escalation-router profile.
+
+    Every conversation starts on the ``weak`` tier. An LLM ``judge`` watches
+    the trajectory each turn and, on a clear pattern of trouble, escalates the
+    conversation to the ``strong`` tier — one-way for the rest of the task
+    (session-affinity latch). A new conversation resets to weak.
+
+    Attributes:
+        strong: Escalation target (frontier / expensive model).
+        weak: Starting tier (cheap / efficient model).
+        judge: Target for the judge LLM call. ``model`` / ``base_url`` /
+            ``api_key`` / ``timeout_secs`` are extracted at build time;
+            other target fields are ignored.
+        fallback_target_on_evict: Target id the chain executor reroutes to on
+            eviction (context-window overflow). Must match ``strong.id`` or
+            ``weak.id``; the judge target is not a routing candidate.
+        judge_min_turn: First conversation turn on which the judge runs.
+        judge_escalate_confirmations: Consecutive escalate verdicts required
+            before the strong latch fires (``1`` pins on the first verdict).
+            The confirmation streak is tracked per process: with multiple
+            workers and no session-sticky load balancing, verdicts for one
+            conversation can land on different workers and take longer to
+            accumulate. Keep ``1`` (the default) on multi-worker deployments,
+            or route conversations sticky to a worker.
+        judge_confirmation_window: Judged turns an escalate verdict stays
+            live for confirmation; ``N > 1`` tolerates up to ``N - 1``
+            intervening declines (recurring intermittent trouble confirms).
+        judge_disable_reasoning: Send the thinking-off template hint on judge
+            calls (default). ``False`` lets a reasoning judge model think,
+            trading per-turn latency for rubric adherence. The hint is only
+            sent to models that accept it (Claude/Bedrock reject it).
+        judge_max_completion_tokens: Completion-token budget for the judge
+            call. ``None`` (default) picks 128 with the thinking-off hint in
+            effect and 4096 otherwise — reasoning tokens and the JSON verdict
+            share this budget, and a too-small cap truncates mid-reasoning so
+            the judge silently fails open every turn.
+        judge_dump_verdicts: Emit one ``escalation_verdict={...}`` line to
+            stderr per judge call (includes a first-user ``task_hint``
+            snippet). Benchmark-only diagnostics, off by default; production
+            routing telemetry flows through the normal stats path.
+        judge_recent_turn_window: Trailing messages shown to the judge on top
+            of the system + first-user anchors.
+        judge_window_message_chars: Per-message truncation cap inside the
+            trailing window (larger keeps more tool-output detail per turn).
+        judge_max_request_chars: Cap on the assembled judge transcript.
+        judge_system_prompt: Optional judge prompt override. ``None`` uses the
+            built-in prompt.
+        judge_timeout_s: Per-call judge timeout (seconds); the judge fails
+            open to the weak tier at timeout.
+        session_key_depth: ``0`` (default) keys conversations on system +
+            first user message (the shared Rust session key). ``N > 0``
+            extends the key with the first ``N`` post-first-user messages so
+            repeated runs of the identical task (k>1 benchmark trials against
+            one server) diverge via early model responses instead of sharing
+            an escalation latch. Requires nonzero sampling temperature to be
+            effective; production traffic should keep ``0``.
+        tier_timeout_s: Default per-call timeout for strong/weak tier calls
+            when a target does not set its own ``timeout_secs``.
+        enable_stats: Wire stats processors and per-tier stats wrappers.
+        affinity_max_sessions: LRU capacity of the escalation latch store.
+        affinity_store: Shared L2 behind the in-process latch LRU. ``"memory"``
+            (default) keeps the escalation latch per process — a worker or pod
+            change can lose it. ``"redis"`` shares the latch across workers
+            and persists it across pod churn (best-effort: an L2 error never
+            fails a request).
+        affinity_store_url: Connection URL for the shared store (e.g.
+            ``"redis://host:6379/0"``). Required when ``affinity_store`` is
+            ``"redis"``.
+        affinity_store_ttl_seconds: Expiry for a shared latch entry. The latch
+            is re-read every turn; an escalated conversation older than the
+            TTL restarts on weak.
+        affinity_key_prefix: Namespace prefix for shared-store keys.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    strong: LlmTarget
+    weak: LlmTarget
+    judge: LlmTarget
+    fallback_target_on_evict: str
+    judge_min_turn: int = Field(default=3, ge=1)
+    judge_escalate_confirmations: int = Field(default=1, ge=1)
+    judge_confirmation_window: int = Field(default=1, ge=1)
+    judge_disable_reasoning: bool = True
+    judge_max_completion_tokens: int | None = Field(default=None, ge=16)
+    judge_dump_verdicts: bool = False
+    judge_recent_turn_window: int = Field(default=14, ge=1)
+    judge_window_message_chars: int = Field(default=300, ge=50)
+    judge_max_request_chars: int = Field(default=12_000, ge=1_000)
+    judge_system_prompt: str | None = Field(default=None, min_length=1)
+    judge_timeout_s: float = Field(default=5.0, gt=0.0)
+    session_key_depth: int = Field(default=0, ge=0)
+    tier_timeout_s: float | None = Field(
+        default=DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,
+        gt=0.0,
+    )
+    enable_stats: bool = True
+    affinity_max_sessions: int = Field(default=10_000, gt=0)
+    affinity_store: Literal["memory", "redis"] = "memory"
+    affinity_store_url: str | None = None
+    affinity_store_ttl_seconds: int = Field(default=3_600, gt=0)
+    affinity_key_prefix: str = "swyd:esc:"
+
+    @model_validator(mode="after")
+    def _redis_store_requires_url(self) -> Self:
+        # A shared store is dead config unless it is reachable.
+        if self.affinity_store == "redis" and not self.affinity_store_url:
+            raise ValueError('affinity_store="redis" requires affinity_store_url to be set')
+        return self
+
+    @field_validator("strong", "weak", "judge", mode="before")
+    @classmethod
+    def _coerce_target(cls, value: object, info: ValidationInfo) -> LlmTarget:
+        return coerce_llm_target(value, default_id=info.field_name or "target")
+
+    @field_validator("strong", "weak", "judge")
+    @classmethod
+    def _target_model_non_empty(cls, tier: LlmTarget) -> LlmTarget:
+        if not tier.model:
+            raise ValueError("target.model must be a non-empty string")
+        return tier
+
+    @field_validator("weak")
+    @classmethod
+    def _tier_ids_distinct(cls, value: LlmTarget, info: ValidationInfo) -> LlmTarget:
+        strong = info.data.get("strong")
+        if isinstance(strong, LlmTarget) and strong.id == value.id:
+            raise ValueError(
+                f"strong.id and weak.id must differ (both are {value.id!r}); "
+                "they key the routing tiers"
+            )
+        return value
+
+    @field_validator("judge_system_prompt", mode="before")
+    @classmethod
+    def _blank_judge_prompt_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("fallback_target_on_evict")
+    @classmethod
+    def _fallback_matches_existing_target(cls, value: str, info: ValidationInfo) -> str:
+        valid_ids = {info.data[key].id for key in ("strong", "weak") if key in info.data}
+        if value not in valid_ids:
+            raise ValueError(
+                f"fallback_target_on_evict={value!r} must match one of "
+                f"{sorted(valid_ids)} (the configured strong/weak target ids; "
+                f"the judge target is not a routing candidate)"
+            )
+        return value
+
+
+__all__ = ["EscalationRouterConfig"]

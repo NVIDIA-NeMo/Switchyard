@@ -81,6 +81,29 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "openai/nvidia/nvidia/Nemotron-3-Nano-30B-A3B": ModelPriceData(
         input=0.05, output=0.20, cached=0.005, cache_write=0.05,
     ),
+    # Nemotron 3 Ultra — 550B/55B-active MoE, 1M ctx (released 2026-06-04).
+    # OpenRouter reference list price (June 2026): $0.50 / $2.20 per 1M
+    # tokens. The ``evals-nemotron-ultra-N`` ids are parallel deployments
+    # of the same model on the hub's benchmarking gateway (pair with
+    # ``X-Inference-Priority: batch``); same per-token pricing.
+    "nvidia/nvidia/nemotron-3-ultra": ModelPriceData(
+        input=0.50, output=2.20, cached=0.05, cache_write=0.50,
+    ),
+    "openai/nvidia/nvidia/nemotron-3-ultra": ModelPriceData(
+        input=0.50, output=2.20, cached=0.05, cache_write=0.50,
+    ),
+    "nvidia/nvidia/evals-nemotron-ultra": ModelPriceData(
+        input=0.50, output=2.20, cached=0.05, cache_write=0.50,
+    ),
+    "nvidia/nvidia/evals-nemotron-ultra-2": ModelPriceData(
+        input=0.50, output=2.20, cached=0.05, cache_write=0.50,
+    ),
+    "nvidia/nvidia/evals-nemotron-ultra-3": ModelPriceData(
+        input=0.50, output=2.20, cached=0.05, cache_write=0.50,
+    ),
+    "nvidia/nvidia/evals-nemotron-ultra-4": ModelPriceData(
+        input=0.50, output=2.20, cached=0.05, cache_write=0.50,
+    ),
     # Moonshot Kimi K2.6 — official platform.kimi.ai pricing (May 2026).
     # OpenAI wire format, so no cache_write premium (cache_write = input).
     "nvidia/moonshotai/kimi-k2.6": ModelPriceData(
@@ -155,6 +178,11 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     ),
     # --- Anthropic Claude on AWS Bedrock (via NVIDIA Inference Hub) ---
     # 5-minute cache write = 1.25x input; cache read = 0.1x input.
+    # Opus 4.8 keeps the Opus-tier $5/$25 list price (docs.anthropic.com,
+    # verified 2026-07-11).
+    "aws/anthropic/bedrock-claude-opus-4-8": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "aws/anthropic/bedrock-claude-opus-4-7": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
@@ -177,6 +205,12 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "azure/anthropic/claude-opus-4-7": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
+    "azure/anthropic/claude-opus-4-8": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
+    "azure/anthropic/claude-sonnet-4-5": ModelPriceData(
+        input=3.00, output=15.00, cached=0.30, cache_write=3.75,
+    ),
     "aws/anthropic/bedrock-claude-sonnet-4-6": ModelPriceData(
         input=3.00, output=15.00, cached=0.30, cache_write=3.75,
     ),
@@ -187,6 +221,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
         input=1.00, output=5.00, cached=0.10, cache_write=1.25,
     ),
     # --- Anthropic direct API aliases (no AWS prefix) ---
+    "claude-opus-4-8": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "claude-opus-4-7": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
