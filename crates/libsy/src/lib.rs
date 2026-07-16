@@ -57,6 +57,9 @@
 //! Worked implementations — a random router, an LLM classifier, and a stateful
 //! ensemble — plus runnable agents live in the `libsy-examples` crate.
 
+mod algorithms;
+pub use algorithms::noop::{NoopAlgo, NoopDecision};
+
 mod driver;
 
 use std::{error::Error, pin::Pin, sync::Arc};
