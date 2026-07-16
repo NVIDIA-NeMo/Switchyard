@@ -19,7 +19,7 @@ CTX_ORIGINAL_REQUEST = "original_request"
 #: Written by routing backends and processors.
 CTX_PROXY_ACTUAL_MODEL = "_proxy_actual_model"
 
-#: Routing metadata dict produced by RouteLLMRequestProcessor.
+#: Routing metadata dict produced by tier-routing request processors.
 CTX_ROUTING = "_routing"
 
 #: Original inbound format stored by translation layers.
@@ -28,7 +28,7 @@ CTX_ORIGINAL_FORMAT = "_original_format"
 #: Original model name stored by translation layers.
 CTX_ORIGINAL_MODEL = "_original_model"
 
-#: Target wire format chosen by a router (e.g. random routing, RouteLLM).
+#: Target wire format chosen by a router (e.g. random routing).
 #: Written by router request-side components; read by
 #: FormatTranslateRequestProcessor.
 CTX_TARGET_FORMAT = "_target_format"

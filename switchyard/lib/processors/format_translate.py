@@ -14,8 +14,8 @@ When the host (NMP IGW) owns the LLM call, neither slot is available
 — IGW supplies its own backend and there's no
 :class:`TranslationEngine` slot. Format translation has to live in
 processors instead. The three processors here are the IGW equivalent
-of the standalone path, and reusable by *any* router (random routing
-today, RouteLLM later) that needs cross-format dispatch:
+of the standalone path, and reusable by *any* router (random
+routing today, others later) that needs cross-format dispatch:
 
 * :class:`StampOriginalFormatProcessor` — runs at the head of the
   chain and captures the inbound :class:`ChatRequestType` into

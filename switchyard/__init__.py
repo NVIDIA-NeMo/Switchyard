@@ -50,10 +50,6 @@ from switchyard.lib.processors.intake_request_processor import IntakeRequestProc
 from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 from switchyard.lib.processors.rl_logging_request_processor import RlLoggingRequestProcessor
 from switchyard.lib.processors.rl_logging_response_processor import RlLoggingResponseProcessor
-from switchyard.lib.processors.routellm_request_processor import (
-    CTX_ROUTELLM_TIER,
-    RouteLLMRequestProcessor,
-)
 from switchyard.lib.profiles import (
     ClassifierConfig,
     ContextAwareProfile,
@@ -83,8 +79,6 @@ from switchyard.lib.profiles import (
     RandomRoutingConfig,
     RandomRoutingPresets,
     RandomRoutingProfileConfig,
-    RouteLLMConfig,
-    RouteLLMProfileConfig,
     StageRouterConfig,
     StageRouterProfileConfig,
     TranslateProfileConfig,
@@ -188,8 +182,6 @@ __all__ = [
     "RandomRoutingConfig",
     "RandomRoutingPresets",
     "RandomRoutingProfileConfig",
-    "RouteLLMConfig",
-    "RouteLLMProfileConfig",
     "TranslateProfileConfig",
     "build_profile",
     "load_profiles",
@@ -224,9 +216,6 @@ __all__ = [
     "LlmTarget",
     # Deterministic (LLM-classifier) routing usage case
     # Plan-execute (strong planner + weak executor) usage case
-    # RouteLLM
-    "CTX_ROUTELLM_TIER",
-    "RouteLLMRequestProcessor",
     # Translation engine
     "TranslationEngine",
     # ChatResponse types

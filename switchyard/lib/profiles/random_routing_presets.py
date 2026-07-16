@@ -200,7 +200,7 @@ class RandomRoutingPresets:
 
         Same weak tier as :meth:`opus_nemotron_super` but swaps Opus
         for GPT-5.2 on the strong side. Matches the default
-        strong+weak pair used by the RouteLLM/random-routing CLI
+        strong+weak pair used by the random-routing CLI
         examples.
         """
         return RandomRoutingConfig(

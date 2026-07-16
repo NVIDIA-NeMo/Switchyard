@@ -47,7 +47,6 @@ from switchyard.lib.profiles.random_routing import (
     RandomRoutingProfileConfig,
 )
 from switchyard.lib.profiles.random_routing_presets import RandomRoutingPresets
-from switchyard.lib.profiles.routellm import RouteLLMConfig, RouteLLMProfileConfig
 from switchyard.lib.profiles.stage_router import StageRouterProfileConfig
 from switchyard.lib.profiles.stage_router_config import ClassifierConfig, StageRouterConfig
 from switchyard.lib.profiles.switchyard_adapter import ProfileSwitchyard
@@ -93,8 +92,6 @@ __all__ = [
     "RandomRoutingConfig",
     "RandomRoutingPresets",
     "RandomRoutingProfileConfig",
-    "RouteLLMConfig",
-    "RouteLLMProfileConfig",
     "TranslateProfileConfig",
     "build_profile",
     "load_profiles",
