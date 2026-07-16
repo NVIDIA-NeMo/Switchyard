@@ -291,7 +291,7 @@ def test_cli_write_records_closed_book_local_dataset_snapshot(tmp_path: Path) ->
         json.dumps(
             {
                 "source_dataset": "openthoughts-tblite@2.0",
-                "agent_versions": {"codex": "0.125.0"},
+                "agent_versions": {"codex": "0.144.5"},
             }
         )
     )
@@ -324,7 +324,7 @@ def test_cli_write_records_closed_book_local_dataset_snapshot(tmp_path: Path) ->
             "--closed-book-proxy-strip-artifact",
             "/etc/proxy-public/strip.jsonl",
             "--agent-versions-json",
-            '{"codex":"0.125.0"}',
+            '{"codex":"0.144.5"}',
             "--run-dir",
             str(run_dir),
             "--log-path",
@@ -344,7 +344,7 @@ def test_cli_write_records_closed_book_local_dataset_snapshot(tmp_path: Path) ->
     assert manifest["closed_book"]["gateway_enforced"] is True
     assert manifest["closed_book"]["hosted_tools_disabled"] is True
     assert manifest["closed_book"]["verifier_egress"] == "open-via-authenticated-proxy"
-    assert manifest["closed_book"]["agent_versions"] == {"codex": "0.125.0"}
+    assert manifest["closed_book"]["agent_versions"] == {"codex": "0.144.5"}
     snapshot = run_dir / "dataset" / "switchyard_dataset_manifest.json"
     assert manifest["closed_book"]["dataset_manifest_snapshot"] == str(snapshot)
     assert snapshot.read_text() == source_manifest.read_text()

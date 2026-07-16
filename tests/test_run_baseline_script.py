@@ -185,7 +185,7 @@ def _write_closed_book_dataset(path: Path) -> Path:
             {
                 "source_dataset": "openthoughts-tblite@2.0",
                 "task_count": 1,
-                "agent_versions": {"codex": "0.125.0"},
+                "agent_versions": {"codex": "0.144.5"},
             }
         )
     )
@@ -297,7 +297,7 @@ def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert _option_value(harbor, "--model") == "tb-lite-single-opus-4-7"
-    assert "version=2.1.119" in _option_values(harbor, "--ak")
+    assert "version=2.1.211" in _option_values(harbor, "--ak")
     assert "reasoning_effort=high" in _option_values(harbor, "--ak")
     assert "reasoning:     high" in result.stdout
     assert "harbor_server: http://switchyard:4000" in result.stdout
@@ -318,7 +318,7 @@ def test_dry_run_codex_gpt_defaults_high_reasoning(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert _option_value(harbor, "--model") == "tb-lite-single-gpt-5-5"
-    assert "version=0.125.0" in _option_values(harbor, "--ak")
+    assert "version=0.144.5" in _option_values(harbor, "--ak")
     assert "reasoning_effort=high" in _option_values(harbor, "--ak")
     catalog_env = next(
         value
@@ -550,7 +550,7 @@ def test_dry_run_harbor_path_uses_local_dataset_and_closed_book_artifact(
     assert "--dataset" not in harbor
     assert _option_value(harbor, "--path") == str(dataset)
     assert _option_value(harbor, "--artifact") == "/etc/proxy-public/strip.jsonl"
-    assert "version=0.125.0" in _option_values(harbor, "--ak")
+    assert "version=0.144.5" in _option_values(harbor, "--ak")
     assert "CODEX_DISABLE_WEB_SEARCH=1" in _option_values(harbor, "--ae")
     catalog_env = next(
         value
@@ -626,7 +626,7 @@ def test_dry_run_claude_closed_book_merges_disallowed_tools(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
-    assert "version=2.1.119" in _option_values(harbor, "--ak")
+    assert "version=2.1.211" in _option_values(harbor, "--ak")
     assert "disallowed_tools=Bash,WebFetch,WebSearch" in _option_values(harbor, "--ak")
 
 
@@ -651,7 +651,7 @@ def test_dry_run_opencode_closed_book_disables_webfetch(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert _option_value(harbor, "--model") == "nvidia/tb-lite-random-routing"
-    assert "version=1.14.31" in _option_values(harbor, "--ak")
+    assert "version=1.18.3" in _option_values(harbor, "--ak")
     assert "OPENCODE_DISABLE_WEBFETCH=1" in _option_values(harbor, "--ae")
 
 
