@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn neutral_call_uses_a_buffered_synthetic_request() -> std::result::Result<(), BoxErr> {
         let request = Request {
-            llm_request: text_request(Some("auto".to_string()), "classify this"),
+            llm_request: text_request(Some("auto".to_string()), "route this"),
             raw_request: None,
             metadata: None,
         };

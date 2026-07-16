@@ -40,7 +40,7 @@ pub struct Metadata {
     pub wire_format: Option<WireFormat>,
 }
 
-/// Optional lineage and semantic signals for agent-aware routing.
+/// Optional lineage and semantic signals for affinity-aware routing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentContext {
     /// Whether the harness explicitly identified this request as coming from a child agent.
@@ -51,7 +51,7 @@ pub struct AgentContext {
     pub agent_kind: Option<String>,
     /// Semantic agent role, such as `explorer`, `worker`, or `reviewer`.
     pub agent_role: Option<String>,
-    /// Semantic task class supplied by the harness or a prior classifier.
+    /// Semantic task class supplied by the harness.
     pub task_kind: Option<String>,
     /// Id of the current agent turn.
     pub turn_id: Option<String>,
