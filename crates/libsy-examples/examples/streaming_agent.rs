@@ -19,9 +19,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use libsy::{
     Algorithm, Context, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget, LlmTargetSet,
-    Request, Response, Step,
+    RandomOrchAlgo, Request, Response, Step,
 };
-use libsy_examples::rand::RandomOrchAlgo;
 use switchyard_protocol::{completion_text, text_request};
 
 /// The "real" model call the agent makes to fulfill an offloaded promise: a response

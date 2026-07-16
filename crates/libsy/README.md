@@ -251,13 +251,14 @@ impl Algorithm for LlmClassifierOrchAlgo {
 
 ## Explore
 
-Reference algorithms and runnable agents live in the sibling
-[`libsy-examples`](../libsy-examples) crate (kept out of `libsy` itself, but compiled and
-tested — `cargo test -p libsy-examples`).
+The core crate includes uniform random routing. More reference algorithms and runnable
+agents live in the sibling [`libsy-examples`](../libsy-examples) crate (compiled and tested
+with `cargo test -p libsy-examples`).
 
 **Reference algorithms** — implementations to read and route with:
 
-- [`RandomOrchAlgo`](../libsy-examples/src/rand.rs) — uniform random over the set (one call).
+- [`RandomOrchAlgo`](src/algorithms/rand.rs) — uniform random over the set
+  (one call).
 - [`LlmClassifierOrchAlgo`](../libsy-examples/src/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
 - [`EnsembleOrchAlgo`](../libsy-examples/src/ensemble.rs) — stateful: fan out to
