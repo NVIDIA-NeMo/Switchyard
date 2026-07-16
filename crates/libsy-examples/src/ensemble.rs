@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response, Signals};
+use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 use switchyard_protocol::{completion_text, prompt_text, text_request};
 
 /// Which step of the ensemble flow produced a decision.
@@ -390,20 +390,12 @@ impl Algorithm for EnsembleOrchAlgo {
         }
         Ok(response)
     }
-
-    async fn process_signals(
-        self: Arc<Self>,
-        _signals: Signals,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Success is measured by the judge, not agent-system signals.
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest, Signals};
     use std::sync::Mutex as StdMutex;
     use switchyard_protocol::text_response;
 

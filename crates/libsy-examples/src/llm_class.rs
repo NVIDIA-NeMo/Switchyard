@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response, Signals};
+use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 use switchyard_protocol::{completion_text, prompt_text, text_request};
 
 /// Preamble prepended to the user prompt when asking the classifier target for a
@@ -169,14 +169,6 @@ impl Algorithm for LlmClassifierOrchAlgo {
         driver
             .call_llm_target(ctx, &routed_target, routed_request, route_decision)
             .await
-    }
-
-    async fn process_signals(
-        self: Arc<Self>,
-        _signals: Signals,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Stateless classification; agent-system signals are ignored.
-        Ok(())
     }
 }
 

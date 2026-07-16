@@ -14,7 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rand::seq::SliceRandom;
 
-use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response, Signals};
+use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 
 /// Decision produced by [`RandomOrchAlgo`]: which target was chosen and why.
 pub struct RandomDecision {
@@ -85,20 +85,12 @@ impl Algorithm for RandomOrchAlgo {
             .call_llm_target(ctx, &target, request, decision)
             .await
     }
-
-    async fn process_signals(
-        self: Arc<Self>,
-        _signals: Signals,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Random routing is stateless, so agent-system signals are ignored.
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest, Signals};
     use std::collections::HashSet;
     use switchyard_protocol::{completion_text, text_request, text_response};
 

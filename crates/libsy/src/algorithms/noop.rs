@@ -10,7 +10,7 @@ use switchyard_protocol::{
     AggLlmResponse, ContentBlock, LlmResponse, Request, Response, ResponseOutput, Role, StopReason,
 };
 
-use crate::{Algorithm, Context, Decision, Driver, Signals};
+use crate::{Algorithm, Context, Decision, Driver};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
 pub struct NoopAlgo {}
@@ -67,13 +67,6 @@ impl Algorithm for NoopAlgo {
             metadata: request.metadata.clone(),
         };
         Ok(response)
-    }
-
-    async fn process_signals(
-        self: Arc<Self>,
-        _signals: Signals,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Ok(())
     }
 }
 
