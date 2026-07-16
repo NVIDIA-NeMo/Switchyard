@@ -855,6 +855,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "rand 0.8.6",
  "serde_json",
  "switchyard-protocol",
  "tokio",
@@ -868,7 +869,6 @@ dependencies = [
  "async-trait",
  "futures",
  "libsy",
- "rand 0.8.6",
  "switchyard-protocol",
  "tokio",
  "tokio-stream",

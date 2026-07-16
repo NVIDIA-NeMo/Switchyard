@@ -52,13 +52,15 @@
 //! responsible for its own thread-safety — stateless (like the reference routers) or
 //! interior mutability over just its own state.
 //!
-//! ## Reference algorithms
+//! ## Algorithms
 //!
-//! Worked implementations — a random router, an LLM classifier, and a stateful
-//! ensemble — plus runnable agents live in the `libsy-examples` crate.
+//! [`RandomAlgo`] provides uniform random routing in the core crate. Worked
+//! implementations of an LLM classifier and a stateful ensemble, plus runnable
+//! agents, live in the `libsy-examples` crate.
 
 mod algorithms;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
+pub use algorithms::rand::{RandomAlgo, RandomDecision};
 
 mod driver;
 
