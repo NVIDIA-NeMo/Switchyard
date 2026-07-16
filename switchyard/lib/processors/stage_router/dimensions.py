@@ -61,15 +61,15 @@ def from_signal(signal: ToolResultSignal) -> CodingAgentDimensions:
         and signal.recent_write_count == 0
         and signal.recent_read_count >= 2
     )
-    # no_progress: a *whole-task* dead-end — deep into the run having produced
-    # nothing at all (no write or edit ever). Distinct from stuck_exploring (which
-    # only looks at the recent window), so the two are independent corroborating
-    # signals rather than the same condition counted twice. Cumulative by
-    # necessity to capture "the whole task", but self-releases on the first write.
+    # no_progress: a *windowed* dead-end — deep into the run (turn_depth > 30) with no
+    # write or edit in the recent window. Windowed like every other signal, so it clears
+    # once the agent produces something recent and re-fires if it stalls again. The
+    # deeper turn_depth gate keeps it distinct from stuck_exploring (turn_depth >= 8 and
+    # requires recent reads), so the two still corroborate rather than duplicate.
     no_progress = (
         signal.turn_depth > 30
-        and signal.write_count == 0
-        and signal.edit_count == 0
+        and signal.recent_write_count == 0
+        and signal.recent_edit_count == 0
     )
     return CodingAgentDimensions(
         severity=float(signal.severity),
