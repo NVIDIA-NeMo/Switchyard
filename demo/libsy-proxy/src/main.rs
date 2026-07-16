@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Demo proxy combining Switchyard HTTP/translation with libsy agent-aware routing.
+//! Demo proxy combining Switchyard HTTP/translation with libsy random routing and affinity.
 //!
 //! The server accepts OpenAI Chat, Anthropic Messages, and OpenAI Responses requests.
-//! libsy normalizes harness identity headers, assigns a stable agent/task to a model
-//! pool target, and makes calls through Switchyard's OpenAI-compatible backend.
+//! libsy normalizes harness identity headers, randomly routes ordinary requests, and
+//! retains the first model selected for each stable child agent.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -15,12 +15,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use libsy::agentic::{
-    metadata_from_headers, AgentAwareOrchAlgo, AgentRoutingCandidate, AgentRoutingDecision,
-};
+use libsy::affinity::{metadata_from_headers, SubAgentAffinity};
 use libsy::{
-    Algorithm, Context, Decision, LlmClient, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, RoutedRequest,
+    Algorithm, Context, Decision, LlmClient, LlmResponse, LlmTarget, LlmTargetSet, RandomAlgo,
+    Request, Response, RoutedRequest,
 };
 use switchyard_components::OpenAiPassthroughBackend;
 use switchyard_components_v2::{Profile, ProfileInput, ProfileResponse, RoutingMetadata};
@@ -31,16 +29,14 @@ use switchyard_core::{
 use switchyard_server::{build_switchyard_router, ProfileRegistry, ServerState};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
-const CLASSIFIER_MODEL: &str = "nvidia/deepseek-ai/deepseek-v4-flash";
 const FRONTIER_MODEL: &str = "aws/anthropic/bedrock-claude-opus-4-7";
 const FAST_MODEL: &str = "nvidia/deepseek-ai/deepseek-v4-flash";
-const CLASSIFIER_TARGET: &str = "classifier";
 const FRONTIER_TARGET: &str = "frontier";
 const FAST_TARGET: &str = "fast";
 
 const DEFAULT_BASE_URL: &str = "https://inference-api.nvidia.com/v1";
 const DEFAULT_ADDR: &str = "127.0.0.1:4000";
-const PROFILE_MODEL_ID: &str = "libsy-agent-aware";
+const PROFILE_MODEL_ID: &str = "libsy-random-affinity";
 
 type BoxErr = Box<dyn Error + Send + Sync>;
 
@@ -84,13 +80,13 @@ impl LlmClient for SwitchyardBackendClient {
 }
 
 /// Switchyard profile that delegates all routing decisions to libsy.
-struct LibsyAgentAwareProfile {
+struct LibsyAffinityProfile {
     algorithm: Arc<dyn Algorithm>,
     translation: Arc<TranslationEngine>,
 }
 
 #[async_trait]
-impl Profile for LibsyAgentAwareProfile {
+impl Profile for LibsyAffinityProfile {
     async fn run(&self, input: ProfileInput) -> Result<ProfileResponse> {
         let request = libsy_request(&input, self.translation.as_ref())?;
         let (trace, response) = Arc::clone(&self.algorithm)
@@ -141,20 +137,20 @@ fn libsy_request(input: &ProfileInput, translation: &TranslationEngine) -> Resul
     })
 }
 
-/// Preserve routed provider payloads; encode classifier calls from the neutral IR.
+/// Preserve routed provider payloads; encode neutral requests when no raw body exists.
 fn chat_request_for_call(
     request: &Request,
     model: &str,
     translation: &TranslationEngine,
 ) -> std::result::Result<ChatRequest, BoxErr> {
     let Some(mut body) = request.raw_request.clone() else {
-        let mut classifier_request = request.llm_request.clone();
-        classifier_request.model = Some(model.to_string());
-        classifier_request.stream = false;
+        let mut neutral_request = request.llm_request.clone();
+        neutral_request.model = Some(model.to_string());
+        neutral_request.stream = false;
         let body = translation
             .encode_request(
                 WireFormat::OpenAiChat,
-                &classifier_request,
+                &neutral_request,
                 &TranslationPolicy::default(),
             )
             .map_err(|error| BoxErr::from(error.to_string()))?
@@ -198,8 +194,6 @@ fn wire_format(request_type: ChatRequestType) -> WireFormat {
 /// Surface libsy's routing decision as `x-model-router-*` response headers.
 fn routing_metadata(trace: &[Arc<dyn Decision>]) -> RoutingMetadata {
     let decision = trace.last();
-    let agent =
-        decision.and_then(|decision| decision.as_any().downcast_ref::<AgentRoutingDecision>());
     let selected_target = decision.map(|decision| decision.selected_model());
     RoutingMetadata {
         selected_model: selected_target.map(|target| match target {
@@ -208,8 +202,8 @@ fn routing_metadata(trace: &[Arc<dyn Decision>]) -> RoutingMetadata {
             other => other.to_string(),
         }),
         selected_tier: selected_target.map(str::to_string),
-        confidence: agent.and_then(|decision| decision.confidence),
-        router_version: Some("libsy-agent-aware-v1".to_string()),
+        confidence: None,
+        router_version: Some("libsy-random-affinity-v1".to_string()),
         tolerance: None,
         rationale: decision.and_then(|decision| decision.reasoning().map(str::to_string)),
     }
@@ -229,7 +223,6 @@ fn build_algorithm() -> Result<Arc<dyn Algorithm>> {
         timeout_secs: Some(120.0),
     })?);
     let model_ids = BTreeMap::from([
-        (CLASSIFIER_TARGET.to_string(), CLASSIFIER_MODEL.to_string()),
         (FRONTIER_TARGET.to_string(), FRONTIER_MODEL.to_string()),
         (FAST_TARGET.to_string(), FAST_MODEL.to_string()),
     ]);
@@ -243,33 +236,16 @@ fn build_algorithm() -> Result<Arc<dyn Algorithm>> {
         semantic_name: name.to_string(),
         llm_client: Some(Arc::clone(&client)),
     };
-    let targets = LlmTargetSet::new(vec![
-        target(CLASSIFIER_TARGET),
-        target(FRONTIER_TARGET),
-        target(FAST_TARGET),
-    ]);
+    let targets = LlmTargetSet::new(vec![target(FRONTIER_TARGET), target(FAST_TARGET)]);
+    let algorithm = RandomAlgo::new(targets).with_affinity(Arc::new(SubAgentAffinity::new()));
 
-    Ok(Arc::new(AgentAwareOrchAlgo::new(
-        CLASSIFIER_TARGET,
-        vec![
-            AgentRoutingCandidate::new(
-                FRONTIER_TARGET,
-                "frontier model for planning, ambiguous implementation, synthesis, and review",
-            ),
-            AgentRoutingCandidate::new(
-                FAST_TARGET,
-                "efficient model for bounded exploration, retrieval, and mechanical edits",
-            ),
-        ],
-        FRONTIER_TARGET,
-        targets,
-    )))
+    Ok(Arc::new(algorithm))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let translation = Arc::new(TranslationEngine::default());
-    let profile = Arc::new(LibsyAgentAwareProfile {
+    let profile = Arc::new(LibsyAffinityProfile {
         algorithm: build_algorithm()?,
         translation,
     }) as Arc<dyn Profile>;
@@ -293,9 +269,9 @@ async fn main() -> Result<()> {
         .map_err(|error| SwitchyardError::Other(error.to_string()))?;
 
     println!("libsy-proxy listening on http://{bound_addr}");
-    println!("  routing (libsy agent-aware): classifier={CLASSIFIER_MODEL}");
-    println!("                               frontier={FRONTIER_MODEL}");
-    println!("                               fast={FAST_MODEL}");
+    println!("  routing (libsy random + sub-agent affinity):");
+    println!("    frontier={FRONTIER_MODEL}");
+    println!("    fast={FAST_MODEL}");
     println!(
         "  send model \"{PROFILE_MODEL_ID}\" to /v1/chat/completions, /v1/messages, or /v1/responses"
     );
@@ -318,9 +294,9 @@ mod tests {
     #[test]
     fn routed_call_preserves_provider_body_and_rewrites_model() -> std::result::Result<(), BoxErr> {
         let request = Request {
-            llm_request: text_request(Some("libsy-agent-aware".to_string()), "inspect"),
+            llm_request: text_request(Some(PROFILE_MODEL_ID.to_string()), "inspect"),
             raw_request: Some(json!({
-                "model": "libsy-agent-aware",
+                "model": PROFILE_MODEL_ID,
                 "input": "inspect",
                 "tools": [{"type": "function", "name": "shell"}],
                 "stream": false,
@@ -349,7 +325,7 @@ mod tests {
     fn decodes_responses_input_and_normalizes_headers() -> Result<()> {
         let input = ProfileInput {
             request: ChatRequest::openai_responses(json!({
-                "model": "libsy-agent-aware",
+                "model": PROFILE_MODEL_ID,
                 "input": [{
                     "type": "message",
                     "role": "user",
@@ -358,10 +334,14 @@ mod tests {
                 "stream": false,
             })),
             metadata: RequestMetadata {
-                headers: BTreeMap::from([(
-                    "thread-id".to_string(),
-                    vec!["child-agent".to_string()],
-                )]),
+                headers: BTreeMap::from([
+                    ("session-id".to_string(), vec!["session-1".to_string()]),
+                    ("thread-id".to_string(), vec!["child-agent".to_string()]),
+                    (
+                        "x-openai-subagent".to_string(),
+                        vec!["collab_spawn".to_string()],
+                    ),
+                ]),
                 ..RequestMetadata::default()
             },
         };
@@ -375,22 +355,30 @@ mod tests {
                 .and_then(|metadata| metadata.agent_id.as_deref()),
             Some("child-agent")
         );
+        assert_eq!(
+            request
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.agent_context.as_deref())
+                .map(|agent| agent.is_subagent),
+            Some(true)
+        );
         Ok(())
     }
 
     #[test]
-    fn classifier_call_uses_a_buffered_synthetic_request() -> std::result::Result<(), BoxErr> {
+    fn neutral_call_uses_a_buffered_synthetic_request() -> std::result::Result<(), BoxErr> {
         let request = Request {
             llm_request: text_request(Some("auto".to_string()), "classify this"),
             raw_request: None,
             metadata: None,
         };
 
-        let classifier =
-            chat_request_for_call(&request, "classifier/model", &TranslationEngine::default())?;
-        assert_eq!(classifier.request_type(), ChatRequestType::OpenAiChat);
+        let neutral =
+            chat_request_for_call(&request, "provider/model", &TranslationEngine::default())?;
+        assert_eq!(neutral.request_type(), ChatRequestType::OpenAiChat);
         assert_ne!(
-            classifier.body().get("stream").and_then(Value::as_bool),
+            neutral.body().get("stream").and_then(Value::as_bool),
             Some(true)
         );
         Ok(())
@@ -398,18 +386,14 @@ mod tests {
 
     #[test]
     fn response_metadata_exposes_provider_model_and_logical_tier() {
-        let decision: Arc<dyn Decision> = Arc::new(AgentRoutingDecision {
+        let decision: Arc<dyn Decision> = Arc::new(libsy::RandomDecision {
             selected_model: FAST_TARGET.to_string(),
-            reason: "bounded lookup".to_string(),
-            task_kind: Some("research".to_string()),
-            confidence: Some(0.9),
-            agent_id: Some("child-1".to_string()),
-            cache_hit: false,
+            reasoning: "random routing selected target 'fast'".to_string(),
         });
 
         let metadata = routing_metadata(&[decision]);
         assert_eq!(metadata.selected_model.as_deref(), Some(FAST_MODEL));
         assert_eq!(metadata.selected_tier.as_deref(), Some(FAST_TARGET));
-        assert_eq!(metadata.confidence, Some(0.9));
+        assert_eq!(metadata.confidence, None);
     }
 }

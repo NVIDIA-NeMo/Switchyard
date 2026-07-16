@@ -14,6 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rand::seq::SliceRandom;
 
+use crate::affinity::Affinity;
 use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 
 /// Decision produced by [`RandomAlgo`]: which target was chosen and why.
@@ -41,6 +42,7 @@ impl Decision for RandomDecision {
 /// Uniform random router over a target set.
 pub struct RandomAlgo {
     target_set: LlmTargetSet,
+    affinity: Option<Arc<dyn Affinity>>,
 }
 
 impl RandomAlgo {
@@ -49,7 +51,35 @@ impl RandomAlgo {
     /// Wrap it in an [`Arc`] and drive it with [`Algorithm::run`] or
     /// [`Algorithm::run_stream`].
     pub fn new(target_set: LlmTargetSet) -> Self {
-        Self { target_set }
+        Self {
+            target_set,
+            affinity: None,
+        }
+    }
+
+    /// Retains selections according to `affinity` while preserving per-request
+    /// random routing for requests the policy does not key.
+    pub fn with_affinity(mut self, affinity: Arc<dyn Affinity>) -> Self {
+        self.affinity = Some(affinity);
+        self
+    }
+
+    /// Selects one configured target name uniformly at random.
+    fn choose_target(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
+        if let [target] = self.target_set.targets() {
+            return Ok(target.semantic_name.clone());
+        }
+        // Scope the non-Send ThreadRng so callers may await after this returns.
+        let selected = {
+            let mut rng = rand::thread_rng();
+            self.target_set
+                .targets()
+                .choose(&mut rng)
+                .ok_or("no targets available")?
+                .semantic_name
+                .clone()
+        };
+        Ok(selected)
     }
 }
 
@@ -61,19 +91,35 @@ impl Algorithm for RandomAlgo {
         driver: Driver,
         request: Request,
     ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-        // Scope the non-Send ThreadRng before the await so the future remains Send.
-        let target = {
-            let mut rng = rand::thread_rng();
-            self.target_set
-                .targets()
-                .choose(&mut rng)
-                .ok_or("no targets available")?
-                .clone()
+        let (selected, reasoning) = match self.affinity.as_ref() {
+            Some(affinity) => match affinity.assignment(&request) {
+                Some(selected) => {
+                    let reasoning = format!("affinity reused target '{selected}'");
+                    (selected, reasoning)
+                }
+                None => {
+                    let proposed = self.choose_target()?;
+                    let applies = affinity.key(&request).is_some();
+                    let selected = affinity.retain(&request, proposed.clone());
+                    let reasoning = if !applies {
+                        format!("random routing selected target '{selected}'")
+                    } else if selected == proposed {
+                        format!("random routing selected and retained target '{selected}'")
+                    } else {
+                        format!("affinity retained concurrent target '{selected}'")
+                    };
+                    (selected, reasoning)
+                }
+            },
+            None => {
+                let selected = self.choose_target()?;
+                let reasoning = format!("random routing selected target '{selected}'");
+                (selected, reasoning)
+            }
         };
-
-        let selected = target.semantic_name.clone();
+        let target = self.target_set.get_target(&selected)?;
         let decision: Arc<dyn Decision> = Arc::new(RandomDecision {
-            reasoning: format!("random routing selected target '{selected}'"),
+            reasoning,
             selected_model: selected,
         });
 
@@ -91,7 +137,8 @@ mod tests {
 
     use switchyard_protocol::{completion_text, text_request, text_response};
 
-    use crate::{LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals};
+    use crate::affinity::{Affinity, SessionAffinity, SubAgentAffinity};
+    use crate::{AgentContext, LlmResponse, LlmTarget, Metadata, Request, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
     struct EchoClient;
@@ -133,6 +180,30 @@ mod tests {
 
     fn shared_algorithm(names: &[&str]) -> Arc<dyn Algorithm> {
         Arc::new(algorithm(names))
+    }
+
+    fn shared_algorithm_with_affinity(
+        names: &[&str],
+        affinity: Arc<dyn Affinity>,
+    ) -> Arc<dyn Algorithm> {
+        Arc::new(algorithm(names).with_affinity(affinity))
+    }
+
+    fn affinity_request(is_subagent: bool, agent_id: &str, task_id: &str) -> Request {
+        Request {
+            llm_request: text_request(Some("auto".to_string()), "hi"),
+            raw_request: None,
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some(agent_id.to_string()),
+                task_id: Some(task_id.to_string()),
+                agent_context: Some(Box::new(AgentContext {
+                    is_subagent,
+                    ..AgentContext::default()
+                })),
+                ..Metadata::default()
+            }),
+        }
     }
 
     #[tokio::test]
@@ -232,6 +303,145 @@ mod tests {
             .downcast_ref::<RandomDecision>()
             .ok_or("expected a RandomDecision")?;
         assert_eq!(concrete.selected_model, "only/model");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagent_affinity_reuses_selection_across_task_changes(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let algorithm = shared_algorithm_with_affinity(
+            &["a/model", "b/model"],
+            Arc::new(SubAgentAffinity::new()),
+        );
+        let (_, first) = Arc::clone(&algorithm)
+            .run(
+                Context::default(),
+                affinity_request(true, "child-1", "task-1"),
+            )
+            .await?;
+        let (trace, second) = algorithm
+            .run(
+                Context::default(),
+                affinity_request(true, "child-1", "task-2"),
+            )
+            .await?;
+
+        assert_eq!(first.selected_model(), second.selected_model());
+        assert!(trace[0]
+            .reasoning()
+            .unwrap_or_default()
+            .contains("affinity reused"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn single_target_subagent_is_retained_without_reselection(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let algorithm =
+            shared_algorithm_with_affinity(&["only/model"], Arc::new(SubAgentAffinity::new()));
+        Arc::clone(&algorithm)
+            .run(
+                Context::default(),
+                affinity_request(true, "child-1", "task-1"),
+            )
+            .await?;
+        let (trace, response) = algorithm
+            .run(
+                Context::default(),
+                affinity_request(true, "child-1", "task-2"),
+            )
+            .await?;
+
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "only/model"
+        );
+        assert!(trace[0]
+            .reasoning()
+            .unwrap_or_default()
+            .contains("affinity reused"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagent_affinity_does_not_retain_root_selection(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let affinity = Arc::new(SubAgentAffinity::new());
+        let algorithm = shared_algorithm_with_affinity(
+            &["a/model", "b/model"],
+            Arc::clone(&affinity) as Arc<dyn Affinity>,
+        );
+        Arc::clone(&algorithm)
+            .run(
+                Context::default(),
+                affinity_request(false, "root-1", "task-1"),
+            )
+            .await?;
+
+        assert!(affinity
+            .assignment(&affinity_request(false, "root-1", "task-2"))
+            .is_none());
+        let (trace, _) = algorithm
+            .run(
+                Context::default(),
+                affinity_request(false, "root-1", "task-2"),
+            )
+            .await?;
+        assert!(trace[0]
+            .reasoning()
+            .unwrap_or_default()
+            .starts_with("random routing selected"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_affinity_reuses_selection_for_different_agents(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let algorithm = shared_algorithm_with_affinity(
+            &["a/model", "b/model"],
+            Arc::new(SessionAffinity::new()),
+        );
+        let (_, first) = Arc::clone(&algorithm)
+            .run(
+                Context::default(),
+                affinity_request(false, "agent-a", "task-1"),
+            )
+            .await?;
+        let (_, second) = algorithm
+            .run(
+                Context::default(),
+                affinity_request(false, "agent-b", "task-2"),
+            )
+            .await?;
+
+        assert_eq!(first.selected_model(), second.selected_model());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_subagent_turns_use_one_assignment(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let algorithm = shared_algorithm_with_affinity(
+            &["a/model", "b/model"],
+            Arc::new(SubAgentAffinity::new()),
+        );
+        let first = Arc::clone(&algorithm).run(
+            Context::default(),
+            affinity_request(true, "child-1", "task-1"),
+        );
+        let second = algorithm.run(
+            Context::default(),
+            affinity_request(true, "child-1", "task-1"),
+        );
+        let (first, second) = tokio::join!(first, second);
+        let (_, first) = first?;
+        let (_, second) = second?;
+
+        assert_eq!(first.selected_model(), second.selected_model());
         Ok(())
     }
 }

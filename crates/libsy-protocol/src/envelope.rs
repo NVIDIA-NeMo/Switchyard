@@ -43,6 +43,8 @@ pub struct Metadata {
 /// Optional lineage and semantic signals for agent-aware routing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentContext {
+    /// Whether the harness explicitly identified this request as coming from a child agent.
+    pub is_subagent: bool,
     /// Id of the parent agent, when this request comes from a child agent.
     pub parent_agent_id: Option<String>,
     /// Harness-defined kind of agent call, such as `collab_spawn` or `review`.

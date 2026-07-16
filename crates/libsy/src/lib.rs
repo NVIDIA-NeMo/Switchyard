@@ -54,15 +54,15 @@
 //!
 //! ## Algorithms
 //!
-//! [`RandomAlgo`] provides uniform random routing in the core crate. Worked
-//! [`agentic::AgentAwareOrchAlgo`] provides sub-agent-aware model-pool routing and
-//! neutral harness-header normalization. Worked implementations of an LLM classifier
-//! and a stateful ensemble, plus runnable agents, live in the `libsy-examples` crate.
+//! [`RandomAlgo`] provides uniform random routing in the core crate and can retain
+//! selections through an [`affinity::Affinity`] policy. Worked implementations of an
+//! LLM classifier and a stateful ensemble, plus runnable agents, live in the
+//! `libsy-examples` crate.
 
 mod algorithms;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
 pub use algorithms::rand::{RandomAlgo, RandomDecision};
-pub mod agentic;
+pub mod affinity;
 
 mod driver;
 
