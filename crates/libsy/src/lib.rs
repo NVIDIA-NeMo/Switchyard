@@ -69,8 +69,8 @@ use futures::{Stream, StreamExt};
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    AggLlmResponse, Context, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream,
-    Metadata, Request, Response,
+    AggLlmResponse, Context, Decision, LlmRequest, LlmResponse, LlmResponseChunk,
+    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient,
 };
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
@@ -90,22 +90,6 @@ pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step, BoxErr>> + Send>>;
 /// enum grows without changing the orchestrator contract.
 #[derive(Clone)]
 pub struct Signals {}
-
-/// A decision/trace object produced by an algorithm.
-///
-/// Carried as a trait object (not a generic parameter) so a stream consumer can
-/// inspect any algorithm's decision through this common interface without
-/// knowing the concrete type. `as_any` is the escape hatch for a consumer that
-/// *does* know the algo and wants to downcast to the concrete decision.
-pub trait Decision: Send + Sync {
-    /// The model this decision selected (e.g. the routed target's name).
-    fn selected_model(&self) -> &str;
-    /// A human-readable explanation of the decision, for logs and traces.
-    fn reasoning(&self) -> Option<&str>;
-    /// Downcast handle: a consumer that knows the algorithm can recover the
-    /// concrete decision type via `as_any().downcast_ref::<ConcreteDecision>()`.
-    fn as_any(&self) -> &dyn std::any::Any;
-}
 
 /// A request paired with the routing [`Decision`] that produced it — the offload
 /// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
@@ -285,25 +269,6 @@ pub enum Step {
     Decision(Arc<dyn Decision>),
     /// The algorithm finished with its final response — the last step of a run.
     ReturnToAgent(Box<Response>),
-}
-
-/// Performs the actual model call for a target. This is the one piece of I/O
-/// `libsy` does not own — a host implements it over its own transport (HTTP SDK,
-/// in-process model, mock). It serves a call the stream consumer chose not to
-/// override, reached as [`RoutedRequest::default_client`] (see [`Algorithm::run_stream`]).
-#[async_trait]
-pub trait RoutedLlmClient: Send + Sync {
-    /// Serve the call, returning the model's response. Call the model named by
-    /// [`decision.selected_model()`](Decision::selected_model) — the target the algorithm
-    /// routed to — mapping it to whatever provider model id this client hits.
-    /// `request.llm_request.model` is the agent's original name, carried through for
-    /// reference, not a call target. `ctx` carries the request's cross-cutting state.
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request,
-        decision: Arc<dyn Decision>,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>>;
 }
 
 /// A named routing target: a `semantic_name` an algorithm routes by, and an optional
