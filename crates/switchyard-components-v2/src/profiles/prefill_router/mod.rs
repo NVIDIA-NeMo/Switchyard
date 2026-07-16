@@ -7,3 +7,5 @@
 mod artifact;
 #[allow(dead_code)]
 mod policy;
+#[allow(dead_code)]
+mod scorer;
