@@ -86,7 +86,7 @@ impl ResearchAgent {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Configure routing once: an LLM classifier over three named targets. Swapping
-    // in `RandomOrchAlgo` needs no change to the agent.
+    // in `RandomAlgo` needs no change to the agent.
     let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
         CLASSIFIER,
         STRONG,

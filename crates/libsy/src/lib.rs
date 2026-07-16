@@ -54,13 +54,13 @@
 //!
 //! ## Algorithms
 //!
-//! [`RandomOrchAlgo`] provides uniform random routing in the core crate. Worked
+//! [`RandomAlgo`] provides uniform random routing in the core crate. Worked
 //! implementations of an LLM classifier and a stateful ensemble, plus runnable
 //! agents, live in the `libsy-examples` crate.
 
 mod algorithms;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
-pub use algorithms::rand::{RandomDecision, RandomOrchAlgo};
+pub use algorithms::rand::{RandomAlgo, RandomDecision};
 
 mod driver;
 

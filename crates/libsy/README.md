@@ -257,7 +257,7 @@ with `cargo test -p libsy-examples`).
 
 **Reference algorithms** — implementations to read and route with:
 
-- [`RandomOrchAlgo`](src/algorithms/rand.rs) — uniform random over the set
+- [`RandomAlgo`](src/algorithms/rand.rs) — uniform random over the set
   (one call).
 - [`LlmClassifierOrchAlgo`](../libsy-examples/src/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.

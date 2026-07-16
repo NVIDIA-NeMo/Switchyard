@@ -19,7 +19,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use libsy::{
     Algorithm, Context, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget, LlmTargetSet,
-    RandomOrchAlgo, Request, Response, Step,
+    RandomAlgo, Request, Response, Step,
 };
 use switchyard_protocol::{completion_text, text_request};
 
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         semantic_name: "stream/model".to_string(),
         llm_client: None,
     }]);
-    let algo: Arc<dyn Algorithm> = Arc::new(RandomOrchAlgo::new(targets));
+    let algo: Arc<dyn Algorithm> = Arc::new(RandomAlgo::new(targets));
 
     let request = Request {
         llm_request: text_request(Some("auto".to_string()), "tell me about switchyard"),

@@ -16,7 +16,7 @@ use rand::seq::SliceRandom;
 
 use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 
-/// Decision produced by [`RandomOrchAlgo`]: which target was chosen and why.
+/// Decision produced by [`RandomAlgo`]: which target was chosen and why.
 pub struct RandomDecision {
     /// The randomly selected target/model.
     pub selected_model: String,
@@ -39,11 +39,11 @@ impl Decision for RandomDecision {
 }
 
 /// Uniform random router over a target set.
-pub struct RandomOrchAlgo {
+pub struct RandomAlgo {
     target_set: LlmTargetSet,
 }
 
-impl RandomOrchAlgo {
+impl RandomAlgo {
     /// Creates a router over `target_set`.
     ///
     /// Wrap it in an [`Arc`] and drive it with [`Algorithm::run`] or
@@ -54,7 +54,7 @@ impl RandomOrchAlgo {
 }
 
 #[async_trait]
-impl Algorithm for RandomOrchAlgo {
+impl Algorithm for RandomAlgo {
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -121,7 +121,7 @@ mod tests {
     }
 
     /// Builds a random router whose targets all share an echo client.
-    fn algorithm(names: &[&str]) -> RandomOrchAlgo {
+    fn algorithm(names: &[&str]) -> RandomAlgo {
         let targets = names
             .iter()
             .map(|name| LlmTarget {
@@ -129,7 +129,7 @@ mod tests {
                 llm_client: Some(Arc::new(EchoClient)),
             })
             .collect();
-        RandomOrchAlgo::new(LlmTargetSet::new(targets))
+        RandomAlgo::new(LlmTargetSet::new(targets))
     }
 
     fn shared_algorithm(names: &[&str]) -> Arc<dyn Algorithm> {
