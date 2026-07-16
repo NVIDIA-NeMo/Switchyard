@@ -1721,7 +1721,6 @@ dependencies = [
 name = "switchyard-llm-client"
 version = "0.1.0"
 dependencies = [
- "async-stream",
  "async-trait",
  "futures",
  "futures-util",
@@ -1802,6 +1801,8 @@ dependencies = [
 name = "switchyard-translation"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
+ "futures",
  "pretty_assertions",
  "serde",
  "serde_json",

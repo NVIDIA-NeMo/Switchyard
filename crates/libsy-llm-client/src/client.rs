@@ -4,26 +4,23 @@
 //! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::RequestBuilder;
 use serde_json::Value;
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, LlmResponseStream, Metadata, Request, Response, RoutedLlmClient,
+    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    StreamCodecRegistry, StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
+    decode_buffered_response, decode_request, decode_stream, encode_buffered_response,
+    encode_request, encode_stream, WireFormat,
 };
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
-use crate::sse::{
-    decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes, parse_json_sse_frame,
-    ParsedSseFrame,
-};
+use crate::raw::RawResponse;
 
 // Headers this client owns or that are hop-by-hop; never forwarded from the
 // caller's metadata. Auth/version/content-type are set by the backend or the
@@ -76,8 +73,6 @@ impl ModelConfig {
 pub struct TranslatingLlmClient {
     model_to_config: HashMap<String, ModelConfig>,
     client: reqwest::Client,
-    engine: TranslationEngine,
-    policy: TranslationPolicy,
 }
 
 impl TranslatingLlmClient {
@@ -95,8 +90,6 @@ impl TranslatingLlmClient {
         Ok(Self {
             model_to_config,
             client,
-            engine: TranslationEngine::default(),
-            policy: TranslationPolicy::default(),
         })
     }
 
@@ -162,11 +155,8 @@ impl TranslatingLlmClient {
         // The resolved name is the upstream model id (per the crate contract).
         llm_request.model = Some(model.clone());
 
-        let mut body = self
-            .engine
-            .encode_request(wire_format, &llm_request, &self.policy)
-            .map_err(|error| LlmClientError::Translation(error.to_string()))?
-            .body;
+        let mut body = encode_request(&llm_request, wire_format)
+            .map_err(|error| LlmClientError::Translation(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
@@ -201,22 +191,85 @@ impl TranslatingLlmClient {
         }
 
         let llm_response = if streaming {
-            LlmResponse::Stream(decode_stream(http_response, wire_format))
+            // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
+            // transport-agnostic and lives in `switchyard-translation`.
+            let bytes = http_response.bytes_stream().map(|chunk| {
+                chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
+                    Box::new(LlmClientError::Stream(format!(
+                        "stream read failed: {error}"
+                    ))) as Box<dyn std::error::Error + Send + Sync>
+                })
+            });
+            LlmResponse::Stream(decode_stream(bytes, wire_format))
         } else {
             let body = http_response.json::<Value>().await.map_err(|error| {
                 LlmClientError::Transport(format!("invalid upstream JSON: {error}"))
             })?;
-            let decoded = self
-                .engine
-                .decode_response(wire_format, &body, &self.policy)
+            let agg = decode_buffered_response(&body, wire_format)
                 .map_err(|error| LlmClientError::Translation(error.to_string()))?;
-            LlmResponse::Agg(decoded.response)
+            LlmResponse::Agg(agg)
         };
 
         Ok(Response {
             llm_response,
             metadata,
         })
+    }
+
+    /// The whole decode → call → encode path a wire endpoint needs, in one call.
+    ///
+    /// Decodes `raw_http_request` from `wire_format` to the neutral IR, serves it via
+    /// [`call_rewrite_model`](Self::call_rewrite_model) — the *upstream* wire format is
+    /// resolved there from the model's backend, independently of `wire_format` — then
+    /// encodes the neutral response back into `wire_format`. The result is a buffered
+    /// [`RawResponse::Buffered`] JSON body or a streamed [`RawResponse::Stream`] of
+    /// wire events (the caller frames the stream as SSE). The response's `model` is
+    /// restamped with the model the request asked for, never the upstream id.
+    ///
+    /// `http_headers` are carried through as the request's
+    /// [`Metadata::http_headers`] and forwarded to the upstream (minus the reserved
+    /// set); pass `None` to forward nothing.
+    pub async fn call_rewrite_model_raw(
+        &self,
+        ctx: Context,
+        raw_http_request: Value,
+        http_headers: Option<BTreeMap<String, String>>,
+        model: Option<&str>,
+        wire_format: WireFormat,
+    ) -> Result<RawResponse> {
+        let llm_request = decode_request(wire_format, &raw_http_request)
+            .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+        // The model the client asked for; restamped onto the response so it never
+        // leaks the upstream id.
+        let requested_model = llm_request.model.clone();
+
+        let request = Request {
+            llm_request,
+            raw_request: None,
+            metadata: Some(Metadata {
+                session_id: None,
+                agent_id: None,
+                task_id: None,
+                correlation_id: None,
+                extra_metadata: None,
+                http_headers,
+                wire_format: None,
+            }),
+        };
+        let response = self.call_rewrite_model(ctx, request, model).await?;
+
+        match response.llm_response {
+            LlmResponse::Agg(agg) => {
+                let body = encode_buffered_response(&agg, wire_format, requested_model.as_deref())
+                    .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+                Ok(RawResponse::Buffered(body))
+            }
+            LlmResponse::Stream(chunks) => Ok(RawResponse::Stream(encode_stream(
+                chunks,
+                wire_format,
+                requested_model,
+            ))),
+        }
     }
 }
 
@@ -272,70 +325,6 @@ fn is_reserved_header(name: &str) -> bool {
     RESERVED_HEADERS
         .iter()
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
-}
-
-// The terminal SSE marker for the format, if any. OpenAI Chat and Responses use
-// `[DONE]`; Anthropic ends on its `message_stop` event with no marker.
-fn done_marker(format: WireFormat) -> Option<&'static str> {
-    match format {
-        WireFormat::OpenAiChat | WireFormat::OpenAiResponses => Some("[DONE]"),
-        WireFormat::AnthropicMessages => None,
-    }
-}
-
-// Reads the upstream SSE body, draining frames and decoding each into neutral IR
-// chunks. Partial frames are preserved across TCP chunks.
-//
-// The stream codec is resolved once and reused for every frame: it is stateless
-// (all per-response state lives in `StreamTranslationState`), so rebuilding the
-// registry per frame — as the `decode_stream_event` free function does — would
-// allocate a throwaway registry for each of a response's many chunks.
-fn decode_stream(response: reqwest::Response, source: WireFormat) -> LlmResponseStream {
-    let marker = done_marker(source);
-    // Source is always a built-in wire format, so this lookup cannot fail; a
-    // failure still surfaces as a single error item rather than a panic.
-    let codec = match StreamCodecRegistry::with_builtins().codec(source) {
-        Ok(codec) => codec,
-        Err(error) => {
-            let boxed: Box<dyn std::error::Error + Send + Sync> =
-                Box::new(LlmClientError::Stream(error.to_string()));
-            return Box::pin(futures::stream::once(async move { Err(boxed) }));
-        }
-    };
-    Box::pin(try_stream! {
-        let mut state = StreamTranslationState::default();
-        let mut bytes = response.bytes_stream();
-        let mut buffer = Vec::new();
-
-        while let Some(chunk) = bytes.next().await {
-            let chunk = chunk
-                .map_err(|error| LlmClientError::Stream(format!("stream read failed: {error}")))?;
-            buffer.extend_from_slice(&chunk);
-
-            while let Some(frame) = drain_next_sse_frame(&mut buffer)? {
-                match parse_json_sse_frame(&frame, marker)? {
-                    ParsedSseFrame::Json(value) => {
-                        for event in codec.decode_event(&mut state, &value) {
-                            yield event;
-                        }
-                    }
-                    ParsedSseFrame::Done => return,
-                    ParsedSseFrame::Empty => {}
-                }
-            }
-        }
-
-        // A non-standard upstream might omit the final blank line; parse a
-        // trailing complete frame instead of losing its last chunk.
-        if has_non_whitespace_bytes(&buffer) {
-            let frame = decode_sse_frame(&buffer)?;
-            if let ParsedSseFrame::Json(value) = parse_json_sse_frame(&frame, marker)? {
-                for event in codec.decode_event(&mut state, &value) {
-                    yield event;
-                }
-            }
-        }
-    })
 }
 
 #[cfg(test)]
@@ -686,5 +675,130 @@ mod tests {
             .unwrap();
         let agg = response.llm_response.into_agg().expect("buffered response");
         assert_eq!(completion_text(&agg), "routed hi");
+    }
+
+    // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
+    // Chat JSON, with the client-facing `model` restamped over the upstream id.
+    #[tokio::test]
+    async fn call_rewrite_model_raw_round_trips_buffered_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hi there"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let RawResponse::Buffered(body) = client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a buffered response");
+        };
+
+        assert_eq!(body["choices"][0]["message"]["content"], "Hi there");
+        // The client sees the model it asked for, not the upstream "gpt".
+        assert_eq!(body["model"], "client-facing");
+    }
+
+    // Raw path, streaming: an inbound `stream: true` request yields an unframed stream
+    // of OpenAI Chat chunk objects whose deltas reassemble the completion.
+    #[tokio::test]
+    async fn call_rewrite_model_raw_streams_wire_events() {
+        use futures::StreamExt;
+
+        let server = MockServer::start().await;
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
+             data: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+        let RawResponse::Stream(stream) = client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a streamed response");
+        };
+
+        let events: Vec<Value> = stream.map(|item| item.unwrap()).collect().await;
+        assert!(!events.is_empty(), "expected at least one wire event");
+        let content: String = events
+            .iter()
+            .filter_map(|event| event["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert_eq!(content, "Hello world");
+    }
+
+    // Raw path forwards caller headers (minus the reserved set) to the upstream.
+    #[tokio::test]
+    async fn call_rewrite_model_raw_forwards_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::header("x-request-id", "abc"))
+            // A forwarded authorization must NOT override the backend's bearer key.
+            .and(wiremock::matchers::header("authorization", "Bearer secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "gpt",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = BTreeMap::new();
+        headers.insert("x-request-id".to_string(), "abc".to_string());
+        headers.insert("authorization".to_string(), "Bearer client-key".to_string());
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let raw = json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]});
+        // Matchers assert the forwarded x-request-id survives and reserved
+        // authorization is the backend's, not the client's.
+        client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                Some(headers),
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .unwrap();
     }
 }

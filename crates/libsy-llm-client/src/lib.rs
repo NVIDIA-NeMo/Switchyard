@@ -11,17 +11,20 @@
 //! back to a [`switchyard_protocol::Response`] — supporting both buffered and
 //! streamed responses.
 //!
-//! The crate depends only on `libsy-protocol` and `switchyard-translation`. The
-//! SSE frame parser ([`mod@sse`]) and the context-overflow detection in
-//! [`mod@error`] are deliberately vendored from `switchyard-components` (whose
-//! copies are crate-private and unavailable here); a future refactor could
-//! promote them to a shared location.
+//! The crate depends only on `libsy-protocol` and `switchyard-translation`. Neutral
+//! IR encode/decode — including SSE stream decoding — lives in
+//! `switchyard-translation`; this crate is the HTTP transport around it. The
+//! context-overflow detection in [`mod@error`] is vendored from
+//! `switchyard-components` (whose copy is crate-private and unavailable here); a
+//! future refactor could promote it to a shared location.
 
 pub mod backend;
 pub mod client;
 pub mod error;
-mod sse;
+pub mod raw;
 
 pub use backend::{Backend, HttpBackendConfig};
 pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
+pub use raw::RawResponse;
+pub use switchyard_translation::RawEventStream;
