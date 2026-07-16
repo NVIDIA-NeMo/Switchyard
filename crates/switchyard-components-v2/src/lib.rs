@@ -25,10 +25,12 @@ pub use profiles::{
     EndpointHealth, EndpointHealthStatus, LatencyServiceProcessedRequest, LatencyServiceProfile,
     LatencyServiceProfileConfig, LlmRoutingDecision, LlmRoutingProcessedRequest, LlmRoutingProfile,
     LlmRoutingProfileConfig, LlmRoutingTierMapping, NoopProfile, NoopProfileConfig,
-    PassthroughProfile, PassthroughProfileConfig, RandomRoutingProcessedRequest,
-    RandomRoutingProfile, RandomRoutingProfileConfig, SelectedTarget, StageRouterClassifierConfig,
-    StageRouterDecision, StageRouterDecisionSource, StageRouterPickerMode,
-    StageRouterProcessedRequest, StageRouterProfile, StageRouterProfileConfig, StageRouterTier,
+    PassthroughProfile, PassthroughProfileConfig, PrefillProbeDecision,
+    PrefillProbeProcessedRequest, PrefillProbeProfile, PrefillProbeProfileConfig,
+    PrefillProbeRoutingPolicyConfig, RandomRoutingProcessedRequest, RandomRoutingProfile,
+    RandomRoutingProfileConfig, SelectedTarget, StageRouterClassifierConfig, StageRouterDecision,
+    StageRouterDecisionSource, StageRouterPickerMode, StageRouterProcessedRequest,
+    StageRouterProfile, StageRouterProfileConfig, StageRouterTier,
 };
 pub use stats::profile_stats_accumulator;
 pub use switchyard_components_v2_macros::profile_config;

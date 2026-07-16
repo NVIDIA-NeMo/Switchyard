@@ -23,6 +23,10 @@ pub use llm_routing::{
 };
 pub use noop::{NoopProfile, NoopProfileConfig};
 pub use passthrough::{PassthroughProfile, PassthroughProfileConfig};
+pub use prefill_router::{
+    PrefillProbeDecision, PrefillProbeProcessedRequest, PrefillProbeProfile,
+    PrefillProbeProfileConfig, PrefillProbeRoutingPolicyConfig,
+};
 pub(crate) use profile_types::{parse_profile_config, ProfileConfigEntry};
 pub use random_routing::{
     RandomRoutingProcessedRequest, RandomRoutingProfile, RandomRoutingProfileConfig,

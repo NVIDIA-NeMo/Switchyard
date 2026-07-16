@@ -5,7 +5,11 @@
 
 #[allow(dead_code)]
 mod artifact;
-#[allow(dead_code)]
 mod policy;
-#[allow(dead_code)]
+mod profile;
 mod scorer;
+
+pub use profile::{
+    PrefillProbeDecision, PrefillProbeProcessedRequest, PrefillProbeProfile,
+    PrefillProbeProfileConfig, PrefillProbeRoutingPolicyConfig,
+};
