@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use reqwest::RequestBuilder;
-use switchyard_translation::WireFormat;
+use switchyard_protocol::WireFormat;
 
 use crate::error::is_overflow_body;
 

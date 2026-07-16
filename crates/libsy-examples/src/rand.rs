@@ -98,7 +98,7 @@ impl Algorithm for RandomOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
     use std::collections::HashSet;
     use switchyard_protocol::{completion_text, text_request, text_response};
 
@@ -107,16 +107,15 @@ mod tests {
     struct EchoClient;
 
     #[async_trait]
-    impl LlmClient for EchoClient {
+    impl RoutedLlmClient for EchoClient {
         async fn call(
             &self,
-            routed: RoutedRequest,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(
-                    None,
-                    routed.decision.selected_model(),
-                )),
+                llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
                 metadata: None,
             })
         }

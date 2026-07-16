@@ -403,7 +403,7 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
     use std::sync::Mutex as StdMutex;
     use switchyard_protocol::text_response;
 
@@ -418,18 +418,20 @@ mod tests {
     }
 
     #[async_trait]
-    impl LlmClient for JudgingClient {
+    impl RoutedLlmClient for JudgingClient {
         async fn call(
             &self,
-            routed: RoutedRequest,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn Decision>,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-            let name = routed.decision.selected_model().to_string();
+            let name = decision.selected_model().to_string();
             self.calls
                 .lock()
                 .map_err(|_| "lock poisoned")?
                 .push(name.clone());
             let completion = if name == self.judge_model {
-                judge_pick(&prompt_text(&routed.request.llm_request), &self.prefer)
+                judge_pick(&prompt_text(&request.llm_request), &self.prefer)
             } else {
                 format!("answer from {name}")
             };
@@ -471,7 +473,7 @@ mod tests {
             judge_model: judge.to_string(),
             prefer: prefer.to_string(),
             calls: Arc::clone(&calls),
-        }) as Arc<dyn LlmClient>;
+        }) as Arc<dyn RoutedLlmClient>;
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
@@ -493,7 +495,7 @@ mod tests {
         candidates: &[&str],
         judge: &str,
         exploration_turns: u64,
-        client: Arc<dyn LlmClient>,
+        client: Arc<dyn RoutedLlmClient>,
     ) -> EnsembleOrchAlgo {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
@@ -661,15 +663,17 @@ mod tests {
         /// Client whose every call fails.
         struct FailingClient;
         #[async_trait]
-        impl LlmClient for FailingClient {
+        impl RoutedLlmClient for FailingClient {
             async fn call(
                 &self,
-                _routed: RoutedRequest,
+                _ctx: Context,
+                _request: Request,
+                _decision: Arc<dyn Decision>,
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 Err("upstream down".into())
             }
         }
-        let client = Arc::new(FailingClient) as Arc<dyn LlmClient>;
+        let client = Arc::new(FailingClient) as Arc<dyn RoutedLlmClient>;
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
@@ -726,15 +730,17 @@ mod tests {
         }
 
         #[async_trait]
-        impl LlmClient for BarrierClient {
+        impl RoutedLlmClient for BarrierClient {
             async fn call(
                 &self,
-                routed: RoutedRequest,
+                _ctx: Context,
+                request: Request,
+                decision: Arc<dyn Decision>,
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-                let name = routed.decision.selected_model().to_string();
+                let name = decision.selected_model().to_string();
                 let completion = if name == self.judge_model {
                     // Judge runs after the barrier releases; it must not wait.
-                    judge_pick(&prompt_text(&routed.request.llm_request), &self.prefer)
+                    judge_pick(&prompt_text(&request.llm_request), &self.prefer)
                 } else {
                     // Hold every candidate call until all sessions have fanned out.
                     self.barrier.wait().await;
@@ -754,7 +760,7 @@ mod tests {
             barrier: barrier.clone(),
             judge_model: "judge/haiku".to_string(),
             prefer: "a/model".to_string(),
-        }) as Arc<dyn LlmClient>;
+        }) as Arc<dyn RoutedLlmClient>;
 
         // Two independent sessions: separate algo instances, each with its own
         // per-session state, sharing only the backend client.

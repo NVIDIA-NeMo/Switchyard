@@ -11,13 +11,13 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use libsy::{Algorithm, Context, LlmClient, LlmTarget, LlmTargetSet, Request};
+use libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
-// Targets the algorithm routes among, each backed by your LlmClient (see below).
-let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn LlmClient>;
+// Targets the algorithm routes among, each backed by your RoutedLlmClient (see below).
+let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
 let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
 
 let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
@@ -75,19 +75,19 @@ fidelity.
 
 ## Targets and clients
 
-An `LlmTarget` pairs a routing `semantic_name` with an optional `LlmClient`. Mapping that
-name to a provider model id is the client's job, not the algorithm's — `LlmClient` is
+An `LlmTarget` pairs a routing `semantic_name` with an optional `RoutedLlmClient`. Mapping that
+name to a provider model id is the client's job, not the algorithm's — `RoutedLlmClient` is
 meant to be implemented by you.
 
 ```rust
 struct MyClient { /* http client, base url, key */ }
 
 #[async_trait::async_trait]
-impl LlmClient for MyClient {
-    async fn call(&self, routed: RoutedRequest)
+impl RoutedLlmClient for MyClient {
+    async fn call(&self, ctx: Context, request: Request, decision: Arc<dyn Decision>)
         -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
-        let model = routed.decision.selected_model();   // the routed target — map it to a provider id
-        // routed.request.llm_request.model is the agent's original name (not a call target)
+        let model = decision.selected_model();   // the routed target — map it to a provider id
+        // request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
         let completion = String::from("provider response text");
         Ok(Response {
@@ -104,9 +104,9 @@ To stream instead, return `LlmResponse::Stream(..)` — a boxed
 `Stream<Item = Result<LlmResponseChunk, _>>` — and emit chunks as they arrive from your
 upstream. See [Streaming responses](#streaming-responses) below.
 
-A `RoutedRequest` bundles the `request` with the routing `decision` and the target's
-`default_client`; the model to call is `decision.selected_model()`, never a mutated
-request field. `semantic_name` is the label an algorithm routes by; the client maps it to
+A `RoutedRequest` bundles the `request` with the routing `decision`, the target's
+`default_client`, and the request's `ctx`; the model to call is
+`decision.selected_model()`, never a mutated request field. `semantic_name` is the label an algorithm routes by; the client maps it to
 the id it calls — they can differ (`"strong"` → `"openai/gpt-4o"`) or coincide.
 
 ## Running a request
@@ -129,7 +129,7 @@ so pulling it paces the algorithm; each run is independent, so many run concurre
 ## Streaming responses
 
 A `Response` carries an `LlmResponse` that is either buffered (`Agg`) or a live token
-stream (`Stream`). An `LlmClient` — or an algorithm — chooses: return
+stream (`Stream`). An `RoutedLlmClient` — or an algorithm — chooses: return
 `LlmResponse::Agg(..)` for a whole answer, or `LlmResponse::Stream(..)` to forward tokens
 as they arrive. libsy never buffers a stream on your behalf; it flows through the algorithm
 untouched, so `run` / `run_stream` hand back whatever was produced and **the caller

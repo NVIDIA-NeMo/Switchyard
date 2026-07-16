@@ -22,7 +22,7 @@
 //!   it to completion with the targets' default clients.
 //! - An [`LlmTarget`] names a routing target by its [`semantic_name`](LlmTarget::semantic_name).
 //!   Every call is *offloaded* to the request's stream as a [`Step::CallLlm`]; the
-//!   target's [`LlmClient`], if any, rides along as
+//!   target's [`RoutedLlmClient`], if any, rides along as
 //!   [`RoutedRequest::default_client`] so the host can serve it by default or
 //!   override it (see below).
 //!
@@ -57,10 +57,7 @@
 //! Worked implementations — a random router, an LLM classifier, and a stateful
 //! ensemble — plus runnable agents live in the `libsy-examples` crate.
 
-mod common;
 mod driver;
-
-pub use common::Context;
 
 use std::{error::Error, pin::Pin, sync::Arc};
 
@@ -72,8 +69,8 @@ use futures::{Stream, StreamExt};
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    AggLlmResponse, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, Metadata,
-    Request, Response,
+    AggLlmResponse, Context, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream,
+    Metadata, Request, Response,
 };
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
@@ -110,8 +107,8 @@ pub trait Decision: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// A request paired with the routing [`Decision`] that produced it — the unit an
-/// [`LlmClient`] (or an offload host) is handed to serve.
+/// A request paired with the routing [`Decision`] that produced it — the offload
+/// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
 ///
 /// The two model identifiers live in separate, unambiguous places: the model to
 /// call is [`decision.selected_model()`](Decision::selected_model), while
@@ -127,7 +124,11 @@ pub struct RoutedRequest {
     /// The client that serves this call by default, or `None` when the routed target
     /// had no client. Rides along on the offloaded call so a host driving the stream
     /// can serve it by default or override it with its own transport.
-    pub default_client: Option<Arc<dyn LlmClient>>,
+    pub default_client: Option<Arc<dyn RoutedLlmClient>>,
+    /// The request's cross-cutting context, carried through the offload so whoever
+    /// serves the call (libsy's own `run`, or a host driving the stream) hands it to
+    /// [`RoutedLlmClient::call`].
+    pub ctx: Context,
 }
 
 /// The host-facing half of an offloaded model call, surfaced inside [`Step::CallLlm`].
@@ -201,10 +202,11 @@ impl Driver {
     }
 
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
-    /// consumer's [`Response`]. Errors if the stream is closed or the call failed.
-    pub async fn call_llm(&self, ctx: Context, routed: RoutedRequest) -> Result<Response, BoxErr> {
+    /// consumer's [`Response`]. The call's context travels inside
+    /// [`routed.ctx`](RoutedRequest::ctx). Errors if the stream is closed or the call failed.
+    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
         self.driver
-            .fulfill_request::<RoutedRequest, Response>(ctx, routed)
+            .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
             .await
     }
 
@@ -220,14 +222,12 @@ impl Driver {
         request: Request,
         decision: Arc<dyn Decision>,
     ) -> Result<Response, BoxErr> {
-        self.call_llm(
+        self.call_llm(RoutedRequest {
+            request,
+            decision,
+            default_client: target.llm_client.clone(),
             ctx,
-            RoutedRequest {
-                request,
-                decision,
-                default_client: target.llm_client.clone(),
-            },
-        )
+        })
         .await
     }
 
@@ -292,17 +292,22 @@ pub enum Step {
 /// in-process model, mock). It serves a call the stream consumer chose not to
 /// override, reached as [`RoutedRequest::default_client`] (see [`Algorithm::run_stream`]).
 #[async_trait]
-pub trait LlmClient: Send + Sync {
-    /// Serve `routed`, returning the model's response. Call the model named by
-    /// [`routed.decision.selected_model()`](Decision::selected_model) — the target
-    /// the algorithm routed to — mapping it to whatever provider model id this
-    /// client hits. `routed.request.llm_request.model` is the agent's original
-    /// name, carried through for reference, not a call target.
-    async fn call(&self, request: RoutedRequest) -> Result<Response, Box<dyn Error + Send + Sync>>;
+pub trait RoutedLlmClient: Send + Sync {
+    /// Serve the call, returning the model's response. Call the model named by
+    /// [`decision.selected_model()`](Decision::selected_model) — the target the algorithm
+    /// routed to — mapping it to whatever provider model id this client hits.
+    /// `request.llm_request.model` is the agent's original name, carried through for
+    /// reference, not a call target. `ctx` carries the request's cross-cutting state.
+    async fn call(
+        &self,
+        ctx: Context,
+        request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, Box<dyn Error + Send + Sync>>;
 }
 
 /// A named routing target: a `semantic_name` an algorithm routes by, and an optional
-/// [`LlmClient`] to serve its calls. An algorithm hands a target to
+/// [`RoutedLlmClient`] to serve its calls. An algorithm hands a target to
 /// [`Driver::call_llm_target`]; the client rides along as
 /// [`RoutedRequest::default_client`] for the stream consumer to serve or override.
 #[derive(Clone)]
@@ -313,7 +318,7 @@ pub struct LlmTarget {
     pub semantic_name: String,
     /// The client that serves this target's calls by default, or `None` (then the
     /// stream consumer must serve them).
-    pub llm_client: Option<Arc<dyn LlmClient>>,
+    pub llm_client: Option<Arc<dyn RoutedLlmClient>>,
 }
 
 /// The set of targets an algorithm may route among. An algorithm is constructed
@@ -425,7 +430,11 @@ pub trait Algorithm: Send + Sync + 'static {
                     routed.decision.selected_model()
                 )
             })?;
-            call.respond(client.call(routed).await)
+            call.respond(
+                client
+                    .call(routed.ctx, routed.request, routed.decision)
+                    .await,
+            )
         }
 
         let stream = self.run_stream(ctx, request);
@@ -475,16 +484,18 @@ mod tests {
     struct EchoClient;
 
     #[async_trait]
-    impl LlmClient for EchoClient {
+    impl RoutedLlmClient for EchoClient {
         async fn call(
             &self,
-            routed: RoutedRequest,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
                     None,
-                    routed.decision.selected_model().to_string(),
+                    decision.selected_model().to_string(),
                 )),
                 metadata: None,
             })
@@ -563,7 +574,7 @@ mod tests {
             .iter()
             .map(|(name, has_client)| LlmTarget {
                 semantic_name: name.to_string(),
-                llm_client: has_client.then(|| Arc::new(EchoClient) as Arc<dyn LlmClient>),
+                llm_client: has_client.then(|| Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
             })
             .collect();
         LlmTargetSet::new(targets)
@@ -576,10 +587,12 @@ mod tests {
     }
 
     #[async_trait]
-    impl LlmClient for StreamingClient {
+    impl RoutedLlmClient for StreamingClient {
         async fn call(
             &self,
-            _routed: RoutedRequest,
+            _ctx: Context,
+            _request: Request,
+            _decision: Arc<dyn Decision>,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             let stream = futures::stream::iter(self.chunks.clone().into_iter().map(Ok)).boxed();
             Ok(Response {
@@ -593,7 +606,7 @@ mod tests {
     fn streaming_orch(chunks: Vec<LlmResponseChunk>) -> Arc<dyn Algorithm> {
         let target = LlmTarget {
             semantic_name: "stream/model".to_string(),
-            llm_client: Some(Arc::new(StreamingClient { chunks }) as Arc<dyn LlmClient>),
+            llm_client: Some(Arc::new(StreamingClient { chunks }) as Arc<dyn RoutedLlmClient>),
         };
         orch(LlmTargetSet::new(vec![target]))
     }
@@ -720,7 +733,9 @@ mod tests {
                         .default_client
                         .clone()
                         .ok_or("expected a default client")?;
-                    let result = client.call(routed).await;
+                    let result = client
+                        .call(routed.ctx, routed.request, routed.decision)
+                        .await;
                     call.respond(result)?;
                 }
                 Step::Decision(_) => {}
@@ -790,16 +805,18 @@ mod tests {
         }
 
         #[async_trait]
-        impl LlmClient for BarrierClient {
+        impl RoutedLlmClient for BarrierClient {
             async fn call(
                 &self,
-                routed: RoutedRequest,
+                _ctx: Context,
+                _request: Request,
+                decision: Arc<dyn Decision>,
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 self.barrier.wait().await;
                 Ok(Response {
                     llm_response: LlmResponse::Agg(text_response(
                         None,
-                        routed.decision.selected_model().to_string(),
+                        decision.selected_model().to_string(),
                     )),
                     metadata: None,
                 })
@@ -893,10 +910,12 @@ mod tests {
         }
 
         #[async_trait]
-        impl LlmClient for ProbeClient {
+        impl RoutedLlmClient for ProbeClient {
             async fn call(
                 &self,
-                routed: RoutedRequest,
+                _ctx: Context,
+                _request: Request,
+                decision: Arc<dyn Decision>,
             ) -> Result<Response, Box<dyn Error + Send + Sync>> {
                 let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
                 self.max.fetch_max(now, Ordering::SeqCst);
@@ -908,7 +927,7 @@ mod tests {
                 Ok(Response {
                     llm_response: LlmResponse::Agg(text_response(
                         None,
-                        routed.decision.selected_model().to_string(),
+                        decision.selected_model().to_string(),
                     )),
                     metadata: None,
                 })
@@ -967,7 +986,7 @@ mod tests {
             max: max.clone(),
             entered: entered_tx,
             gate: gate.clone(),
-        }) as Arc<dyn LlmClient>;
+        }) as Arc<dyn RoutedLlmClient>;
         let target = LlmTarget {
             semantic_name: "m".to_string(),
             llm_client: Some(client),

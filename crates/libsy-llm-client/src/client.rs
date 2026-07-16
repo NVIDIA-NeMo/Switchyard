@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`LlmModelClient`] — the crate's single public entry point: encode a neutral
+//! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::HashMap;
 
 use async_stream::try_stream;
 use futures_util::StreamExt;
-use switchyard_protocol::{LlmResponse, LlmResponseStream, Metadata, Request, Response};
 use reqwest::RequestBuilder;
 use serde_json::Value;
+use switchyard_protocol::{LlmResponse, LlmResponseStream, Metadata, Request, Response};
 use switchyard_translation::{
     StreamCodecRegistry, StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
 };
@@ -37,49 +37,85 @@ const RESERVED_HEADERS: &[&str] = &[
     "content-type",
 ];
 
+/// How one model is served: the `default_backend` used when the request does not
+/// pin a wire format, plus any `other_backends` reachable over additional formats.
+#[derive(Clone, Debug)]
+pub struct ModelConfig {
+    model_name: String,
+    default_backend: Backend,
+    other_backends: Option<Vec<Backend>>,
+}
+
+impl ModelConfig {
+    /// A model named `model_name` served by `default_backend`, optionally reachable
+    /// over additional wire formats via `other_backends`.
+    pub fn new(
+        model_name: impl Into<String>,
+        default_backend: Backend,
+        other_backends: Option<Vec<Backend>>,
+    ) -> Self {
+        Self {
+            model_name: model_name.into(),
+            default_backend,
+            other_backends,
+        }
+    }
+}
+
 /// A client that dispatches neutral-IR requests to per-model HTTP backends.
 ///
-/// Construct it with a two-layer map — model name to wire format to
-/// [`Backend`] — so one model can be served over several upstream formats. Each
-/// call resolves the model and format, encodes the request to that backend's
-/// wire format, applies auth and forwarded headers, sends the HTTP request with
-/// a shared [`reqwest::Client`], and decodes the response back to the neutral IR
-/// (buffered or streamed).
-pub struct LlmModelClient {
-    model_name_to_config: HashMap<String, HashMap<WireFormat, Backend>>,
+/// Construct it with a list of [`ModelConfig`]s — one per model, each naming a
+/// default [`Backend`] and any additional per-format backends. Each call resolves
+/// the model and wire format, encodes the request to that backend's wire format,
+/// applies auth and forwarded headers, sends the HTTP request with a shared
+/// [`reqwest::Client`], and decodes the response back to the neutral IR (buffered
+/// or streamed).
+pub struct TranslatingLlmClient {
+    model_to_config: HashMap<String, ModelConfig>,
     client: reqwest::Client,
     engine: TranslationEngine,
     policy: TranslationPolicy,
 }
 
-impl LlmModelClient {
-    /// Builds a client over the given model→format→backend map, with a fresh
-    /// shared HTTP client and the built-in translation codecs.
-    pub fn new(
-        model_name_to_config: HashMap<String, HashMap<WireFormat, Backend>>,
-    ) -> Result<Self> {
+impl TranslatingLlmClient {
+    /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
+    /// client and the built-in translation codecs.
+    pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
         let client = reqwest::Client::builder().build().map_err(|error| {
             LlmClientError::Transport(format!("failed to build HTTP client: {error}"))
         })?;
+        let model_to_config = model_configs
+            .iter()
+            .map(|config| (config.model_name.clone(), config.clone()))
+            .collect();
+
         Ok(Self {
-            model_name_to_config,
+            model_to_config,
             client,
             engine: TranslationEngine::default(),
             policy: TranslationPolicy::default(),
         })
     }
 
-    /// The wire formats configured for `model`, or `None` when the model is
-    /// unknown. Lets a caller pick a supported format without duplicating the
-    /// map.
-    pub fn formats_for(&self, model: &str) -> Option<Vec<WireFormat>> {
-        self.model_name_to_config
-            .get(model)
-            .map(|backends| backends.keys().copied().collect())
+    /// The backend serving `model` over `format` — the default backend when its
+    /// format matches, otherwise a matching entry in `other_backends`; `None` when
+    /// the model is unknown or has no backend for `format`.
+    pub fn backend_for(&self, model: &str, format: WireFormat) -> Option<&Backend> {
+        self.model_to_config.get(model).and_then(|config| {
+            if config.default_backend.wire_format() == format {
+                Some(&config.default_backend)
+            } else {
+                config
+                    .other_backends
+                    .as_ref()
+                    .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
+            }
+        })
     }
 
-    /// Calls the backend for `model_name` (or the request's own model) at the
-    /// given wire `format` and returns the neutral response.
+    /// Calls the backend for `model_name` (or the request's own model), over the
+    /// wire format the request pins in its metadata (else the model's default
+    /// backend), and returns the neutral response.
     ///
     /// Resolution: `model_name` wins over `request.llm_request.model`; the
     /// resolved name is both the outer map key and the model id written into the
@@ -87,11 +123,10 @@ impl LlmModelClient {
     /// when neither is set, [`LlmClientError::UnknownModel`] when the model has
     /// no backends, and [`LlmClientError::UnknownModelFormat`] when the model has
     /// no backend for `format`.
-    pub async fn call(
+    pub async fn call_rewrite_model(
         &self,
         request: Request,
         model_name: Option<&str>,
-        format: WireFormat,
     ) -> Result<Response> {
         // Own the request's parts so the model can be set without a `mut` param
         // and without cloning the messages. `raw_request` is unused here.
@@ -106,20 +141,23 @@ impl LlmModelClient {
             .or_else(|| llm_request.model.clone())
             .ok_or(LlmClientError::MissingModel)?;
 
-        let backend = self
-            .model_name_to_config
-            .get(&model)
-            .ok_or_else(|| LlmClientError::UnknownModel(model.clone()))?
-            .get(&format)
-            .ok_or_else(|| LlmClientError::UnknownModelFormat {
-                model: model.clone(),
-                format,
-            })?;
+        let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
+        let wire_format = orig_format.unwrap_or(
+            self.model_to_config
+                .get(&model)
+                .map(|config| config.default_backend.wire_format())
+                .ok_or(LlmClientError::UnknownModel(model.clone()))?,
+        );
+        let backend =
+            self.backend_for(&model, wire_format)
+                .ok_or(LlmClientError::UnknownModelFormat {
+                    model: model.clone(),
+                    format: wire_format,
+                })?;
 
         // The resolved name is the upstream model id (per the crate contract).
         llm_request.model = Some(model.clone());
 
-        let wire_format = backend.wire_format();
         let mut body = self
             .engine
             .encode_request(wire_format, &llm_request, &self.policy)
@@ -285,8 +323,8 @@ fn decode_stream(response: reqwest::Response, source: WireFormat) -> LlmResponse
 mod tests {
     use std::collections::BTreeMap;
 
-    use switchyard_protocol::{completion_text, text_request, LlmRequest};
     use serde_json::json;
+    use switchyard_protocol::{completion_text, text_request, LlmRequest};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -301,15 +339,13 @@ mod tests {
         }
     }
 
-    // A one-model, one-format map: "gpt" served over OpenAI Chat at base_url.
-    fn chat_map(base_url: &str) -> HashMap<String, HashMap<WireFormat, Backend>> {
-        HashMap::from([(
-            "gpt".to_string(),
-            HashMap::from([(
-                WireFormat::OpenAiChat,
-                Backend::OpenAiChat(config(base_url)),
-            )]),
-        )])
+    // A one-model config list: "gpt" served over OpenAI Chat at base_url.
+    fn chat_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(config(base_url)),
+            None,
+        )]
     }
 
     fn request_for(model: Option<&str>, stream: bool) -> Request {
@@ -322,6 +358,22 @@ mod tests {
         }
     }
 
+    // A request that pins `format` in its metadata, so the client resolves that
+    // wire format instead of the model's default backend.
+    fn request_with_wire_format(model: &str, format: WireFormat) -> Request {
+        let mut request = request_for(Some(model), false);
+        request.metadata = Some(Metadata {
+            session_id: None,
+            agent_id: None,
+            task_id: None,
+            correlation_id: None,
+            extra_metadata: None,
+            http_headers: None,
+            wire_format: Some(format),
+        });
+        request
+    }
+
     #[test]
     fn reserved_headers_are_case_insensitive() {
         assert!(is_reserved_header("Authorization"));
@@ -332,9 +384,9 @@ mod tests {
 
     #[tokio::test]
     async fn missing_model_errors() {
-        let client = LlmModelClient::new(HashMap::new()).unwrap();
+        let client = TranslatingLlmClient::new(&[]).unwrap();
         let Err(error) = client
-            .call(request_for(None, false), None, WireFormat::OpenAiChat)
+            .call_rewrite_model(request_for(None, false), None)
             .await
         else {
             panic!("expected an error");
@@ -344,13 +396,9 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_model_errors() {
-        let client = LlmModelClient::new(HashMap::new()).unwrap();
+        let client = TranslatingLlmClient::new(&[]).unwrap();
         let Err(error) = client
-            .call(
-                request_for(Some("gpt"), false),
-                None,
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -360,13 +408,12 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_model_format_errors() {
-        // "gpt" exists but only over OpenAI Chat; ask for Anthropic.
-        let client = LlmModelClient::new(chat_map("https://example.test/v1")).unwrap();
+        // "gpt" exists but only over OpenAI Chat; the request pins Anthropic.
+        let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1")).unwrap();
         let Err(error) = client
-            .call(
-                request_for(Some("gpt"), false),
+            .call_rewrite_model(
+                request_with_wire_format("gpt", WireFormat::AnthropicMessages),
                 None,
-                WireFormat::AnthropicMessages,
             )
             .await
         else {
@@ -380,25 +427,24 @@ mod tests {
     }
 
     #[test]
-    fn formats_for_lists_configured_formats() {
-        let client = LlmModelClient::new(chat_map("https://example.test/v1")).unwrap();
-        assert_eq!(
-            client.formats_for("gpt"),
-            Some(vec![WireFormat::OpenAiChat])
-        );
-        assert_eq!(client.formats_for("missing"), None);
+    fn backend_for_resolves_configured_format() {
+        let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1")).unwrap();
+        // "gpt" is served over OpenAI Chat only; other formats and models miss.
+        assert!(client.backend_for("gpt", WireFormat::OpenAiChat).is_some());
+        assert!(client
+            .backend_for("gpt", WireFormat::AnthropicMessages)
+            .is_none());
+        assert!(client
+            .backend_for("missing", WireFormat::OpenAiChat)
+            .is_none());
     }
 
     #[tokio::test]
     async fn model_name_arg_wins_over_request_model() {
-        let client = LlmModelClient::new(HashMap::new()).unwrap();
+        let client = TranslatingLlmClient::new(&[]).unwrap();
         // Arg "b" is looked up (and reported), not the request's "a".
         let Err(error) = client
-            .call(
-                request_for(Some("a"), false),
-                Some("b"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model(request_for(Some("a"), false), Some("b"))
             .await
         else {
             panic!("expected an error");
@@ -424,14 +470,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let response = client
-            .call(
-                request_for(Some("gpt"), false),
-                None,
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
             .unwrap();
         let agg = response.llm_response.into_agg().expect("buffered response");
@@ -453,14 +495,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
         // Inbound model differs from the map key / resolved model.
         client
-            .call(
-                request_for(Some("switchyard"), false),
-                Some("gpt"),
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model(request_for(Some("switchyard"), false), Some("gpt"))
             .await
             .unwrap();
         // The body_partial_json matcher asserts the upstream saw model "gpt".
@@ -478,10 +516,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let response = client
-            .call(request_for(Some("gpt"), true), None, WireFormat::OpenAiChat)
+            .call_rewrite_model(request_for(Some("gpt"), true), None)
             .await
             .unwrap();
         assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
@@ -497,14 +535,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let Err(error) = client
-            .call(
-                request_for(Some("gpt"), false),
-                None,
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -525,14 +559,10 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         let Err(error) = client
-            .call(
-                request_for(Some("gpt"), false),
-                None,
-                WireFormat::OpenAiChat,
-            )
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
         else {
             panic!("expected an error");
@@ -574,16 +604,14 @@ mod tests {
                 correlation_id: None,
                 extra_metadata: None,
                 http_headers: Some(headers),
+                wire_format: None,
             }),
         };
 
-        let client = LlmModelClient::new(chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
 
         // Matchers assert forwarded x-request-id survives and reserved
         // authorization is the backend's, not the client's.
-        client
-            .call(request, None, WireFormat::OpenAiChat)
-            .await
-            .unwrap();
+        client.call_rewrite_model(request, None).await.unwrap();
     }
 }

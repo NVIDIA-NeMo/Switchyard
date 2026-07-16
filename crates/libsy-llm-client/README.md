@@ -35,8 +35,8 @@ Within this workspace:
 
 ```toml
 [dependencies]
-libsy-llm-client = { path = "../libsy-llm-client" }
-libsy-protocol = { path = "../libsy-protocol" }
+switchyard-llm-client = { path = "../libsy-llm-client" }
+switchyard-protocol = { path = "../libsy-protocol" }
 switchyard-translation = { path = "../switchyard-translation" }   # for WireFormat
 ```
 
@@ -46,7 +46,7 @@ switchyard-translation = { path = "../switchyard-translation" }   # for WireForm
 
 ```rust
 use std::collections::{BTreeMap, HashMap};
-use libsy_llm_client::{Backend, HttpBackendConfig, LlmModelClient};
+use switchyard_llm_client::{Backend, HttpBackendConfig, LlmModelClient};
 use switchyard_translation::WireFormat;
 
 fn build_client() -> libsy_llm_client::Result<LlmModelClient> {
