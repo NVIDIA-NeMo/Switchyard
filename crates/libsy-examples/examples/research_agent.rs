@@ -77,7 +77,7 @@ impl ResearchAgent {
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(completion_text(&response.llm_response.aggregate().await?));
+            notes.push(completion_text(&response.llm_response.into_agg().await?));
         }
         Ok(notes.join("\n"))
     }

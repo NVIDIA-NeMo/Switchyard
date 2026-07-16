@@ -282,7 +282,7 @@ impl EnsembleOrchAlgo {
             let choice = parse_choice(
                 &judge_response
                     .llm_response
-                    .agg()
+                    .as_agg()
                     .map(completion_text)
                     .unwrap_or_default(),
                 survivors.len(),
@@ -336,7 +336,7 @@ fn build_judge_prompt(user_prompt: &str, survivors: &[(String, Response)]) -> St
             i + 1,
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default()
         ));
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from b/model"
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from b/model"
@@ -614,7 +614,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from only/model"
@@ -779,7 +779,7 @@ mod tests {
                     .map(|(_, response)| {
                         response
                             .llm_response
-                            .agg()
+                            .as_agg()
                             .map(completion_text)
                             .unwrap_or_default()
                     })
@@ -831,7 +831,7 @@ mod tests {
                 Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((
                     response
                         .llm_response
-                        .agg()
+                        .as_agg()
                         .map(completion_text)
                         .unwrap_or_default(),
                     phase,

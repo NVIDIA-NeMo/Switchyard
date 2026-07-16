@@ -35,15 +35,7 @@ pub enum LlmResponse {
 
 impl LlmResponse {
     /// Borrow the aggregate; `None` while this is still a stream.
-    pub fn agg(&self) -> Option<&AggLlmResponse> {
-        match self {
-            LlmResponse::Agg(agg) => Some(agg),
-            LlmResponse::Stream(_) => None,
-        }
-    }
-
-    /// Consume into the aggregate; `None` while this is still a stream.
-    pub fn into_agg(self) -> Option<AggLlmResponse> {
+    pub fn as_agg(&self) -> Option<&AggLlmResponse> {
         match self {
             LlmResponse::Agg(agg) => Some(agg),
             LlmResponse::Stream(_) => None,
@@ -54,7 +46,7 @@ impl LlmResponse {
     /// to completion, folding its chunks into an [`AggLlmResponse`] via
     /// [`ResponseAccumulator`]. A stream item error, or an in-band
     /// [`LlmResponseChunk::Error`], aborts with `Err`.
-    pub async fn aggregate(self) -> Result<AggLlmResponse, BoxError> {
+    pub async fn into_agg(self) -> Result<AggLlmResponse, BoxError> {
         match self {
             LlmResponse::Agg(agg) => Ok(agg),
             LlmResponse::Stream(mut stream) => {

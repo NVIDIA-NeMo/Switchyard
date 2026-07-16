@@ -136,7 +136,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
             .await?;
         let score = classify_response
             .llm_response
-            .agg()
+            .as_agg()
             .map(completion_text)
             .unwrap_or_default()
             .trim()
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from frontier/model"
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from cheap/model"
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from frontier/model"
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "answer from frontier/model"

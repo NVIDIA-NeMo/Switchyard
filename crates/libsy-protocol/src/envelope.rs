@@ -6,6 +6,12 @@
 
 use crate::{LlmRequest, LlmResponse};
 
+/// Per-request state threaded to an algorithm alongside a request. A placeholder
+/// for cross-cutting state (correlation ids, budgets, deadlines) an algorithm will
+/// read; empty today.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Context {}
+
 /// Correlation and routing metadata attached to a request or response.
 ///
 /// All fields are optional; algorithms and observers use whichever are present

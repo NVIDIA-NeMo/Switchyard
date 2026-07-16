@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "only/model"
@@ -173,7 +173,7 @@ mod tests {
             let (trace, response) = orch.clone().run(Context::default(), request()).await?;
             let selected = response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default();
             assert!(
@@ -196,7 +196,7 @@ mod tests {
             seen.insert(
                 response
                     .llm_response
-                    .agg()
+                    .as_agg()
                     .map(completion_text)
                     .unwrap_or_default(),
             );

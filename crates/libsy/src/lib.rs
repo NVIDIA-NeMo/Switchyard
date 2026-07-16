@@ -57,10 +57,7 @@
 //! Worked implementations — a random router, an LLM classifier, and a stateful
 //! ensemble — plus runnable agents live in the `libsy-examples` crate.
 
-mod common;
 mod driver;
-
-pub use common::Context;
 
 use std::{error::Error, pin::Pin, sync::Arc};
 
@@ -72,8 +69,8 @@ use futures::{Stream, StreamExt};
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    AggLlmResponse, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, Metadata,
-    Request, Response,
+    AggLlmResponse, Context, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream,
+    Metadata, Request, Response,
 };
 
 use crate::driver::{DriverRequest, DriverStep, TypeErasedDriver};
@@ -622,7 +619,7 @@ mod tests {
         ]);
         let (trace, response) = orch.run(Context::default(), request()).await?;
         // `run` handed back the live stream; the caller folds it to a buffered aggregate.
-        let agg = response.llm_response.aggregate().await?;
+        let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "hello");
         assert_eq!(agg.model.as_deref(), Some("stream/model"));
         assert_eq!(trace.len(), 1);
@@ -644,7 +641,7 @@ mod tests {
             },
         ]);
         let (_, response) = orch.run(Context::default(), request()).await?;
-        match response.llm_response.aggregate().await {
+        match response.llm_response.into_agg().await {
             Ok(_) => Err("expected a mid-stream error, got an aggregate".into()),
             Err(err) => {
                 assert!(err.to_string().contains("upstream exploded"));
@@ -686,7 +683,7 @@ mod tests {
                     final_completion = Some(
                         response
                             .llm_response
-                            .agg()
+                            .as_agg()
                             .map(completion_text)
                             .unwrap_or_default(),
                     );
@@ -728,7 +725,7 @@ mod tests {
                     final_completion = Some(
                         response
                             .llm_response
-                            .agg()
+                            .as_agg()
                             .map(completion_text)
                             .unwrap_or_default(),
                     );
@@ -753,7 +750,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "direct/model"
@@ -825,7 +822,7 @@ mod tests {
                     .map(|(_, response)| {
                         response
                             .llm_response
-                            .agg()
+                            .as_agg()
                             .map(completion_text)
                             .unwrap_or_default()
                     })
@@ -1005,7 +1002,7 @@ mod tests {
         assert_eq!(
             response
                 .llm_response
-                .agg()
+                .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
             "done"
