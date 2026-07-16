@@ -6,9 +6,11 @@
 
 use std::{error::Error, sync::Arc};
 
-use switchyard_protocol::{Request, Response};
+use switchyard_protocol::{
+    AggLlmResponse, ContentBlock, LlmResponse, Request, Response, ResponseOutput, Role, StopReason,
+};
 
-use crate::{Algorithm, Context, Decision, Driver, LlmResponse, Signals};
+use crate::{Algorithm, Context, Decision, Driver, Signals};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
 pub struct NoopAlgo {}
@@ -48,33 +50,18 @@ impl Algorithm for NoopAlgo {
         });
         driver.info(ctx, decision.clone()).await?;
 
-        let json = serde_json::json!({
-            "id": "switchyard-noop",
-            "model": model,
-            "outputs": [{
-                "role": "Assistant",
-                "content": [{
-                    "Text": {
-                        "text": "OK"
-                    }
+        let llm_response = LlmResponse::Agg(AggLlmResponse {
+            id: Some("switchyard-noop".to_string()),
+            model: Some(model),
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "OK".to_string(),
                 }],
-                "stop_reason": "EndTurn"
+                stop_reason: Some(StopReason::EndTurn),
             }],
-            "usage": {
-                "input_tokens": null,
-                "output_tokens": null,
-                "total_tokens": null,
-                "reasoning_tokens": null
-            },
-            "extensions": {
-                "fields": {}
-            },
-            "preservation": {
-                "requests": {},
-                "responses": {}
-        }});
-
-        let llm_response: LlmResponse = serde_json::from_value(json)?;
+            ..Default::default()
+        });
         let response = Response {
             llm_response,
             metadata: request.metadata.clone(),
@@ -115,7 +102,7 @@ mod tests {
             panic!("Expected exactly one Decision");
         };
         assert_eq!(decision.selected_model(), TEST_MODEL);
-        assert_eq!(response.model(), Some(TEST_MODEL));
+        assert_eq!(response.selected_model(), Some(TEST_MODEL));
         Ok(())
     }
 }
