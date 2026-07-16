@@ -9,17 +9,18 @@
 //! multi-step routing (classify -> route) happens inside the classifier algorithm; the
 //! agent never sees it. To drive the step stream yourself instead, use
 //! `Algorithm::run_stream`. Run with:
-//!   cargo run -p libsy --example research_agent
+//!   cargo run -p libsy-examples --example research_agent
 
 use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, ContentBlock, Context, LlmClient, LlmRequest, LlmResponse, LlmTarget, LlmTargetSet,
-    Message, Request, Response, ResponseOutput, Role, RoutedRequest,
+    Algorithm, Context, LlmClient, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
+    RoutedRequest,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
+use switchyard_protocol::{completion_text, text_request, text_response};
 
 const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
@@ -41,14 +42,7 @@ impl LlmClient for StubClient {
             format!("answer from {model}")
         };
         Ok(Response {
-            llm_response: LlmResponse {
-                outputs: vec![ResponseOutput {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text { text: completion }],
-                    stop_reason: None,
-                }],
-                ..LlmResponse::default()
-            },
+            llm_response: LlmResponse::Agg(text_response(None, completion)),
             metadata: None,
         })
     }
@@ -77,32 +71,13 @@ impl ResearchAgent {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
-                llm_request: LlmRequest {
-                    model: Some("auto".to_string()),
-                    messages: vec![Message::text(Role::User, step)],
-                    ..LlmRequest::default()
-                },
+                llm_request: text_request(Some("auto".to_string()), step),
                 raw_request: None,
                 metadata: None,
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(
-                response
-                    .llm_response
-                    .outputs
-                    .iter()
-                    .flat_map(|output| output.content.iter())
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text }
-                        | ContentBlock::Refusal { text }
-                        | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                        ContentBlock::Unknown { raw, .. } => raw.as_str(),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
+            notes.push(completion_text(&response.llm_response.into_agg().await?));
         }
         Ok(notes.join("\n"))
     }

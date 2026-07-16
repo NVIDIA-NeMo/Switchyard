@@ -22,10 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use libsy::{
-    Algorithm, ContentBlock, Context, Decision, Driver, LlmRequest, LlmTargetSet, Message, Request,
-    Response, Role, Signals,
-};
+use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response, Signals};
+use switchyard_protocol::{completion_text, prompt_text, text_request};
 
 /// Which step of the ensemble flow produced a decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +170,7 @@ impl EnsembleOrchAlgo {
     async fn route_committed(
         &self,
         driver: &Driver,
+        ctx: Context,
         request: Request,
         model: String,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
@@ -184,13 +183,18 @@ impl EnsembleOrchAlgo {
             selected_model: model.clone(),
             phase: EnsemblePhase::Committed,
         });
+        // The agent's inbound name rides through; the committed model is on the
+        // decision, not stamped onto the request.
         let routed = Request {
-            llm_request: request.llm_request,
+            llm_request: text_request(
+                request.llm_request.model.clone(),
+                prompt_text(&request.llm_request),
+            ),
             raw_request: request.raw_request,
             metadata: request.metadata,
         };
         let response = driver
-            .call_llm_target(&target, routed, decision.clone())
+            .call_llm_target(ctx, &target, routed, decision.clone())
             .await?;
         Ok((vec![decision], response))
     }
@@ -200,29 +204,13 @@ impl EnsembleOrchAlgo {
     async fn ensemble_turn(
         &self,
         driver: &Driver,
+        ctx: Context,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
-        let user_prompt = request
-            .llm_request
-            .instructions
-            .iter()
-            .flat_map(|instruction| instruction.content.iter())
-            .chain(
-                request
-                    .llm_request
-                    .messages
-                    .iter()
-                    .flat_map(|message| message.content.iter()),
-            )
-            .filter_map(|block| match block {
-                ContentBlock::Text { text }
-                | ContentBlock::Refusal { text }
-                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                ContentBlock::Unknown { raw, .. } => raw.as_str(),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let user_prompt = prompt_text(&request.llm_request);
+        // The agent's inbound name rides through every sub-call unchanged; the model
+        // each call hits is carried by its decision, not stamped onto the request.
+        let inbound = request.llm_request.model.clone();
 
         // Fan out to all candidates concurrently with the same user prompt. Each
         // call is annotated with its own candidate decision so the caller can see
@@ -238,16 +226,17 @@ impl EnsembleOrchAlgo {
             });
             candidate_decisions.push(decision.clone());
             let call_request = Request {
-                llm_request: request.llm_request.clone(),
+                llm_request: text_request(inbound.clone(), user_prompt.clone()),
                 raw_request: request.raw_request.clone(),
                 metadata: request.metadata.clone(),
             };
             let model = model.clone();
+            let ctx = ctx.clone();
             calls.push(async move {
                 (
                     model,
                     driver
-                        .call_llm_target(&target, call_request, decision)
+                        .call_llm_target(ctx, &target, call_request, decision)
                         .await,
                 )
             });
@@ -282,33 +271,22 @@ impl EnsembleOrchAlgo {
                 phase: EnsemblePhase::Judge,
             });
             let judge_request = Request {
-                llm_request: LlmRequest {
-                    model: request.llm_request.model.clone(),
-                    messages: vec![Message::text(Role::User, judge_prompt)],
-                    ..LlmRequest::default()
-                },
-                raw_request: None,
+                llm_request: text_request(inbound.clone(), judge_prompt),
+                raw_request: request.raw_request.clone(),
                 metadata: request.metadata.clone(),
             };
             let judge_response = driver
-                .call_llm_target(&judge_target, judge_request, judge_decision.clone())
+                .call_llm_target(ctx, &judge_target, judge_request, judge_decision.clone())
                 .await?;
             // Fail open: an unparseable pick falls back to the first response.
-            let judge_text = judge_response
-                .llm_response
-                .outputs
-                .iter()
-                .flat_map(|output| output.content.iter())
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text }
-                    | ContentBlock::Refusal { text }
-                    | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                    ContentBlock::Unknown { raw, .. } => raw.as_str(),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let choice = parse_choice(&judge_text, survivors.len());
+            let choice = parse_choice(
+                &judge_response
+                    .llm_response
+                    .as_agg()
+                    .map(completion_text)
+                    .unwrap_or_default(),
+                survivors.len(),
+            );
             let (model, response) = survivors
                 .into_iter()
                 .nth(choice)
@@ -353,21 +331,15 @@ fn build_judge_prompt(user_prompt: &str, survivors: &[(String, Response)]) -> St
     prompt.push_str(user_prompt);
     prompt.push_str("\n\n");
     for (i, (_model, response)) in survivors.iter().enumerate() {
-        let candidate_text = response
-            .llm_response
-            .outputs
-            .iter()
-            .flat_map(|output| output.content.iter())
-            .filter_map(|block| match block {
-                ContentBlock::Text { text }
-                | ContentBlock::Refusal { text }
-                | ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                ContentBlock::Unknown { raw, .. } => raw.as_str(),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        prompt.push_str(&format!("Response {}:\n{}\n\n", i + 1, candidate_text));
+        prompt.push_str(&format!(
+            "Response {}:\n{}\n\n",
+            i + 1,
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default()
+        ));
     }
     prompt.push_str(&format!(
         "Reply with only the number (1-{}) of the best response.",
@@ -398,7 +370,7 @@ fn parse_choice(completion: &str, count: usize) -> usize {
 impl Algorithm for EnsembleOrchAlgo {
     async fn create_run_task(
         self: Arc<Self>,
-        _ctx: Context,
+        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response, Box<dyn Error + Send + Sync>> {
@@ -406,14 +378,15 @@ impl Algorithm for EnsembleOrchAlgo {
         // otherwise run a full ensemble turn. Both return a decision trace plus the
         // final response.
         let (trace, response) = if let Some(model) = self.resolve_committed()? {
-            self.route_committed(&driver, request, model).await?
+            self.route_committed(&driver, ctx.clone(), request, model)
+                .await?
         } else {
-            self.ensemble_turn(&driver, request).await?
+            self.ensemble_turn(&driver, ctx.clone(), request).await?
         };
         // Publish the trace to the stream (candidate..., judge?, winner). The
         // candidate decisions also rode along on their offloaded `CallLlm` steps.
         for decision in trace {
-            driver.info(decision).await?;
+            driver.info(ctx.clone(), decision).await?;
         }
         Ok(response)
     }
@@ -430,8 +403,9 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, ResponseOutput, RoutedRequest};
+    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
     use std::sync::Mutex as StdMutex;
+    use switchyard_protocol::text_response;
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
     /// for the judge model, returns the 1-based number of the response whose
@@ -455,22 +429,12 @@ mod tests {
                 .map_err(|_| "lock poisoned")?
                 .push(name.clone());
             let completion = if name == self.judge_model {
-                let prompt = routed.request.llm_request.messages[0]
-                    .text_content("\n")
-                    .unwrap_or_default();
-                judge_pick(&prompt, &self.prefer)
+                judge_pick(&prompt_text(&routed.request.llm_request), &self.prefer)
             } else {
                 format!("answer from {name}")
             };
             Ok(Response {
-                llm_response: LlmResponse {
-                    outputs: vec![ResponseOutput {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::Text { text: completion }],
-                        stop_reason: None,
-                    }],
-                    ..LlmResponse::default()
-                },
+                llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,
             })
         }
@@ -547,11 +511,7 @@ mod tests {
 
     fn request(prompt: &str) -> Request {
         Request {
-            llm_request: LlmRequest {
-                model: Some("auto".to_string()),
-                messages: vec![Message::text(Role::User, prompt)],
-                ..LlmRequest::default()
-            },
+            llm_request: text_request(Some("auto".to_string()), prompt),
             raw_request: None,
             metadata: None,
         }
@@ -580,10 +540,12 @@ mod tests {
             .run(Context::default(), request("solve it"))
             .await?;
         assert_eq!(
-            response.llm_response.outputs[0].content,
-            vec![ContentBlock::Text {
-                text: "answer from b/model".to_string()
-            }]
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "answer from b/model"
         );
 
         // Both candidates and the judge were called.
@@ -625,10 +587,12 @@ mod tests {
         // fan-out to a/model and no judge call.
         let (trace, response) = orch.clone().run(Context::default(), request("t3")).await?;
         assert_eq!(
-            response.llm_response.outputs[0].content,
-            vec![ContentBlock::Text {
-                text: "answer from b/model".to_string()
-            }]
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "answer from b/model"
         );
         assert_eq!(trace.len(), 1);
         let decision = as_ensemble(&trace[0])?;
@@ -648,10 +612,12 @@ mod tests {
         let (algo, calls) = algo(&["only/model"], "judge/haiku", "only/model", 100);
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
-            response.llm_response.outputs[0].content,
-            vec![ContentBlock::Text {
-                text: "answer from only/model".to_string()
-            }]
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "answer from only/model"
         );
         // No judge call for a lone candidate.
         assert!(!calls
@@ -768,24 +734,14 @@ mod tests {
                 let name = routed.decision.selected_model().to_string();
                 let completion = if name == self.judge_model {
                     // Judge runs after the barrier releases; it must not wait.
-                    let prompt = routed.request.llm_request.messages[0]
-                        .text_content("\n")
-                        .unwrap_or_default();
-                    judge_pick(&prompt, &self.prefer)
+                    judge_pick(&prompt_text(&routed.request.llm_request), &self.prefer)
                 } else {
                     // Hold every candidate call until all sessions have fanned out.
                     self.barrier.wait().await;
                     format!("answer from {name}")
                 };
                 Ok(Response {
-                    llm_response: LlmResponse {
-                        outputs: vec![ResponseOutput {
-                            role: Role::Assistant,
-                            content: vec![ContentBlock::Text { text: completion }],
-                            stop_reason: None,
-                        }],
-                        ..LlmResponse::default()
-                    },
+                    llm_response: LlmResponse::Agg(text_response(None, completion)),
                     metadata: None,
                 })
             }
@@ -821,16 +777,11 @@ mod tests {
                     .run(Context::default(), request(prompt))
                     .await
                     .map(|(_, response)| {
-                        match response
+                        response
                             .llm_response
-                            .outputs
-                            .into_iter()
-                            .next()
-                            .and_then(|output| output.content.into_iter().next())
-                        {
-                            Some(ContentBlock::Text { text }) => text,
-                            _ => String::new(),
-                        }
+                            .as_agg()
+                            .map(completion_text)
+                            .unwrap_or_default()
                     })
             })
         };
@@ -877,17 +828,14 @@ mod tests {
                     .and_then(|d| d.as_any().downcast_ref::<EnsembleDecision>())
                     .map(|d| d.phase)
                     .ok_or("missing final decision")?;
-                let completion = match response
-                    .llm_response
-                    .outputs
-                    .into_iter()
-                    .next()
-                    .and_then(|output| output.content.into_iter().next())
-                {
-                    Some(ContentBlock::Text { text }) => text,
-                    _ => String::new(),
-                };
-                Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((completion, phase))
+                Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((
+                    response
+                        .llm_response
+                        .as_agg()
+                        .map(completion_text)
+                        .unwrap_or_default(),
+                    phase,
+                ))
             })
         };
         // The two sessions run in parallel; each committed independently.

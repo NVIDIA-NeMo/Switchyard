@@ -869,6 +869,7 @@ dependencies = [
  "futures",
  "libsy",
  "rand 0.8.6",
+ "switchyard-protocol",
  "tokio",
  "tokio-stream",
 ]
@@ -1632,6 +1633,7 @@ dependencies = [
 name = "switchyard-protocol"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "serde",
  "serde_json",
 ]

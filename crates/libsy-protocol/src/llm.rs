@@ -229,36 +229,6 @@ pub struct Usage {
     pub reasoning_tokens: Option<u64>,
 }
 
-/// Provider-neutral event used between stream decoders and encoders.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum LlmStreamEvent {
-    MessageStart {
-        id: Option<String>,
-        model: Option<String>,
-    },
-    TextDelta {
-        index: usize,
-        text: String,
-    },
-    ReasoningDelta {
-        index: usize,
-        text: String,
-    },
-    ToolCallDelta {
-        index: usize,
-        id: Option<String>,
-        name: Option<String>,
-        arguments_delta: Option<String>,
-    },
-    Usage(Usage),
-    MessageStop {
-        reason: Option<String>,
-    },
-    Error {
-        message: String,
-    },
-}
-
 /// Normalized reason a model stopped producing output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum StopReason {
@@ -278,9 +248,12 @@ pub struct ResponseOutput {
     pub stop_reason: Option<StopReason>,
 }
 
-/// Normalized response representation shared by Switchyard components.
+/// Normalized, fully-buffered response — the aggregate of a completed generation.
+/// libsy refers to this as an `AggLlmResponse` (the terminal form of a streamed
+/// [`LlmResponse`](crate::LlmResponse)); `switchyard-translation` re-exports it as
+/// `ConversationResponse`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct LlmResponse {
+pub struct AggLlmResponse {
     pub id: Option<String>,
     pub model: Option<String>,
     pub outputs: Vec<ResponseOutput>,
@@ -289,7 +262,7 @@ pub struct LlmResponse {
     pub preservation: PreservationMetadata,
 }
 
-impl LlmResponse {
+impl AggLlmResponse {
     /// Returns the first output item when a response has any output.
     pub fn first_output(&self) -> Option<&ResponseOutput> {
         self.outputs.first()

@@ -18,9 +18,9 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    ContentBlock, LlmRequest, LlmResponse, MediaSource, Message, OutputParams, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, LlmRequest, MediaSource, Message, OutputParams,
+    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
+    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -200,7 +200,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 stop_reason: Some(StopReason::EndTurn),
             });
         }
-        let response = LlmResponse {
+        let response = AggLlmResponse {
             id: body
                 .get("id")
                 .and_then(Value::as_str)
@@ -231,7 +231,7 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn encode_response(
         &self,
-        response: &LlmResponse,
+        response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =

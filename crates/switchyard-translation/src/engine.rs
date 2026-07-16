@@ -16,7 +16,7 @@ use crate::codecs::FormatCodec;
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
-use crate::llm::{LlmRequest, LlmResponse};
+use crate::llm::{AggLlmResponse, LlmRequest};
 use crate::policy::TranslationPolicy;
 
 /// Encoded translation result with any diagnostics emitted along the way.
@@ -36,7 +36,7 @@ pub struct RequestIrOutput {
 /// Decoded response IR plus diagnostics.
 #[derive(Debug)]
 pub struct ResponseIrOutput {
-    pub response: LlmResponse,
+    pub response: AggLlmResponse,
     pub diagnostics: Vec<TranslationDiagnostic>,
 }
 
@@ -184,7 +184,7 @@ impl TranslationEngine {
     pub fn encode_response(
         &self,
         target: impl Into<FormatId>,
-        response: &LlmResponse,
+        response: &AggLlmResponse,
         policy: &TranslationPolicy,
     ) -> Result<TranslationOutput> {
         let target = target.into();
