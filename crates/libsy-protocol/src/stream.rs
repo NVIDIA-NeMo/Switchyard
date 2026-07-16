@@ -61,6 +61,14 @@ impl LlmResponse {
             }
         }
     }
+
+    pub fn selected_model(&self) -> Option<&str> {
+        match self {
+            LlmResponse::Agg(agg) => agg.model.as_deref(),
+            // TODO: How do we get the model name on a stream?
+            LlmResponse::Stream(_) => None,
+        }
+    }
 }
 
 /// One provider-neutral streaming event — the normalized counterpart to

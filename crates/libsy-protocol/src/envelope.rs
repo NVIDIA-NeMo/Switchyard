@@ -46,6 +46,12 @@ pub struct Request {
     pub metadata: Option<Metadata>,
 }
 
+impl Request {
+    pub fn requested_model(&self) -> Option<&str> {
+        self.llm_request.model.as_deref()
+    }
+}
+
 /// A response an algorithm returns: the [`LlmResponse`] (streamed or aggregate) plus
 /// optional correlation [`Metadata`].
 ///
@@ -55,4 +61,10 @@ pub struct Response {
     pub llm_response: LlmResponse,
     /// Correlation metadata carried through the response.
     pub metadata: Option<Metadata>,
+}
+
+impl Response {
+    pub fn selected_model(&self) -> Option<&str> {
+        self.llm_response.selected_model()
+    }
 }
