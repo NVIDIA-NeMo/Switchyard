@@ -3,7 +3,7 @@
 
 //! Minimal research agent using the [`Algorithm::run`] convenience.
 //!
-//! Every target owns an `LlmClient`, so the agent runs each request to completion with
+//! Every target owns an `RoutedLlmClient`, so the agent runs each request to completion with
 //! [`Algorithm::run`]: it serves each offloaded call with the routed
 //! target's `default_client` and returns the final response — no stream to drive. The
 //! multi-step routing (classify -> route) happens inside the classifier algorithm; the
@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use libsy::{
-    Algorithm, Context, LlmClient, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
-    RoutedRequest,
+    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
+    RoutedLlmClient,
 };
 use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use switchyard_protocol::{completion_text, text_request, text_response};
@@ -26,14 +26,19 @@ const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
 const WEAK: &str = "weak/model";
 
-/// Stub transport. Real integrators implement `LlmClient` over their own HTTP.
+/// Stub transport. Real integrators implement `RoutedLlmClient` over their own HTTP.
 struct StubClient;
 
 #[async_trait]
-impl LlmClient for StubClient {
-    async fn call(&self, routed: RoutedRequest) -> Result<Response, Box<dyn Error + Send + Sync>> {
+impl RoutedLlmClient for StubClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        _request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
         // The model to call is the routed decision's selection, not the inbound name.
-        let model = routed.decision.selected_model().to_string();
+        let model = decision.selected_model().to_string();
         println!("  -> model call: {model}");
         // The classifier returns a score; other models return an answer.
         let completion = if model == CLASSIFIER {
@@ -49,7 +54,7 @@ impl LlmClient for StubClient {
 }
 
 fn targets() -> LlmTargetSet {
-    let client = Arc::new(StubClient) as Arc<dyn LlmClient>;
+    let client = Arc::new(StubClient) as Arc<dyn RoutedLlmClient>;
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
         llm_client: Some(client.clone()),

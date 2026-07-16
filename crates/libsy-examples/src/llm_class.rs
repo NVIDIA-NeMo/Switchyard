@@ -175,7 +175,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmClient, LlmResponse, LlmTarget, Response, RoutedRequest};
+    use libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
     use std::sync::Mutex;
     use switchyard_protocol::text_response;
 
@@ -189,21 +189,20 @@ mod tests {
     }
 
     #[async_trait]
-    impl LlmClient for ScoringClient {
+    impl RoutedLlmClient for ScoringClient {
         async fn call(
             &self,
-            routed: RoutedRequest,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn Decision>,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-            let name = routed.decision.selected_model().to_string();
+            let name = decision.selected_model().to_string();
             let completion = if name == self.classifier_model {
                 self.score.clone()
             } else {
                 format!("answer from {name}")
             };
-            self.seen
-                .lock()
-                .map_err(|_| "lock poisoned")?
-                .push(routed.request);
+            self.seen.lock().map_err(|_| "lock poisoned")?.push(request);
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,
@@ -218,7 +217,7 @@ mod tests {
             classifier_model: "router/classifier".to_string(),
             score: score.to_string(),
             seen: Arc::clone(&seen),
-        }) as Arc<dyn LlmClient>;
+        }) as Arc<dyn RoutedLlmClient>;
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),

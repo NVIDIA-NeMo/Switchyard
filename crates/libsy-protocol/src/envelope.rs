@@ -4,13 +4,16 @@
 //! The request/response envelope: the normalized [`LlmRequest`]/[`LlmResponse`] paired
 //! with the original provider payload and correlation [`Metadata`].
 
-use crate::{LlmRequest, LlmResponse};
+use crate::{LlmRequest, LlmResponse, WireFormat};
+use std::collections::HashMap;
 
 /// Per-request state threaded to an algorithm alongside a request. A placeholder
 /// for cross-cutting state (correlation ids, budgets, deadlines) an algorithm will
 /// read; empty today.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Context {}
+pub struct Context {
+    pub values: HashMap<String, String>,
+}
 
 /// Correlation and routing metadata attached to a request or response.
 ///
@@ -31,6 +34,8 @@ pub struct Metadata {
     pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
     /// HTTP headers to attach when forwarding the request/response, if any.
     pub http_headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The wire format the request/response was originally encoded in, if known.
+    pub wire_format: Option<WireFormat>,
 }
 
 /// A request an algorithm routes: the normalized [`LlmRequest`] plus the original
