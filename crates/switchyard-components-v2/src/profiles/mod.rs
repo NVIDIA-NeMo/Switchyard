@@ -8,6 +8,7 @@ mod llm_routing;
 mod macros;
 mod noop;
 mod passthrough;
+mod prefill_router;
 mod profile_types;
 mod random_routing;
 mod stage_router;
