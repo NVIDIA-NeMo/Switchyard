@@ -23,7 +23,7 @@ from switchyard.lib.processors.token_capture_response_processor import (
     TokenCaptureResponseProcessor,
     build_token_capture_processors,
 )
-from switchyard.lib.request_metadata import CTX_REQUEST_METADATA
+from switchyard.lib.request_metadata import CTX_PROFILE_REQUEST_HEADERS, CTX_REQUEST_METADATA
 from switchyard.server.server_util import resolve_rl_log_dir
 from switchyard_rust.components import RequestMetadata
 from switchyard_rust.core import ChatRequest, ChatResponse, ProxyContext
@@ -396,6 +396,42 @@ async def test_non_string_body_session_ignored_but_stripped(tmp_path: Path) -> N
 
     # Ignored as a session, but still never forwarded upstream.
     assert "proxy_x_session_id" not in dict(request.body)
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+async def test_session_id_from_native_header(tmp_path: Path) -> None:
+    # OpenCode (stock, no fork) rides its session id on the native X-Session-Id
+    # header; capture keys on it without a proxy header, body field, or api key.
+    ctx = ProxyContext()
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = {"X-Session-Id": "oc-sess-1"}
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+    assert _read_only_record(tmp_path)["session_id"] == "oc-sess-1"
+
+
+async def test_native_header_matched_case_insensitively(tmp_path: Path) -> None:
+    ctx = ProxyContext()
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = {"x-session-id": "oc-sess-2"}
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+    assert _read_only_record(tmp_path)["session_id"] == "oc-sess-2"
+
+
+async def test_proxy_session_wins_over_native_header(tmp_path: Path) -> None:
+    ctx = _session_ctx("from-proxy-header")
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = {"X-Session-Id": "from-native"}
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+    assert _read_only_record(tmp_path)["session_id"] == "from-proxy-header"
+
+
+async def test_unlisted_header_never_becomes_session(tmp_path: Path) -> None:
+    # Only allowlisted native headers are honored; an arbitrary caller header is
+    # never mistaken for a session id.
+    ctx = ProxyContext()
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = {"x-random-id": "nope"}
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
     assert list(tmp_path.rglob("*.json")) == []
 
 

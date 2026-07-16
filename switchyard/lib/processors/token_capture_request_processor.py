@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY, ProxyContext
-from switchyard.lib.request_metadata import CTX_REQUEST_METADATA
+from switchyard.lib.request_metadata import CTX_PROFILE_REQUEST_HEADERS, CTX_REQUEST_METADATA
 from switchyard_rust.core import ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,16 @@ SESSION_API_KEY_MARKER = "sycap-session:"
 #: knob is extra JSON body fields). Always stripped before the request is
 #: forwarded upstream, captured or not.
 BODY_SESSION_KEY = "proxy_x_session_id"
+
+#: Harness-native session headers read as the capture session id when the
+#: explicit ``proxy_x_session_id`` (header/body) is absent. Lets a stock,
+#: unmodified harness be captured through its own correlation header — the whole
+#: point of capture-and-reconstruct. OpenCode (run stock, no fork) emits
+#: ``X-Session-Id`` on every request to a custom OpenAI-compatible provider, and
+#: a distinct id per subagent session. Matched case-insensitively against the
+#: retained request header map. Kept as an explicit allowlist (not any header)
+#: so an arbitrary caller header is never mistaken for a session id.
+NATIVE_SESSION_HEADERS: tuple[str, ...] = ("x-session-id",)
 
 #: Caller-supplied sampling params stripped so the target's derived
 #: token-capture ``extra_body`` params (see ``llm_target_with_token_capture``)
@@ -98,6 +109,12 @@ def _resolve_session_id(ctx: ProxyContext, body_session: object) -> str | None:
     # session id on a top-level body key (stripped by the caller above).
     if isinstance(body_session, str) and body_session:
         return body_session
+    # Stock harnesses that emit their own correlation header (e.g. OpenCode's
+    # ``X-Session-Id``) are captured through it — no proxy-specific header, body
+    # field, or fork required.
+    native = _native_session_id(ctx)
+    if native is not None:
+        return native
     # Harnesses with no custom-header surface (OpenClaw) ride the session id on
     # their API key, marker-prefixed by the launcher. Strip the marker to get
     # the session id; a caller key without the marker is a real credential and
@@ -106,4 +123,21 @@ def _resolve_session_id(ctx: ProxyContext, body_session: object) -> str | None:
     if isinstance(caller_key, str) and caller_key.startswith(SESSION_API_KEY_MARKER):
         session = caller_key[len(SESSION_API_KEY_MARKER):]
         return session or None
+    return None
+
+
+def _native_session_id(ctx: ProxyContext) -> str | None:
+    """First non-empty value among :data:`NATIVE_SESSION_HEADERS` in the request headers.
+
+    Reads the retained request header map on the context, matched
+    case-insensitively (``NATIVE_SESSION_HEADERS`` are already lowercased).
+    """
+    headers = ctx.metadata.get(CTX_PROFILE_REQUEST_HEADERS)
+    if not isinstance(headers, Mapping):
+        return None
+    lowered = {str(name).lower(): value for name, value in headers.items()}
+    for header in NATIVE_SESSION_HEADERS:
+        value = lowered.get(header)
+        if isinstance(value, str) and value:
+            return value
     return None
