@@ -426,3 +426,105 @@
 +++ b/harbor/switchyard_patch_id.txt
 @@ -0,0 +1 @@
 +switchyard-harbor-patches-2026-05-22-v2
+
+--- a/harbor/agents/installed/hermes.py
++++ b/harbor/agents/installed/hermes.py
+@@ -59,6 +59,16 @@
+         return 'export PATH="$HOME/.local/bin:$PATH"; hermes version'
+
+     async def install(self, environment: BaseEnvironment) -> None:
++        # Skip if hermes is already installed (e.g. from the dataset
++        # agent-bake layer). hermes installs to $HOME/.local/bin, so export
++        # that path before probing. Required for closed-book runs where the
++        # task-time curl install cannot reach github/pypi.
++        probe = await self.exec_as_agent(
++            environment,
++            command='export PATH="$HOME/.local/bin:$PATH"; command -v hermes >/dev/null 2>&1 && echo present || true',
++        )
++        if "present" in (getattr(probe, "stdout", "") or ""):
++            return
+         await self.exec_as_root(
+             environment,
+             command="apt-get update && apt-get install -y curl git ripgrep xz-utils",
+@@ -92,11 +92,31 @@
+     # ------------------------------------------------------------------
+ 
+     @staticmethod
+-    def _build_config_yaml(model: str) -> str:
+-        """Generate a hermes config.yaml with full capabilities enabled."""
++    def _build_config_yaml(
++        model: str, base_url: str | None = None, api_key: str | None = None
++    ) -> str:
++        """Generate a hermes config.yaml with full capabilities enabled.
++
++        When ``base_url`` is given, route the model through a custom
++        OpenAI-compatible endpoint (e.g. a Switchyard gateway): hermes only
++        honors a custom endpoint via its config.yaml ``model.provider=custom`` +
++        ``model.base_url`` (the ``OPENAI_BASE_URL`` env var is ignored for the
++        chat model), so we nest the provider/base_url/api_key under ``model``.
++        """
++        model_field: Any
++        if base_url:
++            model_field = {
++                "default": model,
++                "provider": "custom",
++                "base_url": base_url,
++            }
++            if api_key:
++                model_field["api_key"] = api_key
++        else:
++            model_field = model
+         config: dict[str, Any] = {
+-            "model": model,
+-            "provider": "auto",
++            "model": model_field,
++            **({} if base_url else {"provider": "auto"}),
+             "toolsets": ["hermes-cli"],
+             "agent": {"max_turns": 90},
+             "memory": {
+@@ -357,6 +377,9 @@
+         # Try native provider key first, fall back to OpenRouter.
+         hermes_provider_flag: str | None = None
+         use_native = False
++        # Custom OpenAI-compatible endpoint (e.g. Switchyard) for the chat model.
++        custom_base_url: str | None = None
++        custom_api_key: str | None = None
+ 
+         if provider in _NATIVE_PROVIDERS:
+             native_flag, key_names = _NATIVE_PROVIDERS[provider]
+@@ -367,11 +390,15 @@
+                     hermes_provider_flag = native_flag
+                     use_native = True
+                     break
+-            # Forward OPENAI_BASE_URL when using native OpenAI key
++            # Forward OPENAI_BASE_URL when using native OpenAI key. Hermes ignores
++            # this env var for the chat model, so also thread it into config.yaml
++            # as a custom provider (see _build_config_yaml).
+             if use_native and provider == "openai":
+                 base_url = os.environ.get("OPENAI_BASE_URL")
+                 if base_url:
+                     env["OPENAI_BASE_URL"] = base_url
++                    custom_base_url = base_url
++                    custom_api_key = os.environ.get("OPENAI_API_KEY")
+ 
+         if not use_native:
+             openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+@@ -386,9 +413,15 @@
+             env["OPENROUTER_API_KEY"] = openrouter_key
+ 
+         # Native providers with --provider flag use just the model name;
+-        # everything else (OpenRouter, openai direct) uses provider/model.
+-        cli_model = model if hermes_provider_flag else self.model_name
+-        config_yaml = self._build_config_yaml(cli_model)
++        # a custom OpenAI-compatible endpoint also uses the bare model (the
++        # base_url already targets the gateway); everything else uses provider/model.
++        if custom_base_url:
++            cli_model = model
++        else:
++            cli_model = model if hermes_provider_flag else self.model_name
++        config_yaml = self._build_config_yaml(
++            cli_model, base_url=custom_base_url, api_key=custom_api_key
++        )
+ 
+         # Pass instruction via env var (safe from shell escaping issues)
+         env["HARBOR_INSTRUCTION"] = instruction

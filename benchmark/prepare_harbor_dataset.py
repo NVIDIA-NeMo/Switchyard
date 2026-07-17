@@ -187,10 +187,19 @@ def _install_layer(pins: dict[str, str]) -> str:
     claude_version = pins["CLAUDE_CODE_VERSION"]
     codex_version = pins["CODEX_VERSION"]
     opencode_version = pins["OPENCODE_VERSION"]
+    # Hermes (NousResearch hermes-agent) is a per-user uv app installed from
+    # GitHub, not an npm package. Default to main; pin a tag/commit via
+    # HERMES_VERSION for reproducibility. Baking it here (build-time, with host
+    # network) means the runtime install() skip-guard short-circuits, so tasks
+    # need no egress for it — enabling closed-book Hermes runs.
+    hermes_version = pins.get("HERMES_VERSION", "main")
+    hermes_branch_flag = (
+        f" --branch {hermes_version}" if hermes_version and hermes_version != "main" else ""
+    )
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
-ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version}"
+ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
 RUN set -eux; \\
     if command -v apt-get >/dev/null 2>&1; then \\
         apt-get update; \\
@@ -231,6 +240,19 @@ RUN set -eux; \\
     claude --version; \\
     codex --version; \\
     opencode --version
+RUN set -eux; \\
+    export HOME=/root; \\
+    export PATH="/root/.local/bin:$PATH"; \\
+    if command -v apt-get >/dev/null 2>&1; then \\
+        apt-get update; \\
+        apt-get install -y --no-install-recommends git ripgrep xz-utils; \\
+        rm -rf /var/lib/apt/lists/*; \\
+    elif command -v apk >/dev/null 2>&1; then \\
+        apk add --no-cache git ripgrep xz; \\
+    fi; \\
+    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \\
+        | bash -s -- --skip-setup{hermes_branch_flag}; \\
+    hermes version
 """
 
 
