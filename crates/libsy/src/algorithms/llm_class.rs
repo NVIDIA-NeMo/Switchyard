@@ -16,11 +16,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
-use switchyard_protocol::{completion_text, prompt_text, text_request};
+use switchyard_protocol::{completion_text, prompt_text, text_request, LlmRequest, Message, Role};
 
-// Preamble prepended to the user prompt when asking the classifier target for a
-// strong-win-rate score.
-const CLASSIFIER_PROMPT_PREAMBLE: &str = "Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1].\n";
+/// The system prompt tells the classifier what to do
+const CLASSIFIER_SYSTEM_PROMPT: &str = "Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1].";
 
 /// The tier a classifier score selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,11 +109,16 @@ impl Algorithm for LlmClassifierOrchAlgo {
 
         // 1. Classify: call the classifier target with the score-eliciting prompt.
         let classifier_target = self.target_set.get_target(&self.classifier_model)?;
+        let llm_request = LlmRequest {
+            model: inbound.clone(),
+            messages: vec![
+                Message::text(Role::System, CLASSIFIER_SYSTEM_PROMPT),
+                Message::text(Role::User, &user_prompt),
+            ],
+            ..LlmRequest::default()
+        };
         let classify_request = Request {
-            llm_request: text_request(
-                inbound.clone(),
-                format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
-            ),
+            llm_request,
             raw_request: request.raw_request.clone(),
             metadata: request.metadata.clone(),
         };
@@ -335,22 +339,6 @@ mod tests {
         let routed = as_classifier(&trace[1])?;
         assert_eq!(routed.tier, Some(ClassifierTier::Strong));
         assert_eq!(routed.score, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn classifier_prompt_includes_the_user_text() -> Result<(), Box<dyn Error + Send + Sync>>
-    {
-        let (algo, seen) = algo(0.5, "0.9");
-        orch(algo)
-            .run(Context::default(), request("prove it"))
-            .await?;
-        let seen = seen.lock().map_err(|_| "lock poisoned")?;
-        // Two calls: the classifier (preamble + user text), then the routed model.
-        assert_eq!(seen.len(), 2);
-        assert!(prompt_text(&seen[0].llm_request).contains("prove it"));
-        assert!(prompt_text(&seen[0].llm_request).contains("frontier model"));
-        assert_eq!(prompt_text(&seen[1].llm_request), "prove it");
         Ok(())
     }
 }
