@@ -17,8 +17,8 @@ use serde_json::Value;
 
 use libsy::affinity::{metadata_from_headers, SubAgentAffinity};
 use libsy::{
-    Algorithm, Context, Decision, LlmClient, LlmResponse, LlmTarget, LlmTargetSet, RandomAlgo,
-    Request, Response, RoutedRequest,
+    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, RandomAlgo, Request,
+    Response, RoutedLlmClient,
 };
 use switchyard_components::OpenAiPassthroughBackend;
 use switchyard_components_v2::{Profile, ProfileInput, ProfileResponse, RoutingMetadata};
@@ -48,15 +48,19 @@ struct SwitchyardBackendClient {
 }
 
 #[async_trait]
-impl LlmClient for SwitchyardBackendClient {
-    async fn call(&self, routed: RoutedRequest) -> std::result::Result<Response, BoxErr> {
-        let target = routed.decision.selected_model();
+impl RoutedLlmClient for SwitchyardBackendClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> std::result::Result<Response, BoxErr> {
+        let target = decision.selected_model();
         let model = self
             .model_ids
             .get(target)
             .ok_or_else(|| format!("no provider model configured for target '{target}'"))?;
-        let chat_request =
-            chat_request_for_call(&routed.request, model, self.translation.as_ref())?;
+        let chat_request = chat_request_for_call(&request, model, self.translation.as_ref())?;
 
         let mut ctx = ProxyContext::new();
         let response = self
@@ -74,7 +78,7 @@ impl LlmClient for SwitchyardBackendClient {
 
         Ok(Response {
             llm_response: LlmResponse::Agg(decoded.response),
-            metadata: routed.request.metadata,
+            metadata: request.metadata,
         })
     }
 }
@@ -231,7 +235,7 @@ fn build_algorithm() -> Result<Arc<dyn Algorithm>> {
         backend,
         model_ids,
         translation,
-    }) as Arc<dyn LlmClient>;
+    }) as Arc<dyn RoutedLlmClient>;
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
         llm_client: Some(Arc::clone(&client)),

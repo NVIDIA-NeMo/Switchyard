@@ -138,7 +138,9 @@ mod tests {
     use switchyard_protocol::{completion_text, text_request, text_response};
 
     use crate::affinity::{Affinity, SessionAffinity, SubAgentAffinity};
-    use crate::{AgentContext, LlmResponse, LlmTarget, Metadata, Request, RoutedLlmClient, Signals};
+    use crate::{
+        AgentContext, LlmResponse, LlmTarget, Metadata, Request, RoutedLlmClient, Signals,
+    };
 
     /// Echoes the selected target so tests can inspect which target was called.
     struct EchoClient;
