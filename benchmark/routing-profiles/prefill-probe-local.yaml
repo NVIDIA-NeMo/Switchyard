@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Local learned prefill-probe profile. Before serving, start the Qwen probe as
+# documented in docs/vllm-serve-hidden-state.md and export:
+#   NVIDIA_API_KEY
+#   VLLM_BASE_URL=http://127.0.0.1:8000
+#   PREFILL_ROUTER_ARTIFACT_DIR=/absolute/path/to/exported/router
+#
+# Serve with:
+#   switchyard serve --config benchmark/routing-profiles/prefill-probe-local.yaml
+# Clients select this profile by sending model: router.
+
+endpoints:
+  inference-hub:
+    base_url: https://inference-api.nvidia.com/v1
+    api_key: ${NVIDIA_API_KEY}
+    timeout_secs: 600.0
+  vllm-local:
+    base_url: ${VLLM_BASE_URL}/v1
+
+targets:
+  strong:
+    endpoint: inference-hub
+    model: aws/anthropic/bedrock-claude-opus-4-7
+    format: anthropic
+  probe:
+    endpoint: vllm-local
+    model: Qwen/Qwen3.6-35B-A3B
+    format: openai
+  weak:
+    endpoint: inference-hub
+    model: nvidia/nvidia/nemotron-3-super-120b-long-ctx
+    format: openai
+
+profiles:
+  router:
+    type: prefill-probe
+    probe: probe
+    strong: strong
+    strong_checkpoint_head: opus-4.7
+    weak: weak
+    weak_checkpoint_head: nemotron-3-super
+    hidden_states_dir: /tmp/switchyard-hidden-states
+    inference_artifact_dir: ${PREFILL_ROUTER_ARTIFACT_DIR}
+    routing_policy:
+      type: cost-aware
+      lambda: 0.5
+      weak_cost: 0
+      strong_cost: 1
