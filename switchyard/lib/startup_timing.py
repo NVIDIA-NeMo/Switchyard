@@ -16,9 +16,9 @@ import sys
 import time
 from typing import TextIO
 
-# On when SWITCHYARD_STARTUP_TIMING is set, or once --startup-timing calls enable().
-# Read once at import — the env var does not change during a launch.
-enabled: bool = bool(os.environ.get("SWITCHYARD_STARTUP_TIMING"))
+# On unless SWITCHYARD_STARTUP_TIMING is unset or "0", or once --startup-timing calls
+# enable(). Read once at import — the env var does not change during a launch.
+enabled: bool = os.environ.get("SWITCHYARD_STARTUP_TIMING", "0") != "0"
 
 # (label, perf_counter timestamp) for each point reached during startup.
 _marks: list[tuple[str, float]] = []
