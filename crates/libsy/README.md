@@ -61,7 +61,9 @@ The first request from a child agent runs the random algorithm and atomically re
 its choice; later requests for the same `(session_id, agent_id)` reuse that target.
 With one configured target, that target is retained directly. `metadata_from_headers`
 converts harness-specific identity into neutral `Metadata`.
-Supported inputs include Codex `session-id`, `thread-id`,
+Supported inputs include Claude Code `x-claude-code-session-id`,
+`x-claude-code-agent-id`, and `x-claude-code-parent-agent-id`; Codex `session-id`,
+`thread-id`,
 `x-codex-parent-thread-id`, `x-openai-subagent`, and `x-codex-turn-metadata`;
 NeMo Relay `x-nemo-relay-session-id` / `x-nemo-relay-subagent-id`; Dynamo
 `x-dynamo-session-id` / `x-dynamo-parent-session-id`; and explicit

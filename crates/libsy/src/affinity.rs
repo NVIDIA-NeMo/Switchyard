@@ -166,20 +166,24 @@ struct CodexTurnMetadata {
 
 /// Normalizes harness-specific request headers into libsy metadata.
 ///
-/// Explicit `x-switchyard-*` headers win. NeMo Relay and Dynamo correlation
-/// headers are accepted without linking either runtime. Codex's structured turn
-/// metadata is preferred over its compatibility projections.
+/// Explicit `x-switchyard-*` headers win. Claude Code, NeMo Relay, and Dynamo
+/// correlation headers are accepted without linking their runtimes. Codex's structured
+/// turn metadata is preferred over its compatibility projections.
 pub fn metadata_from_headers(headers: &BTreeMap<String, Vec<String>>) -> Metadata {
     let codex = header(headers, CODEX_TURN_METADATA_HEADER)
         .and_then(|value| serde_json::from_str::<CodexTurnMetadata>(&value).ok())
         .unwrap_or_default();
 
     let switchyard_parent = header(headers, "x-switchyard-parent-agent-id");
+    let claude_agent = header(headers, "x-claude-code-agent-id");
+    let claude_parent = header(headers, "x-claude-code-parent-agent-id");
     let relay_subagent = header(headers, "x-nemo-relay-subagent-id");
     let dynamo_parent = header(headers, "x-dynamo-parent-session-id");
     let codex_parent = header(headers, "x-codex-parent-thread-id");
     let openai_subagent = header(headers, "x-openai-subagent");
     let inferred_subagent = switchyard_parent.is_some()
+        || claude_agent.is_some()
+        || claude_parent.is_some()
         || relay_subagent.is_some()
         || dynamo_parent.is_some()
         || codex.parent_thread_id.is_some()
@@ -195,6 +199,7 @@ pub fn metadata_from_headers(headers: &BTreeMap<String, Vec<String>>) -> Metadat
         is_subagent,
         parent_agent_id: first_some([
             switchyard_parent,
+            claude_parent,
             dynamo_parent,
             codex.parent_thread_id,
             codex_parent,
@@ -220,6 +225,7 @@ pub fn metadata_from_headers(headers: &BTreeMap<String, Vec<String>>) -> Metadat
         ]),
         agent_id: first_some([
             header(headers, "x-switchyard-agent-id"),
+            claude_agent,
             relay_subagent,
             header(headers, "x-dynamo-session-id"),
             codex.thread_id,
@@ -413,6 +419,34 @@ mod tests {
         assert_eq!(
             metadata.session_id.as_deref(),
             Some("fb46caae-eac6-4f5f-83fd-8fc8f5743abb")
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_code_subagent_headers() {
+        let headers = BTreeMap::from([
+            (
+                "x-claude-code-session-id".to_string(),
+                vec!["root-session".to_string()],
+            ),
+            (
+                "x-claude-code-agent-id".to_string(),
+                vec!["child-agent".to_string()],
+            ),
+            (
+                "x-claude-code-parent-agent-id".to_string(),
+                vec!["root-agent".to_string()],
+            ),
+        ]);
+
+        let metadata = metadata_from_headers(&headers);
+        assert_eq!(metadata.session_id.as_deref(), Some("root-session"));
+        assert_eq!(metadata.agent_id.as_deref(), Some("child-agent"));
+        let agent = metadata.agent_context.as_deref();
+        assert_eq!(agent.map(|value| value.is_subagent), Some(true));
+        assert_eq!(
+            agent.and_then(|value| value.parent_agent_id.as_deref()),
+            Some("root-agent")
         );
     }
 

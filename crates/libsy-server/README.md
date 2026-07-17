@@ -98,7 +98,7 @@ Affinity keys on identifying request headers, normalized into request metadata:
   pins to one tier. This makes A/B outcomes per-session and all-or-nothing rather
   than a per-request blend.
 - **`subagent`** keys on session + agent id for requests identified as sub-agents
-  (via Switchyard / Codex / Relay / Dynamo headers); root-agent turns stay random.
+  (via Claude Code / Switchyard / Codex / Relay / Dynamo headers); root-agent turns stay random.
 
 If a request carries no identifying header, affinity **falls open** to normal random
 routing.
@@ -109,11 +109,11 @@ Add `--log-routing` to print the chosen tier (and session id) for each request t
 stderr:
 
 ```
-[route][session=fb46caae-…] inbound=anthropic_messages -> gpt-4o
-[route][session=fb46caae-…] inbound=anthropic_messages -> gpt-4o
+[route][session=fb46caae-…][actor=root] inbound=anthropic_messages -> gpt-4o
+[route][session=fb46caae-…][actor=subagent:agent-123] inbound=anthropic_messages -> gpt-4o
 ```
 
-With `--affinity`, this is how you confirm a session stayed pinned to one tier.
+The actor label shows whether the request came from the root path or a specific child agent.
 
 ## Flags
 

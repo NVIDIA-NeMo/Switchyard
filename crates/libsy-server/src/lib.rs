@@ -139,6 +139,12 @@ async fn handle(
     // the chosen tier's own format — the response is translated back to `inbound`.
     let mut metadata = metadata_from_headers(&multi_headers(&headers));
     let session = metadata.session_id.clone().unwrap_or("none".to_string());
+    let subagent_id = metadata
+        .agent_context
+        .as_deref()
+        .is_some_and(|context| context.is_subagent)
+        .then(|| metadata.agent_id.clone())
+        .flatten();
     metadata.http_headers = Some(normalized_headers(&headers));
     let request = Request {
         llm_request,
@@ -159,8 +165,9 @@ async fn handle(
     // The trace's first decision is the routing choice; log which tier served.
     if state.log_routing {
         if let Some(decision) = trace.first() {
+            let actor = actor_label(subagent_id.as_deref());
             eprintln!(
-                "[route][session={session}] inbound={inbound} -> {}",
+                "[route][session={session}][actor={actor}] inbound={inbound} -> {}",
                 decision.selected_model()
             );
         }
@@ -181,6 +188,14 @@ async fn handle(
             frame_stream(encode_stream(chunks, inbound, requested_model), inbound).into_response()
         }
     }
+}
+
+// Labels the request source for the demo's routing log. Claude Code only sends a
+// child-agent id for sub-agent requests, so every other request is the root path.
+fn actor_label(subagent_id: Option<&str>) -> String {
+    subagent_id
+        .map(|id| format!("subagent:{id}"))
+        .unwrap_or_else(|| "root".to_string())
 }
 
 // Maps an algorithm run failure onto an HTTP envelope. A failed upstream model
