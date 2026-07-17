@@ -763,23 +763,32 @@ fn encode_responses_input(
     }
     let mut encoded = Vec::new();
     for message in messages {
-        if message.content.iter().any(|block| {
+        // Reasoning has no valid Responses *input* representation — the API rejects
+        // a reasoning input item that carries content, and a cross-provider turn has
+        // no prior response id to reference — so drop reasoning blocks, mirroring the
+        // OpenAI Chat encoder's handling of Anthropic thinking. A message that was
+        // only reasoning contributes no input item.
+        let content: Vec<ContentBlock> = message
+            .content
+            .iter()
+            .filter(|block| !matches!(block, ContentBlock::Reasoning { .. }))
+            .cloned()
+            .collect();
+        if content.is_empty() {
+            continue;
+        }
+        if content.iter().any(|block| {
             matches!(
                 block,
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(
-                message
-                    .content
-                    .iter()
-                    .filter_map(encode_responses_special_input),
-            );
+            encoded.extend(content.iter().filter_map(encode_responses_special_input));
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
-        for block in &message.content {
+        for block in &content {
             if let Some(item) = encode_responses_special_input(block) {
                 encoded.push(item);
                 emitted_special = true;
@@ -799,19 +808,18 @@ fn encode_responses_input(
     Ok(Value::Array(encoded))
 }
 
-// Encodes IR blocks that Responses represents as top-level input items.
+// Encodes IR blocks that Responses represents as top-level input items. Reasoning
+// is intentionally not handled here — it is dropped by the caller, since a
+// reasoning input item carrying content is rejected by the Responses API.
 fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
     match block {
-        ContentBlock::Reasoning { text, .. } => Some(json!({
-            "type": "reasoning",
-            "content": [{"type": "reasoning_text", "text": text}],
-            "summary": [],
-        })),
         ContentBlock::ToolCall(call) => Some(json!({
             "type": "function_call",
             "call_id": call.id,
             "name": call.name,
-            "arguments": call.arguments,
+            // Responses requires `arguments` as a JSON-encoded string, not an
+            // object (matching the OpenAI Chat request encoder).
+            "arguments": json_string(&call.arguments),
         })),
         ContentBlock::ToolResult(result) => Some(json!({
             "type": "function_call_output",
