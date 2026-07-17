@@ -2,18 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end router tests: drive `build_router` with `tower::oneshot` against a
-//! `wiremock` upstream, covering the buffered and streaming paths per served wire
-//! format, error mapping, and discovery endpoints.
+//! `wiremock` upstream, covering the buffered and streaming paths per wire format,
+//! cross-format routing, error mapping, and discovery endpoints.
 //!
-//! The client's raw path is same-format — each inbound format is served by a
-//! backend of the same format — so a request routes to the matching upstream
-//! endpoint, and an inbound format with no backend is a client error.
+//! Each request is decoded to the neutral IR, routed by the `RandomAlgo` to a
+//! tier, translated to that tier's upstream format for the call, and translated
+//! back to the inbound format for the client.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RandomAlgo, RoutedLlmClient};
 use libsy_server::{build_router, ProxyState};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
@@ -37,19 +39,19 @@ fn backend_for(format: WireFormat, base_url: &str) -> Backend {
     }
 }
 
-// Builds server state serving each of `formats` via a same-format upstream at
-// `base_url`. The first format is the default backend, the rest are others; the
-// raw path resolves either slot by the inbound format.
-fn state(base_url: &str, formats: &[WireFormat]) -> ProxyState {
-    let mut backends: Vec<Backend> = formats
-        .iter()
-        .map(|&format| backend_for(format, base_url))
-        .collect();
-    let default_backend = backends.remove(0);
-    let other_backends = (!backends.is_empty()).then_some(backends);
-    let config = ModelConfig::new(UPSTREAM_MODEL, default_backend, other_backends);
-    let client = TranslatingLlmClient::new(&[config]).unwrap();
-    ProxyState::new(client, UPSTREAM_MODEL)
+// Builds server state whose single random-routing target serves `UPSTREAM_MODEL`
+// over an upstream speaking `upstream_format` at `base_url`. Inbound requests are
+// translated to `upstream_format` for the upstream call; when it matches the
+// inbound format this is a same-format round trip.
+fn state(base_url: &str, upstream_format: WireFormat) -> ProxyState {
+    let config = ModelConfig::new(UPSTREAM_MODEL, backend_for(upstream_format, base_url), None);
+    let client = Arc::new(TranslatingLlmClient::new(&[config]).unwrap());
+    let targets = LlmTargetSet::new(vec![LlmTarget {
+        semantic_name: UPSTREAM_MODEL.to_string(),
+        llm_client: Some(client as Arc<dyn RoutedLlmClient>),
+    }]);
+    let algorithm: Arc<dyn Algorithm> = Arc::new(RandomAlgo::new(targets));
+    ProxyState::new(algorithm, false)
 }
 
 async fn post(state: ProxyState, uri: &str, body: Value) -> (StatusCode, String) {
@@ -109,7 +111,7 @@ async fn buffered_chat_round_trips() {
     .await;
 
     let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat]),
+        state(&format!("{}/v1", server.uri()), WireFormat::OpenAiChat),
         "/v1/chat/completions",
         json!({"model": "switchyard", "messages": [{"role": "user", "content": "hi"}]}),
     )
@@ -135,7 +137,7 @@ async fn buffered_messages_round_trips() {
     let (status, body) = post(
         state(
             &format!("{}/v1", server.uri()),
-            &[WireFormat::AnthropicMessages],
+            WireFormat::AnthropicMessages,
         ),
         "/v1/messages",
         json!({
@@ -167,7 +169,7 @@ async fn streaming_chat_ends_with_done() {
     .await;
 
     let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat]),
+        state(&format!("{}/v1", server.uri()), WireFormat::OpenAiChat),
         "/v1/chat/completions",
         json!({
             "model": "switchyard",
@@ -210,7 +212,7 @@ async fn streaming_messages_ends_with_message_stop() {
     let (status, body) = post(
         state(
             &format!("{}/v1", server.uri()),
-            &[WireFormat::AnthropicMessages],
+            WireFormat::AnthropicMessages,
         ),
         "/v1/messages",
         json!({
@@ -241,7 +243,7 @@ async fn upstream_500_passes_status_through() {
     .await;
 
     let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat]),
+        state(&format!("{}/v1", server.uri()), WireFormat::OpenAiChat),
         "/v1/chat/completions",
         json!({"model": "switchyard", "messages": [{"role": "user", "content": "hi"}]}),
     )
@@ -252,25 +254,40 @@ async fn upstream_500_passes_status_through() {
 }
 
 #[tokio::test]
-async fn unsupported_inbound_format_is_400() {
+async fn routes_inbound_openai_to_anthropic_upstream() {
     let server = MockServer::start().await;
-    // Only OpenAI Chat is served; an inbound Anthropic request has no backend.
-    let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat]),
+    // Inbound is OpenAI Chat, but the tier's upstream speaks Anthropic: the
+    // request is translated to Anthropic Messages, and the Anthropic response is
+    // translated back to the inbound OpenAI Chat shape.
+    mock(
+        &server,
         "/v1/messages",
-        json!({"model": "switchyard", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}),
+        ResponseTemplate::new(200).set_body_json(anthropic_message_body()),
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("no upstream backend"), "body: {body}");
+    let (status, body) = post(
+        state(
+            &format!("{}/v1", server.uri()),
+            WireFormat::AnthropicMessages,
+        ),
+        "/v1/chat/completions",
+        json!({"model": "switchyard", "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let value: Value = serde_json::from_str(&body).unwrap();
+    // Client-facing shape is OpenAI Chat, restamped to the served model id.
+    assert_eq!(value["choices"][0]["message"]["content"], "Hi there");
+    assert_eq!(value["model"], "switchyard");
 }
 
 #[tokio::test]
 async fn non_object_body_is_400() {
     let server = MockServer::start().await;
     let (status, body) = post(
-        state(&format!("{}/v1", server.uri()), &[WireFormat::OpenAiChat]),
+        state(&format!("{}/v1", server.uri()), WireFormat::OpenAiChat),
         "/v1/chat/completions",
         json!([1, 2, 3]),
     )
@@ -285,7 +302,7 @@ async fn models_lists_served_model() {
     let server = MockServer::start().await;
     let router = build_router(state(
         &format!("{}/v1", server.uri()),
-        &[WireFormat::OpenAiChat],
+        WireFormat::OpenAiChat,
     ));
     let response = router
         .oneshot(
@@ -307,7 +324,7 @@ async fn health_ok() {
     let server = MockServer::start().await;
     let router = build_router(state(
         &format!("{}/v1", server.uri()),
-        &[WireFormat::OpenAiChat],
+        WireFormat::OpenAiChat,
     ));
     let response = router
         .oneshot(

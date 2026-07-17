@@ -1,16 +1,17 @@
 # libsy-server
 
 A minimal [axum](https://github.com/tokio-rs/axum) server that exposes the OpenAI
-Chat Completions, OpenAI Responses, and Anthropic Messages wire APIs and forwards
-every request to a single upstream via
+Chat Completions, OpenAI Responses, and Anthropic Messages wire APIs and routes
+every request through a libsy [`RandomAlgo`](../libsy), which picks a weak- or
+strong-tier upstream uniformly at random and serves it via
 [`switchyard-llm-client`](../libsy-llm-client).
 
 This crate is only the HTTP surface: routing, header normalization, SSE framing,
-and error mapping. The actual work — decoding an inbound request to Switchyard's
-neutral IR, calling the upstream, and encoding the response back into the same
-wire format (buffered JSON or a stream of wire events) — lives in
-`switchyard-llm-client`'s `TranslatingLlmClient::call_rewrite_model_raw`. It
-mirrors `switchyard-server` but swaps the profile-chain executor for one client.
+and error mapping. Each request is decoded to Switchyard's neutral IR, run
+through the routing algorithm — which selects a target and calls the upstream —
+and the response is encoded back into the same wire format (buffered JSON or a
+stream of wire events). It mirrors `switchyard-server` but swaps the
+profile-chain executor for a libsy algorithm.
 
 ## Endpoints
 
@@ -25,28 +26,35 @@ mirrors `switchyard-server` but swaps the profile-chain executor for one client.
 Clients address the server's served model id, `switchyard`; the response is
 always restamped with that id rather than the real upstream model.
 
-## Upstream and served formats
+## Tiers, formats, and translation
 
-Serving is same-format: each inbound endpoint is forwarded to an upstream of the
-same wire format. A backend is configured for every format whose provider key is
-set — OpenAI Chat + Responses from `OPENAI_API_KEY`, Anthropic Messages from
-`ANTHROPIC_API_KEY` — and the server serves exactly those endpoints. An inbound
-request for a format with no configured backend gets a `400` with an
-`unsupported_format` error.
+Two tiers — `weak` and `strong` — are the random-routing targets. Each has its
+own upstream wire format (`--weak-format` / `--strong-format`); every inbound
+request (any of the three served endpoints) is decoded to the neutral IR,
+re-encoded to the chosen tier's format for the upstream call, and translated back
+to the inbound format for the client. Each tier authenticates with its format's
+provider key — OpenAI formats from `OPENAI_API_KEY`, Anthropic Messages from
+`ANTHROPIC_API_KEY` — at the shared `--base-url`; startup errors if a tier's key
+is unset.
+
+Wire-format values: `openai-chat`, `openai-responses`, `anthropic-messages`.
 
 ## Running
 
 ```bash
-export OPENAI_API_KEY="sk-..."      # and/or ANTHROPIC_API_KEY
+export OPENAI_API_KEY="sk-..."      # for openai-chat / openai-responses tiers
+export ANTHROPIC_API_KEY="sk-..."   # for anthropic-messages tiers
 
 cargo run -p libsy-server -- \
     --base-url https://api.openai.com/v1 \
-    --model-name gpt-4o-mini \
+    --weak gpt-4o-mini    --weak-format openai-chat \
+    --strong gpt-4o       --strong-format openai-chat \
     --port 4000
 ```
 
-Flags: `--base-url` (required), `--model-name` (required upstream id),
-`--host` (default `127.0.0.1`), `--port` (default `4000`).
+Flags: `--base-url` (required), `--weak` / `--strong` (required tier model ids),
+`--weak-format` / `--strong-format` (required tier wire formats), `--host`
+(default `127.0.0.1`), `--port` (default `4000`).
 
 ## Testing
 

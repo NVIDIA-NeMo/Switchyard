@@ -940,6 +940,7 @@ dependencies = [
  "clap",
  "futures-util",
  "http-body-util",
+ "libsy",
  "serde_json",
  "switchyard-llm-client",
  "switchyard-protocol",

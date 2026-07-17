@@ -12,6 +12,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+libsy = { path = "../libsy" }
 switchyard-protocol = { path = "../libsy-protocol" }
 switchyard-llm-client = { path = "../libsy-llm-client" }
 switchyard-translation = { path = "../switchyard-translation" }

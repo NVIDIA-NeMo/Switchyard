@@ -6,8 +6,10 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use clap::Parser;
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RandomAlgo, RoutedLlmClient};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_translation::WireFormat;
 use tokio::net::TcpListener;
@@ -31,9 +33,27 @@ pub struct Args {
     #[arg(long)]
     pub base_url: String,
 
-    /// Upstream model id sent on every call.
+    /// Weak-tier upstream model id — one of the two random-routing targets.
     #[arg(long)]
-    pub model_name: String,
+    pub weak: String,
+
+    /// Wire format the weak tier's upstream speaks (openai-chat, openai-responses,
+    /// anthropic-messages). Its provider key selects the credential.
+    #[arg(long, value_parser = parse_wire_format)]
+    pub weak_format: WireFormat,
+
+    /// Strong-tier upstream model id — one of the two random-routing targets.
+    #[arg(long)]
+    pub strong: String,
+
+    /// Wire format the strong tier's upstream speaks (openai-chat, openai-responses,
+    /// anthropic-messages). Its provider key selects the credential.
+    #[arg(long, value_parser = parse_wire_format)]
+    pub strong_format: WireFormat,
+
+    /// Log each request's routing decision (the selected tier) to stderr.
+    #[arg(long)]
+    pub log_routing: bool,
 
     /// Host address to bind.
     #[arg(long, default_value_t = DEFAULT_HOST)]
@@ -47,67 +67,100 @@ pub struct Args {
 impl Args {
     /// Builds server state (and the bind address) from the args and env keys.
     ///
-    /// The client's raw path is same-format: each inbound format is served by a
-    /// backend of the *same* format. A backend is configured for each format whose
-    /// provider key is set — OpenAI Chat + Responses from `OPENAI_API_KEY`,
-    /// Anthropic from `ANTHROPIC_API_KEY` — so the server serves exactly those
-    /// inbound endpoints. Errors if neither key is present.
-    fn build(self) -> Result<(ProxyState, SocketAddr, Vec<WireFormat>), String> {
-        let openai_key = env_key(OPENAI_API_KEY_ENV);
-        let anthropic_key = env_key(ANTHROPIC_API_KEY_ENV);
+    /// Each tier (`weak`, `strong`) is served by a backend of its own
+    /// `--*-format`, at the shared `--base-url`, authenticated with that format's
+    /// provider key — OpenAI formats from `OPENAI_API_KEY`, Anthropic from
+    /// `ANTHROPIC_API_KEY`. The tiers become the [`RandomAlgo`]'s routing targets:
+    /// each request picks one uniformly at random. Any inbound format is decoded
+    /// to the neutral IR, re-encoded to the chosen tier's format for the upstream
+    /// call, and translated back to the inbound format for the client. Errors if a
+    /// tier's provider key is unset.
+    fn build(self) -> Result<(ProxyState, SocketAddr), String> {
+        let weak_backend = backend_for_format(self.weak_format, &self.base_url)?;
+        let strong_backend = backend_for_format(self.strong_format, &self.base_url)?;
 
-        let mut backends: Vec<Backend> = Vec::new();
-        if let Some(key) = &openai_key {
-            backends.push(Backend::OpenAiChat(self.config(key)));
-            backends.push(Backend::OpenAiResponses(self.config(key)));
-        }
-        if let Some(key) = &anthropic_key {
-            backends.push(Backend::Anthropic(self.config(key)));
-        }
-        if backends.is_empty() {
-            return Err(format!(
-                "no upstream credentials: set {OPENAI_API_KEY_ENV} and/or {ANTHROPIC_API_KEY_ENV}"
-            ));
-        }
+        // One config per tier — its own format's backend, keyed by the tier's
+        // model id. The client resolves a target's name to that config.
+        let client = Arc::new(
+            TranslatingLlmClient::new(&[
+                ModelConfig::new(self.weak.clone(), weak_backend, None),
+                ModelConfig::new(self.strong.clone(), strong_backend, None),
+            ])
+            .map_err(|error| error.to_string())?,
+        );
 
-        let served: Vec<WireFormat> = backends.iter().map(Backend::wire_format).collect();
-        // Which backend is "default" vs "other" does not affect routing: the raw
-        // path resolves a backend by the inbound format, matching either slot.
-        let default_backend = backends.remove(0);
-        let other_backends = (!backends.is_empty()).then_some(backends);
+        // The two tiers as routing targets, sharing the client that serves them.
+        let targets = LlmTargetSet::new(vec![
+            target(&self.weak, client.clone()),
+            target(&self.strong, client.clone()),
+        ]);
+        let algorithm: Arc<dyn Algorithm> = Arc::new(RandomAlgo::new(targets));
 
-        let config = ModelConfig::new(self.model_name.clone(), default_backend, other_backends);
-        let client = TranslatingLlmClient::new(&[config]).map_err(|error| error.to_string())?;
         let addr = SocketAddr::new(self.host, self.port);
-        let state = ProxyState::new(client, self.model_name.as_str());
-        Ok((state, addr, served))
-    }
-
-    fn config(&self, api_key: &str) -> HttpBackendConfig {
-        HttpBackendConfig {
-            base_url: self.base_url.clone(),
-            api_key: Some(api_key.to_string()),
-            extra_headers: BTreeMap::new(),
-        }
+        Ok((ProxyState::new(algorithm, self.log_routing), addr))
     }
 }
 
 /// Parses args, binds the listener, and serves until Ctrl-C.
 pub async fn run(args: Args) -> Result<(), String> {
     let base_url = args.base_url.clone();
-    let model_name = args.model_name.clone();
-    let (state, addr, served) = args.build()?;
+    let weak = (args.weak.clone(), args.weak_format);
+    let strong = (args.strong.clone(), args.strong_format);
+    let (state, addr) = args.build()?;
 
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|error| format!("failed to bind {addr}: {error}"))?;
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
-    eprintln!("{}", banner(bound, &base_url, &model_name, &served));
+    eprintln!("{}", banner(bound, &base_url, &weak, &strong));
 
     axum::serve(listener, build_router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| error.to_string())
+}
+
+// Parses a `--*-format` flag into a built-in wire format, accepting the canonical
+// ids plus common hyphenated aliases.
+fn parse_wire_format(value: &str) -> Result<WireFormat, String> {
+    match value.to_ascii_lowercase().replace('-', "_").as_str() {
+        "openai_chat" | "openai_chat_completions" | "chat" => Ok(WireFormat::OpenAiChat),
+        "openai_responses" | "responses" => Ok(WireFormat::OpenAiResponses),
+        "anthropic_messages" | "anthropic" | "messages" => Ok(WireFormat::AnthropicMessages),
+        _ => Err(format!(
+            "unknown wire format '{value}': expected one of \
+             openai-chat, openai-responses, anthropic-messages"
+        )),
+    }
+}
+
+// Builds the backend serving `format` at `base_url`, drawing the API key from the
+// format's provider env var. Errors if that key is unset.
+fn backend_for_format(format: WireFormat, base_url: &str) -> Result<Backend, String> {
+    let env_name = match format {
+        WireFormat::OpenAiChat | WireFormat::OpenAiResponses => OPENAI_API_KEY_ENV,
+        WireFormat::AnthropicMessages => ANTHROPIC_API_KEY_ENV,
+    };
+    let api_key = env_key(env_name)
+        .ok_or_else(|| format!("no credential for {format} tier: set {env_name}"))?;
+    let config = HttpBackendConfig {
+        base_url: base_url.to_string(),
+        api_key: Some(api_key),
+        extra_headers: BTreeMap::new(),
+    };
+    Ok(match format {
+        WireFormat::OpenAiChat => Backend::OpenAiChat(config),
+        WireFormat::OpenAiResponses => Backend::OpenAiResponses(config),
+        WireFormat::AnthropicMessages => Backend::Anthropic(config),
+    })
+}
+
+// Builds a routing target named `model` that serves its calls through `client`.
+fn target(model: &str, client: Arc<TranslatingLlmClient>) -> LlmTarget {
+    LlmTarget {
+        semantic_name: model.to_string(),
+        llm_client: Some(client as Arc<dyn RoutedLlmClient>),
+    }
 }
 
 fn env_key(name: &str) -> Option<String> {
@@ -117,19 +170,22 @@ fn env_key(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn banner(addr: SocketAddr, base_url: &str, model_name: &str, served: &[WireFormat]) -> String {
-    let mut formats: Vec<String> = served.iter().map(|format| format.to_string()).collect();
-    formats.sort();
+fn banner(
+    addr: SocketAddr,
+    base_url: &str,
+    weak: &(String, WireFormat),
+    strong: &(String, WireFormat),
+) -> String {
     format!(
         "libsy-server\n  \
          listening:     http://{addr}\n  \
-         upstream:      {base_url} (model {model_name})\n  \
-         served fmts:   {}\n  \
+         upstream:      {base_url}\n  \
+         random routing: weak {} ({}), strong {} ({})\n  \
          serving model: {SERVED_MODEL}\n  \
          endpoints:     GET /health, GET /v1/models, POST /v1/chat/completions, \
          POST /v1/messages, POST /v1/responses\n  \
          stop:          Ctrl-C",
-        formats.join(", ")
+        weak.0, weak.1, strong.0, strong.1
     )
 }
 

@@ -1,16 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Minimal axum server exposing the LLM wire APIs over [`TranslatingLlmClient`].
+//! Minimal axum server exposing the LLM wire APIs over a libsy [`Algorithm`].
 //!
-//! Each inbound request is handed to the client's raw path
-//! ([`TranslatingLlmClient::call_rewrite_model_raw`]), which decodes it to
-//! Switchyard's neutral IR, dispatches to the model's upstream backend, and
-//! encodes the response back into the inbound wire format — buffered JSON or a
-//! stream of wire events. This crate is the HTTP surface around that: routing,
+//! Each inbound request is decoded to Switchyard's neutral IR and run through the
+//! routing [`Algorithm`] (a [`RandomAlgo`](libsy::RandomAlgo) over weak/strong
+//! targets). The algorithm picks a target and serves the call through the
+//! target's client, which dispatches to the upstream backend; the neutral
+//! response is then encoded back into the inbound wire format — buffered JSON or
+//! a stream of wire events. This crate is the HTTP surface around that: routing,
 //! header normalization, SSE framing, and error mapping. It mirrors
-//! `switchyard-server` but swaps the profile-chain executor for a single client.
-//! See [`build_router`].
+//! `switchyard-server` but swaps the profile-chain executor for a libsy
+//! algorithm. See [`build_router`].
 
 mod sse;
 
@@ -25,10 +26,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use libsy::Algorithm;
 use serde_json::{json, Value};
-use switchyard_llm_client::{LlmClientError, RawResponse, TranslatingLlmClient};
-use switchyard_protocol::Context;
-use switchyard_translation::WireFormat;
+use switchyard_llm_client::LlmClientError;
+use switchyard_protocol::{Context, LlmResponse, Metadata, Request};
+use switchyard_translation::{decode_request, encode_buffered_response, encode_stream, WireFormat};
 
 use crate::sse::frame_stream;
 
@@ -38,21 +40,24 @@ pub const SERVED_MODEL: &str = "switchyard";
 /// Shared state for all endpoint handlers.
 #[derive(Clone)]
 pub struct ProxyState {
-    client: Arc<TranslatingLlmClient>,
-    /// Model id sent upstream and used as the client's map key.
-    upstream_model: Arc<str>,
+    /// The routing algorithm run once per request; it picks a target and serves
+    /// the call through the target's client.
+    algorithm: Arc<dyn Algorithm>,
+    /// When set, log each request's routing decision (the selected tier) to stderr.
+    log_routing: bool,
 }
 
 impl ProxyState {
-    /// Builds server state around a configured client.
+    /// Builds server state around a routing algorithm.
     ///
-    /// `upstream_model` is the model id the client resolves to its backend and
-    /// sends upstream; the response is always restamped with the model the
-    /// caller asked for (the served name), never this id.
-    pub fn new(client: TranslatingLlmClient, upstream_model: impl Into<Arc<str>>) -> Self {
+    /// Each request is decoded to the neutral IR and handed to `algorithm`, whose
+    /// chosen target resolves its own upstream model id. The response is always
+    /// restamped with the model the caller asked for, never the upstream id. With
+    /// `log_routing`, each request's chosen tier is logged to stderr.
+    pub fn new(algorithm: Arc<dyn Algorithm>, log_routing: bool) -> Self {
         Self {
-            client: Arc::new(client),
-            upstream_model: upstream_model.into(),
+            algorithm,
+            log_routing,
         }
     }
 }
@@ -108,33 +113,83 @@ async fn dispatch(
     handle(state, headers, body, inbound).await
 }
 
-// The client's raw path owns decode → call upstream → encode-back-to-`inbound`;
-// this only forwards headers, picks the upstream model, and frames the result.
+// Decodes the inbound body to the neutral IR, runs the routing algorithm, then
+// encodes its response back into `inbound`. The chosen target owns the upstream
+// call; this frames the neutral result and restamps the caller's model.
 async fn handle(
     state: ProxyState,
     headers: HeaderMap,
     body: Value,
     inbound: WireFormat,
 ) -> Response {
+    let llm_request = match decode_request(inbound, &body) {
+        Ok(request) => request,
+        Err(error) => return invalid_body(format!("Request body could not be decoded: {error}")),
+    };
+    // The model the caller asked for; restamped onto the response so it never
+    // leaks the upstream id the algorithm's target resolved.
+    let requested_model = llm_request.model.clone();
+
     // Caller headers ride along as metadata; the client drops reserved/auth
     // headers and injects the backend's real credential, so the sentinel key a
-    // coding agent sends is filtered automatically.
-    let http_headers = Some(normalized_headers(&headers));
-    let response = state
-        .client
-        .call_rewrite_model_raw(
-            Context::default(),
-            body,
-            http_headers,
-            Some(&state.upstream_model),
-            inbound,
-        )
-        .await;
+    // coding agent sends is filtered automatically. `wire_format` is left unset so
+    // the upstream call uses the chosen tier's own format, not the inbound one —
+    // the response is translated back to `inbound` below.
+    let request = Request {
+        llm_request,
+        raw_request: Some(body),
+        metadata: Some(Metadata {
+            session_id: None,
+            agent_id: None,
+            task_id: None,
+            correlation_id: None,
+            extra_metadata: None,
+            http_headers: Some(normalized_headers(&headers)),
+            wire_format: None,
+        }),
+    };
 
-    match response {
-        Ok(RawResponse::Buffered(body)) => Json(body).into_response(),
-        Ok(RawResponse::Stream(events)) => frame_stream(events, inbound).into_response(),
-        Err(error) => map_client_error(error),
+    let (trace, response) = match state
+        .algorithm
+        .clone()
+        .run(Context::default(), request)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return map_run_error(error),
+    };
+
+    // The trace's first decision is the routing choice; log which tier served.
+    if state.log_routing {
+        if let Some(decision) = trace.first() {
+            eprintln!("[route] inbound={inbound} -> {}", decision.selected_model());
+        }
+    }
+
+    match response.llm_response {
+        LlmResponse::Agg(agg) => {
+            match encode_buffered_response(&agg, inbound, requested_model.as_deref()) {
+                Ok(body) => Json(body).into_response(),
+                Err(error) => error_body(
+                    StatusCode::BAD_REQUEST,
+                    error.to_string(),
+                    "invalid_request_error",
+                ),
+            }
+        }
+        LlmResponse::Stream(chunks) => {
+            frame_stream(encode_stream(chunks, inbound, requested_model), inbound).into_response()
+        }
+    }
+}
+
+// Maps an algorithm run failure onto an HTTP envelope. A failed upstream model
+// call surfaces as a boxed [`LlmClientError`] (mapped like the direct path);
+// anything else is an internal proxy fault.
+fn map_run_error(error: Box<dyn std::error::Error + Send + Sync>) -> Response {
+    match error.downcast::<LlmClientError>() {
+        Ok(client_error) => map_client_error(*client_error),
+        Err(other) => server_error(other.to_string()),
     }
 }
 
