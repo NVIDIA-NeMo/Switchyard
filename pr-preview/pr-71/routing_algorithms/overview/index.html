@@ -512,34 +512,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guides/nemo_relay_known_issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    NeMo Relay: Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../skill_distillation/" class="md-nav__link">
         
   
@@ -992,6 +964,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../escalation_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1320,6 +1320,11 @@ for configuration and tuning.</p>
 <td>Tool-result and agent-progress signals should route most turns without an extra classifier call.</td>
 <td><code>stage_router</code></td>
 </tr>
+<tr>
+<td><a href="../escalation_router_routing/">Escalation-Router Routing</a></td>
+<td>Start every task on the weak tier and let an LLM judge escalate to strong — one-way per task — when the run is in trouble.</td>
+<td><code>escalation_router</code> (<code>routes:</code> bundle)</td>
+</tr>
 </tbody>
 </table>
 <p><a href="../sticky_routing/">Session Affinity (Sticky Routing)</a> is an opt-in feature of
@@ -1428,6 +1433,11 @@ They are not shared across workers or restarts. See
 <a href="../sticky_routing/">Sticky Routing</a> for configuration and key derivation.</p>
 <p>Random and stage-router routing do not expose session-affinity settings; they
 continue to make a routing decision for each request.</p>
+<p>The escalation router uses the same affinity store with the opposite policy:
+affinity is always on (the pin <em>is</em> the escalation latch), only the strong
+tier is ever pinned, and once the judge starts (a configurable minimum turn),
+it keeps running each judged turn until the latch fires. See
+<a href="../escalation_router_routing/">Escalation-Router Routing</a>.</p>
 <div class="admonition note">
 <p class="admonition-title">CLI schema availability</p>
 <p>The CLI currently accepts these settings in a <code>deterministic</code> entry in a

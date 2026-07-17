@@ -14,7 +14,7 @@
         <link rel="prev" href="../agent_launchers/">
       
       
-        <link rel="next" href="../nemo_relay_known_issues/">
+        <link rel="next" href="../../skill_distillation/">
       
       
         
@@ -640,34 +640,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../nemo_relay_known_issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    NeMo Relay: Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../skill_distillation/" class="md-nav__link">
         
   
@@ -1003,6 +975,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/escalation_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1311,50 +1311,56 @@
 
 <h1 id="nemo-relay-recipe">NeMo Relay Recipe<a class="headerlink" href="#nemo-relay-recipe" title="Permanent link">&para;</a></h1>
 <p>Run Switchyard <strong>as a library</strong> inside <a href="https://github.com/NVIDIA/NeMo-Relay">NeMo Relay</a>:
-routing decisions are made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1e7b5b436bb3306addf0c65c45e39330a2a3e13e/crates/libsy/README.md">libsy</a>
+routing decisions are made in-process by <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ee3d051ee9e51acdba89f17c838c2241877adfcd/crates/libsy/README.md">libsy</a>
 while Relay owns the proxy, dispatch, credentials, and observability. No
 <code>switchyard serve</code> process is involved.</p>
 <p>libsy never performs a network call: each offloaded <code>CallLlm</code> promise is
 fulfilled by Relay's dispatch chain and answered with
 <code>CallLlmRequest::respond(Ok/Err)</code>. libsy's semantic target names map onto the
 Relay plugin's <code>TargetBinding</code> table, which binds each name to a backend URL,
-model, and protocol.</p>
-<p>Current gaps are tracked separately in
-<a href="../nemo_relay_known_issues/">NeMo Relay: Known Issues</a>.</p>
+model, protocol, and credentials. Buffered and streamed requests are both
+routed; keep every target on the agent's protocol (as below) so streams pass
+through without translation.</p>
 <h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Rust 1.96.1</li>
+<li>Rust 1.96.1 or later</li>
 <li>Claude Code, for the agent launcher path</li>
+<li>An OpenRouter API key, from the
+  <a href="https://openrouter.ai/keys">OpenRouter keys page</a></li>
 </ul>
 <h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
 <p>Build the Relay CLI with the Switchyard plugin (reference branch:
 <a href="https://github.com/ryan-lempka/NeMo-Relay/tree/feat/libsy-decision-backend">feat/libsy-decision-backend</a>):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span>feat/libsy-decision-backend<span class="w"> </span>https://github.com/ryan-lempka/NeMo-Relay.git
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>NeMo-Relay
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nv">RUSTUP_TOOLCHAIN</span><span class="o">=</span><span class="m">1</span>.96.1<span class="w"> </span>cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>nemo-relay-cli<span class="w"> </span>--features<span class="w"> </span>switchyard
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>nemo-relay-cli<span class="w"> </span>--features<span class="w"> </span>switchyard
 </span></code></pre></div>
 <h2 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h2>
-<p>Copy the two example configs into the project you will launch from:</p>
+<p>Copy the two example configs into the project you will launch from, and
+provide your OpenRouter key:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1e7b5b436bb3306addf0c65c45e39330a2a3e13e/examples/nemo_relay/config.toml">examples/nemo_relay/config.toml</a> → <code>.nemo-relay/config.toml</code></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1e7b5b436bb3306addf0c65c45e39330a2a3e13e/examples/nemo_relay/plugins.toml">examples/nemo_relay/plugins.toml</a> → <code>.nemo-relay/plugins.toml</code></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ee3d051ee9e51acdba89f17c838c2241877adfcd/examples/nemo_relay/config.toml">examples/nemo_relay/config.toml</a> → <code>.nemo-relay/config.toml</code></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ee3d051ee9e51acdba89f17c838c2241877adfcd/examples/nemo_relay/plugins.toml">examples/nemo_relay/plugins.toml</a> → <code>.nemo-relay/plugins.toml</code></li>
 </ul>
-<p>The plugin config selects <code>decision_backend = "libsy"</code> with the LLM-classifier
-algorithm: a Haiku target scores each request, and the score routes to an Opus
-(strong) or Sonnet (weak) target. Claude Code's own auth headers pass through
-to Anthropic. Verify with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>./target/debug/nemo-relay<span class="w"> </span>doctor
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_AUTHORIZATION</span><span class="o">=</span><span class="s2">&quot;Bearer </span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>./target/debug/nemo-relay<span class="w"> </span>doctor
 </span></code></pre></div>
+<p>The plugin config selects <code>decision_backend = "libsy"</code> with random routing
+between a strong target (Opus) and a weak target (Sonnet), both served by
+OpenRouter's Anthropic-compatible endpoint. Since Relay v0.7, target bindings
+own their credentials: the agent's own login is never forwarded to a routed
+target.</p>
 <h2 id="path-a-gateway-mode">Path A: Gateway mode<a class="headerlink" href="#path-a-gateway-mode" title="Permanent link">&para;</a></h2>
 <p>Runs Relay's gateway with libsy routing and a deterministic fake provider; no
 credentials needed:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nv">RUSTUP_TOOLCHAIN</span><span class="o">=</span><span class="m">1</span>.96.1<span class="w"> </span>./examples/switchyard/run-libsy-e2e.sh
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>./examples/switchyard/run-libsy-e2e.sh
 </span></code></pre></div>
 <p>Expected receipt:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>ok: easy prompt routes weak
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>ok: hard prompt routes strong
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>ok: classifier and routed calls both flowed through Relay dispatch (4 upstream calls)
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>libsy in-process routing e2e passed
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>ok: streamed hard prompt routes strong
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>ok: classifier and routed calls all flowed through Relay dispatch (6 upstream calls)
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>libsy in-process routing e2e passed
 </span></code></pre></div>
 <h2 id="path-b-agent-launcher">Path B: Agent launcher<a class="headerlink" href="#path-b-agent-launcher" title="Permanent link">&para;</a></h2>
 <p>From the directory containing <code>.nemo-relay/</code>:</p>
@@ -1363,26 +1369,25 @@ credentials needed:</p>
 <p>This opens the normal interactive Claude Code TUI through the Relay gateway.</p>
 <h2 id="validate">Validate<a class="headerlink" href="#validate" title="Permanent link">&para;</a></h2>
 <p>Routing decisions land in <code>nemo-relay-events-*.jsonl</code> in the working
-directory. One line per decision:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>grep<span class="w"> </span>-h<span class="w"> </span>switchyard.routing.decision<span class="w"> </span>nemo-relay-events-*.jsonl
+directory, one mark per decision:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>grep<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s1">&#39;&quot;backend_id&quot;:&quot;[a-z]*&quot;&#39;</span><span class="w"> </span>nemo-relay-events-*.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span><span class="p">|</span><span class="w"> </span>uniq<span class="w"> </span>-c
 </span></code></pre></div>
-<p>Expected receipt: <code>switchyard.routing.decision</code> marks naming the classifier
-step and the routed target, e.g.</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span><span class="nt">&quot;backend_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;classifier&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reason_summary&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;classifying request via classifier&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">...</span><span class="p">}</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="p">{</span><span class="nt">&quot;backend_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;target_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-sonnet-5&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">...</span><span class="p">}</span>
-</span></code></pre></div>
-<p>A decision naming <code>weak</code> or <code>strong</code> is the proof: libsy scored the request
-in-process and Relay dispatched the routed call.</p>
+<p>Expected receipt: <code>switchyard.routing.decision</code> marks naming <code>strong</code> and
+<code>weak</code>, with responses served by both models across the session. A decision
+naming a target is the proof: libsy selected it in-process and Relay
+dispatched the routed call.</p>
 <h2 id="the-embedding-contract">The embedding contract<a class="headerlink" href="#the-embedding-contract" title="Permanent link">&para;</a></h2>
 <p>A host needs three things from libsy:</p>
 <ul>
 <li><code>Algorithm</code>: one shared <code>Arc&lt;dyn Algorithm&gt;</code> serves concurrent requests.</li>
 <li><code>run_stream(ctx, request)</code>: a stream of <code>Step</code>s; the host serves each
-  <code>Step::CallLlm</code> and fulfills it with <code>respond(...)</code>.</li>
-<li>The conversation IR (<code>LlmRequest</code> / <code>LlmResponse</code> from <code>libsy-protocol</code>),
-  which Relay already speaks through <code>switchyard-translation</code>.</li>
+  <code>Step::CallLlm</code> and fulfills it with <code>respond(...)</code> — a buffered response
+  or a live chunk stream.</li>
+<li>The conversation IR (<code>LlmRequest</code>, <code>AggLlmResponse</code>, <code>LlmResponseChunk</code>
+  from <code>switchyard-protocol</code>), which Relay already speaks through
+  <code>switchyard-translation</code>.</li>
 </ul>
-<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1e7b5b436bb3306addf0c65c45e39330a2a3e13e/crates/libsy/README.md">libsy README</a> for the full API.</p>
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ee3d051ee9e51acdba89f17c838c2241877adfcd/crates/libsy/README.md">libsy README</a> for the full API.</p>
 
 
 
