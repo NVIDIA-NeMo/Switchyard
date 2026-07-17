@@ -64,7 +64,14 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
     (
         "no_such_file",
         HARD,
-        &["filenotfounderror:", "no such file or directory"],
+        &[
+            "filenotfounderror:",
+            "no such file or directory",
+            // Claude Code Read-tool miss. Anchored as "file does not exist" (not a
+            // bare "does not exist", which fires on `ls` output and prose) — trace-
+            // mined across 1006 local trajectories at 22 true / 2 false positives.
+            "file does not exist",
+        ],
     ),
     // SOFT: plain non-zero exit without a recognisable exception traceback.
     (
@@ -704,6 +711,23 @@ mod tests {
         // exit_nonzero (SOFT) + traceback (HARD) → HARD.
         let (sev, _) = classify_text("exit code 1\nTraceback (most recent call last):");
         assert_eq!(sev, HARD);
+    }
+
+    #[test]
+    fn file_does_not_exist_is_hard() {
+        // Claude Code Read-tool miss. Trace-mined addition (22 true / 2 false positives).
+        let (sev, patterns) =
+            classify_text("Error: File does not exist. Note: current working directory is /app.");
+        assert_eq!(sev, HARD);
+        assert!(patterns.contains(&"no_such_file".to_string()));
+    }
+
+    #[test]
+    fn bare_does_not_exist_stays_clean() {
+        // Precision guard: only the anchored "file does not exist" fires, so a bare
+        // "does not exist" in prose or directory output must not trip a false error.
+        let (sev, _) = classify_text("The directory does not exist yet, creating it now.");
+        assert_eq!(sev, 0.0);
     }
 
     #[test]
