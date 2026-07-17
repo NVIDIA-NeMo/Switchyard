@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the stage-router dimensions + scorer."""
+"""Unit tests for the stage-router dimensions + two-axis scorer."""
 
 from __future__ import annotations
 
@@ -22,119 +22,91 @@ from switchyard_rust.components import DimensionCollector
 from switchyard_rust.core import ChatRequest, ProxyContext
 
 
-def _zero_dimensions() -> CodingAgentDimensions:
+def _zero() -> CodingAgentDimensions:
     return CodingAgentDimensions(
         severity=0.0,
+        spinning=0.0,
+        exploring=0.0,
+        recent_production_intensity=0.0,
         no_error_streak_intensity=0.0,
-        write_intensity=0.0,
-        edit_intensity=0.0,
-        recent_write_intensity=0.0,
-        planning_active=0.0,
-        pure_bash_intensity=0.0,
-        stuck_exploring=0.0,
-        no_progress=0.0,
-        tests_passed=0.0,
     )
 
 
+def _with(**kw: float) -> CodingAgentDimensions:
+    return CodingAgentDimensions(**{**_zero().__dict__, **kw})
+
+
 def test_zero_signal_scores_to_zero():
-    result = score(_zero_dimensions())
+    result = score(_zero())
     assert result.score == 0.0
     assert result.confidence == 0.0
 
 
-def test_critical_severity_pushes_toward_capable():
-    dims = _zero_dimensions()
-    dims = CodingAgentDimensions(**{**dims.__dict__, "severity": 1.0})
+def test_wrong_signals_point_capable():
+    assert score(_with(severity=0.7)).score > 0
+    assert score(_with(spinning=1.0)).score > 0
+    assert score(_with(exploring=1.0)).score > 0
+
+
+def test_progress_signals_point_efficient():
+    assert score(_with(recent_production_intensity=1.0)).score < 0
+    assert score(_with(no_error_streak_intensity=1.0)).score < 0
+
+
+def test_hard_severity_and_spinning_contribute_one_unit():
+    # severity is normalised by its HARD cap (0.7), so a HARD error lands at the
+    # same unit as a maxed boolean signal like spinning.
+    hard = score(_with(severity=0.7))
+    spin = score(_with(spinning=1.0))
+    assert hard.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))
+    assert spin.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))
+
+
+def test_exploring_is_half_weight_and_neutral():
+    """exploring contributes half a unit → far lower confidence than a full signal,
+    so it never clears a default threshold alone (only when corroborated)."""
+    explore = score(_with(exploring=1.0))
+    full = score(_with(spinning=1.0))
+    assert explore.score > 0
+    assert explore.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.05))  # ~0.245
+    assert explore.confidence < full.confidence
+    assert explore.confidence < 0.30  # below a typical threshold → needs corroboration
+
+
+def test_corroboration_raises_confidence():
+    """Two agreeing wrong signals corroborate to higher confidence than one."""
+    one = score(_with(severity=0.7))
+    two = score(_with(severity=0.7, spinning=1.0))
+    assert two.confidence > one.confidence
+    assert two.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.20))  # ~0.762
+
+
+def test_axes_can_cancel_to_neutral():
+    """A turn that both errored and produced nets toward zero confidence."""
+    dims = _with(severity=0.7, recent_production_intensity=1.0)
     result = score(dims)
-    assert result.score > 0
-    assert result.confidence == abs(result.score)
+    assert result.confidence < 0.30  # roughly cancels → defers to classifier/default
 
 
-def test_tests_passed_is_not_scored():
-    """tests_passed is routed to the picker's default tier, not scored here."""
-    dims = _zero_dimensions()
-    dims = CodingAgentDimensions(**{**dims.__dict__, "tests_passed": 1.0})
-    result = score(dims)
-    assert result.score == 0.0
-
-
-def test_progress_signal_points_efficient():
-    """A progress signal scores negative (→EFFICIENT), picker-independent."""
-    dims = CodingAgentDimensions(
-        **{**_zero_dimensions().__dict__, "recent_write_intensity": 1.0}
-    )
-    assert score(dims).score < 0
-
-
-def test_wrong_signal_points_capable():
-    """A wrong signal scores positive (→CAPABLE), picker-independent."""
-    dims = CodingAgentDimensions(
-        **{**_zero_dimensions().__dict__, "stuck_exploring": 1.0}
-    )
-    assert score(dims).score > 0
-
-
-def test_tanh_spread_and_monotonic_confidence():
-    """Raw sum is tanh-squashed: one signal spreads into the range, more agreeing
-    signals raise confidence monotonically, and realistic turns never saturate.
-    """
-    one = score(
-        CodingAgentDimensions(**{**_zero_dimensions().__dict__, "stuck_exploring": 1.0})
-    )
-    assert one.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))  # tanh(gain*unit)
-    assert one.score > 0                          # wrong signal → CAPABLE
-
-    two = score(
-        CodingAgentDimensions(**{
-            **_zero_dimensions().__dict__,
-            "recent_write_intensity": 1.0,
-            "pure_bash_intensity": 1.0,
-        })
-    )
-    assert two.confidence > one.confidence        # more signals → more confident
-    assert two.score < 0                          # progress → EFFICIENT
-    assert abs(two.score) < 1.0                   # realistic turns never saturate
-
-
-def test_extreme_weights_saturate_via_tanh():
-    """A large raw sum saturates smoothly to ±1 through tanh (no hard clip)."""
-    dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    high = score(dims, weights={"severity": 5.0})   # raw 5.0 → tanh(25) ≈ 1.0
+def test_tanh_saturates_smoothly_via_weight_override():
+    dims = _with(severity=1.0)
+    high = score(dims, weights={"severity": 5.0})  # raw 5.0 → tanh(25) ≈ 1.0
     assert high.score == pytest.approx(1.0)
-    assert high.confidence == pytest.approx(1.0)
     low = score(dims, weights={"severity": -5.0})
     assert low.score == pytest.approx(-1.0)
-    assert low.confidence == pytest.approx(1.0)
 
 
 def test_custom_weights_can_invert_decision():
-    """Researchers override weights via the call site, not YAML."""
-    dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    default = score(dims, weights=DEFAULT_WEIGHTS)
-    inverted = score(dims, weights={"severity": -0.5})
-    assert default.score > 0
-    assert inverted.score < 0
+    dims = _with(severity=1.0)
+    assert score(dims, weights=DEFAULT_WEIGHTS).score > 0
+    assert score(dims, weights={"severity": -0.5}).score < 0
 
 
 def test_contributions_are_raw_presquash():
-    """``contributions`` are pre-squash: they sum to raw, score = tanh(gain*raw)."""
-    dims = CodingAgentDimensions(
-        **{**_zero_dimensions().__dict__, "recent_write_intensity": 0.5}
-    )
+    dims = _with(recent_production_intensity=0.5)
     result = score(dims)
     raw = sum(result.contributions.values())
     assert result.score == pytest.approx(math.tanh(_SCORE_GAIN * raw))
-
-
-def test_contributions_exceed_squashed_score():
-    """A large raw sum stays unsquashed in contributions while score saturates."""
-    dims = CodingAgentDimensions(**{**_zero_dimensions().__dict__, "severity": 1.0})
-    result = score(dims, weights={"severity": 5.0})
-    raw = sum(result.contributions.values())
-    assert raw == 5.0
-    assert result.score == pytest.approx(1.0)
-    assert raw > result.score
 
 
 @pytest.mark.asyncio
@@ -156,5 +128,7 @@ async def test_from_signal_normalises_real_extracted_signal():
     assert signal is not None
     dims = from_signal(signal)
     assert 0.0 <= dims.severity <= 1.0
-    assert 0.0 <= dims.write_intensity <= 1.0
-    assert dims.write_intensity > 0  # we issued one Write call
+    assert dims.recent_production_intensity > 0  # we issued one Write call
+    # too shallow (turn_depth < 8) for a stall signal to fire
+    assert dims.spinning == 0.0
+    assert dims.exploring == 0.0

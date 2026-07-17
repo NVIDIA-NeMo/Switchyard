@@ -138,8 +138,7 @@ static BASH_READ_PATTERNS: &[&str] = &[
 
 static READ_TOOL_NAMES: &[&str] = &["read", "view"];
 
-// Planning / scratchpad tool calls. Used by Opus as a struggle indicator
-// in the capable-first picker direction.
+// Planning / scratchpad tool calls — investigative (non-producing) activity.
 // `update_plan` is codex's equivalent of `todowrite`.
 static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_plan"];
 
@@ -174,13 +173,13 @@ static TEST_FAILURE_LITERAL: &[&str] = &["✗ ", "fatal:", "assertionerror", "er
 // "0 errors" summaries on a clean run are not misread as failures.
 static NUMERIC_FAILURE_KEYWORDS: &[&str] = &["failed", "failure", "failures", "errors", "error"];
 
-/// Default sliding-window size for `recent_*` counts.
+/// Default sliding-window size for `recent_*` counts and windowed severity.
 ///
-/// Calibrated against agent trajectories where a 3-call horizon is enough
-/// to capture the "what is the agent doing right now" signal without
-/// over-smoothing short tasks. Override per-extractor by calling
-/// [`extract_tool_signals_with_window`] directly.
-pub const DEFAULT_RECENT_WINDOW: usize = 3;
+/// A 5-call horizon captures "what is the agent doing right now" while keeping
+/// signals sticky — an error or stall persists a few recovery turns instead of
+/// flickering off the moment one clean result lands. Override per-extractor by
+/// calling [`extract_tool_signals_with_window`] directly.
+pub const DEFAULT_RECENT_WINDOW: usize = 5;
 
 // ─── output type ─────────────────────────────────────────────────────────────
 
@@ -201,8 +200,8 @@ pub struct ToolResultSignal {
     pub write_count: u32,
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
-    /// TodoWrite tool calls. Strong fail predictor for Opus; used by the
-    /// `capable_first` drop-to-weak gate.
+    /// TodoWrite / planning tool calls. Investigative (non-producing) activity —
+    /// recent todowrites distinguish `exploring` from `spinning` in the scorer.
     pub todowrite_count: u32,
     /// Edit-type calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_edit_count: u32,
@@ -212,12 +211,14 @@ pub struct ToolResultSignal {
     pub recent_read_count: u32,
     /// TodoWrite calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_todowrite_count: u32,
-    /// Consecutive trailing tool calls that hit no Write/Edit/Read/Plan
-    /// patterns — proxy for the "stuck in non-Read Bash" build-pit loop.
+    /// Consecutive trailing tool calls in the `Other` category (no Write/Edit/Read/
+    /// Plan match). Surfaced in the classifier state summary; not scored directly.
     pub pure_bash_streak: u32,
     /// At least one of the last three tool results matched a test-pass pattern.
     pub tests_passed: bool,
-    /// Message-count proxy for turn depth.
+    /// Message-count proxy for turn depth. Wire-format dependent (Anthropic batches
+    /// tool results into fewer messages than OpenAI-chat), so gates keyed on it are
+    /// approximate across request origins.
     pub turn_depth: u32,
     /// Char count of the last user message.
     pub prompt_char_count: u32,
@@ -537,7 +538,7 @@ fn build_signal(
         }
     }
 
-    let tests_passed = detect_tests_passed(&tool_texts);
+    let tests_passed = detect_tests_passed(&tool_texts, recent_window);
 
     ToolResultSignal {
         severity,
@@ -630,13 +631,9 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     streak
 }
 
-fn detect_tests_passed(tool_texts: &[String]) -> bool {
-    let recent = if tool_texts.len() > 3 {
-        &tool_texts[tool_texts.len() - 3..]
-    } else {
-        tool_texts
-    };
-    recent.iter().any(|text| {
+fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
+    let start = tool_texts.len().saturating_sub(recent_window.max(1));
+    tool_texts[start..].iter().any(|text| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
             && !TEST_FAILURE_LITERAL.iter().any(|p| lower.contains(p))
@@ -750,14 +747,14 @@ mod tests {
     fn tests_passed_detects_pytest_output() {
         assert!(detect_tests_passed(&[
             "====== 5 passed in 0.12s ======".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
     fn tests_passed_ignores_partial_failures() {
         assert!(!detect_tests_passed(&[
             "2 failed, 5 passed in 0.56s".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
@@ -822,9 +819,9 @@ mod tests {
     }
 
     #[test]
-    fn recent_window_counts_only_last_three_tool_calls() {
-        // 5 writes + 1 edit at the end → recent window of 3 should see
-        // 1 edit + 2 writes (not all 5 writes).
+    fn recent_window_counts_only_last_default_window_tool_calls() {
+        // 5 writes + 1 edit at the end → the default window (5) should see
+        // the last 5 calls: 1 edit + 4 writes (not all 6 calls).
         let request = ChatRequest::openai_chat(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
@@ -844,7 +841,7 @@ mod tests {
         let sig = extract_tool_signals(&request);
         assert_eq!(sig.write_count, 5);
         assert_eq!(sig.edit_count, 1);
-        assert_eq!(sig.recent_write_count, 2);
+        assert_eq!(sig.recent_write_count, 4);
         assert_eq!(sig.recent_edit_count, 1);
     }
 
@@ -942,7 +939,7 @@ mod tests {
         // Mixed pytest run: 2 failed + 5 passed → NOT considered tests_passed.
         assert!(!detect_tests_passed(&[
             "2 failed, 5 passed in 0.56s".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
@@ -951,7 +948,7 @@ mod tests {
         // failure list (regression: previously substring-matched "failed").
         assert!(detect_tests_passed(&[
             "running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
@@ -959,7 +956,7 @@ mod tests {
         // Cargo's actual-failure summary: nonzero count before "failed".
         assert!(!detect_tests_passed(&[
             "running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
@@ -967,7 +964,7 @@ mod tests {
         // Go test's clean-run "0 errors" must not trip (regression).
         assert!(detect_tests_passed(&[
             "ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
@@ -975,12 +972,15 @@ mod tests {
         // Pytest long-form: "0 errors in 0.3s" on a clean run.
         assert!(detect_tests_passed(&[
             "5 passed, 0 errors in 0.30s".to_string()
-        ]));
+        ], DEFAULT_RECENT_WINDOW));
     }
 
     #[test]
     fn tests_passed_detects_diy_checkmark() {
-        assert!(detect_tests_passed(&["✓ all checks passed".to_string()]));
+        assert!(detect_tests_passed(
+            &["✓ all checks passed".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]

@@ -1,7 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Weighted linear scorer, tanh-squashed to ``(-1, +1)``; confidence = ``abs(score)``."""
+"""Signed linear scorer over two axes (error, production), tanh-squashed to ``(-1, +1)``.
+
+Each signal contributes a fixed weight; WRONG signals push toward CAPABLE (+),
+PROGRESS signals toward EFFICIENT (−). The raw weighted sum is squashed with
+``tanh(gain * raw)`` and ``confidence = abs(score)``.
+
+**On the threshold (read this before tuning):** the raw sum is small — one maxed
+signal is ``±0.10``, two corroborating signals ``±0.20``. The gain spreads that
+into a usable confidence range; it does **not** make the threshold an integer
+"signals-to-clear" count. Empirically the dial reads:
+
+    conf 0.245  exploring alone (half weight)
+    conf 0.462  one full signal (a HARD error, or spinning)
+    conf 0.635  severity + exploring
+    conf 0.762  two full signals (severity + spinning)
+
+So a threshold near 0.3 escalates on ~one signal, ~0.5 needs ~1.5, ~0.7 needs two
+to corroborate. The reachable range is ``(0, ~0.76)`` for these two axes — a
+threshold above ~0.76 can't be met, so it always defers to the classifier/default.
+"""
 
 from __future__ import annotations
 
@@ -11,59 +30,48 @@ from dataclasses import dataclass, field
 
 from switchyard.lib.processors.stage_router.dimensions import CodingAgentDimensions
 
-#: Gain applied before the tanh squash. The raw weighted sum is small (typical
-#: multi-signal turns land near ±0.35), so ``tanh(gain * raw)`` spreads it across
-#: most of ``(-1, +1)``. That turns the symmetric ``confidence_threshold`` into a
-#: full-range dial: users pick a positive ``t`` in ``(0, 1)`` and the confident
-#: fraction sweeps smoothly (e.g. t=0.1 → most turns, t=0.7 → few). Monotonic, so
-#: routing sign is unchanged — only the confidence scale is spread out.
+#: Gain applied before the tanh squash — spreads the small raw sum across the
+#: usable confidence range (see the module docstring for the resulting dial). Load-
+#: bearing: without it, confidence would cap near ±0.20 and mid/high thresholds
+#: would be unreachable.
 _SCORE_GAIN: float = 5.0
 
-#: Max severity that reaches the scorer: `1.0` (critical) is caught by the picker
-#: override, so `0.7` (hard) is the strongest error the linear scorer ever sees.
+#: Max severity the scorer ever sees: ``1.0`` (critical) is caught by the picker
+#: override, so ``0.7`` (hard) is the strongest error that reaches the linear sum.
+#: Used to normalise ``severity`` so a HARD error contributes exactly ``_SIGNAL_UNIT``.
 _HARD_SEVERITY: float = 0.7
-#: Fixed weight one maxed signal contributes. Weights are constant (independent of
-#: threshold), so the ``confidence_threshold`` is the sole corroboration dial:
-#: ``signals-to-clear = threshold / _SIGNAL_UNIT``. With unit 0.10 the threshold
-#: maps to whole signal counts — 0.10 → one maxed signal clears, 0.20 → two must
-#: agree, etc. (unit and threshold are redundant for routing; only their ratio
-#: matters, so tuning lives entirely in the threshold). Kept well under 1 so the
-#: summed score never saturates to ±1 — no single axis can peg the decision.
+#: Weight one maxed signal contributes. Small enough that no single axis pegs the
+#: decision; corroboration across the two axes is what pushes confidence up.
 _SIGNAL_UNIT: float = 0.10
 
-#: "Something is wrong" signals — always push toward CAPABLE (strong), both pickers.
-#: severity is per-turn; the other two are windowed gates — all self-clear.
-_WRONG_SIGNALS: tuple[str, ...] = ("severity", "stuck_exploring", "no_progress")
-#: "Progress / settled" signals — push toward EFFICIENT (weak), both pickers.
-#: capable_first / efficient_first differ only in the fall_open default. All windowed.
-_PROGRESS_SIGNALS: tuple[str, ...] = (
-    "recent_write_intensity",
-    "planning_active",
-    "pure_bash_intensity",
-    "no_error_streak_intensity",
-)
-#: Max value each signal reaches at the scorer; used to normalise so a maxed
-#: signal contributes exactly ``_SIGNAL_UNIT``. Defaults to 1.0 for [0, 1] gates.
+#: "Something is wrong" → CAPABLE (strong). ``exploring`` is neutral (half weight):
+#: it never escalates alone at a sane threshold, only when corroborated.
+_WRONG_SIGNALS: tuple[str, ...] = ("severity", "spinning", "exploring")
+#: "Making progress" → EFFICIENT (weak). Both are the good poles of the two axes.
+_PROGRESS_SIGNALS: tuple[str, ...] = ("recent_production_intensity", "no_error_streak_intensity")
+#: Max value each signal reaches, used to normalise so a maxed signal contributes
+#: ``_SIGNAL_UNIT``. Defaults to 1.0 for ``[0, 1]`` gates/ratios.
 _MAX_VALUE: Mapping[str, float] = {"severity": _HARD_SEVERITY}
+#: Signals weighted at half unit — deliberately weak, needs corroboration to matter.
+_HALF_WEIGHT: frozenset[str] = frozenset({"exploring"})
 
 
 def _build_weights(unit: float = _SIGNAL_UNIT) -> dict[str, float]:
-    """Signed, fixed linear weights: wrong → CAPABLE (+), progress → EFFICIENT (-).
+    """Signed, fixed linear weights: wrong → CAPABLE (+), progress → EFFICIENT (−).
 
-    A single maxed signal contributes ``unit`` (severity is normalised by its
-    0.7 cap so it too lands at ``unit``). Because every weight is well under 1,
-    the summed score never saturates; corroboration is set downstream by the
-    ``confidence_threshold`` (signals-to-clear = threshold / unit).
+    A maxed signal contributes ``unit`` (``severity`` is normalised by its HARD cap
+    so it too lands at ``unit``); ``exploring`` is halved to keep it neutral.
     """
     weights: dict[str, float] = {}
     for name in _WRONG_SIGNALS:
-        weights[name] = unit / _MAX_VALUE.get(name, 1.0)
+        w = unit / _MAX_VALUE.get(name, 1.0)
+        weights[name] = w / 2.0 if name in _HALF_WEIGHT else w
     for name in _PROGRESS_SIGNALS:
         weights[name] = -unit / _MAX_VALUE.get(name, 1.0)
     return weights
 
 
-#: Fixed scorer weights. Corroboration is dialed by the confidence_threshold.
+#: Fixed scorer weights. Corroboration across axes is dialed by confidence_threshold.
 DEFAULT_WEIGHTS: Mapping[str, float] = _build_weights()
 
 
@@ -84,9 +92,8 @@ def score(
     """Score ``dimensions``; raw weighted sum is tanh-squashed into ``(-1, +1)``.
 
     ``contributions`` are the raw per-signal weighted values (pre-squash, so they
-    sum to the raw score); ``score`` is ``tanh(gain * raw)``. The squash spreads
-    the small raw sum across the range so the ``confidence_threshold`` reads as a
-    symmetric ``(0, 1)`` dial.
+    sum to the raw score); ``score`` is ``tanh(gain * raw)``; ``confidence`` its
+    magnitude. Positive ``score`` → CAPABLE, negative → EFFICIENT.
     """
     contributions: dict[str, float] = {}
     raw = 0.0

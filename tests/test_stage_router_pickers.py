@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behavioural tests for the stage_router pickers."""
+"""Behavioural tests for the stage_router pickers.
+
+The two pickers share every decision path (override → tests_passed → scorer →
+classifier) and differ only in the low-confidence default tier.
+"""
 
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +36,11 @@ async def _ctx(messages: list[dict]) -> ProxyContext:
 
 def _msg_tool_call(name: str) -> dict:
     return {"role": "assistant", "tool_calls": [{"function": {"name": name, "arguments": "{}"}}]}
+
+
+def _msg_bash(cmd: str) -> dict:
+    args = f'{{"command": "{cmd}"}}'
+    return {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": args}}]}
 
 
 def _msg_tool_result(content: str) -> dict:
@@ -71,11 +80,7 @@ class _StubLLMClient:
 
 
 def _stub_classifier(tier: str | None) -> TierClassifier:
-    return TierClassifier(
-        model="stub",
-        api_key="stub",
-        client=_StubLLMClient(tier),
-    )
+    return TierClassifier(model="stub", api_key="stub", client=_StubLLMClient(tier))
 
 
 @pytest.mark.asyncio
@@ -85,12 +90,16 @@ async def test_critical_severity_overrides_to_capable():
         {"role": "user", "content": "retry"},
     ])
     assert await pick_capable_first(ctx, confidence_threshold=0.7) == CAPABLE
+    ctx = await _ctx([
+        _msg_tool_result("Out of memory: cannot allocate memory"),
+        {"role": "user", "content": "retry"},
+    ])
     assert await pick_efficient_first(ctx, confidence_threshold=0.7) == CAPABLE
 
 
 @pytest.mark.asyncio
 async def test_tests_passed_with_edits_routes_to_efficient():
-    """A settled run (recent test-pass + recent edit) is safe on the cheap tier."""
+    """A settled run (recent test-pass + recent edit, no error) is safe on cheap tier."""
     messages = [_msg_tool_call("Edit")] * 3 + [_msg_tool_result("all tests passed")] * 3
     messages += [{"role": "user", "content": "ok continue"}] * 12
     ctx = await _ctx(messages)
@@ -100,27 +109,55 @@ async def test_tests_passed_with_edits_routes_to_efficient():
 
 
 @pytest.mark.asyncio
-async def test_efficient_first_escalates_on_any_error():
-    """efficient_first escalates to CAPABLE on any wrong signal — even a low-confidence
-    one that would otherwise fall through to the EFFICIENT default — so a failing turn
-    never stays on the weak tier. capable_first is unaffected (already CAPABLE-default)."""
+async def test_tests_passed_blocked_by_windowed_error():
+    """A HARD error in the window blocks the settled-run shortcut (finding G) — the
+    turn falls through to the scorer instead of being swallowed as EFFICIENT."""
     log = StageRouterDecisionLog()
-    ctx = await _ctx([
-        _msg_tool_call("Bash"),
-        _msg_tool_result("bash: foo: command not found"),
-        {"role": "user", "content": "retry"},
-    ])
-    # a single soft error is below the confidence bar, yet ef still escalates
-    assert await pick_efficient_first(ctx, confidence_threshold=0.30, decision_log=log) == CAPABLE
-    assert ctx.metadata[CONTEXT_KEY] == "ef_escalate"
-    # the bias is one-sided: capable_first keeps its own path, still CAPABLE
-    ctx = await _ctx([
-        _msg_tool_call("Bash"),
-        _msg_tool_result("bash: foo: command not found"),
-        {"role": "user", "content": "retry"},
-    ])
-    assert await pick_capable_first(ctx, confidence_threshold=0.30) == CAPABLE
-    assert ctx.metadata[CONTEXT_KEY] != "ef_escalate"
+    messages = [_msg_tool_call("Edit")] * 3 + [
+        _msg_tool_result("all tests passed"),
+        _msg_tool_result("Traceback (most recent call last):\n  ValueError: bad"),
+    ]
+    ctx = await _ctx(messages)
+    await pick_capable_first(ctx, confidence_threshold=0.2, decision_log=log)
+    assert ctx.metadata[CONTEXT_KEY] != "tests_passed"
+
+
+@pytest.mark.asyncio
+async def test_dimensions_routes_capable_on_corroborated_wrong_signals():
+    """Deep pure-command cycling (spinning) that ends in an error corroborates
+    severity + spinning → CAPABLE by sign, for both pickers, no classifier needed."""
+    log = StageRouterDecisionLog()
+    classifier = _stub_classifier(tier="efficient")  # would flip if consulted
+    seq: list[dict] = []
+    for i in range(5):
+        seq.append(_msg_bash("make"))
+        seq.append(_msg_tool_result(
+            "Traceback (most recent call last):\n  ValueError" if i == 4 else "building..."
+        ))
+    seq.append({"role": "user", "content": "next"})
+    ctx = await _ctx(seq)
+    tier = await pick_capable_first(
+        ctx, confidence_threshold=0.2, classifier=classifier, decision_log=log,
+    )
+    assert ctx.metadata[CONTEXT_KEY] == "dimensions"
+    assert tier == CAPABLE
+    assert classifier._client.calls == 0  # type: ignore[attr-defined]
+    ctx = await _ctx(seq)
+    assert await pick_efficient_first(ctx, confidence_threshold=0.2) == CAPABLE
+
+
+@pytest.mark.asyncio
+async def test_dimensions_routes_efficient_on_progress():
+    """A deep, clean, write-heavy run scores negative → EFFICIENT for both pickers."""
+    seq: list[dict] = []
+    for _ in range(5):
+        seq.append(_msg_tool_call("Write"))
+        seq.append(_msg_tool_result("ok"))
+    seq.append({"role": "user", "content": "next"})
+    ctx = await _ctx(seq)
+    assert await pick_capable_first(ctx, confidence_threshold=0.2) == EFFICIENT
+    ctx = await _ctx(seq)
+    assert await pick_efficient_first(ctx, confidence_threshold=0.2) == EFFICIENT
 
 
 @pytest.mark.asyncio
@@ -133,8 +170,7 @@ async def test_no_signal_returns_default_tier():
 @pytest.mark.asyncio
 async def test_low_confidence_consults_classifier_when_configured():
     """Empty trajectory yields confidence 0.0 — picker must call the classifier."""
-    messages = [{"role": "user", "content": "hi"}]
-    ctx = await _ctx(messages)
+    ctx = await _ctx([{"role": "user", "content": "hi"}])
     classifier = _stub_classifier(tier="efficient")
     assert await pick_capable_first(
         ctx, confidence_threshold=0.7, classifier=classifier,
@@ -144,17 +180,16 @@ async def test_low_confidence_consults_classifier_when_configured():
 
 @pytest.mark.asyncio
 async def test_low_confidence_falls_back_to_default_without_classifier():
-    messages = [{"role": "user", "content": "hi"}]
-    ctx = await _ctx(messages)
+    ctx = await _ctx([{"role": "user", "content": "hi"}])
     assert await pick_capable_first(ctx, confidence_threshold=0.7) == CAPABLE
+    ctx = await _ctx([{"role": "user", "content": "hi"}])
     assert await pick_efficient_first(ctx, confidence_threshold=0.7) == EFFICIENT
 
 
 @pytest.mark.asyncio
 async def test_classifier_fall_open_on_unknown_tier():
     """A malformed classifier verdict must not override the picker default."""
-    messages = [{"role": "user", "content": "hi"}]
-    ctx = await _ctx(messages)
+    ctx = await _ctx([{"role": "user", "content": "hi"}])
     classifier = _stub_classifier(tier=None)
     assert await pick_capable_first(
         ctx, confidence_threshold=0.7, classifier=classifier,
@@ -163,52 +198,17 @@ async def test_classifier_fall_open_on_unknown_tier():
 
 @pytest.mark.asyncio
 async def test_threshold_zero_skips_classifier_entirely():
-    """``confidence_threshold=0`` means accept every scorer verdict, however efficient."""
-    messages = [{"role": "user", "content": "hi"}]
-    ctx = await _ctx(messages)
+    """``confidence_threshold=0`` accepts every scorer verdict, however weak."""
+    ctx = await _ctx([{"role": "user", "content": "hi"}])
     classifier = _stub_classifier(tier="capable")
-    # Empty trajectory → scorer near zero, default sign decides; classifier not consulted.
     await pick_capable_first(ctx, confidence_threshold=0.0, classifier=classifier)
     assert classifier._client.calls == 0  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
-async def test_dimensions_branch_routes_by_scorer_sign():
-    """A corroborated scorer verdict (≥ threshold) bypasses the classifier.
-
-    No single signal clears threshold (weights are corroborative). A long,
-    write-free read spree maxes three wrong signals at once — ``stuck_exploring``,
-    ``no_progress`` (turn_depth > 60), and ``severity`` (the last result errors) —
-    which together clear the threshold, so ``_pick`` takes the dimensions branch
-    and routes to CAPABLE by sign without consulting the classifier.
-    """
-    log = StageRouterDecisionLog()
-    classifier = _stub_classifier(tier="efficient")  # would push EFFICIENT if reached
-    read_spree = []
-    for i in range(40):
-        read_spree.append(_msg_tool_call("Read"))
-        read_spree.append(_msg_tool_result(
-            "bash: foo: command not found" if i == 39 else "file contents"
-        ))
-    read_spree.append({"role": "user", "content": "next"})
-    ctx = await _ctx(read_spree)
-    tier = await pick_capable_first(
-        ctx, confidence_threshold=0.20, classifier=classifier, decision_log=log,
-    )
-    assert ctx.metadata[CONTEXT_KEY] == "dimensions"
-    assert tier == CAPABLE  # wrong signals → CAPABLE by sign, regardless of picker
-    assert classifier._client.calls == 0  # type: ignore[attr-defined]
-    assert log.snapshot()["dimensions"] == 1
-    # efficient_first routes the same corroborated wrong verdict to CAPABLE too.
-    ctx = await _ctx(read_spree)
-    assert await pick_efficient_first(ctx, confidence_threshold=0.20) == CAPABLE
 
 
 @pytest.mark.asyncio
 async def test_decision_log_counts_sources():
     """Each decision path increments exactly one bucket in the shared log."""
     log = StageRouterDecisionLog()
-    # override path: critical severity → CAPABLE, source=override
     ctx_critical = await _ctx([
         _msg_tool_result("Out of memory: cannot allocate memory"),
         {"role": "user", "content": "retry"},
@@ -216,12 +216,10 @@ async def test_decision_log_counts_sources():
     await pick_capable_first(ctx_critical, confidence_threshold=0.7, decision_log=log)
     assert ctx_critical.metadata[CONTEXT_KEY] == "override"
 
-    # fall_open path: low confidence, no classifier → default tier
     ctx_neutral = await _ctx([{"role": "user", "content": "hi"}])
     await pick_capable_first(ctx_neutral, confidence_threshold=0.99, decision_log=log)
     assert ctx_neutral.metadata[CONTEXT_KEY] == "fall_open"
 
-    # classifier path: low confidence, classifier configured → classifier verdict
     classifier = _stub_classifier(tier="efficient")
     ctx_class = await _ctx([{"role": "user", "content": "hi"}])
     await pick_capable_first(

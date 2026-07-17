@@ -89,28 +89,22 @@ async def _pick(
     if override is not None:
         return _record(ctx, decision_log, "override", override)
 
-    # Settled run: a recent test-pass backed by a recent code change (write or
-    # edit) is safe to run on the cheap tier — EFFICIENT for both pickers.
-    # Windowed, so it lapses once the run moves on.
-    if signal.tests_passed and (signal.recent_write_count + signal.recent_edit_count) >= 1:
+    # Settled run: a recent test-pass backed by a recent code change (write or edit),
+    # with no error in the window — safe on the cheap tier for both pickers. The
+    # severity gate keeps a windowed HARD error from being swallowed as "settled";
+    # such a turn falls through to the scorer, where the error routes it to CAPABLE.
+    if (
+        signal.tests_passed
+        and (signal.recent_write_count + signal.recent_edit_count) >= 1
+        and not signal.severity > 0.0
+    ):
         return _record(ctx, decision_log, "tests_passed", EFFICIENT)
 
     dimensions = from_signal(signal)
-    # efficient_first is weak-by-default, so it escalates to CAPABLE on ANY wrong
-    # signal (error / stuck / no-progress) before scoring. Without this, a soft
-    # error — or an error diluted by a co-occurring progress signal (a write-heavy
-    # turn that also errored nets to ~0) — falls below the confidence bar and drops
-    # to the EFFICIENT default, leaving a failing turn on the weak tier. capable_first
-    # already defaults to CAPABLE, so it needs no such bias.
-    if default_tier == EFFICIENT and (
-        dimensions.severity > 0.0
-        or dimensions.stuck_exploring > 0.0
-        or dimensions.no_progress > 0.0
-    ):
-        return _record(ctx, decision_log, "ef_escalate", CAPABLE)
-
-    # Fixed weights; confidence_threshold is the corroboration dial
-    # (signals-to-clear = threshold / signal unit).
+    # Both pickers share the scorer: severity / spinning / exploring corroborate
+    # toward CAPABLE, production / clean-streak toward EFFICIENT. The
+    # confidence_threshold is the corroboration dial (see scorer docstring); the two
+    # pickers differ only in the low-confidence default tier below.
     result = score(dimensions, weights=weights)
     if result.confidence >= confidence_threshold:
         tier = CAPABLE if result.score > 0 else EFFICIENT
