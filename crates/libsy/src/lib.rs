@@ -54,9 +54,7 @@
 //!
 //! ## Algorithms
 //!
-//! [`RandomAlgo`] provides uniform random routing in the core crate. Worked
-//! implementations of an LLM classifier and a stateful ensemble, plus runnable
-//! agents, live in the `libsy-examples` crate.
+//! [`RandomAlgo`] provides uniform random routing in the core crate.
 //!
 //! [`LlmClassifierOrchAlgo`] classifies with one model, then routes to a
 //! strong/weak model depending on the classifier's choice.

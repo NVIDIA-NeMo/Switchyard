@@ -252,7 +252,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 ## Explore
 
 The core crate includes uniform random routing and naive LLM classifier. Runnable
-agents live in [`examples`](/examples) folder.
+agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
