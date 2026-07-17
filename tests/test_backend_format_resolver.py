@@ -253,7 +253,7 @@ def test_auto_records_each_probe_in_startup_timing(
 ) -> None:
     """With timing on, each probe reached leaves its own mark so
     `launch --startup-timing` can show a per-route breakdown."""
-    monkeypatch.setattr(startup_timing, "_forced", True)
+    monkeypatch.setattr(startup_timing, "enabled", True)
     startup_timing._marks.clear()
 
     monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync",
