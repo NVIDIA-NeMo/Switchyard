@@ -16,7 +16,7 @@ use pyo3::types::PyType;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use switchyard_protocol::{
-    Context, LlmResponse, LlmResponseChunk, LlmResponseStream, Metadata, Request,
+    Context, LlmResponse, LlmResponseChunk, LlmResponseStream, Metadata, Request, Response,
 };
 
 use crate::errors::py_libsy_error;
@@ -37,16 +37,24 @@ pub(crate) struct PyContext {
     inner: Context,
 }
 
+impl PyContext {
+    pub(crate) fn from_core(inner: Context) -> Self {
+        Self { inner }
+    }
+
+    pub(crate) fn clone_core(&self) -> Context {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl PyContext {
     #[new]
     #[pyo3(signature = (*, values=None))]
     fn new(values: Option<HashMap<String, String>>) -> Self {
-        Self {
-            inner: Context {
-                values: values.unwrap_or_default(),
-            },
-        }
+        Self::from_core(Context {
+            values: values.unwrap_or_default(),
+        })
     }
 
     #[getter]
@@ -164,6 +172,16 @@ pub(crate) struct PyRequest {
     inner: Request,
 }
 
+impl PyRequest {
+    pub(crate) fn from_core(inner: Request) -> Self {
+        Self { inner }
+    }
+
+    pub(crate) fn clone_core(&self) -> Request {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl PyRequest {
     #[new]
@@ -241,6 +259,31 @@ impl PyRequest {
 pub(crate) struct PyResponse {
     llm_response: Mutex<Option<LlmResponse>>,
     metadata: Option<Metadata>,
+}
+
+impl PyResponse {
+    pub(crate) fn from_core(inner: Response) -> Self {
+        Self {
+            llm_response: Mutex::new(Some(inner.llm_response)),
+            metadata: inner.metadata,
+        }
+    }
+
+    pub(crate) fn take_core(&self) -> PyResult<Response> {
+        let mut response = self
+            .llm_response
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Response lock is poisoned"))?;
+        let Some(llm_response) = response.take() else {
+            return Err(PyRuntimeError::new_err(
+                "Response has already been consumed",
+            ));
+        };
+        Ok(Response {
+            llm_response,
+            metadata: self.metadata.clone(),
+        })
+    }
 }
 
 #[pymethods]

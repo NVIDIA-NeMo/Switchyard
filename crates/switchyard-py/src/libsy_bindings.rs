@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Python bindings for Switchyard's neutral protocol and libsy targets.
+//! Python bindings for Switchyard's neutral protocol and libsy algorithms.
 
 mod protocol;
+mod run;
 mod target;
 mod values;
 
@@ -17,6 +18,8 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let libsy_module = PyModule::new(module.py(), "libsy")?;
     target::register(&libsy_module)?;
+    run::register(&libsy_module)?;
+    libsy_module.add("LibsyError", module.getattr("LibsyError")?)?;
     module.add_submodule(&libsy_module)?;
     Ok(())
 }

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rust-owned libsy target bindings."""
+"""Rust-owned libsy algorithm bindings."""
 
 from __future__ import annotations
 
@@ -11,12 +11,18 @@ from switchyard_rust.core import _load_native
 
 _EXPORTS = frozenset(
     {
+        "Algorithm",
+        "LibsyError",
         "LlmTarget",
         "LlmTargetSet",
+        "noop",
+        "random",
     }
 )
 
 if TYPE_CHECKING:
+    Algorithm: type[Any]
+    LibsyError: type[RuntimeError]
     LlmTarget: type[Any]
     LlmTargetSet: type[Any]
 

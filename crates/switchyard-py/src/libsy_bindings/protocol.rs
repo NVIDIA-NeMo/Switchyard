@@ -4,16 +4,17 @@
 //! Typed Python wrappers for the Rust-owned Switchyard protocol.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, FileSource, FormatId, ImageSource, InstructionBlock, LlmRequest,
-    LlmResponseChunk, MediaSource, Message, OutputParams, PreservationMetadata, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage, WireFormat,
+    AggLlmResponse, ContentBlock, Decision, FileSource, FormatId, ImageSource, InstructionBlock,
+    LlmRequest, LlmResponseChunk, MediaSource, Message, OutputParams, PreservationMetadata,
+    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
+    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage, WireFormat,
 };
 
 use crate::py_serde::{value_from_python, value_to_python};
@@ -32,6 +33,39 @@ fn json_or_null(py: Python<'_>, value: Option<&Value>) -> PyResult<Py<PyAny>> {
     match value {
         Some(value) => value_to_python(py, value),
         None => Ok(py.None()),
+    }
+}
+
+/// A routing decision exposed through the protocol's neutral interface.
+#[pyclass(name = "Decision", module = "switchyard.libsy.protocol", frozen)]
+pub(crate) struct PyDecision {
+    inner: Arc<dyn Decision>,
+}
+
+impl PyDecision {
+    pub(crate) fn new(inner: Arc<dyn Decision>) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyDecision {
+    #[getter]
+    fn selected_model(&self) -> String {
+        self.inner.selected_model().to_string()
+    }
+
+    #[getter]
+    fn reasoning(&self) -> Option<String> {
+        self.inner.reasoning().map(str::to_owned)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Decision(selected_model={:?}, reasoning={:?})",
+            self.inner.selected_model(),
+            self.inner.reasoning()
+        )
     }
 }
 
@@ -1520,6 +1554,7 @@ impl PyLlmResponseChunk {
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyDecision>()?;
     module.add_class::<PyWireFormat>()?;
     module.add_class::<PyFormatId>()?;
     module.add_class::<PyRole>()?;

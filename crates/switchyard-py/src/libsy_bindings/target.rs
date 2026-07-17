@@ -3,14 +3,72 @@
 
 //! Python bindings for libsy routing targets and host-provided clients.
 
+use std::error::Error;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use libsy::{LlmTarget, LlmTargetSet};
 use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::prelude::*;
+use switchyard_protocol::{Context, Decision, Request, Response, RoutedLlmClient};
+
+use super::protocol::PyDecision;
+use super::values::{python_error, PyContext, PyRequest, PyResponse};
+
+type BoxError = Box<dyn Error + Send + Sync>;
+
+/// Adapts an object with the protocol's async routed-client method to Rust.
+struct PythonRoutedLlmClient {
+    inner: Py<PyAny>,
+}
+
+#[async_trait]
+impl RoutedLlmClient for PythonRoutedLlmClient {
+    async fn call(
+        &self,
+        ctx: Context,
+        request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, BoxError> {
+        let future = Python::attach(|py| {
+            let ctx = Py::new(py, PyContext::from_core(ctx))?;
+            let request = Py::new(py, PyRequest::from_core(request))?;
+            let decision = Py::new(py, PyDecision::new(decision))?;
+            let awaitable = self
+                .inner
+                .bind(py)
+                .call_method1("call", (ctx, request, decision))?;
+            pyo3_async_runtimes::tokio::into_future(awaitable)
+        })
+        .map_err(python_error)?;
+        let response = future.await.map_err(python_error)?;
+        Python::attach(|py| {
+            let response = response.bind(py).extract::<PyRef<'_, PyResponse>>()?;
+            response.take_core()
+        })
+        .map_err(python_error)
+    }
+}
 
 /// A semantic routing target and its optional Python-hosted routed client.
 #[pyclass(name = "LlmTarget", module = "switchyard.libsy")]
 pub(crate) struct PyLlmTarget {
     semantic_name: String,
     llm_client: Option<Py<PyAny>>,
+}
+
+impl PyLlmTarget {
+    fn clone_core(&self, py: Python<'_>) -> LlmTarget {
+        let llm_client = self.llm_client.as_ref().map(|client| {
+            Arc::new(PythonRoutedLlmClient {
+                inner: client.clone_ref(py),
+            }) as Arc<dyn RoutedLlmClient>
+        });
+        LlmTarget {
+            semantic_name: self.semantic_name.clone(),
+            llm_client,
+        }
+    }
 }
 
 #[pymethods]
@@ -59,6 +117,17 @@ impl PyLlmTarget {
 #[pyclass(name = "LlmTargetSet", module = "switchyard.libsy", frozen)]
 pub(crate) struct PyLlmTargetSet {
     targets: Vec<Py<PyLlmTarget>>,
+}
+
+impl PyLlmTargetSet {
+    pub(crate) fn clone_core(&self, py: Python<'_>) -> PyResult<LlmTargetSet> {
+        let targets = self
+            .targets
+            .iter()
+            .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(LlmTargetSet::new(targets))
+    }
 }
 
 #[pymethods]

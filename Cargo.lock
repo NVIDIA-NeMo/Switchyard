@@ -1645,6 +1645,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-util",
+ "libsy",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",

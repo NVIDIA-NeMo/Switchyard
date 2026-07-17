@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any, ClassVar, final
+from typing import Any, ClassVar, Protocol, final
 
 class WireFormat:
     OPENAI_CHAT: ClassVar[WireFormat]
@@ -428,6 +428,19 @@ class Context:
     def __init__(self, *, values: Mapping[str, str] | None = None) -> None: ...
 
 @final
+class Decision:
+    selected_model: str
+    reasoning: str | None
+
+class RoutedLlmClient(Protocol):
+    async def call(
+        self,
+        context: Context,
+        request: Request,
+        decision: Decision,
+        /,
+    ) -> Response: ...
+
 class Metadata:
     session_id: str | None
     agent_id: str | None
