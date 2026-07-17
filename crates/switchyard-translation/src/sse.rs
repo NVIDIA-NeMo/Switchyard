@@ -14,16 +14,6 @@ use crate::WireFormat;
 /// Boxed, thread-safe error carried by a streamed item.
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// The outcome of parsing one SSE frame's data lines.
-pub(crate) enum ParsedSseFrame {
-    /// Frame contained a JSON payload.
-    Json(Value),
-    /// Frame contained the provider's terminal marker (e.g. `[DONE]`).
-    Done,
-    /// Frame had no data payload.
-    Empty,
-}
-
 /// The terminal SSE marker for `format`, if any. OpenAI Chat and Responses use
 /// `[DONE]`; Anthropic ends on its `message_stop` event with no marker.
 pub(crate) fn done_marker(format: WireFormat) -> Option<&'static str> {
@@ -38,51 +28,33 @@ pub(crate) fn drain_next_sse_frame(buffer: &mut Vec<u8>) -> Result<Option<String
     let Some((index, separator_len)) = next_sse_boundary(buffer) else {
         return Ok(None);
     };
-    let frame = decode_sse_frame(&buffer[..index])?;
+    let frame: String = String::from_utf8_lossy(&buffer[..index]).to_string();
     buffer.drain(..index + separator_len);
     Ok(Some(frame))
 }
 
-/// Decodes one raw SSE frame as UTF-8.
-pub(crate) fn decode_sse_frame(frame: &[u8]) -> Result<String, BoxError> {
-    std::str::from_utf8(frame)
-        .map(str::to_string)
-        .map_err(|error| format!("stream emitted invalid UTF-8 frame: {error}").into())
-}
-
-/// Returns whether the buffer has any non-whitespace bytes.
-pub(crate) fn has_non_whitespace_bytes(buffer: &[u8]) -> bool {
-    buffer.iter().any(|byte| !byte.is_ascii_whitespace())
-}
-
-/// Parses data lines from one SSE frame into JSON, terminal, or empty states.
 pub(crate) fn parse_json_sse_frame(
     frame: &str,
     done_marker: Option<&str>,
-) -> Result<ParsedSseFrame, BoxError> {
-    let mut data_lines = Vec::new();
-    for line in frame.lines() {
-        // SSE comments and blank lines do not contribute data.
-        if line.is_empty() || line.starts_with(':') {
-            continue;
-        }
-        if let Some(data) = line.strip_prefix("data:") {
-            data_lines.push(data.trim_start().to_string());
-        }
-    }
+) -> Result<Option<Value>, BoxError> {
+    let data = frame
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with(':'))
+        .filter_map(|line| line.strip_prefix("data: ").map(|l| l.to_string()))
+        .fold(String::new(), |mut a, b| {
+            a.reserve(b.len() + 1);
+            a.push_str(&b);
+            a.push('\n');
+            a
+        });
+    let data = data.trim_end();
 
-    if data_lines.is_empty() {
-        return Ok(ParsedSseFrame::Empty);
+    // No data payload, or the terminal marker: nothing to decode.
+    if data.is_empty() || done_marker.is_some_and(|marker| data == marker) {
+        return Ok(None);
     }
-
-    let data = data_lines.join("\n");
-    if done_marker.is_some_and(|marker| data.trim() == marker) {
-        return Ok(ParsedSseFrame::Done);
-    }
-
-    let value = serde_json::from_str::<Value>(&data)
-        .map_err(|error| format!("stream emitted invalid JSON frame: {error}"))?;
-    Ok(ParsedSseFrame::Json(value))
+    let value = serde_json::from_str::<Value>(data)?;
+    Ok(Some(value))
 }
 
 /// Finds the next CRLF or LF SSE frame boundary.
@@ -123,7 +95,7 @@ mod tests {
         let Some(frame) = drain_next_sse_frame(&mut buffer)? else {
             return Err("complete SSE frame should be drained".into());
         };
-        let ParsedSseFrame::Json(value) = parse_json_sse_frame(&frame, None)? else {
+        let Some(value) = parse_json_sse_frame(&frame, None)? else {
             return Err("SSE frame should parse as JSON".into());
         };
         assert_eq!(value, json!({"text": "é"}));
@@ -133,9 +105,10 @@ mod tests {
 
     #[test]
     fn recognizes_done_marker() -> Result<(), BoxError> {
-        let ParsedSseFrame::Done = parse_json_sse_frame("data: [DONE]\n", Some("[DONE]"))? else {
-            return Err("DONE frame should stop".into());
-        };
+        // The terminal marker carries no JSON payload.
+        if parse_json_sse_frame("data: [DONE]\n", Some("[DONE]"))?.is_some() {
+            return Err("DONE frame should not yield a JSON value".into());
+        }
         Ok(())
     }
 }

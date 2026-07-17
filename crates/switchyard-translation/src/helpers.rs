@@ -146,23 +146,19 @@ where
         while let Some(chunk) = bytes.next().await {
             buffer.extend_from_slice(&chunk?);
             while let Some(frame) = sse::drain_next_sse_frame(&mut buffer)? {
-                match sse::parse_json_sse_frame(&frame, marker)? {
-                    sse::ParsedSseFrame::Json(value) => {
-                        for event in codec.decode_event(&mut state, &value) {
-                            yield event;
-                        }
+                if let Some(value) = sse::parse_json_sse_frame(&frame, marker)? {
+                    for event in codec.decode_event(&mut state, &value) {
+                        yield event;
                     }
-                    sse::ParsedSseFrame::Done => return,
-                    sse::ParsedSseFrame::Empty => {}
                 }
             }
         }
 
         // A non-standard upstream might omit the final blank line; parse a trailing
         // complete frame instead of losing its last chunk.
-        if sse::has_non_whitespace_bytes(&buffer) {
-            let frame = sse::decode_sse_frame(&buffer)?;
-            if let sse::ParsedSseFrame::Json(value) = sse::parse_json_sse_frame(&frame, marker)? {
+        if !buffer.trim_ascii().is_empty() {
+            let frame: String = String::from_utf8_lossy(&buffer).to_string();
+            if let Some(value) = sse::parse_json_sse_frame(&frame, marker)? {
                 for event in codec.decode_event(&mut state, &value) {
                     yield event;
                 }
