@@ -360,6 +360,76 @@ async def test_openai_streaming_terminal_approved_replays() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pattern trigger (text-protocol harnesses)
+# ---------------------------------------------------------------------------
+
+
+def _pattern_config(**overrides) -> AdvisorConfig:
+    base: dict = {
+        "strategy": "review_gate",
+        "gate_trigger": "pattern",
+        "gate_trigger_pattern": r'task_complete["\s>:]*true',
+        "executor": {"model": "nvidia/nemotron-3-ultra", "base_url": "http://exec.test",
+                     "api_key": "k", "format": "openai"},
+        "advisor": {"model": "adv-model", "base_url": "http://adv.test", "api_key": "k",
+                    "format": "anthropic"},
+    }
+    base.update(overrides)
+    return AdvisorConfig(**base)
+
+
+async def test_pattern_trigger_ignores_non_matching_turns() -> None:
+    """Ordinary command turns (no marker) pass through unreviewed, even with
+    no tool calls — the whole point for text-protocol harnesses."""
+    exec_b = _exec_backend(_openai_completion_resp(text='{"commands": ["ls -la"]}'))
+    adv = _reviewer()
+    resp = await _backend(_pattern_config(), exec_b, adv).call(ProxyContext(), _openai_request())
+    assert adv.advise.await_count == 0
+    assert resp.to_body()["choices"][0]["message"]["content"] == '{"commands": ["ls -la"]}'
+
+
+async def test_pattern_trigger_gates_done_marker_and_redos() -> None:
+    exec_b = _exec_backend(
+        _openai_completion_resp(text='All checks pass. "task_complete": true'),
+        _openai_completion_resp(text='{"commands": ["pytest tests/"]}'),
+    )
+    adv = _reviewer("REDO: the output file was never written; create it and re-verify")
+    config = _pattern_config(redo_feedback_prefix="REVIEWER: not done. ")
+    resp = await _backend(config, exec_b, adv).call(ProxyContext(), _openai_request())
+
+    assert adv.advise.await_count == 1
+    assert exec_b.call.await_count == 2
+    redo_msgs = exec_b.call.await_args_list[1].args[1].to_body()["messages"]
+    assert redo_msgs[-1]["content"].startswith("REVIEWER: not done. the output file")
+    # The client receives the continuation turn, not the premature done-claim.
+    assert "pytest" in resp.to_body()["choices"][0]["message"]["content"]
+
+
+async def test_pattern_trigger_reviews_once_per_session() -> None:
+    exec_b = _exec_backend(
+        _openai_completion_resp(text='"task_complete": true'),
+        _openai_completion_resp(text='<task_complete>true</task_complete>'),
+    )
+    adv = _reviewer("APPROVE")
+    backend = _backend(_pattern_config(), exec_b, adv)
+    await backend.call(ProxyContext(), _openai_request())   # gate fires
+    await backend.call(ProxyContext(), _openai_request())   # passthrough
+    assert adv.advise.await_count == 1
+
+
+def test_pattern_trigger_requires_pattern() -> None:
+    import pydantic
+    with pytest.raises(pydantic.ValidationError, match="gate_trigger_pattern"):
+        _pattern_config(gate_trigger_pattern="")
+
+
+def test_invalid_pattern_rejected() -> None:
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        _pattern_config(gate_trigger_pattern="[unclosed")
+
+
+# ---------------------------------------------------------------------------
 # Pure helpers + advisor caller
 # ---------------------------------------------------------------------------
 

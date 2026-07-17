@@ -282,6 +282,8 @@ _ADVISOR_ROUTE_KEYS = (
         "advisor_tool_description",
         "reviewer_system_prompt",
         "redo_feedback_prefix",
+        "gate_trigger",
+        "gate_trigger_pattern",
         "advisor_max_tokens",
         "advisor_temperature",
         "transcript_max_chars",

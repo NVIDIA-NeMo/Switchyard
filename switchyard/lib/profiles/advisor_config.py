@@ -29,7 +29,8 @@ verbatim. ``responses`` targets are rejected (the advisor loop is Chat-shaped).
 
 from __future__ import annotations
 
-from typing import Literal
+import re
+from typing import Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -37,6 +38,7 @@ from pydantic import (
     Field,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
 
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget, coerce_llm_target
@@ -89,6 +91,16 @@ class AdvisorConfig(BaseModel):
             plan when it is injected back to the executor as a user turn.
             Tune per executor family (e.g. append "continue using tool calls
             only" for small OSS executors).
+        gate_trigger: (review_gate) What fires the once-per-session review.
+            ``"no_tool_call"`` (default) reviews the executor's first turn
+            without tool calls — right for function-calling agent harnesses.
+            ``"pattern"`` reviews the first turn whose text matches
+            ``gate_trigger_pattern`` — for text-protocol harnesses (e.g.
+            Terminal-Bench's terminus), where every turn lacks tool calls and
+            completion is declared with a textual marker instead.
+        gate_trigger_pattern: (review_gate) Regex searched against the
+            executor turn's text when ``gate_trigger`` is ``"pattern"``
+            (e.g. ``task_complete["\\s>:]*true`` for terminus).
 
         advisor_max_tokens: Cap on the advisor's output per call (the doc's
             recommended starting point is 2048).
@@ -124,6 +136,8 @@ class AdvisorConfig(BaseModel):
     # review_gate strategy
     reviewer_system_prompt: str = REVIEWER_SYSTEM_PROMPT
     redo_feedback_prefix: str = REDO_FEEDBACK_PREFIX
+    gate_trigger: Literal["no_tool_call", "pattern"] = "no_tool_call"
+    gate_trigger_pattern: str = ""
 
     # shared
     advisor_max_tokens: int = Field(default=2048, ge=1)
@@ -154,5 +168,23 @@ class AdvisorConfig(BaseModel):
                 "profile (the loop is Chat-shaped); use 'openai' or 'anthropic'"
             )
         return tier
+
+    @field_validator("gate_trigger_pattern")
+    @classmethod
+    def _pattern_compiles(cls, value: str) -> str:
+        if value:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"gate_trigger_pattern is not a valid regex: {exc}") from exc
+        return value
+
+    @model_validator(mode="after")
+    def _pattern_trigger_requires_pattern(self) -> Self:
+        if self.gate_trigger == "pattern" and not self.gate_trigger_pattern:
+            raise ValueError(
+                "gate_trigger 'pattern' requires a non-empty gate_trigger_pattern"
+            )
+        return self
 
 __all__ = ["AdvisorConfig"]

@@ -74,6 +74,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -157,6 +158,12 @@ class AdvisorLoopBackend(LLMBackend):
             "ChatRequestType", request_type_enum(self._request_type_name),
         )
         self._is_openai = self._request_type_name == "openai_chat"
+        # Pre-compiled pattern trigger; None selects the no_tool_call trigger.
+        self._trigger_pattern = (
+            re.compile(config.gate_trigger_pattern)
+            if config.gate_trigger == "pattern"
+            else None
+        )
         # The executor is delegated to verbatim so caching survives
         # (cache_control breakpoints on Anthropic; prefix stability on OpenAI).
         self._executor_backend = executor_backend or build_native_backend(executor_target)
@@ -193,14 +200,21 @@ class AdvisorLoopBackend(LLMBackend):
         if session in self._reviewed:
             return await self._passthrough(ctx, normalized)
 
-        # Not yet reviewed: run the executor and inspect its turn for tool use.
+        # Not yet reviewed: run the executor and inspect its turn.
         turn = await self._run_executor(ctx, normalized)
 
-        # Tool calls → executor is working; never gate mid-work.
-        if turn.has_tool_use:
+        # Trigger check. "no_tool_call" gates the first turn without tool
+        # calls (function-calling harnesses); "pattern" gates the first turn
+        # whose text matches the configured marker (text-protocol harnesses,
+        # e.g. terminus's ``task_complete: true`` declaration).
+        if self._trigger_pattern is not None:
+            if not self._trigger_pattern.search(turn.content or ""):
+                return await self._finish(ctx, turn)
+        elif turn.has_tool_use:
+            # Tool calls → executor is working; never gate mid-work.
             return await self._finish(ctx, turn)
 
-        # No tool calls = a plan or a "done". Gate it (once per session).
+        # Trigger fired: a plan, a "done", or the marker. Gate it (once per session).
         self._reviewed.add(session)
         verdict, plan = await self._review(messages, turn.content)
         if verdict != "REDO":
