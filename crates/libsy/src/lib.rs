@@ -62,7 +62,7 @@
 //! strong/weak model depending on the classifier's choice.
 
 mod algorithms;
-pub use algorithms::llm_class::{ClassifierDecision, LlmClassifierOrchAlgo};
+pub use algorithms::llm_class::{ClassifierDecision, ClassifierTier, LlmClassifierOrchAlgo};
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
 pub use algorithms::rand::{RandomAlgo, RandomDecision};
 

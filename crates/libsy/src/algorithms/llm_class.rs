@@ -20,7 +20,7 @@ use switchyard_protocol::{completion_text, prompt_text, text_request};
 
 // Preamble prepended to the user prompt when asking the classifier target for a
 // strong-win-rate score.
-const CLASSIFIER_PROMPT_PREAMBLE: &str = "Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1].";
+const CLASSIFIER_PROMPT_PREAMBLE: &str = "Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1].\n";
 
 /// The tier a classifier score selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

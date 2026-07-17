@@ -7,7 +7,7 @@
 //! surfaces as a `CallLlm` step. The agent makes the "real" model call itself and
 //! fulfills the promise — this is the offload/streaming path ("ask, don't call").
 //! The classifier's two steps show up as two `model call:` lines. Run with:
-//!   cargo run -p libsy-examples --example research_agent_core
+//!   cargo run -p libsy --example research_agent_core
 
 use std::error::Error;
 use std::sync::Arc;
