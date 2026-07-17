@@ -13,8 +13,11 @@ _EXPORTS = frozenset(
     {
         "Algorithm",
         "LibsyError",
+        "LlmCall",
         "LlmTarget",
         "LlmTargetSet",
+        "RunStream",
+        "Step",
         "noop",
         "random",
     }
@@ -23,8 +26,11 @@ _EXPORTS = frozenset(
 if TYPE_CHECKING:
     Algorithm: type[Any]
     LibsyError: type[RuntimeError]
+    LlmCall: type[Any]
     LlmTarget: type[Any]
     LlmTargetSet: type[Any]
+    RunStream: type[Any]
+    Step: type[Any]
 
 
 def __getattr__(name: str) -> object:

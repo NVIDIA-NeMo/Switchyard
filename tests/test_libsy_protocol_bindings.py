@@ -15,7 +15,6 @@ from switchyard import libsy
 def test_libsy_uses_an_explicit_namespace() -> None:
     assert switchyard.libsy is libsy
     assert libsy.protocol.__name__ == "switchyard.libsy.protocol"
-    assert not hasattr(libsy, "RunStream")
 
 
 def test_protocol_request_and_response_fields_stay_typed() -> None:

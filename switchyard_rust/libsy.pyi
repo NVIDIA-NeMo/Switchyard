@@ -1,11 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import AsyncIterator
 from typing import final
 
-from switchyard_rust.libsy_protocol import Context, Decision, Request, Response, RoutedLlmClient
+from switchyard_rust.libsy_protocol import (
+    Context,
+    Decision,
+    Request,
+    Response,
+    RoutedLlmClient,
+)
 
 class LibsyError(RuntimeError): ...
+
+_DecisionValue = Decision
 
 class LlmTarget:
     def __init__(
@@ -29,6 +38,30 @@ class LlmTargetSet:
     def get_target(self, name: str) -> LlmTarget: ...
     def __len__(self) -> int: ...
 
+class LlmCall:
+    context: Context
+    request: Request
+    decision: Decision
+    is_pending: bool
+
+    def respond(self, response: Response) -> None: ...
+    def fail(self, message: str) -> None: ...
+
+class Step:
+    class CallLlm:
+        call: LlmCall
+
+    class Decision:
+        decision: _DecisionValue
+
+    class ReturnToAgent:
+        response: Response
+
+class RunStream(AsyncIterator[Step]):
+    def __aiter__(self) -> RunStream: ...
+    async def __anext__(self) -> Step: ...
+    async def aclose(self) -> None: ...
+
 @final
 class Algorithm:
     async def run(
@@ -37,6 +70,12 @@ class Algorithm:
         *,
         context: Context | None = None,
     ) -> tuple[list[Decision], Response]: ...
+    def run_stream(
+        self,
+        request: Request,
+        *,
+        context: Context | None = None,
+    ) -> RunStream: ...
 
 def noop() -> Algorithm: ...
 def random(targets: LlmTargetSet) -> Algorithm: ...
