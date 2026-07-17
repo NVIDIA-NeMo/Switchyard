@@ -8,7 +8,8 @@ use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use libsy::affinity::{Affinity, SessionAffinity, SubAgentAffinity};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RandomAlgo, RoutedLlmClient};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_translation::WireFormat;
@@ -55,6 +56,14 @@ pub struct Args {
     #[arg(long)]
     pub log_routing: bool,
 
+    /// Enable model affinity so related requests reuse a tier instead of routing
+    /// each one independently. Bare `--affinity` uses session affinity; pass
+    /// `subagent` to pin sub-agents only. Off when omitted. Requires the harness to
+    /// send identifying headers (session/agent ids); otherwise it falls open to
+    /// random routing.
+    #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "session")]
+    pub affinity: Option<AffinityKind>,
+
     /// Host address to bind.
     #[arg(long, default_value_t = DEFAULT_HOST)]
     pub host: IpAddr,
@@ -62,6 +71,26 @@ pub struct Args {
     /// Port to bind.
     #[arg(long, default_value_t = DEFAULT_PORT)]
     pub port: u16,
+}
+
+/// Which affinity policy `--affinity` enables.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum AffinityKind {
+    /// Pin every request sharing a session id to one tier.
+    Session,
+    /// Pin each identified sub-agent to one tier across its turns; root-agent
+    /// turns keep routing randomly.
+    Subagent,
+}
+
+impl AffinityKind {
+    /// Builds the affinity policy this kind selects.
+    fn policy(self) -> Arc<dyn Affinity> {
+        match self {
+            AffinityKind::Session => Arc::new(SessionAffinity::new()),
+            AffinityKind::Subagent => Arc::new(SubAgentAffinity::new()),
+        }
+    }
 }
 
 impl Args {
@@ -94,7 +123,14 @@ impl Args {
             target(&self.weak, client.clone()),
             target(&self.strong, client.clone()),
         ]);
-        let algorithm: Arc<dyn Algorithm> = Arc::new(RandomAlgo::new(targets));
+        // Optionally retain selections per the affinity policy; without it every
+        // request routes independently.
+        let router = RandomAlgo::new(targets);
+        let router = match self.affinity {
+            Some(kind) => router.with_affinity(kind.policy()),
+            None => router,
+        };
+        let algorithm: Arc<dyn Algorithm> = Arc::new(router);
 
         let addr = SocketAddr::new(self.host, self.port);
         Ok((ProxyState::new(algorithm, self.log_routing), addr))
@@ -106,13 +142,14 @@ pub async fn run(args: Args) -> Result<(), String> {
     let base_url = args.base_url.clone();
     let weak = (args.weak.clone(), args.weak_format);
     let strong = (args.strong.clone(), args.strong_format);
+    let affinity = args.affinity;
     let (state, addr) = args.build()?;
 
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|error| format!("failed to bind {addr}: {error}"))?;
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
-    eprintln!("{}", banner(bound, &base_url, &weak, &strong));
+    eprintln!("{}", banner(bound, &base_url, &weak, &strong, affinity));
 
     axum::serve(listener, build_router(state))
         .with_graceful_shutdown(shutdown_signal())
@@ -175,12 +212,19 @@ fn banner(
     base_url: &str,
     weak: &(String, WireFormat),
     strong: &(String, WireFormat),
+    affinity: Option<AffinityKind>,
 ) -> String {
+    let affinity = match affinity {
+        Some(AffinityKind::Session) => "session",
+        Some(AffinityKind::Subagent) => "subagent",
+        None => "off",
+    };
     format!(
         "libsy-server\n  \
          listening:     http://{addr}\n  \
          upstream:      {base_url}\n  \
          random routing: weak {} ({}), strong {} ({})\n  \
+         affinity:      {affinity}\n  \
          serving model: {SERVED_MODEL}\n  \
          endpoints:     GET /health, GET /v1/models, POST /v1/chat/completions, \
          POST /v1/messages, POST /v1/responses\n  \

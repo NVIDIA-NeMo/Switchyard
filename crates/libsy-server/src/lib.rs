@@ -26,10 +26,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use libsy::affinity::metadata_from_headers;
 use libsy::Algorithm;
 use serde_json::{json, Value};
 use switchyard_llm_client::LlmClientError;
-use switchyard_protocol::{Context, LlmResponse, Metadata, Request};
+use switchyard_protocol::{Context, LlmResponse, Request};
 use switchyard_translation::{decode_request, encode_buffered_response, encode_stream, WireFormat};
 
 use crate::sse::frame_stream;
@@ -130,24 +131,19 @@ async fn handle(
     // leaks the upstream id the algorithm's target resolved.
     let requested_model = llm_request.model.clone();
 
-    // Caller headers ride along as metadata; the client drops reserved/auth
-    // headers and injects the backend's real credential, so the sentinel key a
-    // coding agent sends is filtered automatically. `wire_format` is left unset so
-    // the upstream call uses the chosen tier's own format, not the inbound one —
-    // the response is translated back to `inbound` below.
+    // Normalize harness headers into routing metadata (session/agent/task ids and
+    // sub-agent context) so an affinity policy can key on them. The forwarded
+    // headers ride along too; the client drops reserved/auth headers and injects
+    // the backend's real credential, so the sentinel key a coding agent sends is
+    // filtered automatically. `wire_format` stays unset so the upstream call uses
+    // the chosen tier's own format — the response is translated back to `inbound`.
+    let mut metadata = metadata_from_headers(&multi_headers(&headers));
+    let session = metadata.session_id.clone().unwrap_or("none".to_string());
+    metadata.http_headers = Some(normalized_headers(&headers));
     let request = Request {
         llm_request,
         raw_request: Some(body),
-        metadata: Some(Metadata {
-            session_id: None,
-            agent_id: None,
-            task_id: None,
-            correlation_id: None,
-            extra_metadata: None,
-            http_headers: Some(normalized_headers(&headers)),
-            wire_format: None,
-            agent_context: None,
-        }),
+        metadata: Some(metadata),
     };
 
     let (trace, response) = match state
@@ -163,7 +159,10 @@ async fn handle(
     // The trace's first decision is the routing choice; log which tier served.
     if state.log_routing {
         if let Some(decision) = trace.first() {
-            eprintln!("[route] inbound={inbound} -> {}", decision.selected_model());
+            eprintln!(
+                "[route][session={session}] inbound={inbound} -> {}",
+                decision.selected_model()
+            );
         }
     }
 
@@ -192,6 +191,21 @@ fn map_run_error(error: Box<dyn std::error::Error + Send + Sync>) -> Response {
         Ok(client_error) => map_client_error(*client_error),
         Err(other) => server_error(other.to_string()),
     }
+}
+
+// Collects every UTF-8 header value per lowercased name — the multi-valued shape
+// `metadata_from_headers` expects for harness metadata normalization.
+fn multi_headers(headers: &HeaderMap) -> BTreeMap<String, Vec<String>> {
+    let mut collected: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, value) in headers {
+        if let Ok(value) = value.to_str() {
+            collected
+                .entry(name.as_str().to_ascii_lowercase())
+                .or_default()
+                .push(value.to_string());
+        }
+    }
+    collected
 }
 
 // Lowercases header names and keeps the first UTF-8 value for each.

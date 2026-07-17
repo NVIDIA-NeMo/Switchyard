@@ -213,6 +213,7 @@ pub fn metadata_from_headers(headers: &BTreeMap<String, Vec<String>>) -> Metadat
     Metadata {
         session_id: first_some([
             header(headers, "x-switchyard-session-id"),
+            header(headers, "x-claude-code-session-id"),
             header(headers, "x-nemo-relay-session-id"),
             codex.session_id,
             header(headers, "session-id"),
@@ -396,6 +397,22 @@ mod tests {
                 .as_deref()
                 .map(|agent| agent.is_subagent),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_code_session_header() {
+        // Claude Code identifies a session with `x-claude-code-session-id`; session
+        // affinity keys on it so a whole CLI session pins to one tier.
+        let headers = BTreeMap::from([(
+            "x-claude-code-session-id".to_string(),
+            vec!["fb46caae-eac6-4f5f-83fd-8fc8f5743abb".to_string()],
+        )]);
+
+        let metadata = metadata_from_headers(&headers);
+        assert_eq!(
+            metadata.session_id.as_deref(),
+            Some("fb46caae-eac6-4f5f-83fd-8fc8f5743abb")
         );
     }
 
