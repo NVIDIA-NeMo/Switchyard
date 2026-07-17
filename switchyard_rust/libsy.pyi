@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from typing import Any, final
+
+class LlmTarget:
+    def __init__(
+        self,
+        semantic_name: str,
+        *,
+        llm_client: Any | None = None,
+    ) -> None: ...
+    @property
+    def semantic_name(self) -> str: ...
+    @property
+    def llm_client(self) -> Any | None: ...
+    @llm_client.setter
+    def llm_client(self, value: Any | None) -> None: ...
+
+@final
+class LlmTargetSet:
+    def __init__(self, targets: list[LlmTarget]) -> None: ...
+    @property
+    def targets(self) -> list[LlmTarget]: ...
+    def get_target(self, name: str) -> LlmTarget: ...
+    def __len__(self) -> int: ...
