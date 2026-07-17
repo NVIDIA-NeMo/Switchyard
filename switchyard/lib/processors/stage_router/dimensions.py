@@ -3,10 +3,11 @@
 
 """Scorer-ready view of :class:`ToolResultSignal` — two axes, five signals.
 
-The stage_router scorer models a coding turn on two independent axes:
+The stage_router scorer models a coding turn on two axes:
 
-* **error** — did the recent tool results error?  ``severity`` (bad pole) vs
-  ``no_error_streak_intensity`` (good pole).
+* **error** — did the recent tool results error?  ``severity`` (escalate-only; a
+  clean-result streak used to sit on this axis but cancelled the windowed error
+  signal and released escalations too early, so it was removed).
 * **production** — is the agent producing code?  ``spinning`` / ``exploring``
   (bad poles) vs ``recent_production_intensity`` (good pole).
 
@@ -21,7 +22,6 @@ the scorer weights. All counts are over the recent window; see the notes on
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -31,13 +31,6 @@ if TYPE_CHECKING:
 #: Turn-depth below which stall signals stay quiet — early no-write turns are
 #: normal exploration, not a stall.
 _STALL_MIN_TURN_DEPTH: int = 8
-
-
-def _saturating(x: float, scale: float) -> float:
-    """Map non-negative counts to ``[0, 1)``; ``scale`` is the half-saturation point."""
-    if x <= 0:
-        return 0.0
-    return 1.0 - math.exp(-x / scale)
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -55,12 +48,11 @@ class CodingAgentDimensions:
     #: is only cycling non-inspecting commands (a struggle signal → strong).
     spinning: float
     #: 1.0 when the recent window has reads/plans but no writes or edits — the agent
-    #: is investigating without converging (a neutral-ish signal → strong, half weight).
+    #: is investigating without converging. Full escalation signal → strong; because it
+    #: persists while the agent isn't producing, it latches sustained escalation on hard tasks.
     exploring: float
     #: Fraction of recent tool ops that produced code (writes + edits) → weak.
     recent_production_intensity: float
-    #: Saturating count of consecutive clean recent results → weak.
-    no_error_streak_intensity: float
 
 
 def from_signal(signal: ToolResultSignal) -> CodingAgentDimensions:
@@ -95,7 +87,6 @@ def from_signal(signal: ToolResultSignal) -> CodingAgentDimensions:
         recent_production_intensity=_ratio(
             signal.recent_write_count + signal.recent_edit_count, recent_ops
         ),
-        no_error_streak_intensity=_saturating(signal.no_error_streak, scale=3.0),
     )
 
 

@@ -12,10 +12,8 @@ signal is ``±0.10``, two corroborating signals ``±0.20``. The gain spreads tha
 into a usable confidence range; it does **not** make the threshold an integer
 "signals-to-clear" count. Empirically the dial reads:
 
-    conf 0.245  exploring alone (half weight)
-    conf 0.462  one full signal (a HARD error, or spinning)
-    conf 0.635  severity + exploring
-    conf 0.762  two full signals (severity + spinning)
+    conf 0.462  one full signal (a HARD error, spinning, or exploring)
+    conf 0.762  two full signals (e.g. severity + exploring, severity + spinning)
 
 So a threshold near 0.3 escalates on ~one signal, ~0.5 needs ~1.5, ~0.7 needs two
 to corroborate. The reachable range is ``(0, ~0.76)`` for these two axes — a
@@ -44,28 +42,33 @@ _HARD_SEVERITY: float = 0.7
 #: decision; corroboration across the two axes is what pushes confidence up.
 _SIGNAL_UNIT: float = 0.10
 
-#: "Something is wrong" → CAPABLE (strong). ``exploring`` is neutral (half weight):
-#: it never escalates alone at a sane threshold, only when corroborated.
+#: "Something is wrong" → CAPABLE (strong). ``exploring`` (reading/planning without
+#: producing) is a FULL escalation signal: it clears the threshold on its own, and
+#: because the condition persists while the agent isn't producing, it holds strong
+#: across the whole stretch — the "latch" that sustains escalation on hard debugging
+#: tasks (verified against runs where a struggling agent reads-without-writing for
+#: dozens of turns; treating it as neutral routed those to the weak tier and lost them).
 _WRONG_SIGNALS: tuple[str, ...] = ("severity", "spinning", "exploring")
-#: "Making progress" → EFFICIENT (weak). Both are the good poles of the two axes.
-_PROGRESS_SIGNALS: tuple[str, ...] = ("recent_production_intensity", "no_error_streak_intensity")
+#: "Making progress" → EFFICIENT (weak). De-escalation is driven by real production
+#: (writes/edits), not by a clean-result streak: a streak of clean results actively
+#: cancelled the (windowed) error signal on the same axis and released escalations too
+#: early — trace-verified to suppress escalation entirely on some tasks — so the error
+#: axis is now escalate-only (severity) and progress is production.
+_PROGRESS_SIGNALS: tuple[str, ...] = ("recent_production_intensity",)
 #: Max value each signal reaches, used to normalise so a maxed signal contributes
 #: ``_SIGNAL_UNIT``. Defaults to 1.0 for ``[0, 1]`` gates/ratios.
 _MAX_VALUE: Mapping[str, float] = {"severity": _HARD_SEVERITY}
-#: Signals weighted at half unit — deliberately weak, needs corroboration to matter.
-_HALF_WEIGHT: frozenset[str] = frozenset({"exploring"})
 
 
 def _build_weights(unit: float = _SIGNAL_UNIT) -> dict[str, float]:
     """Signed, fixed linear weights: wrong → CAPABLE (+), progress → EFFICIENT (−).
 
-    A maxed signal contributes ``unit`` (``severity`` is normalised by its HARD cap
-    so it too lands at ``unit``); ``exploring`` is halved to keep it neutral.
+    Every maxed signal contributes ``unit`` (``severity`` is normalised by its HARD
+    cap so it too lands at ``unit``).
     """
     weights: dict[str, float] = {}
     for name in _WRONG_SIGNALS:
-        w = unit / _MAX_VALUE.get(name, 1.0)
-        weights[name] = w / 2.0 if name in _HALF_WEIGHT else w
+        weights[name] = unit / _MAX_VALUE.get(name, 1.0)
     for name in _PROGRESS_SIGNALS:
         weights[name] = -unit / _MAX_VALUE.get(name, 1.0)
     return weights

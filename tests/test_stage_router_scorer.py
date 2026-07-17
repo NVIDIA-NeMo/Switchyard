@@ -28,7 +28,6 @@ def _zero() -> CodingAgentDimensions:
         spinning=0.0,
         exploring=0.0,
         recent_production_intensity=0.0,
-        no_error_streak_intensity=0.0,
     )
 
 
@@ -48,9 +47,8 @@ def test_wrong_signals_point_capable():
     assert score(_with(exploring=1.0)).score > 0
 
 
-def test_progress_signals_point_efficient():
+def test_progress_signal_points_efficient():
     assert score(_with(recent_production_intensity=1.0)).score < 0
-    assert score(_with(no_error_streak_intensity=1.0)).score < 0
 
 
 def test_hard_severity_and_spinning_contribute_one_unit():
@@ -62,15 +60,15 @@ def test_hard_severity_and_spinning_contribute_one_unit():
     assert spin.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))
 
 
-def test_exploring_is_half_weight_and_neutral():
-    """exploring contributes half a unit → far lower confidence than a full signal,
-    so it never clears a default threshold alone (only when corroborated)."""
+def test_exploring_is_a_full_escalation_signal():
+    """exploring is a full-weight WRONG signal → clears a default threshold on its own
+    (it's the persistent 'reading-without-producing' latch), same weight as spinning."""
     explore = score(_with(exploring=1.0))
-    full = score(_with(spinning=1.0))
+    spin = score(_with(spinning=1.0))
     assert explore.score > 0
-    assert explore.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.05))  # ~0.245
-    assert explore.confidence < full.confidence
-    assert explore.confidence < 0.30  # below a typical threshold → needs corroboration
+    assert explore.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))  # ~0.462
+    assert explore.confidence == pytest.approx(spin.confidence)
+    assert explore.confidence > 0.30  # escalates alone at a typical threshold
 
 
 def test_corroboration_raises_confidence():
