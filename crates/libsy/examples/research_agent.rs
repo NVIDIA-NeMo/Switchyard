@@ -15,11 +15,11 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use libsy::LlmClassifierOrchAlgo;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
     RoutedLlmClient,
 };
-use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use switchyard_protocol::{completion_text, text_request, text_response};
 
 const CLASSIFIER: &str = "classifier/model";

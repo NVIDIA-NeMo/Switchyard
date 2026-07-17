@@ -15,13 +15,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
+use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 use switchyard_protocol::{completion_text, prompt_text, text_request};
 
-/// Preamble prepended to the user prompt when asking the classifier target for a
-/// strong-win-rate score.
-const CLASSIFIER_PROMPT_PREAMBLE: &str = "Rate how strongly this request needs a frontier model. \
-     Reply with a single strong-win-rate score in [0, 1]:\n";
+// Preamble prepended to the user prompt when asking the classifier target for a
+// strong-win-rate score.
+const CLASSIFIER_PROMPT_PREAMBLE: &str = "Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1].";
 
 /// The tier a classifier score selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,7 +174,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
+    use crate::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
     use std::sync::Mutex;
     use switchyard_protocol::text_response;
 
