@@ -932,6 +932,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsy-server"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "clap",
+ "futures-util",
+ "http-body-util",
+ "serde_json",
+ "switchyard-llm-client",
+ "switchyard-protocol",
+ "switchyard-translation",
+ "tokio",
+ "tower",
+ "wiremock",
+]
+
+[[package]]
 name = "libyaml-rs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -245,7 +245,7 @@ impl TranslatingLlmClient {
 
         let request = Request {
             llm_request,
-            raw_request: None,
+            raw_request: Some(raw_http_request),
             metadata: Some(Metadata {
                 session_id: None,
                 agent_id: None,
@@ -253,7 +253,7 @@ impl TranslatingLlmClient {
                 correlation_id: None,
                 extra_metadata: None,
                 http_headers,
-                wire_format: None,
+                wire_format: Some(wire_format),
             }),
         };
         let response = self.call_rewrite_model(ctx, request, model).await?;
