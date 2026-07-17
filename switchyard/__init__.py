@@ -11,6 +11,7 @@ format translation, and extensible middleware.
 
 from typing import TYPE_CHECKING, Any
 
+from switchyard import libsy as libsy
 from switchyard.lib.backends import (
     AnthropicNativeBackend,
     EndpointHealth,
@@ -140,6 +141,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "libsy",
     # ChatRequest types
     "AnthropicChatRequest",
     "ChatRequest",

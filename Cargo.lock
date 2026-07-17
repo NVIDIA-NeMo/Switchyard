@@ -1653,6 +1653,7 @@ dependencies = [
  "switchyard-components",
  "switchyard-components-v2",
  "switchyard-core",
+ "switchyard-protocol",
  "switchyard-server",
  "switchyard-translation",
  "tokio",

@@ -10,6 +10,7 @@ use switchyard_core::SwitchyardError;
 use switchyard_translation::TranslationError;
 
 create_exception!(_switchyard_rust, SwitchyardRuntimeError, PyRuntimeError);
+create_exception!(_switchyard_rust, LibsyError, SwitchyardRuntimeError);
 create_exception!(
     _switchyard_rust,
     SwitchyardConfigError,
@@ -77,6 +78,11 @@ create_exception!(
 /// Converts translation crate errors into Python `ValueError`s with stable context.
 pub(crate) fn py_translation_error(error: TranslationError) -> PyErr {
     PyValueError::new_err(format!("{}: {}", error.kind(), error))
+}
+
+/// Converts libsy orchestration failures into the Python binding error.
+pub(crate) fn py_libsy_error(error: impl std::fmt::Display) -> PyErr {
+    LibsyError::new_err(error.to_string())
 }
 
 /// Converts core Switchyard errors into typed Python runtime errors.
@@ -161,6 +167,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "SwitchyardRuntimeError",
         py.get_type::<SwitchyardRuntimeError>(),
     )?;
+    module.add("LibsyError", py.get_type::<LibsyError>())?;
     module.add(
         "SwitchyardConfigError",
         py.get_type::<SwitchyardConfigError>(),
