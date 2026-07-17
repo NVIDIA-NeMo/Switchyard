@@ -61,9 +61,6 @@ from switchyard.lib.profiles import (
     LatencyServiceProfileConfig,
     NoopProfile,
     NoopProfileConfig,
-    OSSRouterConfig,
-    OSSRouterProfileConfig,
-    OSSRouterTier,
     PassthroughProfileConfig,
     PlanExecuteConfig,
     PlanExecutePresets,
@@ -164,9 +161,6 @@ __all__ = [
     "EscalationRouterConfig",
     "EscalationRouterProfileConfig",
     "LatencyServiceProfileConfig",
-    "OSSRouterConfig",
-    "OSSRouterProfileConfig",
-    "OSSRouterTier",
     "PassthroughProfileConfig",
     "PlanExecuteConfig",
     "PlanExecuteProfileConfig",
@@ -209,7 +203,6 @@ __all__ = [
     "IntakeSinkConfig",
     "RlLoggingRequestProcessor",
     "RlLoggingResponseProcessor",
-    # OSS Router (external-process plugin)
     # Random Routing usage case
     "BackendFormat",
     "RandomRoutingProcessorConfig",

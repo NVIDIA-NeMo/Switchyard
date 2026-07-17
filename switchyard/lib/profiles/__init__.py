@@ -24,11 +24,6 @@ from switchyard.lib.profiles.header_routing import (
 from switchyard.lib.profiles.latency_service import LatencyServiceProfileConfig
 from switchyard.lib.profiles.loader import load_profiles
 from switchyard.lib.profiles.noop import NoopProfile, NoopProfileConfig
-from switchyard.lib.profiles.oss_router import (
-    OSSRouterConfig,
-    OSSRouterProfileConfig,
-    OSSRouterTier,
-)
 from switchyard.lib.profiles.passthrough import PassthroughProfileConfig
 from switchyard.lib.profiles.plan_execute import PlanExecuteProfileConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
@@ -73,9 +68,6 @@ __all__ = [
     "LatencyServiceProfileConfig",
     "NoopProfile",
     "NoopProfileConfig",
-    "OSSRouterConfig",
-    "OSSRouterProfileConfig",
-    "OSSRouterTier",
     "PassthroughProfileConfig",
     "PlanExecuteConfig",
     "PlanExecuteProfileConfig",
