@@ -254,6 +254,7 @@ impl TranslatingLlmClient {
                 extra_metadata: None,
                 http_headers,
                 wire_format: Some(wire_format),
+                agent_context: None,
             }),
         };
         let response = self.call_rewrite_model(ctx, request, model).await?;
@@ -378,6 +379,7 @@ mod tests {
             extra_metadata: None,
             http_headers: None,
             wire_format: Some(format),
+            agent_context: None,
         });
         request
     }
@@ -622,6 +624,7 @@ mod tests {
                 extra_metadata: None,
                 http_headers: Some(headers),
                 wire_format: None,
+                agent_context: None,
             }),
         };
 

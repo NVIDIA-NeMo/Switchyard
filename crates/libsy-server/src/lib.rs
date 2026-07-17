@@ -146,6 +146,7 @@ async fn handle(
             extra_metadata: None,
             http_headers: Some(normalized_headers(&headers)),
             wire_format: None,
+            agent_context: None,
         }),
     };
 
