@@ -26,6 +26,7 @@ serde_json = "1"
 switchyard-core = { path = "../switchyard-core" }
 switchyard-components = { path = "../switchyard-components" }
 switchyard-components-v2 = { path = "../switchyard-components-v2" }
+switchyard-protocol = { path = "../libsy-protocol" }
 switchyard-server = { path = "../switchyard-server" }
 switchyard-translation = { path = "../switchyard-translation" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
