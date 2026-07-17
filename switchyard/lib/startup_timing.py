@@ -1,14 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Opt-in per-stage startup timing for ``switchyard launch``.
+"""Per-stage startup timing for ``switchyard launch``.
 
-Turn it on with ``--startup-timing`` or ``SWITCHYARD_STARTUP_TIMING=1``; off, it
-costs nothing. The launcher and backend-format resolver call :func:`mark` at
-fixed points, then :func:`dump` prints the per-stage breakdown to stderr (each
-AUTO probe on its own line) right before the child agent is spawned. It times
-only switchyard's pre-spawn work; the one-time Python import cost is not counted
-here — measure that on its own with ``switchyard launch claude --model X --dry-run``.
+Turn it on with ``--startup-timing`` or ``SWITCHYARD_STARTUP_TIMING=1``; it does
+nothing when off. ``mark()`` records a checkpoint during startup, and ``dump()``
+prints the time between checkpoints to stderr just before the agent starts. It
+times only switchyard's own startup work, not Python's one-time import cost.
 """
 
 import os
