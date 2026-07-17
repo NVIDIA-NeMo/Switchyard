@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "libsy-proxy"
+version = "0.1.0"
+description = "Demo LLM proxy with libsy agent-aware routing"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libsy = { path = "../../crates/libsy" }
+switchyard-components = { path = "../../crates/switchyard-components" }
+switchyard-components-v2 = { path = "../../crates/switchyard-components-v2" }
+switchyard-core = { path = "../../crates/switchyard-core" }
+switchyard-protocol = { path = "../../crates/libsy-protocol" }
+switchyard-server = { path = "../../crates/switchyard-server" }
+switchyard-translation = { path = "../../crates/switchyard-translation" }
+
+async-trait = "0.1"
+axum = "0.8"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }

@@ -1101,3 +1101,110 @@ fn responses_to_chat_preserves_tool_choice_when_tools_survive() -> TestResult {
     );
     Ok(())
 }
+
+// Verifies an Anthropic tool_use encodes into a Responses function_call whose
+// `arguments` is a JSON-encoded string, not an object. The Responses API rejects
+// an object here ("expected a string"), which broke agent tool turns routed to a
+// Responses backend.
+#[test]
+fn anthropic_tool_use_encodes_responses_arguments_as_json_string() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "get_weather",
+                    "input": {"city": "SF"}
+                }]
+            }
+        ],
+        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+        "max_tokens": 64
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let call = output["input"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["type"] == "function_call"))
+        .ok_or("expected a function_call input item")?;
+    assert_eq!(call["name"], "get_weather");
+    // Must be a string, and that string must parse back to the original object.
+    let arguments = call["arguments"]
+        .as_str()
+        .ok_or("function_call arguments must be a JSON string")?;
+    assert_eq!(
+        serde_json::from_str::<Value>(arguments)?,
+        json!({"city": "SF"})
+    );
+    Ok(())
+}
+
+// Verifies an Anthropic thinking block is dropped when encoding a request to
+// OpenAI Responses — never emitted as a reasoning input item carrying content,
+// which the Responses API rejects ("input[..].content: expected max length 0").
+// Mirrors the OpenAI Chat encoder, which also drops thinking.
+#[test]
+fn anthropic_thinking_block_is_dropped_for_openai_responses_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 64,
+        "tools": [{"name": "read_file", "input_schema": {"type": "object"}}],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "read foo.py"}]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private chain of thought", "signature": "sig"},
+                {"type": "text", "text": "Reading it."},
+                {"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "foo.py"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "print(1)"}
+            ]}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input should be an array")?;
+    // No reasoning input item at all, and no private reasoning text leaks anywhere.
+    assert!(
+        input.iter().all(|item| item["type"] != "reasoning"),
+        "reasoning input item must be dropped: {input:?}"
+    );
+    assert!(
+        !json_contains_content_type(&output, "reasoning_text"),
+        "reasoning text must not leak into Responses input"
+    );
+    assert!(
+        !output.to_string().contains("private chain of thought"),
+        "private reasoning must not leak into the request"
+    );
+    // The rest of the turn survives: the tool call and its output are still there.
+    assert!(input.iter().any(|item| item["type"] == "function_call"));
+    assert!(input
+        .iter()
+        .any(|item| item["type"] == "function_call_output"));
+    Ok(())
+}

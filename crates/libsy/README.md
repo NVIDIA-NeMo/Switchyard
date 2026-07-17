@@ -40,6 +40,40 @@ println!("answer: {}", completion_text(&response.llm_response.aggregate().await?
 
 Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in the `libsy-examples` crate).
 
+## Composable affinity
+
+Routing algorithms can consume any `affinity::Affinity` policy at the point where
+their final model is known. `SessionAffinity` retains one model per session;
+`SubAgentAffinity` retains one model per explicitly identified child agent while
+ordinary requests continue through the algorithm on every turn.
+
+```rust
+use libsy::affinity::SubAgentAffinity;
+use libsy::RandomAlgo;
+
+let algo: Arc<dyn Algorithm> = Arc::new(
+    RandomAlgo::new(targets)
+        .with_affinity(Arc::new(SubAgentAffinity::new())),
+);
+```
+
+The first request from a child agent runs the random algorithm and atomically retains
+its choice; later requests for the same `(session_id, agent_id)` reuse that target.
+With one configured target, that target is retained directly. `metadata_from_headers`
+converts harness-specific identity into neutral `Metadata`.
+Supported inputs include Claude Code `x-claude-code-session-id`,
+`x-claude-code-agent-id`, and `x-claude-code-parent-agent-id`; Codex `session-id`,
+`thread-id`,
+`x-codex-parent-thread-id`, `x-openai-subagent`, and `x-codex-turn-metadata`;
+NeMo Relay `x-nemo-relay-session-id` / `x-nemo-relay-subagent-id`; Dynamo
+`x-dynamo-session-id` / `x-dynamo-parent-session-id`; and explicit
+`x-switchyard-*` overrides, including `x-switchyard-is-subagent`. Header parsing is
+separate from affinity keying, so non-HTTP embedders can populate the same metadata
+directly. The adapter stays local and dependency-free because Relay's matching gateway
+normalizer is not exposed through its public Rust library API.
+
+See [`demo/libsy-proxy`](../../demo/libsy-proxy) for a runnable Switchyard HTTP proxy.
+
 ## Requests & responses
 
 ```rust
@@ -257,8 +291,8 @@ with `cargo test -p libsy-examples`).
 
 **Reference algorithms** — implementations to read and route with:
 
-- [`RandomAlgo`](src/algorithms/rand.rs) — uniform random over the set
-  (one call).
+- [`RandomAlgo`](src/algorithms/rand.rs) — uniform random over the set, optionally
+  retaining selections through an `Affinity` policy (one call).
 - [`LlmClassifierOrchAlgo`](../libsy-examples/src/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
 - [`EnsembleOrchAlgo`](../libsy-examples/src/ensemble.rs) — stateful: fan out to
