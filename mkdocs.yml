@@ -23,7 +23,6 @@ nav:
   - Guides:
       - Agent Launchers: guides/agent_launchers.md
       - NeMo Relay: guides/nemo_relay.md
-      - "NeMo Relay: Known Issues": guides/nemo_relay_known_issues.md
       - Skill Distillation: skill_distillation.md
   - Concepts:
       - Core Concepts: core_concepts.md

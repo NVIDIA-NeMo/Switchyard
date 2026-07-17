@@ -9,15 +9,16 @@ libsy never performs a network call: each offloaded `CallLlm` promise is
 fulfilled by Relay's dispatch chain and answered with
 `CallLlmRequest::respond(Ok/Err)`. libsy's semantic target names map onto the
 Relay plugin's `TargetBinding` table, which binds each name to a backend URL,
-model, and protocol.
-
-Current gaps are tracked separately in
-[NeMo Relay: Known Issues](nemo_relay_known_issues.md).
+model, protocol, and credentials. Buffered and streamed requests are both
+routed; keep every target on the agent's protocol (as below) so streams pass
+through without translation.
 
 ## Prerequisites
 
-- Rust 1.96.1
+- Rust 1.96.1 or later
 - Claude Code, for the agent launcher path
+- An OpenRouter API key, from the
+  [OpenRouter keys page](https://openrouter.ai/keys)
 
 ## Install
 
@@ -27,24 +28,27 @@ Build the Relay CLI with the Switchyard plugin (reference branch:
 ```bash
 git clone -b feat/libsy-decision-backend https://github.com/ryan-lempka/NeMo-Relay.git
 cd NeMo-Relay
-RUSTUP_TOOLCHAIN=1.96.1 cargo build -p nemo-relay-cli --features switchyard
+cargo build -p nemo-relay-cli --features switchyard
 ```
 
 ## Configure
 
-Copy the two example configs into the project you will launch from:
+Copy the two example configs into the project you will launch from, and
+provide your OpenRouter key:
 
 - [examples/nemo_relay/config.toml](../../examples/nemo_relay/config.toml) → `.nemo-relay/config.toml`
 - [examples/nemo_relay/plugins.toml](../../examples/nemo_relay/plugins.toml) → `.nemo-relay/plugins.toml`
 
-The plugin config selects `decision_backend = "libsy"` with the LLM-classifier
-algorithm: a Haiku target scores each request, and the score routes to an Opus
-(strong) or Sonnet (weak) target. Claude Code's own auth headers pass through
-to Anthropic. Verify with:
-
 ```bash
+export OPENROUTER_AUTHORIZATION="Bearer $OPENROUTER_API_KEY"
 ./target/debug/nemo-relay doctor
 ```
+
+The plugin config selects `decision_backend = "libsy"` with random routing
+between a strong target (Opus) and a weak target (Sonnet), both served by
+OpenRouter's Anthropic-compatible endpoint. Since Relay v0.7, target bindings
+own their credentials: the agent's own login is never forwarded to a routed
+target.
 
 ## Path A: Gateway mode
 
@@ -52,7 +56,7 @@ Runs Relay's gateway with libsy routing and a deterministic fake provider; no
 credentials needed:
 
 ```bash
-RUSTUP_TOOLCHAIN=1.96.1 ./examples/switchyard/run-libsy-e2e.sh
+./examples/switchyard/run-libsy-e2e.sh
 ```
 
 Expected receipt:
@@ -60,7 +64,8 @@ Expected receipt:
 ```text
 ok: easy prompt routes weak
 ok: hard prompt routes strong
-ok: classifier and routed calls both flowed through Relay dispatch (4 upstream calls)
+ok: streamed hard prompt routes strong
+ok: classifier and routed calls all flowed through Relay dispatch (6 upstream calls)
 libsy in-process routing e2e passed
 ```
 
@@ -77,22 +82,16 @@ This opens the normal interactive Claude Code TUI through the Relay gateway.
 ## Validate
 
 Routing decisions land in `nemo-relay-events-*.jsonl` in the working
-directory. One line per decision:
+directory, one mark per decision:
 
 ```bash
-grep -h switchyard.routing.decision nemo-relay-events-*.jsonl
+grep -h -o '"backend_id":"[a-z]*"' nemo-relay-events-*.jsonl | sort | uniq -c
 ```
 
-Expected receipt: `switchyard.routing.decision` marks naming the classifier
-step and the routed target, e.g.
-
-```json
-{"backend_id": "classifier", "reason_summary": "classifying request via classifier", ...}
-{"backend_id": "weak", "target_model": "claude-sonnet-5", ...}
-```
-
-A decision naming `weak` or `strong` is the proof: libsy scored the request
-in-process and Relay dispatched the routed call.
+Expected receipt: `switchyard.routing.decision` marks naming `strong` and
+`weak`, with responses served by both models across the session. A decision
+naming a target is the proof: libsy selected it in-process and Relay
+dispatched the routed call.
 
 ## The embedding contract
 
@@ -100,8 +99,10 @@ A host needs three things from libsy:
 
 - `Algorithm`: one shared `Arc<dyn Algorithm>` serves concurrent requests.
 - `run_stream(ctx, request)`: a stream of `Step`s; the host serves each
-  `Step::CallLlm` and fulfills it with `respond(...)`.
-- The conversation IR (`LlmRequest` / `LlmResponse` from `libsy-protocol`),
-  which Relay already speaks through `switchyard-translation`.
+  `Step::CallLlm` and fulfills it with `respond(...)` — a buffered response
+  or a live chunk stream.
+- The conversation IR (`LlmRequest`, `AggLlmResponse`, `LlmResponseChunk`
+  from `switchyard-protocol`), which Relay already speaks through
+  `switchyard-translation`.
 
 See the [libsy README](../../crates/libsy/README.md) for the full API.
