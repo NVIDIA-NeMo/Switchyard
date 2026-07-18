@@ -67,9 +67,10 @@ impl Metadata {
     /// child agent (its parent inferred to be the session when not stated). Subagent
     /// status is taken from an explicit `x-switchyard-is-subagent` header when
     /// present, and otherwise inferred from any parent/child lineage header.
-    pub fn from_headers(headers: &BTreeMap<String, Vec<String>>) -> Self {
+    pub fn from_headers(headers: &BTreeMap<String, String>) -> Self {
+        let headers = &normalize_headers(headers);
         let codex = header(headers, CODEX_TURN_METADATA_HEADER)
-            .and_then(|value| serde_json::from_str::<CodexTurnMetadata>(&value).ok())
+            .and_then(|value| serde_json::from_str::<CodexTurnMetadata>(value).ok())
             .unwrap_or_default();
 
         let switchyard_parent = header(headers, "x-switchyard-parent-agent-id");
@@ -88,9 +89,7 @@ impl Metadata {
             (Some(agent), Some(session)) if agent != session
         );
         let claude_parent = claude_subagent
-            .then(|| {
-                header(headers, "x-claude-code-parent-agent-id").or_else(|| claude_session.clone())
-            })
+            .then(|| header(headers, "x-claude-code-parent-agent-id").or(claude_session))
             .flatten();
 
         // OpenCode carries a session id and an optional parent session; the parent
@@ -110,53 +109,59 @@ impl Metadata {
             || claude_subagent
             || opencode_parent.is_some();
         let is_subagent = header(headers, "x-switchyard-is-subagent")
-            .as_deref()
             .and_then(parse_bool)
             .unwrap_or(inferred_subagent);
 
         Metadata {
-            session_id: first_some([
+            session_id: first_some(&[
                 header(headers, "x-switchyard-session-id"),
                 claude_session,
                 header(headers, "x-nemo-relay-session-id"),
                 opencode_session,
-                codex.session_id,
+                codex.session_id.as_deref(),
                 header(headers, "session-id"),
             ]),
-            agent_id: first_some([
+            agent_id: first_some(&[
                 header(headers, "x-switchyard-agent-id"),
                 claude_agent,
                 relay_subagent,
                 header(headers, "x-dynamo-session-id"),
-                codex.thread_id,
+                codex.thread_id.as_deref(),
                 header(headers, "thread-id"),
             ]),
-            parent_agent_id: first_some([
+            parent_agent_id: first_some(&[
                 switchyard_parent,
                 dynamo_parent,
-                codex.parent_thread_id,
+                codex.parent_thread_id.as_deref(),
                 codex_parent,
                 claude_parent,
                 opencode_parent,
             ]),
             is_subagent,
-            agent_kind: first_some([
+            agent_kind: first_some(&[
                 header(headers, "x-switchyard-agent-kind"),
-                codex.subagent_kind,
+                codex.subagent_kind.as_deref(),
                 openai_subagent,
             ]),
-            agent_role: first_some([header(headers, "x-switchyard-agent-role"), codex.agent_role]),
-            task_id: first_some([
+            agent_role: first_some(&[
+                header(headers, "x-switchyard-agent-role"),
+                codex.agent_role.as_deref(),
+            ]),
+            task_id: first_some(&[
                 header(headers, "x-switchyard-task-id"),
-                codex.task_id,
+                codex.task_id.as_deref(),
                 header(headers, "x-task-id"),
             ]),
-            task_kind: first_some([header(headers, "x-switchyard-task-kind"), codex.task_kind]),
-            turn_id: first_some([header(headers, "x-switchyard-turn-id"), codex.turn_id]),
-            session_final: header(headers, "x-dynamo-session-final")
-                .as_deref()
-                .and_then(parse_bool),
-            correlation_id: first_some([
+            task_kind: first_some(&[
+                header(headers, "x-switchyard-task-kind"),
+                codex.task_kind.as_deref(),
+            ]),
+            turn_id: first_some(&[
+                header(headers, "x-switchyard-turn-id"),
+                codex.turn_id.as_deref(),
+            ]),
+            session_final: header(headers, "x-dynamo-session-final").and_then(parse_bool),
+            correlation_id: first_some(&[
                 header(headers, "x-request-id"),
                 header(headers, "x-client-request-id"),
             ]),
@@ -178,15 +183,6 @@ struct CodexTurnMetadata {
     task_kind: Option<String>,
 }
 
-/// Returns the first non-empty, trimmed value for a case-insensitive header name.
-fn header(headers: &BTreeMap<String, Vec<String>>, name: &str) -> Option<String> {
-    headers
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .and_then(|(_, values)| values.iter().find(|value| !value.trim().is_empty()))
-        .map(|value| value.trim().to_string())
-}
-
 /// Parses the common textual spellings of a boolean header value.
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -196,35 +192,45 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Returns the first present value in preference order.
-fn first_some<const N: usize>(values: [Option<String>; N]) -> Option<String> {
-    values.into_iter().flatten().next()
+/// Lowercases header names and keeps the first non-empty, trimmed value per name.
+fn normalize_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut normalized = BTreeMap::new();
+    for (key, value) in headers {
+        let lower_key = key.to_ascii_lowercase();
+        let trimmed_value = value.trim();
+        if !normalized.contains_key(&lower_key) && !trimmed_value.is_empty() {
+            normalized.insert(lower_key, trimmed_value.to_string());
+        }
+    }
+
+    normalized
+}
+
+fn header<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    let lower_key = key.to_ascii_lowercase();
+    headers.get(&lower_key).map(|s| s.as_str())
+}
+
+fn first_some(options: &[Option<&str>]) -> Option<String> {
+    options.iter().find_map(|opt| opt.map(|s| s.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Builds a single-valued header map from `(name, value)` pairs.
-    fn headers(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<String>> {
-        pairs
-            .iter()
-            .map(|(name, value)| (name.to_string(), vec![value.to_string()]))
-            .collect()
-    }
-
     #[test]
     fn normalizes_codex_child_metadata() {
         let headers = BTreeMap::from([(
             CODEX_TURN_METADATA_HEADER.to_string(),
-            vec![serde_json::json!({
+            serde_json::json!({
                 "session_id": "root-session",
                 "thread_id": "child-agent",
                 "parent_thread_id": "root-agent",
                 "turn_id": "turn-7",
                 "subagent_kind": "collab_spawn",
             })
-            .to_string()],
+            .to_string(),
         )]);
 
         let metadata = Metadata::from_headers(&headers);
@@ -238,12 +244,12 @@ mod tests {
     fn root_codex_metadata_is_not_inferred_as_a_subagent() {
         let headers = BTreeMap::from([(
             CODEX_TURN_METADATA_HEADER.to_string(),
-            vec![serde_json::json!({
+            serde_json::json!({
                 "session_id": "root-session",
                 "thread_id": "root-agent",
                 "turn_id": "turn-1",
             })
-            .to_string()],
+            .to_string(),
         )]);
 
         let metadata = Metadata::from_headers(&headers);
@@ -253,13 +259,10 @@ mod tests {
     #[test]
     fn explicit_switchyard_subagent_flag_overrides_inference() {
         let headers = BTreeMap::from([
-            (
-                "x-switchyard-is-subagent".to_string(),
-                vec!["false".to_string()],
-            ),
+            ("x-switchyard-is-subagent".to_string(), "false".to_string()),
             (
                 "x-switchyard-parent-agent-id".to_string(),
-                vec!["parent".to_string()],
+                "parent".to_string(),
             ),
         ]);
 
@@ -273,7 +276,7 @@ mod tests {
         // affinity keys on it so a whole CLI session pins to one tier.
         let headers = BTreeMap::from([(
             "x-claude-code-session-id".to_string(),
-            vec!["fb46caae-eac6-4f5f-83fd-8fc8f5743abb".to_string()],
+            "fb46caae-eac6-4f5f-83fd-8fc8f5743abb".to_string(),
         )]);
 
         let metadata = Metadata::from_headers(&headers);
@@ -288,15 +291,15 @@ mod tests {
         let headers = BTreeMap::from([
             (
                 "x-nemo-relay-session-id".to_string(),
-                vec!["relay-session".to_string()],
+                "relay-session".to_string(),
             ),
             (
                 "x-nemo-relay-subagent-id".to_string(),
-                vec!["relay-child".to_string()],
+                "relay-child".to_string(),
             ),
             (
                 "x-dynamo-parent-session-id".to_string(),
-                vec!["relay-parent".to_string()],
+                "relay-parent".to_string(),
             ),
         ]);
 
@@ -310,9 +313,15 @@ mod tests {
     fn claude_code_agent_lineage_marks_subagent_and_infers_parent() {
         // A distinct agent id under a session is a child agent; with no explicit
         // parent header its parent is inferred to be the session it was spawned under.
-        let metadata = Metadata::from_headers(&headers(&[
-            ("x-claude-code-session-id", "claude-session"),
-            ("x-claude-code-agent-id", "claude-agent"),
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            (
+                "x-claude-code-session-id".to_string(),
+                "claude-session".to_string(),
+            ),
+            (
+                "x-claude-code-agent-id".to_string(),
+                "claude-agent".to_string(),
+            ),
         ]));
         assert_eq!(metadata.session_id.as_deref(), Some("claude-session"));
         assert_eq!(metadata.agent_id.as_deref(), Some("claude-agent"));
@@ -322,10 +331,19 @@ mod tests {
 
     #[test]
     fn explicit_claude_parent_agent_overrides_inferred_session() {
-        let metadata = Metadata::from_headers(&headers(&[
-            ("x-claude-code-session-id", "claude-session"),
-            ("x-claude-code-agent-id", "claude-agent"),
-            ("x-claude-code-parent-agent-id", "claude-parent-agent"),
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            (
+                "x-claude-code-session-id".to_string(),
+                "claude-session".to_string(),
+            ),
+            (
+                "x-claude-code-agent-id".to_string(),
+                "claude-agent".to_string(),
+            ),
+            (
+                "x-claude-code-parent-agent-id".to_string(),
+                "claude-parent-agent".to_string(),
+            ),
         ]));
         assert_eq!(
             metadata.parent_agent_id.as_deref(),
@@ -337,9 +355,15 @@ mod tests {
     fn claude_root_agent_without_distinct_child_is_not_a_subagent() {
         // Session but no distinct agent id: a root agent. A stray parent-agent header
         // is only meaningful for a distinct child, so it must not leak in.
-        let metadata = Metadata::from_headers(&headers(&[
-            ("x-claude-code-session-id", "claude-session"),
-            ("x-claude-code-parent-agent-id", "claude-parent-agent"),
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            (
+                "x-claude-code-session-id".to_string(),
+                "claude-session".to_string(),
+            ),
+            (
+                "x-claude-code-parent-agent-id".to_string(),
+                "claude-parent-agent".to_string(),
+            ),
         ]));
         assert_eq!(metadata.session_id.as_deref(), Some("claude-session"));
         assert_eq!(metadata.agent_id, None);
@@ -349,9 +373,12 @@ mod tests {
 
     #[test]
     fn opencode_parent_session_marks_subagent() {
-        let metadata = Metadata::from_headers(&headers(&[
-            ("x-session-id", "opencode-run"),
-            ("x-parent-session-id", "opencode-parent"),
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            ("x-session-id".to_string(), "opencode-run".to_string()),
+            (
+                "x-parent-session-id".to_string(),
+                "opencode-parent".to_string(),
+            ),
         ]));
         assert_eq!(metadata.session_id.as_deref(), Some("opencode-run"));
         assert!(metadata.is_subagent);
@@ -362,9 +389,12 @@ mod tests {
     fn opencode_parent_ignored_without_opencode_session() {
         // The OpenCode parent header only applies with OpenCode's own session header;
         // next to a Codex `session-id` it must not surface as a parent.
-        let metadata = Metadata::from_headers(&headers(&[
-            ("session-id", "codex-run"),
-            ("x-parent-session-id", "stray-parent"),
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            ("session-id".to_string(), "codex-run".to_string()),
+            (
+                "x-parent-session-id".to_string(),
+                "stray-parent".to_string(),
+            ),
         ]));
         assert_eq!(metadata.session_id.as_deref(), Some("codex-run"));
         assert!(!metadata.is_subagent);
@@ -373,25 +403,31 @@ mod tests {
 
     #[test]
     fn dynamo_session_final_is_captured() {
-        let metadata = Metadata::from_headers(&headers(&[
-            ("x-dynamo-session-id", "generic-run"),
-            ("x-dynamo-parent-session-id", "generic-parent"),
-            ("x-dynamo-session-final", "true"),
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            ("x-dynamo-session-id".to_string(), "generic-run".to_string()),
+            (
+                "x-dynamo-parent-session-id".to_string(),
+                "generic-parent".to_string(),
+            ),
+            ("x-dynamo-session-final".to_string(), "true".to_string()),
         ]));
         assert_eq!(metadata.agent_id.as_deref(), Some("generic-run"));
         assert_eq!(metadata.parent_agent_id.as_deref(), Some("generic-parent"));
         assert_eq!(metadata.session_final, Some(true));
 
-        let not_final = Metadata::from_headers(&headers(&[
-            ("x-dynamo-session-id", "generic-run"),
-            ("x-dynamo-session-final", "false"),
+        let not_final = Metadata::from_headers(&BTreeMap::from([
+            ("x-dynamo-session-id".to_string(), "generic-run".to_string()),
+            ("x-dynamo-session-final".to_string(), "false".to_string()),
         ]));
         assert_eq!(not_final.session_final, Some(false));
     }
 
     #[test]
     fn codex_session_header_is_case_insensitive() {
-        let metadata = Metadata::from_headers(&headers(&[("Session-ID", "codex-run")]));
+        let metadata = Metadata::from_headers(&BTreeMap::from([(
+            "Session-ID".to_string(),
+            "codex-run".to_string(),
+        )]));
         assert_eq!(metadata.session_id.as_deref(), Some("codex-run"));
     }
 }
