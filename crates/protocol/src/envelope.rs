@@ -4,7 +4,7 @@
 //! The request/response envelope: the normalized [`LlmRequest`]/[`LlmResponse`] paired
 //! with the original provider payload and correlation [`Metadata`].
 
-use crate::{LlmRequest, LlmResponse, WireFormat};
+use crate::{LlmRequest, LlmResponse, Metadata};
 use std::collections::HashMap;
 
 /// Per-request state threaded to an algorithm alongside a request. A placeholder
@@ -22,29 +22,6 @@ pub struct Context {
 /// grows without changing the orchestrator contract.
 #[derive(Clone)]
 pub struct Signals {}
-
-/// Correlation and routing metadata attached to a request or response.
-///
-/// All fields are optional; algorithms and observers use whichever are present
-/// (e.g. to key per-session state or emit correlated telemetry). `extra_metadata`
-/// is a free-form escape hatch for host-specific keys.
-#[derive(Clone)]
-pub struct Metadata {
-    /// Stable id for a multi-request session/conversation.
-    pub session_id: Option<String>,
-    /// Id of the agent making the request.
-    pub agent_id: Option<String>,
-    /// Id of the task the request belongs to.
-    pub task_id: Option<String>,
-    /// External trace/request id for joining with the host's telemetry.
-    pub correlation_id: Option<String>,
-    /// Arbitrary host-defined key/value metadata.
-    pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
-    /// HTTP headers to attach when forwarding the request/response, if any.
-    pub http_headers: Option<std::collections::BTreeMap<String, String>>,
-    /// The wire format the request/response was originally encoded in, if known.
-    pub wire_format: Option<WireFormat>,
-}
 
 /// A request an algorithm routes: the normalized [`LlmRequest`] plus the original
 /// provider payload and correlation [`Metadata`].
