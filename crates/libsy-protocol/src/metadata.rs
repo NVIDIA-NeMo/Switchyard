@@ -16,6 +16,48 @@ use crate::WireFormat;
 /// Header carrying Codex's structured turn metadata as a JSON object.
 const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 
+// Explicit Switchyard override headers; these take precedence over harness-native headers.
+const SWITCHYARD_SESSION_ID_HEADER: &str = "x-switchyard-session-id";
+const SWITCHYARD_AGENT_ID_HEADER: &str = "x-switchyard-agent-id";
+const SWITCHYARD_PARENT_AGENT_ID_HEADER: &str = "x-switchyard-parent-agent-id";
+const SWITCHYARD_IS_SUBAGENT_HEADER: &str = "x-switchyard-is-subagent";
+const SWITCHYARD_AGENT_KIND_HEADER: &str = "x-switchyard-agent-kind";
+const SWITCHYARD_AGENT_ROLE_HEADER: &str = "x-switchyard-agent-role";
+const SWITCHYARD_TASK_ID_HEADER: &str = "x-switchyard-task-id";
+const SWITCHYARD_TASK_KIND_HEADER: &str = "x-switchyard-task-kind";
+const SWITCHYARD_TURN_ID_HEADER: &str = "x-switchyard-turn-id";
+
+// NeMo Relay correlation headers.
+const RELAY_SESSION_ID_HEADER: &str = "x-nemo-relay-session-id";
+const RELAY_SUBAGENT_ID_HEADER: &str = "x-nemo-relay-subagent-id";
+
+// Dynamo correlation headers.
+const DYNAMO_SESSION_ID_HEADER: &str = "x-dynamo-session-id";
+const DYNAMO_PARENT_SESSION_ID_HEADER: &str = "x-dynamo-parent-session-id";
+const DYNAMO_SESSION_FINAL_HEADER: &str = "x-dynamo-session-final";
+
+// Codex compatibility projection of its parent thread id.
+const CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
+
+// OpenAI subagent marker.
+const OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
+
+// Claude Code agent-lineage headers.
+const CLAUDE_SESSION_ID_HEADER: &str = "x-claude-code-session-id";
+const CLAUDE_AGENT_ID_HEADER: &str = "x-claude-code-agent-id";
+const CLAUDE_PARENT_AGENT_ID_HEADER: &str = "x-claude-code-parent-agent-id";
+
+// OpenCode session headers.
+const OPENCODE_SESSION_ID_HEADER: &str = "x-session-id";
+const OPENCODE_PARENT_SESSION_ID_HEADER: &str = "x-parent-session-id";
+
+// Generic Codex-compatible correlation headers.
+const SESSION_ID_HEADER: &str = "session-id";
+const THREAD_ID_HEADER: &str = "thread-id";
+const TASK_ID_HEADER: &str = "x-task-id";
+const REQUEST_ID_HEADER: &str = "x-request-id";
+const CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
+
 /// Correlation and routing metadata attached to a request or response.
 ///
 /// All fields are optional (or default-empty); algorithms and observers use whichever
@@ -73,31 +115,31 @@ impl Metadata {
             .and_then(|value| serde_json::from_str::<CodexTurnMetadata>(value).ok())
             .unwrap_or_default();
 
-        let switchyard_parent = header(headers, "x-switchyard-parent-agent-id");
-        let relay_subagent = header(headers, "x-nemo-relay-subagent-id");
-        let dynamo_parent = header(headers, "x-dynamo-parent-session-id");
-        let codex_parent = header(headers, "x-codex-parent-thread-id");
-        let openai_subagent = header(headers, "x-openai-subagent");
+        let switchyard_parent = header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER);
+        let relay_subagent = header(headers, RELAY_SUBAGENT_ID_HEADER);
+        let dynamo_parent = header(headers, DYNAMO_PARENT_SESSION_ID_HEADER);
+        let codex_parent = header(headers, CODEX_PARENT_THREAD_ID_HEADER);
+        let openai_subagent = header(headers, OPENAI_SUBAGENT_HEADER);
 
         // Claude Code names a session and, for a spawned child, a distinct agent id.
         // A child whose agent id differs from the session is a sub-agent; its parent is
         // the explicit parent-agent header, else the session id it was spawned under.
-        let claude_session = header(headers, "x-claude-code-session-id");
-        let claude_agent = header(headers, "x-claude-code-agent-id");
+        let claude_session = header(headers, CLAUDE_SESSION_ID_HEADER);
+        let claude_agent = header(headers, CLAUDE_AGENT_ID_HEADER);
         let claude_subagent = matches!(
             (&claude_agent, &claude_session),
             (Some(agent), Some(session)) if agent != session
         );
         let claude_parent = claude_subagent
-            .then(|| header(headers, "x-claude-code-parent-agent-id").or(claude_session))
+            .then(|| header(headers, CLAUDE_PARENT_AGENT_ID_HEADER).or(claude_session))
             .flatten();
 
         // OpenCode carries a session id and an optional parent session; the parent
         // header is only meaningful alongside OpenCode's own session header.
-        let opencode_session = header(headers, "x-session-id");
+        let opencode_session = header(headers, OPENCODE_SESSION_ID_HEADER);
         let opencode_parent = opencode_session
             .as_ref()
-            .and_then(|_| header(headers, "x-parent-session-id"));
+            .and_then(|_| header(headers, OPENCODE_PARENT_SESSION_ID_HEADER));
 
         let inferred_subagent = switchyard_parent.is_some()
             || relay_subagent.is_some()
@@ -108,26 +150,26 @@ impl Metadata {
             || openai_subagent.is_some()
             || claude_subagent
             || opencode_parent.is_some();
-        let is_subagent = header(headers, "x-switchyard-is-subagent")
+        let is_subagent = header(headers, SWITCHYARD_IS_SUBAGENT_HEADER)
             .and_then(parse_bool)
             .unwrap_or(inferred_subagent);
 
         Metadata {
             session_id: first_some(&[
-                header(headers, "x-switchyard-session-id"),
+                header(headers, SWITCHYARD_SESSION_ID_HEADER),
                 claude_session,
-                header(headers, "x-nemo-relay-session-id"),
+                header(headers, RELAY_SESSION_ID_HEADER),
                 opencode_session,
                 codex.session_id.as_deref(),
-                header(headers, "session-id"),
+                header(headers, SESSION_ID_HEADER),
             ]),
             agent_id: first_some(&[
-                header(headers, "x-switchyard-agent-id"),
+                header(headers, SWITCHYARD_AGENT_ID_HEADER),
                 claude_agent,
                 relay_subagent,
-                header(headers, "x-dynamo-session-id"),
+                header(headers, DYNAMO_SESSION_ID_HEADER),
                 codex.thread_id.as_deref(),
-                header(headers, "thread-id"),
+                header(headers, THREAD_ID_HEADER),
             ]),
             parent_agent_id: first_some(&[
                 switchyard_parent,
@@ -139,31 +181,31 @@ impl Metadata {
             ]),
             is_subagent,
             agent_kind: first_some(&[
-                header(headers, "x-switchyard-agent-kind"),
+                header(headers, SWITCHYARD_AGENT_KIND_HEADER),
                 codex.subagent_kind.as_deref(),
                 openai_subagent,
             ]),
             agent_role: first_some(&[
-                header(headers, "x-switchyard-agent-role"),
+                header(headers, SWITCHYARD_AGENT_ROLE_HEADER),
                 codex.agent_role.as_deref(),
             ]),
             task_id: first_some(&[
-                header(headers, "x-switchyard-task-id"),
+                header(headers, SWITCHYARD_TASK_ID_HEADER),
                 codex.task_id.as_deref(),
-                header(headers, "x-task-id"),
+                header(headers, TASK_ID_HEADER),
             ]),
             task_kind: first_some(&[
-                header(headers, "x-switchyard-task-kind"),
+                header(headers, SWITCHYARD_TASK_KIND_HEADER),
                 codex.task_kind.as_deref(),
             ]),
             turn_id: first_some(&[
-                header(headers, "x-switchyard-turn-id"),
+                header(headers, SWITCHYARD_TURN_ID_HEADER),
                 codex.turn_id.as_deref(),
             ]),
-            session_final: header(headers, "x-dynamo-session-final").and_then(parse_bool),
+            session_final: header(headers, DYNAMO_SESSION_FINAL_HEADER).and_then(parse_bool),
             correlation_id: first_some(&[
-                header(headers, "x-request-id"),
-                header(headers, "x-client-request-id"),
+                header(headers, REQUEST_ID_HEADER),
+                header(headers, CLIENT_REQUEST_ID_HEADER),
             ]),
             ..Metadata::default()
         }
