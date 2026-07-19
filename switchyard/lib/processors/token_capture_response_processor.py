@@ -28,6 +28,7 @@ from switchyard.lib.processors.rl_logging_response_processor import (
 )
 from switchyard.lib.processors.token_capture_request_processor import (
     CTX_TOKEN_CAPTURE_ORIGINAL_STREAM,
+    CTX_TOKEN_CAPTURE_PARENT_SESSION,
     CTX_TOKEN_CAPTURE_SESSION,
     TokenCaptureRequestProcessor,
 )
@@ -132,6 +133,7 @@ class TokenCaptureResponseProcessor:
             "schema_version": SCHEMA_VERSION,
             "uuid": str(uuid_lib.uuid4()),
             "session_id": session_id,
+            "parent_session_id": ctx.metadata.get(CTX_TOKEN_CAPTURE_PARENT_SESSION),
             "captured_at": datetime.now(UTC).isoformat(),
             "request_id": request_id,
             "model": model,

@@ -34,6 +34,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _session_head(session_dir: Path) -> dict[str, Any] | None:
+    """``{session_id, parent_session_id}`` from the first readable record in *session_dir*.
+
+    ``None`` when the directory holds no readable, session-tagged record.
+    """
+    for record_path in sorted(session_dir.glob("*.json")):
+        try:
+            record = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        session_id = record.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            return {
+                "session_id": session_id,
+                "parent_session_id": record.get("parent_session_id"),
+            }
+    return None
+
+
 class TokenCaptureSessionsEndpoint(NemoSwitchyardEndpoint):
     """Exposes captured completion records for retrieval by session id.
 
@@ -84,5 +103,24 @@ class TokenCaptureSessionsEndpoint(NemoSwitchyardEndpoint):
                 "completions": completions,
             }
 
+        async def list_sessions() -> dict[str, Any]:
+            """Every session id captured under this log dir, with its parent link.
+
+            Lets a caller enumerate a run's sessions when the harness mints its
+            own ids (e.g. OpenCode's ``X-Session-Id``), without reading any
+            harness logs. Directory names are session-id hashes, so the ids come
+            from the records. Scope one run to one ``--rl-log-dir`` so the list is
+            not mixed across rollouts.
+            """
+            root = sessions_root(capture_dir)
+            sessions: list[dict[str, Any]] = []
+            if root.is_dir():
+                for session_dir in sorted(root.iterdir()):
+                    entry = _session_head(session_dir) if session_dir.is_dir() else None
+                    if entry is not None:
+                        sessions.append(entry)
+            return {"schema_version": SCHEMA_VERSION, "sessions": sessions}
+
+        routes.get("/v1/sessions")(list_sessions)
         routes.get("/v1/sessions/{session_id}/completions")(get_session_completions)
         app.include_router(routes, tags=["TokenCapture"])

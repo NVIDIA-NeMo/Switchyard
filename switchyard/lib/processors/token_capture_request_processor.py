@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 #: — a call without it is forwarded uncaptured.
 CTX_TOKEN_CAPTURE_SESSION = "_token_capture_session"
 
+#: Context metadata key holding the parent session id for a subagent call, from
+#: the harness's native ``x-parent-session-id`` header. Written by
+#: :class:`TokenCaptureRequestProcessor`, stored on the record so the session
+#: tree is recoverable from Switchyard alone (no harness logs). Absent for
+#: root/single-agent calls.
+CTX_TOKEN_CAPTURE_PARENT_SESSION = "_token_capture_parent_session"
+
 #: Context metadata key set when the inbound request asked for streaming and
 #: the request was flipped to non-streaming for faithful token capture. Read
 #: by the response processor, which synthesizes the client-facing stream.
@@ -49,6 +56,11 @@ BODY_SESSION_KEY = "proxy_x_session_id"
 #: retained request header map. Kept as an explicit allowlist (not any header)
 #: so an arbitrary caller header is never mistaken for a session id.
 NATIVE_SESSION_HEADERS: tuple[str, ...] = ("x-session-id",)
+
+#: Harness-native header naming the parent session of a subagent call (OpenCode
+#: sends it on every subagent request). Captured onto the record so the session
+#: tree is durable in Switchyard. Matched case-insensitively.
+NATIVE_PARENT_SESSION_HEADER = "x-parent-session-id"
 
 #: Caller-supplied sampling params stripped so the target's derived
 #: token-capture ``extra_body`` params (see ``llm_target_with_token_capture``)
@@ -84,6 +96,9 @@ class TokenCaptureRequestProcessor:
                 request.replace_body(body)
             return request
         ctx.metadata[CTX_TOKEN_CAPTURE_SESSION] = session_id
+        parent_session = _native_parent_session_id(ctx)
+        if parent_session is not None:
+            ctx.metadata[CTX_TOKEN_CAPTURE_PARENT_SESSION] = parent_session
 
         for key in _CALLER_PARAM_KEYS:
             if key in body:
@@ -126,18 +141,33 @@ def _resolve_session_id(ctx: ProxyContext, body_session: object) -> str | None:
     return None
 
 
-def _native_session_id(ctx: ProxyContext) -> str | None:
-    """First non-empty value among :data:`NATIVE_SESSION_HEADERS` in the request headers.
-
-    Reads the retained request header map on the context, matched
-    case-insensitively (``NATIVE_SESSION_HEADERS`` are already lowercased).
-    """
+def _lowercased_headers(ctx: ProxyContext) -> dict[str, str] | None:
+    """The retained request header map with lowercased names, or ``None`` if absent."""
     headers = ctx.metadata.get(CTX_PROFILE_REQUEST_HEADERS)
     if not isinstance(headers, Mapping):
         return None
-    lowered = {str(name).lower(): value for name, value in headers.items()}
+    return {str(name).lower(): value for name, value in headers.items()}
+
+
+def _native_session_id(ctx: ProxyContext) -> str | None:
+    """First non-empty value among :data:`NATIVE_SESSION_HEADERS` in the request headers.
+
+    Matched case-insensitively (``NATIVE_SESSION_HEADERS`` are already lowercased).
+    """
+    lowered = _lowercased_headers(ctx)
+    if lowered is None:
+        return None
     for header in NATIVE_SESSION_HEADERS:
         value = lowered.get(header)
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _native_parent_session_id(ctx: ProxyContext) -> str | None:
+    """The :data:`NATIVE_PARENT_SESSION_HEADER` value, or ``None`` (root/single-agent call)."""
+    lowered = _lowercased_headers(ctx)
+    if lowered is None:
+        return None
+    value = lowered.get(NATIVE_PARENT_SESSION_HEADER)
+    return value if isinstance(value, str) and value else None

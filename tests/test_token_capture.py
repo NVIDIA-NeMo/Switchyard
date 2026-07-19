@@ -435,6 +435,29 @@ async def test_unlisted_header_never_becomes_session(tmp_path: Path) -> None:
     assert list(tmp_path.rglob("*.json")) == []
 
 
+async def test_parent_session_captured_from_native_header(tmp_path: Path) -> None:
+    # OpenCode sends x-parent-session-id on every subagent call; capture it so the
+    # session tree is recoverable from Switchyard alone.
+    ctx = ProxyContext()
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = {
+        "X-Session-Id": "sub-1",
+        "x-parent-session-id": "root-1",
+    }
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+    record = _read_only_record(tmp_path)
+    assert record["session_id"] == "sub-1"
+    assert record["parent_session_id"] == "root-1"
+
+
+async def test_parent_session_absent_is_none(tmp_path: Path) -> None:
+    ctx = ProxyContext()
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = {"X-Session-Id": "root-1"}
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+    assert _read_only_record(tmp_path)["parent_session_id"] is None
+
+
 # ---------------------------------------------------------------------------
 # Response processor: unified record
 # ---------------------------------------------------------------------------
@@ -735,6 +758,32 @@ async def test_retrieval_endpoint_serves_session_records(tmp_path: Path) -> None
     assert payload["session_id"] == _SESSION
     assert len(payload["completions"]) == 2
     assert payload["completions"][0]["generation_token_ids"] == [7, 8]
+
+
+async def _capture_native(tmp_path: Path, session_id: str, parent: str | None = None) -> None:
+    """Capture one call for a stock-harness session via its native headers."""
+    ctx = ProxyContext()
+    headers = {"X-Session-Id": session_id}
+    if parent is not None:
+        headers["x-parent-session-id"] = parent
+    ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = headers
+    await _run(tmp_path, _vllm_completion(), ctx=ctx)
+
+
+async def test_list_sessions_endpoint_returns_tree(tmp_path: Path) -> None:
+    await _capture_native(tmp_path, "root-1")
+    await _capture_native(tmp_path, "sub-1", parent="root-1")
+    await _capture_native(tmp_path, "sub-2", parent="root-1")
+
+    payload = _retrieval_client(tmp_path).get("/v1/sessions").json()
+    assert payload["schema_version"] == 1
+    tree = {s["session_id"]: s["parent_session_id"] for s in payload["sessions"]}
+    assert tree == {"root-1": None, "sub-1": "root-1", "sub-2": "root-1"}
+
+
+def test_list_sessions_endpoint_empty(tmp_path: Path) -> None:
+    payload = _retrieval_client(tmp_path).get("/v1/sessions").json()
+    assert payload == {"schema_version": 1, "sessions": []}
 
 
 def _session_dir(tmp_path: Path, session_id: str) -> Path:
