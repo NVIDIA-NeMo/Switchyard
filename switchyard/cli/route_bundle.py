@@ -25,7 +25,7 @@ argparse-driven and YAML-driven assembly share one builder.
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from importlib import import_module
 from pathlib import Path
@@ -170,6 +170,11 @@ _MODEL_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozense
     # Opts this route's single target into token capture. Applied to the target
     # before coercion.
     "token_capture_engine",
+    # Opts this route into token-continuity injection (requires
+    # token_capture_engine). Parser names mirror the vLLM server flags.
+    "token_injection",
+    "tool_parser",
+    "reasoning_parser",
 })
 _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
     "strong",
@@ -197,7 +202,14 @@ _PASSTHROUGH_SETTING_KEYS = frozenset({
 })
 _PASSTHROUGH_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
-    | frozenset({"defaults", "enable_stats", "token_capture_engine"})
+    | frozenset({
+        "defaults",
+        "enable_stats",
+        "token_capture_engine",
+        "token_injection",
+        "tool_parser",
+        "reasoning_parser",
+    })
     | _PASSTHROUGH_SETTING_KEYS
 )
 _LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
@@ -525,6 +537,10 @@ def _strip_token_capture_engine(raw: object) -> object:
             for key, value in node.items():
                 if key == "token_capture_engine":
                     stripped += 1
+                    continue
+                # Injection rides on capture; without capture it must not
+                # activate (its records would go unstored).
+                if key == "token_injection":
                     continue
                 out[key] = _walk(value)
             return out
@@ -866,6 +882,7 @@ def _build_switchyard_for_route(
             enable_stats=_optional_bool(route.get("enable_stats"), default=True),
             extra_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
+            backend_wrapper=_token_injection_wrapper(model_id, route, target),
         )
 
     if route_type == "routellm":
@@ -1215,6 +1232,55 @@ def _passthrough_target(
     if route_engine is not None:
         target["token_capture_engine"] = route_engine
     return coerce_llm_target(target, default_id=model_id)
+
+
+def _token_injection_wrapper(
+    model_id: str,
+    route: Mapping[str, object],
+    target: LlmTarget,
+) -> Callable[[Any], Any] | None:
+    """Backend wrapper enabling token-continuity injection, or ``None``.
+
+    ``token_injection: true`` opts the route in; it requires
+    ``token_capture_engine`` (injection's records must be captured) and an
+    explicit target ``base_url`` for the direct ``/tokenize`` and
+    ``/v1/completions`` calls. Parser names are optional and mirror the vLLM
+    server's ``--tool-call-parser`` / ``--reasoning-parser`` flags.
+    """
+    if not route.get("token_injection"):
+        return None
+    if route.get("token_capture_engine") is None:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: token_injection requires token_capture_engine"
+        )
+    endpoint = target.endpoint
+    base_url = endpoint.base_url if endpoint is not None else None
+    if not base_url:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: token_injection requires an explicit base_url"
+        )
+    tool_parser = _optional_str(route["tool_parser"]) if "tool_parser" in route else None
+    reasoning_parser = (
+        _optional_str(route["reasoning_parser"]) if "reasoning_parser" in route else None
+    )
+    api_key = endpoint.api_key if endpoint is not None else None
+    timeout_secs = (endpoint.timeout_secs if endpoint is not None else None) or 600.0
+    model = target.model
+
+    def _wrap(backend: Any) -> Any:
+        from switchyard.lib.backends.token_injection_backend import TokenInjectionBackend
+
+        return TokenInjectionBackend(
+            backend,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            timeout_secs=timeout_secs,
+        )
+
+    return _wrap
 
 
 def _latency_service_switchyard(
