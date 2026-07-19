@@ -59,6 +59,8 @@
 //! agents, live in the `libsy-examples` crate.
 
 mod algorithms;
+pub use algorithms::affinity::AffinityRouter;
+pub use algorithms::core::{Classifier, Event, Processor, Score, State};
 pub use algorithms::metadata_processor::MetadataProcessor;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
 pub use algorithms::rand::{RandomAlgo, RandomDecision};
