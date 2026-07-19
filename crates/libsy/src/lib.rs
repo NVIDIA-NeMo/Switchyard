@@ -59,6 +59,7 @@
 //! agents, live in the `libsy-examples` crate.
 
 mod algorithms;
+pub use algorithms::metadata_processor::MetadataProcessor;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
 pub use algorithms::rand::{RandomAlgo, RandomDecision};
 
