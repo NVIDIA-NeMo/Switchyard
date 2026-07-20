@@ -6,3 +6,4 @@ pub mod core;
 pub mod metadata_processor;
 pub mod noop;
 pub mod rand;
+pub mod staged;
