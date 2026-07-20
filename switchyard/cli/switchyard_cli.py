@@ -79,6 +79,7 @@ from switchyard.cli.config.user_config import (
 from switchyard.cli.configure_command import (
     cmd_configure,
 )
+from switchyard.cli.configure_request import ConfigureRequest
 from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launch_command import (
     cmd_launch_claude,
@@ -383,7 +384,7 @@ def _add_launch_intake_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_configure(args: argparse.Namespace) -> None:
-    cmd_configure(args)
+    cmd_configure(ConfigureRequest.from_namespace(args))
 
 
 def _cmd_launch_claude(args: argparse.Namespace) -> None:
