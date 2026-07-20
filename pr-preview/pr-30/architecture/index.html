@@ -1329,17 +1329,22 @@ formats select an endpoint directly and do not run capability probes.</p>
 <h3 id="auto-decision-tree">AUTO Decision Tree<a class="headerlink" href="#auto-decision-tree" title="Permanent link">&para;</a></h3>
 <pre class="mermaid"><code>flowchart TB
     auto["BackendFormat.AUTO"]
+    chat{"/v1/chat/completions works?"}
+    openai_chat["OPENAI&lt;br/&gt;/v1/chat/completions"]
     messages{"/v1/messages works?"}
     anthropic["ANTHROPIC&lt;br/&gt;/v1/messages"]
     responses{"/v1/responses works?"}
     responses_format["RESPONSES&lt;br/&gt;/v1/responses"]
-    openai["OPENAI&lt;br/&gt;/v1/chat/completions fallback"]
+    openai_fallback["OPENAI&lt;br/&gt;/v1/chat/completions fallback"]
 
-    auto --&gt;|"Probe /v1/messages"| messages
+    auto --&gt;|"Probe /v1/chat/completions"| chat
+    chat --&gt;|"Timeout: assume Chat Completions"| openai_chat
+    chat --&gt;|"Yes"| openai_chat
+    chat --&gt;|"No (fast 404): probe /v1/messages"| messages
     messages --&gt;|"Yes"| anthropic
     messages --&gt;|"No: probe /v1/responses"| responses
     responses --&gt;|"Yes"| responses_format
-    responses --&gt;|"No"| openai</code></pre>
+    responses --&gt;|"No"| openai_fallback</code></pre>
 <p>Supported inbound and response formats are handled automatically.
 <code>TranslationEngine</code> converts the client's request to the resolved backend
 format and translates the backend response back to the client's expected
@@ -1351,6 +1356,13 @@ upstream format.</p>
 <p>Prefer an explicit format for controlled deployments. It skips capability
 probes and makes the upstream contract clear. Use <code>AUTO</code> when provider
 capabilities are unknown or vary across deployments.</p>
+<p><strong><code>AUTO</code> costs startup latency.</strong> Each probe is a live request to the upstream
+made before the agent starts, so a slow endpoint adds a round-trip per probe
+(up to three, tried in order). This is the main reason a launch that uses
+<code>AUTO</code> (Claude Code, Codex) starts slower than one pinned to an explicit
+format. Set <code>format:</code> explicitly to remove the probing entirely. To see the
+per-probe cost of a launch, run it with <code>--startup-timing</code> (or
+<code>SWITCHYARD_STARTUP_TIMING=1</code>), which prints each probe on its own line.</p>
 </blockquote>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
