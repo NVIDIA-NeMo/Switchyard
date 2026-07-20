@@ -25,6 +25,7 @@ LEGACY_REDIRECTS = {
     "routing_algorithms/llm_classifier_routing": "/routing/llm-classifier-routing",
     "routing_algorithms/sticky_routing": "/routing/sticky-routing",
     "routing_algorithms/stage_router_routing": "/routing/stage-router-routing",
+    "routing_algorithms/escalation_router_routing": "/routing/escalation-router-routing",
     "operations/context_window": "/operations/context-window-handling",
     "cli_reference": "/reference/cli-reference",
 }

@@ -11,12 +11,19 @@ use crate::py_serde::value_from_python;
 ///
 /// Accepts any Python mapping (e.g. a request body dict) and returns the key
 /// the core derivation produces for it, used to pin requests of one session to
-/// a previously selected model.
+/// a previously selected model. `depth == 0` (default) always yields a key;
+/// `depth > 0` extends the hashed prefix with the first `depth` post-first-user
+/// messages and returns `None` until that prefix exists.
 #[pyfunction]
-pub(crate) fn session_key_from_body(body: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(switchyard_core::session_key_from_body(&value_from_python(
-        body,
-    )?))
+#[pyo3(signature = (body, depth = 0))]
+pub(crate) fn session_key_from_body(
+    body: &Bound<'_, PyAny>,
+    depth: usize,
+) -> PyResult<Option<String>> {
+    Ok(switchyard_core::session_key_from_body_with_depth(
+        &value_from_python(body)?,
+        depth,
+    ))
 }
 
 /// LRU-bounded cache mapping session keys to arbitrary Python values.

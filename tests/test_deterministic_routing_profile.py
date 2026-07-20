@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from switchyard.lib.backends.deterministic_routing_llm_backend import (
+    CTX_DETERMINISTIC_ROUTING_TIER,
     DeterministicRoutingLLMBackend,
 )
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
@@ -28,14 +29,21 @@ from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     ProfileSwitchyard,
 )
-from switchyard.lib.profiles.deterministic_routing_profile_config import (
-    _apply_deepseek_overrides,
-    _apply_default_tier_timeout,
+from switchyard.lib.profiles.tier_target_builders import (
+    apply_deepseek_overrides,
+    apply_default_tier_timeout,
 )
 from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.roles import LLMBackend
 from switchyard.lib.route_table_builders import deterministic_routing_virtual_model_id
 from switchyard.lib.stats_accumulator import StatsAccumulator
-from switchyard_rust.core import ChatRequest, ChatResponse
+from switchyard_rust.core import (
+    ChatRequest,
+    ChatRequestType,
+    ChatResponse,
+    SwitchyardContextWindowExceededError,
+)
+from switchyard_rust.profiles import ProfileInput
 from switchyard_rust.translation import TranslationEngine
 
 
@@ -332,7 +340,7 @@ class TestDeepSeekOverrides:
             api_key="k",
             base_url="https://e/v1",
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
     def test_deepseek_gets_batch_priority_header(self) -> None:
@@ -343,7 +351,7 @@ class TestDeepSeekOverrides:
             api_key="k",
             base_url="https://e/v1",
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_headers == {"X-Inference-Priority": "batch"}
 
     def test_non_deepseek_passes_through_unchanged(self) -> None:
@@ -354,7 +362,7 @@ class TestDeepSeekOverrides:
             api_key="k",
             base_url="https://e/v1",
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out is target  # no rebuild needed
 
     def test_caller_supplied_extras_win(self) -> None:
@@ -367,7 +375,7 @@ class TestDeepSeekOverrides:
             extra_body={"chat_template_kwargs": {"enable_thinking": True}},
             extra_headers={"X-Inference-Priority": "interactive"},
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_body == {"chat_template_kwargs": {"enable_thinking": True}}
         assert out.extra_headers == {"X-Inference-Priority": "interactive"}
 
@@ -380,7 +388,7 @@ class TestDeepSeekOverrides:
             base_url="https://e/v1",
             extra_body={},
         )
-        out = _apply_deepseek_overrides(target)
+        out = apply_deepseek_overrides(target)
         assert out.extra_body == {}
 
 
@@ -396,7 +404,7 @@ class TestTierTimeoutDefaults:
             base_url="https://e/v1",
         )
 
-        out = _apply_default_tier_timeout(target, 123.0)
+        out = apply_default_tier_timeout(target, 123.0)
 
         assert out.endpoint.timeout_secs == 123.0
 
@@ -410,7 +418,7 @@ class TestTierTimeoutDefaults:
             timeout_secs=45.0,
         )
 
-        out = _apply_default_tier_timeout(target, 123.0)
+        out = apply_default_tier_timeout(target, 123.0)
 
         assert out is target
         assert out.endpoint.timeout_secs == 45.0
@@ -424,7 +432,7 @@ class TestTierTimeoutDefaults:
             base_url="https://e/v1",
         )
 
-        out = _apply_default_tier_timeout(target, None)
+        out = apply_default_tier_timeout(target, None)
 
         assert out is target
         assert out.endpoint.timeout_secs is None
@@ -489,3 +497,123 @@ def test_virtual_model_id_changes_with_prompt_and_context() -> None:
 
     assert prompt_id != base_id
     assert max_chars_id != base_id
+
+
+def _custom_id_config() -> DeterministicRoutingConfig:
+    return DeterministicRoutingConfig(
+        strong=LlmTarget(
+            id="frontier",
+            model="strong-model",
+            format=BackendFormat.OPENAI,
+            api_key="sk-test",
+            base_url="https://strong.invalid/v1",
+        ),
+        weak=LlmTarget(
+            id="cheap",
+            model="weak-model",
+            format=BackendFormat.OPENAI,
+            api_key="sk-test",
+            base_url="https://weak.invalid/v1",
+        ),
+        classifier=LlmTarget(
+            id="classifier",
+            model="classifier-model",
+            format=BackendFormat.OPENAI,
+            api_key="sk-test",
+            base_url="https://classifier.invalid/v1",
+        ),
+        profile_name="coding_agent",
+        fallback_target_on_evict="frontier",
+    )
+
+
+def test_duplicate_tier_ids_rejected() -> None:
+    config = _custom_id_config()
+    with pytest.raises(ValidationError) as exc:
+        DeterministicRoutingConfig.model_validate({
+            **config.model_dump(),
+            "strong": LlmTarget(id="tier", model="strong-model"),
+            "weak": LlmTarget(id="tier", model="weak-model"),
+            "fallback_target_on_evict": "tier",
+        })
+    assert "must differ" in str(exc.value)
+
+
+def test_custom_tier_ids_key_backend_and_selector() -> None:
+    """Backend tiers and the selector's labels follow the configured ids."""
+    profile = DeterministicRoutingProfileConfig.from_config(_custom_id_config()).build()
+
+    backend = profile._backend
+    assert isinstance(backend, DeterministicRoutingLLMBackend)
+    assert set(backend._backends) == {"frontier", "cheap"}
+    assert backend._default_tier == "frontier"
+
+
+class _OverflowableTier(LLMBackend):
+    """Stub tier backend: overflows when told to, else returns a completion."""
+
+    def __init__(self, *, overflow: bool, target_id: str) -> None:
+        self.calls = 0
+        self._overflow = overflow
+        self._target_id = target_id
+
+    @property
+    def supported_request_types(self) -> list[ChatRequestType]:
+        return [ChatRequestType.OPENAI_CHAT]
+
+    async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        self.calls += 1
+        if self._overflow:
+            error = SwitchyardContextWindowExceededError(f"{self._target_id} overflowed")
+            error.target_id = self._target_id  # type: ignore[attr-defined]
+            raise error
+        return ChatResponse.openai_completion({
+            "id": "deterministic-overflow-test",
+            "object": "chat.completion",
+            "model": request.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        })
+
+
+class _StampTier:
+    """Stand-in for the classifier+selector pair: stamp a fixed tier label."""
+
+    def __init__(self, tier: str) -> None:
+        self._tier = tier
+
+    async def process(self, ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
+        ctx.metadata[CTX_DETERMINISTIC_ROUTING_TIER] = self._tier
+        return request
+
+
+async def test_overflow_reroutes_to_custom_strong_id_through_full_profile() -> None:
+    """Weak overflow retries onto the configured strong id, not an unknown label.
+
+    Regression test for tiers keyed as literal strong/weak while the chain's
+    evict-and-retry rewrote ``selected_target`` to the *configured* fallback
+    id: with ids ``cheap``/``frontier``, the rewritten pick was unrecognised,
+    the retry hit weak again, and the pool exhausted.
+    """
+    profile = DeterministicRoutingProfileConfig.from_config(_custom_id_config()).build()
+    backend = profile._backend
+    assert isinstance(backend, DeterministicRoutingLLMBackend)
+    cheap = _OverflowableTier(overflow=True, target_id="cheap")
+    frontier = _OverflowableTier(overflow=False, target_id="frontier")
+    backend._backends = {"cheap": cheap, "frontier": frontier}
+    profile._request_processors = (_StampTier("cheap"),)
+
+    request = ChatRequest.openai_chat({
+        "model": "client/model",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    response = await profile.run(ProfileInput(request))
+
+    assert cheap.calls == 1
+    assert frontier.calls == 1
+    assert response.body["choices"][0]["message"]["content"] == "ok"

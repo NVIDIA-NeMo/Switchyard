@@ -23,6 +23,7 @@ from switchyard.lib.endpoints.error_envelope import (
     error_response,
     upstream_error_response,
 )
+from switchyard.lib.endpoints.route_selection import route_selection_headers
 from switchyard.lib.proxy_context import (
     CTX_ERROR_SOURCE,
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
@@ -197,14 +198,23 @@ def handle_chain_exception(
     record_upstream_attempt_failure(ctx, exc)
     upstream = upstream_response_from_ctx(ctx, inbound=inbound, exc=exc)
     if upstream is not None:
-        return upstream
-    _log.error(log_msg, exc_info=exc)
-    return internal_chain_error_response(
-        exc,
-        inbound=inbound,
-        error_source=_ctx_error_source(ctx, default=ERROR_SOURCE_SWITCHYARD),
-        upstream_model=_ctx_upstream_model(ctx),
-    )
+        response = upstream
+    else:
+        _log.error(log_msg, exc_info=exc)
+        response = internal_chain_error_response(
+            exc,
+            inbound=inbound,
+            error_source=_ctx_error_source(ctx, default=ERROR_SOURCE_SWITCHYARD),
+            upstream_model=_ctx_upstream_model(ctx),
+        )
+    # A selection on ctx means an upstream call already SUCCEEDED (and was
+    # billed, with the spend-logs header stamped) before this failure — e.g.
+    # response-side translation rejected the 200 payload. Surface the
+    # selection headers on the error response too, so the front proxy can
+    # still join its (failed) parent spend-log row to the billed provider row.
+    for header_name, value in route_selection_headers(ctx).items():
+        response.headers[header_name] = value
+    return response
 
 
 def context_exhausted_response(exc: BaseException, inbound: Inbound) -> JSONResponse:

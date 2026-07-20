@@ -31,8 +31,8 @@ pinned in `docs/fern/fern.config.json`.
 | Remove local Fern artifacts | `cd docs && make clean` |
 | List published pages | `sed -n '1,240p' docs/fern/versions/nightly.yml` |
 | Find unpublished notes | `find docs/internal -type f -name '*.md' -print` |
-| Check MDX safety | `python /path/to/convert-to-fern/scripts/checks/check_mdx_safety.py docs` |
-| Check internal Fern links | `python /path/to/convert-to-fern/scripts/checks/validate_fern_internal_links.py docs --version-yml docs/fern/versions/nightly.yml` |
+| Check MDX safety | `cd docs && make check` |
+| Check internal Fern links | `uv run pytest tests/test_fern_docs.py::test_internal_mdx_links_resolve_to_navigation_routes -v` |
 
 ## Where Things Live
 
@@ -131,7 +131,9 @@ The Fern workflows follow the same split as NeMo Curator:
 
 Every workflow installs the exact Fern CLI version from `docs/fern/fern.config.json` and runs Fern
 from `docs/fern/`. Preview comments and publishing require the `DOCS_FERN_TOKEN` organization
-secret. Do not collapse the trusted and untrusted preview phases or use `pull_request_target`.
+secret. Secret-bearing jobs pin actions to immutable commits, disable package-manager caching, and
+validate the Fern version before installing it. Checkout steps do not persist credentials. Do not
+collapse the trusted and untrusted preview phases or use `pull_request_target`.
 
 ## Failure Map
 

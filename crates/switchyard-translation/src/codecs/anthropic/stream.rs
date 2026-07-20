@@ -7,10 +7,11 @@ use serde_json::{json, Map, Value};
 
 use crate::codecs::stream::{
     record_source_identity, target_message_id_or_source_message_id, target_model_or_source_model,
-    ConversationStreamEvent, StreamCodec, StreamTranslationState,
+    StreamCodec, StreamTranslationState,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::util::sanitize_anthropic_tool_use_id;
+use crate::LlmResponseChunk;
 
 /// Stream codec for Anthropic Messages events.
 pub struct AnthropicMessagesStreamCodec;
@@ -24,14 +25,14 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         &self,
         state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<ConversationStreamEvent> {
+    ) -> Vec<LlmResponseChunk> {
         decode_anthropic_stream(state, event)
     }
 
     fn encode_event(
         &self,
         state: &mut StreamTranslationState,
-        event: ConversationStreamEvent,
+        event: LlmResponseChunk,
     ) -> Vec<Value> {
         encode_anthropic_stream(state, event)
     }
@@ -45,9 +46,9 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
 fn decode_anthropic_stream(
     state: &mut StreamTranslationState,
     event: &Value,
-) -> Vec<ConversationStreamEvent> {
+) -> Vec<LlmResponseChunk> {
     let Some(object) = event.as_object() else {
-        return vec![ConversationStreamEvent::Error {
+        return vec![LlmResponseChunk::Error {
             message: "Anthropic stream event is not an object".to_string(),
         }];
     };
@@ -72,7 +73,7 @@ fn decode_anthropic_stream(
                     capture_anthropic_usage(state, usage);
                 }
             }
-            vec![ConversationStreamEvent::MessageStart {
+            vec![LlmResponseChunk::MessageStart {
                 id: state.message_id.clone(),
                 model: state.model.clone(),
             }]
@@ -83,7 +84,7 @@ fn decode_anthropic_stream(
             let mut out = Vec::new();
             if let Some(usage) = object.get("usage") {
                 capture_anthropic_usage(state, usage);
-                out.push(ConversationStreamEvent::Usage(state.usage.clone()));
+                out.push(LlmResponseChunk::Usage(state.usage.clone()));
             }
             if let Some(stop_reason) = object
                 .get("delta")
@@ -91,14 +92,22 @@ fn decode_anthropic_stream(
                 .and_then(|delta| delta.get("stop_reason"))
                 .and_then(Value::as_str)
             {
-                out.push(ConversationStreamEvent::MessageStop {
+                // Remember the provider stop reason: Anthropic delivers it here, on
+                // `message_delta`, while the terminal `message_stop` carries none of its own.
+                state.stop_reason = Some(stop_reason.to_string());
+                out.push(LlmResponseChunk::MessageStop {
                     reason: Some(stop_reason.to_string()),
                 });
             }
             out
         }
-        Some("message_stop") => vec![ConversationStreamEvent::MessageStop { reason: None }],
-        Some("error") => vec![ConversationStreamEvent::Error {
+        // Anthropic's terminal `message_stop` carries no reason of its own; replay the one
+        // remembered from `message_delta` so a chunk accumulator keeps the real stop reason
+        // (e.g. `max_tokens`) instead of overwriting it with a reasonless `EndTurn`.
+        Some("message_stop") => vec![LlmResponseChunk::MessageStop {
+            reason: state.stop_reason.clone(),
+        }],
+        Some("error") => vec![LlmResponseChunk::Error {
             message: object
                 .get("error")
                 .and_then(Value::as_object)
@@ -114,10 +123,10 @@ fn decode_anthropic_stream(
 // Encodes neutral streaming events into Anthropic Messages events.
 fn encode_anthropic_stream(
     state: &mut StreamTranslationState,
-    event: ConversationStreamEvent,
+    event: LlmResponseChunk,
 ) -> Vec<Value> {
     match event {
-        ConversationStreamEvent::MessageStart { id, model } => {
+        LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             if state.emitted_message_start {
                 Vec::new()
@@ -138,7 +147,7 @@ fn encode_anthropic_stream(
                 })]
             }
         }
-        ConversationStreamEvent::TextDelta { text, .. } => {
+        LlmResponseChunk::TextDelta { text, .. } => {
             state.output_tokens_seen += 1;
             let mut out = ensure_anthropic_text_block(state);
             out.push(json!({
@@ -148,7 +157,7 @@ fn encode_anthropic_stream(
             }));
             out
         }
-        ConversationStreamEvent::ReasoningDelta { text, .. } => {
+        LlmResponseChunk::ReasoningDelta { text, .. } => {
             let mut out = ensure_anthropic_reasoning_block(state);
             out.push(json!({
                 "type": "content_block_delta",
@@ -157,22 +166,22 @@ fn encode_anthropic_stream(
             }));
             out
         }
-        ConversationStreamEvent::ToolCallDelta {
+        LlmResponseChunk::ToolCallDelta {
             index,
             id,
             name,
             arguments_delta,
         } => encode_anthropic_tool_delta(state, index, id, name, arguments_delta),
-        ConversationStreamEvent::Usage(usage) => {
+        LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
             Vec::new()
         }
-        ConversationStreamEvent::MessageStop { reason } => {
+        LlmResponseChunk::MessageStop { reason } => {
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        ConversationStreamEvent::Error { message } => {
+        LlmResponseChunk::Error { message } => {
             vec![json!({"type": "error", "error": {"message": message}})]
         }
     }
@@ -184,7 +193,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if !state.emitted_message_start {
         out.extend(encode_anthropic_stream(
             state,
-            ConversationStreamEvent::MessageStart {
+            LlmResponseChunk::MessageStart {
                 id: state.message_id.clone(),
                 model: state.model.clone(),
             },
@@ -232,9 +241,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Anthropic content-block starts into text or tool-call deltas.
-fn decode_anthropic_content_block_start(
-    object: &Map<String, Value>,
-) -> Vec<ConversationStreamEvent> {
+fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmResponseChunk> {
     let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     let block = object.get("content_block").and_then(Value::as_object);
     match block
@@ -246,7 +253,7 @@ fn decode_anthropic_content_block_start(
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
             .map(|text| {
-                vec![ConversationStreamEvent::TextDelta {
+                vec![LlmResponseChunk::TextDelta {
                     index,
                     text: text.to_string(),
                 }]
@@ -257,7 +264,7 @@ fn decode_anthropic_content_block_start(
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
             .map(|text| {
-                vec![ConversationStreamEvent::ReasoningDelta {
+                vec![LlmResponseChunk::ReasoningDelta {
                     index,
                     text: text.to_string(),
                 }]
@@ -267,7 +274,7 @@ fn decode_anthropic_content_block_start(
             let Some(block) = block else {
                 return Vec::new();
             };
-            vec![ConversationStreamEvent::ToolCallDelta {
+            vec![LlmResponseChunk::ToolCallDelta {
                 index,
                 id: block
                     .get("id")
@@ -285,9 +292,7 @@ fn decode_anthropic_content_block_start(
 }
 
 // Converts Anthropic content-block deltas into neutral text or argument deltas.
-fn decode_anthropic_content_block_delta(
-    object: &Map<String, Value>,
-) -> Vec<ConversationStreamEvent> {
+fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmResponseChunk> {
     let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     let Some(delta) = object.get("delta").and_then(Value::as_object) else {
         return Vec::new();
@@ -297,7 +302,7 @@ fn decode_anthropic_content_block_delta(
             .get("text")
             .and_then(Value::as_str)
             .map(|text| {
-                vec![ConversationStreamEvent::TextDelta {
+                vec![LlmResponseChunk::TextDelta {
                     index,
                     text: text.to_string(),
                 }]
@@ -307,7 +312,7 @@ fn decode_anthropic_content_block_delta(
             .get("thinking")
             .and_then(Value::as_str)
             .map(|text| {
-                vec![ConversationStreamEvent::ReasoningDelta {
+                vec![LlmResponseChunk::ReasoningDelta {
                     index,
                     text: text.to_string(),
                 }]
@@ -318,7 +323,7 @@ fn decode_anthropic_content_block_delta(
             .get("partial_json")
             .and_then(Value::as_str)
             .map(|partial_json| {
-                vec![ConversationStreamEvent::ToolCallDelta {
+                vec![LlmResponseChunk::ToolCallDelta {
                     index,
                     id: None,
                     name: None,

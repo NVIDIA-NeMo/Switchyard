@@ -16,6 +16,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from switchyard.lib.llm_client import OpenAILLMClient
+from switchyard.lib.processors.message_condensing import strip_markdown_fence
 from switchyard.lib.processors.plan_execute.plan import (
     CTX_PLANNER_DECISION,
     PlannerDecision,
@@ -759,7 +760,7 @@ def parse_planner_decision(raw: str) -> PlannerDecision:
     emit one despite instructions).  Any other deviation from the
     schema raises :class:`PlanningError`.
     """
-    stripped = _strip_markdown_fence(raw)
+    stripped = strip_markdown_fence(raw)
     try:
         return PlannerDecision.model_validate_json(stripped)
     except ValidationError as exc:
@@ -975,19 +976,6 @@ def _tool_call_arguments(message: Any) -> str | None:
     if isinstance(arguments, str) and arguments.strip():
         return arguments
     return None
-
-
-def _strip_markdown_fence(raw: str) -> str:
-    stripped = raw.strip()
-    if not stripped.startswith("```"):
-        return stripped
-
-    lines = stripped.splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
 
 
 __all__ = [

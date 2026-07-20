@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Wire-format identifiers understood by the translation engine.
+//! Wire-format identifiers carried by the shared protocol types.
 
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 
 /// Built-in provider API formats.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

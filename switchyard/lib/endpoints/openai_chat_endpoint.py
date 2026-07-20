@@ -73,6 +73,7 @@ class OpenAIChatEndpoint(NemoSwitchyardEndpoint):
             request: Request,
             body: Annotated[dict[str, Any], Body(...)],
         ) -> Response:
+            """OpenAI-compatible Chat Completions endpoint."""
             obj = request.app.state.switchyard
             chat_request = ChatRequest.openai_chat(body)
             # Reject semantically invalid input (e.g. empty messages) at the
@@ -89,7 +90,7 @@ class OpenAIChatEndpoint(NemoSwitchyardEndpoint):
             try:
                 result: Any = await dispatch_chat_request(obj, chat_request, ctx)
                 return serialize_chain_result(
-                    result, stream=stream, sse_iter=iter_chat_completion_sse
+                    result, stream=stream, sse_iter=iter_chat_completion_sse, ctx=ctx
                 )
             except (SwitchyardContextPoolExhaustedError, SwitchyardContextWindowExceededError) as exc:
                 return context_exhausted_response(exc, inbound="openai")

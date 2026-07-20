@@ -30,6 +30,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast, overload
 
+from pydantic import ValidationError
+
 from switchyard.cli.model_catalog.model_discovery import fetch_model_ids
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEndpoint
@@ -37,17 +39,17 @@ from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
 from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
+    EscalationRouterProfileConfig,
     LatencyServiceProfileConfig,
     PlanExecuteProfileConfig,
     ProfileSwitchyard,
-    RouteLLMProfileConfig,
     StageRouterProfileConfig,
 )
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
+from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
-from switchyard.lib.profiles.routellm import RouteLLMConfig
 from switchyard.lib.profiles.stage_router_config import StageRouterConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
 from switchyard.lib.route_table_builders import (
@@ -174,15 +176,6 @@ _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS |
     "preset",
     "fallback_target_on_evict",
 })
-_ROUTELLM_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
-    "strong",
-    "weak",
-    "threshold",
-    "router_type",
-    "classifier_model",
-    "enable_stats",
-    "fallback_target_on_evict",
-})
 _PASSTHROUGH_SETTING_KEYS = frozenset({
     "api_key",
     "base_url",
@@ -264,6 +257,42 @@ _PLAN_EXECUTE_ROUTE_KEYS = (
         "fallback_target_on_evict",
     })
 )
+_ESCALATION_ROUTE_KEYS = (
+    _ROUTE_METADATA_KEYS
+    | _TARGET_DEFAULT_ROUTE_KEYS
+    | frozenset({
+        "judge",
+        "strong",
+        "weak",
+        "enable_stats",
+        "fallback_target_on_evict",
+        "tier_timeout_s",
+        "session_key_depth",
+        "affinity_max_sessions",
+        "affinity_store",
+        "affinity_store_url",
+        "affinity_store_ttl_seconds",
+        "affinity_key_prefix",
+    })
+)
+_ESCALATION_JUDGE_KEYS = frozenset({
+    "model",
+    "api_key",
+    "base_url",
+    "timeout",
+    "timeout_secs",
+    "min_turn",
+    "confirmations",
+    "confirmation_window",
+    "disable_reasoning",
+    "max_completion_tokens",
+    "dump_verdicts",
+    "recent_turn_window",
+    "window_message_chars",
+    "prompt",
+    "prompt_path",
+    "max_request_chars",
+})
 _DETERMINISTIC_CLASSIFIER_KEYS = frozenset({
     "model",
     "api_key",
@@ -293,22 +322,22 @@ _CLASSIFIER_DEFAULT_KEYS = frozenset({
 _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _MODEL_ROUTE_KEYS,
     "random_routing": _RANDOM_ROUTING_ROUTE_KEYS,
-    "routellm": _ROUTELLM_ROUTE_KEYS,
     "latency_service": _LATENCY_SERVICE_ROUTE_KEYS,
     "noop": _NOOP_ROUTE_KEYS,
     "passthrough": _PASSTHROUGH_ROUTE_KEYS,
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
+    "escalation_router": _ESCALATION_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
     "plan_execute": _PLAN_EXECUTE_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
     "random_routing": _TARGET_DEFAULT_KEYS,
-    "routellm": _TARGET_DEFAULT_KEYS,
     "latency_service": _LATENCY_ENDPOINT_DEFAULT_KEYS,
     "passthrough": _PASSTHROUGH_SETTING_KEYS,
     "noop": frozenset(),
     "deterministic": _TARGET_DEFAULT_KEYS,
+    "escalation_router": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
     "plan_execute": _TARGET_DEFAULT_KEYS,
 }
@@ -378,7 +407,7 @@ def routing_profile_model_ids(
     """User-callable model ids from a parsed routing-profiles bundle.
 
     Returns each route's YAML key followed by its tier ``model`` fields
-    (``strong`` / ``weak`` for stage_router/deterministic/routellm/random_routing,
+    (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
     ``planner`` / ``executor`` for plan_execute, ``target`` for
     ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
@@ -548,7 +577,7 @@ def build_table_from_bundle(
         # at the route key AND hydrate each tier's catalog (`strong` + `weak`)
         # into the table as direct passthroughs — same client-facing
         # model-picker experience as random_routing's discovery path.
-        if route_type in ("stage_router", "deterministic"):
+        if route_type in ("stage_router", "deterministic", "escalation_router"):
             _merge_multi_target_discovery(
                 table,
                 model_id,
@@ -788,21 +817,6 @@ def _build_switchyard_for_route(
             extra_response_processors=extra_response_processors,
         )
 
-    if route_type == "routellm":
-        routellm_config = RouteLLMConfig.model_validate(
-            _route_config(route, target_defaults, ("strong", "weak"))
-        )
-        return ProfileSwitchyard(
-            RouteLLMProfileConfig.from_config(routellm_config)
-            .build()
-            .with_runtime_components(
-                stats_accumulator=stats,
-                enable_stats=routellm_config.enable_stats,
-                pre_request_processors=pre_routing_request_processors,
-                response_processors=extra_response_processors,
-            )
-        )
-
     if route_type == "latency_service":
         return _latency_service_switchyard(
             model_id,
@@ -828,6 +842,16 @@ def _build_switchyard_for_route(
 
     if route_type == "deterministic":
         return _deterministic_switchyard(
+            model_id,
+            route,
+            target_defaults=target_defaults,
+            stats=stats,
+            pre_routing_request_processors=pre_routing_request_processors,
+            extra_response_processors=extra_response_processors,
+        )
+
+    if route_type == "escalation_router":
+        return _escalation_router_switchyard(
             model_id,
             route,
             target_defaults=target_defaults,
@@ -1008,6 +1032,151 @@ def _deterministic_switchyard(
     )
 
 
+def _judge_prompt_value(judge: Mapping[str, object], model_id: str) -> str | None:
+    """Resolve the judge prompt override from ``prompt`` or ``prompt_path``.
+
+    ``prompt`` inlines the text; ``prompt_path`` reads it from a file
+    (relative paths resolve against the server's working directory).
+    ``None`` keeps the built-in default.
+    """
+    inline = _optional_str(judge.get("prompt"))
+    path = _optional_str(judge.get("prompt_path"))
+    if inline is not None and path is not None:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: judge.prompt and judge.prompt_path are "
+            "mutually exclusive",
+        )
+    if path is None:
+        return inline
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: judge.prompt_path {path!r}: cannot read: "
+            f"{_format_exception_one_line(exc)}"
+        ) from exc
+
+
+def _escalation_router_switchyard(
+    model_id: str,
+    route: Mapping[str, object],
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any],
+    extra_response_processors: Sequence[Any],
+) -> ChainRuntime:
+    """Build the judge-latched escalation-routing chain for a route.
+
+    Every conversation starts on ``weak``; an LLM judge watches the
+    trajectory and, on a clear pattern of trouble, latches the conversation
+    to ``strong`` for the rest of the task. Requires ``judge``/``strong``/
+    ``weak`` targets plus ``fallback_target_on_evict``; the full YAML schema
+    and knob reference live in ``docs/routing_algorithms/
+    escalation_router_routing.md``.
+    """
+    judge_raw = route.get("judge")
+    if not isinstance(judge_raw, Mapping):
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: type=escalation_router requires a `judge:` "
+            "mapping with model/api_key/base_url",
+        )
+    judge = _classifier_mapping(
+        judge_raw,
+        target_defaults,
+        allowed_keys=_ESCALATION_JUDGE_KEYS,
+        where=f"{model_id}.judge",
+    )
+
+    strong = _target_value(
+        route.get("strong"), target_defaults, default_id="strong", where="strong",
+    )
+    weak = _target_value(
+        route.get("weak"), target_defaults, default_id="weak", where="weak",
+    )
+
+    fallback_target_on_evict = _required_str(
+        route.get("fallback_target_on_evict"),
+        f"{model_id}.fallback_target_on_evict",
+    )
+    valid_ids = {strong.id, weak.id}
+    if fallback_target_on_evict not in valid_ids:
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: fallback_target_on_evict="
+            f"{fallback_target_on_evict!r} must match one of {sorted(valid_ids)} "
+            f"(the configured strong/weak target ids)",
+        )
+
+    config_data: dict[str, object] = {
+        "strong": strong,
+        "weak": weak,
+        "judge": {
+            "id": "judge",
+            "model": _required_str(
+                judge.get("model"), f"{model_id}.judge.model"
+            ),
+            "api_key": _required_str(
+                judge.get("api_key"), f"{model_id}.judge.api_key"
+            ),
+            "base_url": _required_str(
+                judge.get("base_url"), f"{model_id}.judge.base_url"
+            ),
+        },
+        "fallback_target_on_evict": fallback_target_on_evict,
+        "judge_system_prompt": _judge_prompt_value(judge, model_id),
+    }
+    # Optional knobs are forwarded verbatim and only when present, so
+    # ``EscalationRouterConfig`` stays the single owner of every default and
+    # of value validation; re-declaring defaults here is exactly the config
+    # drift this compatibility path must not accumulate.
+    judge_key_map = {
+        "timeout_secs": "judge_timeout_s",
+        "min_turn": "judge_min_turn",
+        "confirmations": "judge_escalate_confirmations",
+        "confirmation_window": "judge_confirmation_window",
+        "disable_reasoning": "judge_disable_reasoning",
+        "max_completion_tokens": "judge_max_completion_tokens",
+        "dump_verdicts": "judge_dump_verdicts",
+        "recent_turn_window": "judge_recent_turn_window",
+        "window_message_chars": "judge_window_message_chars",
+        "max_request_chars": "judge_max_request_chars",
+    }
+    for source_key, config_key in judge_key_map.items():
+        if judge.get(source_key) is not None:
+            config_data[config_key] = judge[source_key]
+    for route_key in (
+        "enable_stats",
+        "tier_timeout_s",
+        "session_key_depth",
+        "affinity_max_sessions",
+        "affinity_store",
+        "affinity_store_url",
+        "affinity_store_ttl_seconds",
+        "affinity_key_prefix",
+    ):
+        if route.get(route_key) is not None:
+            config_data[route_key] = route[route_key]
+
+    try:
+        config = EscalationRouterConfig.model_validate(config_data)
+    except ValidationError as exc:
+        # Surface config mistakes as the CLI's one-line diagnostic instead of
+        # a raw pydantic traceback (see the RouteBundleConfigError handler in
+        # switchyard_cli.main).
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: invalid escalation_router config: {exc}"
+        ) from exc
+    return ProfileSwitchyard(
+        EscalationRouterProfileConfig.from_config(config)
+        .build()
+        .with_runtime_components(
+            stats_accumulator=stats,
+            enable_stats=config.enable_stats,
+            pre_request_processors=pre_routing_request_processors,
+            response_processors=extra_response_processors,
+        )
+    )
+
+
 def _stage_router_switchyard(
     model_id: str,
     route: Mapping[str, object],
@@ -1053,7 +1222,7 @@ def _stage_router_switchyard(
             where=f"{model_id}.classifier",
         )
     # The deprecated bundle keeps the shared strong/weak tier keys (also used by
-    # deterministic/routellm); map them onto StageRouterConfig's capable/efficient fields.
+    # deterministic); map them onto StageRouterConfig's capable/efficient fields.
     resolved = _route_config(route, target_defaults, ("strong", "weak"))
     resolved["capable"] = resolved.pop("strong")
     resolved["efficient"] = resolved.pop("weak")
@@ -1325,8 +1494,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         if "latency_service_url" in route or "latency_url" in route:
             return "latency_service"
         if "strong" in route and "weak" in route:
-            if any(key in route for key in ("threshold", "router_type", "classifier_model")):
-                return "routellm"
             return "random_routing"
         if "target" in route or "model" in route:
             return "model"
@@ -1344,8 +1511,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "target": "model",
         "random": "random_routing",
         "random_routing": "random_routing",
-        "route_llm": "routellm",
-        "routellm": "routellm",
         "latency": "latency_service",
         "latency_service": "latency_service",
         "noop": "noop",
@@ -1354,6 +1519,8 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "deterministic": "deterministic",
         "llm_classifier": "deterministic",
         "llm_classifier_routing": "deterministic",
+        "escalation": "escalation_router",
+        "escalation_router": "escalation_router",
         "stage_router": "stage_router",
         "stage_router_routing": "stage_router",
         "plan": "plan_execute",

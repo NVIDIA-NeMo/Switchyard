@@ -19,7 +19,7 @@ CTX_ORIGINAL_REQUEST = "original_request"
 #: Written by routing backends and processors.
 CTX_PROXY_ACTUAL_MODEL = "_proxy_actual_model"
 
-#: Routing metadata dict produced by RouteLLMRequestProcessor.
+#: Routing metadata dict produced by tier-routing request processors.
 CTX_ROUTING = "_routing"
 
 #: Original inbound format stored by translation layers.
@@ -28,7 +28,7 @@ CTX_ORIGINAL_FORMAT = "_original_format"
 #: Original model name stored by translation layers.
 CTX_ORIGINAL_MODEL = "_original_model"
 
-#: Target wire format chosen by a router (e.g. random routing, RouteLLM).
+#: Target wire format chosen by a router (e.g. random routing).
 #: Written by router request-side components; read by
 #: FormatTranslateRequestProcessor.
 CTX_TARGET_FORMAT = "_target_format"
@@ -89,6 +89,19 @@ ERROR_SOURCE_PROVIDER = "provider"
 #: ``x-switchyard-upstream-model`` response header.
 CTX_UPSTREAM_MODEL = "_upstream_model"
 
+#: Route-selection record for spend/tokenomics attribution, written by a
+#: routing backend after a successful upstream call. A dict with the keys
+#: ``router_model`` (client-facing route id), ``router_strategy``,
+#: ``router_selected_endpoint``, ``router_selected_model``,
+#: ``router_selected_provider``, and ``router_correlation_id``. The same
+#: payload is stamped on the outbound upstream call as the
+#: ``x-litellm-spend-logs-metadata`` header (one per attempt, so provider
+#: spend-log rows record the endpoint they actually hit); the endpoint layer
+#: reads this key to return the ``x-switchyard-*`` route-selection response
+#: headers, letting a front proxy enrich its own spend-log row with the same
+#: correlation id.
+CTX_ROUTE_SELECTION = "_route_selection"
+
 
 __all__ = [
     "CTX_CALLER_API_KEY",
@@ -97,6 +110,7 @@ __all__ = [
     "CTX_ORIGINAL_MODEL",
     "CTX_ORIGINAL_REQUEST",
     "CTX_PROXY_ACTUAL_MODEL",
+    "CTX_ROUTE_SELECTION",
     "CTX_ROUTING",
     "CTX_TARGET_FORMAT",
     "CTX_UPSTREAM_ATTEMPTS_RECORDED",

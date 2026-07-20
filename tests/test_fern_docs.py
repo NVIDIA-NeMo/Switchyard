@@ -79,6 +79,8 @@ def test_published_pages_have_descriptions_and_titled_callouts() -> None:
         metadata = yaml.safe_load(frontmatter)
         if not metadata.get("description"):
             failures.append(f"{path.relative_to(REPO_ROOT)}: missing description")
+        if not metadata.get("title"):
+            failures.append(f"{path.relative_to(REPO_ROOT)}: missing title")
         for tag in re.findall(r"<(?:Note|Warning)(?:\s+[^>]*)?>", text):
             if "title=" not in tag:
                 failures.append(f"{path.relative_to(REPO_ROOT)}: untitled {tag}")

@@ -34,6 +34,8 @@ navigation:
         path: ../../routing_algorithms/sticky_routing.mdx
       - page: "Stage-Router Routing"
         path: ../../routing_algorithms/stage_router_routing.mdx
+      - page: "Escalation-Router Routing"
+        path: ../../routing_algorithms/escalation_router_routing.mdx
   - section: "Operations"
     contents:
       - page: "Context-Window Handling"

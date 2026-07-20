@@ -12,6 +12,10 @@ from switchyard.lib.profiles.deterministic_routing_presets import (
 from switchyard.lib.profiles.deterministic_routing_profile_config import (
     DeterministicRoutingProfileConfig,
 )
+from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
+from switchyard.lib.profiles.escalation_router_profile_config import (
+    EscalationRouterProfileConfig,
+)
 from switchyard.lib.profiles.header_routing import (
     HeaderRoutingConfig,
     HeaderRoutingDecision,
@@ -20,11 +24,6 @@ from switchyard.lib.profiles.header_routing import (
 from switchyard.lib.profiles.latency_service import LatencyServiceProfileConfig
 from switchyard.lib.profiles.loader import load_profiles
 from switchyard.lib.profiles.noop import NoopProfile, NoopProfileConfig
-from switchyard.lib.profiles.oss_router import (
-    OSSRouterConfig,
-    OSSRouterProfileConfig,
-    OSSRouterTier,
-)
 from switchyard.lib.profiles.passthrough import PassthroughProfileConfig
 from switchyard.lib.profiles.plan_execute import PlanExecuteProfileConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
@@ -43,7 +42,6 @@ from switchyard.lib.profiles.random_routing import (
     RandomRoutingProfileConfig,
 )
 from switchyard.lib.profiles.random_routing_presets import RandomRoutingPresets
-from switchyard.lib.profiles.routellm import RouteLLMConfig, RouteLLMProfileConfig
 from switchyard.lib.profiles.stage_router import StageRouterProfileConfig
 from switchyard.lib.profiles.stage_router_config import ClassifierConfig, StageRouterConfig
 from switchyard.lib.profiles.switchyard_adapter import ProfileSwitchyard
@@ -62,15 +60,14 @@ __all__ = [
     "DeterministicRoutingConfig",
     "DeterministicRoutingProfileConfig",
     "DeterministicRoutingPresets",
+    "EscalationRouterConfig",
+    "EscalationRouterProfileConfig",
     "HeaderRoutingConfig",
     "HeaderRoutingDecision",
     "HeaderRoutingProfile",
     "LatencyServiceProfileConfig",
     "NoopProfile",
     "NoopProfileConfig",
-    "OSSRouterConfig",
-    "OSSRouterProfileConfig",
-    "OSSRouterTier",
     "PassthroughProfileConfig",
     "PlanExecuteConfig",
     "PlanExecuteProfileConfig",
@@ -87,8 +84,6 @@ __all__ = [
     "RandomRoutingConfig",
     "RandomRoutingPresets",
     "RandomRoutingProfileConfig",
-    "RouteLLMConfig",
-    "RouteLLMProfileConfig",
     "TranslateProfileConfig",
     "build_profile",
     "load_profiles",

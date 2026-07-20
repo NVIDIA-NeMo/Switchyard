@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Neutral conversation IR used for loss-aware provider translation.
+//! Provider-neutral conversation types shared by routing, clients, and translation.
 
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::format::FormatId;
@@ -18,20 +18,6 @@ pub enum Role {
     User,
     Assistant,
     Tool,
-}
-
-/// Returns true when `name` is a message role recognized by at least one
-/// supported provider API (OpenAI Chat, OpenAI Responses, or Anthropic
-/// Messages). Codecs use this to distinguish a genuinely-unsupported role —
-/// which is rejected on request decode to preserve the provider contract —
-/// from a known role that a given codec maps to a default. `function` is
-/// included because it is a legacy OpenAI Chat role that older clients may
-/// still send and which has always been coerced to `user` here.
-pub(crate) fn is_known_role_name(name: &str) -> bool {
-    matches!(
-        name,
-        "system" | "developer" | "user" | "assistant" | "tool" | "function"
-    )
 }
 
 /// Instruction content separated from normal conversation messages.
@@ -109,7 +95,7 @@ pub enum ContentBlock {
     },
 }
 
-/// Image payload forms supported by the neutral IR.
+/// Image payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ImageSource {
     Url {
@@ -123,7 +109,7 @@ pub enum ImageSource {
     Raw(Value),
 }
 
-/// File payload forms supported by the neutral IR.
+/// File payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FileSource {
     FileId(String),
@@ -134,7 +120,7 @@ pub enum FileSource {
     Raw(Value),
 }
 
-/// Audio and video payload forms supported by the neutral IR.
+/// Audio and video payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MediaSource {
     Url {
@@ -205,7 +191,7 @@ pub struct ReasoningParams {
     pub raw: Option<Value>,
 }
 
-/// Provider-specific fields that do not have first-class IR slots.
+/// Provider-specific fields that do not have first-class conversation fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderExtensions {
     pub fields: Map<String, Value>,
@@ -218,9 +204,9 @@ pub struct PreservationMetadata {
     pub responses: BTreeMap<FormatId, Value>,
 }
 
-/// Normalized request representation used between decoder and encoder.
+/// Normalized request representation shared by Switchyard components.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConversationRequest {
+pub struct LlmRequest {
     pub model: Option<String>,
     pub instructions: Vec<InstructionBlock>,
     pub messages: Vec<Message>,
@@ -262,9 +248,12 @@ pub struct ResponseOutput {
     pub stop_reason: Option<StopReason>,
 }
 
-/// Normalized response representation used between decoder and encoder.
+/// Normalized, fully-buffered response — the aggregate of a completed generation.
+/// libsy refers to this as an `AggLlmResponse` (the terminal form of a streamed
+/// [`LlmResponse`](crate::LlmResponse)); `switchyard-translation` re-exports it as
+/// `ConversationResponse`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ConversationResponse {
+pub struct AggLlmResponse {
     pub id: Option<String>,
     pub model: Option<String>,
     pub outputs: Vec<ResponseOutput>,
@@ -273,7 +262,7 @@ pub struct ConversationResponse {
     pub preservation: PreservationMetadata,
 }
 
-impl ConversationResponse {
+impl AggLlmResponse {
     /// Returns the first output item when a response has any output.
     pub fn first_output(&self) -> Option<&ResponseOutput> {
         self.outputs.first()

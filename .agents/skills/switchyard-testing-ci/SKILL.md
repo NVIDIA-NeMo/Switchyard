@@ -141,7 +141,7 @@ print('import OK, version:', switchyard.__version__)
 from switchyard import RandomRoutingPresets
 print('preset import OK:', sorted(RandomRoutingPresets.PRESETS))
 forbidden = [
-    'torch', 'transformers', 'huggingface_hub', 'routellm', 'litellm',
+    'torch', 'transformers', 'huggingface_hub', 'litellm',
     'datasets', 'tokenizers', 'safetensors', 'pyarrow', 'agents', 'mcp', 'docx',
 ]
 extras = [m for m in forbidden if importlib.util.find_spec(m) is not None]
@@ -244,13 +244,13 @@ uv run ruff check .
 
 Classify before editing:
 
-- Optional package import (`routellm`, `torch`, `fastapi`, `prompt_toolkit`, `nemo_platform`) → keep
+- Optional package import (`torch`, `fastapi`, `prompt_toolkit`, `nemo_platform`) → keep
   optional deps out of top-level/default install paths; use lazy imports and clear runtime errors.
 - Unit test makes network call → mock with `respx`, `httpx.ASGITransport`, or a fake backend.
 - Translation mismatch → run translation-focused tests before touching broad plumbing.
 - Streaming failure → inspect streaming response accumulator, SSE helpers, and translation-stream tests.
 - CLI/config regression → run launcher/config/model/verify tests.
-- Routing/stats regression → run random-routing and RouteLLM suites separately.
+- Routing/stats regression → run the random-routing suite.
 
 Useful focused groups:
 
@@ -258,7 +258,6 @@ Useful focused groups:
 uv run pytest tests/test_anthropic_openai_translation.py tests/test_responses_openai_translation.py tests/test_translation_engine_chaos.py -v -o addopts=
 uv run pytest tests/test_launch_claude.py tests/test_launch_codex.py tests/test_launch_route_builder.py tests/test_user_config.py tests/test_model_discovery.py tests/test_verify.py -v -o addopts=
 uv run pytest tests/test_random_routing_config.py tests/test_random_routing_llm_backend.py tests/test_random_routing_presets.py tests/test_random_routing_profile.py -v -o addopts=
-uv run pytest tests/test_routellm_config.py tests/test_routellm_llm_backend.py tests/test_routellm_request_processor.py -v -o addopts=
 ```
 
 ### Mypy
@@ -272,7 +271,7 @@ external incompatibility is localized.
 
 Default install must not pull heavyweight packages:
 
-- `torch`, `transformers`, `huggingface_hub`, `routellm`, `litellm`, `datasets`, `tokenizers`,
+- `torch`, `transformers`, `huggingface_hub`, `litellm`, `datasets`, `tokenizers`,
   `safetensors`, `pyarrow`, `agents`, `mcp`, `docx`
 
 Keep them in optional extras or dev groups, not `[project.dependencies]`. Dependency changes require
@@ -294,7 +293,8 @@ uv run pytest tests/test_cli_stale_names.py tests/test_no_stale_module_paths.py 
 | Running `uv run ruff check . --exclude docs/.venv-docs --exclude docs/_build` and calling it CI-equivalent | That is a dirty-workspace workaround, not the CI command. Either remove the generated artifacts (`rm -rf docs/.venv-docs docs/_build site/_build`) or run from a clean checkout. |
 | Running `uv run pytest tests/ -v` with `OPENROUTER_API_KEY`/`NVIDIA_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` set in your shell | Tests that mock providers can accidentally hit live endpoints. Default to `-m "not integration"`, or strip credentials with `env -u`. |
 | Treating mypy as optional because CI marks it `continue-on-error` | Mypy still catches real bugs in `switchyard/` typed code. Run it for any change to profiles, route bundles, backends, request/response models, or translation. |
-| Skipping the slim-install smoke gate after a dependency or top-level import change | This is the *actual* hard CI gate that catches `torch`/`transformers`/`routellm` accidentally landing in the default install. |
+| Skipping the slim-install smoke gate after a dependency or top-level import change | This is the *actual* hard CI gate that catches `torch`/`transformers` accidentally landing in the default install. |
+| Claiming validation from `scripts/select_validation.py` without rerunning it after committing changes | The script diffs against `HEAD` plus untracked files; if your changes are already committed, `--changed` returns "no diff". Pass `--path` explicitly, or diff against the branch base. |
 | Adding `# noqa` or per-line ignores to make ruff green | Ruff is a hard CI gate. Fix the code or, if the rule is wrong here, lift the ignore to the file or project level with a one-line justification. |
 | Editing a generated artifact (e.g., `docs/.venv-docs/...`) because ruff complained about it | Delete the artifact instead. CI does not have it; you should not either. |
 

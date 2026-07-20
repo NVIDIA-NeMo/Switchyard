@@ -175,7 +175,6 @@ switchyard/
 │   │   └── health_poller.py                # HealthPoller, EndpointHealthStatus
 │   ├── processors/                 # Request-side / response-side component implementations
 │   │   ├── format_translate.py
-│   │   ├── routellm_request_processor.py
 │   │   ├── random_routing_request_processor.py
 │   │   ├── stats_request_processor.py
 │   │   ├── stats_response_processor_accumulator.py
@@ -222,7 +221,6 @@ tests/                              # Unit tests (pytest)
 - **FastAPI + Uvicorn** for HTTP (`nemo-switchyard[server]`), **sse-starlette** for SSE streaming
 - **OpenAI SDK** (`openai>=2.30`) — primary client; the translation engine converts all inbound formats to Chat Completions
 - **Anthropic SDK** (`anthropic>=0.94`)
-- **RouteLLM** for ML-based strong/weak routing (`nemo-switchyard[gpu]`)
 - **httpx** for direct HTTP (health polling, Anthropic Messages)
 - **uv** as the package manager (preferred over pip)
 - **pytest + pytest-asyncio** for testing, **respx** for HTTP mocking

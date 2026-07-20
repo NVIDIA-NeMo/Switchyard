@@ -136,7 +136,12 @@ def test_cli_reference_documents_shared_intake_flags_once() -> None:
 
 
 def _public_cli_doc_paths() -> list[Path]:
-    return [REPO_ROOT / "README.md", *sorted((REPO_ROOT / "docs").glob("*.mdx"))]
+    docs_root = REPO_ROOT / "docs"
+    fern_root = docs_root / "fern"
+    published_pages = sorted(
+        path for path in docs_root.rglob("*.mdx") if fern_root not in path.parents
+    )
+    return [REPO_ROOT / "README.md", *published_pages]
 
 
 def _markdown_command_lines(path: Path) -> list[tuple[int, str]]:

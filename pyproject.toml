@@ -11,7 +11,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 authors = [{ name = "NVIDIA Corporation" }]
 maintainers = [{ name = "NVIDIA Corporation" }]
-keywords = ["llm", "switchyard", "routing", "routellm", "openai", "nemo"]
+keywords = ["llm", "switchyard", "routing", "openai", "nemo"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -52,21 +52,6 @@ cli = [
     "prompt-toolkit>=3.0.52,<4.0",
 ]
 
-# GPU / ML stack needed for RouteLLM-based routing (RouteLLMFactory
-# and RouteLLMRequestProcessor). Also used by the random-routing
-# usage-case. Drags torch, transformers, scikit-learn, scipy, tokenizers,
-# datasets, pandas, pyarrow, numpy — ~800 MB of wheels. Named ``gpu``
-# because that's the real cost the user opts into.
-#
-# ``transformers>=5.8.0`` is a security floor, not a feature requirement:
-# routellm itself doesn't pin transformers, and several pre-5.x releases
-# carry known CVEs. Keep this floor in lockstep with the latest secure
-# transformers release; bump on every routine dependency refresh.
-gpu = [
-    "routellm[serve]>=0.2.0,<1.0",
-    "transformers>=5.8.0",
-]
-
 # Tracing — ddtrace for Datadog APM spans on the proxy routing path
 # Optional: ``switchyard.lib.tracing`` no-ops when ddtrace is not
 # importable, so the default install and non-Datadog deployments are unaffected
@@ -93,7 +78,7 @@ affinity-redis = [
 
 # Everything — all optional dependencies for full-featured deployment.
 all = [
-    "nemo-switchyard[server,cli,gpu,tracing,intake,affinity-redis]",
+    "nemo-switchyard[server,cli,tracing,intake,affinity-redis]",
 ]
 
 # Dev tooling lives in a PEP 735 dependency group rather than an optional
@@ -147,7 +132,11 @@ where = ["."]
 include = ["switchyard*"]
 
 [tool.setuptools.package-data]
-switchyard = ["py.typed", "lib/processors/stage_router/prompts/*.md"]
+switchyard = [
+    "py.typed",
+    "lib/processors/prompts/*.md",
+    "lib/processors/stage_router/prompts/*.md",
+]
 switchyard_rust = ["py.typed", "*.pyi"]
 
 [tool.maturin]

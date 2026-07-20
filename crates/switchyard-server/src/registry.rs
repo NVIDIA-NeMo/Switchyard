@@ -67,13 +67,6 @@ impl ProfileRegistry {
                 Arc::clone(&profile),
                 target.model.as_str(),
             )?;
-            if target.id.as_str() != target.model.as_str() {
-                registry.insert(
-                    target.model.clone(),
-                    profile,
-                    format!("target {}", target.id.as_str()),
-                )?;
-            }
         }
 
         Ok(registry)

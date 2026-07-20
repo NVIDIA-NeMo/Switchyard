@@ -187,9 +187,9 @@ def test_prebuilt_docker_image_task_becomes_derived_dockerfile(tmp_path: Path) -
     assert "docker_image" not in (task / "task.toml").read_text()
     dockerfile = (task / "environment" / "Dockerfile").read_text()
     assert dockerfile.startswith("FROM python:3.12-slim\nUSER root\n")
-    assert "@anthropic-ai/claude-code@2.1.119" in dockerfile
-    assert "@openai/codex@0.125.0" in dockerfile
-    assert "opencode-ai@1.14.31" in dockerfile
+    assert "@anthropic-ai/claude-code@2.1.211" in dockerfile
+    assert "@openai/codex@0.144.5" in dockerfile
+    assert "opencode-ai@1.18.3" in dockerfile
 
 
 def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
@@ -282,10 +282,10 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
     assert manifest["source_dataset"] == "openthoughts-tblite@2.0"
     assert manifest["task_count"] == 2
     assert manifest["agent_versions"] == {
-        "CLAUDE_CODE_VERSION": "2.1.119",
-        "CODEX_VERSION": "0.125.0",
+        "CLAUDE_CODE_VERSION": "2.1.211",
+        "CODEX_VERSION": "0.144.5",
         "NODE_VERSION": "20.11.1",
-        "OPENCODE_VERSION": "1.14.31",
+        "OPENCODE_VERSION": "1.18.3",
     }
     assert manifest["closed_book"]["proxy_asset_digest"].startswith("sha256:")
     assert manifest["closed_book"]["verifier_egress"] == "open-via-authenticated-proxy"

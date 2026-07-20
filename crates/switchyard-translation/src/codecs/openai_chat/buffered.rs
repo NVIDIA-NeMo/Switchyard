@@ -5,18 +5,19 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::codecs::common::{provider_extensions, reasoning_text_from_blocks, text_from_blocks};
+use crate::codecs::common::{
+    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
-use crate::ir::{
-    is_known_role_name, ContentBlock, ConversationRequest, ConversationResponse, FileSource,
-    ImageSource, InstructionBlock, MediaSource, Message, OutputParams, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage,
+use crate::llm::{
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -36,7 +37,7 @@ impl FormatCodec for OpenAiChatCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let mut request = ConversationRequest {
+        let mut request = LlmRequest {
             model: body
                 .get("model")
                 .and_then(Value::as_str)
@@ -67,7 +68,7 @@ impl FormatCodec for OpenAiChatCodec {
                 &Value::Object(body.clone()),
                 policy,
             ),
-            ..ConversationRequest::default()
+            ..LlmRequest::default()
         };
 
         if let Some(messages) = body.get("messages").and_then(Value::as_array) {
@@ -172,7 +173,7 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn encode_request(
         &self,
-        request: &ConversationRequest,
+        request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         if let Some(body) =
@@ -245,7 +246,7 @@ impl FormatCodec for OpenAiChatCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
-        let mut response = ConversationResponse {
+        let mut response = AggLlmResponse {
             id: object
                 .get("id")
                 .and_then(Value::as_str)
@@ -312,7 +313,7 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn encode_response(
         &self,
-        response: &ConversationResponse,
+        response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =

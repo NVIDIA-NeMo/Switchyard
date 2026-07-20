@@ -39,6 +39,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -46,7 +48,13 @@ jobs:
           node-version: "20"
 
       - name: Install Fern CLI
-        run: npm install -g fern-api@$(jq -r .version docs/fern/fern.config.json)
+        run: |
+          FERN_VERSION="$(jq -r '.version' docs/fern/fern.config.json)"
+          if ! [[ "$FERN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::Refusing to install unexpected Fern CLI version: $FERN_VERSION"
+            exit 1
+          fi
+          npm install -g "fern-api@${FERN_VERSION}"
 
       - name: Validate Fern configuration
         working-directory: ./docs/fern

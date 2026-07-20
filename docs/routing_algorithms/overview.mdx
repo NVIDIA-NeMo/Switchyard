@@ -1,6 +1,6 @@
 ---
 title: "Overview"
-description: "Choose and configure passthrough, random, classifier, stage-router, and sticky routing behavior."
+description: "Choose and configure passthrough, random, classifier, stage-router, escalation-router, and sticky routing behavior."
 position: 1
 ---
 Switchyard profile configs register profiles and targets as model IDs that
@@ -21,6 +21,7 @@ for configuration and tuning.
 | [Random Routing](/routing/random-routing) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random-routing` |
 | [LLM Classifier Routing](/routing/llm-classifier-routing) | Request content should decide whether a turn needs the weak or strong tier. | `llm-routing` |
 | [Stage-Router Routing](/routing/stage-router-routing) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Escalation-Router Routing](/routing/escalation-router-routing) | Start every task on the weak tier and let an LLM judge escalate to strong — one-way per task — when the run is in trouble. | `escalation_router` (`routes:` bundle) |
 
 [Session Affinity (Sticky Routing)](/routing/sticky-routing) is an opt-in feature of
 LLM classifier routing, not a standalone routing strategy. The classifier
@@ -154,6 +155,12 @@ They are not shared across workers or restarts. See
 
 Random and stage-router routing do not expose session-affinity settings; they
 continue to make a routing decision for each request.
+
+The escalation router uses the same affinity store with the opposite policy:
+affinity is always on (the pin *is* the escalation latch), only the strong
+tier is ever pinned, and once the judge starts (a configurable minimum turn),
+it keeps running each judged turn until the latch fires. See
+[Escalation-Router Routing](/routing/escalation-router-routing).
 
 <Note title="CLI schema availability">
 The CLI currently accepts these settings in a `deterministic` entry in a

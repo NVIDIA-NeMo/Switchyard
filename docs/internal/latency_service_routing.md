@@ -431,6 +431,52 @@ front of Switchyard (e.g. LiteLLM) should tag its own failures the same way and
 propagate these headers from below. Mid-stream failures after HTTP 200 has been
 committed cannot carry headers and are not annotated today.
 
+## Route-selection spend attribution
+
+For tokenomics reporting, a LiteLLM front proxy needs to tie its provider spend-log
+rows back to the Switchyard logical route that selected them. The backend stamps
+**every upstream attempt** with a spend-logs metadata request header (LiteLLM copies
+its JSON value into the provider spend-log DB row):
+
+```text
+x-litellm-spend-logs-metadata: {"router_model": "<client-facing route id>",
+                                "router_strategy": "latency",
+                                "router_selected_endpoint": "<endpoint id>",
+                                "router_selected_model": "<upstream model>",
+                                "router_selected_provider": "<upstream model's leading path segment>",
+                                "router_correlation_id": "<uuid4>"}
+```
+
+One correlation id is generated per client request and shared by every failover
+attempt; the selection fields are re-stamped per attempt, so each provider row
+records the endpoint it actually hit. `router_model` is the model the client asked
+for, falling back to the configured `route_model` when the body carried no model.
+
+**Successful** responses then return the selection that served the request, so the
+front proxy can enrich its own (parent) spend-log row with the same correlation id
+the provider row received:
+
+| Header | Value |
+|---|---|
+| `x-switchyard-router-model` | `router_model` from the selection |
+| `x-switchyard-selected-model` | `router_selected_model` |
+| `x-switchyard-selected-provider` | `router_selected_provider` |
+| `x-switchyard-router-correlation-id` | `router_correlation_id` |
+
+Streaming responses carry the same headers (the upstream call completes before the
+SSE response is committed). Error responses carry the failure-source headers above;
+the selection headers join them only when an upstream call already **succeeded**
+before the failure (e.g. a response-translation error after a billed 200), so the
+provider row's correlation id stays joinable — a request that never reached a
+successful upstream claims no selection. Because the client controls `router_model`,
+header values are re-validated as header material: a value that is not
+latin-1-encodable or contains control characters is omitted rather than breaking
+(or splitting) the response; the outbound JSON header is immune (`json.dumps`
+escapes it) and still records the raw value. The cross-component contract is
+`CTX_ROUTE_SELECTION` in `switchyard/lib/proxy_context.py` (written by the backend,
+read by the endpoint layer via `switchyard/lib/endpoints/route_selection.py`);
+wire-level proofs live in `tests/test_route_selection_headers.py`.
+
 ## Observability
 
 When `enable_stats` is `true` (the default), `LatencyServiceProfileConfig` wires a
