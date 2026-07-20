@@ -1876,6 +1876,11 @@ for aggregate routing/model cost estimates. When a session ID is present,
 Switchyard also maps the Intake app/task labels into top-level
 <code>evaluation_context.dataset_*</code> and <code>evaluation_context.test_case_id</code> for span
 queries while keeping the original labels under <code>request.switchyard</code>.</p>
+<p>Set <code>--intake-target-url</code> to a full posting URL to send captures to a different
+store instead. Switchyard then posts a flat, top-level, type-prefixed document
+(<code>s_</code> string, <code>l_</code> long, <code>f_</code> float, <code>b_</code> bool, <code>text_</code> debug — one indexable
+field per metric) to that URL, unauthenticated, rather than the nested
+nemo-platform payload. Unset, it uses the nemo-platform ingest above.</p>
 <h3 id="rl-trace-logging">RL trace logging<a class="headerlink" href="#rl-trace-logging" title="Permanent link">&para;</a></h3>
 <p><code>--enable-rl-logging</code> attaches a response-side logger to the proxy chain of any
 <code>launch</code> session or <code>serve --routing-profiles</code> bundle. Each completed turn
