@@ -64,10 +64,56 @@ margin becomes public score `0.0` and selects strong. The learned profile's
 threshold is fixed at `0.5`; tune routing only with `lambda`. The sample uses
 `lambda: 0.5`, `weak_cost: 0`, and `strong_cost: 1`.
 
-Successful decisions are cached by a hash of the first string-valued user
-instruction. A cache hit reuses the selected tier without another probe. Probe,
-artifact, or scoring failures route to strong and are not cached, so a later
-matching request retries the probe.
+Successful decisions are cached by a hash of the resolved probe input: the
+explicit benchmark input when present, otherwise the first string-valued user
+instruction. A cache hit reuses the selected tier without another probe.
+Probe, artifact, or scoring failures route to strong and are not cached, so a
+later matching request retries the probe.
+
+## Explicit probe input for Terminal-Bench
+
+Ordinary clients do not need special request fields. When no override is
+present, the profile scores and caches the first string-valued user message.
+Terminal-Bench's stock Terminus 2 agent, however, places the raw task
+instruction inside a larger first-user message containing its command protocol
+and current terminal state. That wrapped message does not reproduce a router
+checkpoint trained on the raw task instruction alone.
+
+For prefill-probe benchmark runs, the repository provides
+`benchmark/prefill_probe_terminus_2.py`. Its `PrefillProbeTerminus2` adapter adds
+the exact `Terminus2.run()` instruction as this private top-level request field:
+
+```json
+{
+  "_switchyard_prefill_probe_input": "<exact raw task instruction>"
+}
+```
+
+The `prefill-probe` profile uses a non-empty string value for both scoring and
+the decision-cache key. It removes the field before calling the selected
+completion target, so that target still receives the unmodified Terminus
+conversation. A present empty or non-string value is rejected as an invalid
+request instead of silently falling back to the wrapped message.
+
+Run Harbor from the repository root and select the adapter by import path:
+
+```bash
+uv run --no-sync harbor run \
+  --agent-import-path benchmark.prefill_probe_terminus_2:PrefillProbeTerminus2 \
+  --model openai/router \
+  --path /path/to/terminal-bench-2-closed-book \
+  --jobs-dir /path/to/jobs \
+  --job-name prefill-probe-smoke \
+  --n-tasks 1 \
+  --n-concurrent 1 \
+  --max-retries 0 \
+  --yes
+```
+
+Replace the usual `--agent terminus-2` option with `--agent-import-path`; do
+not pass both. Harbor gives a registered agent name precedence over a custom
+import path. The adapter keeps the same explicit input in `extra_body` for all
+LLM calls during the task while leaving normal prompt construction unchanged.
 
 ## Docker launch
 
