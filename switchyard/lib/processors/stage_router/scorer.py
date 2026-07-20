@@ -48,7 +48,15 @@ _SIGNAL_UNIT: float = 0.10
 #: across the whole stretch — the "latch" that sustains escalation on hard debugging
 #: tasks (verified against runs where a struggling agent reads-without-writing for
 #: dozens of turns; treating it as neutral routed those to the weak tier and lost them).
-_WRONG_SIGNALS: tuple[str, ...] = ("severity", "spinning", "exploring", "repeated_cmd_ratio")
+#:
+#: ``repeated_cmd_ratio`` was dropped here: an ablation over 178 task-runs (two
+#: Nemotron deployments) found 0/71 of its escalations were real command loops — its
+#: ``max_count / window`` normalisation makes a single Bash call read as ratio 0.20,
+#: so it fired a low-grade CAPABLE bias on any turn that touched the shell, adding
+#: ~8% Opus with no accuracy payoff. The Rust signal still computes it for
+#: observability; it just no longer influences routing. Re-add with a ``max_count >= 3``
+#: gate if a genuine same-command-loop detector is wanted.
+_WRONG_SIGNALS: tuple[str, ...] = ("severity", "spinning", "exploring")
 #: "Making progress" → EFFICIENT (weak). De-escalation is driven by real production
 #: (writes/edits), not by a clean-result streak: a streak of clean results actively
 #: cancelled the (windowed) error signal on the same axis and released escalations too

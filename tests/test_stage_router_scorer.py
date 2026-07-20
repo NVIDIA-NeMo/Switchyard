@@ -72,12 +72,14 @@ def test_exploring_is_a_full_escalation_signal():
     assert explore.confidence > 0.30  # escalates alone at a typical threshold
 
 
-def test_repeated_cmd_ratio_is_a_wrong_signal():
-    """A weak model looping one command (repeated_cmd_ratio→1) is a full WRONG signal
-    → CAPABLE, same weight as spinning. Catches churn that severity/spinning miss."""
+def test_repeated_cmd_ratio_does_not_influence_routing():
+    """repeated_cmd_ratio was dropped from the WRONG signals (ablation: 0/71 of its
+    escalations were real loops — it fired on any single shell command). It is still
+    carried on the dimensions for observability but must contribute nothing to score."""
     churn = score(_with(repeated_cmd_ratio=1.0))
-    assert churn.score > 0
-    assert churn.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))
+    assert churn.score == 0.0
+    assert churn.confidence == 0.0
+    assert "repeated_cmd_ratio" not in churn.contributions
 
 
 def test_corroboration_raises_confidence():
