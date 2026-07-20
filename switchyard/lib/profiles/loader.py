@@ -29,7 +29,7 @@ from switchyard_rust.profiles import (
     parse_profile_config_path,
 )
 
-__all__ = ["load_profiles", "load_profiles_and_targets", "python_profile_ids"]
+__all__ = ["load_profiles", "load_profiles_and_targets"]
 
 _PROFILE_TARGET = "profile_target"
 
@@ -64,17 +64,6 @@ def load_profiles_and_targets(
     for profile_id, (profile_type, body) in python_profiles.items():
         built[profile_id] = _build_python_profile(profile_id, profile_type, body, plan)
     return built, _targets(plan)
-
-
-def python_profile_ids(path: str | Path) -> list[str]:
-    """Return the ids of Python-defined profiles declared in ``path``.
-
-    Used by ``serve --config`` to select the Rust server for files containing
-    only Rust-defined profiles and the Python FastAPI adapter for files that
-    include Python-defined profiles.
-    """
-    _register_shipped_python_profiles()
-    return sorted(_python_profiles(parse_profile_config_path(path)))
 
 
 class _RustProfileRunner:

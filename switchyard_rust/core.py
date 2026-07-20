@@ -252,15 +252,6 @@ class _NativeModule(Protocol):
     SessionCache: type[Any]
     session_key_from_body: Any
 
-    def run_profile_server(
-        self,
-        config_path: str,
-        host: str,
-        port: int,
-        backlog: int,
-        dry_run: bool,
-    ) -> None: ...
-
 
 def _ensure_switchyard_version_env() -> None:
     if os.environ.get("SWITCHYARD_VERSION", "").strip():

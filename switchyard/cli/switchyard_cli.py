@@ -99,7 +99,6 @@ from switchyard.server.server_util import (
     add_transport_args,
     build_and_serve,
     load_secrets,
-    resolve_port,
     resolve_rl_log_dir,
 )
 
@@ -140,17 +139,6 @@ def _warn_deprecated_saved_route_bundle() -> None:
         details=(
             "Prefer v2 profile configs with `switchyard serve --config PATH`.",
             "Clear the saved bundle with `switchyard --routing-profiles '' -- configure`.",
-        ),
-    )
-
-
-def _warn_deprecated_python_profile_server(python_profiles: Sequence[str]) -> None:
-    _print_deprecation_warning(
-        "Python-defined profile serving",
-        details=(
-            "This config is using the Python FastAPI adapter.",
-            f"Python profile(s): {', '.join(python_profiles)}.",
-            "Prefer Rust-defined components-v2 profiles for new serve configs.",
         ),
     )
 
@@ -468,7 +456,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 
 def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
-    """Serve a components-v2 profile config."""
+    """Serve a v2 profile config through the Python HTTP application."""
     if args.routing_profiles:
         raise SystemExit(
             "serve --config cannot be combined with --routing-profiles; "
@@ -494,47 +482,14 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         raise SystemExit("serve --config does not support Intake options yet.")
     if getattr(args, "enable_rl_logging", False):
         raise SystemExit(
-            "serve --config does not support --enable-rl-logging: the Rust "
-            "profile server has no Python processor chain to attach the trace "
-            "logger to. Use serve --routing-profiles for local RL trace logging."
+            "serve --config does not support --enable-rl-logging. "
+            "Use serve --routing-profiles for local RL trace logging."
         )
 
-    # Inspect first so files containing only Rust-defined profiles can use the
-    # Rust server path, while files with Python-defined profiles use FastAPI.
-    from switchyard.lib.profiles.loader import python_profile_ids
-
-    try:
-        python_profiles = python_profile_ids(args.config)
-    except Exception as exc:
-        raise SystemExit(
-            "serve --config: failed to inspect profile config for "
-            f"Python-defined profiles: {exc}"
-        ) from exc
-    if python_profiles:
-        _cmd_serve_mixed_profile_config(args, python_profiles)
-        return
-
-    from switchyard_rust.server import run_profile_server
-
-    port = args.port if isinstance(args.port, int) else resolve_port()
-    logger.info(
-        "Switchyard components-v2 profile config loaded from %s",
-        args.config,
-    )
-    run_profile_server(args.config, args.host, port)
-
-
-def _cmd_serve_mixed_profile_config(
-    args: argparse.Namespace,
-    python_profiles: list[str],
-) -> None:
-    """Serve a config containing Python-defined profiles through FastAPI."""
-    _warn_deprecated_python_profile_server(python_profiles)
     table = _profile_config_route_table(args.config)
     logger.info(
-        "Switchyard profile config loaded from %s with Python-defined profile(s): %s",
+        "Switchyard profile config loaded from %s",
         args.config,
-        ", ".join(python_profiles),
     )
     build_and_serve(args, table, inbound_default="both")
 
@@ -928,10 +883,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Path to a Switchyard v2 profile config (YAML, JSON, or TOML). "
-            "Files containing only Rust-defined profiles use the Rust profile "
-            "server; files with Python-defined profiles use the Python FastAPI "
-            "adapter."
+            "Path to a Switchyard v2 profile config (YAML, JSON, or TOML)."
         ),
     )
     serve.add_argument(

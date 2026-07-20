@@ -1,53 +1,96 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! CLI entrypoint for running the components-v2 Rust profile server.
+//! CLI entrypoint for running the libsy server with random routing.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use clap::Parser;
-use switchyard_core::{Result, SwitchyardError};
-use switchyard_server::{run_server, ServerRunOptions, TLSOptions, DEFAULT_LISTEN_BACKLOG};
+use clap::{Parser, ValueEnum};
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RandomAlgo, RoutedLlmClient};
+use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_server::{
+    run_server, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
+    DEFAULT_LISTEN_BACKLOG,
+};
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DEFAULT_PORT: u16 = 4000;
+const DEFAULT_ROUTE_MODEL: &str = "switchyard/random";
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum UpstreamFormat {
+    #[value(name = "openai-chat")]
+    OpenAiChat,
+    #[value(name = "openai-responses")]
+    OpenAiResponses,
+    #[value(name = "anthropic")]
+    Anthropic,
+}
+
+impl UpstreamFormat {
+    fn backend(self, config: HttpBackendConfig) -> Backend {
+        match self {
+            Self::OpenAiChat => Backend::OpenAiChat(config),
+            Self::OpenAiResponses => Backend::OpenAiResponses(config),
+            Self::Anthropic => Backend::Anthropic(config),
+        }
+    }
+}
 
 /// Command-line arguments accepted by the Rust server binary.
 #[derive(Debug, Parser)]
 #[command(
     name = "switchyard-server",
-    about = "Run the Rust Switchyard server from a components-v2 profile config",
+    about = "Run uniform random routing with libsy",
     version
 )]
 pub(crate) struct ServerArgs {
-    /// Path to a components-v2 profile config file.
-    #[arg(short, long, env = "SWITCHYARD_PROFILE_CONFIG", value_name = "PATH")]
-    pub(crate) config: PathBuf,
+    /// Public model id clients send to this server.
+    #[arg(long, default_value = DEFAULT_ROUTE_MODEL)]
+    route_model: String,
+
+    /// Upstream model id eligible for random selection. Repeat for each target.
+    #[arg(long = "target", required = true)]
+    targets: Vec<String>,
+
+    /// Base URL shared by the configured upstream targets.
+    #[arg(long, env = "SWITCHYARD_UPSTREAM_BASE_URL")]
+    base_url: String,
+
+    /// Upstream API key. Omit when the backend needs no authentication.
+    #[arg(long, env = "SWITCHYARD_UPSTREAM_API_KEY")]
+    api_key: Option<String>,
+
+    /// Provider wire format used by the upstream backend.
+    #[arg(long, value_enum, default_value = "openai-chat")]
+    upstream_format: UpstreamFormat,
 
     /// Host address to bind.
     #[arg(long, default_value_t = DEFAULT_HOST)]
-    pub(crate) host: IpAddr,
+    host: IpAddr,
 
     /// Port to bind.
     #[arg(short, long, default_value_t = DEFAULT_PORT)]
-    pub(crate) port: u16,
+    port: u16,
 
     /// TCP listen backlog passed to the socket before Axum accepts traffic.
     #[arg(long, default_value_t = DEFAULT_LISTEN_BACKLOG)]
-    pub(crate) backlog: u32,
+    backlog: u32,
 
-    /// Validate and build the config without starting the HTTP listener.
+    /// Validate the algorithm and client configuration without binding a socket.
     #[arg(long)]
-    pub(crate) dry_run: bool,
+    dry_run: bool,
 
-    /// TLS certificate path, PEM format
+    /// TLS certificate path in PEM format.
     #[arg(long, requires = "tls_key")]
-    pub(crate) tls_cert: Option<PathBuf>,
+    tls_cert: Option<PathBuf>,
 
-    /// TLS certificate key path, PEM format
+    /// TLS private-key path in PEM format.
     #[arg(long, requires = "tls_cert")]
-    pub(crate) tls_key: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
 }
 
 impl ServerArgs {
@@ -56,30 +99,124 @@ impl ServerArgs {
         Self::parse()
     }
 
-    fn into_options(self) -> Result<ServerRunOptions> {
-        let mut tls_options = None;
-        if let (Some(cert), Some(key)) = (self.tls_cert, self.tls_key) {
-            if !cert.exists() || !key.exists() {
-                return Err(SwitchyardError::InvalidConfig(format!(
-                    "Invalid path in --tls-cert {} or --tls-key {}. File does not exist.",
-                    cert.display(),
-                    key.display()
-                )));
+    fn into_runtime(self) -> ServerResult<(ServerState, ServerRunOptions)> {
+        let targets = validated_targets(self.targets)?;
+        if self.base_url.trim().is_empty() {
+            return Err(ServerError::new("--base-url must not be empty"));
+        }
+
+        let backend = self.upstream_format.backend(HttpBackendConfig {
+            base_url: self.base_url,
+            api_key: self.api_key,
+            extra_headers: BTreeMap::new(),
+        });
+        let model_configs = targets
+            .iter()
+            .map(|model| ModelConfig::new(model, backend.clone(), None))
+            .collect::<Vec<_>>();
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(
+            TranslatingLlmClient::new(&model_configs)
+                .map_err(|error| ServerError::new(error.to_string()))?,
+        );
+        let target_set = LlmTargetSet::new(
+            targets
+                .iter()
+                .map(|model| LlmTarget {
+                    semantic_name: model.clone(),
+                    llm_client: Some(Arc::clone(&client)),
+                })
+                .collect(),
+        );
+        let algorithm: Arc<dyn Algorithm> = Arc::new(RandomAlgo::new(target_set));
+        let state = ServerState::new(
+            self.route_model,
+            format!("uniform random routing across {}", targets.join(", ")),
+            algorithm,
+        )?;
+
+        let tls = match (self.tls_cert, self.tls_key) {
+            (Some(cert), Some(key)) => {
+                if !cert.exists() || !key.exists() {
+                    return Err(ServerError::new(format!(
+                        "invalid --tls-cert {} or --tls-key {}: file does not exist",
+                        cert.display(),
+                        key.display()
+                    )));
+                }
+                Some(TlsOptions { cert, key })
             }
-            tls_options = Some(TLSOptions { cert, key })
+            _ => None,
         };
-        Ok(ServerRunOptions {
-            config: self.config,
+        let options = ServerRunOptions {
             addr: SocketAddr::new(self.host, self.port),
             backlog: self.backlog,
             dry_run: self.dry_run,
-            tls: tls_options,
-        })
+            tls,
+        };
+        Ok((state, options))
     }
 }
 
-/// Loads config, optionally validates it, then starts the Rust server.
-pub(crate) async fn run(args: ServerArgs) -> Result<()> {
-    let opts = args.into_options()?;
-    run_server(opts).await
+fn validated_targets(targets: Vec<String>) -> ServerResult<Vec<String>> {
+    if targets.iter().any(|target| target.trim().is_empty()) {
+        return Err(ServerError::new("--target values must not be empty"));
+    }
+    let unique = targets.iter().collect::<BTreeSet<_>>();
+    if unique.len() != targets.len() {
+        return Err(ServerError::new("--target values must be unique"));
+    }
+    Ok(targets)
+}
+
+/// Builds the random algorithm and starts the server.
+pub(crate) async fn run(args: ServerArgs) -> ServerResult<()> {
+    let (state, options) = args.into_runtime()?;
+    run_server(state, options).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_targets_build_random_runtime() -> ServerResult<()> {
+        let args = ServerArgs::try_parse_from([
+            "switchyard-server",
+            "--target",
+            "model/a",
+            "--target",
+            "model/b",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+            "--dry-run",
+        ])
+        .map_err(|error| ServerError::new(error.to_string()))?;
+
+        let (state, options) = args.into_runtime()?;
+
+        assert_eq!(state.served_model().id, DEFAULT_ROUTE_MODEL);
+        assert!(state
+            .served_model()
+            .display_name
+            .contains("model/a, model/b"));
+        assert!(options.dry_run);
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_targets_are_rejected() -> ServerResult<()> {
+        let args = ServerArgs::try_parse_from([
+            "switchyard-server",
+            "--target",
+            "model/a",
+            "--target",
+            "model/a",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+        ])
+        .map_err(|error| ServerError::new(error.to_string()))?;
+
+        assert!(args.into_runtime().is_err());
+        Ok(())
+    }
 }

@@ -16,7 +16,7 @@ a drop-in scrape config and starter alert rules.
 
 !!! note "Availability: legacy route-bundle serve only"
     `GET /metrics` is served by the **legacy route-bundle path**
-    (`switchyard --routing-profiles PATH serve`). The recommended v2 profile server
+    (`switchyard --routing-profiles PATH serve`). The v2 profile-config path
     (`switchyard serve --config`) returns **404** for `/metrics` — use `GET /v1/stats`
     (or its alias `GET /v1/routing/stats`) on that path instead.
 
