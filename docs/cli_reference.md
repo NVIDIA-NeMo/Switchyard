@@ -121,6 +121,12 @@ Switchyard also maps the Intake app/task labels into top-level
 `evaluation_context.dataset_*` and `evaluation_context.test_case_id` for span
 queries while keeping the original labels under `request.switchyard`.
 
+Set `--intake-target-url` to a full posting URL to send captures to a different
+store instead. Switchyard then posts a flat, top-level, type-prefixed document
+(`s_` string, `l_` long, `f_` float, `b_` bool, `text_` debug — one indexable
+field per metric) to that URL, unauthenticated, rather than the nested
+nemo-platform payload. Unset, it uses the nemo-platform ingest above.
+
 ### RL trace logging
 
 `--enable-rl-logging` attaches a response-side logger to the proxy chain of any
