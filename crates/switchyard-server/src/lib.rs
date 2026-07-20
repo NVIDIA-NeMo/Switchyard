@@ -6,6 +6,7 @@
 mod response;
 mod sse;
 
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -76,36 +77,54 @@ pub struct ServedModel {
 /// Shared server state used by all endpoint handlers.
 #[derive(Clone)]
 pub struct ServerState {
+    routes: Arc<BTreeMap<String, AlgorithmEntry>>,
+}
+
+struct AlgorithmEntry {
     algorithm: Arc<dyn Algorithm>,
-    served_model: Arc<ServedModel>,
+    model: ServedModel,
 }
 
 impl ServerState {
-    /// Creates server state for one public route backed by a libsy algorithm.
+    /// Creates server state from public models and their libsy algorithms.
     pub fn new(
-        model: impl Into<String>,
-        display_name: impl Into<String>,
-        algorithm: Arc<dyn Algorithm>,
+        routes: impl IntoIterator<Item = (ServedModel, Arc<dyn Algorithm>)>,
     ) -> ServerResult<Self> {
-        let model = model.into();
-        if model.trim().is_empty() {
-            return Err(ServerError::new("route model must not be empty"));
+        let mut entries = BTreeMap::new();
+        for (model, algorithm) in routes {
+            if model.id.trim().is_empty() {
+                return Err(ServerError::new("route model must not be empty"));
+            }
+            let id = model.id.clone();
+            match entries.entry(id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(AlgorithmEntry { algorithm, model });
+                }
+                Entry::Occupied(entry) => {
+                    return Err(ServerError::new(format!(
+                        "duplicate route model {}",
+                        entry.key()
+                    )));
+                }
+            }
+        }
+        if entries.is_empty() {
+            return Err(ServerError::new("at least one algorithm route is required"));
         }
         Ok(Self {
-            algorithm,
-            served_model: Arc::new(ServedModel {
-                id: model,
-                display_name: display_name.into(),
-            }),
+            routes: Arc::new(entries),
         })
     }
 
-    /// Returns the public model served by this algorithm.
-    pub fn served_model(&self) -> &ServedModel {
-        self.served_model.as_ref()
+    /// Returns the public models served by the configured algorithms.
+    pub fn served_models(&self) -> impl Iterator<Item = &ServedModel> {
+        self.routes.values().map(|entry| &entry.model)
     }
 
-    fn validate_model(&self, model: Option<&str>) -> std::result::Result<(), Box<Response>> {
+    fn algorithm_for_model(
+        &self,
+        model: Option<&str>,
+    ) -> std::result::Result<Arc<dyn Algorithm>, Box<Response>> {
         let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
             return Err(Box::new(error_response(
                 StatusCode::BAD_REQUEST,
@@ -114,15 +133,15 @@ impl ServerState {
                 "invalid_request_error",
             )));
         };
-        if model != self.served_model.id {
+        let Some(entry) = self.routes.get(model) else {
             return Err(Box::new(error_response(
                 StatusCode::NOT_FOUND,
                 format!("No route registered for model {model}"),
                 "model_not_found",
                 "model_not_found",
             )));
-        }
-        Ok(())
+        };
+        Ok(Arc::clone(&entry.algorithm))
     }
 }
 
@@ -309,19 +328,17 @@ async fn handle_llm_request(
         Err(error) => return invalid_body_error(error.to_string()),
     };
     let requested_model = llm_request.model.clone();
-    if let Err(response) = state.validate_model(requested_model.as_deref()) {
-        return *response;
-    }
+    let algorithm = match state.algorithm_for_model(requested_model.as_deref()) {
+        Ok(algorithm) => algorithm,
+        Err(response) => return *response,
+    };
 
     let request = Request {
         llm_request,
         raw_request: Some(body),
         metadata: Some(metadata_from_headers(&headers)),
     };
-    let (trace, response) = match Arc::clone(&state.algorithm)
-        .run(Context::default(), request)
-        .await
-    {
+    let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };
@@ -477,7 +494,7 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(state.served_model()))
+    Json(model_list_payload(state.served_models()))
 }
 
 async fn health() -> Json<Value> {
@@ -493,15 +510,22 @@ async fn not_found() -> Response {
     )
 }
 
-fn model_list_payload(entry: &ServedModel) -> Value {
+fn model_list_payload<'a>(entries: impl IntoIterator<Item = &'a ServedModel>) -> Value {
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    let model_ids = entries
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect::<Vec<_>>();
+    let first_id = model_ids.first().cloned();
+    let last_id = model_ids.last().cloned();
     json!({
         "object": "list",
-        "data": [model_entry_json(entry)],
-        "first_id": entry.id,
-        "last_id": entry.id,
+        "data": entries.into_iter().map(model_entry_json).collect::<Vec<_>>(),
+        "first_id": first_id,
+        "last_id": last_id,
         "has_more": false,
-        "default_model": entry.id,
-        "model_pool": [entry.id],
+        "default_model": first_id,
+        "model_pool": model_ids,
     })
 }
 
@@ -533,11 +557,6 @@ fn startup_banner(options: &ServerRunOptions, state: &ServerState) -> String {
     let mut output = String::new();
 
     push_line(&mut output, "Switchyard libsy server");
-    push_line(&mut output, format!("  model: {}", state.served_model.id));
-    push_line(
-        &mut output,
-        format!("  algorithm: {}", state.served_model.display_name),
-    );
     push_line(&mut output, format!("  listening: {listen_url}"));
     if local_url != listen_url {
         push_line(&mut output, format!("  local: {local_url}"));
@@ -550,17 +569,27 @@ fn startup_banner(options: &ServerRunOptions, state: &ServerState) -> String {
     push_line(&mut output, "    POST /v1/messages");
     push_line(&mut output, "    POST /v1/responses");
     push_line(&mut output, "");
+    push_line(&mut output, "  routes:");
+    for model in state.served_models() {
+        push_line(
+            &mut output,
+            format!("    - {} ({})", model.id, model.display_name),
+        );
+    }
+    push_line(&mut output, "");
     push_line(&mut output, "  try:");
     push_line(&mut output, format!("    curl -s {local_url}/health"));
-    let chat_payload = json!({
-        "model": state.served_model.id,
-        "messages": [{"role": "user", "content": "Say OK"}],
-        "max_tokens": 256,
-    });
-    push_line(
-        &mut output,
-        format!("    curl -s {local_url}/v1/chat/completions -H 'content-type: application/json' -d '{chat_payload}'"),
-    );
+    if let Some(model) = state.served_models().next() {
+        let chat_payload = json!({
+            "model": model.id,
+            "messages": [{"role": "user", "content": "Say OK"}],
+            "max_tokens": 256,
+        });
+        push_line(
+            &mut output,
+            format!("    curl -s {local_url}/v1/chat/completions -H 'content-type: application/json' -d '{chat_payload}'"),
+        );
+    }
     if options.is_tls() {
         push_line(
             &mut output,
@@ -573,10 +602,14 @@ fn startup_banner(options: &ServerRunOptions, state: &ServerState) -> String {
 }
 
 fn dry_run_summary(state: &ServerState) -> String {
-    format!(
-        "server OK: model={}, algorithm={}\n",
-        state.served_model.id, state.served_model.display_name
-    )
+    let mut output = String::from("server OK:\n");
+    for model in state.served_models() {
+        push_line(
+            &mut output,
+            format!("  - {} ({})", model.id, model.display_name),
+        );
+    }
+    output
 }
 
 fn push_line(output: &mut String, line: impl AsRef<str>) {

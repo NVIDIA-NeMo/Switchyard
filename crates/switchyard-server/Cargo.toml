@@ -18,7 +18,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23" }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
-libsy = { path = "../libsy" }
+libsy = { package = "switchyard-libsy", path = "../libsy" }
 switchyard-llm-client = { path = "../libsy-llm-client" }
 serde_json = "1"
 switchyard-translation = { path = "../switchyard-translation" }
