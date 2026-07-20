@@ -7,15 +7,15 @@
 //! surfaces as a `CallLlm` step. The agent makes the "real" model call itself and
 //! fulfills the promise — this is the offload/streaming path ("ask, don't call").
 //! The classifier's two steps show up as two `model call:` lines. Run with:
-//!   cargo run -p libsy-examples --example research_agent_core
+//!   cargo run -p libsy --example research_agent_core
 
 use std::error::Error;
 use std::sync::Arc;
 
+use libsy::LlmClassifierOrchAlgo;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
 };
-use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use switchyard_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
 

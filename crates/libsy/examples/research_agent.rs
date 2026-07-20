@@ -9,17 +9,17 @@
 //! multi-step routing (classify -> route) happens inside the classifier algorithm; the
 //! agent never sees it. To drive the step stream yourself instead, use
 //! `Algorithm::run_stream`. Run with:
-//!   cargo run -p libsy-examples --example research_agent
+//!   cargo run -p libsy --example research_agent
 
 use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use libsy::LlmClassifierOrchAlgo;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
     RoutedLlmClient,
 };
-use libsy_examples::llm_class::LlmClassifierOrchAlgo;
 use switchyard_protocol::{completion_text, text_request, text_response};
 
 const CLASSIFIER: &str = "classifier/model";

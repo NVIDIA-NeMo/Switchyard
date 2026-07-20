@@ -4,7 +4,7 @@
 [package]
 name = "libsy-examples"
 version = "0.1.0"
-description = "Reference algorithms and runnable agents built on libsy"
+description = "Example algorithms built on libsy"
 publish = false
 authors.workspace = true
 edition.workspace = true
