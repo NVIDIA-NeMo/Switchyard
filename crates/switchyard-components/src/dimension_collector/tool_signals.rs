@@ -8,6 +8,9 @@
 //! [`switchyard_protocol::Request`] (raw body + wire-format metadata) so the two
 //! request models share one implementation.
 
+use std::collections::HashMap;
+
+use serde_json::Value;
 use switchyard_core::{ChatRequest, ChatRequestType};
 use switchyard_protocol::{Metadata, Request, WireFormat};
 
@@ -222,6 +225,17 @@ pub struct ToolResultSignal {
     pub turn_depth: u32,
     /// Char count of the last user message.
     pub prompt_char_count: u32,
+    /// Over the recent window, the largest share taken by a single identical
+    /// command-bearing tool call (Bash name + command), in `[0, 1]`. A weak model
+    /// looping the same command (e.g. `cd /tmp` many times) spikes this even when it
+    /// errors little and keeps "producing" — churn the error/stall signals miss.
+    pub repeated_cmd_ratio: f32,
+    /// The request carries a context-compaction summary (the agent's context was
+    /// summarised after overflowing). Compaction resets the router's accumulated
+    /// signals, so a task that was on the strong tier de-escalates back to weak — the
+    /// picker uses this to force + hold the strong tier. Self-latching: the summary
+    /// stays in the context prefix on every subsequent turn.
+    pub compacted: bool,
 }
 
 /// Extract tool-execution signals using the default `recent_*` window.
@@ -239,14 +253,14 @@ pub fn extract_tool_signals_with_window(
         return ToolResultSignal::default();
     };
 
-    match request.request_type() {
+    let (mut signal, entries) = match request.request_type() {
         ChatRequestType::Anthropic => {
             let messages = obj
                 .get("messages")
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            extract_from_messages_anthropic(messages, recent_window)
+            (extract_from_messages_anthropic(messages, recent_window), messages)
         }
         ChatRequestType::OpenAiResponses => {
             let items = obj
@@ -254,7 +268,7 @@ pub fn extract_tool_signals_with_window(
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            extract_from_input_responses(items, recent_window)
+            (extract_from_input_responses(items, recent_window), items)
         }
         ChatRequestType::OpenAiChat => {
             let messages = obj
@@ -262,12 +276,39 @@ pub fn extract_tool_signals_with_window(
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            extract_from_messages_openai_chat(messages, recent_window)
+            (extract_from_messages_openai_chat(messages, recent_window), messages)
         }
-    }
+    };
+
+    // Compaction is detected anywhere in the message/item contents (the summary stays
+    // in the prefix on every subsequent turn, so this self-latches once it fires).
+    signal.compacted = entries.iter().any(|m| {
+        m.as_object()
+            .is_some_and(|o| content_has_compaction_marker(o.get("content")))
+    });
+    signal
 }
 
 // ─── format-specific extractors ──────────────────────────────────────────────
+
+/// Distinctive preamble Claude Code injects as a user message when it compacts an
+/// overflowed context. Matched case-insensitively; normal task text never contains it.
+const COMPACTION_MARKER: &str = "session is being continued";
+
+/// True when a user-message content (string or text blocks) carries the compaction
+/// summary preamble.
+fn content_has_compaction_marker(content: Option<&Value>) -> bool {
+    match content {
+        Some(Value::String(s)) => s.to_lowercase().contains(COMPACTION_MARKER),
+        Some(Value::Array(blocks)) => blocks.iter().any(|b| {
+            b.as_object()
+                .and_then(|o| o.get("text"))
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.to_lowercase().contains(COMPACTION_MARKER))
+        }),
+        _ => false,
+    }
+}
 
 fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolResultSignal {
     let mut tool_texts: Vec<String> = Vec::new();
@@ -540,6 +581,23 @@ fn build_signal(
 
     let tests_passed = detect_tests_passed(&tool_texts, recent_window);
 
+    // repeated_cmd_ratio: over the recent window, the largest count of an identical
+    // command-bearing call (Bash name + command) / window. Catches a weak model
+    // looping the same command with no progress — the churn that severity/spinning
+    // miss because it errors little and still "produces". Only command-bearing calls
+    // count, so distinct reads/writes don't false-positive.
+    let mut cmd_counts: HashMap<(&str, &str), u32> = HashMap::new();
+    for tc in tool_calls.iter().skip(recent_start) {
+        if let Some(cmd) = tc.command.as_deref() {
+            *cmd_counts.entry((tc.name.as_str(), cmd)).or_insert(0) += 1;
+        }
+    }
+    let repeated_cmd_ratio = if recent_window > 0 {
+        cmd_counts.values().copied().max().unwrap_or(0) as f32 / recent_window as f32
+    } else {
+        0.0
+    };
+
     ToolResultSignal {
         severity,
         patterns,
@@ -556,6 +614,10 @@ fn build_signal(
         tests_passed,
         turn_depth,
         prompt_char_count,
+        repeated_cmd_ratio,
+        // Set by extract_tool_signals_with_window after the format-specific extract,
+        // which scans all message contents for the compaction marker.
+        compacted: false,
     }
 }
 
@@ -873,6 +935,59 @@ mod tests {
         let wide = extract_tool_signals_with_window(&request, 6);
         assert_eq!(wide.recent_write_count, 5);
         assert_eq!(wide.recent_edit_count, 1);
+    }
+
+    #[test]
+    fn repeated_cmd_ratio_spikes_on_a_looping_command() {
+        // Five identical `cd /tmp` calls fill a window of 5 → ratio 1.0 (churn).
+        let request = ChatRequest::openai_chat(json!({
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
+            ]
+        }));
+        assert_eq!(extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio, 1.0);
+    }
+
+    #[test]
+    fn compaction_marker_sets_compacted() {
+        // The compaction summary is a user message carrying Claude Code's preamble.
+        let request = ChatRequest::openai_chat(json!({
+            "messages": [
+                {"role": "user", "content": "This session is being continued from a previous conversation that ran out of context."},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}}]},
+            ]
+        }));
+        assert!(extract_tool_signals(&request).compacted);
+    }
+
+    #[test]
+    fn no_compaction_marker_stays_uncompacted() {
+        let request = ChatRequest::openai_chat(json!({
+            "messages": [
+                {"role": "user", "content": "Write a script that parses the log file."},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}}]},
+            ]
+        }));
+        assert!(!extract_tool_signals(&request).compacted);
+    }
+
+    #[test]
+    fn repeated_cmd_ratio_stays_low_for_distinct_commands() {
+        // Five distinct commands → max repeat 1 / window 5 = 0.2, no false churn.
+        let request = ChatRequest::openai_chat(json!({
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls a\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls b\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls c\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls d\"}"}}]},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls e\"}"}}]},
+            ]
+        }));
+        assert_eq!(extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio, 0.2);
     }
 
     #[test]

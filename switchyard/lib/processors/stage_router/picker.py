@@ -140,9 +140,16 @@ def _record(
 def _apply_overrides(signal: "ToolResultSignal") -> int | None:
     """Non-negotiable, signal-derived shortcuts that bypass the scorer.
 
-    A CRITICAL severity always forces CAPABLE; it outranks the settled-run
-    (`tests_passed`) shortcut handled in :func:`_pick`.
+    A CRITICAL severity or a context compaction always forces CAPABLE; both outrank
+    the settled-run (`tests_passed`) shortcut handled in :func:`_pick`.
+
+    Compaction resets the router's accumulated signals, so a task that had escalated
+    de-escalates straight back to weak. Once the context has been compacted we force —
+    and, because the summary stays in the prefix on every subsequent turn, hold — the
+    strong tier, which is where a task hard enough to overflow its context belongs.
     """
+    if signal.compacted:
+        return CAPABLE
     if signal.severity >= SEVERITY_CRITICAL:
         return CAPABLE
     return None

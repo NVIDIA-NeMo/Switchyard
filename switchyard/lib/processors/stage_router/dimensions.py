@@ -53,6 +53,10 @@ class CodingAgentDimensions:
     exploring: float
     #: Fraction of recent tool ops that produced code (writes + edits) → weak.
     recent_production_intensity: float
+    #: Largest share of the recent window taken by one identical command-bearing call
+    #: in ``[0, 1]`` — a weak model looping the same command (churn) → strong. Catches
+    #: the "busy but not converging" case that severity/spinning miss.
+    repeated_cmd_ratio: float
 
 
 def from_signal(signal: ToolResultSignal) -> CodingAgentDimensions:
@@ -87,6 +91,7 @@ def from_signal(signal: ToolResultSignal) -> CodingAgentDimensions:
         recent_production_intensity=_ratio(
             signal.recent_write_count + signal.recent_edit_count, recent_ops
         ),
+        repeated_cmd_ratio=float(signal.repeated_cmd_ratio),
     )
 
 

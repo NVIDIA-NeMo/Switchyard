@@ -28,6 +28,7 @@ def _zero() -> CodingAgentDimensions:
         spinning=0.0,
         exploring=0.0,
         recent_production_intensity=0.0,
+        repeated_cmd_ratio=0.0,
     )
 
 
@@ -69,6 +70,14 @@ def test_exploring_is_a_full_escalation_signal():
     assert explore.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))  # ~0.462
     assert explore.confidence == pytest.approx(spin.confidence)
     assert explore.confidence > 0.30  # escalates alone at a typical threshold
+
+
+def test_repeated_cmd_ratio_is_a_wrong_signal():
+    """A weak model looping one command (repeated_cmd_ratio→1) is a full WRONG signal
+    → CAPABLE, same weight as spinning. Catches churn that severity/spinning miss."""
+    churn = score(_with(repeated_cmd_ratio=1.0))
+    assert churn.score > 0
+    assert churn.score == pytest.approx(math.tanh(_SCORE_GAIN * 0.10))
 
 
 def test_corroboration_raises_confidence():

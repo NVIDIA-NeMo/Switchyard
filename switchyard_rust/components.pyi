@@ -347,6 +347,8 @@ class ToolResultSignal:
     no_error_streak: int
     tests_passed: bool
     prompt_char_count: int
+    repeated_cmd_ratio: float
+    compacted: bool
 
 
 def get_tool_result_signal(ctx: ProxyContext) -> ToolResultSignal | None: ...

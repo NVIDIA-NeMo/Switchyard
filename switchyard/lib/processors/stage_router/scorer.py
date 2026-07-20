@@ -48,7 +48,7 @@ _SIGNAL_UNIT: float = 0.10
 #: across the whole stretch — the "latch" that sustains escalation on hard debugging
 #: tasks (verified against runs where a struggling agent reads-without-writing for
 #: dozens of turns; treating it as neutral routed those to the weak tier and lost them).
-_WRONG_SIGNALS: tuple[str, ...] = ("severity", "spinning", "exploring")
+_WRONG_SIGNALS: tuple[str, ...] = ("severity", "spinning", "exploring", "repeated_cmd_ratio")
 #: "Making progress" → EFFICIENT (weak). De-escalation is driven by real production
 #: (writes/edits), not by a clean-result streak: a streak of clean results actively
 #: cancelled the (windowed) error signal on the same axis and released escalations too

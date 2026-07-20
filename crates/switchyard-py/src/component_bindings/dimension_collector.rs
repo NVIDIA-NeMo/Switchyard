@@ -541,6 +541,20 @@ impl PyToolResultSignal {
         self.inner.prompt_char_count
     }
 
+    /// Largest share taken by a single identical command-bearing tool call over the
+    /// recent window, in `[0, 1]` — a weak model looping the same command (churn).
+    #[getter]
+    fn repeated_cmd_ratio(&self) -> f32 {
+        self.inner.repeated_cmd_ratio
+    }
+
+    /// The request carries a context-compaction summary — the picker forces + holds
+    /// the strong tier, since compaction otherwise de-escalates the router to weak.
+    #[getter]
+    fn compacted(&self) -> bool {
+        self.inner.compacted
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ToolResultSignal(severity={:.2}, streak={}, edit={}, write={}, tests_passed={})",

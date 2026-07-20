@@ -98,6 +98,21 @@ async def test_critical_severity_overrides_to_capable():
 
 
 @pytest.mark.asyncio
+async def test_compaction_overrides_to_capable():
+    """A compacted context forces CAPABLE for both pickers, even with a production
+    signal that would otherwise route EFFICIENT — a task hard enough to overflow its
+    context belongs on strong, and the override holds it there."""
+    msgs = [
+        {"role": "user", "content":
+            "This session is being continued from a previous conversation that ran out of context."},
+    ] + [_msg_tool_call("Write"), _msg_tool_result("ok")] * 3
+    ctx = await _ctx(msgs)
+    assert await pick_efficient_first(ctx, confidence_threshold=0.7) == CAPABLE
+    ctx = await _ctx(msgs)
+    assert await pick_capable_first(ctx, confidence_threshold=0.7) == CAPABLE
+
+
+@pytest.mark.asyncio
 async def test_tests_passed_with_edits_routes_to_efficient():
     """A settled run (recent test-pass + recent edit, no error) is safe on cheap tier."""
     messages = [_msg_tool_call("Edit")] * 3 + [_msg_tool_result("all tests passed")] * 3
