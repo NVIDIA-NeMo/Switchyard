@@ -27,6 +27,7 @@ use super::policy::CostAwareRoutingPolicy;
 use super::scorer::{HiddenStateProbeScorer, ProbeScorer};
 
 const LEARNED_SCORE_THRESHOLD: f64 = 0.5;
+const PREFILL_PROBE_INPUT_FIELD: &str = "_switchyard_prefill_probe_input";
 const TIER_STRONG: &str = "strong";
 const TIER_WEAK: &str = "weak";
 
@@ -177,32 +178,60 @@ pub struct PrefillProbeProfile {
     score_threshold: f64,
     scorer: Arc<dyn ProbeScorer>,
     stats: StatsAccumulator,
-    // Successful scores are reused by the first string-valued user instruction.
+    // Successful scores are reused by the resolved probe input.
     decision_cache: Arc<Mutex<HashMap<u64, f64>>>,
 }
 
 impl PrefillProbeProfile {
-    // Hashes the first user instruction represented as a string.
-    fn instruction_key(request: &switchyard_core::ChatRequest) -> Option<u64> {
+    // Returns the first string-valued user instruction.
+    fn first_user_instruction(request: &switchyard_core::ChatRequest) -> Option<&str> {
         let messages = request.body().as_object()?.get("messages")?.as_array()?;
-        let content = messages.iter().find_map(|message| {
+        messages.iter().find_map(|message| {
             (message.get("role").and_then(serde_json::Value::as_str) == Some("user"))
                 .then(|| message.get("content").and_then(serde_json::Value::as_str))
                 .flatten()
-        })?;
+        })
+    }
+
+    // Removes the profile-local field and resolves the exact input to score and cache.
+    fn take_probe_input(request: &mut switchyard_core::ChatRequest) -> Result<Option<String>> {
+        let explicit = request
+            .body_mut()
+            .as_object_mut()
+            .and_then(|body| body.remove(PREFILL_PROBE_INPUT_FIELD));
+        match explicit {
+            Some(serde_json::Value::String(probe_input)) if !probe_input.is_empty() => {
+                Ok(Some(probe_input))
+            }
+            Some(_) => Err(SwitchyardError::InvalidRequest(format!(
+                "{PREFILL_PROBE_INPUT_FIELD} must be a non-empty string",
+            ))),
+            None => Ok(Self::first_user_instruction(request).map(str::to_owned)),
+        }
+    }
+
+    // Hashes the resolved probe input for successful-decision reuse.
+    fn instruction_key(probe_input: &str) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        content.hash(&mut hasher);
-        Some(hasher.finish())
+        probe_input.hash(&mut hasher);
+        hasher.finish()
     }
 
     // Scores an uncached instruction and explicitly bypasses threshold routing on failure.
     async fn route(&self, mut input: ProfileInput) -> Result<PrefillProbeProcessedRequest> {
-        let key = Self::instruction_key(&input.request);
+        let probe_input = Self::take_probe_input(&mut input.request)?;
+        let key = probe_input.as_deref().map(Self::instruction_key);
         let cached = key.and_then(|key| self.decision_cache.lock().get(&key).copied());
         let (score, strong_fallback) = if let Some(score) = cached {
             (score, false)
         } else {
-            match self.scorer.score(&input.request).await {
+            let scored = match probe_input.as_deref() {
+                Some(probe_input) => self.scorer.score(probe_input).await,
+                None => Err(SwitchyardError::Other(
+                    "prefill probe request has no string-valued user instruction".to_string(),
+                )),
+            };
+            match scored {
                 Ok(score) => {
                     if let Some(key) = key {
                         self.decision_cache.lock().insert(key, score);
@@ -392,7 +421,7 @@ mod tests {
 
     #[async_trait]
     impl ProbeScorer for FixedScorer {
-        async fn score(&self, _request: &ChatRequest) -> Result<f64> {
+        async fn score(&self, _probe_input: &str) -> Result<f64> {
             Ok(self.0)
         }
     }
@@ -401,7 +430,7 @@ mod tests {
 
     #[async_trait]
     impl ProbeScorer for ErrorScorer {
-        async fn score(&self, _request: &ChatRequest) -> Result<f64> {
+        async fn score(&self, _probe_input: &str) -> Result<f64> {
             Err(SwitchyardError::Other("probe unavailable".to_string()))
         }
     }
@@ -413,7 +442,7 @@ mod tests {
 
     #[async_trait]
     impl ProbeScorer for CountingScorer {
-        async fn score(&self, _request: &ChatRequest) -> Result<f64> {
+        async fn score(&self, _probe_input: &str) -> Result<f64> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.score)
         }
@@ -425,7 +454,7 @@ mod tests {
 
     #[async_trait]
     impl ProbeScorer for FlakyScorer {
-        async fn score(&self, _request: &ChatRequest) -> Result<f64> {
+        async fn score(&self, _probe_input: &str) -> Result<f64> {
             let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
             if attempt == 0 {
                 Err(SwitchyardError::Other(
@@ -434,6 +463,19 @@ mod tests {
             } else {
                 Ok(1.0)
             }
+        }
+    }
+
+    struct RecordingScorer {
+        inputs: Arc<Mutex<Vec<String>>>,
+        score: f64,
+    }
+
+    #[async_trait]
+    impl ProbeScorer for RecordingScorer {
+        async fn score(&self, probe_input: &str) -> Result<f64> {
+            self.inputs.lock().push(probe_input.to_string());
+            Ok(self.score)
         }
     }
 
@@ -488,6 +530,17 @@ mod tests {
         }
     }
 
+    fn input_with_probe_field(probe_input: Value, wrapped_instruction: &str) -> ProfileInput {
+        ProfileInput {
+            request: ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [{"role": "user", "content": wrapped_instruction}],
+                (PREFILL_PROBE_INPUT_FIELD): probe_input,
+            })),
+            metadata: RequestMetadata::default(),
+        }
+    }
+
     fn observed(calls: &Arc<Mutex<Vec<ObservedCall>>>) -> Vec<ObservedCall> {
         calls.lock().clone()
     }
@@ -529,6 +582,190 @@ mod tests {
         assert_eq!(first.decision.tier, TIER_WEAK);
         assert_eq!(second.decision.tier, TIER_WEAK);
         assert_eq!(scorer_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn profile_passes_only_first_string_user_instruction_to_scorer() -> Result<()> {
+        let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
+        let (profile, _calls) = profile(
+            Arc::new(RecordingScorer {
+                inputs: scorer_inputs.clone(),
+                score: 1.0,
+            }),
+            false,
+            false,
+        )?;
+        let input = ProfileInput {
+            request: ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [
+                    {"role": "system", "content": "System wrapper"},
+                    {"role": "user", "content": "First instruction"},
+                    {"role": "assistant", "content": "Intermediate response"},
+                    {"role": "user", "content": "Later instruction"},
+                ],
+                "temperature": 0.2,
+            })),
+            metadata: RequestMetadata::default(),
+        };
+
+        let processed = profile.process(input).await?;
+
+        assert_eq!(processed.decision.tier, TIER_WEAK);
+        assert_eq!(&*scorer_inputs.lock(), &["First instruction"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_probe_input_controls_scoring_cache_and_not_backend_body() -> Result<()> {
+        let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
+        let (profile, calls) = profile(
+            Arc::new(RecordingScorer {
+                inputs: scorer_inputs.clone(),
+                score: 1.0,
+            }),
+            false,
+            false,
+        )?;
+
+        let first = profile
+            .run(input_with_probe_field(
+                json!("raw instruction"),
+                "wrapped instruction with terminal state one",
+            ))
+            .await?;
+        let second = profile
+            .run(input_with_probe_field(
+                json!("raw instruction"),
+                "wrapped instruction with terminal state two",
+            ))
+            .await?;
+
+        assert_eq!(
+            first.routing_metadata.and_then(|data| data.selected_tier),
+            Some(TIER_WEAK.to_string())
+        );
+        assert_eq!(
+            second.routing_metadata.and_then(|data| data.selected_tier),
+            Some(TIER_WEAK.to_string())
+        );
+        assert_eq!(&*scorer_inputs.lock(), &["raw instruction"]);
+        assert_eq!(profile.decision_cache.lock().len(), 1);
+        let observed = observed(&calls);
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].backend, "weak-backend");
+        assert_eq!(observed[1].backend, "weak-backend");
+        assert_eq!(
+            observed[0].body["messages"],
+            json!([{"role": "user", "content": "wrapped instruction with terminal state one"}])
+        );
+        assert_eq!(
+            observed[1].body["messages"],
+            json!([{"role": "user", "content": "wrapped instruction with terminal state two"}])
+        );
+        assert!(observed
+            .iter()
+            .all(|call| call.body.get(PREFILL_PROBE_INPUT_FIELD).is_none()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn different_explicit_probe_inputs_create_distinct_cache_entries() -> Result<()> {
+        let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
+        let (profile, _calls) = profile(
+            Arc::new(RecordingScorer {
+                inputs: scorer_inputs.clone(),
+                score: 1.0,
+            }),
+            false,
+            false,
+        )?;
+
+        let _first = profile
+            .process(input_with_probe_field(json!("raw one"), "same wrapper"))
+            .await?;
+        let _second = profile
+            .process(input_with_probe_field(json!("raw two"), "same wrapper"))
+            .await?;
+
+        assert_eq!(&*scorer_inputs.lock(), &["raw one", "raw two"]);
+        assert_eq!(profile.decision_cache.lock().len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_probe_field_is_removed_on_strong_and_failure_paths() -> Result<()> {
+        let (strong_profile, strong_calls) = profile(Arc::new(FixedScorer(0.0)), false, false)?;
+        let strong_response = strong_profile
+            .run(input_with_probe_field(
+                json!("raw strong"),
+                "wrapped strong",
+            ))
+            .await?;
+        assert_eq!(
+            strong_response
+                .routing_metadata
+                .and_then(|data| data.selected_tier),
+            Some(TIER_STRONG.to_string())
+        );
+        let strong_observed = observed(&strong_calls);
+        assert_eq!(strong_observed.len(), 1);
+        assert!(strong_observed[0]
+            .body
+            .get(PREFILL_PROBE_INPUT_FIELD)
+            .is_none());
+
+        let (fallback_profile, fallback_calls) = profile(Arc::new(ErrorScorer), false, false)?;
+        let fallback_response = fallback_profile
+            .run(input_with_probe_field(
+                json!("raw fallback"),
+                "wrapped fallback",
+            ))
+            .await?;
+        assert_eq!(
+            fallback_response
+                .routing_metadata
+                .and_then(|data| data.selected_tier),
+            Some(TIER_STRONG.to_string())
+        );
+        assert_eq!(fallback_profile.decision_cache.lock().len(), 0);
+        let fallback_observed = observed(&fallback_calls);
+        assert_eq!(fallback_observed.len(), 1);
+        assert!(fallback_observed[0]
+            .body
+            .get(PREFILL_PROBE_INPUT_FIELD)
+            .is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn malformed_explicit_probe_input_is_rejected_without_scoring() -> Result<()> {
+        let scorer_calls = Arc::new(AtomicUsize::new(0));
+        let (profile, calls) = profile(
+            Arc::new(CountingScorer {
+                score: 1.0,
+                calls: scorer_calls.clone(),
+            }),
+            false,
+            false,
+        )?;
+
+        for invalid in [json!(""), Value::Null, json!([]), json!({}), json!(7)] {
+            let error = profile
+                .run(input_with_probe_field(invalid, "wrapped instruction"))
+                .await
+                .err()
+                .ok_or_else(|| {
+                    SwitchyardError::Other("malformed explicit input should fail".to_string())
+                })?;
+            assert!(matches!(error, SwitchyardError::InvalidRequest(_)));
+            assert!(format!("{error}").contains(PREFILL_PROBE_INPUT_FIELD));
+        }
+
+        assert_eq!(scorer_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(profile.decision_cache.lock().len(), 0);
+        assert!(observed(&calls).is_empty());
         Ok(())
     }
 

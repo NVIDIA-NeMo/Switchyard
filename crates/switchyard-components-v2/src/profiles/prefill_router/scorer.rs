@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use safetensors::{Dtype, SafeTensors};
 use serde::Deserialize;
-use switchyard_core::{ChatRequest, Result, SwitchyardError};
+use switchyard_core::{Result, SwitchyardError};
 
 use super::artifact::InferenceArtifact;
 use super::policy::CostAwareRoutingPolicy;
@@ -24,7 +24,7 @@ const ARTIFACT_WAIT_INTERVAL: Duration = Duration::from_millis(50);
 #[async_trait]
 pub(crate) trait ProbeScorer: Send + Sync {
     /// Returns `1.0` for weak and `0.0` for strong.
-    async fn score(&self, request: &ChatRequest) -> Result<f64>;
+    async fn score(&self, probe_input: &str) -> Result<f64>;
 }
 
 struct CheckpointPrediction {
@@ -131,19 +131,13 @@ struct KvTransferParams {
 
 #[async_trait]
 impl ProbeScorer for HiddenStateProbeScorer {
-    async fn score(&self, request: &ChatRequest) -> Result<f64> {
-        let messages = request
-            .body()
-            .as_object()
-            .and_then(|body| body.get("messages"))
-            .cloned()
-            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    async fn score(&self, probe_input: &str) -> Result<f64> {
         let response = self
             .client
             .post(&self.completions_url)
             .json(&serde_json::json!({
                 "model": self.model,
-                "messages": messages,
+                "messages": [{"role": "user", "content": probe_input}],
                 "max_tokens": 1,
                 "kv_transfer_params": {
                     "hidden_states_path": self.hidden_states_dir,
@@ -899,17 +893,6 @@ mod tests {
         )?))
     }
 
-    fn test_request() -> ChatRequest {
-        ChatRequest::openai_chat(serde_json::json!({
-            "model": "client/model",
-            "messages": [
-                {"role": "system", "content": "Be concise."},
-                {"role": "user", "content": "Explain the failure."},
-            ],
-            "temperature": 0.2,
-        }))
-    }
-
     #[test]
     fn token_mean_pooling_produces_layer_major_features() -> Result<()> {
         let pooled = token_mean_per_layer(
@@ -1173,7 +1156,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn learned_probe_forwards_exact_request_and_returns_binary_score() -> Result<()> {
+    async fn learned_probe_forwards_exact_input_and_returns_binary_score() -> Result<()> {
         let directory = TestDirectory::create()?;
         let hidden_path = directory.write("probe-hidden.safetensors", &valid_artifact_bytes()?)?;
         let artifact = write_router_artifact(&directory, "router", [8.0, 2.0, -2.0, -8.0])?;
@@ -1194,9 +1177,7 @@ mod tests {
             2,
             CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
         );
-        let request = test_request();
-
-        let score = scorer.score(&request).await?;
+        let score = scorer.score("Explain the failure.").await?;
 
         assert_eq!(score, 1.0);
         assert!(!hidden_path.exists());
@@ -1207,7 +1188,6 @@ mod tests {
             serde_json::json!({
                 "model": "probe/model",
                 "messages": [
-                    {"role": "system", "content": "Be concise."},
                     {"role": "user", "content": "Explain the failure."},
                 ],
                 "max_tokens": 1,
@@ -1224,8 +1204,6 @@ mod tests {
     async fn probe_response_errors_are_reported_before_artifact_processing() -> Result<()> {
         let directory = TestDirectory::create()?;
         let artifact = write_router_artifact(&directory, "router", [8.0, 2.0, -2.0, -8.0])?;
-        let request = test_request();
-
         let missing_server = MockProbeServer::spawn(200, serde_json::json!({}))?;
         let missing_scorer = HiddenStateProbeScorer::new(
             missing_server.base_url(),
@@ -1237,7 +1215,7 @@ mod tests {
             CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
         );
         let error = missing_scorer
-            .score(&request)
+            .score("Explain the failure.")
             .await
             .err()
             .ok_or_else(|| probe_error("missing kv_transfer_params should fail"))?;
@@ -1257,7 +1235,7 @@ mod tests {
             CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
         );
         let error = malformed_scorer
-            .score(&request)
+            .score("Explain the failure.")
             .await
             .err()
             .ok_or_else(|| probe_error("malformed kv_transfer_params should fail"))?;
@@ -1274,7 +1252,7 @@ mod tests {
             CostAwareRoutingPolicy::new(1.0, 0.0, 0.0)?,
         );
         let error = unavailable_scorer
-            .score(&request)
+            .score("Explain the failure.")
             .await
             .err()
             .ok_or_else(|| probe_error("non-success probe response should fail"))?;
