@@ -11,12 +11,17 @@ from switchyard.libsy import LlmTarget, algorithms
 
 
 class EchoClient:
-    """Return the selected target as the completion."""
+    """Return its configured model as the completion."""
 
-    async def call(self, request: Mapping[str, object], *, target: str) -> Mapping[str, object]:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    async def call(self, request: Mapping[str, object]) -> Mapping[str, object]:
         return {
-            "model": target,
-            "outputs": [{"role": "assistant", "content": [{"type": "text", "text": target}]}],
+            "model": self.model,
+            "outputs": [
+                {"role": "assistant", "content": [{"type": "text", "text": self.model}]}
+            ],
         }
 
 
@@ -32,8 +37,8 @@ async def main() -> None:
 
     random = algorithms.random(
         [
-            LlmTarget("fast", EchoClient()),
-            LlmTarget("quality", EchoClient()),
+            LlmTarget("fast", EchoClient("fast")),
+            LlmTarget("quality", EchoClient("quality")),
         ]
     )
     random_decisions, random_response = await random.run(request)

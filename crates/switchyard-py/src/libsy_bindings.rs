@@ -13,7 +13,6 @@ use libsy::{
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use serde_json::{json, Value};
 
 use crate::errors::py_libsy_error;
@@ -21,7 +20,7 @@ use crate::py_serde::{from_python, to_python};
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
-/// Adapts a Python object with `async call(request, *, target)` to libsy.
+/// Adapts a Python object with `async call(request)` to libsy.
 struct PythonLlmClient {
     inner: Py<PyAny>,
 }
@@ -32,18 +31,12 @@ impl RoutedLlmClient for PythonLlmClient {
         &self,
         _ctx: Context,
         request: Request,
-        decision: Arc<dyn Decision>,
+        _decision: Arc<dyn Decision>,
     ) -> Result<Response, BoxError> {
         let metadata = request.metadata;
-        let target = decision.selected_model().to_string();
         let future = Python::attach(|py| {
             let request = to_python(py, &request.llm_request)?;
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("target", target)?;
-            let awaitable = self
-                .inner
-                .bind(py)
-                .call_method("call", (request,), Some(&kwargs))?;
+            let awaitable = self.inner.bind(py).call_method1("call", (request,))?;
             pyo3_async_runtimes::tokio::into_future(awaitable)
         })
         .map_err(boxed_python_error)?;
@@ -80,12 +73,13 @@ impl PyLlmTarget {
 impl PyLlmTarget {
     #[new]
     fn new(py: Python<'_>, name: String, client: Py<PyAny>) -> PyResult<Self> {
-        let call = client.bind(py).getattr("call").map_err(|_| {
-            PyTypeError::new_err("client must define async call(request, *, target)")
-        })?;
+        let call = client
+            .bind(py)
+            .getattr("call")
+            .map_err(|_| PyTypeError::new_err("client must define async call(request)"))?;
         if !call.is_callable() {
             return Err(PyTypeError::new_err(
-                "client.call must be callable as async call(request, *, target)",
+                "client.call must be callable as async call(request)",
             ));
         }
         Ok(Self { name, client })

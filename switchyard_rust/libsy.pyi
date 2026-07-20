@@ -6,15 +6,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol, final
 
+from switchyard_rust.core import SwitchyardRuntimeError
+
 class LlmClient(Protocol):
     async def call(
         self,
         request: Mapping[str, object],
-        *,
-        target: str,
     ) -> Mapping[str, object]: ...
 
-class LibsyError(RuntimeError): ...
+class LibsyError(SwitchyardRuntimeError): ...
 
 @final
 class LlmTarget:

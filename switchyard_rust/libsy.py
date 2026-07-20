@@ -13,8 +13,10 @@ from switchyard_rust.core import _load_native
 _EXPORTS = frozenset({"Algorithm", "LibsyError", "LlmTarget", "noop", "random"})
 
 if TYPE_CHECKING:
+    from switchyard_rust.core import SwitchyardRuntimeError
+
     Algorithm: type[Any]
-    LibsyError: type[RuntimeError]
+    LibsyError: type[SwitchyardRuntimeError]
     LlmTarget: type[Any]
 
 
@@ -24,10 +26,8 @@ class LlmClient(Protocol):
     async def call(
         self,
         request: Mapping[str, object],
-        *,
-        target: str,
     ) -> Mapping[str, object]:
-        """Call the selected target and return an aggregate neutral response."""
+        """Call the configured target and return an aggregate neutral response."""
         ...
 
 

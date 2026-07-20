@@ -23,17 +23,18 @@ def request_body() -> dict[str, Any]:
 
 
 class EchoClient:
-    def __init__(self) -> None:
-        self.calls: list[tuple[dict[str, Any], str]] = []
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.calls: list[dict[str, Any]] = []
 
-    async def call(self, request: dict[str, Any], *, target: str) -> dict[str, Any]:
-        self.calls.append((request, target))
+    async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(request)
         return {
-            "model": target,
+            "model": self.model,
             "outputs": [
                 {
                     "role": "assistant",
-                    "content": [{"type": "text", "text": target}],
+                    "content": [{"type": "text", "text": self.model}],
                     "stop_reason": "end_turn",
                 }
             ],
@@ -41,7 +42,7 @@ class EchoClient:
 
 
 async def test_random_runs_with_a_python_client() -> None:
-    client = EchoClient()
+    client = EchoClient("fast")
     algorithm = algorithms.random([LlmTarget("fast", client)])
 
     decisions, response = await algorithm.run(request_body())
@@ -52,8 +53,7 @@ async def test_random_runs_with_a_python_client() -> None:
             "reasoning": "random routing selected target 'fast'",
         }
     ]
-    assert client.calls[0][1] == "fast"
-    assert client.calls[0][0]["messages"][0]["content"] == [
+    assert client.calls[0]["messages"][0]["content"] == [
         {"type": "text", "text": "hello"}
     ]
     assert response["model"] == "fast"
@@ -88,7 +88,7 @@ def test_random_requires_a_target() -> None:
 
 
 async def test_invalid_request_is_rejected_at_the_boundary() -> None:
-    algorithm = algorithms.random([LlmTarget("fast", EchoClient())])
+    algorithm = algorithms.random([LlmTarget("fast", EchoClient("fast"))])
 
     with pytest.raises(ValueError, match="unknown variant"):
         await algorithm.run(
@@ -101,10 +101,10 @@ async def test_invalid_request_is_rejected_at_the_boundary() -> None:
 
 async def test_client_failure_becomes_libsy_error() -> None:
     class FailingClient:
-        async def call(self, request: dict[str, Any], *, target: str) -> dict[str, Any]:
-            raise RuntimeError(f"{target} failed")
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("client failed")
 
     algorithm = algorithms.random([LlmTarget("broken", FailingClient())])
 
-    with pytest.raises(LibsyError, match="broken failed"):
+    with pytest.raises(LibsyError, match="client failed"):
         await algorithm.run(request_body())
