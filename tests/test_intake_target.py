@@ -8,7 +8,7 @@ import argparse
 from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launchers.launch_intake_config import LaunchIntakeConfig
 
-_URL = "https://data-lake.example/dataflow/ipp-nova-tokenomics/posting"
+_URL = "https://data-lake.example/lake/example-project/posting"
 
 
 def test_launch_args_resolve_target_from_flag() -> None:

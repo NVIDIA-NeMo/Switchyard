@@ -165,7 +165,7 @@ async fn http_intake_sink_posts_to_flat_target_url_without_auth() -> Result<()> 
     let server = OneShotServer::json(201, json!({"status": "Created"}))?;
     let sink = HttpIntakeSink::new(IntakeSinkConfig {
         target: Some(IntakeTarget {
-            url: format!("{}/dataflow/sandbox-switchyard/posting", server.base_url()),
+            url: format!("{}/lake/switchyard/posting", server.base_url()),
             format: IntakeFormat::FlatDocument,
             authenticated: false,
         }),
@@ -180,7 +180,7 @@ async fn http_intake_sink_posts_to_flat_target_url_without_auth() -> Result<()> 
     let request = server.captured()?;
 
     assert_eq!(request.method, "POST");
-    assert_eq!(request.path, "/dataflow/sandbox-switchyard/posting");
+    assert_eq!(request.path, "/lake/switchyard/posting");
     assert_eq!(request.header("authorization"), None);
     assert_eq!(request.body["s_source"], "switchyard");
     assert_eq!(request.body["l_switchyard_input_tokens"], 19);

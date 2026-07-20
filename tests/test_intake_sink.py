@@ -648,7 +648,7 @@ class TestIntakeRequestProcessor:
         with _IntakeHttpStub() as server:
             response_processor = IntakeResponseProcessor(
                 IntakeSinkConfig(
-                    target_url=f"{server.base_url}/dataflow/sandbox-switchyard/posting",
+                    target_url=f"{server.base_url}/lake/switchyard/posting",
                     max_retries=0,
                 )
             )
@@ -662,7 +662,7 @@ class TestIntakeRequestProcessor:
         posted = server.requests
         assert len(posted) == 2
         for entry in posted:
-            assert entry["path"] == "/dataflow/sandbox-switchyard/posting"
+            assert entry["path"] == "/lake/switchyard/posting"
         # Distinct _id so the routing record never overwrites the routed turn.
         assert len({entry["body"]["_id"] for entry in posted}) == 2
         routed = {entry["body"].get("s_switchyard_routed_to") for entry in posted}
