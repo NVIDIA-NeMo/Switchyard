@@ -3,6 +3,7 @@
 
 pub mod affinity;
 pub mod core;
+pub mod llm_classifier;
 pub mod metadata_processor;
 pub mod noop;
 pub mod rand;

@@ -8,6 +8,11 @@ use std::collections::HashMap;
 use crate::Signals;
 use switchyard_protocol::{Decision, Request, Response};
 
+/// The per-request accumulator shared across an algorithm's components.
+///
+/// The [`Processor`] chain runs first and *writes* facts into it (keyed by type); the
+/// [`Classifier`] cascade runs next and *reads* those facts to decide. One `State` is
+/// threaded through a single request's whole processor→classifier run.
 #[derive(Default)]
 pub struct State {
     items: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -50,21 +55,36 @@ pub enum Event<'a> {
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-/// Processor mutates state given an event
+/// Head-of-algorithm state collection.
+///
+/// Processors run first, one after another, before any classifier. Each does *lightweight*
+/// work — read an [`Event`] and accumulate facts into the shared [`State`] — so later
+/// classifiers can key off it. Heavy work (LLM calls, scoring) belongs in a [`Classifier`],
+/// not here.
 // `Event` can carry a `&Response`, whose streaming body is `!Sync`, so the returned
 // future cannot be `Send`; opt out of async_trait's default `Send` bound.
 #[async_trait(?Send)]
 pub trait Processor: Send + Sync {
-    /// Process an event, mutating the state and returning a result.
+    /// Process an event, accumulating facts into `state`.
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr>;
 }
 
+/// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 pub struct Score {
-    /// [0.0, 1.0] confidence score
+    /// `[0.0, 1.0]` confidence in `target`.
     pub confidence: f64,
+    /// The target (model / tier) being recommended.
     pub target: String,
 }
 
+/// A classification stage in the cascade that runs after the [`Processor`] chain.
+///
+/// Classifiers are tried in turn — ideally cheapest first (e.g. a heuristic `StagedRouter`),
+/// falling back to heavier ones (e.g. an LLM-backed classifier). Each [`score`](Self::score)
+/// call reads the accumulated [`State`] and the request, does its (possibly expensive)
+/// classification, and returns a [`Score`] per recommended `target`. Returning an **empty**
+/// vec **abstains**, deferring to the next classifier; the first classifier to return a
+/// non-empty result decides.
 #[async_trait]
 pub trait Classifier: Send + Sync {
     async fn score(&self, state: &mut State, request: &Request) -> Result<Vec<Score>, BoxErr>;

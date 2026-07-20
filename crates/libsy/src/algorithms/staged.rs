@@ -3,24 +3,26 @@
 
 //! Staged (cascade) routing as an SDK component.
 //!
-//! [`StagedRouter`] recreates the reference cascade router's first, heuristic stage over
-//! libsy's normalized conversation model. It plays both SDK roles over shared [`State`]:
+//! [`StagedRouter`] is the **cheap first stage** of a classifier cascade: a heuristic
+//! [`Classifier`] that decides confidently-shaped turns for free and abstains on the rest,
+//! deferring to a heavier classifier (e.g. an LLM-backed one). It recreates the reference
+//! cascade router's first, heuristic stage over libsy's normalized conversation model. All
+//! of the per-request work happens in [`score`](Classifier::score), which
 //!
-//! - As a [`Processor`] it extracts a [`ToolResultSignal`] from the request's conversation
-//!   history — the tool calls and tool results already accumulated over the session — and
-//!   stashes it in [`State`]. This is the port of the cascade router's request-side
-//!   dimension collection; it reads the conversation, not correlation metadata.
-//! - As a [`Classifier`] it performs the per-request heuristic scoring: apply hard
-//!   overrides, then a weighted linear score over normalized dimensions. The signed
-//!   `[-1, 1]` score is reranged to a `[0, 1]` capability confidence
-//!   (`confidence = (score + 1) / 2`; `0.0` = strongly efficient, `1.0` = strongly
-//!   capable). A confident score yields one [`Score`] for the winning tier's model; a
-//!   score in the ambiguous band yields no scores, deferring to the next cascade stage.
+//! 1. extracts a [`ToolResultSignal`] from the request's conversation history — the tool
+//!    calls and tool results already accumulated over the session (the port of the cascade
+//!    router's dimension collection; it reads the conversation, not correlation metadata);
+//! 2. applies hard overrides, then a weighted linear score over the normalized dimensions.
+//!
+//! The signed `[-1, 1]` score is reranged to a `[0, 1]` capability confidence
+//! (`confidence = (score + 1) / 2`; `0.0` = strongly efficient, `1.0` = strongly capable). A
+//! confident score yields one [`Score`] for the winning tier's model; a score in the
+//! ambiguous band yields no scores, deferring to the next cascade stage.
 
 use async_trait::async_trait;
 use switchyard_protocol::{ContentBlock, Request, Role};
 
-use super::core::{Classifier, Event, Processor, Score, State};
+use super::core::{Classifier, Score, State};
 
 /// Boxed, thread-safe error type used across the SDK.
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -580,8 +582,8 @@ fn apply_overrides(signal: &ToolResultSignal) -> Option<Tier> {
 
 /// Heuristic first stage of a two-tier cascade router.
 ///
-/// Register the same instance as both a processor and a classifier; the processor extracts
-/// the signal and the classifier scores it, sharing [`State`].
+/// A pure [`Classifier`]: [`score`](Classifier::score) extracts the tool-result signal from
+/// the request and scores it in one pass, with no cross-component [`State`].
 pub struct StagedRouter {
     capable_model: String,
     efficient_model: String,
@@ -623,29 +625,16 @@ impl StagedRouter {
     }
 }
 
-#[async_trait(?Send)]
-impl Processor for StagedRouter {
-    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
-        // Extract the tool-result signal from the request's history and stash it for the
-        // classifier. The metadata processor's Metadata fact is left untouched.
-        if let Event::Request(request) = event {
-            state.insert(extract_tool_signals(request));
-        }
-        Ok(())
-    }
-}
-
 #[async_trait]
 impl Classifier for StagedRouter {
-    async fn score(&self, state: &mut State, _request: &Request) -> Result<Vec<Score>, BoxErr> {
-        let Some(signal) = state.get::<ToolResultSignal>() else {
-            // No signal extracted yet: abstain.
-            return Ok(Vec::new());
-        };
+    async fn score(&self, _state: &mut State, request: &Request) -> Result<Vec<Score>, BoxErr> {
+        // Extract the tool-result signal from the request's conversation history, then score
+        // it — all the heuristic work happens here, in the classifier.
+        let signal = extract_tool_signals(request);
 
         // Hard overrides jump to the extremes of the capability axis:
         // capable → 1.0, efficient → 0.0.
-        if let Some(tier) = apply_overrides(signal) {
+        if let Some(tier) = apply_overrides(&signal) {
             let confidence = match tier {
                 Tier::Capable => 1.0,
                 Tier::Efficient => 0.0,
@@ -656,7 +645,7 @@ impl Classifier for StagedRouter {
         // Rerange the signed [-1, 1] weighted score onto the [0, 1] capability
         // confidence, then compare it directly against the threshold band. Capable
         // above `threshold`, efficient below `1 - threshold`, abstain in between.
-        let confidence = (weighted_score(&dimensions(signal)) + 1.0) / 2.0;
+        let confidence = (weighted_score(&dimensions(&signal)) + 1.0) / 2.0;
         if confidence >= self.confidence_threshold {
             Ok(self.tier_score(Tier::Capable, confidence))
         } else if confidence <= 1.0 - self.confidence_threshold {
@@ -790,18 +779,17 @@ mod tests {
         assert_eq!(signal.recent_write_count, DEFAULT_RECENT_WINDOW as u32);
     }
 
-    // --- routing (processor + classifier) ----------------------------------------------
+    // --- routing (classifier) ----------------------------------------------------------
 
     async fn route(router: &StagedRouter, request: &Request) -> Result<Vec<Score>, BoxErr> {
         let mut state = State::default();
-        router.process(&mut state, Event::Request(request)).await?;
         router.score(&mut state, request).await
     }
 
     #[tokio::test]
-    async fn no_signal_abstains() -> Result<(), BoxErr> {
-        let mut state = State::default();
-        let scores = router().score(&mut state, &request_from(vec![])).await?;
+    async fn empty_request_abstains() -> Result<(), BoxErr> {
+        // No conversation history: a neutral signal scores to the ambiguous band → abstain.
+        let scores = route(&router(), &request_from(vec![])).await?;
         assert!(scores.is_empty());
         Ok(())
     }
@@ -850,21 +838,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_router_serves_both_roles() -> Result<(), BoxErr> {
-        let router = Arc::new(router());
-        let processor: Arc<dyn Processor> = router.clone();
-        let classifier: Arc<dyn Classifier> = router;
+    async fn shared_classifier_scores_via_trait_object() -> Result<(), BoxErr> {
+        // The router is used behind an `Arc<dyn Classifier>`, as an orchestrator would hold it.
+        let classifier: Arc<dyn Classifier> = Arc::new(router());
         let mut state = State::default();
-
         let request = request_from(vec![user(vec![tool_result("out of memory")])]);
-        processor
-            .process(&mut state, Event::Request(&request))
-            .await?;
         let scores = classifier.score(&mut state, &request).await?;
-        assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
-            Some("capable-model")
-        );
+        assert_eq!(scores.first().map(|score| score.target.as_str()), Some("capable-model"));
         Ok(())
     }
 
