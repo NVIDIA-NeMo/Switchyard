@@ -837,23 +837,36 @@ fn encode_responses_input(
     }
     let mut encoded = Vec::new();
     for message in messages {
-        if message.content.iter().any(|block| {
+        // Anthropic-signed thinking cannot be sent as Responses input.
+        let content = message
+            .content
+            .iter()
+            .filter(|block| {
+                !matches!(
+                    block,
+                    ContentBlock::Reasoning {
+                        signature: Some(_),
+                        ..
+                    }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if content.is_empty() {
+            continue;
+        }
+        if content.iter().any(|block| {
             matches!(
                 block,
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
-            encoded.extend(
-                message
-                    .content
-                    .iter()
-                    .filter_map(encode_responses_special_input),
-            );
+            encoded.extend(content.iter().filter_map(encode_responses_special_input));
             continue;
         }
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
-        for block in &message.content {
+        for block in &content {
             if let Some(item) = encode_responses_special_input(block) {
                 encoded.push(item);
                 emitted_special = true;
@@ -876,7 +889,10 @@ fn encode_responses_input(
 // Encodes IR blocks that Responses represents as top-level input items.
 fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
     match block {
-        ContentBlock::Reasoning { text, .. } => Some(json!({
+        ContentBlock::Reasoning {
+            text,
+            signature: None,
+        } => Some(json!({
             "type": "reasoning",
             "content": [{"type": "reasoning_text", "text": text}],
             "summary": [],
@@ -885,7 +901,7 @@ fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
             "type": "function_call",
             "call_id": call.id,
             "name": call.name,
-            "arguments": call.arguments,
+            "arguments": json_string(&call.arguments),
         })),
         ContentBlock::ToolResult(result) => Some(json!({
             "type": "function_call_output",
