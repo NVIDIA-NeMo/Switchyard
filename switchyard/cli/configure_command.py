@@ -3,7 +3,6 @@
 
 """Implementation of ``switchyard configure``."""
 
-import argparse
 import json
 import logging
 from collections.abc import Iterable
@@ -38,6 +37,7 @@ from switchyard.cli.config.user_config import (
     save_user_config,
     save_user_credentials,
 )
+from switchyard.cli.configure_request import ConfigureRequest
 from switchyard.cli.launchers.claude_alias import claude_alias_for
 from switchyard.cli.model_catalog.model_discovery import (
     choose_default_claude_model,
@@ -56,42 +56,42 @@ from switchyard.server.server_util import load_secrets
 logger = logging.getLogger(__name__)
 
 
-def _skill_distillation_args_present(args: argparse.Namespace) -> bool:
-    return bool(args.disable_skill_distillation) or args.skill_distillation is not None
+def _skill_distillation_args_present(request: ConfigureRequest) -> bool:
+    return bool(request.disable_skill_distillation) or request.skill_distillation is not None
 
 
-def _provider_or_launcher_args_present(args: argparse.Namespace) -> bool:
+def _provider_or_launcher_args_present(request: ConfigureRequest) -> bool:
     return any(
         value
         for value in (
-            args.api_key,
-            args.base_url,
-            args.claude_model,
-            args.claude_base_url,
-            args.claude_api_key,
-            args.codex_model,
-            args.codex_base_url,
-            args.codex_api_key,
-            args.openclaw_model,
-            args.openclaw_base_url,
-            args.openclaw_api_key,
+            request.api_key,
+            request.base_url,
+            request.claude_model,
+            request.claude_base_url,
+            request.claude_api_key,
+            request.codex_model,
+            request.codex_base_url,
+            request.codex_api_key,
+            request.openclaw_model,
+            request.openclaw_base_url,
+            request.openclaw_api_key,
         )
-    ) or args.routing_profiles is not None
+    ) or request.routing_profiles is not None
 
 
-def _skill_only_config_update(args: argparse.Namespace) -> bool:
+def _skill_only_config_update(request: ConfigureRequest) -> bool:
     return (
-        _skill_distillation_args_present(args)
-        and not _provider_or_launcher_args_present(args)
+        _skill_distillation_args_present(request)
+        and not _provider_or_launcher_args_present(request)
     )
 
 
 def _apply_skill_distillation_args(
     existing: SkillDistillationConfig,
-    args: argparse.Namespace,
+    request: ConfigureRequest,
 ) -> SkillDistillationConfig:
-    if args.disable_skill_distillation:
-        if args.skill_distillation is not None:
+    if request.disable_skill_distillation:
+        if request.skill_distillation is not None:
             raise UserConfigError(
                 "--disable-skill-distillation cannot be combined with "
                 "--skill-distillation"
@@ -100,8 +100,8 @@ def _apply_skill_distillation_args(
 
     return SkillDistillationConfig(
         namespace=(
-            args.skill_distillation
-            if args.skill_distillation is not None
+            request.skill_distillation
+            if request.skill_distillation is not None
             else existing.namespace
         ),
     )
@@ -292,18 +292,18 @@ def _merge_candidate_ids(*sources: Iterable[str]) -> list[str]:
     return merged
 
 
-def _list_models(args: argparse.Namespace) -> None:
+def _list_models(request: ConfigureRequest) -> None:
     """Print a ranked list of backend models — fold of ``switchyard models``."""
     from switchyard.server.server_util import load_secrets
 
     connectivity = resolve_provider_connectivity(
-        cli_api_key=args.api_key,
-        cli_base_url=args.base_url,
+        cli_api_key=request.api_key,
+        cli_base_url=request.base_url,
         api_key_env_vars=("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"),
         base_url_env_vars=("OPENROUTER_BASE_URL", "NVIDIA_BASE_URL", "OPENAI_BASE_URL"),
         secrets=load_secrets(),
         secrets_section_priority=DEFAULT_SECRETS_SECTION_PRIORITY,
-        default_provider=getattr(args, "provider", None),
+        default_provider=request.provider,
     )
     if not connectivity.api_key:
         raise SystemExit(
@@ -314,7 +314,7 @@ def _list_models(args: argparse.Namespace) -> None:
     # `--target provider` is meaningful for `configure` setup but not for
     # model ranking; collapse it to `all` so the renderer treats the
     # ranking target as the launcher-neutral default.
-    raw_target = getattr(args, "target", "all") or "all"
+    raw_target = request.target
     target: ModelListTarget
     if raw_target == "claude":
         target = "claude"
@@ -326,38 +326,38 @@ def _list_models(args: argparse.Namespace) -> None:
         model_ids,
         ModelListRequest(
             target=target,
-            query=getattr(args, "query", None),
-            limit=getattr(args, "limit", 50),
+            query=request.query,
+            limit=request.limit,
         ),
     ))
 
 
-def cmd_configure(args: argparse.Namespace) -> None:
+def cmd_configure(request: ConfigureRequest) -> None:
     """Set, show, or reset user-level launcher defaults."""
 
-    if getattr(args, "list_models", False):
-        _list_models(args)
+    if request.list_models:
+        _list_models(request)
         return
 
-    if args.show:
+    if request.show:
         snapshot = build_redacted_snapshot()
-        if bool(getattr(args, "json", False)):
+        if request.json:
             print(json.dumps(snapshot, indent=2, sort_keys=True))
             return
         print(format_config_snapshot(snapshot))
         print()
         print(render_status(
             StatusRequest(
-                cli_api_key=getattr(args, "api_key", None),
-                cli_base_url=getattr(args, "base_url", None),
-                provider=getattr(args, "provider", None),
-                check=bool(getattr(args, "check", False)),
+                cli_api_key=request.api_key,
+                cli_base_url=request.base_url,
+                provider=request.provider,
+                check=request.check,
                 secrets=load_secrets(),
             ),
         ))
         return
 
-    if args.reset:
+    if request.reset:
         removed = reset_user_config()
         if removed:
             print("Removed Switchyard user config:")
@@ -367,8 +367,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
             print("No Switchyard user config found.")
         return
 
-    provider = args.provider
-    target_scope = getattr(args, "target", "all")
+    provider = request.provider
+    target_scope = request.target
     configure_claude = target_scope in ("all", "claude")
     configure_codex = target_scope in ("all", "codex")
     configure_openclaw = target_scope in ("all", "openclaw")
@@ -376,9 +376,9 @@ def cmd_configure(args: argparse.Namespace) -> None:
     existing_credentials = load_user_credentials()
     skill_distillation = _apply_skill_distillation_args(
         existing_config.skill_distillation,
-        args,
+        request,
     )
-    if _skill_only_config_update(args):
+    if _skill_only_config_update(request):
         save_user_config(
             UserConfig(
                 default_provider=existing_config.default_provider,
@@ -398,15 +398,15 @@ def cmd_configure(args: argparse.Namespace) -> None:
     existing_claude_credentials = existing_credentials.launch_target("claude")
     existing_codex_credentials = existing_credentials.launch_target("codex")
     existing_openclaw_credentials = existing_credentials.launch_target("openclaw")
-    reuse_existing_provider = bool(getattr(args, "reuse_existing_provider", False))
+    reuse_existing_provider = request.reuse_existing_provider
     interactive = is_interactive_terminal()
-    wizard = build_launch_config_wizard(args) if interactive else None
+    wizard = build_launch_config_wizard(request.no_tui) if interactive else None
     if wizard:
         wizard.start(target=target_scope)
 
     base_url_default = existing_provider.base_url or _default_base_url_for_provider(provider)
-    if args.base_url:
-        base_url = args.base_url
+    if request.base_url:
+        base_url = request.base_url
     elif reuse_existing_provider and existing_provider.base_url:
         base_url = existing_provider.base_url
     elif interactive and wizard:
@@ -414,16 +414,14 @@ def cmd_configure(args: argparse.Namespace) -> None:
     else:
         base_url = base_url_default
 
-    api_key = args.api_key
+    api_key = request.api_key
     if not api_key:
         existing_api_key = existing_credentials.api_key(provider)
         prompt_default_api_key = (
             existing_api_key
-            or getattr(args, "prompt_default_api_key", None)
+            or request.prompt_default_api_key
         )
-        prompt_default_api_key_source = getattr(
-            args, "prompt_default_api_key_source", None,
-        )
+        prompt_default_api_key_source = request.prompt_default_api_key_source
         if reuse_existing_provider and existing_api_key:
             api_key = existing_api_key
         elif interactive and wizard:
@@ -446,7 +444,7 @@ def cmd_configure(args: argparse.Namespace) -> None:
             cache=model_catalog_cache,
             base_url=selection.effective_base_url,
             api_key=selection.effective_api_key,
-            disabled=args.no_model_discovery,
+            disabled=request.no_model_discovery,
         )
 
     # Resolve routing-profiles up front (CLI > existing config > interactive
@@ -455,11 +453,11 @@ def cmd_configure(args: argparse.Namespace) -> None:
     # raw `/v1/models` response and the user can't pick e.g. `opus-ds-stage_router`
     # even when their YAML declares it.
     routing_profiles = existing_config.routing_profiles
-    if args.routing_profiles is not None:
+    if request.routing_profiles is not None:
         # Empty string clears, any other value is a path whose YAML we parse.
         routing_profiles = (
-            _read_routing_profiles_file(args.routing_profiles)
-            if args.routing_profiles else None
+            _read_routing_profiles_file(request.routing_profiles)
+            if request.routing_profiles else None
         )
     elif interactive and wizard:
         prompted = wizard.prompt_routing_profiles(default=None)
@@ -489,8 +487,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
             wizard=wizard,
             interactive=interactive,
             label="Claude Code",
-            cli_base_url=args.claude_base_url,
-            cli_api_key=args.claude_api_key,
+            cli_base_url=request.claude_base_url,
+            cli_api_key=request.claude_api_key,
             existing_endpoint=existing_claude_route.endpoint(PRIMARY_TIER),
             existing_api_key=existing_claude_credentials.api_key(PRIMARY_TIER),
             default_base_url=base_url,
@@ -501,7 +499,7 @@ def cmd_configure(args: argparse.Namespace) -> None:
         )
         discovered_claude = choose_default_claude_model(claude_model_ids)
         claude_default = (
-            args.claude_model
+            request.claude_model
             or default_claude_route_model
             or existing_claude_route.model
             or discovered_claude
@@ -512,8 +510,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
                 "or run interactively."
             )
 
-        if args.claude_model:
-            claude_model = args.claude_model
+        if request.claude_model:
+            claude_model = request.claude_model
         elif interactive and wizard:
             claude_model = wizard.select_model(
                 "Claude Code",
@@ -532,8 +530,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
             wizard=wizard,
             interactive=interactive,
             label="Codex",
-            cli_base_url=args.codex_base_url,
-            cli_api_key=args.codex_api_key,
+            cli_base_url=request.codex_base_url,
+            cli_api_key=request.codex_api_key,
             existing_endpoint=existing_codex_route.endpoint(PRIMARY_TIER),
             existing_api_key=existing_codex_credentials.api_key(PRIMARY_TIER),
             default_base_url=base_url,
@@ -544,7 +542,7 @@ def cmd_configure(args: argparse.Namespace) -> None:
         )
         discovered_codex = choose_default_codex_model(codex_model_ids)
         codex_default = (
-            args.codex_model
+            request.codex_model
             or default_route_model
             or existing_codex_route.model
             or discovered_codex
@@ -555,8 +553,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
                 "or run interactively."
             )
 
-        if args.codex_model:
-            codex_model = args.codex_model
+        if request.codex_model:
+            codex_model = request.codex_model
         elif interactive and wizard:
             codex_model = wizard.select_model(
                 "Codex",
@@ -575,8 +573,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
             wizard=wizard,
             interactive=interactive,
             label="OpenClaw",
-            cli_base_url=args.openclaw_base_url,
-            cli_api_key=args.openclaw_api_key,
+            cli_base_url=request.openclaw_base_url,
+            cli_api_key=request.openclaw_api_key,
             existing_endpoint=existing_openclaw_route.endpoint(PRIMARY_TIER),
             existing_api_key=existing_openclaw_credentials.api_key(PRIMARY_TIER),
             default_base_url=base_url,
@@ -590,7 +588,7 @@ def cmd_configure(args: argparse.Namespace) -> None:
         # until OpenClaw-specific signals emerge.
         discovered_openclaw = choose_default_codex_model(openclaw_model_ids)
         openclaw_default = (
-            args.openclaw_model
+            request.openclaw_model
             or default_route_model
             or existing_openclaw_route.model
             or discovered_openclaw
@@ -601,8 +599,8 @@ def cmd_configure(args: argparse.Namespace) -> None:
                 "--openclaw-model or run interactively."
             )
 
-        if args.openclaw_model:
-            openclaw_model = args.openclaw_model
+        if request.openclaw_model:
+            openclaw_model = request.openclaw_model
         elif interactive and wizard:
             openclaw_model = wizard.select_model(
                 "OpenClaw",
