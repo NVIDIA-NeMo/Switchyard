@@ -62,6 +62,10 @@ def test_random_routing_virtual_model_id_is_client_neutral() -> None:
 
 
 def test_bootstrap_persists_selected_env_provider_base_url(monkeypatch, tmp_path) -> None:
+    from switchyard.cli.config.user_config import (
+        load_user_config,
+        load_user_credentials,
+    )
     from switchyard.cli.launch_command import maybe_bootstrap_launch_config
 
     monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
@@ -79,10 +83,8 @@ def test_bootstrap_persists_selected_env_provider_base_url(monkeypatch, tmp_path
     monkeypatch.setenv("NVIDIA_BASE_URL", "https://nvidia.test/v1")
     monkeypatch.setattr("switchyard.cli.launch_command.is_interactive_terminal", lambda: True)
     monkeypatch.setattr("switchyard.cli.launch_command.load_secrets", lambda: {})
-    captured: dict[str, argparse.Namespace] = {}
     monkeypatch.setattr(
-        "switchyard.cli.launch_command.cmd_configure",
-        lambda configure_args: captured.setdefault("args", configure_args),
+        "switchyard.cli.configure_command.is_interactive_terminal", lambda: False
     )
 
     args = argparse.Namespace(
@@ -106,11 +108,13 @@ def test_bootstrap_persists_selected_env_provider_base_url(monkeypatch, tmp_path
         ),
     )
 
-    configure_args = captured["args"]
-    assert configure_args.provider == "nvidia"
-    assert configure_args.base_url == "https://nvidia.test/v1"
-    assert configure_args.prompt_default_api_key == "nvidia-key"  # pragma: allowlist secret
-    assert configure_args.prompt_default_api_key_source == "$NVIDIA_API_KEY"
+    config = load_user_config()
+    credentials = load_user_credentials()
+    assert config.default_provider == "nvidia"
+    assert config.provider("nvidia").base_url == "https://nvidia.test/v1"
+    assert config.launch_target("claude").effective_route().model == "nvidia/model"
+    assert credentials.api_key("nvidia") == "nvidia-key"  # pragma: allowlist secret
+    assert args.api_key == "nvidia-key"  # pragma: allowlist secret
 
 
 # ---------------------------------------------------------------------------

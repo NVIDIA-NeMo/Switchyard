@@ -267,6 +267,9 @@ def maybe_bootstrap_launch_config(
         provider=connectivity.provider,
         base_url=connectivity.base_url,
         api_key=args.api_key,
+        routing_profiles=getattr(args, "routing_profiles", None),
+        skill_distillation=None,
+        disable_skill_distillation=False,
         prompt_default_api_key=resolved_api_key,
         prompt_default_api_key_source=_api_key_prompt_default_source(
             args=args,
