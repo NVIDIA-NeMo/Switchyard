@@ -35,6 +35,7 @@ from switchyard.cli.routing import (
     build_deterministic_routing_config,
     require_route_model,
 )
+from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import BackendFormat
 from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
@@ -480,6 +481,9 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
 
     Random / latency-aware routing live in the YAML schema.
     """
+    if getattr(args, "startup_timing", False):
+        startup_timing.enable()
+    startup_timing.mark("launch invoked")
     if args.routing_profiles and getattr(args, "smoke", False):
         raise SystemExit(
             "launch claude: --smoke and --routing-profiles cannot be combined. "
@@ -626,6 +630,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     intake = resolve_launch_intake_config(
         args, target="claude", default_app="claude-code-switchyard",
     )
+    startup_timing.mark("config + credentials resolved")
 
     if deterministic:
         primary_connectivity = require_launch_tier_key(

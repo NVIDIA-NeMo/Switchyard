@@ -69,6 +69,7 @@ from switchyard.cli.launchers.session_summary import print_session_summary
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
 )
+from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import (
     BackendFormat,
     LlmTarget,
@@ -316,6 +317,7 @@ def _run_claude_with_switchyard(
     Returns the ``claude`` process's exit code (or ``127`` if the
     binary wasn't found, ``130`` on Ctrl-C).
     """
+    startup_timing.mark("chain assembled")
     # Expose every table entry under a `claude-` prefixed alias so Claude
     # Code's gateway-discovery filter accepts the full listing. Originals stay
     # registered for direct-id callers; aliases share the same chain object.
@@ -339,6 +341,7 @@ def _run_claude_with_switchyard(
         thread.is_alive(),
         server.started,
     )
+    startup_timing.mark("proxy thread started")
 
     try:
         if not _wait_ready(resolved_port):
@@ -355,6 +358,7 @@ def _run_claude_with_switchyard(
             )
             return 1
 
+        startup_timing.mark("proxy health-ready")
         suppress_uvicorn_stream_handlers()
         logger.info("proxy ready on port %d", resolved_port)
         if intake is not None:
@@ -386,6 +390,8 @@ def _run_claude_with_switchyard(
             env_overrides.get("ANTHROPIC_CUSTOM_MODEL_OPTION"),
             env_overrides.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"),
         )
+        startup_timing.mark("child agent spawned")
+        startup_timing.dump()
         if stdin_is_tty():
             footer = LiveStatsFooter(
                 stats, display_model, health, table=table,

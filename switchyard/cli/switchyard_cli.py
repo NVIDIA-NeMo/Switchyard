@@ -1168,6 +1168,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, default=None,
         help="Request timeout in seconds for the backend LLM client",
     )
+    lc.add_argument(
+        "--startup-timing", action="store_true",
+        help=(
+            "Print a per-stage startup timing breakdown to stderr before "
+            "claude starts (each backend-format probe on its own line). "
+            "Also enabled with SWITCHYARD_STARTUP_TIMING=1."
+        ),
+    )
     _add_launch_deterministic_override_args(lc)
     _add_launch_intake_args(lc)
     lc.add_argument(
