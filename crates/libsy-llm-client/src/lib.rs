@@ -10,13 +10,6 @@
 //! HTTP call with a shared [`reqwest::Client`], and decodes the wire response
 //! back to a [`switchyard_protocol::Response`] — supporting both buffered and
 //! streamed responses.
-//!
-//! The crate depends only on `libsy-protocol` and `switchyard-translation`. Neutral
-//! IR encode/decode — including SSE stream decoding — lives in
-//! `switchyard-translation`; this crate is the HTTP transport around it. The
-//! context-overflow detection in [`mod@error`] is vendored from
-//! `switchyard-components` (whose copy is crate-private and unavailable here); a
-//! future refactor could promote it to a shared location.
 
 pub mod backend;
 pub mod client;

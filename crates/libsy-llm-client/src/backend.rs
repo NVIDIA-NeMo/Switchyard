@@ -3,7 +3,7 @@
 
 //! Per-provider backend configuration: wire format, upstream URL, and auth.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use reqwest::RequestBuilder;
 use switchyard_protocol::WireFormat;
@@ -31,7 +31,7 @@ const ANTHROPIC_OVERFLOW_PHRASES: &[&str] = &[
 ];
 
 /// Shared HTTP configuration for one upstream backend.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HttpBackendConfig {
     /// Base URL of the provider API (e.g. `https://api.openai.com/v1`).
     pub base_url: String,
@@ -39,6 +39,16 @@ pub struct HttpBackendConfig {
     pub api_key: Option<String>,
     /// Static headers added to every outbound call to this backend.
     pub extra_headers: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for HttpBackendConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpBackendConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("extra_headers", &self.extra_headers)
+            .finish()
+    }
 }
 
 /// A configured upstream backend, one variant per built-in wire format.

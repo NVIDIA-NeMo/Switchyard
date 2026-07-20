@@ -6,19 +6,20 @@ SPDX-License-Identifier: Apache-2.0
 # libsy-llm-client
 
 An HTTP client that speaks Switchyard's neutral IR directly. You hand it a
-[`libsy_protocol::Request`] and a model name; it looks up the configured backend,
+[`switchyard_protocol::Request`] and a model name; it looks up the configured backend,
 encodes the request to that backend's wire format, adds auth and forwards your
 headers, makes the call with a shared `reqwest::Client`, and decodes the reply
-back into a [`libsy_protocol::Response`] — buffered or streamed.
+back into a [`switchyard_protocol::Response`] — buffered or streamed.
 
-It depends only on `libsy-protocol` and `switchyard-translation`; no server, no
+It depends only on `switchyard-protocol` and `switchyard-translation`; no server, no
 provider SDK. For an HTTP front door built on top of it, see [`libsy-proxy`].
 
 ## Concepts
 
-- **Two-layer map.** A client is built from `model → wire format → Backend`, so
-  one model can be served over several upstream formats. `call(request, model, format)`
-  picks the backend by `(model, format)`.
+- **Model configs.** A client is built from [`ModelConfig`] values. Each model has a
+  default [`Backend`] and can have additional backends for other wire formats.
+  [`TranslatingLlmClient::call_rewrite_model`] uses the request's metadata wire format
+  when set, otherwise the model's default backend.
 - **Backends.** A [`Backend`] is one of `OpenAiChat`, `OpenAiResponses`, or
   `Anthropic`, each wrapping an [`HttpBackendConfig`] (`base_url`, `api_key`,
   static `extra_headers`). The variant fixes the URL path and auth scheme
@@ -45,34 +46,35 @@ switchyard-translation = { path = "../switchyard-translation" }   # for WireForm
 ### Build a client
 
 ```rust
-use std::collections::{BTreeMap, HashMap};
-use switchyard_llm_client::{Backend, HttpBackendConfig, LlmModelClient};
-use switchyard_translation::WireFormat;
+use std::collections::BTreeMap;
+use switchyard_llm_client::{
+    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+};
 
-fn build_client() -> libsy_llm_client::Result<LlmModelClient> {
+fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
     let openai = HttpBackendConfig {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         extra_headers: BTreeMap::new(),
     };
 
-    // model → format → backend
-    let map = HashMap::from([(
-        "gpt-4o-mini".to_string(),
-        HashMap::from([(WireFormat::OpenAiChat, Backend::OpenAiChat(openai))]),
-    )]);
+    let models = [ModelConfig::new(
+        "gpt-4o-mini",
+        Backend::OpenAiChat(openai),
+        None,
+    )];
 
-    LlmModelClient::new(map)
+    TranslatingLlmClient::new(&models)
 }
 ```
 
 ### Buffered call
 
 ```rust
-use libsy_protocol::{completion_text, text_request, Request};
-use switchyard_translation::WireFormat;
+use switchyard_llm_client::{LlmClientError, TranslatingLlmClient};
+use switchyard_protocol::{completion_text, text_request, Context, LlmResponse, Request};
 
-async fn ask(client: &LlmModelClient) -> libsy_llm_client::Result<String> {
+async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<String> {
     let request = Request {
         llm_request: text_request(None, "Say hello in five words."),
         raw_request: None,
@@ -81,12 +83,15 @@ async fn ask(client: &LlmModelClient) -> libsy_llm_client::Result<String> {
 
     // model_name wins over request.llm_request.model; it is also sent upstream.
     let response = client
-        .call(request, Some("gpt-4o-mini"), WireFormat::OpenAiChat)
+        .call_rewrite_model(Context::default(), request, Some("gpt-4o-mini"))
         .await?;
 
-    // Buffered backends return `Agg`; a stream can be folded with `.aggregate()`.
-    let agg = response.llm_response.aggregate().await.unwrap();
-    Ok(completion_text(&agg))
+    match response.llm_response {
+        LlmResponse::Agg(agg) => Ok(completion_text(&agg)),
+        LlmResponse::Stream(_) => Err(LlmClientError::Stream(
+            "expected a buffered response".to_string(),
+        )),
+    }
 }
 ```
 
@@ -96,16 +101,16 @@ Set `stream` on the IR request and drive the returned chunk stream:
 
 ```rust
 use futures_util::StreamExt;
-use libsy_protocol::{text_request, LlmResponse, LlmResponseChunk, Request};
-use switchyard_translation::WireFormat;
+use switchyard_llm_client::{LlmClientError, TranslatingLlmClient};
+use switchyard_protocol::{text_request, Context, LlmResponse, LlmResponseChunk, Request};
 
-async fn stream(client: &LlmModelClient) -> libsy_llm_client::Result<()> {
+async fn stream(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<()> {
     let mut llm_request = text_request(None, "Count to five.");
     llm_request.stream = true;
     let request = Request { llm_request, raw_request: None, metadata: None };
 
     let response = client
-        .call(request, Some("gpt-4o-mini"), WireFormat::OpenAiChat)
+        .call_rewrite_model(Context::default(), request, Some("gpt-4o-mini"))
         .await?;
 
     if let LlmResponse::Stream(mut chunks) = response.llm_response {
@@ -113,7 +118,7 @@ async fn stream(client: &LlmModelClient) -> libsy_llm_client::Result<()> {
             match item {
                 Ok(LlmResponseChunk::TextDelta { text, .. }) => print!("{text}"),
                 Ok(_) => {}                       // usage, tool-call deltas, message start/stop
-                Err(error) => return Err(libsy_llm_client::LlmClientError::Stream(error.to_string())),
+                Err(error) => return Err(LlmClientError::Stream(error.to_string())),
             }
         }
     }
@@ -126,18 +131,31 @@ async fn stream(client: &LlmModelClient) -> libsy_llm_client::Result<()> {
 The request/response are translated through the neutral IR, so the inbound shape
 you build and the backend's wire format are independent. Pointing a
 `WireFormat::AnthropicMessages` backend at an Anthropic endpoint while building
-requests with the same helpers works the same way — pass the matching format to
-`call`. Register several formats under one model to serve it over more than one
-upstream API:
+requests with the same helpers works the same way. Set `request.metadata.wire_format`
+to select a non-default backend before calling `call_rewrite_model`. Register several
+formats under one model to serve it over more than one upstream API:
 
 ```rust
-let backends = HashMap::from([
-    (WireFormat::OpenAiChat,      Backend::OpenAiChat(openai_chat_cfg)),
-    (WireFormat::OpenAiResponses, Backend::OpenAiResponses(openai_resp_cfg)),
-    (WireFormat::AnthropicMessages, Backend::Anthropic(anthropic_cfg)),
-]);
-let map = HashMap::from([("my-model".to_string(), backends)]);
-// client.formats_for("my-model") -> the configured formats
+use switchyard_llm_client::{
+    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+};
+
+fn build_multi_format_client(
+    openai_chat: HttpBackendConfig,
+    openai_responses: HttpBackendConfig,
+    anthropic: HttpBackendConfig,
+) -> switchyard_llm_client::Result<TranslatingLlmClient> {
+    let models = [ModelConfig::new(
+        "my-model",
+        Backend::OpenAiChat(openai_chat),
+        Some(vec![
+            Backend::OpenAiResponses(openai_responses),
+            Backend::Anthropic(anthropic),
+        ]),
+    )];
+
+    TranslatingLlmClient::new(&models)
+}
 ```
 
 ## Headers & auth
@@ -152,7 +170,7 @@ let map = HashMap::from([("my-model".to_string(), backends)]);
 
 ## Errors
 
-`call` returns [`LlmClientError`]:
+`call_rewrite_model` returns [`LlmClientError`]:
 
 | Variant | When |
 |---------|------|
@@ -165,10 +183,11 @@ let map = HashMap::from([("my-model".to_string(), backends)]);
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
 | `Stream(msg)` | mid-stream read / malformed frame |
 
-[`libsy_protocol::Request`]: ../libsy-protocol
-[`libsy_protocol::Response`]: ../libsy-protocol
+[`switchyard_protocol::Request`]: ../libsy-protocol
+[`switchyard_protocol::Response`]: ../libsy-protocol
 [`libsy-proxy`]: ../libsy-proxy
 [`Backend`]: src/backend.rs
 [`HttpBackendConfig`]: src/backend.rs
-[`LlmModelClient`]: src/client.rs
+[`ModelConfig`]: src/client.rs
+[`TranslatingLlmClient::call_rewrite_model`]: src/client.rs
 [`LlmClientError`]: src/error.rs

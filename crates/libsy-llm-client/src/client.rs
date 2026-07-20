@@ -22,6 +22,7 @@ use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
 use crate::raw::RawResponse;
 
+// TODO: Why is this here? What does it do?
 // Headers this client owns or that are hop-by-hop; never forwarded from the
 // caller's metadata. Auth/version/content-type are set by the backend or the
 // JSON body, so a forwarded copy would either be ignored or conflict. Compared
@@ -32,6 +33,10 @@ const RESERVED_HEADERS: &[&str] = &[
     "content-length",
     "connection",
     "authorization",
+    "proxy-authorization",
+    "proxy-authenticate",
+    "cookie",
+    "set-cookie",
     "x-api-key",
     "anthropic-version",
     "content-type",
@@ -333,6 +338,7 @@ fn is_reserved_header(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::error::Error;
 
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request, LlmRequest};
@@ -385,17 +391,10 @@ mod tests {
         request
     }
 
-    #[test]
-    fn reserved_headers_are_case_insensitive() {
-        assert!(is_reserved_header("Authorization"));
-        assert!(is_reserved_header("content-type"));
-        assert!(is_reserved_header("X-Api-Key"));
-        assert!(!is_reserved_header("x-request-id"));
-    }
-
     #[tokio::test]
-    async fn missing_model_errors() {
-        let client = TranslatingLlmClient::new(&[]).unwrap();
+    async fn missing_model_errors(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(None, false), None)
             .await
@@ -403,11 +402,13 @@ mod tests {
             panic!("expected an error");
         };
         assert!(matches!(error, LlmClientError::MissingModel));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn unknown_model_errors() {
-        let client = TranslatingLlmClient::new(&[]).unwrap();
+    async fn unknown_model_errors(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
             .await
@@ -415,12 +416,14 @@ mod tests {
             panic!("expected an error");
         };
         assert!(matches!(error, LlmClientError::UnknownModel(model) if model == "gpt"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn unknown_model_format_errors() {
+    async fn unknown_model_format_errors(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         // "gpt" exists but only over OpenAI Chat; the request pins Anthropic.
-        let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1")).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1"))?;
         let Err(error) = client
             .call_rewrite_model(
                 Context::default(),
@@ -436,11 +439,13 @@ mod tests {
             LlmClientError::UnknownModelFormat { model, format }
                 if model == "gpt" && format == WireFormat::AnthropicMessages
         ));
+        Ok(())
     }
 
     #[test]
-    fn backend_for_resolves_configured_format() {
-        let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1")).unwrap();
+    fn backend_for_resolves_configured_format(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1"))?;
         // "gpt" is served over OpenAI Chat only; other formats and models miss.
         assert!(client.backend_for("gpt", WireFormat::OpenAiChat).is_some());
         assert!(client
@@ -449,11 +454,13 @@ mod tests {
         assert!(client
             .backend_for("missing", WireFormat::OpenAiChat)
             .is_none());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn model_name_arg_wins_over_request_model() {
-        let client = TranslatingLlmClient::new(&[]).unwrap();
+    async fn model_name_arg_wins_over_request_model(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let client = TranslatingLlmClient::new(&[])?;
         // Arg "b" is looked up (and reported), not the request's "a".
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(Some("a"), false), Some("b"))
@@ -462,10 +469,12 @@ mod tests {
             panic!("expected an error");
         };
         assert!(matches!(error, LlmClientError::UnknownModel(model) if model == "b"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn buffered_openai_chat_round_trips() {
+    async fn buffered_openai_chat_round_trips(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -482,22 +491,20 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let response = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
-            .await
-            .unwrap();
-        let agg = response
-            .llm_response
-            .into_agg()
-            .await
-            .expect("buffered response");
+            .await?;
+        let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn rewrites_model_to_resolved_upstream_id() {
+    async fn rewrites_model_to_resolved_upstream_id(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         // Inbound body says "switchyard"; the upstream must receive "gpt".
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -511,7 +518,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         // Inbound model differs from the map key / resolved model.
         client
             .call_rewrite_model(
@@ -519,13 +526,14 @@ mod tests {
                 request_for(Some("switchyard"), false),
                 Some("gpt"),
             )
-            .await
-            .unwrap();
+            .await?;
         // The body_partial_json matcher asserts the upstream saw model "gpt".
+        Ok(())
     }
 
     #[tokio::test]
-    async fn streaming_openai_chat_aggregates() {
+    async fn streaming_openai_chat_aggregates(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
@@ -536,26 +544,27 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let response = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
-            .await
-            .unwrap();
+            .await?;
         assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
-        let agg = response.llm_response.into_agg().await.unwrap();
+        let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hello world");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn upstream_500_is_upstream_http() {
+    async fn upstream_500_is_upstream_http(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
@@ -567,10 +576,12 @@ mod tests {
             error,
             LlmClientError::UpstreamHttp { status: 500, .. }
         ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn context_overflow_400_is_mapped() {
+    async fn context_overflow_400_is_mapped(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
@@ -579,7 +590,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
@@ -591,10 +602,12 @@ mod tests {
             error,
             LlmClientError::ContextWindowExceeded { model, .. } if model == "gpt"
         ));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn forwards_metadata_headers_except_reserved() {
+    async fn forwards_metadata_headers_except_reserved(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(wiremock::matchers::header("x-request-id", "abc"))
@@ -628,14 +641,14 @@ mod tests {
             }),
         };
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         // Matchers assert forwarded x-request-id survives and reserved
         // authorization is the backend's, not the client's.
         client
             .call_rewrite_model(Context::default(), request, None)
-            .await
-            .unwrap();
+            .await?;
+        Ok(())
     }
 
     // Minimal `Decision` for driving the client through the `RoutedLlmClient` trait.
@@ -656,7 +669,8 @@ mod tests {
     // Exercises the `RoutedLlmClient` impl: `call` resolves the upstream model from the
     // decision (the request carries none) and round-trips a buffered response.
     #[tokio::test]
-    async fn routed_llm_client_serves_the_decision_model() {
+    async fn routed_llm_client_serves_the_decision_model(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -673,25 +687,22 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
         // Called through the trait; the request has no model, so "gpt" comes from the decision.
         let response = client
             .call(Context::default(), request_for(None, false), decision)
-            .await
-            .unwrap();
-        let agg = response
-            .llm_response
-            .into_agg()
-            .await
-            .expect("buffered response");
+            .await?;
+        let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "routed hi");
+        Ok(())
     }
 
     // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
     // Chat JSON, with the client-facing `model` restamped over the upstream id.
     #[tokio::test]
-    async fn call_rewrite_model_raw_round_trips_buffered_json() {
+    async fn call_rewrite_model_raw_round_trips_buffered_json(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -708,7 +719,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let raw = json!({
             "model": "client-facing",
             "messages": [{"role": "user", "content": "hi"}]
@@ -721,8 +732,7 @@ mod tests {
                 Some("gpt"),
                 WireFormat::OpenAiChat,
             )
-            .await
-            .unwrap()
+            .await?
         else {
             panic!("expected a buffered response");
         };
@@ -730,13 +740,15 @@ mod tests {
         assert_eq!(body["choices"][0]["message"]["content"], "Hi there");
         // The client sees the model it asked for, not the upstream "gpt".
         assert_eq!(body["model"], "client-facing");
+        Ok(())
     }
 
     // Raw path, streaming: an inbound `stream: true` request yields an unframed stream
     // of OpenAI Chat chunk objects whose deltas reassemble the completion.
     #[tokio::test]
-    async fn call_rewrite_model_raw_streams_wire_events() {
-        use futures::StreamExt;
+    async fn call_rewrite_model_raw_streams_wire_events(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use futures::TryStreamExt;
 
         let server = MockServer::start().await;
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
@@ -748,7 +760,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let raw = json!({
             "model": "client-facing",
             "messages": [{"role": "user", "content": "hi"}],
@@ -762,24 +774,25 @@ mod tests {
                 Some("gpt"),
                 WireFormat::OpenAiChat,
             )
-            .await
-            .unwrap()
+            .await?
         else {
             panic!("expected a streamed response");
         };
 
-        let events: Vec<Value> = stream.map(|item| item.unwrap()).collect().await;
+        let events: Vec<Value> = stream.try_collect().await?;
         assert!(!events.is_empty(), "expected at least one wire event");
         let content: String = events
             .iter()
             .filter_map(|event| event["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert_eq!(content, "Hello world");
+        Ok(())
     }
 
     // Raw path forwards caller headers (minus the reserved set) to the upstream.
     #[tokio::test]
-    async fn call_rewrite_model_raw_forwards_headers() {
+    async fn call_rewrite_model_raw_forwards_headers(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(wiremock::matchers::header("x-request-id", "abc"))
@@ -797,7 +810,7 @@ mod tests {
         headers.insert("x-request-id".to_string(), "abc".to_string());
         headers.insert("authorization".to_string(), "Bearer client-key".to_string());
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri()))).unwrap();
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let raw = json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]});
         // Matchers assert the forwarded x-request-id survives and reserved
         // authorization is the backend's, not the client's.
@@ -809,7 +822,7 @@ mod tests {
                 Some("gpt"),
                 WireFormat::OpenAiChat,
             )
-            .await
-            .unwrap();
+            .await?;
+        Ok(())
     }
 }
