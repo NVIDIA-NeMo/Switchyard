@@ -1,0 +1,37 @@
+# A/B variant of tb2-1-stage-router-evalsnem-opus-ef-t30-w5 with tier-transition
+# handoff notes ENABLED (escalation direction only; de-escalation left off).
+# Everything else — ef · evals-nemotron weak · Opus 4.8 @ high · window 5 · t0.30 —
+# is identical, so a diff vs the base run isolates the note's effect.
+routes:
+  switchyard:
+    type: stage_router
+    picker: efficient_first
+    confidence_threshold: 0.30
+    signal_recent_window: 5
+    fallback_target_on_evict: strong
+    enable_stats: true
+    handoff_notes:
+      enabled: true
+      only_on_wrong_signal_escalation: true
+      # escalation_note uses the built-in default; override here to customise.
+      # deescalation_note: left unset (strong→weak hand-backs inject nothing).
+    strong:
+      model: azure/anthropic/claude-opus-4-8
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: anthropic
+      timeout_secs: 600
+      extra_body:
+        output_config:
+          effort: high
+    weak:
+      model: nvidia/nvidia/evals-nemotron-ultra-3
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: openai
+      timeout_secs: 600
+      extra_headers:
+        X-Inference-Priority: batch
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: true

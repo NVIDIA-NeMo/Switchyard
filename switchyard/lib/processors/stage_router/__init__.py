@@ -17,6 +17,10 @@ from switchyard.lib.processors.stage_router.dimensions import (
     CodingAgentDimensions,
     from_signal,
 )
+from switchyard.lib.processors.stage_router.handoff_notes import (
+    DEFAULT_ESCALATION_NOTE,
+    HandoffNoteInjector,
+)
 from switchyard.lib.processors.stage_router.picker import (
     CAPABLE,
     EFFICIENT,
@@ -31,9 +35,11 @@ from switchyard.lib.processors.stage_router.scorer import (
 
 __all__ = [
     "CONTEXT_KEY",
+    "DEFAULT_ESCALATION_NOTE",
     "DEFAULT_WEIGHTS",
     "CAPABLE",
     "CAPABLE_TIER",
+    "HandoffNoteInjector",
     "StageRouterDecisionLog",
     "CodingAgentDimensions",
     "DecisionSource",

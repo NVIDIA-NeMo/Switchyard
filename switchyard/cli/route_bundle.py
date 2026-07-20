@@ -240,6 +240,7 @@ _STAGE_ROUTER_ROUTE_KEYS = (
         "confidence_threshold",
         "signal_recent_window",
         "classifier",
+        "handoff_notes",
         "enable_stats",
         "fallback_target_on_evict",
     })

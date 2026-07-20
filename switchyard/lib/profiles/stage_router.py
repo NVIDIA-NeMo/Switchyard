@@ -10,6 +10,7 @@ from typing import Any, Self
 
 from switchyard.lib.processors.reasoning_hint import model_accepts_reasoning_hint
 from switchyard.lib.processors.stage_router import StageRouterDecisionLog, TierClassifier
+from switchyard.lib.processors.stage_router.handoff_notes import HandoffNoteInjector
 from switchyard.lib.processors.stage_router_request_processor import (
     BUILTIN_PICKERS,
     StageRouterRequestProcessor,
@@ -18,6 +19,7 @@ from switchyard.lib.processors.stage_router_request_processor import (
 from switchyard.lib.profiles.chain import ComponentChainProfile
 from switchyard.lib.profiles.stage_router_config import (
     ClassifierConfig,
+    HandoffNoteConfig,
     StageRouterConfig,
 )
 from switchyard.lib.profiles.table import profile_config
@@ -53,6 +55,7 @@ class StageRouterProfileConfig:
                 picker=_build_tier_picker(config, decision_log, classifier),
                 classifier=classifier,
                 decision_log=decision_log,
+                handoff_injector=_build_handoff_injector(config.handoff_notes),
             )
         )
 
@@ -80,6 +83,17 @@ def _build_tier_picker(
         confidence_threshold=config.confidence_threshold,
         classifier=classifier,
         decision_log=decision_log,
+    )
+
+
+def _build_handoff_injector(config: HandoffNoteConfig | None) -> HandoffNoteInjector | None:
+    """Build the optional tier-transition note injector; ``None`` when disabled."""
+    if config is None or not config.enabled:
+        return None
+    return HandoffNoteInjector(
+        escalation_note=config.escalation_note,
+        deescalation_note=config.deescalation_note,
+        only_on_wrong_signal_escalation=config.only_on_wrong_signal_escalation,
     )
 
 

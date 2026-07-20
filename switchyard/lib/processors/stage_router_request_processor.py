@@ -22,6 +22,7 @@ from switchyard.lib.processors.stage_router.classifier import RECENT_MESSAGES_KE
 
 if TYPE_CHECKING:
     from switchyard.lib.backends.llm_target import LlmTarget
+    from switchyard.lib.processors.stage_router.handoff_notes import HandoffNoteInjector
     from switchyard.lib.proxy_context import ProxyContext
     from switchyard.lib.stats_accumulator import StatsAccumulator
     from switchyard_rust.core import ChatRequest
@@ -48,6 +49,7 @@ class StageRouterRequestProcessor:
         picker: TierPicker,
         classifier: TierClassifier | None = None,
         decision_log: StageRouterDecisionLog | None = None,
+        handoff_injector: HandoffNoteInjector | None = None,
     ) -> None:
         if len(targets) != 2:
             raise ValueError(f"stage_router requires exactly 2 targets, got {len(targets)}")
@@ -57,6 +59,7 @@ class StageRouterRequestProcessor:
         self._classifier = classifier
         self._max_index = len(targets) - 1
         self._decision_log = decision_log if decision_log is not None else StageRouterDecisionLog()
+        self._handoff_injector = handoff_injector
         self._stats_accumulator: StatsAccumulator | None = None
 
     def attach_stats_accumulator(self, stats_accumulator: StatsAccumulator) -> None:
@@ -83,6 +86,13 @@ class StageRouterRequestProcessor:
         ctx.selected_target = self._target_ids[idx]
         ctx.selected_model = self._target_models[idx]
         await self._record_decision_source(ctx)
+        if self._handoff_injector is not None:
+            source = ctx.metadata.get(CONTEXT_KEY)
+            self._handoff_injector.maybe_inject(
+                request,
+                tier=idx,
+                source=source if isinstance(source, str) else None,
+            )
         log.debug(
             "stage_router pick: idx=%d target=%s model=%s",
             idx, ctx.selected_target, ctx.selected_model,
