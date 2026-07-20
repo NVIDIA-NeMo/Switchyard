@@ -223,7 +223,7 @@ def _resolve_intake_config(args: argparse.Namespace) -> IntakeSinkConfig | None:
         intake_base_url=intake.base_url,
         workspace=intake.workspace,
         api_key=intake.api_key,
-        nvdataflow_project=intake.nvdataflow_project,
+        target_url=intake.target_url,
     )
 
 
@@ -275,11 +275,11 @@ def _add_common_intake_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--intake-nvdataflow-project", type=str, default=None,
+        "--intake-target-url", type=str, default=None,
         help=(
-            "Post flat per-request telemetry to this NVDataflow project's "
-            "posting endpoint instead of nemo-platform chat-completions "
-            "ingest. Defaults to $SWITCHYARD_NVDATAFLOW_PROJECT."
+            "Post flat per-request telemetry to this full URL (a data-lake "
+            "posting endpoint) instead of nemo-platform chat-completions "
+            "ingest. Defaults to $SWITCHYARD_INTAKE_TARGET_URL."
         ),
     )
 
@@ -487,7 +487,7 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         args.intake_base_url,
         args.intake_workspace,
         args.intake_api_key,
-        args.intake_nvdataflow_project,
+        args.intake_target_url,
     ))
     if unsupported_intake:
         raise SystemExit("serve --config does not support Intake options yet.")

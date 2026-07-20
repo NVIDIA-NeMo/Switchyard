@@ -15,7 +15,7 @@ use switchyard_core::{
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use crate::backends::BackendSelection;
-use crate::intake::config::IntakeSinkConfig;
+use crate::intake::config::{IntakeFormat, IntakeSinkConfig};
 use crate::intake::context::{IntakeRequestState, RequestMetadata, SubModelCall};
 use crate::request_processors::RandomRoutingDecision;
 use crate::stats::{estimate_model_cost, usage_from_body, StatsRouteLabel};
@@ -145,7 +145,7 @@ impl IntakePayloadBuilder {
     /// label — never message content. It reuses the turn's session, task, and
     /// timestamps but overrides the routing label with this call's own. `index`
     /// yields a per-call id suffix so several calls in one turn stay distinct as
-    /// separate NVDataflow documents instead of overwriting one another.
+    /// separate flat documents instead of overwriting one another.
     pub fn build_submodel_record(
         &self,
         ctx: &IntakePayloadContext,
@@ -185,7 +185,7 @@ impl IntakePayloadBuilder {
 
     /// Assembles the final intake API JSON payload.
     ///
-    /// `id_discriminator` makes an NVDataflow document's `_id` unique among
+    /// `id_discriminator` makes a flat document's `_id` unique among
     /// records built for the same turn (same session + timestamp); the primary
     /// per-turn record passes `None`.
     fn build_from_openai(
@@ -233,8 +233,13 @@ impl IntakePayloadBuilder {
             Value::String("switchyard".to_string()),
         );
         let payload = Value::Object(payload);
-        if self.config().nvdataflow_project.is_some() {
-            return Ok(to_nvdataflow_document(
+        let flat = self
+            .config()
+            .target
+            .as_ref()
+            .is_some_and(|target| target.format == IntakeFormat::FlatDocument);
+        if flat {
+            return Ok(to_flat_document(
                 &payload,
                 ctx.ended_at_ms,
                 id_discriminator,
@@ -912,10 +917,10 @@ fn anthropic_stop_reason_to_openai(reason: Value) -> Value {
 }
 
 /// Flattens a chat-completions intake payload into a top-level, type-prefixed
-/// (`s_`/`l_`/`f_`/`b_`/`text_`) NVDataflow document, since NVDataflow only
-/// indexes top-level fields. The raw record is kept in
+/// (`s_`/`l_`/`f_`/`b_`/`text_`) flat document, since flat posting endpoints
+/// only index top-level fields. The raw record is kept in
 /// `text_switchyard_record_json`.
-pub fn to_nvdataflow_document(
+pub fn to_flat_document(
     payload: &Value,
     ts_created_ms: Option<i64>,
     id_discriminator: Option<&str>,

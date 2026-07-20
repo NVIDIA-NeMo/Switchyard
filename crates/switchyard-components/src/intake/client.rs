@@ -231,18 +231,18 @@ async fn post_once(
     client: &reqwest::Client,
     payload: &Value,
 ) -> Result<()> {
-    // NVDataflow posting is unauthenticated; chat-completions ingest needs the bearer.
-    let request = if let Some(url) = config.nvdataflow_posting_url() {
-        client.post(url).json(payload)
-    } else {
-        let mut request = client
-            .post(chat_completions_ingest_url(config))
-            .json(payload);
+    // A configured target posts to its own URL with its own auth mode; otherwise
+    // fall back to the authenticated nemo-platform chat-completions ingest.
+    let (url, authenticated) = match &config.target {
+        Some(target) => (target.url.clone(), target.authenticated),
+        None => (chat_completions_ingest_url(config), true),
+    };
+    let mut request = client.post(url).json(payload);
+    if authenticated {
         if let Some(api_key) = config.api_key.as_deref() {
             request = request.bearer_auth(api_key);
         }
-        request
-    };
+    }
     let response = request.send().await.map_err(|error| {
         SwitchyardError::Upstream(format!("intake payload POST failed: {error}"))
     })?;
@@ -261,9 +261,9 @@ async fn post_once(
 
 /// Validates sink configuration before any background worker is started.
 fn validate_config(config: &IntakeSinkConfig) -> Result<()> {
-    // NVDataflow mode defaults its own host, so intake_base_url is only
-    // required for chat-completions ingest.
-    if config.nvdataflow_project.is_none()
+    // A configured target carries its own URL; only the nemo-platform fallback
+    // needs intake_base_url to build the ingest URL.
+    if config.target.is_none()
         && !matches!(config.intake_base_url.as_deref(), Some(base_url) if !base_url.is_empty())
     {
         return Err(SwitchyardError::InvalidConfig(

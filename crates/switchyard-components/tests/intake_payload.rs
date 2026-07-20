@@ -7,8 +7,9 @@ mod support;
 
 use serde_json::{json, Value};
 use switchyard_components::{
-    IntakePayloadBuilder, IntakeRequestMetadata, IntakeRequestState, IntakeSinkConfig,
-    RandomRoutingDecision, RandomRoutingTier, RequestMetadata, StatsRouteLabel, SubModelCall,
+    IntakeFormat, IntakePayloadBuilder, IntakeRequestMetadata, IntakeRequestState,
+    IntakeSinkConfig, IntakeTarget, RandomRoutingDecision, RandomRoutingTier, RequestMetadata,
+    StatsRouteLabel, SubModelCall,
 };
 use switchyard_core::{ChatRequest, ChatRequestType, LlmTargetId, ModelId, ProxyContext, Result};
 
@@ -340,12 +341,16 @@ fn payload_usage_uses_null_model_when_served_model_is_missing() -> Result<()> {
     Ok(())
 }
 
-// NVDataflow mode flattens the record into top-level, type-prefixed fields.
+// A flat-document target flattens the record into top-level, type-prefixed fields.
 #[test]
-fn payload_builds_flat_nvdataflow_document_when_project_set() -> Result<()> {
+fn payload_builds_flat_document_when_target_is_flat() -> Result<()> {
     let builder = IntakePayloadBuilder::new(IntakeSinkConfig {
         user_id: "0badf00d".to_string(),
-        nvdataflow_project: Some("sandbox-switchyard".to_string()),
+        target: Some(IntakeTarget {
+            url: "https://example.invalid/posting".to_string(),
+            format: IntakeFormat::FlatDocument,
+            authenticated: false,
+        }),
         ..IntakeSinkConfig::default()
     });
     let request = openai_chat_request("openai/openai/gpt-5.2");
@@ -411,13 +416,17 @@ fn payload_builds_flat_nvdataflow_document_when_project_set() -> Result<()> {
 }
 
 // Sub-model routing records reuse the turn's context but carry the router's own
-// model/usage/route, and each gets a distinct NVDataflow _id so the primary
+// model/usage/route, and each gets a distinct flat-document _id so the primary
 // record and every routing call coexist instead of overwriting one another.
 #[test]
-fn submodel_records_get_distinct_nvdataflow_ids_and_router_fields() -> Result<()> {
+fn submodel_records_get_distinct_flat_ids_and_router_fields() -> Result<()> {
     let builder = IntakePayloadBuilder::new(IntakeSinkConfig {
         user_id: "0badf00d".to_string(),
-        nvdataflow_project: Some("sandbox-switchyard".to_string()),
+        target: Some(IntakeTarget {
+            url: "https://example.invalid/posting".to_string(),
+            format: IntakeFormat::FlatDocument,
+            authenticated: false,
+        }),
         ..IntakeSinkConfig::default()
     });
     let request = openai_chat_request("openai/openai/gpt-5.2");
@@ -483,9 +492,13 @@ fn submodel_records_get_distinct_nvdataflow_ids_and_router_fields() -> Result<()
 
 // Default is metadata-only: no prompt/response text in the document, metrics kept.
 #[test]
-fn nvdataflow_document_is_metadata_only_by_default() -> Result<()> {
+fn flat_document_is_metadata_only_by_default() -> Result<()> {
     let builder = IntakePayloadBuilder::new(IntakeSinkConfig {
-        nvdataflow_project: Some("sandbox-switchyard".to_string()),
+        target: Some(IntakeTarget {
+            url: "https://example.invalid/posting".to_string(),
+            format: IntakeFormat::FlatDocument,
+            authenticated: false,
+        }),
         ..IntakeSinkConfig::default()
     });
     let request = ChatRequest::openai_chat(json!({

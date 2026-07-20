@@ -619,10 +619,11 @@ class TestIntakeRequestProcessor:
         assert "task" not in payload["request"]["switchyard"]
         assert payload["session_id"] == "session-123"
 
-    async def test_store_true_posts_routed_turn_and_submodel_records_to_nvdataflow(self):
+    async def test_store_true_posts_routed_turn_and_submodel_records_to_flat_target(self):
         """`store: true` alone (no header) opts in, so the routed turn and every
-        recorded routing call post to NVDataflow as distinct flat documents. This
-        is the opt-in the response-side Python processor could never see."""
+        recorded routing call post to the flat-document target as distinct
+        documents. This is the opt-in the response-side Python processor could
+        never see."""
         request_processor = IntakeRequestProcessor()
         request = ChatRequest.openai_chat({
             "model": "gpt-4o",
@@ -647,9 +648,7 @@ class TestIntakeRequestProcessor:
         with _IntakeHttpStub() as server:
             response_processor = IntakeResponseProcessor(
                 IntakeSinkConfig(
-                    intake_base_url=server.base_url,
-                    workspace="default",
-                    nvdataflow_project="sandbox-switchyard",
+                    target_url=f"{server.base_url}/dataflow/sandbox-switchyard/posting",
                     max_retries=0,
                 )
             )
@@ -659,7 +658,7 @@ class TestIntakeRequestProcessor:
             )
             await response_processor.shutdown()
 
-        # One routed-turn document plus one per routing call, all NVDataflow-flat.
+        # One routed-turn document plus one per routing call, all flat documents.
         posted = server.requests
         assert len(posted) == 2
         for entry in posted:

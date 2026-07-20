@@ -61,7 +61,8 @@ impl IntakeResponseProcessor {
         // router already made its call at request time — so emit them here,
         // gated by the same opt-in, instead of threading through the
         // buffered/streaming split below.
-        self.emit_submodel_records(ctx, Arc::clone(&self.sink)).await;
+        self.emit_submodel_records(ctx, Arc::clone(&self.sink))
+            .await;
 
         match response {
             ChatResponse::OpenAiCompletion(_)
@@ -116,7 +117,9 @@ impl IntakeResponseProcessor {
         };
         let payload_ctx = IntakePayloadContext::from_proxy_context(ctx, Some(now_millis()));
         for (index, call) in calls.iter().enumerate() {
-            let payload = self.builder.build_submodel_record(&payload_ctx, call, index);
+            let payload = self
+                .builder
+                .build_submodel_record(&payload_ctx, call, index);
             enqueue_payload(Arc::clone(&sink), payload).await;
         }
     }

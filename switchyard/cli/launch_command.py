@@ -459,7 +459,7 @@ def resolve_launch_intake_config(
         task=intake.task or "developer-session",
         session_id=intake.session_id,
         user_id=intake.user_id,
-        nvdataflow_project=intake.nvdataflow_project,
+        target_url=intake.target_url,
         target=target,
     )
 

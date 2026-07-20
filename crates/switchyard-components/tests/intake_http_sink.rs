@@ -4,7 +4,9 @@
 mod support;
 
 use serde_json::json;
-use switchyard_components::{HttpIntakeSink, IntakeSink, IntakeSinkConfig};
+use switchyard_components::{
+    HttpIntakeSink, IntakeFormat, IntakeSink, IntakeSinkConfig, IntakeTarget,
+};
 use switchyard_core::{Result, SwitchyardError};
 
 use support::{OneShotServer, SequenceServer};
@@ -156,15 +158,18 @@ fn http_intake_sink_rejects_zero_queue_size() -> Result<()> {
     Ok(())
 }
 
-// NVDataflow mode posts the flat document to the project posting endpoint and
-// must not send the bearer token (NVDataflow posting is unauthenticated).
+// An unauthenticated flat-document target posts to its full URL and must not
+// send the bearer token even when an api_key is configured.
 #[tokio::test]
-async fn http_intake_sink_posts_to_nvdataflow_project_path_without_auth() -> Result<()> {
+async fn http_intake_sink_posts_to_flat_target_url_without_auth() -> Result<()> {
     let server = OneShotServer::json(201, json!({"status": "Created"}))?;
     let sink = HttpIntakeSink::new(IntakeSinkConfig {
-        intake_base_url: Some(server.base_url().to_string()),
-        nvdataflow_project: Some("sandbox-switchyard".to_string()),
-        // Set but must not be sent in NVDataflow mode.
+        target: Some(IntakeTarget {
+            url: format!("{}/dataflow/sandbox-switchyard/posting", server.base_url()),
+            format: IntakeFormat::FlatDocument,
+            authenticated: false,
+        }),
+        // Set but must not be sent for an unauthenticated target.
         api_key: Some("secret-token".to_string()),
         ..IntakeSinkConfig::default()
     })?;

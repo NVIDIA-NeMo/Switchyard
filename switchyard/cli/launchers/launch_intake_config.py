@@ -72,7 +72,7 @@ class LaunchIntakeConfig:
     task: str
     session_id: str
     user_id: str
-    nvdataflow_project: str | None = None
+    target_url: str | None = None
 
     @classmethod
     def from_resolved(
@@ -85,7 +85,7 @@ class LaunchIntakeConfig:
         task: str,
         session_id: str | None,
         user_id: str | None = None,
-        nvdataflow_project: str | None = None,
+        target_url: str | None = None,
         target: str,
     ) -> "LaunchIntakeConfig":
         """Resolve any blank fields and return the immutable config.
@@ -106,7 +106,7 @@ class LaunchIntakeConfig:
             task=task,
             session_id=session_id or _default_session_id(target),
             user_id=user_id or resolve_machine_user_id(),
-            nvdataflow_project=nvdataflow_project,
+            target_url=target_url,
         )
 
     def opt_in_headers(self) -> dict[str, str]:
@@ -133,7 +133,7 @@ class LaunchIntakeConfig:
             workspace=self.workspace,
             api_key=self.api_key,
             user_id=self.user_id,
-            nvdataflow_project=self.nvdataflow_project,
+            target_url=self.target_url,
         )
 
 
