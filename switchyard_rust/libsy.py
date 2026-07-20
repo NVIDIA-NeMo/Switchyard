@@ -12,13 +12,6 @@ from switchyard_rust.core import _load_native
 
 _EXPORTS = frozenset({"Algorithm", "LibsyError", "LlmTarget", "noop", "random"})
 
-if TYPE_CHECKING:
-    from switchyard_rust.core import SwitchyardRuntimeError
-
-    Algorithm: type[Any]
-    LibsyError: type[SwitchyardRuntimeError]
-    LlmTarget: type[Any]
-
 
 class LlmClient(Protocol):
     """Structural interface for a Python-hosted model client."""
@@ -29,6 +22,33 @@ class LlmClient(Protocol):
     ) -> Mapping[str, object]:
         """Call the configured target and return an aggregate neutral response."""
         ...
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from typing import final
+
+    from switchyard_rust.core import SwitchyardRuntimeError
+
+    class LibsyError(SwitchyardRuntimeError): ...
+
+    @final
+    class LlmTarget:
+        def __init__(self, name: str, client: LlmClient) -> None: ...
+
+        @property
+        def name(self) -> str: ...
+
+    @final
+    class Algorithm:
+        async def run(
+            self,
+            request: Mapping[str, object],
+        ) -> tuple[list[dict[str, object]], dict[str, object]]: ...
+
+    def noop() -> Algorithm: ...
+
+    def random(targets: Sequence[LlmTarget]) -> Algorithm: ...
 
 
 def __getattr__(name: str) -> object:
