@@ -43,6 +43,17 @@ _FORWARDED_SAMPLING_KEYS = (
 )
 
 
+class _ChainMismatch(ValueError):
+    """This call does not extend the session's token chain.
+
+    Raised for history-shape conditions (interleaved side-calls like
+    opencode's title generator, rewritten history, no observed end-of-turn
+    token). The call is served via the chat path but the session state is
+    kept, so later calls that do extend the chain still inject — unlike hard
+    errors, which pin the session to the fallback path.
+    """
+
+
 @dataclass
 class _SessionState:
     """Canonical token history for one capture session.
@@ -101,6 +112,9 @@ class TokenInjectionBackend(LLMBackend):
         self._reasoning_parser = reasoning_parser
         self._timeout = timeout_secs
         self._sessions: dict[str, _SessionState] = {}
+        # Model context length, learned from /tokenize responses; used to clamp
+        # the completion budget the way the chat endpoint does implicitly.
+        self._max_model_len: int | None = None
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
         """Serve one model call, injecting the canonical history when possible."""
@@ -121,6 +135,17 @@ class TokenInjectionBackend(LLMBackend):
             return await self._inner.call(ctx, request)
         try:
             return await self._injected_call(session_id, state, body)
+        except _ChainMismatch as exc:
+            # Harnesses interleave side-calls on the main session (e.g.
+            # opencode's title generator); serve this call via the chat path
+            # but keep the chain state so later extending calls still inject.
+            logger.info(
+                "token injection: session %s: call does not extend the chain (%s); "
+                "serving via the chat path",
+                session_id,
+                exc,
+            )
+            return await self._inner.call(ctx, request)
         except (httpx.HTTPError, VllmParserError, KeyError, ValueError) as exc:
             self._fall_back(session_id, f"injection failed: {exc}")
             return await self._inner.call(ctx, request)
@@ -163,10 +188,10 @@ class TokenInjectionBackend(LLMBackend):
     ) -> ChatResponse:
         """Generate through ``/v1/completions`` with the canonical token history."""
         if state.eot_token_id is None:
-            raise ValueError("no end-of-turn token observed (prior turn did not stop naturally)")
+            raise _ChainMismatch("no end-of-turn token observed (prior turn did not stop naturally)")
         rendered = await self._tokenize(body, add_generation_prompt=True)
         if rendered[: len(state.prefix)] != state.prefix:
-            raise ValueError("templated prompt no longer extends the session prefix")
+            raise _ChainMismatch("templated prompt does not extend the session prefix")
         env_tokens = _slice_env_suffix(
             rendered[len(state.prefix):], state.last_generation, state.eot_token_id
         )
@@ -254,6 +279,31 @@ class TokenInjectionBackend(LLMBackend):
             "usage": completion.get("usage"),
         }
 
+    def _resolve_max_tokens(self, body: JsonObject, prompt_len: int) -> int | None:
+        """The effective completion budget for the injected call.
+
+        Honors the smaller of ``max_tokens`` / ``max_completion_tokens`` when
+        both are present, then clamps to the model context: the chat endpoint
+        caps the budget to the remaining context automatically, but
+        ``/v1/completions`` rejects the request outright, so the clamp must
+        happen here. ``max_model_len`` is learned from ``/tokenize`` responses.
+        """
+        requested = [
+            value
+            for value in (body.get("max_tokens"), body.get("max_completion_tokens"))
+            if isinstance(value, int) and not isinstance(value, bool)
+        ]
+        max_tokens = min(requested) if requested else None
+        if max_tokens is None or self._max_model_len is None:
+            return max_tokens
+        remaining = self._max_model_len - prompt_len
+        if remaining <= 0:
+            raise ValueError(
+                f"injected prompt ({prompt_len} tokens) leaves no room in the model "
+                f"context ({self._max_model_len})"
+            )
+        return min(max_tokens, remaining)
+
     async def _tokenize(self, body: JsonObject, *, add_generation_prompt: bool) -> list[int]:
         """Template-render and tokenize the request's messages without generating."""
         payload: JsonObject = {
@@ -266,6 +316,9 @@ class TokenInjectionBackend(LLMBackend):
         if isinstance(body.get("chat_template_kwargs"), dict):
             payload["chat_template_kwargs"] = body["chat_template_kwargs"]
         data = await self._post(f"{self._root_url}/tokenize", payload)
+        max_model_len = data.get("max_model_len")
+        if isinstance(max_model_len, int) and not isinstance(max_model_len, bool):
+            self._max_model_len = max_model_len
         tokens = data.get("tokens")
         if not isinstance(tokens, list) or not all(isinstance(t, int) for t in tokens):
             raise ValueError("/tokenize response has no integer token list")
@@ -280,7 +333,7 @@ class TokenInjectionBackend(LLMBackend):
             "return_token_ids": True,
             "logprobs": 0,
         }
-        max_tokens = body.get("max_tokens", body.get("max_completion_tokens"))
+        max_tokens = self._resolve_max_tokens(body, len(prompt))
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         for key in _FORWARDED_SAMPLING_KEYS:
@@ -354,7 +407,7 @@ def _slice_env_suffix(
     try:
         index = canonical_tail.index(eot_token_id)
     except ValueError:
-        raise ValueError("end-of-turn token not found in the re-rendered prompt tail") from None
+        raise _ChainMismatch("end-of-turn token not found in the re-rendered prompt tail") from None
     if last_generation and last_generation[-1] == eot_token_id:
         return canonical_tail[index + 1:]
     return canonical_tail[index:]
