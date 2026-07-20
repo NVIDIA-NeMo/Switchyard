@@ -17,7 +17,7 @@ type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 /// with any metadata already attached to the request, and stores the result in [`State`].
 pub struct MetadataProcessor;
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Processor for MetadataProcessor {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
         // Only the inbound request carries the harness headers we normalize.

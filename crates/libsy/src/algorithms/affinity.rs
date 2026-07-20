@@ -16,7 +16,7 @@
 //! Identity is derived from correlation metadata: a request is keyed by its session, and a
 //! sub-agent is keyed more finely by `session + agent` — a subset of its session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use switchyard_protocol::Request;
@@ -74,17 +74,38 @@ struct AffinityAssignments {
 /// chosen model, the request's identity is captured first (on [`Event::Request`]) and
 /// consumed when the decision arrives — this assumes a turn's request is observed before
 /// its decision on the same [`State`], as the driving algorithm folds a turn in order.
+///
+/// [`with_latch_only`](Self::with_latch_only) narrows *which* models are retained — a
+/// decision for any other model routes normally but is not latched (the escalation latch:
+/// retain only the strong tier, never the weak one).
 #[derive(Default)]
-pub struct AffinityRouter;
+pub struct AffinityRouter {
+    /// When set, only these models are retained; a decision for any other model is not latched.
+    latch_only: Option<HashSet<String>>,
+}
 
 impl AffinityRouter {
-    /// Creates a router with empty assignments.
+    /// Creates a router that latches every decision.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Restricts latching to `models`; a decision for any other model routes but is not
+    /// retained.
+    pub fn with_latch_only(mut self, models: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.latch_only = Some(models.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Whether a decision for `model` should be retained.
+    fn should_latch(&self, model: &str) -> bool {
+        self.latch_only
+            .as_ref()
+            .is_none_or(|set| set.contains(model))
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Processor for AffinityRouter {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
         match event {
@@ -96,14 +117,15 @@ impl Processor for AffinityRouter {
             }
             // Bind the captured identity to the chosen model, keeping any earlier winner.
             Event::Decision(decision) => {
+                let model = decision.selected_model();
                 let fact = state.entry_or_insert_with(AffinityAssignments::default);
                 let Some(key) = fact.pending.take() else {
                     return Ok(());
                 };
-                if !fact.assignments.contains_key(&key) {
+                // Latch only permitted models; others consume `pending` but are not retained.
+                if self.should_latch(model) && !fact.assignments.contains_key(&key) {
                     evict_if_full(&mut fact.assignments);
-                    fact.assignments
-                        .insert(key, decision.selected_model().to_string());
+                    fact.assignments.insert(key, model.to_string());
                 }
             }
             _ => {}
@@ -114,7 +136,12 @@ impl Processor for AffinityRouter {
 
 #[async_trait]
 impl Classifier for AffinityRouter {
-    async fn score(&self, state: &mut State, request: &Request) -> Result<Vec<Score>, BoxErr> {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &Request,
+        _driver: Option<&crate::Driver>,
+    ) -> Result<Vec<Score>, BoxErr> {
         let Some(key) = affinity_key(request) else {
             return Ok(Vec::new());
         };
@@ -214,7 +241,7 @@ mod tests {
 
         // A different agent in the same session is scored onto the retained model.
         let second = request(session("session-1", "agent-b"));
-        let scores = router.score(&mut state, &second).await?;
+        let scores = router.score(&mut state, &second, None).await?;
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].confidence, 1.0);
         assert_eq!(scores[0].target, "model-a");
@@ -231,7 +258,7 @@ mod tests {
         // A later decision for the same identity must not overwrite the first.
         retain(&router, &mut state, &req, "model-b").await?;
 
-        let scores = router.score(&mut state, &req).await?;
+        let scores = router.score(&mut state, &req, None).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -249,7 +276,7 @@ mod tests {
 
         // Same child, different task: still scored onto the retained model.
         let second = request(subagent("child-1", "task-2"));
-        let scores = router.score(&mut state, &second).await?;
+        let scores = router.score(&mut state, &second, None).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -273,7 +300,7 @@ mod tests {
 
         // ...a sibling child in the same session has no assignment of its own yet.
         let sibling = request(subagent("child-2", "task-1"));
-        assert!(router.score(&mut state, &sibling).await?.is_empty());
+        assert!(router.score(&mut state, &sibling, None).await?.is_empty());
         Ok(())
     }
 
@@ -293,7 +320,7 @@ mod tests {
 
         // ...so the sub-agent abstains until it is assigned in its own right.
         let child = request(subagent("child-1", "task-1"));
-        assert!(router.score(&mut state, &child).await?.is_empty());
+        assert!(router.score(&mut state, &child, None).await?.is_empty());
         Ok(())
     }
 
@@ -304,7 +331,7 @@ mod tests {
 
         // No session id at all: nothing to key on.
         let req = request(Metadata::default());
-        assert!(router.score(&mut state, &req).await?.is_empty());
+        assert!(router.score(&mut state, &req, None).await?.is_empty());
         Ok(())
     }
 
@@ -326,7 +353,7 @@ mod tests {
             .await?;
 
         let second = request(session("session-1", "agent-b"));
-        let scores = classifier.score(&mut state, &second).await?;
+        let scores = classifier.score(&mut state, &second, None).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -345,7 +372,7 @@ mod tests {
             .await?;
 
         let req = request(session("session-1", "agent-a"));
-        assert!(router.score(&mut state, &req).await?.is_empty());
+        assert!(router.score(&mut state, &req, None).await?.is_empty());
         Ok(())
     }
 
@@ -365,7 +392,7 @@ mod tests {
             .process(&mut state, Event::Decision(&FixedDecision("model-a")))
             .await?;
 
-        let scores = router.score(&mut state, &req).await?;
+        let scores = router.score(&mut state, &req, None).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -394,10 +421,10 @@ mod tests {
         .await?;
 
         let first = router
-            .score(&mut state, &request(session("session-1", "other")))
+            .score(&mut state, &request(session("session-1", "other")), None)
             .await?;
         let second = router
-            .score(&mut state, &request(session("session-2", "other")))
+            .score(&mut state, &request(session("session-2", "other")), None)
             .await?;
         assert_eq!(
             first.first().map(|score| score.target.as_str()),
@@ -424,7 +451,7 @@ mod tests {
         };
         let req = request(metadata);
         retain(&router, &mut state, &req, "model-a").await?;
-        assert!(router.score(&mut state, &req).await?.is_empty());
+        assert!(router.score(&mut state, &req, None).await?.is_empty());
         Ok(())
     }
 
@@ -449,6 +476,29 @@ mod tests {
             .get::<AffinityAssignments>()
             .map(|fact| fact.assignments.len());
         assert_eq!(len, Some(MAX_ASSIGNMENTS));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn latch_only_retains_matching_models() -> Result<(), BoxErr> {
+        let router = AffinityRouter::new().with_latch_only(["strong"]);
+        let mut state = State::default();
+        let req = request(session("session-1", "agent-a"));
+
+        // A "weak" decision is not retained — a later turn is not latched.
+        retain(&router, &mut state, &req, "weak").await?;
+        assert!(router.score(&mut state, &req, None).await?.is_empty());
+
+        // A "strong" decision is retained — later turns latch onto it.
+        retain(&router, &mut state, &req, "strong").await?;
+        assert_eq!(
+            router
+                .score(&mut state, &req, None)
+                .await?
+                .first()
+                .map(|s| s.target.as_str()),
+            Some("strong")
+        );
         Ok(())
     }
 }

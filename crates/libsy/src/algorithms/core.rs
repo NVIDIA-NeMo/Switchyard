@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-use crate::Signals;
-use switchyard_protocol::{Decision, Request, Response};
+use crate::{Driver, Signals};
+use switchyard_protocol::{AggLlmResponse, Decision, Request};
 
 /// The per-request accumulator shared across an algorithm's components.
 ///
@@ -45,12 +45,15 @@ impl State {
     }
 }
 
+/// An event fed to the [`Processor`] chain. Every variant is `Send` so the chain can run
+/// inside an algorithm's `Send` run task; a response-side processor therefore observes the
+/// *buffered* [`AggLlmResponse`], since a live response stream cannot cross that boundary.
 pub enum Event<'a> {
     Request(&'a Request),
     Signal(&'a Signals),
     Decision(&'a dyn Decision),
     ModelRequest(&'a Request),
-    ModelResponse(&'a Response),
+    ModelResponse(&'a AggLlmResponse),
 }
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -61,9 +64,10 @@ type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 /// work — read an [`Event`] and accumulate facts into the shared [`State`] — so later
 /// classifiers can key off it. Heavy work (LLM calls, scoring) belongs in a [`Classifier`],
 /// not here.
-// `Event` can carry a `&Response`, whose streaming body is `!Sync`, so the returned
-// future cannot be `Send`; opt out of async_trait's default `Send` bound.
-#[async_trait(?Send)]
+///
+/// `process` returns a `Send` future so a processor chain can run inside an algorithm's
+/// `Send` run task — which is why every [`Event`] variant is `Send`.
+#[async_trait]
 pub trait Processor: Send + Sync {
     /// Process an event, accumulating facts into `state`.
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr>;
@@ -85,9 +89,18 @@ pub struct Score {
 /// classification, and returns a [`Score`] per recommended `target`. Returning an **empty**
 /// vec **abstains**, deferring to the next classifier; the first classifier to return a
 /// non-empty result decides.
+///
+/// `driver` offloads any model call the classifier itself needs (e.g. an LLM-backed
+/// classifier's own call). It is `None` when the classifier is scored outside an algorithm
+/// run; a classifier that requires it returns an error rather than assuming one is present.
 #[async_trait]
 pub trait Classifier: Send + Sync {
-    async fn score(&self, state: &mut State, request: &Request) -> Result<Vec<Score>, BoxErr>;
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &Request,
+        driver: Option<&Driver>,
+    ) -> Result<Vec<Score>, BoxErr>;
 }
 
 #[cfg(test)]

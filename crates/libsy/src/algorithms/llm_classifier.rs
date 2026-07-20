@@ -132,10 +132,10 @@ impl Decision for ClassifierCall {
 /// LLM-backed [`Classifier`]: scores each routing target with one offloaded, tool-calling
 /// model call.
 ///
-/// Holds the [`Driver`] to offload that call (constructor-injected, since only LLM-backed
-/// classifiers need one) and the classifier [`LlmTarget`] naming the scoring model.
+/// The call is offloaded through the [`Driver`] passed to [`score`](Classifier::score); a
+/// [`None`] driver is an error (this classifier cannot decide without one). Holds the
+/// classifier [`LlmTarget`] naming the scoring model.
 pub struct LlmClassifier {
-    driver: Driver,
     classifier_target: LlmTarget,
     /// The target `semantic_name`s to score, one [`Score`] emitted per entry.
     targets: Vec<String>,
@@ -148,11 +148,11 @@ pub struct LlmClassifier {
 }
 
 impl LlmClassifier {
-    /// Creates a classifier that offloads its call through `driver`, scores with
-    /// `classifier_target`, and emits a [`Score`] for each name in `targets`.
-    pub fn new(driver: Driver, classifier_target: LlmTarget, targets: Vec<String>) -> Self {
+    /// Creates a classifier that scores with `classifier_target` and emits a [`Score`] for
+    /// each name in `targets`. Its call is offloaded through the driver given to
+    /// [`score`](Classifier::score).
+    pub fn new(classifier_target: LlmTarget, targets: Vec<String>) -> Self {
         Self {
-            driver,
             classifier_target,
             targets,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
@@ -200,15 +200,19 @@ impl LlmClassifier {
         self
     }
 
-    /// Offloads the tool-calling classification and returns the parsed per-target score map.
-    async fn classify(&self, request: &Request) -> Result<HashMap<String, f64>, BoxErr> {
+    /// Offloads the tool-calling classification through `driver` and returns the parsed
+    /// per-target score map.
+    async fn classify(
+        &self,
+        request: &Request,
+        driver: &Driver,
+    ) -> Result<HashMap<String, f64>, BoxErr> {
         let classify_request =
             self.build_request(summarize_request(request, self.recent_turn_window));
         let decision: Arc<dyn Decision> = Arc::new(ClassifierCall {
             model: self.classifier_target.semantic_name.clone(),
         });
-        let response = self
-            .driver
+        let response = driver
             .call_llm_target(
                 Context::default(),
                 &self.classifier_target,
@@ -229,12 +233,19 @@ impl LlmClassifier {
                 model: Some(self.classifier_target.semantic_name.clone()),
                 instructions: vec![InstructionBlock {
                     role: Role::System,
-                    content: vec![ContentBlock::Text { text: self.system_prompt.clone() }],
+                    content: vec![ContentBlock::Text {
+                        text: self.system_prompt.clone(),
+                    }],
                 }],
                 messages: vec![Message::text(Role::User, summary)],
                 tools: vec![self.route_tool()],
-                tool_choice: Some(ToolChoice::Tool { name: self.tool_name.clone() }),
-                sampling: SamplingParams { temperature: Some(0.0), ..SamplingParams::default() },
+                tool_choice: Some(ToolChoice::Tool {
+                    name: self.tool_name.clone(),
+                }),
+                sampling: SamplingParams {
+                    temperature: Some(0.0),
+                    ..SamplingParams::default()
+                },
                 output: OutputParams {
                     max_output_tokens: Some(self.max_tokens),
                     ..OutputParams::default()
@@ -253,8 +264,11 @@ impl LlmClassifier {
             .iter()
             .map(|name| (name.clone(), json!({ "type": "number" })))
             .collect();
-        let required: Vec<Value> =
-            self.targets.iter().map(|name| Value::String(name.clone())).collect();
+        let required: Vec<Value> = self
+            .targets
+            .iter()
+            .map(|name| Value::String(name.clone()))
+            .collect();
         ToolDefinition {
             name: self.tool_name.clone(),
             description: Some(
@@ -285,15 +299,20 @@ impl LlmClassifier {
 
 #[async_trait]
 impl Classifier for LlmClassifier {
-    async fn score(&self, _state: &mut State, request: &Request) -> Result<Vec<Score>, BoxErr> {
-        match self.classify(request).await {
+    async fn score(
+        &self,
+        _state: &mut State,
+        request: &Request,
+        driver: Option<&Driver>,
+    ) -> Result<Vec<Score>, BoxErr> {
+        // The classifier cannot decide without a driver to offload its call.
+        let driver = driver.ok_or("LlmClassifier requires a driver to offload its call")?;
+        match self.classify(request, driver).await {
             // Missing targets score 0.0.
             Ok(parsed) => Ok(self.scores_by(|name| parsed.get(name).copied().unwrap_or(0.0))),
             // On failure, fail open to the configured default target, or propagate.
             Err(err) => match &self.fail_open_target {
-                Some(target) => {
-                    Ok(self.scores_by(|name| if name == target { 1.0 } else { 0.0 }))
-                }
+                Some(target) => Ok(self.scores_by(|name| if name == target { 1.0 } else { 0.0 })),
                 None => Err(err),
             },
         }
@@ -366,7 +385,10 @@ fn summarize_request(request: &Request, recent_turn_window: usize) -> String {
 /// Keeps the routing-signal slice of the conversation: the first user message plus the last
 /// `recent_turn_window` messages (or, with window `0`, just the last user message).
 fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Value> {
-    let Some(first_user) = messages.iter().position(|message| message.role == Role::User) else {
+    let Some(first_user) = messages
+        .iter()
+        .position(|message| message.role == Role::User)
+    else {
         return Vec::new();
     };
     let mut out = vec![render_message(&messages[first_user])];
@@ -453,7 +475,10 @@ mod tests {
     }
 
     fn target(name: &str) -> LlmTarget {
-        LlmTarget { semantic_name: name.to_string(), llm_client: None }
+        LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: None,
+        }
     }
 
     fn request(prompt: &str) -> Request {
@@ -476,12 +501,18 @@ mod tests {
                 name: DEFAULT_TOOL_NAME.to_string(),
                 arguments: arguments.clone(),
             })],
-            ModelReply::NoToolCall => vec![ContentBlock::Text { text: "no tool".to_string() }],
+            ModelReply::NoToolCall => vec![ContentBlock::Text {
+                text: "no tool".to_string(),
+            }],
             ModelReply::Error => return Err("classifier upstream failed".into()),
         };
         Ok(Response {
             llm_response: LlmResponse::Agg(AggLlmResponse {
-                outputs: vec![ResponseOutput { role: Role::Assistant, content, stop_reason: None }],
+                outputs: vec![ResponseOutput {
+                    role: Role::Assistant,
+                    content,
+                    stop_reason: None,
+                }],
                 ..AggLlmResponse::default()
             }),
             metadata: None,
@@ -489,17 +520,20 @@ mod tests {
     }
 
     /// Runs a classifier's `score` against a stubbed reply, returning the scores and the
-    /// classifier requests it offloaded.
+    /// classifier requests it offloaded. Builds a driver and serves the one offloaded call.
     async fn run_score(
         classifier: LlmClassifier,
-        driver: Driver,
         request: Request,
         reply: ModelReply,
     ) -> Result<(Vec<Score>, Vec<Request>), BoxErr> {
+        let driver = Driver::new();
         let stream = driver.stream();
+        let task_driver = driver.clone();
         let handle = tokio::spawn(async move {
             let mut state = State::default();
-            classifier.score(&mut state, &request).await
+            classifier
+                .score(&mut state, &request, Some(&task_driver))
+                .await
         });
 
         let mut seen = Vec::new();
@@ -514,10 +548,9 @@ mod tests {
         handle.await?.map(|scores| (scores, seen))
     }
 
-    /// A classifier over `["strong", "weak"]` sharing `driver`.
-    fn classifier(driver: &Driver) -> LlmClassifier {
+    /// A classifier over `["strong", "weak"]`.
+    fn classifier() -> LlmClassifier {
         LlmClassifier::new(
-            driver.clone(),
             target("classifier-model"),
             vec!["strong".to_string(), "weak".to_string()],
         )
@@ -525,10 +558,8 @@ mod tests {
 
     #[tokio::test]
     async fn scores_each_target_from_the_tool_call() -> Result<(), BoxErr> {
-        let driver = Driver::new();
         let (scores, _) = run_score(
-            classifier(&driver),
-            driver.clone(),
+            classifier(),
             request("solve this proof"),
             ModelReply::ToolCall(json!({ "strong": 0.9, "weak": 0.2 })),
         )
@@ -544,10 +575,8 @@ mod tests {
     #[tokio::test]
     async fn tool_call_arguments_as_json_string_are_parsed() -> Result<(), BoxErr> {
         // Some formats deliver `arguments` as a JSON string rather than an object.
-        let driver = Driver::new();
         let (scores, _) = run_score(
-            classifier(&driver),
-            driver.clone(),
+            classifier(),
             request("hi"),
             ModelReply::ToolCall(Value::String(r#"{"strong": 0.4, "weak": 0.6}"#.to_string())),
         )
@@ -559,10 +588,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_target_scores_zero_and_out_of_range_is_clamped() -> Result<(), BoxErr> {
-        let driver = Driver::new();
         let (scores, _) = run_score(
-            classifier(&driver),
-            driver.clone(),
+            classifier(),
             request("hi"),
             ModelReply::ToolCall(json!({ "strong": 1.5 })),
         )
@@ -575,33 +602,22 @@ mod tests {
 
     #[tokio::test]
     async fn missing_tool_call_without_fail_open_errors() -> Result<(), BoxErr> {
-        let driver = Driver::new();
-        let result = run_score(
-            classifier(&driver),
-            driver.clone(),
-            request("hi"),
-            ModelReply::NoToolCall,
-        )
-        .await;
+        let result = run_score(classifier(), request("hi"), ModelReply::NoToolCall).await;
         assert!(result.is_err());
         Ok(())
     }
 
     #[tokio::test]
     async fn call_error_without_fail_open_propagates() -> Result<(), BoxErr> {
-        let driver = Driver::new();
-        let result =
-            run_score(classifier(&driver), driver.clone(), request("hi"), ModelReply::Error).await;
+        let result = run_score(classifier(), request("hi"), ModelReply::Error).await;
         assert!(result.is_err());
         Ok(())
     }
 
     #[tokio::test]
     async fn fail_open_routes_to_the_default_target() -> Result<(), BoxErr> {
-        let driver = Driver::new();
         let (scores, _) = run_score(
-            classifier(&driver).with_fail_open("weak"),
-            driver.clone(),
+            classifier().with_fail_open("weak"),
             request("hi"),
             ModelReply::Error,
         )
@@ -615,10 +631,8 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_call_forces_the_strict_route_tool() -> Result<(), BoxErr> {
-        let driver = Driver::new();
         let (_, seen) = run_score(
-            classifier(&driver),
-            driver.clone(),
+            classifier(),
             request("prove it"),
             ModelReply::ToolCall(json!({ "strong": 0.9, "weak": 0.1 })),
         )
@@ -626,7 +640,12 @@ mod tests {
         assert_eq!(seen.len(), 1);
         let llm = &seen[0].llm_request;
         // Forced strict tool with a required number property per target.
-        assert_eq!(llm.tool_choice, Some(ToolChoice::Tool { name: DEFAULT_TOOL_NAME.to_string() }));
+        assert_eq!(
+            llm.tool_choice,
+            Some(ToolChoice::Tool {
+                name: DEFAULT_TOOL_NAME.to_string()
+            })
+        );
         assert_eq!(llm.sampling.temperature, Some(0.0));
         assert_eq!(llm.output.max_output_tokens, Some(DEFAULT_MAX_TOKENS));
         let tool = &llm.tools[0];
@@ -645,10 +664,8 @@ mod tests {
 
     #[tokio::test]
     async fn policy_selects_the_traffic_tuned_system_prompt() -> Result<(), BoxErr> {
-        let driver = Driver::new();
         let (_, seen) = run_score(
-            classifier(&driver).with_policy(Policy::CodingAgent),
-            driver.clone(),
+            classifier().with_policy(Policy::CodingAgent),
             request("refactor auth"),
             ModelReply::ToolCall(json!({ "strong": 0.8, "weak": 0.2 })),
         )
@@ -657,15 +674,23 @@ mod tests {
             .llm_request
             .instructions
             .iter()
-            .find_map(|instruction| instruction.content.iter().find_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
-            }))
+            .find_map(|instruction| {
+                instruction.content.iter().find_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+            })
             .unwrap_or_default();
         assert!(system.contains("coding-agent harness"));
         // The three policies carry distinct rubrics.
-        assert_ne!(Policy::General.system_prompt(), Policy::CodingAgent.system_prompt());
-        assert_ne!(Policy::CodingAgent.system_prompt(), Policy::OpenClaw.system_prompt());
+        assert_ne!(
+            Policy::General.system_prompt(),
+            Policy::CodingAgent.system_prompt()
+        );
+        assert_ne!(
+            Policy::CodingAgent.system_prompt(),
+            Policy::OpenClaw.system_prompt()
+        );
         // General is the default.
         assert_eq!(Policy::default(), Policy::General);
         assert_eq!(DEFAULT_SYSTEM_PROMPT, Policy::General.system_prompt());
@@ -680,7 +705,14 @@ mod tests {
             messages.push(Message::text(Role::Assistant, format!("turn {index}")));
         }
         let summary = summarize_request(
-            &Request { llm_request: LlmRequest { messages, ..LlmRequest::default() }, raw_request: None, metadata: None },
+            &Request {
+                llm_request: LlmRequest {
+                    messages,
+                    ..LlmRequest::default()
+                },
+                raw_request: None,
+                metadata: None,
+            },
             4,
         );
         assert!(summary.contains("FIRST")); // first-user anchor kept

@@ -627,7 +627,12 @@ impl StagedRouter {
 
 #[async_trait]
 impl Classifier for StagedRouter {
-    async fn score(&self, _state: &mut State, request: &Request) -> Result<Vec<Score>, BoxErr> {
+    async fn score(
+        &self,
+        _state: &mut State,
+        request: &Request,
+        _driver: Option<&crate::Driver>,
+    ) -> Result<Vec<Score>, BoxErr> {
         // Extract the tool-result signal from the request's conversation history, then score
         // it — all the heuristic work happens here, in the classifier.
         let signal = extract_tool_signals(request);
@@ -783,7 +788,7 @@ mod tests {
 
     async fn route(router: &StagedRouter, request: &Request) -> Result<Vec<Score>, BoxErr> {
         let mut state = State::default();
-        router.score(&mut state, request).await
+        router.score(&mut state, request, None).await
     }
 
     #[tokio::test]
@@ -843,8 +848,11 @@ mod tests {
         let classifier: Arc<dyn Classifier> = Arc::new(router());
         let mut state = State::default();
         let request = request_from(vec![user(vec![tool_result("out of memory")])]);
-        let scores = classifier.score(&mut state, &request).await?;
-        assert_eq!(scores.first().map(|score| score.target.as_str()), Some("capable-model"));
+        let scores = classifier.score(&mut state, &request, None).await?;
+        assert_eq!(
+            scores.first().map(|score| score.target.as_str()),
+            Some("capable-model")
+        );
         Ok(())
     }
 

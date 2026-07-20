@@ -61,6 +61,11 @@
 mod algorithms;
 pub use algorithms::affinity::AffinityRouter;
 pub use algorithms::core::{Classifier, Event, Processor, Score, State};
+pub use algorithms::escalation::{
+    escalation_router, ConfirmingJudge, ESCALATION_JUDGE_SYSTEM_PROMPT,
+    ESCALATION_JUDGE_TURN_WINDOW,
+};
+pub use algorithms::fall_through::FallThroughClassification;
 pub use algorithms::llm_classifier::{
     LlmClassifier, Policy, CODING_AGENT_SYSTEM_PROMPT, DEFAULT_MAX_TOKENS,
     DEFAULT_RECENT_TURN_WINDOW, DEFAULT_SYSTEM_PROMPT, DEFAULT_TOOL_NAME, GENERAL_SYSTEM_PROMPT,
@@ -70,6 +75,7 @@ pub use algorithms::metadata_processor::MetadataProcessor;
 pub use algorithms::noop::{NoopAlgo, NoopDecision};
 pub use algorithms::rand::{RandomAlgo, RandomDecision};
 pub use algorithms::staged::{StagedRouter, ToolResultSignal};
+pub use algorithms::turn_gate::{conversation_turn, TurnGate};
 
 mod driver;
 
