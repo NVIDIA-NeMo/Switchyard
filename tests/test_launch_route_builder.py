@@ -125,7 +125,6 @@ def test_deterministic_launch_routes_use_preset_defaults() -> None:
         classifier_model=None,
         profile_name=None,
         classifier_min_confidence=None,
-        backend_format=BackendFormat.OPENAI,
         timeout=600.0,
     )
     assert config.strong.model == "anthropic/claude-opus-4.7"
@@ -134,6 +133,10 @@ def test_deterministic_launch_routes_use_preset_defaults() -> None:
     assert config.profile_name == "coding_agent"
     assert config.classifier_min_confidence == 0.0
     assert config.preset == "coding_agent_default"
+    # Tier formats are preset-owned.
+    assert config.strong.format == BackendFormat.AUTO
+    assert config.weak.format == BackendFormat.OPENAI
+    assert config.classifier.format == BackendFormat.OPENAI
 
 
 def test_deterministic_launch_routes_apply_user_overrides() -> None:
@@ -150,7 +153,6 @@ def test_deterministic_launch_routes_apply_user_overrides() -> None:
         classifier_model="nvidia/nvidia/nemotron-3-super-v3",
         profile_name="general",
         classifier_min_confidence=0.55,
-        backend_format=BackendFormat.OPENAI,
         timeout=600.0,
     )
     assert config.strong.model == "openai/openai/gpt-5.2"
@@ -159,6 +161,7 @@ def test_deterministic_launch_routes_apply_user_overrides() -> None:
     assert config.profile_name == "general"
     assert config.classifier_min_confidence == 0.55
     assert config.preset is None
+    assert config.strong.format == BackendFormat.AUTO
 
 
 def test_deterministic_launch_routes_reject_invalid_profile() -> None:
@@ -171,7 +174,6 @@ def test_deterministic_launch_routes_reject_invalid_profile() -> None:
             classifier_model=None,
             profile_name="invented_profile",
             classifier_min_confidence=None,
-            backend_format=BackendFormat.OPENAI,
             timeout=600.0,
         )
 
@@ -186,7 +188,6 @@ def test_deterministic_launch_routes_reject_out_of_range_confidence() -> None:
             classifier_model=None,
             profile_name=None,
             classifier_min_confidence=1.5,
-            backend_format=BackendFormat.OPENAI,
             timeout=600.0,
         )
 

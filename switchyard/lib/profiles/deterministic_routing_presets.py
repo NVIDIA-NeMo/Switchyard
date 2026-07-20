@@ -71,7 +71,8 @@ class DeterministicRoutingPresets:
             strong=LlmTarget(
                 id="strong",
                 model=_MODEL_OPUS_4_7,
-                format=BackendFormat.OPENAI,
+                # AUTO probes for Anthropic Messages; keeps cache_control on Claude.
+                format=BackendFormat.AUTO,
                 api_key=api_key,
                 base_url=base_url,
                 timeout_secs=timeout_secs,
