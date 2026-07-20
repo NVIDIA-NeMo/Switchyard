@@ -37,7 +37,6 @@ from switchyard.cli.routing import (
     require_route_model,
 )
 from switchyard.lib import startup_timing
-from switchyard.lib.backends.llm_target import BackendFormat
 from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
 )
@@ -582,8 +581,6 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
                 classifier_min_confidence=getattr(
                     args, "classifier_min_confidence", None,
                 ),
-                backend_format=BackendFormat.OPENAI,
-                strong_backend_format=BackendFormat.AUTO,
                 timeout=args.timeout,
             )
             dry_run_route = LaunchRouteConfig(
@@ -633,8 +630,6 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
             classifier_min_confidence=getattr(
                 args, "classifier_min_confidence", None,
             ),
-            backend_format=BackendFormat.OPENAI,
-            strong_backend_format=BackendFormat.AUTO,
             timeout=args.timeout,
         )
         raise SystemExit(launch_claude_deterministic_routing(
@@ -776,7 +771,6 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
                 classifier_min_confidence=getattr(
                     args, "classifier_min_confidence", None,
                 ),
-                backend_format=BackendFormat.OPENAI,
                 timeout=args.timeout,
             )
             dry_run_route = LaunchRouteConfig(
@@ -825,7 +819,6 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             classifier_min_confidence=getattr(
                 args, "classifier_min_confidence", None,
             ),
-            backend_format=BackendFormat.OPENAI,
             timeout=args.timeout,
         )
         raise SystemExit(launch_codex_deterministic_routing(
@@ -984,7 +977,6 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
                 classifier_min_confidence=getattr(
                     args, "classifier_min_confidence", None,
                 ),
-                backend_format=BackendFormat.OPENAI,
                 timeout=args.timeout,
             )
             dry_run_route = LaunchRouteConfig(
@@ -1033,7 +1025,6 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
             classifier_min_confidence=getattr(
                 args, "classifier_min_confidence", None,
             ),
-            backend_format=BackendFormat.OPENAI,
             timeout=args.timeout,
         )
         raise SystemExit(launch_openclaw_deterministic_routing(
