@@ -62,8 +62,8 @@ mod algorithms;
 pub use algorithms::affinity::AffinityRouter;
 pub use algorithms::core::{Classifier, Event, Processor, Score, State};
 pub use algorithms::escalation::{
-    escalation_router, ConfirmingJudge, ESCALATION_JUDGE_SYSTEM_PROMPT,
-    ESCALATION_JUDGE_TURN_WINDOW,
+    escalation_router, escalation_router_with_staged, ConfirmingJudge,
+    ESCALATION_JUDGE_SYSTEM_PROMPT, ESCALATION_JUDGE_TURN_WINDOW,
 };
 pub use algorithms::fall_through::FallThroughClassification;
 pub use algorithms::llm_classifier::{
