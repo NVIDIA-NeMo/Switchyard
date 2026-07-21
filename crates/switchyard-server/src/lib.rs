@@ -446,6 +446,21 @@ fn llm_error(error: SwitchyardError) -> Response {
             })),
         )
             .into_response(),
+        // Context-window overflow is a client-side problem (prompt too long), so
+        // surface it as a 400 with the OpenAI-compatible `context_length_exceeded`
+        // code rather than an opaque 500.
+        err @ (SwitchyardError::ContextWindowExceeded { .. }
+        | SwitchyardError::ContextPoolExhausted { .. }) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": err.to_string(),
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                }
+            })),
+        )
+            .into_response(),
         error => server_error(error.to_string()),
     }
 }
@@ -541,8 +556,8 @@ fn model_entry_json(entry: &ServedModel) -> Value {
         "display_name": entry.display_name,
         "capabilities": {
             "streaming": true,
-            "tool_calling": null,
-            "context_window": null,
+            "tool_calling": true,
+            "context_window": inferred_context_window(&entry.display_name),
             "supported_inbound_formats": [
                 "openai-chat-completions",
                 "openai-responses",
@@ -550,6 +565,27 @@ fn model_entry_json(entry: &ServedModel) -> Value {
             ],
         },
     })
+}
+
+/// Infers an advertised context window from a model's display name.
+///
+/// Mirrors the Python `model_listing` fragment table: the first matching
+/// substring wins, falling back to a conservative 128k default.
+fn inferred_context_window(model: &str) -> u32 {
+    const TABLE: &[(&str, u32)] = &[
+        ("deepseek-v4", 1_000_000),
+        ("nemotron-3-super", 1_000_000),
+        ("kimi-k2", 256_000),
+        ("nemotron-3-nano", 262_000),
+        ("claude", 200_000),
+    ];
+    let lower = model.to_ascii_lowercase();
+    for (frag, ctx) in TABLE {
+        if lower.contains(frag) {
+            return *ctx;
+        }
+    }
+    128_000
 }
 
 fn startup_banner(options: &ServerRunOptions, registry: &ProfileRegistry) -> String {

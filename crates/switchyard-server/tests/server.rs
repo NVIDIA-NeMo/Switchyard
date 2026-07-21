@@ -51,6 +51,14 @@ profiles:
     let models = json_body(models).await?;
     assert_eq!(models["object"], "list");
     assert_eq!(models["data"][0]["id"], "bench");
+    assert_eq!(
+        models["data"][0]["capabilities"]["tool_calling"],
+        json!(true)
+    );
+    assert_eq!(
+        models["data"][0]["capabilities"]["context_window"],
+        json!(128000)
+    );
     assert_eq!(models["default_model"], "bench");
     assert_eq!(models["model_pool"], json!(["bench"]));
 
@@ -203,6 +211,32 @@ async fn translation_errors_do_not_emit_routing_metadata_headers() -> TestResult
         .headers()
         .keys()
         .any(|name| name.as_str().starts_with("x-model-router-")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn context_window_overflow_maps_to_client_error() -> TestResult {
+    let app = build_switchyard_router(state_from_profile(
+        "overflow",
+        Arc::new(ContextOverflowProfile),
+    )?);
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "overflow",
+                "messages": [{"role": "user", "content": "hi"}],
+            })),
+        )?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await?["error"]["code"],
+        "context_length_exceeded"
+    );
     Ok(())
 }
 
@@ -599,6 +633,20 @@ struct CaptureProfile {
 }
 
 struct BadTranslationProfile;
+
+/// Test profile that fails with a context-window overflow error.
+struct ContextOverflowProfile;
+
+#[async_trait]
+impl Profile for ContextOverflowProfile {
+    async fn run(&self, _input: ProfileInput) -> Result<ProfileResponse> {
+        Err(SwitchyardError::ContextWindowExceeded {
+            target_id: "overflow".to_string(),
+            model: "overflow".to_string(),
+            message: "prompt is too long".to_string(),
+        })
+    }
+}
 
 #[async_trait]
 impl Profile for BadTranslationProfile {
