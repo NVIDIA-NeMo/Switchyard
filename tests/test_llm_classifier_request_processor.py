@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 
+from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.processors.llm_classifier import (
     CTX_DETERMINISTIC_ROUTE_SIGNALS,
     ClassifierCompletion,
@@ -22,7 +23,7 @@ from switchyard.lib.processors.llm_classifier import (
     TaskType,
     parse_route_signals,
 )
-from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.proxy_context import CTX_SWITCHYARD_FALLBACK, ProxyContext
 from switchyard.lib.session_affinity import SessionAffinity
 from switchyard_rust.core import ChatRequest
 
@@ -67,6 +68,13 @@ class _FakeClassifierClient:
         if isinstance(self.response, Exception):
             raise self.response
         return ClassifierCompletion(content=self.response, usage=self.usage)
+
+
+@pytest.fixture(autouse=True)
+def _reset_classifier_fail_open_metrics() -> None:
+    outcome_metrics._reset_for_tests()
+    yield
+    outcome_metrics._reset_for_tests()
 
 
 def _messages_with_prior_assistant_turns(n: int) -> list[dict[str, str]]:
@@ -222,6 +230,11 @@ async def test_request_processor_fail_open_stamps_abstain_signals() -> None:
     assert signals.abstain is True
     assert signals.confidence == 0.0
     assert signals.reason_code is ReasonCode.AMBIGUOUS
+    assert ctx.metadata[CTX_SWITCHYARD_FALLBACK] == "classifier_error"
+
+    metrics = "\n".join(outcome_metrics.render_lines())
+    assert 'switchyard_classifier_fail_open_triggered_total{reason="parse_error"} 1' in metrics
+    assert 'switchyard_classifier_fail_open_triggered_total{reason="timeout"} 0' in metrics
 
 
 async def test_fail_open_annotates_signals_dump(capsys: pytest.CaptureFixture[str]) -> None:
@@ -240,6 +253,41 @@ async def test_fail_open_annotates_signals_dump(capsys: pytest.CaptureFixture[st
     assert payload["fail_open"] is True
     assert "upstream timeout" in payload["error"]
     assert payload["abstain"] is True
+    metrics = "\n".join(outcome_metrics.render_lines())
+    assert 'switchyard_classifier_fail_open_triggered_total{reason="timeout"} 1' in metrics
+
+
+class _StatusClassifierError(RuntimeError):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"upstream returned {status_code}")
+        self.status_code = status_code
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (_StatusClassifierError(500), "upstream_5xx"),
+        (_StatusClassifierError(401), "upstream_4xx"),
+        (RuntimeError("SSL CERTIFICATE_VERIFY_FAILED"), "ssl"),
+    ],
+)
+async def test_fail_open_records_bounded_reason_metric(
+    error: Exception,
+    reason: str,
+) -> None:
+    fake = _FakeClassifierClient(error)
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-model"),
+        client=fake,
+    )
+
+    await processor.process(ProxyContext(), _request())
+
+    metrics = "\n".join(outcome_metrics.render_lines())
+    assert (
+        f'switchyard_classifier_fail_open_triggered_total{{reason="{reason}"}} 1'
+        in metrics
+    )
 
 
 async def test_request_processor_fail_closed_raises() -> None:

@@ -74,8 +74,9 @@ class TestStrategyHelpers:
         config.strong.model = "strong-model"
         config.weak.model = "weak-model"
         config.profile_name = "default"
+        config.classifier_fail_open = True
         result = deterministic_strategy_summary(config)
-        assert result == "llm-classifier: classifier=clf-model, strong=strong-model, weak=weak-model, profile=default"
+        assert result == "llm-classifier: classifier=clf-model, strong=strong-model, weak=weak-model, profile=default, alert=switchyard_classifier_fail_open_triggered_total"
 
 
 def _captured_strategy(captured: dict) -> str | None:

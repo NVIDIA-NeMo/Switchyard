@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from switchyard.lib.endpoints.base import Endpoint
+from switchyard.lib.proxy_context import CTX_SWITCHYARD_FALLBACK
 from switchyard.server.switchyard_app import build_switchyard_app
 
 
@@ -19,8 +20,9 @@ class _RequestWithBody(Protocol):
 
 
 class _RecordingSwitchyard:
-    def __init__(self) -> None:
+    def __init__(self, *, fallback: str | None = None) -> None:
         self.requests: list[_RequestWithBody] = []
+        self.fallback = fallback
 
     async def call(
         self,
@@ -29,6 +31,8 @@ class _RecordingSwitchyard:
         ctx: object | None = None,
     ) -> dict[str, object]:
         self.requests.append(request)
+        if self.fallback is not None and hasattr(ctx, "metadata"):
+            ctx.metadata[CTX_SWITCHYARD_FALLBACK] = self.fallback
         return {
             "id": "resp-test",
             "object": "response",
@@ -76,6 +80,21 @@ def test_responses_endpoint_uses_app_factory_switchyard() -> None:
     assert response.status_code == 200
     assert response.json()["model"] == "test-model"
     assert len(switchyard.requests) == 1
+
+
+def test_endpoint_surfaces_switchyard_fallback_header() -> None:
+    switchyard = _RecordingSwitchyard(fallback="classifier_error")
+    app = build_switchyard_app(switchyard)  # type: ignore[arg-type]
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/responses",
+            json={"model": "test-model", "input": "ping"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-switchyard-fallback"] == "classifier_error"
+    assert response.json()["model"] == "test-model"
 
 
 def test_app_registers_component_contributed_endpoints() -> None:

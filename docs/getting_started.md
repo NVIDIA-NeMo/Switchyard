@@ -150,6 +150,11 @@ LLM classifier routes can also enable
 [Session Affinity (Sticky Routing)](routing_algorithms/sticky_routing.md) to pin
 multi-turn conversations to one tier.
 
+For production LLM-classifier routes, alert on
+`switchyard_classifier_fail_open_triggered_total`. If the classifier fails and
+`classifier_fail_open` is enabled, successful responses include
+`x-switchyard-fallback: classifier_error`.
+
 A single YAML file can declare multiple routes. Each route becomes a model id on
 `GET /v1/models`; the first declared route is the launcher's initial model. See
 [Routing Overview](routing_algorithms/overview.md) for route selection and the

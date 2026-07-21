@@ -285,10 +285,15 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
 
 def deterministic_strategy_summary(config: DeterministicRoutingConfig) -> str:
     """Return the strategy summary string for a deterministic (LLM-classifier) launch."""
+    alert = (
+        ", alert=switchyard_classifier_fail_open_triggered_total"
+        if getattr(config, "classifier_fail_open", True)
+        else ""
+    )
     return (
         f"llm-classifier: classifier={config.classifier.model}, "
         f"strong={config.strong.model}, weak={config.weak.model}, "
-        f"profile={config.profile_name}"
+        f"profile={config.profile_name}{alert}"
     )
 
 

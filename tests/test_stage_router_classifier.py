@@ -16,12 +16,14 @@ from typing import Any
 
 import pytest
 
+from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.processors.stage_router.classifier import (
     CAPABLE_TIER,
     EFFICIENT_TIER,
     RECENT_MESSAGES_KEY,
     TierClassifier,
 )
+from switchyard.lib.proxy_context import CTX_SWITCHYARD_FALLBACK
 from switchyard_rust.components import DimensionCollector, get_tool_result_signal
 from switchyard_rust.core import ChatRequest, ProxyContext
 
@@ -51,6 +53,13 @@ class _StubClient:
         if self._response.raise_exc is not None:
             raise self._response.raise_exc
         return self._response
+
+
+@pytest.fixture(autouse=True)
+def _reset_classifier_fail_open_metrics() -> None:
+    outcome_metrics._reset_for_tests()
+    yield
+    outcome_metrics._reset_for_tests()
 
 
 async def _build_signal() -> Any:
@@ -93,6 +102,9 @@ async def test_falls_open_on_malformed_json():
         client=_StubClient(_Resp(content="not json at all")),
     )
     assert await classifier.classify(ctx, signal) is None
+    metrics = "\n".join(outcome_metrics.render_lines())
+    assert 'switchyard_classifier_fail_open_triggered_total{reason="parse_error"} 1' in metrics
+    assert ctx.metadata[CTX_SWITCHYARD_FALLBACK] == "classifier_error"
 
 
 @pytest.mark.asyncio
@@ -113,6 +125,9 @@ async def test_falls_open_on_network_error():
         client=_StubClient(_Resp(raise_exc=TimeoutError("upstream slow"))),
     )
     assert await classifier.classify(ctx, signal) is None
+    metrics = "\n".join(outcome_metrics.render_lines())
+    assert 'switchyard_classifier_fail_open_triggered_total{reason="timeout"} 1' in metrics
+    assert ctx.metadata[CTX_SWITCHYARD_FALLBACK] == "classifier_error"
 
 
 @pytest.mark.asyncio
