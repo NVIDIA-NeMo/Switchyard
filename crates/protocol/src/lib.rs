@@ -24,12 +24,14 @@ pub mod client;
 pub mod envelope;
 pub mod format;
 pub mod llm;
+pub mod metadata;
 pub mod stream;
 
 pub use client::*;
 pub use envelope::*;
 pub use format::*;
 pub use llm::*;
+pub use metadata::*;
 pub use stream::*;
 
 /// Build a single-turn request: one user message carrying `prompt`, for `model`.

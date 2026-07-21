@@ -261,6 +261,7 @@ impl TranslatingLlmClient {
                 extra_metadata: None,
                 http_headers,
                 wire_format: None,
+                ..Default::default()
             }),
         };
         let response = self.call_rewrite_model(ctx, request, model).await?;
@@ -387,6 +388,7 @@ mod tests {
             extra_metadata: None,
             http_headers: None,
             wire_format: Some(format),
+            ..Default::default()
         });
         request
     }
@@ -638,6 +640,7 @@ mod tests {
                 extra_metadata: None,
                 http_headers: Some(headers),
                 wire_format: None,
+                ..Default::default()
             }),
         };
 
