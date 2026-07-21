@@ -10,7 +10,7 @@ use switchyard_components::request_processors::{
     RandomRoutingDecision, RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier,
 };
 use switchyard_components::StatsAccumulator;
-use switchyard_core::{ChatResponse, LlmTarget, Result, SwitchyardError};
+use switchyard_core::{ChatResponse, LlmTarget, LlmTargetId, Result, SwitchyardError};
 
 use crate::backend::{native_target_backend, TargetBackend};
 use crate::profile_stats_accumulator;
@@ -35,6 +35,9 @@ pub struct RandomRoutingProfileConfig {
     /// Optional deterministic RNG seed for reproducible routing.
     #[serde(default)]
     pub rng_seed: Option<u64>,
+    /// Target used for one retry after context-window overflow; defaults to the strong target.
+    #[serde(default)]
+    pub fallback_target_on_evict: Option<LlmTargetId>,
 }
 
 impl ProfileConfig for RandomRoutingProfileConfig {
@@ -42,6 +45,18 @@ impl ProfileConfig for RandomRoutingProfileConfig {
 
     /// Builds the runtime profile using existing native backend construction.
     fn build(&self) -> Result<Self::Runtime> {
+        // Resolve the evict fallback to the strong target when unset, then validate it
+        // names one of this profile's two configured targets.
+        let fallback_target_on_evict = self
+            .fallback_target_on_evict
+            .clone()
+            .unwrap_or_else(|| self.strong.id.clone());
+        if fallback_target_on_evict != self.strong.id && fallback_target_on_evict != self.weak.id {
+            return Err(SwitchyardError::InvalidConfig(format!(
+                "fallback_target_on_evict={} must match one of [{}, {}]",
+                fallback_target_on_evict, self.weak.id, self.strong.id
+            )));
+        }
         let router_config =
             RandomRoutingProcessorConfig::new(self.strong.clone(), self.weak.clone())
                 .with_strong_probability(self.strong_probability)?
@@ -50,6 +65,7 @@ impl ProfileConfig for RandomRoutingProfileConfig {
             router: RandomRoutingEngine::new(router_config)?,
             strong_backend: native_target_backend(self.strong.clone())?,
             weak_backend: native_target_backend(self.weak.clone())?,
+            fallback_target_on_evict,
             stats: profile_stats_accumulator(),
         })
     }
@@ -60,6 +76,7 @@ pub struct RandomRoutingProfile {
     router: RandomRoutingEngine,
     strong_backend: TargetBackend,
     weak_backend: TargetBackend,
+    fallback_target_on_evict: LlmTargetId,
     stats: StatsAccumulator,
 }
 
@@ -85,17 +102,92 @@ impl RandomRoutingProfile {
     }
 
     // Finds the routed backend by the target ID emitted by the routing engine.
-    fn selected_backend(&self, decision: &RandomRoutingDecision) -> Result<&TargetBackend> {
-        if decision.selected_target == self.strong_backend.target().id {
+    fn backend_for_target(&self, target_id: &LlmTargetId) -> Result<&TargetBackend> {
+        if *target_id == self.strong_backend.target().id {
             Ok(&self.strong_backend)
-        } else if decision.selected_target == self.weak_backend.target().id {
+        } else if *target_id == self.weak_backend.target().id {
             Ok(&self.weak_backend)
         } else {
             Err(SwitchyardError::InvalidConfig(format!(
-                "router selected target {} that is not configured for this profile",
-                decision.selected_target
+                "random-routing selected target {target_id} that is not configured for this profile"
             )))
         }
+    }
+
+    // Maps a configured target ID back to its random-routing tier.
+    fn tier_for_target(&self, target_id: &LlmTargetId) -> Result<RandomRoutingTier> {
+        if *target_id == self.strong_backend.target().id {
+            Ok(RandomRoutingTier::Strong)
+        } else if *target_id == self.weak_backend.target().id {
+            Ok(RandomRoutingTier::Weak)
+        } else {
+            Err(SwitchyardError::InvalidConfig(format!(
+                "random-routing target {target_id} is not configured for this profile"
+            )))
+        }
+    }
+
+    // Rewrites the processed request to dispatch against the evict fallback target.
+    fn fallback_processed_request(
+        &self,
+        processed: &RandomRoutingProcessedRequest,
+    ) -> Result<RandomRoutingProcessedRequest> {
+        let backend = self.backend_for_target(&self.fallback_target_on_evict)?;
+        let target = backend.target();
+        let mut profile_input = processed.profile_input.clone();
+        profile_input.request.set_model(target.model.as_str());
+        let mut decision = processed.decision.clone();
+        decision.tier = self.tier_for_target(&target.id)?;
+        decision.selected_target = target.id.clone();
+        decision.selected_model = target.model.clone();
+        Ok(RandomRoutingProcessedRequest {
+            profile_input,
+            decision,
+        })
+    }
+
+    // Dispatches the routed request to its backend and reports the backend latency.
+    async fn call_selected(
+        &self,
+        processed: &RandomRoutingProcessedRequest,
+    ) -> (Result<ChatResponse>, f64) {
+        let started_at = Instant::now();
+        let backend = match self.backend_for_target(&processed.decision.selected_target) {
+            Ok(backend) => backend,
+            Err(error) => return (Err(error), 0.0),
+        };
+        let result = backend.call(&processed.profile_input.request).await;
+        let latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+        (result, latency_ms)
+    }
+
+    fn record_success(
+        &self,
+        decision: &RandomRoutingDecision,
+        response: ChatResponse,
+        profile_started_at: Instant,
+        backend_latency_ms: f64,
+    ) -> Result<ChatResponse> {
+        self.stats.record_success(
+            decision.selected_model.as_str(),
+            Some(backend_latency_ms),
+            Some(decision.tier.as_str()),
+        )?;
+        record_usage_or_wrap_stream(
+            &self.stats,
+            decision.selected_model.as_str(),
+            Some(decision.tier.as_str()),
+            profile_started_at,
+            backend_latency_ms,
+            response,
+        )
+    }
+
+    fn record_error(&self, decision: &RandomRoutingDecision) -> Result<()> {
+        self.stats.record_error(
+            decision.selected_model.as_str(),
+            Some(decision.tier.as_str()),
+        )
     }
 
     fn routing_metadata(&self, decision: &RandomRoutingDecision) -> RoutingMetadata {
@@ -141,45 +233,61 @@ impl ProfileHooks for RandomRoutingProfile {
 
 #[async_trait]
 impl Profile for RandomRoutingProfile {
-    /// Executes random routing while keeping selected-target state local to this call.
+    /// Executes random routing with one context-window fallback retry.
     async fn run(&self, input: ProfileInput) -> Result<ProfileResponse> {
         let profile_started_at = Instant::now();
         let processed = self.process(input).await?;
-        let decision = &processed.decision;
-        let selected_backend = self.selected_backend(decision)?;
-        let backend_started_at = Instant::now();
-        let response = match selected_backend
-            .call(&processed.profile_input.request)
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                self.stats.record_error(
-                    decision.selected_model.as_str(),
-                    Some(decision.tier.as_str()),
+        let (first_result, first_backend_latency_ms) = self.call_selected(&processed).await;
+        match first_result {
+            Ok(response) => {
+                let response = self.record_success(
+                    &processed.decision,
+                    response,
+                    profile_started_at,
+                    first_backend_latency_ms,
                 )?;
-                return Err(error);
+                let response = self.rprocess(&processed, response).await?;
+                Ok(ProfileResponse::with_routing_metadata(
+                    response,
+                    self.routing_metadata(&processed.decision),
+                ))
             }
-        };
-        let backend_latency_ms = backend_started_at.elapsed().as_secs_f64() * 1000.0;
-        self.stats.record_success(
-            decision.selected_model.as_str(),
-            Some(backend_latency_ms),
-            Some(decision.tier.as_str()),
-        )?;
-        let response = record_usage_or_wrap_stream(
-            &self.stats,
-            decision.selected_model.as_str(),
-            Some(decision.tier.as_str()),
-            profile_started_at,
-            backend_latency_ms,
-            response,
-        )?;
-        let response = self.rprocess(&processed, response).await?;
-        Ok(ProfileResponse::with_routing_metadata(
-            response,
-            self.routing_metadata(decision),
-        ))
+            Err(SwitchyardError::ContextWindowExceeded { .. }) => {
+                let retry = self.fallback_processed_request(&processed)?;
+                let (retry_result, retry_backend_latency_ms) = self.call_selected(&retry).await;
+                match retry_result {
+                    Ok(response) => {
+                        let response = self.record_success(
+                            &retry.decision,
+                            response,
+                            profile_started_at,
+                            retry_backend_latency_ms,
+                        )?;
+                        let response = self.rprocess(&retry, response).await?;
+                        Ok(ProfileResponse::with_routing_metadata(
+                            response,
+                            self.routing_metadata(&retry.decision),
+                        ))
+                    }
+                    Err(SwitchyardError::ContextWindowExceeded { target_id, .. }) => {
+                        self.record_error(&retry.decision)?;
+                        Err(SwitchyardError::ContextPoolExhausted {
+                            last_target_id: target_id,
+                            reason: "all attempted targets returned context-window overflow"
+                                .to_string(),
+                        })
+                    }
+                    Err(error) => {
+                        self.record_error(&retry.decision)?;
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => {
+                self.record_error(&processed.decision)?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -216,6 +324,13 @@ mod tests {
     }
 
     struct StreamingUsageBackend;
+
+    // Records the call, then reports a context-window overflow for evict/retry tests.
+    struct ContextOverflowBackend {
+        name: &'static str,
+        target_id: String,
+        calls: Arc<Mutex<Vec<ObservedCall>>>,
+    }
 
     #[async_trait]
     impl ProfileBackend for TestBackend {
@@ -259,6 +374,24 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ProfileBackend for ContextOverflowBackend {
+        async fn call(&self, request: &ChatRequest) -> Result<ChatResponse> {
+            self.calls
+                .lock()
+                .map_err(|_| SwitchyardError::Other("calls mutex poisoned".to_string()))?
+                .push(ObservedCall {
+                    backend: self.name,
+                    body: request.body().clone(),
+                });
+            Err(SwitchyardError::ContextWindowExceeded {
+                target_id: self.target_id.clone(),
+                model: request.model().unwrap_or("").to_string(),
+                message: "prompt is too long".to_string(),
+            })
+        }
+    }
+
     fn target(id: &str, model: &str) -> Result<LlmTarget> {
         let mut target = LlmTarget::new(LlmTargetId::new(id)?, ModelId::new(model)?);
         target.format = BackendFormat::OpenAi;
@@ -271,6 +404,7 @@ mod tests {
             weak,
             strong_probability: probability,
             rng_seed: Some(7),
+            fallback_target_on_evict: None,
         }
     }
 
@@ -327,6 +461,7 @@ mod tests {
             router: RandomRoutingEngine::new(router_config)?,
             strong_backend,
             weak_backend,
+            fallback_target_on_evict: strong.id.clone(),
             stats: StatsAccumulator::new(),
         };
         Ok((profile, calls))
@@ -416,6 +551,7 @@ mod tests {
         let router_config = RandomRoutingProcessorConfig::new(strong.clone(), weak.clone())
             .with_strong_probability(0.0)?
             .with_rng_seed(Some(7));
+        let strong_id = strong.id.clone();
         let profile = RandomRoutingProfile {
             router: RandomRoutingEngine::new(router_config)?,
             strong_backend: TargetBackend::new(
@@ -426,6 +562,7 @@ mod tests {
                 }),
             ),
             weak_backend: TargetBackend::new(weak, Arc::new(StreamingUsageBackend)),
+            fallback_target_on_evict: strong_id,
             stats: StatsAccumulator::new(),
         };
 
@@ -554,6 +691,97 @@ mod tests {
             _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
         }
         assert!(observed(&calls)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_retries_fallback_target_after_context_overflow() -> Result<()> {
+        let strong = target("strong", "frontier/model")?;
+        let weak = target("weak", "cheap/model")?;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        // strong_probability 0.0 selects the weak target first; the default fallback is strong.
+        let router_config = RandomRoutingProcessorConfig::new(strong.clone(), weak.clone())
+            .with_strong_probability(0.0)?
+            .with_rng_seed(Some(7));
+        let profile = RandomRoutingProfile {
+            router: RandomRoutingEngine::new(router_config)?,
+            strong_backend: TargetBackend::new(
+                strong.clone(),
+                Arc::new(TestBackend {
+                    name: "strong-backend",
+                    calls: calls.clone(),
+                }),
+            ),
+            weak_backend: TargetBackend::new(
+                weak.clone(),
+                Arc::new(ContextOverflowBackend {
+                    name: "weak-backend",
+                    target_id: weak.id.to_string(),
+                    calls: calls.clone(),
+                }),
+            ),
+            fallback_target_on_evict: strong.id.clone(),
+            stats: StatsAccumulator::new(),
+        };
+
+        let response = profile
+            .run(profile_input(ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [{"role": "user", "content": "continue"}],
+            }))))
+            .await?;
+
+        let routing_metadata = response
+            .routing_metadata
+            .as_ref()
+            .ok_or_else(|| SwitchyardError::Other("routing metadata missing".into()))?;
+        assert_eq!(
+            routing_metadata.selected_model.as_deref(),
+            Some("frontier/model")
+        );
+        assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
+        let response = response.response;
+
+        let calls = observed(&calls)?;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].backend, "weak-backend");
+        assert_eq!(calls[0].body["model"], "cheap/model");
+        assert_eq!(calls[1].backend, "strong-backend");
+        assert_eq!(calls[1].body["model"], "frontier/model");
+        match response {
+            ChatResponse::OpenAiCompletion(body) => {
+                assert_eq!(body.body()["served_by"], "strong-backend");
+                assert_eq!(body.body()["model"], "frontier/model");
+            }
+            _ => return Err(SwitchyardError::Other("unexpected response shape".into())),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn build_rejects_fallback_target_not_matching_strong_or_weak() -> Result<()> {
+        let mut config = config(
+            target("strong", "frontier/model")?,
+            target("weak", "cheap/model")?,
+            0.5,
+        );
+        config.fallback_target_on_evict = Some(LlmTargetId::new("ghost")?);
+
+        match config.build() {
+            Err(SwitchyardError::InvalidConfig(message)) => {
+                assert!(message.contains("fallback_target_on_evict"));
+            }
+            Ok(_) => {
+                return Err(SwitchyardError::Other(
+                    "unknown fallback target should reject profile construction".into(),
+                ));
+            }
+            Err(other) => {
+                return Err(SwitchyardError::Other(format!(
+                    "expected InvalidConfig, got {other}"
+                )));
+            }
+        }
         Ok(())
     }
 }

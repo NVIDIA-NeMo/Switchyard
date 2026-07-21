@@ -19,6 +19,7 @@ fn config(strong: LlmTarget, weak: LlmTarget, probability: f64) -> RandomRouting
         weak,
         strong_probability: probability,
         rng_seed: Some(7),
+        fallback_target_on_evict: None,
     }
 }
 
@@ -50,6 +51,7 @@ fn profile_config_macro_adds_type_metadata_and_strict_serde() -> Result<()> {
         "weak": config.weak,
         "strong_probability": 0.5,
         "rng_seed": 7,
+        "fallback_target_on_evict": "strong",
         "stats": false,
     });
     let error = serde_json::from_value::<RandomRoutingProfileConfig>(old_stats_toggle)
