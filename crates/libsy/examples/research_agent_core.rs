@@ -12,7 +12,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::algorithms::LlmClassifierOrch;
+use libsy::algorithms::LlmClassifier;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
 };
@@ -98,13 +98,8 @@ fn print_decision(decision: &dyn Decision) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrch::new(
-        CLASSIFIER,
-        STRONG,
-        WEAK,
-        0.5,
-        targets(),
-    ));
+    let algo: Arc<dyn Algorithm> =
+        Arc::new(LlmClassifier::new(CLASSIFIER, STRONG, WEAK, 0.5, targets()));
 
     let mut agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

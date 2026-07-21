@@ -162,9 +162,9 @@ fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<P
         .iter()
         .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyAlgorithm::new(Arc::new(Random::new(
-        LlmTargetSet::new(targets),
-    ))))
+    Ok(PyAlgorithm::new(Arc::new(Random::new(LlmTargetSet::new(
+        targets,
+    )))))
 }
 
 fn boxed_python_error(error: PyErr) -> BoxError {

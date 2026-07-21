@@ -24,7 +24,6 @@ pub mod client;
 pub mod envelope;
 pub mod format;
 pub mod llm;
-pub mod signals;
 pub mod stream;
 
 pub use client::*;

@@ -15,7 +15,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libsy::algorithms::LlmClassifierOrch;
+use libsy::algorithms::LlmClassifier;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
     RoutedLlmClient,
@@ -92,13 +92,8 @@ impl ResearchAgent {
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Configure routing once: an LLM classifier over three named targets. Swapping
     // in `Random` needs no change to the agent.
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrch::new(
-        CLASSIFIER,
-        STRONG,
-        WEAK,
-        0.5,
-        targets(),
-    ));
+    let algo: Arc<dyn Algorithm> =
+        Arc::new(LlmClassifier::new(CLASSIFIER, STRONG, WEAK, 0.5, targets()));
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

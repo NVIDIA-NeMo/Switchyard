@@ -6,12 +6,10 @@
 //! Reach for them by name — `use libsy::algorithms::Random` — rather than through the
 //! per-algorithm submodules.
 
-pub mod core;
 pub mod llm_class;
 pub mod noop;
 pub mod rand;
 
-pub use core::*;
-pub use llm_class::{ClassifierDecision, ClassifierTier, LlmClassifierOrch};
+pub use llm_class::{ClassifierDecision, ClassifierTier, LlmClassifier};
 pub use noop::{Noop, NoopDecision};
 pub use rand::{Random, RandomDecision};
