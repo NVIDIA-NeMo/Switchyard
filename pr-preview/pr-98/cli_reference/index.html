@@ -1834,8 +1834,8 @@ launchers:</p>
 <td>Override bearer token. Disables the SDK's transparent refresh.</td>
 </tr>
 <tr>
-<td><code>--intake-nvdataflow-project PROJECT</code></td>
-<td>Post flat per-request telemetry to this NVDataflow project instead of chat-completions ingest. Defaults to <code>$SWITCHYARD_NVDATAFLOW_PROJECT</code>.</td>
+<td><code>--intake-target-url URL</code></td>
+<td>Post flat per-request telemetry to this full URL (a data-lake posting endpoint) instead of chat-completions ingest. Defaults to <code>$SWITCHYARD_INTAKE_TARGET_URL</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -1876,6 +1876,11 @@ for aggregate routing/model cost estimates. When a session ID is present,
 Switchyard also maps the Intake app/task labels into top-level
 <code>evaluation_context.dataset_*</code> and <code>evaluation_context.test_case_id</code> for span
 queries while keeping the original labels under <code>request.switchyard</code>.</p>
+<p>Set <code>--intake-target-url</code> to a full posting URL to send captures to a different
+store instead. Switchyard then posts a flat, top-level, type-prefixed document
+(<code>s_</code> string, <code>l_</code> long, <code>f_</code> float, <code>b_</code> bool, <code>text_</code> debug — one indexable
+field per metric) to that URL, unauthenticated, rather than the nested
+nemo-platform payload. Unset, it uses the nemo-platform ingest above.</p>
 <h3 id="rl-trace-logging">RL trace logging<a class="headerlink" href="#rl-trace-logging" title="Permanent link">&para;</a></h3>
 <p><code>--enable-rl-logging</code> attaches a response-side logger to the proxy chain of any
 <code>launch</code> session or <code>serve --routing-profiles</code> bundle. Each completed turn
@@ -1996,7 +2001,7 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 <td>uvicorn worker count.</td>
 </tr>
 <tr>
-<td><code>--intake-enabled</code> / <code>--enable-intake</code>, <code>--intake-base-url</code>, <code>--intake-workspace</code>, <code>--intake-api-key</code>, <code>--intake-nvdataflow-project</code></td>
+<td><code>--intake-enabled</code> / <code>--enable-intake</code>, <code>--intake-base-url</code>, <code>--intake-workspace</code>, <code>--intake-api-key</code>, <code>--intake-target-url</code></td>
 <td><a href="#intake-sink-serve-and-launchers">Intake sink</a>.</td>
 </tr>
 </tbody>
@@ -2402,8 +2407,8 @@ your provider uses a different model ID.</p>
 <td>Boolean equivalent of <code>--intake-enabled</code> / <code>--enable-intake</code>. Set to <code>1</code> or <code>true</code> to enable the intake sink without a CLI flag. Precedence: CLI flag first, then this env var.</td>
 </tr>
 <tr>
-<td><code>SWITCHYARD_NVDATAFLOW_PROJECT</code></td>
-<td>NVDataflow project name for the alternate intake sink (paired with <code>--intake-nvdataflow-project</code>). Precedence: CLI flag first, then this env var.</td>
+<td><code>SWITCHYARD_INTAKE_TARGET_URL</code></td>
+<td>Full posting URL for the alternate flat-document intake sink (paired with <code>--intake-target-url</code>). Precedence: CLI flag first, then this env var.</td>
 </tr>
 <tr>
 <td><code>SWITCHYARD_WORKERS</code></td>
