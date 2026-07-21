@@ -48,6 +48,13 @@ strong tier using the validated coding-agent trio:
 when route resolution selects an explicit or saved route bundle or single
 model.
 
+The default trio uses OpenRouter model ids and therefore requires OpenRouter
+connectivity (`OPENROUTER_API_KEY`). If the resolved provider is not OpenRouter,
+the launcher fails fast. The strong tier stays `anthropic/claude-opus-4.7`, so
+`--weak-model`/`--classifier-model` don't make the trio reachable — pass
+`--model` for a single model, use `--routing-profiles` for a bundle, or set
+`OPENROUTER_API_KEY`.
+
 ## Override the default route
 
 Use `--model` for a single-model passthrough session:
