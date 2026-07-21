@@ -323,23 +323,10 @@ async fn handle_llm_request(
 }
 
 fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
-    Metadata {
-        session_id: None,
-        agent_id: None,
-        task_id: None,
-        correlation_id: header_text(headers, "x-request-id"),
-        extra_metadata: None,
-        http_headers: Some(normalized_headers(headers)),
-        // Inbound format must not constrain the independently configured upstream.
-        wire_format: None,
-    }
-}
-
-fn header_text(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
+    let headers = normalized_headers(headers);
+    let mut metadata = Metadata::from_headers(&headers);
+    metadata.http_headers = Some(headers);
+    metadata
 }
 
 fn normalized_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
