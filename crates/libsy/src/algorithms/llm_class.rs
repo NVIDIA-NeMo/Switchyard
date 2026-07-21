@@ -179,16 +179,19 @@ impl Algorithm for LlmClassifier {
                 classify_decision,
             )
             .await?;
-        let score = classify_response
-            .llm_response
-            .as_agg()
-            .map(completion_text)
-            .unwrap_or_default()
+        // Drain a streamed classifier response to its aggregate so a streamed
+        // score is read instead of silently dropped. Keep only a valid
+        // probability in [0.0, 1.0]: NaN, ±inf, and out-of-range values parse
+        // as f64 but are not usable scores, so they collapse to None and fail
+        // open to strong below rather than being treated as a real verdict.
+        let score = completion_text(&classify_response.llm_response.into_agg().await?)
             .trim()
             .parse::<f64>()
-            .ok();
+            .ok()
+            .filter(|s| (0.0..=1.0).contains(s));
 
-        // 2. Route: pick strong/weak. Fail open — an unparseable score routes strong.
+        // 2. Route: pick strong/weak. Fail open — an unparseable or out-of-range
+        //    score routes strong.
         let (tier, model) = match score {
             Some(s) if s >= self.threshold => (ClassifierTier::Strong, self.strong_model.clone()),
             Some(_) => (ClassifierTier::Weak, self.weak_model.clone()),
@@ -215,7 +218,8 @@ impl Algorithm for LlmClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
+    use crate::{LlmResponse, LlmResponseChunk, LlmTarget, Response, RoutedLlmClient};
+    use futures::StreamExt;
     use std::sync::Mutex;
     use switchyard_protocol::text_response;
 
@@ -225,6 +229,9 @@ mod tests {
     struct ScoringClient {
         classifier_model: String,
         score: String,
+        /// When true, the classifier target returns its score as a live stream
+        /// rather than a buffered aggregate, exercising the drain-the-stream path.
+        stream: bool,
         seen: Arc<Mutex<Vec<Request>>>,
     }
 
@@ -237,14 +244,26 @@ mod tests {
             decision: Arc<dyn Decision>,
         ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             let name = decision.selected_model().to_string();
-            let completion = if name == self.classifier_model {
+            let is_classifier = name == self.classifier_model;
+            let completion = if is_classifier {
                 self.score.clone()
             } else {
                 format!("answer from {name}")
             };
             self.seen.lock().map_err(|_| "lock poisoned")?.push(request);
+            // A streaming classifier target emits its score as a live TextDelta
+            // stream; the algorithm must drain it (into_agg) to read the score.
+            let llm_response = if is_classifier && self.stream {
+                let chunks = vec![Ok(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: completion,
+                })];
+                LlmResponse::Stream(futures::stream::iter(chunks).boxed())
+            } else {
+                LlmResponse::Agg(text_response(None, completion))
+            };
             Ok(Response {
-                llm_response: LlmResponse::Agg(text_response(None, completion)),
+                llm_response,
                 metadata: None,
             })
         }
@@ -252,10 +271,24 @@ mod tests {
 
     /// Build a classifier algo whose three targets share a scoring client.
     fn algo(threshold: f64, score: &str) -> (LlmClassifier, Arc<Mutex<Vec<Request>>>) {
+        build_algo(threshold, score, false)
+    }
+
+    /// Like [`algo`], but the classifier target returns its score as a live stream.
+    fn algo_streaming(threshold: f64, score: &str) -> (LlmClassifier, Arc<Mutex<Vec<Request>>>) {
+        build_algo(threshold, score, true)
+    }
+
+    fn build_algo(
+        threshold: f64,
+        score: &str,
+        stream: bool,
+    ) -> (LlmClassifier, Arc<Mutex<Vec<Request>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let client = Arc::new(ScoringClient {
             classifier_model: "router/classifier".to_string(),
             score: score.to_string(),
+            stream,
             seen: Arc::clone(&seen),
         }) as Arc<dyn RoutedLlmClient>;
         let target = |name: &str| LlmTarget {
@@ -376,6 +409,51 @@ mod tests {
         let routed = as_classifier(&trace[1])?;
         assert_eq!(routed.tier, Some(ClassifierTier::Strong));
         assert_eq!(routed.score, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn out_of_range_score_defaults_to_strong() -> Result<(), Box<dyn Error + Send + Sync>> {
+        // "NaN" parses as an f64 but is not a usable probability, so it must fail
+        // open to strong rather than be treated as a below-threshold verdict and
+        // silently downgraded to weak (NvBug 6485976).
+        let (algo, _) = algo(0.5, "NaN");
+        let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "answer from frontier/model"
+        );
+        let routed = as_classifier(&trace[1])?;
+        assert_eq!(routed.tier, Some(ClassifierTier::Strong));
+        assert_eq!(routed.score, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_score_below_threshold_routes_weak() -> Result<(), Box<dyn Error + Send + Sync>>
+    {
+        // A streaming classifier target must have its score drained and read, not
+        // dropped — otherwise every streamed verdict falls open to strong
+        // regardless of value (NvBug 6485975).
+        let (algo, _) = algo_streaming(0.5, "0.2");
+        let (trace, response) = orch(algo)
+            .run(Context::default(), request("say hello"))
+            .await?;
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "answer from cheap/model"
+        );
+        let routed = as_classifier(&trace[1])?;
+        assert_eq!(routed.tier, Some(ClassifierTier::Weak));
+        assert_eq!(routed.score, Some(0.2));
         Ok(())
     }
 }
