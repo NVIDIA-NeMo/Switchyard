@@ -314,7 +314,7 @@ pub trait Algorithm: Send + Sync + 'static {
     /// [`run_stream`](Self::run_stream) instead to serve the calls yourself. The returned
     /// [`Response`] is whatever the algorithm produced — a buffered [`LlmResponse::Agg`]
     /// or a live [`LlmResponse::Stream`]; the caller decides whether to
-    /// [`aggregate`](LlmResponse::aggregate) it or forward its chunks. Errors if a routed
+    /// [`into_agg`](LlmResponse::into_agg) it or forward its chunks. Errors if a routed
     /// target has no client to serve its call, or the algorithm fails.
     async fn run(
         self: Arc<Self>,

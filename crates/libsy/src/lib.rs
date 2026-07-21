@@ -58,7 +58,7 @@
 //!
 //! [`algorithms::Random`](crate::algorithms::Random) provides uniform random routing.
 //!
-//! [`algorithms::LlmClassifierOrch`](crate::algorithms::LlmClassifierOrch) classifies
+//! [`algorithms::LlmClassifier`](crate::algorithms::LlmClassifier) classifies
 //! with one model, then routes to a strong/weak model depending on the classifier's choice.
 
 mod core;

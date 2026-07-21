@@ -3,9 +3,10 @@
 
 //! # driver — a type-erased promise-over-a-stream request pump
 //!
-//! [`TypeErasedDriver`] is the generic offload primitive; the crate root builds the
-//! libsy-typed `Driver` on top of it. This module has no dependency on the rest of the
-//! crate — the coupling is one-directional (`lib.rs` → `driver.rs`).
+//! [`TypeErasedDriver`] is the generic offload primitive; its sibling
+//! [`algorithm`](super::algorithm) builds the libsy-typed `Driver` on top of it. This
+//! module has no dependency on the rest of the crate — the coupling is one-directional
+//! (`core/algorithm.rs` → `core/driver.rs`).
 //!
 //! A [`TypeErasedDriver`] lets a *producer* (e.g. a routing algorithm) fulfill
 //! arbitrary requests by publishing promises onto a stream that a single *consumer*
