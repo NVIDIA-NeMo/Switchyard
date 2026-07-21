@@ -434,9 +434,9 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         saved = load_user_config().routing_profiles
         if not saved:
             raise SystemExit(
-                "serve: no routing-profiles given. Pass --routing-profiles "
-                "PATH or run `switchyard configure --routing-profiles PATH` "
-                "to save one."
+                "serve: no config given. Pass --config PATH for a v2 profile "
+                "config (recommended), or --routing-profiles PATH for a legacy "
+                "route bundle."
             )
         # Saved bundles are stored as parsed dicts, so we can skip the
         # YAML parse step and feed them straight into the dict-driven
@@ -514,6 +514,7 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         _cmd_serve_mixed_profile_config(args, python_profiles)
         return
 
+    from switchyard_rust import SwitchyardDuplicateRegistrationError
     from switchyard_rust.server import run_profile_server
 
     port = args.port if isinstance(args.port, int) else resolve_port()
@@ -521,7 +522,10 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         "Switchyard components-v2 profile config loaded from %s",
         args.config,
     )
-    run_profile_server(args.config, args.host, port)
+    try:
+        run_profile_server(args.config, args.host, port)
+    except SwitchyardDuplicateRegistrationError as exc:
+        raise SystemExit(f"serve --config: {exc}") from exc
 
 
 def _cmd_serve_mixed_profile_config(
@@ -985,7 +989,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     cfg.add_argument(
-        "--provider", type=str, default=DEFAULT_PROVIDER,
+        "--provider", type=str, default=None,
         help=f"Provider id to configure (default: {DEFAULT_PROVIDER})",
     )
     cfg.add_argument(
@@ -1456,10 +1460,14 @@ def main() -> None:
     #   switchyard --routing-profiles dev.yaml -- launch claude
     # The '--' is purely visual — argparse doesn't need it.
     argv = list(sys.argv[1:])
-    try:
-        argv.pop(argv.index("--"))
-    except ValueError:
-        pass
+    # Only strip a '--' that precedes the subcommand token; a '--' after it is
+    # the harness separator (e.g. `launch claude ... -- --version`) and must
+    # survive so forwarded args reach the launcher instead of tripping argparse.
+    _SUBCOMMANDS = ("serve", "configure", "launch", "verify")
+    sep_idx = argv.index("--") if "--" in argv else len(argv)
+    cmd_idx = next((i for i, t in enumerate(argv) if t in _SUBCOMMANDS), len(argv))
+    if sep_idx < cmd_idx:
+        argv.pop(sep_idx)
     args = parser.parse_args(argv)
 
     if args.routing_profiles is not None:

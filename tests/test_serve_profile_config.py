@@ -303,6 +303,48 @@ def test_serve_config_fails_closed_when_python_profile_inspection_fails(
         _cmd_serve_profile_config(_serve_args(path))
 
 
+_DUPLICATE_ID_CONFIG = """
+targets:
+  shared:
+    model: provider/shared
+    format: openai
+    base_url: http://127.0.0.1:9/shared/v1
+    api_key: test-key
+
+profiles:
+  shared:
+    type: passthrough
+    target: shared
+"""
+
+
+def test_serve_no_config_error_mentions_config_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`serve` with neither --config nor a saved bundle points at --config."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_serve
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    parser = _build_parser()
+    args = parser.parse_args(["serve", "--port", "4000"])
+    with pytest.raises(SystemExit) as excinfo:
+        _cmd_serve(args)
+    assert "--config" in str(excinfo.value)
+
+
+def test_serve_config_duplicate_model_id_exits_cleanly(tmp_path: Path) -> None:
+    """A profile id colliding with a target id surfaces as a clean SystemExit.
+
+    The Rust profile server raises SwitchyardDuplicateRegistrationError while
+    registering routes (before binding a socket); `serve --config` maps it to a
+    one-line diagnostic instead of a raw traceback.
+    """
+    path = _write(tmp_path, _DUPLICATE_ID_CONFIG)
+    with pytest.raises(SystemExit, match="already registered"):
+        _cmd_serve_profile_config(_serve_args(path))
+
+
 def _serve_args(path: Path) -> argparse.Namespace:
     return argparse.Namespace(
         config=str(path),
