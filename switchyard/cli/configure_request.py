@@ -35,7 +35,7 @@ class ConfigureRequest:
     # Which provider and scope to configure.
     json: bool = False
     target: ConfigureTarget = "all"
-    provider: str = DEFAULT_PROVIDER
+    provider: str | None = DEFAULT_PROVIDER
     base_url: str | None = None
     api_key: str | None = None
 
