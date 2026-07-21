@@ -55,7 +55,7 @@ pub struct RoutedRequest {
 
 /// The host-facing half of an offloaded model call, surfaced inside [`Step::CallLlm`].
 ///
-/// Wraps a [`DriverRequest`] whose payload is a [`RoutedRequest`]. The host reads the
+/// Wraps a `DriverRequest` whose payload is a [`RoutedRequest`]. The host reads the
 /// routed request ([`get_routed`](Self::get_routed)) and the decision behind it
 /// ([`get_decision`](Self::get_decision)), performs (or delegates) the model call, and
 /// fulfills it with [`respond`](Self::respond) — unblocking the algorithm's
@@ -196,7 +196,7 @@ impl Default for Driver {
     }
 }
 
-/// One item in the stream returned by [`Driver::stream`] / [`Algorithm::run_stream`].
+/// One item in the stream returned by `Driver::stream` / [`Algorithm::run_stream`].
 pub enum Step {
     /// The algorithm needs this model call performed. The host serves it (optionally
     /// via [`RoutedRequest::default_client`]) and fulfills it with
