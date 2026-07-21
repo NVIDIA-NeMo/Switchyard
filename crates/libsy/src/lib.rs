@@ -58,6 +58,9 @@
 //!
 //! [`algorithms::Random`] provides uniform random routing.
 //!
+//! [`algorithms::RandomClassifier`] provides the same selection policy inside a
+//! classifier cascade.
+//!
 //! [`algorithms::LlmClassifier`] classifies with one model, then routes to a strong/weak
 //! model depending on the classifier's choice.
 

@@ -142,6 +142,7 @@ impl Algorithm for FallThrough {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algorithms::AffinityRouter;
     use crate::core::Classification;
 
     use switchyard_protocol::{
@@ -235,17 +236,25 @@ mod tests {
         }
     }
 
-    /// Drives a shared router through one turn, returning the completion text + trace.
-    async fn run_turn(
+    /// Drives a request through a shared router, returning the completion text + trace.
+    async fn run_request(
         router: &Arc<FallThrough>,
+        request: Request,
     ) -> Result<(String, Vec<Arc<dyn Decision>>), BoxErr> {
-        let (trace, response) = router.clone().run(Context::default(), request()).await?;
+        let (trace, response) = router.clone().run(Context::default(), request).await?;
         let text = response
             .llm_response
             .into_agg()
             .await
             .map(|agg| completion_text(&agg))?;
         Ok((text, trace))
+    }
+
+    /// Drives a shared router through one default root-agent turn.
+    async fn run_turn(
+        router: &Arc<FallThrough>,
+    ) -> Result<(String, Vec<Arc<dyn Decision>>), BoxErr> {
+        run_request(router, request()).await
     }
 
     /// Drives a fresh router through one turn.
@@ -409,6 +418,63 @@ mod tests {
         assert_eq!(turn1, "weak"); // count 1 — below threshold
         assert_eq!(turn2, "strong"); // count 2 — state carried over from turn 1
         assert_eq!(turn3, "strong"); // count 3 — still above threshold
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagent_affinity_latches_children_but_root_traffic_falls_through(
+    ) -> Result<(), BoxErr> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct AlternatingClassifier(AtomicUsize);
+
+        #[async_trait]
+        impl Classifier for AlternatingClassifier {
+            async fn score(
+                &self,
+                _state: &mut State,
+                _request: &Request,
+                _driver: Option<&Driver>,
+            ) -> Result<Classification, BoxErr> {
+                let target = if self.0.fetch_add(1, Ordering::SeqCst).is_multiple_of(2) {
+                    "strong"
+                } else {
+                    "weak"
+                };
+                Ok(Classification::Scores(vec![score(target, 1.0)]))
+            }
+        }
+
+        let classifier = Arc::new(AlternatingClassifier(AtomicUsize::new(0)));
+        let affinity = Arc::new(AffinityRouter::for_subagents());
+        let router = Arc::new(
+            FallThrough::new(target_set(&["strong", "weak"]))
+                .with_processor(affinity.clone() as Arc<dyn Processor>)
+                .with_classifier(affinity as Arc<dyn Classifier>)
+                .with_classifier(classifier.clone()),
+        );
+
+        let (root_turn_1, _) = run_turn(&router).await?;
+        let (root_turn_2, _) = run_turn(&router).await?;
+        assert_eq!(
+            (root_turn_1.as_str(), root_turn_2.as_str()),
+            ("strong", "weak")
+        );
+
+        let mut child = request();
+        child.metadata = Some(Metadata {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("child-1".to_string()),
+            is_subagent: true,
+            ..Metadata::default()
+        });
+        let (child_turn_1, _) = run_request(&router, child.clone()).await?;
+        let (child_turn_2, _) = run_request(&router, child).await?;
+        assert_eq!(
+            (child_turn_1.as_str(), child_turn_2.as_str()),
+            ("strong", "strong")
+        );
+        assert_eq!(classifier.0.load(Ordering::SeqCst), 3);
         Ok(())
     }
 }

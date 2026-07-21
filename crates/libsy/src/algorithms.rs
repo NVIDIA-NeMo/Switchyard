@@ -11,9 +11,11 @@ pub mod fall_through;
 pub mod llm_class;
 pub mod noop;
 pub mod rand;
+pub mod random_classifier;
 
 pub use affinity::AffinityRouter;
 pub use fall_through::{FallThrough, FallThroughDecision};
 pub use llm_class::{ClassifierDecision, ClassifierTier, LlmClassifier};
 pub use noop::{Noop, NoopDecision};
 pub use rand::{Random, RandomDecision};
+pub use random_classifier::RandomClassifier;

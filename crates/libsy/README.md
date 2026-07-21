@@ -40,6 +40,33 @@ println!("answer: {}", completion_text(&response.llm_response.into_agg().await?)
 
 Runnable: [`research_agent`](examples/research_agent.rs)
 
+## Sub-agent affinity
+
+Compose `AffinityRouter` as both the first classifier and a processor. On a child
+agent's first turn it abstains, the random fallback chooses a target, and the
+processor retains that decision. Later turns from the same `(session_id, agent_id)`
+short-circuit to the retained target. Root-agent traffic continues through the
+fallback on every turn.
+
+```rust
+use switchyard_libsy::{
+    algorithms::{AffinityRouter, FallThrough, RandomClassifier},
+    Algorithm, Classifier, Processor,
+};
+use std::sync::Arc;
+
+let affinity = Arc::new(AffinityRouter::for_subagents());
+let algo: Arc<dyn Algorithm> = Arc::new(
+    FallThrough::new(targets)
+        .with_processor(affinity.clone() as Arc<dyn Processor>)
+        .with_classifier(affinity as Arc<dyn Classifier>)
+        .with_classifier(Arc::new(RandomClassifier::new(["frontier", "fast"]))),
+);
+```
+
+Request identity comes from `switchyard_protocol::Metadata`; HTTP integrations can
+normalize supported harness headers with `Metadata::from_headers` before routing.
+
 ## Requests & responses
 
 ```rust
