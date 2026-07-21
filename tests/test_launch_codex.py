@@ -506,9 +506,12 @@ class TestLaunchCodex:
         )
 
         monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+        # OpenRouter endpoint: the zero-flag default trio is OpenRouter-only, so
+        # the deterministic default only dispatches when the resolved endpoint is
+        # OpenRouter (a non-OpenRouter provider is rejected — see NvBug 6401771).
         monkeypatch.setattr(
             "switchyard.cli.launch_command.resolve_launch_connectivity",
-            lambda args, **_kw: ("sk-test", "https://inference-api.nvidia.com/v1"),
+            lambda args, **_kw: ("sk-test", "https://openrouter.ai/api/v1"),
         )
 
         captured: dict = {}

@@ -10,8 +10,6 @@ overrides (``--weak-model``, ``--classifier-model``, ``--profile``,
 ``--classifier-min-confidence``) still tune the default trio.
 """
 
-from __future__ import annotations
-
 import pytest
 
 
@@ -248,6 +246,102 @@ class TestDispatch:
 
         # Dry-run prints + returns without SystemExit.
         _cmd_launch_claude(args)
+
+    def test_dry_run_routing_profiles_reports_bundle(
+        self, monkeypatch, tmp_path, capsys,
+    ) -> None:
+        """A ``--routing-profiles`` dry run reports ``route: bundle``, not single."""
+        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
+
+        yaml_path = tmp_path / "routes.yaml"
+        yaml_path.write_text(
+            "routes:\n"
+            "  my-route:\n"
+            "    type: model\n"
+            "    model: openai/gpt-4o-mini\n",
+            encoding="utf-8",
+        )
+
+        parser = _build_parser()
+        args = parser.parse_args([
+            "--routing-profiles", str(yaml_path),
+            "--", "launch", "claude", "--dry-run",
+        ])
+
+        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "switchyard.cli.launch_command.resolve_launch_connectivity",
+            lambda args, **_kw: ("sk-test", "https://openrouter.ai/api/v1"),
+        )
+
+        _cmd_launch_claude(args)
+
+        out = capsys.readouterr().out
+        assert "route: bundle" in out
+        assert "route: single" not in out
+
+    def test_zero_config_non_openrouter_rejects_default_trio(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        """Zero-flag launch against a non-OpenRouter provider fails fast."""
+        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
+
+        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "switchyard.cli.launch_command.resolve_launch_connectivity",
+            lambda args, **_kw: ("nvapi-test", "https://inference-api.nvidia.com/v1"),
+        )
+
+        parser = _build_parser()
+        args = parser.parse_args(["launch", "claude"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_launch_claude(args)
+
+        message = str(exc_info.value)
+        assert "OpenRouter-only" in message
+        assert "anthropic/claude-opus-4.7" in message
+        assert "moonshotai/kimi-k2.6" in message
+        assert "google/gemini-3.5-flash" in message
+        assert "'nvidia'" in message
+
+    def test_model_flag_bypasses_non_openrouter_guard(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        """Passing --model opts out of the default trio, bypassing the guard."""
+        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
+
+        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "switchyard.cli.launch_command.resolve_launch_connectivity",
+            lambda args, **_kw: ("nvapi-test", "https://inference-api.nvidia.com/v1"),
+        )
+
+        captured: dict = {}
+
+        def fake_passthrough(**kwargs):
+            captured.update(kwargs)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(
+            "switchyard.cli.launchers.claude_code_launcher.launch_claude",
+            fake_passthrough,
+        )
+
+        parser = _build_parser()
+        args = parser.parse_args([
+            "launch", "claude", "--model", "nvidia/moonshotai/kimi-k2.5",
+        ])
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_launch_claude(args)
+
+        assert "OpenRouter-only" not in str(exc_info.value)
+        assert captured["model"] == "nvidia/moonshotai/kimi-k2.5"
 
 
 class TestRoutesByDefault:

@@ -49,6 +49,11 @@ strong tier using the validated coding-agent trio:
 when route resolution selects an explicit or saved legacy route bundle or
 single model.
 
+The default trio uses OpenRouter model ids and therefore requires OpenRouter
+connectivity (`OPENROUTER_API_KEY`). If the resolved provider is not OpenRouter
+and you pass no model overrides, the launcher fails fast — pass `--model` (and
+optionally `--weak-model`/`--classifier-model`) or set `OPENROUTER_API_KEY`.
+
 ## Override the default route
 
 Use `--model` for a single-model passthrough session:

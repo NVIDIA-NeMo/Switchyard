@@ -97,6 +97,47 @@ def resolve_launch_connectivity(
     return connectivity.api_key, connectivity.base_url
 
 
+# Marker for the OpenRouter gateway. The zero-flag deterministic default trio
+# uses OpenRouter-only model ids, so a resolved endpoint that isn't OpenRouter
+# cannot serve them.
+_OPENROUTER_URL_MARKER = "openrouter.ai"
+
+
+def _reject_openrouter_only_default_trio(
+    target: str,
+    args: argparse.Namespace,
+    api_key_env_vars: tuple[str, ...],
+    base_url: str,
+) -> None:
+    """Fail fast when the zero-config default trio can't reach the provider.
+
+    The deterministic zero-flag default uses OpenRouter-only model ids
+    (``anthropic/claude-opus-4.7`` / ``moonshotai/kimi-k2.6`` /
+    ``google/gemini-3.5-flash``). When the user supplied no model overrides and
+    the resolved endpoint is not OpenRouter, those ids are inaccessible to the
+    resolved key, so raise :class:`SystemExit` pointing the user at ``--model``
+    or ``OPENROUTER_API_KEY`` instead of launching a trio that can't work.
+    """
+    if (
+        getattr(args, "model", None)
+        or getattr(args, "weak_model", None)
+        or getattr(args, "classifier_model", None)
+    ):
+        return
+    if _OPENROUTER_URL_MARKER in base_url:
+        return
+    provider = _resolve_launch_connectivity(
+        args, api_key_env_vars=api_key_env_vars,
+    ).provider
+    raise SystemExit(
+        f"launch {target}: the zero-config default trio "
+        f"(anthropic/claude-opus-4.7, moonshotai/kimi-k2.6, "
+        f"google/gemini-3.5-flash) is OpenRouter-only; the resolved provider "
+        f"is {provider!r}. Pass --model (and optionally "
+        f"--weak-model/--classifier-model), or set OPENROUTER_API_KEY."
+    )
+
+
 def _is_deterministic_launch(
     target: str,
     args: argparse.Namespace,
@@ -605,6 +646,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
+            routing_profiles=routing_profiles,
         ))
         return
 
@@ -614,6 +656,17 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     startup_timing.mark("config + credentials resolved")
 
     if deterministic:
+        _reject_openrouter_only_default_trio(
+            target="claude",
+            args=args,
+            api_key_env_vars=(
+                "OPENROUTER_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+            ),
+            base_url=primary_connectivity.base_url,
+        )
         primary_connectivity = require_launch_tier_key(
             target="claude",
             tier=PRIMARY_TIER,
@@ -798,6 +851,7 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
+            routing_profiles=routing_profiles,
         ))
         return
 
@@ -806,6 +860,12 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
     )
 
     if deterministic:
+        _reject_openrouter_only_default_trio(
+            target="codex",
+            args=args,
+            api_key_env_vars=("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"),
+            base_url=primary_connectivity.base_url,
+        )
         primary_connectivity = require_launch_tier_key(
             target="codex",
             tier=PRIMARY_TIER,
@@ -1006,6 +1066,7 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
+            routing_profiles=routing_profiles,
         ))
         return
 
@@ -1014,6 +1075,17 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
     )
 
     if deterministic:
+        _reject_openrouter_only_default_trio(
+            target="openclaw",
+            args=args,
+            api_key_env_vars=(
+                "OPENROUTER_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+            ),
+            base_url=primary_connectivity.base_url,
+        )
         primary_connectivity = require_launch_tier_key(
             target="openclaw",
             tier=PRIMARY_TIER,
