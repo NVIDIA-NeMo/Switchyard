@@ -6,7 +6,14 @@
 //! re-exported at the crate root; algorithm implementations live in
 //! [`crate::algorithms`].
 
-pub mod algorithm;
 mod driver;
 
+pub mod algorithm;
+pub mod classifier;
+pub mod processor;
+pub mod state;
+
 pub use algorithm::*;
+pub use classifier::*;
+pub use processor::*;
+pub use state::*;
