@@ -15,9 +15,10 @@
 
 # Workflow 1 of 2 for Fern doc previews.
 #
-# Collects the docs sources and PR metadata from the possibly untrusted PR
-# branch. No secrets are used here, so this is safe to run on fork PRs.
-# The companion workflow builds the preview and posts the PR comment.
+# Collects docs sources and changed-file metadata from same-repository PR
+# branches. No secrets are used here. Fork PRs receive the required Fern check
+# but do not enter the hosted-preview path. The companion workflow builds the
+# preview and posts the PR comment.
 
 name: "Preview Fern Docs: Build"
 
@@ -30,31 +31,33 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: fern-docs-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   collect:
+    name: Collect preview sources
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Save PR metadata
+      - name: Save changed MDX paths
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.head_ref }}
           BASE_REF: ${{ github.base_ref }}
         run: |
           mkdir -p .preview-metadata
-          echo "$PR_NUMBER" > .preview-metadata/pr_number
-          echo "$HEAD_REF" > .preview-metadata/head_ref
           git diff --name-only "origin/${BASE_REF}...HEAD" -- '*.mdx' > .preview-metadata/changed_mdx_files 2>/dev/null || true
 
       # The nightly navigation reaches from docs/fern/ into docs/**/*.mdx,
       # so the artifact must preserve the complete docs tree.
       - name: Upload docs sources and metadata
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fern-preview
           path: |

@@ -30,6 +30,7 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 | Rust component crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-components` |
 | Rust server crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-server` |
 | Broad Rust crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` |
+| Docs/Fern workflow change | `make -C docs check && uv run pytest tests/test_fern_docs.py -v -o addopts=` |
 | Slim-install regression guard | see [Slim-install smoke gate](#slim-install-smoke-gate) |
 | Live e2e (only on explicit user request) | `NVIDIA_API_KEY=… uv run pytest tests/e2e/ -v -m integration -o addopts= --maxfail=10` |
 | Skill/docs change only | YAML frontmatter check + `git diff --check` (see [Skill/docs-only gate](#skilldocs-only-gate)) |
@@ -54,6 +55,8 @@ The hard GitHub Actions gates live in `.github/workflows/ci.yml`:
 - `uv run ruff check .`
 - SPDX header check for every Python file found by CI, including `.agents/skills/**/scripts/*.py`
 - `uv run pytest tests/ -v -m "not integration"` on Python 3.12 through 3.14
+- reusable Fern validation (`fern check`) called from `.github/workflows/ci.yml` and included in
+  the required `CI Success` aggregate
 - Rust workspace gate: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   and `cargo test --workspace`
 - slim-install smoke: isolated `uv run --with` default install/import checks, heavy-package

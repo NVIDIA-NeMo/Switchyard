@@ -12,6 +12,12 @@ These instructions apply to `docs/fern/` in addition to `docs/AGENTS.md` and the
   the user explicitly asks.
 - Never expose `DOCS_FERN_TOKEN` to a `pull_request` job or check out untrusted PR code in the
   trusted `workflow_run` job.
+- Derive the preview PR number from the trusted `workflow_run` payload and the Fern CLI version from
+  the default branch. PR artifacts may provide docs content and changed-file hints only.
+- Reject fork-originated runs before collecting or processing preview artifacts. Fork PRs receive
+  required Fern validation but no secret-bearing hosted preview.
+- Keep previews PR-numbered and cancel superseded runs. Serialize production publishing, and
+  isolate repository write permission from Fern CLI execution.
 
 ## Site structure
 

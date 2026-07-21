@@ -42,3 +42,7 @@ uv run pytest tests/test_fern_docs.py -v
 Before pushing, also follow the repository-wide validation requirements in the root `AGENTS.md`.
 If a docs workflow, route invariant, or ownership boundary changes, update
 `.agents/skills/switchyard-docs/SKILL.md` in the same change.
+
+Fern validation is part of the required `CI Success` aggregate. Keep preview concurrency scoped to
+the PR number, and never trust PR-artifact metadata for the target PR or Fern CLI version. Hosted
+previews are limited to same-repository branches; fork PRs receive validation only.

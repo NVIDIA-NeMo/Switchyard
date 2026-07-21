@@ -117,23 +117,33 @@ pinned in `docs/fern/fern.config.json`.
 
 The Fern workflows follow the same split as NeMo Curator:
 
-- `fern-docs-ci.yml` validates pull requests and pushes to `main` with `fern check`.
-- `fern-docs-preview-build.yml` runs on the untrusted PR, uses no secrets, and uploads the complete
-  `docs/` tree plus PR metadata. The complete tree is required because nightly navigation under
-  `docs/fern/` references MDX pages through `../../` paths.
+- `fern-docs-ci.yml` is a reusable `fern check` workflow called by the repository-wide CI. Its job
+  is included in the required `CI Success` aggregate, so Fern failures cannot merge as an optional
+  check.
+- `fern-docs-preview-build.yml` runs only for same-repository PR branches, uses no secrets, and
+  uploads the complete `docs/` tree plus a changed-MDX hint. Fork PRs stop after required Fern
+  validation. The complete tree is required because nightly navigation under `docs/fern/`
+  references MDX pages through `../../` paths. It uses PR-numbered concurrency and cancels
+  superseded runs.
 - `fern-docs-preview-comment.yml` runs through `workflow_run`, downloads the collector artifact,
-  generates a preview with `DOCS_FERN_TOKEN`, and upserts a marked PR comment. It must never check
-  out the PR branch or run PR-provided scripts.
+  rejects fork-originated runs, derives the target PR from the trusted event, reads the Fern version
+  from a separate default-branch checkout, and generates a PR-numbered preview with
+  `DOCS_FERN_TOKEN`. Commenting runs in a separate job with only pull-request write permission. It
+  must never check out the PR branch, run PR-provided scripts, or trust artifact metadata for the
+  target PR/tool version.
 - `publish-fern-docs.yml` publishes only for `docs/v*` tags or manual dispatch, then replaces the
   old GitHub Pages content with static redirects to the custom Fern domain. The workflow verifies
-  the custom-domain home page first; if it remains unavailable, GitHub Pages stays untouched. A
-  merge to `main` validates the site but does not publish either destination.
+  the custom-domain home page first; if it remains unavailable, GitHub Pages stays untouched.
+  Publishing is serialized, and the repository-write redirect job never receives the Fern token.
+  A merge to `main` validates the site but does not publish either destination.
 
 Every workflow installs the exact Fern CLI version from `docs/fern/fern.config.json` and runs Fern
-from `docs/fern/`. Preview comments and publishing require the `DOCS_FERN_TOKEN` organization
-secret. Secret-bearing jobs pin actions to immutable commits, disable package-manager caching, and
-validate the Fern version before installing it. Checkout steps do not persist credentials. Do not
-collapse the trusted and untrusted preview phases or use `pull_request_target`.
+from `docs/fern/`. The privileged preview reads that pin from the trusted default branch rather
+than the artifact. Preview generation and publishing require the `DOCS_FERN_TOKEN` organization
+secret. All Fern workflow actions use immutable commit pins and supported Node LTS; secret-bearing
+jobs disable package-manager caching and validate the Fern version before installing it. Checkout
+steps do not persist credentials. Do not collapse the collector and trusted preview phases or use
+`pull_request_target`.
 
 ## Failure Map
 
@@ -174,7 +184,7 @@ collapse the trusted and untrusted preview phases or use `pull_request_target`.
 - `docs/fern/generate_legacy_redirect_site.py` — redirect-only GitHub Pages output.
 - `tests/test_fern_docs.py` — navigation, link, metadata, and redirect invariants.
 - `.github/workflows/fern-docs-ci.yml` — CI-equivalent validation.
-- `.github/workflows/fern-docs-preview-build.yml` — fork-safe preview source collection.
+- `.github/workflows/fern-docs-preview-build.yml` — same-repository preview source collection.
 - `.github/workflows/fern-docs-preview-comment.yml` — trusted preview generation and PR comment.
 - `.github/workflows/publish-fern-docs.yml` — tag/manual production publishing.
 - [`switchyard-testing-ci`](../switchyard-testing-ci/SKILL.md) — broader repository validation.

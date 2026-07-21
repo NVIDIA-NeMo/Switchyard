@@ -62,14 +62,17 @@ Pages domain. Keep its redirect map aligned with `docs.yml`; tests enforce the s
 
 | Workflow | Purpose |
 |---|---|
-| `.github/workflows/fern-docs-ci.yml` | Run `fern check` for docs changes |
-| `.github/workflows/fern-docs-preview-build.yml` | Collect untrusted PR docs without secrets |
-| `.github/workflows/fern-docs-preview-comment.yml` | Build the trusted hosted preview and upsert the PR comment |
-| `.github/workflows/publish-fern-docs.yml` | Publish tagged/manual releases and update the redirect-only Pages site |
+| `.github/workflows/fern-docs-ci.yml` | Reusable `fern check` gate called by required repository CI |
+| `.github/workflows/fern-docs-preview-build.yml` | Collect same-repository PR docs without secrets |
+| `.github/workflows/fern-docs-preview-comment.yml` | Build a trusted PR-numbered preview, then comment with separate permissions |
+| `.github/workflows/publish-fern-docs.yml` | Serialize tagged/manual publishing and deploy redirects in a write-only job |
 
 Hosted previews and production publishing require the `DOCS_FERN_TOKEN` organization secret. Do
 not run a secret-bearing preview from a `pull_request` job, and do not publish production docs from
-an ordinary merge to `main`.
+an ordinary merge to `main`. The trusted preview reads PR identity from `workflow_run`, reads the
+Fern version from the default branch, and processes the downloaded PR docs in an isolated
+directory. Fork PRs stop after required Fern validation. Preview runs are cancelled when
+superseded; production runs are serialized.
 
 For content authoring, start with [`../README.md`](../README.md). For scoped agent rules, see
 [`AGENTS.md`](AGENTS.md) and the

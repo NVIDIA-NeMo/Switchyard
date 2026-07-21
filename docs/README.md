@@ -38,9 +38,11 @@ publish the site.
 3. Use canonical Fern routes derived from the navigation labels for internal links.
 4. Run the Fern check and route regression tests above.
 
-Pull requests that change `docs/**` run Fern validation. The preview workflows collect the
-untrusted PR content separately from the trusted job that creates the hosted preview and comments
-on the pull request.
+Every pull request runs Fern validation inside the required `CI Success` aggregate. Docs changes
+from repository branches also start a PR-numbered hosted preview: the collector uploads content
+without secrets, while the trusted workflow derives PR identity and the Fern CLI version from
+GitHub/default-branch state before publishing. Preview generation and PR commenting use separate
+permission scopes. Fork PRs receive Fern validation but do not publish hosted previews.
 
 Legacy GitHub Pages paths are handled in two places: Fern redirects live in
 [`fern/docs.yml`](fern/docs.yml), while

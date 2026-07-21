@@ -19,11 +19,24 @@ NAVIGATION_PATH = FERN_ROOT / "versions" / "nightly.yml"
 DOCS_CONFIG_PATH = FERN_ROOT / "docs.yml"
 GENERATOR_PATH = FERN_ROOT / "generate_legacy_redirect_site.py"
 BASE_PATH = "/nemo/switchyard"
+WORKFLOW_ROOT = REPO_ROOT / ".github" / "workflows"
+CI_WORKFLOW_PATH = WORKFLOW_ROOT / "ci.yml"
+FERN_CI_WORKFLOW_PATH = WORKFLOW_ROOT / "fern-docs-ci.yml"
+FERN_PREVIEW_BUILD_PATH = WORKFLOW_ROOT / "fern-docs-preview-build.yml"
+FERN_PREVIEW_COMMENT_PATH = WORKFLOW_ROOT / "fern-docs-preview-comment.yml"
+FERN_PUBLISH_PATH = WORKFLOW_ROOT / "publish-fern-docs.yml"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     """Load one YAML mapping used by the Fern project."""
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def _load_workflow(path: Path) -> dict[str, Any]:
+    """Load a GitHub workflow without treating the `on` key as a YAML boolean."""
+    data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert isinstance(data, dict)
     return data
 
@@ -121,3 +134,81 @@ def test_legacy_github_pages_site_generation(tmp_path: Path) -> None:
         content = page.read_text(encoding="utf-8")
         assert f'<link rel="canonical" href="{target}" />' in content
         assert "window.location.search + window.location.hash" in content
+
+
+def test_fern_validation_is_part_of_required_ci_success() -> None:
+    """The required CI aggregate must fail when reusable Fern validation fails."""
+    ci = _load_workflow(CI_WORKFLOW_PATH)
+    jobs = ci["jobs"]
+
+    assert jobs["fern-docs"]["uses"] == "./.github/workflows/fern-docs-ci.yml"
+    assert "fern-docs" in jobs["ci-success"]["needs"]
+
+    fern_ci = _load_workflow(FERN_CI_WORKFLOW_PATH)
+    assert set(fern_ci["on"]) == {"workflow_call"}
+
+
+def test_fern_preview_uses_trusted_identity_and_pr_scoped_concurrency() -> None:
+    """Preview artifacts must not choose the target PR, preview identifier, or tool version."""
+    build = _load_workflow(FERN_PREVIEW_BUILD_PATH)
+    comment = _load_workflow(FERN_PREVIEW_COMMENT_PATH)
+    build_text = FERN_PREVIEW_BUILD_PATH.read_text(encoding="utf-8")
+    comment_text = FERN_PREVIEW_COMMENT_PATH.read_text(encoding="utf-8")
+
+    assert build["concurrency"] == {
+        "group": "fern-docs-preview-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": "true",
+    }
+    assert comment["concurrency"] == {
+        "group": "fern-docs-preview-${{ github.event.workflow_run.pull_requests[0].number }}",
+        "cancel-in-progress": "true",
+    }
+    assert "github.event.workflow_run.pull_requests[0].number" in comment_text
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in build_text
+    assert "github.event.workflow_run.head_repository.full_name == github.repository" in comment_text
+    assert "github.event.repository.default_branch" in comment_text
+    assert "working-directory: ./preview-source/docs/fern" in comment_text
+    assert '--id "pr-$PR_NUMBER"' in comment_text
+    assert ".preview-metadata/pr_number" not in comment_text
+    assert ".preview-metadata/head_ref" not in comment_text
+    assert '.user.login == "github-actions[bot]"' in comment_text
+
+
+def test_fern_publish_serializes_runs_and_isolates_write_permission() -> None:
+    """Only the redirect deployment may receive repository write permission."""
+    workflow = _load_workflow(FERN_PUBLISH_PATH)
+    jobs = workflow["jobs"]
+
+    assert workflow["permissions"] == {}
+    assert workflow["concurrency"] == {
+        "group": "fern-docs-website",
+        "cancel-in-progress": "false",
+    }
+    assert jobs["publish"]["permissions"] == {"contents": "read"}
+    assert jobs["redirects"]["permissions"] == {
+        "actions": "read",
+        "contents": "write",
+    }
+    assert "DOCS_FERN_TOKEN" in yaml.safe_dump(jobs["publish"])
+    assert "DOCS_FERN_TOKEN" not in yaml.safe_dump(jobs["redirects"])
+
+
+def test_fern_workflows_pin_actions_and_use_supported_node() -> None:
+    """Secret-bearing and docs validation workflows use immutable action pins and Node 24."""
+    paths = (
+        FERN_CI_WORKFLOW_PATH,
+        FERN_PREVIEW_BUILD_PATH,
+        FERN_PREVIEW_COMMENT_PATH,
+        FERN_PUBLISH_PATH,
+    )
+    action_pattern = re.compile(r"^\s*uses:\s+([^#\s]+)", re.MULTILINE)
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for action in action_pattern.findall(text):
+            if action.startswith("./"):
+                continue
+            assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), f"{path}: {action}"
+
+    for path in (FERN_CI_WORKFLOW_PATH, FERN_PREVIEW_COMMENT_PATH, FERN_PUBLISH_PATH):
+        assert 'node-version: "24"' in path.read_text(encoding="utf-8")
