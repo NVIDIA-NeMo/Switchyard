@@ -277,6 +277,7 @@ fn decode_responses_input(
             let mut pending_tool_calls = Vec::new();
             let mut pending_tool_outputs = Vec::new();
             let mut deferred_messages = Vec::new();
+            let mut pending_reasoning: Vec<ContentBlock> = Vec::new();
             for (index, item) in items.iter().enumerate() {
                 let Some(item) = item.as_object() else {
                     push_lossy(
@@ -288,35 +289,55 @@ fn decode_responses_input(
                 };
                 match item.get("type").and_then(Value::as_str) {
                     Some("message") => {
-                        let message = Message {
-                            role: request_role_from_responses(
-                                item.get("role").and_then(Value::as_str),
-                                &format!("$.input[{index}].role"),
-                            )?,
-                            content: decode_responses_content(
-                                item.get("content").unwrap_or(&Value::Null),
-                            ),
-                        };
+                        let role = request_role_from_responses(
+                            item.get("role").and_then(Value::as_str),
+                            &format!("$.input[{index}].role"),
+                        )?;
+                        let mut content =
+                            decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+                        // Reasoning that precedes an assistant message belongs to
+                        // that turn; fold it in so it never surfaces as its own
+                        // (empty-looking) assistant message downstream.
+                        if role == Role::Assistant
+                            && pending_tool_calls.is_empty()
+                            && !pending_reasoning.is_empty()
+                        {
+                            let mut merged = std::mem::take(&mut pending_reasoning);
+                            merged.append(&mut content);
+                            content = merged;
+                        }
+                        if role != Role::Assistant {
+                            flush_unattached_responses_reasoning(
+                                &mut messages,
+                                &mut pending_tool_calls,
+                                &mut pending_tool_outputs,
+                                &mut deferred_messages,
+                                &mut pending_reasoning,
+                            );
+                        }
                         push_responses_non_tool_message(
                             &mut messages,
                             &mut pending_tool_calls,
                             &mut pending_tool_outputs,
                             &mut deferred_messages,
-                            message,
+                            &mut pending_reasoning,
+                            Message { role, content },
                         );
                     }
                     Some("reasoning") => {
-                        let message = Message {
-                            role: Role::Assistant,
-                            content: decode_responses_reasoning_item(item),
-                        };
-                        push_responses_non_tool_message(
-                            &mut messages,
-                            &mut pending_tool_calls,
-                            &mut pending_tool_outputs,
-                            &mut deferred_messages,
-                            message,
-                        );
+                        // A reasoning item after a completed tool block opens the
+                        // next assistant turn: flush the finished block so this
+                        // reasoning attaches to the turn that produced it.
+                        if !pending_tool_outputs.is_empty() {
+                            flush_responses_tool_block(
+                                &mut messages,
+                                &mut pending_tool_calls,
+                                &mut pending_tool_outputs,
+                                &mut deferred_messages,
+                                &mut pending_reasoning,
+                            );
+                        }
+                        pending_reasoning.extend(decode_responses_reasoning_item(item));
                     }
                     Some("function_call") => {
                         if !pending_tool_outputs.is_empty() {
@@ -325,6 +346,7 @@ fn decode_responses_input(
                                 &mut pending_tool_calls,
                                 &mut pending_tool_outputs,
                                 &mut deferred_messages,
+                                &mut pending_reasoning,
                             );
                         }
                         let id = item
@@ -369,11 +391,19 @@ fn decode_responses_input(
                                 raw: Value::Object(item.clone()),
                             }],
                         };
+                        flush_unattached_responses_reasoning(
+                            &mut messages,
+                            &mut pending_tool_calls,
+                            &mut pending_tool_outputs,
+                            &mut deferred_messages,
+                            &mut pending_reasoning,
+                        );
                         push_responses_non_tool_message(
                             &mut messages,
                             &mut pending_tool_calls,
                             &mut pending_tool_outputs,
                             &mut deferred_messages,
+                            &mut pending_reasoning,
                             message,
                         );
                     }
@@ -385,7 +415,16 @@ fn decode_responses_input(
                     &mut pending_tool_calls,
                     &mut pending_tool_outputs,
                     &mut deferred_messages,
+                    &mut pending_reasoning,
                 );
+            }
+            // Trailing reasoning with no assistant turn to join keeps the
+            // historical standalone-message shape.
+            if !pending_reasoning.is_empty() {
+                messages.push(Message {
+                    role: Role::Assistant,
+                    content: pending_reasoning,
+                });
             }
             Ok(messages)
         }
@@ -402,6 +441,7 @@ fn push_responses_non_tool_message(
     pending_tool_calls: &mut Vec<ToolCall>,
     pending_tool_outputs: &mut Vec<ToolResult>,
     deferred_messages: &mut Vec<Message>,
+    pending_reasoning: &mut Vec<ContentBlock>,
     message: Message,
 ) {
     if !pending_tool_calls.is_empty() && pending_tool_outputs.is_empty() {
@@ -414,17 +454,48 @@ fn push_responses_non_tool_message(
             pending_tool_calls,
             pending_tool_outputs,
             deferred_messages,
+            pending_reasoning,
         );
     }
     messages.push(message);
 }
 
+// Emits reasoning that cannot join an assistant turn as a standalone assistant
+// message at its original position. While tool calls are pending, the
+// reasoning belongs to the in-flight turn and stays pending for the flush.
+fn flush_unattached_responses_reasoning(
+    messages: &mut Vec<Message>,
+    pending_tool_calls: &mut Vec<ToolCall>,
+    pending_tool_outputs: &mut Vec<ToolResult>,
+    deferred_messages: &mut Vec<Message>,
+    pending_reasoning: &mut Vec<ContentBlock>,
+) {
+    if pending_reasoning.is_empty() || !pending_tool_calls.is_empty() {
+        return;
+    }
+    let message = Message {
+        role: Role::Assistant,
+        content: std::mem::take(pending_reasoning),
+    };
+    push_responses_non_tool_message(
+        messages,
+        pending_tool_calls,
+        pending_tool_outputs,
+        deferred_messages,
+        pending_reasoning,
+        message,
+    );
+}
+
 // Flushes pending function calls and matching outputs while preserving adjacency.
+// Pending reasoning rides in the same assistant message as the tool calls so a
+// Codex reasoning + function_call turn stays one assistant turn downstream.
 fn flush_responses_tool_block(
     messages: &mut Vec<Message>,
     pending_tool_calls: &mut Vec<ToolCall>,
     pending_tool_outputs: &mut Vec<ToolResult>,
     deferred_messages: &mut Vec<Message>,
+    pending_reasoning: &mut Vec<ContentBlock>,
 ) {
     let tool_call_ids = pending_tool_calls
         .iter()
@@ -432,12 +503,15 @@ fn flush_responses_tool_block(
         .collect::<HashSet<_>>();
 
     if !pending_tool_calls.is_empty() {
+        let mut content = std::mem::take(pending_reasoning);
+        content.extend(
+            std::mem::take(pending_tool_calls)
+                .into_iter()
+                .map(ContentBlock::ToolCall),
+        );
         messages.push(Message {
             role: Role::Assistant,
-            content: std::mem::take(pending_tool_calls)
-                .into_iter()
-                .map(ContentBlock::ToolCall)
-                .collect(),
+            content,
         });
     }
 
