@@ -742,6 +742,155 @@ fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
     Ok(())
 }
 
+// Verifies Codex-style reasoning items attach to the turn's tool-call message
+// instead of surfacing as fabricated empty assistant chat messages.
+#[test]
+fn responses_reasoning_items_attach_to_tool_call_turn_for_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "big-reasoner",
+        "input": [
+            {"type": "message", "role": "user", "content": "Fix pip"},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "\n\n"}]
+            },
+            {
+                "type": "reasoning",
+                "summary": [],
+                "content": [{"type": "reasoning_text", "text": "Check the python setup."}]
+            },
+            {
+                "type": "function_call",
+                "name": "shell",
+                "call_id": "call-1",
+                "arguments": "{\"command\":\"pip3 --version\"}"
+            },
+            {"type": "function_call_output", "call_id": "call-1", "output": "no pip"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let messages = output["messages"]
+        .as_array()
+        .ok_or("messages is not an array")?;
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message["role"] == "assistant" && message["content"] == ""),
+        "reasoning item leaked an empty assistant message: {messages:?}"
+    );
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[1], json!({"role": "assistant", "content": "\n\n"}));
+    assert_eq!(messages[2]["tool_calls"][0]["id"], "call-1");
+    assert_eq!(messages[3]["role"], "tool");
+    Ok(())
+}
+
+// Verifies a reasoning item merges into the assistant message that follows it.
+#[test]
+fn responses_reasoning_item_merges_into_next_assistant_message_for_openai_chat() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "Check the file"},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Reading."}]},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Let me check."}]
+            }
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["messages"],
+        json!([
+            {"role": "user", "content": "Check the file"},
+            {"role": "assistant", "content": "Let me check."}
+        ])
+    );
+    Ok(())
+}
+
+// Verifies merged reasoning re-emerges as a Responses reasoning item ahead of
+// the turn's function call when encoding back to the Responses format.
+#[test]
+fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: switchyard_translation::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": [
+            {"type": "message", "role": "user", "content": "List files"},
+            {
+                "type": "reasoning",
+                "summary": [],
+                "content": [{"type": "reasoning_text", "text": "Simple ls."}]
+            },
+            {
+                "type": "function_call",
+                "name": "shell",
+                "call_id": "call-ls",
+                "arguments": "{\"command\":\"ls\"}"
+            },
+            {"type": "function_call_output", "call_id": "call-ls", "output": "a.py"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    let input = output["input"].as_array().ok_or("input is not an array")?;
+    let item_types = input
+        .iter()
+        .map(|item| item["type"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        item_types,
+        vec![
+            "message",
+            "reasoning",
+            "function_call",
+            "function_call_output"
+        ]
+    );
+    assert_eq!(
+        input[1]["content"],
+        json!([{"type": "reasoning_text", "text": "Simple ls."}])
+    );
+    assert_eq!(input[2]["call_id"], "call-ls");
+    Ok(())
+}
+
 // Verifies Responses JSON schema text format maps to Chat response_format shape.
 #[test]
 fn responses_json_schema_text_format_maps_to_chat_response_format() -> TestResult {
