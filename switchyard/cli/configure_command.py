@@ -367,13 +367,15 @@ def cmd_configure(request: ConfigureRequest) -> None:
             print("No Switchyard user config found.")
         return
 
-    provider = request.provider
     target_scope = request.target
     configure_claude = target_scope in ("all", "claude")
     configure_codex = target_scope in ("all", "codex")
     configure_openclaw = target_scope in ("all", "openclaw")
     existing_config = load_user_config()
     existing_credentials = load_user_credentials()
+    # A CLI --provider wins; otherwise honor the saved default_provider so the
+    # save path doesn't overwrite it with the argparse fallback.
+    provider = request.provider or existing_config.default_provider
     skill_distillation = _apply_skill_distillation_args(
         existing_config.skill_distillation,
         request,
@@ -417,9 +419,22 @@ def cmd_configure(request: ConfigureRequest) -> None:
     api_key = request.api_key
     if not api_key:
         existing_api_key = existing_credentials.api_key(provider)
+        # Fall back to an env/secrets key so non-interactive `configure` (no
+        # --api-key, no saved key) picks up e.g. OPENROUTER_API_KEY instead of
+        # erroring out that it "requires an API key".
+        env_api_key = resolve_provider_connectivity(
+            cli_api_key=None,
+            cli_base_url=None,
+            api_key_env_vars=("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"),
+            base_url_env_vars=("OPENROUTER_BASE_URL", "NVIDIA_BASE_URL", "OPENAI_BASE_URL"),
+            secrets=load_secrets(),
+            secrets_section_priority=DEFAULT_SECRETS_SECTION_PRIORITY,
+            default_provider=provider,
+        ).api_key
         prompt_default_api_key = (
             existing_api_key
             or request.prompt_default_api_key
+            or env_api_key
         )
         prompt_default_api_key_source = request.prompt_default_api_key_source
         if reuse_existing_provider and existing_api_key:

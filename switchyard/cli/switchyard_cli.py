@@ -812,8 +812,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     cfg.add_argument(
-        "--provider", type=str, default=DEFAULT_PROVIDER,
-        help=f"Provider id to configure (default: {DEFAULT_PROVIDER})",
+        "--provider", type=str, default=None,
+        help=f"Provider id to configure (default: the saved default_provider, "
+        f"or {DEFAULT_PROVIDER} if none is saved)",
     )
     cfg.add_argument(
         "--base-url", type=str, default=None,
@@ -1283,10 +1284,19 @@ def main() -> None:
     #   switchyard --routing-profiles dev.yaml -- launch claude
     # The '--' is purely visual — argparse doesn't need it.
     argv = list(sys.argv[1:])
-    try:
-        argv.pop(argv.index("--"))
-    except ValueError:
-        pass
+    # Only strip a '--' that precedes the subcommand token; a '--' after it is
+    # the harness separator (e.g. `launch claude ... -- --version`) and must
+    # survive so forwarded args reach the launcher instead of tripping argparse.
+    # Read the subcommand names off the parser so this can't drift as
+    # subcommands are added.
+    subparsers_action = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    subcommands = set(subparsers_action.choices)
+    sep_idx = argv.index("--") if "--" in argv else len(argv)
+    cmd_idx = next((i for i, t in enumerate(argv) if t in subcommands), len(argv))
+    if sep_idx < cmd_idx:
+        argv.pop(sep_idx)
     args = parser.parse_args(argv)
 
     if not hasattr(args, "func"):
