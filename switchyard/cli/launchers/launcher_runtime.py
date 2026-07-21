@@ -3,8 +3,6 @@
 
 """Shared proxy/runtime helpers for one-command launchers."""
 
-from __future__ import annotations
-
 import logging
 import os
 import socket
@@ -26,6 +24,10 @@ if TYPE_CHECKING:
 
 _debug_file_handler: logging.FileHandler | None = None
 log = logging.getLogger(__name__)
+
+#: Opener that ignores env proxies — loopback probes to the in-process proxy
+#: must never be routed through a configured HTTP_PROXY.
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 #: System CA bundle paths to try (Debian/Ubuntu, RHEL/CentOS/Fedora).
@@ -75,7 +77,9 @@ def wait_for_proxy_ready(port: int, *, timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=0.5):
+            # Loopback: bypass env proxies so a configured HTTP_PROXY can't
+            # intercept the 127.0.0.1 health probe.
+            with _LOCAL_OPENER.open(url, timeout=0.5):
                 return True
         except Exception:
             time.sleep(0.05)
@@ -283,7 +287,7 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
     return f"{route_type}: {route_key}"
 
 
-def deterministic_strategy_summary(config: DeterministicRoutingConfig) -> str:
+def deterministic_strategy_summary(config: "DeterministicRoutingConfig") -> str:
     """Return the strategy summary string for a deterministic (LLM-classifier) launch."""
     return (
         f"llm-classifier: classifier={config.classifier.model}, "
