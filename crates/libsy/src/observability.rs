@@ -12,8 +12,9 @@
 //! no-op. Spans and logs use the `tracing` facade (the async-native surface the
 //! OpenTelemetry ecosystem bridges with `tracing-opentelemetry` /
 //! `opentelemetry-appender-tracing`), so the host's subscriber decides where
-//! they go. Spans are attached to futures with [`Instrument`], never a
-//! [`Span::enter`] guard held across an `.await`: a suspended task would leave
+//! they go. Method spans use `#[tracing::instrument]`; the `libsy.run` span is
+//! attached to the spawned run task with [`tracing::Instrument`]. Neither holds
+//! a [`Span::enter`] guard across an `.await` — a suspended task would leave
 //! the span entered on its executor thread, mis-parenting every span other
 //! tasks create there (see the `tracing` docs on spans in asynchronous code).
 //!
@@ -34,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::Meter;
 use opentelemetry::{global, KeyValue};
-use tracing::{Instrument, Span};
+use tracing::Span;
 
 use crate::{Context, Decision, Metadata, Response};
 
@@ -49,7 +50,7 @@ const SCOPE: &str = "libsy";
 pub(crate) const ALGORITHM_KEY: &str = "algorithm";
 
 /// The algorithm label carried by a request context; empty until stamped.
-fn algorithm_label<S>(ctx: &Context<S>) -> &str {
+pub(crate) fn algorithm_label<S>(ctx: &Context<S>) -> &str {
     ctx.values
         .get(ALGORITHM_KEY)
         .map(String::as_str)
@@ -126,48 +127,6 @@ pub(crate) async fn observe_run<S>(
     result
 }
 
-/// Drives one offloaded model call inside its own `libsy.llm_call` span,
-/// recording the call counter, latency histogram, token usage, span fields,
-/// and failure log when the call resolves.
-pub(crate) async fn observe_llm_call(
-    ctx: &Context,
-    selected_model: &str,
-    call: impl Future<Output = Result<Response, BoxErr>>,
-) -> Result<Response, BoxErr> {
-    let algorithm = algorithm_label(ctx);
-    let span = llm_call_span(algorithm, selected_model);
-    async {
-        let started = Instant::now();
-        let result = call.await;
-        record_llm_call(
-            algorithm,
-            selected_model,
-            started.elapsed(),
-            &result,
-            &Span::current(),
-        );
-        result
-    }
-    .instrument(span)
-    .await
-}
-
-/// Span covering one *actual* provider API call the crate itself performs —
-/// the default-client serve path inside [`Algorithm::run`](crate::Algorithm::run).
-/// `libsy.llm_call` measures fulfillment as the algorithm observes it; this
-/// span isolates the client call that fulfills it. A host serving calls over
-/// its own transport should emit an equivalent span in its `LlmClient`.
-pub(crate) fn client_call_span(ctx: &Context, selected_model: &str) -> Span {
-    tracing::info_span!(
-        target: SCOPE,
-        "libsy.client_call",
-        algorithm = algorithm_label(ctx),
-        selected_model,
-        outcome = tracing::field::Empty,
-        error = tracing::field::Empty,
-    )
-}
-
 /// Records the outcome fields on the enclosing `libsy.client_call` span. The
 /// failure itself is not logged here — it propagates to the algorithm, where
 /// the `libsy.llm_call` recording logs it once.
@@ -177,26 +136,6 @@ pub(crate) fn record_client_call(result: &Result<Response, BoxErr>) {
     if let Err(error) = result {
         span.record("error", tracing::field::display(error));
     }
-}
-
-/// Span covering one offloaded model call, a child of the surrounding
-/// `libsy.run` span. It measures *fulfillment* as the algorithm observes it —
-/// host queueing and serving included, not just the provider call. `outcome`,
-/// `error`, and the token-count fields are filled in by [`record_llm_call`]
-/// when the call resolves.
-fn llm_call_span(algorithm: &str, selected_model: &str) -> Span {
-    tracing::info_span!(
-        target: SCOPE,
-        "libsy.llm_call",
-        algorithm,
-        selected_model,
-        outcome = tracing::field::Empty,
-        error = tracing::field::Empty,
-        input_tokens = tracing::field::Empty,
-        output_tokens = tracing::field::Empty,
-        total_tokens = tracing::field::Empty,
-        reasoning_tokens = tracing::field::Empty,
-    )
 }
 
 /// Records the end of one algorithm run: the run counter and duration
@@ -226,7 +165,7 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response, Box
 /// latency histogram, token counters from the response usage (absent fields are
 /// skipped, not recorded as zero), the `outcome`/`error`/token fields on
 /// `span`, and a warn log when the call failed.
-fn record_llm_call(
+pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
     duration: Duration,

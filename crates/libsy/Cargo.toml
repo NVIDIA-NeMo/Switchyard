@@ -22,7 +22,7 @@ rand = "0.8"
 switchyard-protocol = { path = "../protocol" }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.

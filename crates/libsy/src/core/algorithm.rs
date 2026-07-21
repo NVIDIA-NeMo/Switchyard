@@ -5,7 +5,7 @@
 //! routing/optimization algorithm implements, and the offload channel it makes model
 //! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
 
-use std::{error::Error, pin::Pin, sync::Arc};
+use std::{error::Error, pin::Pin, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -133,16 +133,37 @@ impl Driver {
     /// response resolves when its stream handle arrives); latency, outcome, and
     /// token usage are recorded when it resolves. The provider call itself gets a
     /// `libsy.client_call` span when [`Algorithm::run`] serves it.
-    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
-        let ctx = routed.ctx.clone();
-        let selected_model = routed.decision.selected_model().to_string();
-        observability::observe_llm_call(
-            &ctx,
-            &selected_model,
-            self.driver
-                .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed),
+    #[tracing::instrument(
+        target = "libsy",
+        name = "libsy.llm_call",
+        skip_all,
+        fields(
+            algorithm = observability::algorithm_label(&routed.ctx),
+            selected_model = routed.decision.selected_model(),
+            outcome = tracing::field::Empty,
+            error = tracing::field::Empty,
+            input_tokens = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+            total_tokens = tracing::field::Empty,
+            reasoning_tokens = tracing::field::Empty,
         )
-        .await
+    )]
+    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
+        let algorithm = observability::algorithm_label(&routed.ctx).to_string();
+        let selected_model = routed.decision.selected_model().to_string();
+        let started = Instant::now();
+        let result = self
+            .driver
+            .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
+            .await;
+        observability::record_llm_call(
+            &algorithm,
+            &selected_model,
+            started.elapsed(),
+            &result,
+            &tracing::Span::current(),
+        );
+        result
     }
 
     /// Offload a call to `target`: pair `request` with `decision` and the target's
@@ -389,6 +410,19 @@ where
         // Serve one offloaded call with its target's default client. A failed *model*
         // call is forwarded to the algorithm via `respond`; this errors only on an
         // infrastructure failure (no default client, or the promise was dropped).
+        // `serve` makes the one API call libsy itself performs, so it gets its
+        // own `libsy.client_call` span.
+        #[tracing::instrument(
+            target = "libsy",
+            name = "libsy.client_call",
+            skip_all,
+            fields(
+                algorithm = observability::algorithm_label(&call.get_routed().ctx),
+                selected_model = call.get_decision().selected_model(),
+                outcome = tracing::field::Empty,
+                error = tracing::field::Empty,
+            )
+        )]
         async fn serve(call: CallLlmRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
             let routed = call.get_routed().clone();
             let client = routed.default_client.clone().ok_or_else(|| {
@@ -421,15 +455,7 @@ where
                     match step {
                         None => break, // stream has ended, no more steps
                         Some(item) => match item? {
-                            Step::CallLlm(call) => {
-                                // `serve` makes the one API call libsy itself
-                                // performs; give it its own client-call span.
-                                let span = observability::client_call_span(
-                                    &call.get_routed().ctx,
-                                    call.get_decision().selected_model(),
-                                );
-                                in_flight.push(serve(*call).instrument(span));
-                            }
+                            Step::CallLlm(call) => in_flight.push(serve(*call)),
                             Step::Decision(decision) => trace.push(decision),
                             Step::ReturnToAgent(response) => {
                                 final_response = Some(*response);
