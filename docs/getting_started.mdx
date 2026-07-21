@@ -1,11 +1,14 @@
-# Getting Started with Switchyard
-
+---
+title: "Getting Started"
+description: "Install NeMo Switchyard, configure an LLM provider, start the proxy, and send your first routed request."
+position: 1
+---
 ## Prerequisites
 
 - Python 3.12 or later
 - macOS, Linux, or Windows
 - An API key for OpenRouter, OpenAI, Anthropic, or another OpenAI-compatible endpoint.
-  To use OpenRouter, create an account at [openrouter.ai](https://openrouter.ai/)
+  To use OpenRouter, create an account at [openrouter.ai](https://openrouter.ai)
   and generate a key from the [OpenRouter keys page](https://openrouter.ai/keys).
 
 ## Install
@@ -115,7 +118,7 @@ switchyard launch openclaw    # OpenClaw
 ```
 
 Each launcher reads the routing bundle and provider credentials saved by
-`switchyard configure`. See [Agent Launchers](guides/agent_launchers.md) for
+`switchyard configure`. See [Agent Launchers](/guides/agent-launchers) for
 supported harness versions, model requirements, and Claude Code `/model` picker
 aliasing.
 
@@ -142,17 +145,17 @@ another route type when the routing decision needs different inputs:
 
 | Algorithm | Use it when | Config |
 |---|---|---|
-| [Random Routing](routing_algorithms/random_routing.md) | You need a fixed strong/weak split for A/B tests or baselines. | `random_routing` |
-| [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use `weak` or `strong`. | `deterministic` |
-| [Stage-Router Routing](routing_algorithms/stage_router_routing.md) | Tool-result and progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Random Routing](/routing/random-routing) | You need a fixed strong/weak split for A/B tests or baselines. | `random_routing` |
+| [LLM Classifier Routing](/routing/llm-classifier-routing) | Request content should decide whether to use `weak` or `strong`. | `deterministic` |
+| [Stage-Router Routing](/routing/stage-router-routing) | Tool-result and progress signals should route most turns without an extra classifier call. | `stage_router` |
 
 LLM classifier routes can also enable
-[Session Affinity (Sticky Routing)](routing_algorithms/sticky_routing.md) to pin
+[Session Affinity (Sticky Routing)](/routing/sticky-routing) to pin
 multi-turn conversations to one tier.
 
 A single YAML file can declare multiple routes. Each route becomes a model id on
 `GET /v1/models`; the first declared route is the launcher's initial model. See
-[Routing Overview](routing_algorithms/overview.md) for route selection and the
+[Routing Overview](/routing/overview) for route selection and the
 strategy-specific pages for full examples and tuning notes.
 
 ---
@@ -241,11 +244,11 @@ uv run mypy switchyard
 
 ## Next steps
 
-- [CLI Reference](cli_reference.md): full flag reference for every verb
-- [Agent Launchers](guides/agent_launchers.md): Claude Code, Codex, and OpenClaw launcher details
-- [Architecture](architecture.md): system context and end-to-end request flow
-- [Routing Overview](routing_algorithms/overview.md): choose the right routing strategy
-- [Random Routing](routing_algorithms/random_routing.md): fixed strong/weak split routing
-- [LLM Classifier Routing](routing_algorithms/llm_classifier_routing.md): classifier-driven strong/weak routing
-- [Stage-Router Routing](routing_algorithms/stage_router_routing.md): picker layers, signal dimensions, calibration
-- [Sticky Routing](routing_algorithms/sticky_routing.md): conversation-level route affinity
+- [CLI Reference](/reference/cli-reference): full flag reference for every verb
+- [Agent Launchers](/guides/agent-launchers): Claude Code, Codex, and OpenClaw launcher details
+- [Switchyard Architecture](/concepts/architecture): system context and end-to-end request flow
+- [Routing Overview](/routing/overview): choose the right routing strategy
+- [Random Routing](/routing/random-routing): fixed strong/weak split routing
+- [LLM Classifier Routing](/routing/llm-classifier-routing): classifier-driven strong/weak routing
+- [Stage-Router Routing](/routing/stage-router-routing): picker layers, signal dimensions, calibration
+- [Sticky Routing](/routing/sticky-routing): conversation-level route affinity

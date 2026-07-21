@@ -28,9 +28,9 @@ from switchyard_rust.profiles import parse_profile_config_str
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPO_ROOT / "README.md"
 ROUTING_DOC_PATHS = (
-    REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.md",
-    REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.md",
-    REPO_ROOT / "docs" / "routing_algorithms" / "overview.md",
+    REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.mdx",
+    REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.mdx",
+    REPO_ROOT / "docs" / "routing_algorithms" / "overview.mdx",
 )
 
 

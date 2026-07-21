@@ -12,7 +12,7 @@ from markdown_it import MarkdownIt
 from switchyard.cli.switchyard_cli import _build_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CLI_REFERENCE = REPO_ROOT / "docs" / "cli_reference.md"
+CLI_REFERENCE = REPO_ROOT / "docs" / "cli_reference.mdx"
 _MARKDOWN = MarkdownIt()
 
 
@@ -37,7 +37,7 @@ def _markdown_section(text: str, heading: str) -> str:
                 end = next_token.map[0]
                 break
         return "\n".join(lines[start:end])
-    raise AssertionError(f"docs/cli_reference.md missing section {heading!r}")
+    raise AssertionError(f"docs/cli_reference.mdx missing section {heading!r}")
 
 
 def _long_options(parser: argparse.ArgumentParser) -> set[str]:
@@ -59,7 +59,7 @@ def test_cli_reference_documents_every_serve_flag() -> None:
     missing = sorted(flag for flag in expected if flag not in serve_section)
 
     assert not missing, (
-        "docs/cli_reference.md serve section missing flags: " + ", ".join(missing)
+        "docs/cli_reference.mdx serve section missing flags: " + ", ".join(missing)
     )
 
 
@@ -73,7 +73,7 @@ def test_cli_reference_documents_every_configure_flag() -> None:
     missing = sorted(flag for flag in expected if flag not in configure_section)
 
     assert not missing, (
-        "docs/cli_reference.md configure section missing flags: "
+        "docs/cli_reference.mdx configure section missing flags: "
         + ", ".join(missing)
     )
 
@@ -94,7 +94,7 @@ def test_cli_reference_omits_unsupported_skill_distillation_flags() -> None:
     stale = sorted(flag for flag in unsupported_flags if flag in configure_section)
 
     assert not stale, (
-        "docs/cli_reference.md configure section documents unsupported flags: "
+        "docs/cli_reference.mdx configure section documents unsupported flags: "
         + ", ".join(stale)
     )
 
@@ -136,7 +136,12 @@ def test_cli_reference_documents_shared_intake_flags_once() -> None:
 
 
 def _public_cli_doc_paths() -> list[Path]:
-    return [REPO_ROOT / "README.md", *sorted((REPO_ROOT / "docs").glob("*.md"))]
+    docs_root = REPO_ROOT / "docs"
+    fern_root = docs_root / "fern"
+    published_pages = sorted(
+        path for path in docs_root.rglob("*.mdx") if fern_root not in path.parents
+    )
+    return [REPO_ROOT / "README.md", *published_pages]
 
 
 def _markdown_command_lines(path: Path) -> list[tuple[int, str]]:

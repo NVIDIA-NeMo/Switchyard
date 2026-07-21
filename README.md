@@ -82,7 +82,7 @@ switchyard --routing-profiles routes.yaml -- launch claude                      
 
 > **Bedrock-backed profile caveat (Claude Code + MCP):** Bedrock enforces a 64-character `toolSpec.name` cap. Claude Code's MCP bridge can auto-inject longer tool names, producing `BedrockException` 400s on tool-bearing requests. If you use a Bedrock-backed route and hit this, swap to an OpenAI-compatible model with `--model openai/gpt-4o` or a routing-profile YAML.
 
-See [Agent Launchers](docs/guides/agent_launchers.md) for supported harness
+See [Agent Launchers](docs/guides/agent_launchers.mdx) for supported harness
 versions, model requirements, troubleshooting, and Claude Code `/model` picker
 aliasing.
 
@@ -149,15 +149,15 @@ Non-interactive `configure` does not read provider credentials from the routing
 bundle; pass `--api-key` explicitly when persisting the bundle for CI.
 
 For profile selection and full configuration examples, start with
-[Routing Overview](docs/routing_algorithms/overview.md), then open the
+[Routing Overview](docs/routing_algorithms/overview.mdx), then open the
 strategy-specific page:
 
-- [Random Routing](docs/routing_algorithms/random_routing.md)
-- [LLM Classifier Routing](docs/routing_algorithms/llm_classifier_routing.md)
-- [Stage-Router Routing](docs/routing_algorithms/stage_router_routing.md)
+- [Random Routing](docs/routing_algorithms/random_routing.mdx)
+- [LLM Classifier Routing](docs/routing_algorithms/llm_classifier_routing.mdx)
+- [Stage-Router Routing](docs/routing_algorithms/stage_router_routing.mdx)
 
 For multi-turn classifier sessions, see
-[Session Affinity (Sticky Routing)](docs/routing_algorithms/sticky_routing.md).
+[Session Affinity (Sticky Routing)](docs/routing_algorithms/sticky_routing.mdx).
 
 ### 3. Use as a Python library
 
@@ -200,7 +200,7 @@ flowchart LR
 Clients keep their native OpenAI or Anthropic API format. Switchyard picks a
 configured backend, forwards the request in that backend's own format, and
 translates the response back into the shape the client expects. See
-[Architecture](docs/architecture.md) for the system context and the full
+[Architecture](docs/architecture.mdx) for the system context and the full
 request flow.
 
 ## Installation Options
@@ -223,11 +223,11 @@ See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds
 
 ## Documentation
 
-- **[Getting Started](docs/getting_started.md)**: step-by-step setup, first request, troubleshooting
-- **[Known Issues](docs/known_issues.md)**: known issues in 0.1.0
-- **[Agent Launchers](docs/guides/agent_launchers.md)**: Claude Code, Codex, and OpenClaw launcher behavior
-- **[Cli Reference](docs/cli_reference.md)**: canonical reference for every `switchyard` subcommand and flag
-- **[Architecture](docs/architecture.md)**: system context and end-to-end request flow
+- **[Getting Started](docs/getting_started.mdx)**: step-by-step setup, first request, troubleshooting
+- **[Known Issues](docs/known_issues.mdx)**: known issues in 0.1.0
+- **[Agent Launchers](docs/guides/agent_launchers.mdx)**: Claude Code, Codex, and OpenClaw launcher behavior
+- **[Cli Reference](docs/cli_reference.mdx)**: canonical reference for every `switchyard` subcommand and flag
+- **[Architecture](docs/architecture.mdx)**: system context and end-to-end request flow
 - **[Routing Algorithms](docs/routing_algorithms/)**: signal-driven weak/strong stage-router routing: picker layers, signal dimensions, and calibration data.
 - **[Contributing](CONTRIBUTING.md)**: dev setup, testing, CI gates, PR process
 - **[Development](DEVELOPMENT.md)**: project structure, benchmarks, conventions

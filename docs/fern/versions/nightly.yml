@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+navigation:
+  - page: "Home"
+    path: ../../index.mdx
+  - section: "Get Started"
+    contents:
+      - page: "Getting Started"
+        path: ../../getting_started.mdx
+      - page: "Known Issues in 0.1.0"
+        path: ../../known_issues.mdx
+  - section: "Guides"
+    contents:
+      - page: "Agent Launchers"
+        path: ../../guides/agent_launchers.mdx
+      - page: "Skill Distillation"
+        path: ../../skill_distillation.mdx
+  - section: "Concepts"
+    contents:
+      - page: "Core Concepts"
+        path: ../../core_concepts.mdx
+      - page: "Architecture"
+        path: ../../architecture.mdx
+  - section: "Routing"
+    contents:
+      - page: "Overview"
+        path: ../../routing_algorithms/overview.mdx
+      - page: "Random Routing"
+        path: ../../routing_algorithms/random_routing.mdx
+      - page: "LLM Classifier Routing"
+        path: ../../routing_algorithms/llm_classifier_routing.mdx
+      - page: "Sticky Routing"
+        path: ../../routing_algorithms/sticky_routing.mdx
+      - page: "Stage-Router Routing"
+        path: ../../routing_algorithms/stage_router_routing.mdx
+      - page: "Escalation-Router Routing"
+        path: ../../routing_algorithms/escalation_router_routing.mdx
+  - section: "Operations"
+    contents:
+      - page: "Context-Window Handling"
+        path: ../../operations/context_window.mdx
+  - section: "Reference"
+    contents:
+      - page: "CLI Reference"
+        path: ../../cli_reference.mdx

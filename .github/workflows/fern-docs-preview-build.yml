@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Workflow 1 of 2 for Fern doc previews.
+#
+# Collects docs sources and changed-file metadata from same-repository PR
+# branches. No secrets are used here. Fork PRs receive the required Fern check
+# but do not enter the hosted-preview path. The companion workflow builds the
+# preview and posts the PR comment.
+
+name: "Preview Fern Docs: Build"
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/fern-docs-preview-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fern-docs-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    name: Collect preview sources
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Save changed MDX paths
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mkdir -p .preview-metadata
+          git diff --name-only "origin/${BASE_REF}...HEAD" -- '*.mdx' > .preview-metadata/changed_mdx_files 2>/dev/null || true
+
+      # The nightly navigation reaches from docs/fern/ into docs/**/*.mdx,
+      # so the artifact must preserve the complete docs tree.
+      - name: Upload docs sources and metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fern-preview
+          path: |
+            docs/
+            .preview-metadata/
+          include-hidden-files: true
+          retention-days: 1

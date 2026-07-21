@@ -5,7 +5,7 @@ Switchyard itself. If you only want to **use** the package, see
 [README](README.md).
 
 For deeper architectural docs, see [Agents](AGENTS.md) and
-[Architecture](docs/ARCHITECTURE.md).
+[Architecture](docs/architecture.mdx).
 
 ## Setup
 

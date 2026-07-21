@@ -1,6 +1,9 @@
-# CLI Reference
-
-This page is the canonical reference for every `switchyard` subcommand. It mirrors the output of `switchyard --help` and `switchyard <verb> --help`. If you spot drift, file a docs ticket. Tutorials and recipes live in [Getting Started](getting_started.md); this page is reference material only.
+---
+title: "CLI Reference"
+description: "Reference every NeMo Switchyard command, option, configuration path, and environment variable."
+position: 1
+---
+This page is the canonical reference for every `switchyard` subcommand. It mirrors the output of `switchyard --help` and `switchyard <verb> --help`. If you spot drift, file a docs ticket. Tutorials and recipes live in [Getting Started with Switchyard](/get-started/getting-started); this page is reference material only.
 
 ## Verbs at a glance
 
@@ -507,16 +510,17 @@ switchyard configure --disable-skill-distillation
 switchyard configure --reset
 ```
 
-!!! note "Non-interactive / CI usage"
-    **`--target all` (the default) requires launcher models in no-TTY mode.** Without a
-    TTY or `--claude-model` / `--codex-model` / `--openclaw-model`, the command exits with
-    `No Claude model configured or discovered`. Pass `--target provider` to save only
-    provider credentials, or supply explicit `--claude-model` / `--codex-model` / `--openclaw-model` values.
+<Note title="Non-interactive / CI usage">
+**`--target all` (the default) requires launcher models in no-TTY mode.** Without a
+TTY or `--claude-model` / `--codex-model` / `--openclaw-model`, the command exits with
+`No Claude model configured or discovered`. Pass `--target provider` to save only
+provider credentials, or supply explicit `--claude-model` / `--codex-model` / `--openclaw-model` values.
 
-    **`configure` requires an explicit `--api-key` flag.** It does not read `OPENROUTER_API_KEY`
-    (or any other `*_API_KEY` environment variable) and does not read `api_key` from a
-    routing-profile bundle (`--routing-profiles`). Always pass `--api-key` when running
-    non-interactively.
+**`configure` requires an explicit `--api-key` flag.** It does not read `OPENROUTER_API_KEY`
+(or any other `*_API_KEY` environment variable) and does not read `api_key` from a
+routing-profile bundle (`--routing-profiles`). Always pass `--api-key` when running
+non-interactively.
+</Note>
 
 ## `switchyard verify`
 
@@ -574,5 +578,5 @@ switchyard verify --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.
 
 ## See also
 
-- [Getting Started](getting_started.md): install Switchyard and run your first request.
-- [Architecture](architecture.md): system context and end-to-end request flow.
+- [Getting Started with Switchyard](/get-started/getting-started): install Switchyard and run your first request.
+- [Switchyard Architecture](/concepts/architecture): system context and end-to-end request flow.

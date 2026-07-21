@@ -22,7 +22,7 @@ want Switchyard to:
 
 If you only have a single backend, use `passthrough`. If you want a fixed weighted
 strong/weak split for benchmarking, use
-[Random Routing](../routing_algorithms/random_routing.md).
+[Random Routing](../routing_algorithms/random_routing.mdx).
 
 ## Architecture
 
@@ -253,7 +253,7 @@ is 2, so 3 attempts). On each attempt:
    latency before surfacing the same status. (Context-window overflow surfaces as a `400`
    here and is also passed straight through. The `latency_service` route does not
    participate in the chain-level evict-and-retry described in
-   [Context-Window Handling](../operations/context_window.md).)
+   [Context-Window Handling](../operations/context_window.mdx).)
 
 If an attempt succeeds **after** at least one failure, the router records a
 `retry_recovered` outcome. This is direct evidence the steering logic rescued a request that

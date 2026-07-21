@@ -13,7 +13,7 @@ traffic that sits between client applications and LLM backends.
 
 - **Four-role chain** — `RequestProcessor → LLMBackend → ResponseProcessor →
   TranslationEngine`, executed by the Rust-backed core. See
-  [Architecture](docs/ARCHITECTURE.md).
+  [Architecture](docs/architecture.mdx).
 - **Protocol translation** — convert between OpenAI Chat Completions, Anthropic
   Messages, and OpenAI Responses wire formats, so each client keeps speaking its
   native API regardless of the upstream backend.
@@ -22,7 +22,7 @@ traffic that sits between client applications and LLM backends.
   `passthrough`, `random_routing`, `stage_router`, `deterministic`
   (LLM-as-classifier), `latency_service`, and `noop`.
 - **Routing strategies** — weighted random split, signal-driven **stage-router**
-  escalation (see [Stage-Router Routing](docs/stage_router_routing.md)),
+  escalation (see [Stage-Router Routing](docs/routing_algorithms/stage_router_routing.mdx)),
   LLM-as-classifier strong/weak routing, and latency-aware multi-endpoint
   failover.
 - **One-command launchers** — `switchyard launch claude`, `launch codex`, and
@@ -33,7 +33,7 @@ traffic that sits between client applications and LLM backends.
   `--list-models`), and `verify` / `launch --smoke` round-trip checks.
 - **Observability** — Prometheus `/metrics`, a JSON `/v1/stats`
   (`/v1/routing/stats` alias), and per-request cost/token/latency stats. See
-  [Metrics Reference](docs/METRICS_REFERENCE.md).
+  [Metrics Reference](docs/internal/metrics_reference.md).
 - **Python library** — `SwitchyardRecipes` (`passthrough_recipe`,
   `random_routing_recipe`, `stage_router_recipe`, `deterministic_routing_recipe`,
   …) and typed `ChatRequest` / `ChatResponse` containers for in-process use.
@@ -54,4 +54,3 @@ traffic that sits between client applications and LLM backends.
   development — LLM-as-classifier routing is now the implicit default for the
   `claude` / `codex` / `openclaw` launchers.
 - Inference Hub integration docs are out of scope for this release.
-

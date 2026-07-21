@@ -1,4 +1,8 @@
-# Escalation-Router Routing
+---
+title: "Escalation-Router Routing"
+description: "Start agent tasks on a weak model and latch them to a strong model when an LLM judge detects sustained trouble."
+position: 6
+---
 
 Escalation-router routing starts each conversation on a cheaper `weak` model.
 An LLM judge watches how the work progresses and moves the conversation to a
@@ -9,7 +13,7 @@ the task.
 Use it for multi-turn agent workloads where a weak model can handle routine
 work but may need rescue after repeated errors, loops, drift, false progress,
 or premature completion. Unlike
-[LLM Classifier Routing](llm_classifier_routing.md), which predicts how
+[LLM Classifier Routing](/routing/llm-classifier-routing), which predicts how
 difficult a request looks, escalation routing judges whether the run is
 actually going well.
 
@@ -18,7 +22,7 @@ actually going well.
 The router keeps one state value per conversation: whether that conversation
 has escalated. Conversations are identified from the stable system prompt and
 first user message, using the same bounded in-memory store described in
-[Sticky Routing](sticky_routing.md).
+[Sticky Routing](/routing/sticky-routing).
 
 For each turn, Switchyard:
 
@@ -120,7 +124,7 @@ a client-selectable model.
 If the selected tier exceeds its context window, Switchyard retries once on
 `fallback_target_on_evict`, which must match one of the configured tier ids
 (`strong` / `weak` unless the targets set their own `id`). See
-[Context-Window Handling](../operations/context_window.md).
+[Context-Window Handling](/operations/context-window-handling).
 
 ## Useful options
 
@@ -185,12 +189,12 @@ mid-session prefix rewrites can change a deep key and lose the existing latch.
 ## When not to use escalation routing
 
 - **One-shot requests.** There is no trajectory to judge. Use
-  [LLM Classifier Routing](llm_classifier_routing.md) when the initial request
+  [LLM Classifier Routing](/routing/llm-classifier-routing) when the initial request
   should determine the tier.
 - **Fixed traffic experiments.** Use
-  [Random Routing](random_routing.md) for A/B splits and gradual traffic ramps.
+  [Random Routing](/routing/random-routing) for A/B splits and gradual traffic ramps.
 - **Per-turn stage optimization.** Use
-  [Stage-Router Routing](stage_router_routing.md) when tool-result signals
+  [Stage-Router Routing](/routing/stage-router-routing) when tool-result signals
   should move individual turns in both directions.
 - **Latency-critical traffic.** Eligible unlatched turns wait for the judge
   before the selected backend call.
@@ -199,8 +203,8 @@ mid-session prefix rewrites can change a deep key and lose the existing latch.
 
 ## Related
 
-- [Routing Overview](overview.md): compare all supported routing strategies.
-- [Sticky Routing](sticky_routing.md): session-key derivation and affinity
+- [Routing Overview](/routing/overview): compare all supported routing strategies.
+- [Sticky Routing](/routing/sticky-routing): session-key derivation and affinity
   behavior.
-- [Architecture](../architecture.md): the end-to-end request lifecycle and
+- [Architecture](/concepts/architecture): the end-to-end request lifecycle and
   system boundaries.

@@ -99,6 +99,12 @@ jobs:
       - name: mypy
         run: uv run mypy switchyard
 
+  # Keep Fern validation inside the required CI Success aggregate so a docs
+  # configuration failure cannot be merged as an optional check.
+  fern-docs:
+    name: Fern docs
+    uses: ./.github/workflows/fern-docs-ci.yml
+
   # Unit tests on supported Python versions. Integration/e2e tests are
   # intentionally deselected here because they may need Docker, live provider
   # credentials, or network egress.
@@ -197,7 +203,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [lint, spdx-headers, rust, typecheck, test, slim-install-smoke]
+    needs: [lint, spdx-headers, rust, typecheck, fern-docs, test, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

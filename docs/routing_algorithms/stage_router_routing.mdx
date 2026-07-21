@@ -1,5 +1,8 @@
-# Stage-Router Routing
-
+---
+title: "Stage-Router Routing"
+description: "Route agent turns with progress signals, tool results, and an optional LLM classifier fallback."
+position: 5
+---
 Stage-router routing sends each request to either a **capable** model or a
 cheaper **efficient** one, depending on where the agent is in its run. The goal
 is to spend the capable model on the turns that need it (exploration, error
@@ -11,7 +14,7 @@ plus an optional LLM classifier.
 
 If the selected backend hits a context-window overflow, the router retries once
 against `fallback_target_on_evict`; a second overflow surfaces a
-context-pool-exhausted error (see [Context-Window Handling](../operations/context_window.md)).
+context-pool-exhausted error (see [Context-Window Handling](/operations/context-window-handling)).
 
 ## How it works
 
@@ -229,7 +232,7 @@ If you omit `confidence_threshold`, the profile-config default of `0.7` applies;
 the example sets `0.5` explicitly.
 
 `fallback_target_on_evict` is required and must reference one of the
-declared target ids. See [Context-Window Handling](../operations/context_window.md) for
+declared target ids. See [Context-Window Handling](/operations/context-window-handling) for
 exception types and error envelopes.
 
 ### Optional: add an LLM classifier
@@ -297,7 +300,7 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 
 - **Single-model deployments.** Use a plain passthrough profile instead.
 - **Probabilistic A/B splits.** Use
-  [Random Routing](random_routing.md) (`type: random-routing` in profile configs).
+  [Random Routing](/routing/random-routing) (`type: random-routing` in profile configs).
   The stage-router's signals are wasted on a fixed traffic ratio.
 - **No tool-result history.** Stage-router needs meaningful tool-call traffic to
   populate the tool-result signal. For pure chat-completion workloads every
@@ -305,5 +308,5 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 
 ## Related
 
-- [Architecture](../architecture.md): the end-to-end request lifecycle and
+- [Switchyard Architecture](/concepts/architecture): the end-to-end request lifecycle and
   system boundaries.

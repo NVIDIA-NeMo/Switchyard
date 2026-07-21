@@ -1,122 +1,191 @@
 ---
 name: switchyard-docs
-description: Use when adding or editing pages on the published Switchyard MkDocs site (`docs/`, `mkdocs.yml`, `.github/workflows/docs.yml`), wiring a new page into the nav, debugging a `mkdocs build --strict` failure, previewing the site locally, or reviewing changes to the docs CI workflow. Triggers on phrases like "add a docs page", "the docs site is broken", "mkdocs strict is failing", "preview docs locally", or any edit under `docs/**` that should reach the published Pages site.
+description: Use when adding or editing Switchyard docs or contributor guidance under `docs/`, changing Fern configuration or navigation, debugging `fern check`, previewing or publishing docs, or reviewing the Fern GitHub Actions workflows.
 ---
 
-# Switchyard Docs Site
+# Switchyard Fern Docs
 
 ## Overview
 
-**The published site is a deliberately small subset of `docs/`.** Most files under `docs/` are internal design notes; only the pages listed in `mkdocs.yml`'s `nav:` (and not in `exclude_docs`) ship to the public site. When in doubt, prefer not to publish — add a file as internal first, then promote it once the content is stable.
+Published documentation is authored as MDX at the top level of `docs/`. Fern infrastructure lives
+under `docs/fern/`; do not put nightly content under `docs/fern/versions/nightly/pages/`.
 
-**Strict mode is the contract.** `mkdocs build --strict` runs in CI (`.github/workflows/docs.yml`) and locally via `make publish`. Any warning — missing link target, unrecognized anchor, ambiguous file reference — fails the build. If you broke strict, fix the warning rather than relaxing the gate.
+`docs/README.md` is the contributor entry point. Scoped instructions live in `docs/AGENTS.md` and
+`docs/fern/AGENTS.md`; neither guidance file is published. Keep those files synchronized with this
+skill when the authoring, validation, redirect, or publishing workflow changes.
 
-Repository files outside `docs_dir` are linked with paths relative to the Markdown source. The
-`mkdocs_hooks.py` `on_page_markdown` hook rewrites valid in-repository targets to source URLs using
-`repo_url` and `extra.source_ref` from `mkdocs.yml` before MkDocs validates links. The source ref
-comes from `MKDOCS_SOURCE_REF`, with `main` as the local fallback. CI sets it to the PR head SHA or
-push SHA so preview and published links resolve against the exact source commit. Missing targets and
-paths that escape the repository remain relative so strict validation still exposes them.
+The public page set, order, and labels come from `docs/fern/versions/nightly.yml`. Markdown files
+under `docs/internal/` are intentionally unpublished design and operations notes. Do not add them to
+the Fern navigation unless the content is deliberately being promoted to public documentation.
 
-The docs site uses the same `uv` toolchain as the rest of the repo. Dependencies live in the `docs` group in `pyproject.toml`; there is no separate `requirements*.txt`.
+`fern check` is the contract. Run it locally through `docs/Makefile`; CI runs the same CLI version
+pinned in `docs/fern/fern.config.json`.
 
 ## Quick Reference
 
 | Situation | Command |
 |---|---|
-| Sync the docs dependency group | `cd docs && make env`  (= `uv sync --only-group docs`) |
-| Live-reload preview at http://127.0.0.1:8000 | `cd docs && make live` |
-| One-shot strict build (mirrors CI) | `cd docs && make publish` |
-| Plain incremental build | `cd docs && make html` |
-| Remove `site/` | `cd docs && make clean` |
-| List published pages | `grep -A20 "^nav:" mkdocs.yml` |
-| List excluded `docs/*.md` | `grep -A10 "^exclude_docs:" mkdocs.yml` |
-
-The MkDocs config and the workflow live at the repo root; `docs/Makefile` cd's there for you.
+| Validate the site | `cd docs && make check` |
+| Test routes and redirects | `uv run pytest tests/test_fern_docs.py -v` |
+| Run a local preview | `cd docs && make preview` |
+| Remove local Fern artifacts | `cd docs && make clean` |
+| List published pages | `sed -n '1,240p' docs/fern/versions/nightly.yml` |
+| Find unpublished notes | `find docs/internal -type f -name '*.md' -print` |
+| Check MDX safety | `cd docs && make check` |
+| Check internal Fern links | `uv run pytest tests/test_fern_docs.py::test_internal_mdx_links_resolve_to_navigation_routes -v` |
 
 ## Where Things Live
 
-Before editing, discover the current state — don't memorize it:
+- **Published content** → `docs/**/*.mdx`, excluding `docs/fern/`.
+- **Unpublished notes** → `docs/internal/**/*.md`.
+- **Docs contributor guide and scoped instructions** → `docs/README.md` and `docs/AGENTS.md`.
+- **Fern infrastructure guide and scoped instructions** → `docs/fern/README.md` and
+  `docs/fern/AGENTS.md`.
+- **Site and product configuration** → `docs/fern/docs.yml`.
+- **Nightly navigation** → `docs/fern/versions/nightly.yml`.
+- **Fern CLI pin** → `docs/fern/fern.config.json`.
+- **Local commands** → `docs/Makefile`.
+- **CI validation** → `.github/workflows/fern-docs-ci.yml`.
+- **PR preview collection** → `.github/workflows/fern-docs-preview-build.yml`.
+- **PR preview publishing and comment** → `.github/workflows/fern-docs-preview-comment.yml`.
+- **Release publishing** → `.github/workflows/publish-fern-docs.yml`.
+- **GitHub Pages redirect generator** → `docs/fern/generate_legacy_redirect_site.py`.
+- **Route/redirect regression tests** → `tests/test_fern_docs.py`.
+- **Shared NVIDIA presentation** → `global-theme: nvidia`; theme assets are not vendored here.
 
-- **Published page set** → `nav:` block in `mkdocs.yml`. The order there is the order on the site.
-- **Hidden-from-publish files** → `exclude_docs:` block in `mkdocs.yml`. Anything under `docs/` that isn't in `nav:` and isn't excluded will trigger a strict-build warning.
-- **Internal design notes** → also under `docs/`, but excluded. They live next to published pages so cross-linking from internal notes to public pages stays trivial.
-- **Build/preview entry points** → `docs/Makefile` (thin wrapper over `uv run --only-group docs mkdocs ...`).
-- **Docs dependencies** → `docs` group in `pyproject.toml`; resolved into `uv.lock` like the rest of the project.
-- **Site styling** → `docs/stylesheets/` (extra CSS) and the `theme:` block in `mkdocs.yml`.
-- **Repository source-link hook** → `mkdocs_hooks.py`, configured by `repo_url` and
-  `extra.source_ref` in `mkdocs.yml`. `MKDOCS_SOURCE_REF` overrides the local `main` fallback.
-- **CI** → `.github/workflows/docs.yml`. Triggered on `docs/**`, `mkdocs_hooks.py`, `mkdocs.yml`,
-  `pyproject.toml`, `uv.lock`, and the workflow file itself.
+## Adding a Published Page
 
-Run `ls docs/` and `grep -A20 "^nav:" mkdocs.yml` to see the current set in one shot.
+1. Create `docs/<section>/<page>.mdx` with concise frontmatter, including `title` and `position`.
+2. Add it to `docs/fern/versions/nightly.yml` in the intended sidebar location. Preserve existing
+   labels and order unless the change explicitly redesigns navigation.
+3. Point `path:` from the version file back to the authored page with `../../`, for example:
 
-## Adding a Page
+   ```yaml
+   - page: Health-aware Routing
+     path: ../../routing_algorithms/health_aware_routing.mdx
+   ```
 
-1. **Decide whether it's public or internal.** Internal design notes stay out of `nav` and go into `exclude_docs`. Don't ship anything that isn't stable enough to read cold.
-2. **Place the file under `docs/`.** Use existing naming: lower_snake or UPPER_SNAKE — match the surrounding pages on the same topic.
-3. **Wire it into `mkdocs.yml`** in two places:
-   - Add the entry under `nav:` with a human-readable title.
-   - Remove it from `exclude_docs` if a stale entry exists.
-4. **Use relative links between published pages** (e.g. `[Architecture](architecture.md)`). MkDocs strict mode resolves these against `docs_dir`.
-5. **Link to repository files outside `docs_dir` relative to the Markdown file.** For example,
-   `docs/operations/example.md` links to `examples/config.yaml` as
-   `../../examples/config.yaml`. The source-link hook turns an existing in-repository file into a
-   `/blob/<source-ref>/...` URL and a directory into `/tree/<source-ref>/...` during the build.
-6. **Run `make publish` locally** before pushing. CI runs `mkdocs build --strict`; reproduce that locally.
-7. **Code samples in docs are tested by reading.** They are not executed by CI, so the burden is on the author. Verify imports resolve from `switchyard/__init__.py`'s `__all__` (anything else is an internal path that may move).
-8. **Provider examples must match CLI resolution.** NVIDIA examples may use `NVIDIA_API_KEY` where the CLI supports that fallback. OpenRouter examples should use `https://openrouter.ai/api/v1` and pass `"$OPENROUTER_API_KEY"` via `--api-key`, or save it with `switchyard configure --provider openrouter`, unless the code being documented actually adds an `OPENROUTER_API_KEY` fallback.
+4. Use version-agnostic Fern URLs for published-page links. Fern URLs derive from the slugified
+   `page:` and `section:` labels, not filenames. For example, `page: Core Concepts` is
+   `/concepts/core-concepts` inside every version.
+5. Link repository files outside `docs/` with an absolute GitHub URL. They are not part of Fern's
+   content tree.
+6. Import examples from `switchyard`, not `switchyard.lib.*`; public examples must use exports from
+   `switchyard/__init__.py`.
+7. Run `cd docs && make check` before pushing.
+
+## Editing Navigation
+
+- Treat `docs/fern/versions/nightly.yml` as the source of truth for public scope and order.
+- Use `section:` for labeled groups with nested `contents:`. Do not combine `folder:` with
+  `contents:`; Fern rejects that schema.
+- Keep Switchyard sections label-only. Do not add a `path:` to a section and then repeat that same
+  file as a child page; Fern publishes the section landing route instead of the intended child
+  route. Every authored page in this site belongs under `contents:` and resolves as
+  `/section/page`.
+- Keep the first navigation entry as the home page.
+- Paths in nightly navigation point to `../../*.mdx`. Frozen releases, when added, own independent
+  copies under `docs/fern/versions/<version>/pages/`.
+- Do not add `latest.yml` as a copy of nightly. A future `latest` alias must point at a frozen GA
+  tree.
+
+## Links and MDX
+
+- MDX treats bare angle-bracket text as JSX. Escape comparisons such as `<100ms` as `&lt;100ms`
+  and wrap placeholders such as `<MODEL>` in backticks.
+- HTML void tags must self-close, for example `<img src="..." />`.
+- Use MDX comments (`{/* note */}`), not HTML comments.
+- Built-in Fern components do not require imports. Add product-specific components only when a page
+  needs them, then register their directory in `docs/fern/docs.yml`.
+- Do not link unpublished `docs/internal/` notes from published MDX.
+- Preserve titled MkDocs admonitions with the Fern callout `title` prop, for example
+  `<Note title="Deployment boundary">`.
+- Give every published page a non-empty `description` in frontmatter.
+
+## Redirects
+
+- Use full `/nemo/switchyard/...` paths in both `source` and `destination`.
+- Add exact mappings when old filenames and new navigation slugs differ. A generic `index.html`
+  catch-all cannot translate underscores or changed section hierarchy.
+- Cover both the directory route and its generated `index.html` form for every former MkDocs page.
+- Keep `docs/fern/generate_legacy_redirect_site.py` synchronized with `docs/fern/docs.yml`. The
+  generator owns redirects on `nvidia-nemo.github.io/Switchyard`; Fern redirects only own requests
+  that already reach the Fern domain.
+- Run `uv run pytest tests/test_fern_docs.py -v` after changing navigation, links, or redirects.
 
 ## CI Hygiene
 
-`.github/workflows/docs.yml` mirrors the conventions in `ci.yml` — match them when editing:
+The Fern workflows follow the same split as NeMo Curator:
 
-- **Path-filtered triggers** on `docs/**`, `mkdocs_hooks.py`, `mkdocs.yml`, `pyproject.toml`,
-  `uv.lock`, and the workflow file. Keeps unrelated PRs out of the docs job graph.
-- **Read-only default permissions** at the workflow level. Each job re-declares write scopes only when it needs them (`contents: write` for the Pages deploy, `pull-requests: write` for the preview comment).
-- **`concurrency` group `${{ github.workflow }}-${{ github.ref }}`** with `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`. Superseded PR runs are cancelled; main runs queue so the `gh-pages` writes don't race.
-- **Workflow-level `MKDOCS_SOURCE_REF`** resolves from
-  `${{ github.event.pull_request.head.sha || github.sha }}`. Pull requests use the immutable head
-  commit; pushes use the pushed commit. Keep this environment override on both build event types.
-- **`astral-sh/setup-uv@v6`** with `enable-cache: true` and `cache-dependency-glob: "uv.lock"`. Cache is keyed off the same lockfile the rest of the project uses.
-- **`uv sync --only-group docs --locked`** installs just the docs group, deterministically.
-- **`uv run --only-group docs mkdocs build --strict`** is the build step. The local equivalent is `make publish`.
-- **Preview job gated to same-repo PRs.** `GITHUB_TOKEN` from a fork PR has no write scope on `gh-pages`, so the `if:` clause checks `head.repo.full_name == github.repository`. Don't switch to `pull_request_target` to "fix" this — that runs untrusted PR code with write secrets.
-- **Single artifact handoff between jobs.** The `build` job uploads `site/`; `deploy` and `preview` download it. Don't duplicate the build inside either downstream job — it diverges from what was validated.
+- `fern-docs-ci.yml` is a reusable `fern check` workflow called by the repository-wide CI. Its job
+  is included in the required `CI Success` aggregate, so Fern failures cannot merge as an optional
+  check.
+- `fern-docs-preview-build.yml` runs only for same-repository PR branches, uses no secrets, and
+  uploads the complete `docs/` tree plus a changed-MDX hint. Fork PRs stop after required Fern
+  validation. The complete tree is required because nightly navigation under `docs/fern/`
+  references MDX pages through `../../` paths. It uses PR-numbered concurrency and cancels
+  superseded runs.
+- `fern-docs-preview-comment.yml` runs through `workflow_run`, downloads the collector artifact,
+  rejects fork-originated runs, derives the target PR from the trusted event, reads the Fern version
+  from a separate default-branch checkout, and generates a PR-numbered preview with
+  `DOCS_FERN_TOKEN`. Commenting runs in a separate job with only pull-request write permission. It
+  must never check out the PR branch, run PR-provided scripts, or trust artifact metadata for the
+  target PR/tool version.
+- `publish-fern-docs.yml` publishes only for `docs/v*` tags or manual dispatch, then replaces the
+  old GitHub Pages content with static redirects to the custom Fern domain. The workflow verifies
+  the custom-domain home page first; if it remains unavailable, GitHub Pages stays untouched.
+  Publishing is serialized, and the repository-write redirect job never receives the Fern token.
+  A merge to `main` validates the site but does not publish either destination.
 
-If the workflow needs a new job (e.g. link check, spell check), keep it inside this file and gate it on the same path filter so it doesn't fan out to unrelated PRs.
+Every workflow installs the exact Fern CLI version from `docs/fern/fern.config.json` and runs Fern
+from `docs/fern/`. The privileged preview reads that pin from the trusted default branch rather
+than the artifact. Preview generation and publishing require the `DOCS_FERN_TOKEN` organization
+secret. All Fern workflow actions use immutable commit pins and supported Node LTS; secret-bearing
+jobs disable package-manager caching and validate the Fern version before installing it. Checkout
+steps do not persist credentials. Do not collapse the collector and trusted preview phases or use
+`pull_request_target`.
 
-## Failure → Fix Map
+## Failure Map
 
 | Symptom | Fix |
 |---|---|
-| `WARNING - A reference to 'X.md' is included in the 'nav' configuration ... is not found in the documentation files` | The nav points at a file that doesn't exist under `docs/`. Add the file or drop the nav entry. |
-| `WARNING - Doc file 'X.md' contains a link 'Y.md', but the doc does not exist` | Bad relative link. Use a path relative to the Markdown file. Existing targets outside `docs_dir` are rewritten by `mkdocs_hooks.py`; missing and repository-escaping paths intentionally remain visible to strict validation. |
-| `WARNING - Doc file 'X.md' is excluded from the build but its 'nav' entry references it` | The file is both in `nav:` and in `exclude_docs:`. Pick one. |
-| `WARNING - The following pages exist in the docs directory, but are not included in the "nav" configuration` | Either add the page to `nav:` (publish it) or add it to `exclude_docs:` (hide it). The "do nothing" option doesn't exist under strict. |
-| Repository links in a PR preview point at `main` | Confirm `MKDOCS_SOURCE_REF` is present in the build job and resolves to `github.event.pull_request.head.sha`; local builds intentionally fall back to `main`. |
-| Preview job fails with `Permission to <repo>.git denied to github-actions[bot]` on a fork PR | Expected — the preview job is gated to same-repo PRs. If the gate is firing on a same-repo PR, check that `github.event.pull_request.head.repo.full_name` resolves correctly. |
-| GitHub Pages site loses PR previews after a `main` deploy | Confirm `keep_files: true` on the `peaceiris/actions-gh-pages` step. The main deploy must not wipe `pr-preview/*`. |
-| `make env` fails with `uv: command not found` | Install `uv` per the project Setup docs (see `AGENTS.md`). The Makefile shells out to `uv`; no separate Python toolchain is bootstrapped. |
+| `Path does not exist` | Correct the `../../` path in `versions/nightly.yml` or restore the referenced MDX file. |
+| Navigation object does not match schema | Use `section` with `contents`, or a standalone `folder`; do not combine `folder` and `contents`. |
+| Unsupported JSX tag | Replace it with a built-in Fern component or register the product component directory. |
+| MDX parse error near `<` | Escape prose comparisons/placeholders or self-close the HTML element. |
+| Link works on GitHub but not Fern | Rewrite it to the canonical Fern URL or an absolute GitHub URL for repository-only files. |
+| Child page returns 404 but section works | Remove the duplicate section `path`; keep the authored page only under `contents`. |
+| Legacy redirect lands on another 404 | Add an exact old-path → current-slug mapping before broad redirect patterns. |
+| `global-theme` authentication failure | Verify NVIDIA Fern authentication; do not vendor a local copy of the shared theme. |
 
 ## Anti-Patterns
 
-- **Publishing internal design notes.** Anything under `docs/` that isn't a user-facing walkthrough or reference belongs in `exclude_docs`, not in `nav:`. Internal notes drift faster than the public surface and confuse users who land on them from search.
-- **Hard-coded same-repository GitHub blob/tree URLs.** They pin the repository and source ref,
-  which breaks forks and branch-specific builds. Use a path relative to the Markdown file and let
-  `mkdocs_hooks.py` derive the source URL from `mkdocs.yml`.
-- **Disabling `strict: true`** to make a CI failure go away. The warning is the bug. The two legitimate fixes are: fix the broken reference, or add the file to `exclude_docs`.
-- **Importing internal symbols in published examples.** Code in published pages must import from `switchyard` (the public API), not from `switchyard.lib.*` or any other internal path. Anything outside `switchyard/__init__.__all__` can move without a deprecation.
-- **Reintroducing a separate `requirements-mkdocs.txt`.** Docs deps belong in the `docs` group in `pyproject.toml` so `uv.lock` is the single source of pinned versions. Two pinning surfaces drift.
-- **Switching the preview job to `pull_request_target`** to make fork previews work. That trades a missing preview for a real supply-chain risk. The current `if:` gate is the right answer.
+- Adding unpublished design notes to navigation because they happen to live under `docs/`.
+- Adding `README.md` or `AGENTS.md` contributor guidance to published navigation.
+- Recreating `docs/fern/versions/nightly/pages/`; nightly content is authored at `docs/*.mdx`.
+- Deriving links from filenames instead of the navigation title/slug.
+- Assigning the same MDX file to a section `path` and one of its child pages.
+- Hardcoding `/nightly/` in shared page links.
+- Vendoring NVIDIA theme CSS, logos, favicon, or footer components.
+- Reintroducing MkDocs configuration, hooks, or a parallel docs build.
+- Running a secret-bearing Fern preview directly from a `pull_request` job.
+- Publishing production docs on every merge to `main` instead of a docs tag or manual dispatch.
 
 ## References
 
-- `mkdocs.yml` — published-site config
-- `mkdocs_hooks.py` — repository-relative source-link rewriting
-- `docs/README.md` — local build instructions
-- `docs/Makefile` — `env / html / publish / live / clean`
-- `.github/workflows/docs.yml` — build + deploy + preview pipeline
-- `pyproject.toml` — `[dependency-groups]` `docs = [...]`
-- [`switchyard-testing-ci`](../switchyard-testing-ci/SKILL.md) — broader CI/validation guidance (ruff, mypy, pytest gates)
-- [`switchyard-codebase-exploration`](../switchyard-codebase-exploration/SKILL.md) — load before editing docs that cite specific symbols, file paths, or APIs
+- `docs/fern/docs.yml` — Fern instance, theme, versions, and redirects.
+- `docs/README.md` — contributor entry point for docs content.
+- `docs/AGENTS.md` — scoped instructions for the full docs tree.
+- `docs/fern/README.md` — Fern infrastructure and CI guide.
+- `docs/fern/AGENTS.md` — scoped instructions for Fern configuration and redirects.
+- `docs/fern/versions/nightly.yml` — public navigation and authored-page paths.
+- `docs/fern/fern.config.json` — Fern CLI pin.
+- `docs/Makefile` — local check and preview commands.
+- `docs/fern/generate_legacy_redirect_site.py` — redirect-only GitHub Pages output.
+- `tests/test_fern_docs.py` — navigation, link, metadata, and redirect invariants.
+- `.github/workflows/fern-docs-ci.yml` — CI-equivalent validation.
+- `.github/workflows/fern-docs-preview-build.yml` — same-repository preview source collection.
+- `.github/workflows/fern-docs-preview-comment.yml` — trusted preview generation and PR comment.
+- `.github/workflows/publish-fern-docs.yml` — tag/manual production publishing.
+- [`switchyard-testing-ci`](../switchyard-testing-ci/SKILL.md) — broader repository validation.
+- [`switchyard-codebase-exploration`](../switchyard-codebase-exploration/SKILL.md) — impact mapping for docs that cite code or APIs.

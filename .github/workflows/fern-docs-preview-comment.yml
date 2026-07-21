@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Workflow 2 of 2 for Fern doc previews.
+#
+# Runs after the same-repository collector succeeds, downloads only its artifact,
+# creates a Fern preview with DOCS_FERN_TOKEN, and upserts a PR comment. PR
+# identity and the Fern CLI version come from trusted GitHub/default-branch
+# state. The workflow never checks out or executes scripts from the PR branch.
+
+name: "Preview Fern Docs: Comment"
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] Same-repository runs only; identity/tooling are trusted.
+    workflows: ["Preview Fern Docs: Build"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: fern-docs-preview-${{ github.event.workflow_run.pull_requests[0].number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Publish preview
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.pull_requests[0].number != null
+      }}
+    permissions:
+      # Download the triggering artifact and read only the trusted default branch.
+      actions: read # Required to download the triggering workflow artifact.
+      contents: read
+    outputs:
+      page_links: ${{ steps.page-links.outputs.page_links }}
+      pr_number: ${{ steps.metadata.outputs.pr_number }}
+      preview_url: ${{ steps.generate-docs.outputs.preview_url }}
+    steps:
+      - name: Checkout trusted Fern configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Download docs sources and metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fern-preview
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: preview-source
+
+      - name: Read trusted workflow metadata
+        id: metadata
+        env:
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::workflow_run did not identify a pull request."
+            exit 1
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Read trusted Fern CLI version
+        id: fern-version
+        run: |
+          FERN_VERSION="$(jq -r '.version' trusted/docs/fern/fern.config.json)"
+          if ! [[ "$FERN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::Refusing to install unexpected Fern CLI version: $FERN_VERSION"
+            exit 1
+          fi
+          echo "version=$FERN_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install pinned Fern CLI
+        env:
+          FERN_VERSION: ${{ steps.fern-version.outputs.version }}
+        run: npm install -g "fern-api@$FERN_VERSION" # zizmor: ignore[adhoc-packages] Trusted exact version.
+
+      - name: Generate preview URL
+        id: generate-docs
+        env:
+          FERN_TOKEN: ${{ secrets.DOCS_FERN_TOKEN }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+        working-directory: ./preview-source/docs/fern
+        run: |
+          OUTPUT=$(fern generate --docs --preview --id "pr-$PR_NUMBER" --force --no-prompt 2>&1)
+          echo "$OUTPUT"
+          URL=$(echo "$OUTPUT" | grep -oP 'Published docs to \K.*(?= \()')
+          if [ -z "$URL" ]; then
+            echo "::error::Failed to generate preview URL. See fern output above."
+            exit 1
+          fi
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Build page links for changed MDX files
+        id: page-links
+        env:
+          FERN_TOKEN: ${{ secrets.DOCS_FERN_TOKEN }}
+          PREVIEW_URL: ${{ steps.generate-docs.outputs.preview_url }}
+        run: |
+          CHANGED_FILES=""
+          if [ -f preview-source/.preview-metadata/changed_mdx_files ]; then
+            CHANGED_FILES=$(cat preview-source/.preview-metadata/changed_mdx_files)
+          fi
+
+          if [ -z "$CHANGED_FILES" ] || [ -z "$PREVIEW_URL" ]; then
+            echo "page_links=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BASE_URL=$(echo "$PREVIEW_URL" | grep -oP 'https?://[^/]+')
+          FILES_PARAM=$(echo "$CHANGED_FILES" | tr '\n' ',' | sed 's/,$//' \
+            | python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read().strip(), safe=',/'))")
+          RESPONSE=$(curl -sf -H "FERN_TOKEN: $FERN_TOKEN" "${PREVIEW_URL}/api/fern-docs/get-slug-for-file?files=${FILES_PARAM}" 2>/dev/null) || {
+            echo "page_links=" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          PAGE_LINKS=$(echo "$RESPONSE" | jq -r --arg url "$BASE_URL" \
+            '.mappings[] | select(.slug != null) | "- [\(.slug)](\($url)/\(.slug))"')
+
+          if [ -n "$PAGE_LINKS" ]; then
+            { echo "page_links<<EOF"; echo "$PAGE_LINKS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "page_links=" >> "$GITHUB_OUTPUT"
+          fi
+
+  comment:
+    name: Update pull request comment
+    needs: preview
+    runs-on: ubuntu-latest
+    permissions:
+      # The comment job receives no Fern token or repository content access.
+      pull-requests: write # Required to create or update the preview comment.
+    steps:
+      - name: Post or update PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAGE_LINKS: ${{ needs.preview.outputs.page_links }}
+          PREVIEW_URL: ${{ needs.preview.outputs.preview_url }}
+          PR_NUMBER: ${{ needs.preview.outputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          BODY=":herb: **Preview your docs:** <${PREVIEW_URL}>"
+          if [ -n "${PAGE_LINKS}" ]; then
+            BODY="${BODY}
+
+          Here are the documentation pages you've updated:
+          ${PAGE_LINKS}"
+          fi
+
+          MARKER="<!-- preview-docs -->"
+          BODY="${BODY}
+
+          ${MARKER}"
+
+          COMMENT_ID=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- preview-docs -->"))) | .id' \
+            | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/$REPOSITORY/issues/comments/$COMMENT_ID" \
+              -X PATCH -f body="$BODY"
+          else
+            gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+              -f body="$BODY"
+          fi

@@ -24,36 +24,32 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 
 | Situation | Command |
 |---|---|
-| Pick gates from the current diff | `python .agents/skills/switchyard-testing-ci/scripts/select_validation.py --changed` |
+| Map the current diff | `git status -sb && git diff --stat && git diff --name-only` |
 | Pre-PR hermetic gate (default) | `uv run ruff check . && uv run mypy switchyard && env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Mirror CI pytest with no live creds | `env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Rust component crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-components` |
 | Rust server crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-server` |
 | Broad Rust crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` |
+| Docs/Fern workflow change | `make -C docs check && uv run pytest tests/test_fern_docs.py -v -o addopts=` |
+| Select focused validation from uncommitted paths | `python scripts/select_validation.py --changed` |
+| Select validation for committed branch work | `python scripts/select_validation.py --base origin/main` |
+| Any GitHub Actions workflow change | Run the selector, then `actionlint && zizmor --pedantic .github/workflows`; review `scripts/ci/README.md` |
 | Slim-install regression guard | see [Slim-install smoke gate](#slim-install-smoke-gate) |
 | Live e2e (only on explicit user request) | `NVIDIA_API_KEY=… uv run pytest tests/e2e/ -v -m integration -o addopts= --maxfail=10` |
 | Skill/docs change only | YAML frontmatter check + `git diff --check` (see [Skill/docs-only gate](#skilldocs-only-gate)) |
 
-## Dynamic Selection First
+## Diff-Based Selection First
 
-From the repo root, inspect the diff and let the selector propose focused gates:
+From the repo root, inspect the diff and map each changed area to the focused gates below:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 git status -sb
 git diff --stat
-python .agents/skills/switchyard-testing-ci/scripts/select_validation.py --changed
 ```
 
-For a not-yet-edited area, pass likely owners explicitly:
-
-```bash
-python .agents/skills/switchyard-testing-ci/scripts/select_validation.py \
-  --path switchyard/lib/translation/request_engine.py \
-  --path tests/test_request_translation_engine.py
-```
-
-Use the output as the starting plan, then add any tests revealed by code search or by the failure.
+Use the current diff as the starting plan, then add any tests revealed by code search or by the
+failure map in this skill.
 
 ## CI Gates and Local Equivalence
 
@@ -62,6 +58,8 @@ The hard GitHub Actions gates live in `.github/workflows/ci.yml`:
 - `uv run ruff check .`
 - SPDX header check for every Python file found by CI, including `.agents/skills/**/scripts/*.py`
 - `uv run pytest tests/ -v -m "not integration"` on Python 3.12 through 3.14
+- reusable Fern validation (`fern check`) called from `.github/workflows/ci.yml` and included in
+  the required `CI Success` aggregate
 - Rust workspace gate: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   and `cargo test --workspace`
 - slim-install smoke: isolated `uv run --with` default install/import checks, heavy-package
@@ -302,7 +300,7 @@ uv run pytest tests/test_cli_stale_names.py tests/test_no_stale_module_paths.py 
 | Running `uv run pytest tests/ -v` with `OPENROUTER_API_KEY`/`NVIDIA_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` set in your shell | Tests that mock providers can accidentally hit live endpoints. Default to `-m "not integration"`, or strip credentials with `env -u`. |
 | Treating mypy as optional because CI marks it `continue-on-error` | Mypy still catches real bugs in `switchyard/` typed code. Run it for any change to profiles, route bundles, backends, request/response models, or translation. |
 | Skipping the slim-install smoke gate after a dependency or top-level import change | This is the *actual* hard CI gate that catches `torch`/`transformers` accidentally landing in the default install. |
-| Claiming validation from `scripts/select_validation.py` without rerunning it after committing changes | The script diffs against `HEAD` plus untracked files; if your changes are already committed, `--changed` returns "no diff". Pass `--path` explicitly, or diff against the branch base. |
+| Claiming validation from `scripts/select_validation.py --changed` after committing changes | `--changed` covers staged, unstaged, and untracked paths. Use `--base origin/main` to include committed branch changes, or pass `--path` explicitly. |
 | Adding `# noqa` or per-line ignores to make ruff green | Ruff is a hard CI gate. Fix the code or, if the rule is wrong here, lift the ignore to the file or project level with a one-line justification. |
 | Editing a generated artifact (e.g., `docs/.venv-docs/...`) because ruff complained about it | Delete the artifact instead. CI does not have it; you should not either. |
 

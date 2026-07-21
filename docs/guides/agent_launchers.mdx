@@ -1,5 +1,8 @@
-# Agent Launchers
-
+---
+title: "Agent Launchers"
+description: "Launch Claude Code, Codex, and OpenClaw through a local NeMo Switchyard proxy."
+position: 1
+---
 Switchyard launchers start a local proxy, configure the target coding agent to
 use it, and shut the proxy down when the agent exits. Use them when you want
 Claude Code, Codex, or OpenClaw to run through the same routing and translation
@@ -72,12 +75,13 @@ For route-bundle sessions, the footer reports active-model and aggregate
 request/token counts, including errors. `/v1/routing/stats` aggregates usage
 across the registered chains.
 
-!!! note "Profile-config boundary"
-    `--config profiles.yaml` belongs to `switchyard serve` and is the primary
-    profile configuration path. Launcher subcommands do not accept `--config`
-    today. Use the deprecated `--routing-profiles` flag only for launcher-owned
-    legacy route-bundle routing; use `switchyard serve --config profiles.yaml`
-    for standalone deployments.
+<Note title="Profile-config boundary">
+`--config profiles.yaml` belongs to `switchyard serve` and is the primary
+profile configuration path. Launcher subcommands do not accept `--config`
+today. Use the deprecated `--routing-profiles` flag only for launcher-owned
+legacy route-bundle routing; use `switchyard serve --config profiles.yaml`
+for standalone deployments.
+</Note>
 
 ## Model requirements
 

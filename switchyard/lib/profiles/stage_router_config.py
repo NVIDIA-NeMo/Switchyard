@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Declarative config for stage_router profiles. See ``docs/stage_router_routing.md``."""
+"""Declarative config for stage_router profiles.
+
+See ``docs/routing_algorithms/stage_router_routing.mdx``.
+"""
 
 from __future__ import annotations
 
