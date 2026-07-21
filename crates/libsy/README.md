@@ -260,11 +260,12 @@ agents live in [`examples`](examples/) folder.
   (one call).
 - [`LlmClassifier`](src/algorithms/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
-- [`EnsembleOrchAlgo`](../libsy-examples/src/ensemble.rs) — stateful: fan out to
+- [`EnsembleOrchAlgo`](examples/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.
 
-**Runnable agents** (`cargo run -p libsy --example <name>`):
+**Runnable agents** (`cargo run -p switchyard-libsy --example <name>`):
 
+- [`ensemble`](examples/ensemble.rs) — query three NVIDIA-hosted candidates, then judge and commit.
 - [`research_agent`](examples/research_agent.rs) — client-backed
   targets, `run` (libsy makes the calls).
 - [`research_agent_core`](examples/research_agent_core.rs) — client-less

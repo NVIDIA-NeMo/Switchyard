@@ -9,6 +9,8 @@
 //! requests and, after `exploration_turns` ensemble turns, commits to the
 //! winningest model — every subsequent request routes straight to that one model
 //! with no fan-out and no judge call.
+//! Run with:
+//!   NVIDIA_API_KEY=... cargo run -p switchyard-libsy --example ensemble
 //!
 //! Unlike the reference routers, this algorithm is **stateful**: the win tally,
 //! turn counter, and committed choice live behind a [`std::sync::Mutex`] so one
@@ -22,8 +24,19 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use switchyard_libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
+use switchyard_libsy::{
+    Algorithm, Context, Decision, Driver, LlmTarget, LlmTargetSet, Request, Response,
+    RoutedLlmClient,
+};
+use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_protocol::{completion_text, prompt_text, text_request};
+
+const CANDIDATE_MODELS: [&str; 3] = [
+    "nvidia/qwen/qwen3.6-27b",
+    "nvidia/nvidia/nemotron-3-super-v3",
+    "nvidia/openai/gpt-oss-20b",
+];
+const JUDGE_MODEL: &str = "nvidia/deepseek-ai/deepseek-v4-flash";
 
 /// Which step of the ensemble flow produced a decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,6 +403,55 @@ impl Algorithm for EnsembleOrchAlgo {
         }
         Ok(response)
     }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let backend = HttpBackendConfig {
+        base_url: std::env::var("NVIDIA_BASE_URL")
+            .unwrap_or_else(|_| "https://inference-api.nvidia.com/v1".to_string()),
+        api_key: Some(std::env::var("NVIDIA_API_KEY")?),
+        extra_headers: BTreeMap::new(),
+    };
+    let models: Vec<_> = CANDIDATE_MODELS
+        .iter()
+        .copied()
+        .chain(std::iter::once(JUDGE_MODEL))
+        .map(|model| ModelConfig::new(model, Backend::OpenAiChat(backend.clone()), None))
+        .collect();
+    let client = Arc::new(TranslatingLlmClient::new(&models)?) as Arc<dyn RoutedLlmClient>;
+    let targets = LlmTargetSet::new(
+        CANDIDATE_MODELS
+            .iter()
+            .copied()
+            .chain(std::iter::once(JUDGE_MODEL))
+            .map(|model| LlmTarget {
+                semantic_name: model.to_string(),
+                llm_client: Some(client.clone()),
+            })
+            .collect(),
+    );
+    let algorithm: Arc<dyn Algorithm> = Arc::new(EnsembleOrchAlgo::new(
+        CANDIDATE_MODELS.map(str::to_string).to_vec(),
+        JUDGE_MODEL,
+        1,
+        targets,
+    ));
+    let request = Request {
+        llm_request: text_request(
+            Some("ensemble".to_string()),
+            "Explain how LLM routing improves reliability.",
+        ),
+        raw_request: None,
+        metadata: None,
+    };
+
+    let (_, response) = algorithm.run(Context::default(), request).await?;
+    println!(
+        "{}",
+        completion_text(&response.llm_response.into_agg().await?)
+    );
+    Ok(())
 }
 
 #[cfg(test)]
