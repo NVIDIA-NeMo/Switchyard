@@ -12,7 +12,7 @@ headers, makes the call with a shared `reqwest::Client`, and decodes the reply
 back into a [`switchyard_protocol::Response`] — buffered or streamed.
 
 It depends only on `switchyard-protocol` and `switchyard-translation`; no server, no
-provider SDK. For an HTTP front door built on top of it, see [`libsy-proxy`].
+provider SDK.
 
 ## Concepts
 
