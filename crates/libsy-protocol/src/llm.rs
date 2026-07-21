@@ -12,6 +12,7 @@ use crate::format::FormatId;
 
 /// Actor role normalized across provider APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     System,
     Developer,
@@ -64,6 +65,7 @@ impl Message {
 
 /// Normalized content block variants carried by messages and tool results.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
         text: String,
@@ -97,6 +99,7 @@ pub enum ContentBlock {
 
 /// Image payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ImageSource {
     Url {
         url: String,
@@ -111,6 +114,7 @@ pub enum ImageSource {
 
 /// File payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum FileSource {
     FileId(String),
     FileData {
@@ -122,6 +126,7 @@ pub enum FileSource {
 
 /// Audio and video payload forms supported by the conversation model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum MediaSource {
     Url {
         url: String,
@@ -161,6 +166,7 @@ pub struct ToolDefinition {
 
 /// Normalized tool choice policy.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ToolChoice {
     Auto,
     Required,
@@ -193,12 +199,14 @@ pub struct ReasoningParams {
 
 /// Provider-specific fields that do not have first-class conversation fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProviderExtensions {
     pub fields: Map<String, Value>,
 }
 
 /// Exact source payloads retained for lossless round trips.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PreservationMetadata {
     pub requests: BTreeMap<FormatId, Value>,
     pub responses: BTreeMap<FormatId, Value>,
@@ -206,6 +214,7 @@ pub struct PreservationMetadata {
 
 /// Normalized request representation shared by Switchyard components.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LlmRequest {
     pub model: Option<String>,
     pub instructions: Vec<InstructionBlock>,
@@ -231,6 +240,7 @@ pub struct Usage {
 
 /// Normalized reason a model stopped producing output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
     MaxTokens,
@@ -253,6 +263,7 @@ pub struct ResponseOutput {
 /// [`LlmResponse`](crate::LlmResponse)); `switchyard-translation` re-exports it as
 /// `ConversationResponse`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AggLlmResponse {
     pub id: Option<String>,
     pub model: Option<String>,
@@ -266,5 +277,40 @@ impl AggLlmResponse {
     /// Returns the first output item when a response has any output.
     pub fn first_output(&self) -> Option<&ResponseOutput> {
         self.outputs.first()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn serde_uses_python_friendly_dictionary_shapes() -> Result<(), serde_json::Error> {
+        let request: LlmRequest = serde_json::from_value(json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "hello"}]
+            }]
+        }))?;
+        assert_eq!(request.messages[0], Message::text(Role::User, "hello"));
+
+        let tool_call = ContentBlock::ToolCall(ToolCall {
+            id: "call-1".to_string(),
+            name: "lookup".to_string(),
+            arguments: json!({"query": "rust"}),
+        });
+        assert_eq!(
+            serde_json::to_value(tool_call)?,
+            json!({
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "lookup",
+                "arguments": {"query": "rust"}
+            })
+        );
+        Ok(())
     }
 }

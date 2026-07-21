@@ -255,8 +255,10 @@ curl localhost:4000/v1/chat/completions \
 # Legacy route bundle on port 4000
 switchyard --routing-profiles routes.yaml -- serve --port 4000
 
-# Use the bundle previously persisted by `switchyard --routing-profiles ... -- configure`
-switchyard --routing-profiles routes.yaml -- configure
+# Persist a bundle for later runs; no-TTY configure requires explicit provider credentials
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 switchyard serve --port 4000
 
 # Multi-worker uvicorn (route-bundle path)
@@ -470,7 +472,9 @@ The top-level key is omitted when skill distillation is not configured. `namespa
 switchyard configure
 
 # Save a routing bundle as the default for serve + launchers
-switchyard --routing-profiles routes.yaml -- configure
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 
 # Inspect what's stored, plus resolved provider / key source / harness paths
 switchyard configure --show

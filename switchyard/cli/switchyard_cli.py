@@ -79,6 +79,7 @@ from switchyard.cli.config.user_config import (
 from switchyard.cli.configure_command import (
     cmd_configure,
 )
+from switchyard.cli.configure_request import ConfigureRequest
 from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launch_command import (
     cmd_launch_claude,
@@ -383,7 +384,7 @@ def _add_launch_intake_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_configure(args: argparse.Namespace) -> None:
-    cmd_configure(args)
+    cmd_configure(ConfigureRequest.from_namespace(args))
 
 
 def _cmd_launch_claude(args: argparse.Namespace) -> None:
@@ -1167,6 +1168,14 @@ def _build_parser() -> argparse.ArgumentParser:
     lc.add_argument(
         "--timeout", type=float, default=None,
         help="Request timeout in seconds for the backend LLM client",
+    )
+    lc.add_argument(
+        "--startup-timing", action="store_true",
+        help=(
+            "Print a per-stage startup timing breakdown to stderr before "
+            "claude starts (each backend-format probe on its own line). "
+            "Also enabled with SWITCHYARD_STARTUP_TIMING=1."
+        ),
     )
     _add_launch_deterministic_override_args(lc)
     _add_launch_intake_args(lc)

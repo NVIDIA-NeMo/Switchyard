@@ -10,7 +10,7 @@
 //! and prints each [`LlmResponseChunk`] as it arrives — true token streaming end to end.
 //! Contrast [`Algorithm::run`], which would aggregate the same stream into one buffered
 //! answer. Run with:
-//!   cargo run -p libsy-examples --example streaming_agent
+//!   cargo run -p libsy --example streaming_agent
 
 use std::error::Error;
 use std::io::Write;

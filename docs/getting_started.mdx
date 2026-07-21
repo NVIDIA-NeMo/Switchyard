@@ -48,8 +48,15 @@ routes:
     fallback_target_on_evict: strong
 EOF
 
-switchyard --routing-profiles routes.yaml -- configure
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 ```
+
+`api_key` inside the route bundle is used when Switchyard serves or launches the
+bundle. `configure --no-tui` still requires provider credentials as explicit
+flags, so CI setup should pass `--api-key` even when the YAML contains
+`${OPENROUTER_API_KEY}`.
 
 > **Format default and caching.** Omitting `format:` from a tier silently defaults to `OPENAI` (Chat Completions) — not `AUTO`. For Claude/Anthropic/Bedrock tiers this is wrong: set `format: anthropic` explicitly. The native `/v1/messages` path preserves `cache_control`, which is what enables prompt caching. `format: openai` routes Claude through OpenAI-format translation that strips `cache_control`: the request still succeeds, but caching silently never engages and you pay full input price. Always use `format: openai` for NIM/non-Claude models and `format: anthropic` for Claude and Bedrock models. Use `format: auto` only when the upstream is genuinely unknown.
 
@@ -79,9 +86,17 @@ curl http://localhost:4000/v1/chat/completions \
   -d '{"model": "smart", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
-**CI pattern:** run `switchyard --routing-profiles routes.yaml -- configure` in
-your environment setup, then `switchyard serve` in your service start step. No
-flags needed at serve time.
+**CI pattern:** run configure in your environment setup with explicit provider
+credentials:
+
+```bash
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
+```
+
+Then run `switchyard serve` in your service start step. No flags needed at serve
+time.
 
 > **Override (dev / one-off work):** pass `--routing-profiles` to use a different
 > bundle for a session without overwriting your saved config:
@@ -120,8 +135,8 @@ aliasing.
 ## Routing profiles
 
 All route types work with both [Path A](#path-a-server-mode) and
-[Path B](#path-b-agent-launcher). Declare a type in your YAML, run
-`switchyard --routing-profiles routes.yaml -- configure`, then `serve` or `launch` as above.
+[Path B](#path-b-agent-launcher). Declare a type in your YAML, run the
+non-interactive configure command above, then `serve` or `launch` as above.
 
 ### Choose a route type
 

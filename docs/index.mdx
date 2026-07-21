@@ -106,8 +106,13 @@ legacy bundles and saved bundle paths:
 
 ```bash
 switchyard --routing-profiles routes.yaml -- launch claude
-switchyard --routing-profiles routes.yaml -- configure
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 ```
+
+Non-interactive `configure` does not read provider credentials from the routing
+bundle; pass `--api-key` explicitly when persisting the bundle for CI.
 
 Profile ids, direct targets, legacy launcher compatibility, and persistence are
 covered in [Routing Overview](/routing/overview).

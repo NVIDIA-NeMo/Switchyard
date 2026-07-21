@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from switchyard.cli.configure_request import ConfigureRequest
 from switchyard.cli.launchers.claude_code_launcher import (
     _EXIT_BINARY_NOT_FOUND,
     _EXIT_SIGINT,
@@ -79,10 +80,10 @@ def test_bootstrap_persists_selected_env_provider_base_url(monkeypatch, tmp_path
     monkeypatch.setenv("NVIDIA_BASE_URL", "https://nvidia.test/v1")
     monkeypatch.setattr("switchyard.cli.launch_command.is_interactive_terminal", lambda: True)
     monkeypatch.setattr("switchyard.cli.launch_command.load_secrets", lambda: {})
-    captured: dict[str, argparse.Namespace] = {}
+    captured: dict[str, ConfigureRequest] = {}
     monkeypatch.setattr(
         "switchyard.cli.launch_command.cmd_configure",
-        lambda configure_args: captured.setdefault("args", configure_args),
+        lambda configure_request: captured.setdefault("request", configure_request),
     )
 
     args = argparse.Namespace(
@@ -106,11 +107,48 @@ def test_bootstrap_persists_selected_env_provider_base_url(monkeypatch, tmp_path
         ),
     )
 
-    configure_args = captured["args"]
-    assert configure_args.provider == "nvidia"
-    assert configure_args.base_url == "https://nvidia.test/v1"
-    assert configure_args.prompt_default_api_key == "nvidia-key"  # pragma: allowlist secret
-    assert configure_args.prompt_default_api_key_source == "$NVIDIA_API_KEY"
+    configure_request = captured["request"]
+    assert configure_request.provider == "nvidia"
+    assert configure_request.base_url == "https://nvidia.test/v1"
+    assert configure_request.prompt_default_api_key == "nvidia-key"  # pragma: allowlist secret
+    assert configure_request.prompt_default_api_key_source == "$NVIDIA_API_KEY"
+
+    # Setup leaves these three at their ConfigureRequest defaults. Assert them
+    # directly so a regression in any one field fails here, not mid-launch: a
+    # missing default is exactly what crashed the first run before this fix.
+    assert configure_request.routing_profiles is None
+    assert configure_request.skill_distillation is None
+    assert configure_request.disable_skill_distillation is False
+
+    # The request setup builds must work with the real configure helpers. Before
+    # the typed ConfigureRequest, setup passed a hand-built namespace missing the
+    # skill-distillation fields, and these helpers crashed with AttributeError.
+    from switchyard.cli.config.user_config import SkillDistillationConfig
+    from switchyard.cli.configure_command import (
+        _apply_skill_distillation_args,
+        _skill_only_config_update,
+    )
+
+    assert (
+        _apply_skill_distillation_args(SkillDistillationConfig(), configure_request)
+        == SkillDistillationConfig()
+    )
+    assert _skill_only_config_update(configure_request) is False
+
+
+def test_configure_parser_builds_a_complete_request() -> None:
+    # A real `switchyard configure` parse must fill every ConfigureRequest field
+    # through the one from_namespace boundary. This is the check the original bug
+    # lacked: disable_skill_distillation is the field that crashed first-run.
+    from switchyard.cli.config.user_config import DEFAULT_PROVIDER
+    from switchyard.cli.switchyard_cli import _build_parser
+
+    namespace = _build_parser().parse_args(["configure"])
+    request = ConfigureRequest.from_namespace(namespace)
+
+    assert request.provider == DEFAULT_PROVIDER
+    assert request.disable_skill_distillation is False
+    assert request.routing_profiles is None  # the global flag is merged in
 
 
 # ---------------------------------------------------------------------------

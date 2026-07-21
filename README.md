@@ -140,8 +140,13 @@ routes:
 
 ```bash
 switchyard --routing-profiles routes.yaml -- launch claude
-switchyard --routing-profiles routes.yaml -- configure
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 ```
+
+Non-interactive `configure` does not read provider credentials from the routing
+bundle; pass `--api-key` explicitly when persisting the bundle for CI.
 
 For profile selection and full configuration examples, start with
 [Routing Overview](docs/routing_algorithms/overview.mdx), then open the

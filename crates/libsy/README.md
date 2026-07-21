@@ -12,7 +12,7 @@ Build a target set, pick an algorithm, run a request:
 
 ```rust
 use libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
-use libsy_examples::llm_class::LlmClassifierOrchAlgo;
+use libsy::LlmClassifierOrchAlgo;
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ println!("routed to {}", trace.last().unwrap().selected_model());
 println!("answer: {}", completion_text(&response.llm_response.aggregate().await?));
 ```
 
-Runnable: [`research_agent`](../libsy-examples/examples/research_agent.rs) (in the `libsy-examples` crate).
+Runnable: [`research_agent`](examples/research_agent.rs)
 
 ## Requests & responses
 
@@ -163,7 +163,7 @@ println!("{}", completion_text(&agg));
 An `LlmResponseChunk` is the provider-neutral streaming event (`MessageStart`, `TextDelta`,
 `ReasoningDelta`, `ToolCallDelta`, `Usage`, `MessageStop`, `Error`); `ResponseAccumulator`
 is the fold behind `aggregate()` if you need to assemble one yourself. Runnable end-to-end
-demo: [`streaming_agent`](../libsy-examples/examples/streaming_agent.rs).
+demo: [`streaming_agent`](examples/streaming_agent.rs).
 
 ## Driving the calls yourself (`run_stream`)
 
@@ -171,7 +171,7 @@ demo: [`streaming_agent`](../libsy-examples/examples/streaming_agent.rs).
 `default_client`), streams each `Decision` as it happens, and ends with `ReturnToAgent`.
 This is the *step* stream (one `Step` at a time); it is orthogonal to whether any single
 response is itself streamed — see [Streaming responses](#streaming-responses).
-Runnable: [`research_agent_core`](../libsy-examples/examples/research_agent_core.rs) (in the `libsy-examples` crate).
+Runnable: [`research_agent_core`](examples/research_agent_core.rs).
 
 ```rust
 let stream = algo.clone().run_stream(Context::default(), req);
@@ -217,7 +217,7 @@ pub trait Decision: Send + Sync {
 
 Give it a `new(config.., target_set)` constructor and `Arc`-wrap it — there is no builder.
 Example — the LLM classifier (classify, then route; full version in
-[`libsy-examples/src/llm_class.rs`](../libsy-examples/src/llm_class.rs)):
+[`src/algorithms/llm_class.rs`](src/algorithms/llm_class.rs)):
 
 ```rust
 #[async_trait]
@@ -251,26 +251,25 @@ impl Algorithm for LlmClassifierOrchAlgo {
 
 ## Explore
 
-The core crate includes uniform random routing. More reference algorithms and runnable
-agents live in the sibling [`libsy-examples`](../libsy-examples) crate (compiled and tested
-with `cargo test -p libsy-examples`).
+The core crate includes uniform random routing and naive LLM classifier. Runnable
+agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
 - [`RandomAlgo`](src/algorithms/rand.rs) — uniform random over the set
   (one call).
-- [`LlmClassifierOrchAlgo`](../libsy-examples/src/llm_class.rs) — classify, then route
+- [`LlmClassifierOrchAlgo`](src/algorithms/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
 - [`EnsembleOrchAlgo`](../libsy-examples/src/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.
 
-**Runnable agents** (`cargo run -p libsy-examples --example <name>`):
+**Runnable agents** (`cargo run -p libsy --example <name>`):
 
-- [`research_agent`](../libsy-examples/examples/research_agent.rs) — client-backed
+- [`research_agent`](examples/research_agent.rs) — client-backed
   targets, `run` (libsy makes the calls).
-- [`research_agent_core`](../libsy-examples/examples/research_agent_core.rs) — client-less
+- [`research_agent_core`](examples/research_agent_core.rs) — client-less
   targets, `run_stream` (the agent makes the calls).
-- [`streaming_agent`](../libsy-examples/examples/streaming_agent.rs) — a target that streams
+- [`streaming_agent`](examples/streaming_agent.rs) — a target that streams
   its response; the agent forwards each `LlmResponseChunk` to the caller token-by-token.
 
 ## Not yet built

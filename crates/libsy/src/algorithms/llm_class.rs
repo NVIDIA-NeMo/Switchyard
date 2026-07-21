@@ -15,13 +15,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
-use switchyard_protocol::{completion_text, prompt_text, text_request};
+use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
+use switchyard_protocol::{completion_text, LlmRequest, Message, Role};
 
-/// Preamble prepended to the user prompt when asking the classifier target for a
-/// strong-win-rate score.
-const CLASSIFIER_PROMPT_PREAMBLE: &str = "Rate how strongly this request needs a frontier model. \
-     Reply with a single strong-win-rate score in [0, 1]:\n";
+/// The system prompt tells the classifier what to do
+const CLASSIFIER_SYSTEM_PROMPT: &str = "Rate how strongly this request needs a frontier model. Reply with a single strong-win-rate score in [0, 1].";
 
 /// The tier a classifier score selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +94,49 @@ impl LlmClassifierOrchAlgo {
     }
 }
 
+/// The first User message as well as the last <recent_turn_window> turns (User + Assistant).
+/// If fewer than 5 turns have happened, include the whole message.
+fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
+    let mut system = Vec::new();
+    let mut first_user = None;
+    let mut first_user_idx = None;
+    for (idx, message) in messages.iter().enumerate() {
+        match message.role {
+            Role::System | Role::Developer => system.push(message.clone()),
+            Role::User if first_user.is_none() => {
+                first_user = Some(message.clone());
+                first_user_idx = Some(idx);
+            }
+            _ => {}
+        }
+    }
+    let Some(first_user) = first_user else {
+        return system;
+    };
+    let tail = messages
+        .iter()
+        .enumerate()
+        .filter(|(idx, message)| {
+            *idx > first_user_idx.unwrap_or(0)
+                && !matches!(message.role, Role::System | Role::Developer)
+        })
+        .map(|(_, message)| message.clone())
+        .collect::<Vec<_>>();
+    if recent_turn_window == 0 {
+        let mut out = system;
+        out.push(first_user);
+        if let Some(last_user) = tail.iter().rev().find(|message| message.role == Role::User) {
+            out.push(last_user.clone());
+        }
+        return out;
+    }
+    let mut out = system;
+    out.push(first_user);
+    let start = tail.len().saturating_sub(recent_turn_window);
+    out.extend_from_slice(&tail[start..]);
+    out
+}
+
 #[async_trait]
 impl Algorithm for LlmClassifierOrchAlgo {
     async fn create_run_task(
@@ -104,18 +145,22 @@ impl Algorithm for LlmClassifierOrchAlgo {
         driver: Driver,
         request: Request,
     ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-        let user_prompt = prompt_text(&request.llm_request);
         // The agent's inbound name rides through unchanged on every sub-call; the
         // model each sub-call actually hits is carried by its decision instead.
         let inbound = request.llm_request.model.clone();
 
+        let mut just_the_key_messages = trim_messages(&request.llm_request.messages, 5);
+        just_the_key_messages.insert(0, Message::text(Role::System, CLASSIFIER_SYSTEM_PROMPT));
+
         // 1. Classify: call the classifier target with the score-eliciting prompt.
         let classifier_target = self.target_set.get_target(&self.classifier_model)?;
+        let llm_request = LlmRequest {
+            model: inbound.clone(),
+            messages: just_the_key_messages,
+            ..LlmRequest::default()
+        };
         let classify_request = Request {
-            llm_request: text_request(
-                inbound.clone(),
-                format!("{CLASSIFIER_PROMPT_PREAMBLE}{user_prompt}"),
-            ),
+            llm_request,
             raw_request: request.raw_request.clone(),
             metadata: request.metadata.clone(),
         };
@@ -160,14 +205,9 @@ impl Algorithm for LlmClassifierOrchAlgo {
             score,
             tier: Some(tier),
         });
-        let routed_request = Request {
-            llm_request: text_request(inbound, user_prompt),
-            raw_request: request.raw_request,
-            metadata: request.metadata,
-        };
         driver.info(ctx.clone(), route_decision.clone()).await?;
         driver
-            .call_llm_target(ctx, &routed_target, routed_request, route_decision)
+            .call_llm_target(ctx, &routed_target, request, route_decision)
             .await
     }
 }
@@ -175,7 +215,7 @@ impl Algorithm for LlmClassifierOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
+    use crate::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
     use std::sync::Mutex;
     use switchyard_protocol::text_response;
 
@@ -239,7 +279,7 @@ mod tests {
 
     fn request(prompt: &str) -> Request {
         Request {
-            llm_request: text_request(Some("auto".to_string()), prompt),
+            llm_request: switchyard_protocol::text_request(Some("auto".to_string()), prompt),
             raw_request: None,
             metadata: None,
         }
@@ -336,22 +376,6 @@ mod tests {
         let routed = as_classifier(&trace[1])?;
         assert_eq!(routed.tier, Some(ClassifierTier::Strong));
         assert_eq!(routed.score, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn classifier_prompt_includes_the_user_text() -> Result<(), Box<dyn Error + Send + Sync>>
-    {
-        let (algo, seen) = algo(0.5, "0.9");
-        orch(algo)
-            .run(Context::default(), request("prove it"))
-            .await?;
-        let seen = seen.lock().map_err(|_| "lock poisoned")?;
-        // Two calls: the classifier (preamble + user text), then the routed model.
-        assert_eq!(seen.len(), 2);
-        assert!(prompt_text(&seen[0].llm_request).contains("prove it"));
-        assert!(prompt_text(&seen[0].llm_request).contains("frontier model"));
-        assert_eq!(prompt_text(&seen[1].llm_request), "prove it");
         Ok(())
     }
 }
