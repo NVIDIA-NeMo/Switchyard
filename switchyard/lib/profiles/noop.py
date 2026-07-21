@@ -118,11 +118,13 @@ class NoopProfile:
         *,
         request_processors: tuple[Any, ...] = (),
         response_processors: tuple[Any, ...] = (),
+        stats_accumulator: StatsAccumulator | None = None,
     ) -> None:
         """Create a no-op profile with a local translation helper."""
         self._translation = TranslationEngine()
         self._request_processors = request_processors
         self._response_processors = response_processors
+        self._stats_accumulator = stats_accumulator
 
     def iter_components(self) -> list[object]:
         """Return lifecycle components in startup order."""
@@ -162,6 +164,7 @@ class NoopProfile:
         return NoopProfile(
             request_processors=tuple(request_chain),
             response_processors=tuple(response_chain),
+            stats_accumulator=stats if enable_stats else None,
         )
 
     async def process(self, input: ProfileInput) -> NoopProcessedRequest:
@@ -217,6 +220,13 @@ class NoopProfile:
     ) -> ChatResponse:
         """Execute no-op response generation with an existing context."""
         processed = await self.process_with_context(input, ctx)
+        # Record the call under the "noop" model. Stamping ctx.selected_model
+        # lets the stats response processor attribute the response tokens to
+        # "noop" instead of "<unknown>"; record_success counts the request so
+        # the noop route shows up in /v1/routing/stats.
+        ctx.selected_model = _NOOP_MODEL
+        if self._stats_accumulator is not None:
+            await self._stats_accumulator.record_success(_NOOP_MODEL, None, None)
         openai_request = self._translation.request_to_any_of(
             processed.request,
             _NOOP_SUPPORTED_TYPES,

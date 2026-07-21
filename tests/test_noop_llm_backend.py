@@ -4,6 +4,7 @@
 """Unit tests for the no-op profile."""
 
 from switchyard.lib.profiles import NoopProfile, NoopProfileConfig, ProfileSwitchyard
+from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard_rust.core import ChatRequest, ChatResponseType, response_type_matches
 from switchyard_rust.profiles import ProfileInput
 
@@ -106,3 +107,22 @@ class TestNoOpProfile:
 
         assert processed.request.model == "noop"
         assert processed_response is response
+
+    async def test_noop_call_reports_routing_stats(self) -> None:
+        """The no-op profile self-reports its call and model to the stats accumulator."""
+        stats = StatsAccumulator()
+        profile = NoopProfileConfig().build().with_runtime_components(
+            stats_accumulator=stats
+        )
+
+        await ProfileSwitchyard(profile).call(_openai_request(stream=False))
+
+        snap = stats.snapshot_sync()
+        assert snap["total_requests"] == 1
+        assert "noop" in snap["models"]
+        assert snap["models"]["noop"]["calls"] == 1
+        assert "<unknown>" not in snap["models"]
+        # Response tokens land on "noop", not "<unknown>".
+        assert snap["models"]["noop"]["prompt_tokens"] == 1
+        assert snap["models"]["noop"]["completion_tokens"] == 1
+        assert snap["models"]["noop"]["total_tokens"] == 2
