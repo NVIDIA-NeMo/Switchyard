@@ -81,6 +81,12 @@ These commands run in CI on every push. **Fix linting errors locally before push
 uv run ruff check --fix .
 ```
 
+For a path-based validation plan, run `python scripts/select_validation.py --changed` (or use
+`--base origin/main` after committing). Maintainers adding or changing workflows should also use
+the [CI options and workflow design guide](scripts/ci/README.md), which covers required-check
+aggregation, fork trust boundaries, concurrency, permissions, immutable action pins, and workflow
+security checks.
+
 ### 3. Commit messages
 
 Commit messages must follow

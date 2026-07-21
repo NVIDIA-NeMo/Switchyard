@@ -31,6 +31,9 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 | Rust server crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-server` |
 | Broad Rust crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` |
 | Docs/Fern workflow change | `make -C docs check && uv run pytest tests/test_fern_docs.py -v -o addopts=` |
+| Select focused validation from uncommitted paths | `python scripts/select_validation.py --changed` |
+| Select validation for committed branch work | `python scripts/select_validation.py --base origin/main` |
+| Any GitHub Actions workflow change | Run the selector, then `actionlint && zizmor --pedantic .github/workflows`; review `scripts/ci/README.md` |
 | Slim-install regression guard | see [Slim-install smoke gate](#slim-install-smoke-gate) |
 | Live e2e (only on explicit user request) | `NVIDIA_API_KEY=… uv run pytest tests/e2e/ -v -m integration -o addopts= --maxfail=10` |
 | Skill/docs change only | YAML frontmatter check + `git diff --check` (see [Skill/docs-only gate](#skilldocs-only-gate)) |
@@ -297,7 +300,7 @@ uv run pytest tests/test_cli_stale_names.py tests/test_no_stale_module_paths.py 
 | Running `uv run pytest tests/ -v` with `OPENROUTER_API_KEY`/`NVIDIA_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` set in your shell | Tests that mock providers can accidentally hit live endpoints. Default to `-m "not integration"`, or strip credentials with `env -u`. |
 | Treating mypy as optional because CI marks it `continue-on-error` | Mypy still catches real bugs in `switchyard/` typed code. Run it for any change to profiles, route bundles, backends, request/response models, or translation. |
 | Skipping the slim-install smoke gate after a dependency or top-level import change | This is the *actual* hard CI gate that catches `torch`/`transformers` accidentally landing in the default install. |
-| Claiming validation from `scripts/select_validation.py` without rerunning it after committing changes | The script diffs against `HEAD` plus untracked files; if your changes are already committed, `--changed` returns "no diff". Pass `--path` explicitly, or diff against the branch base. |
+| Claiming validation from `scripts/select_validation.py --changed` after committing changes | `--changed` covers staged, unstaged, and untracked paths. Use `--base origin/main` to include committed branch changes, or pass `--path` explicitly. |
 | Adding `# noqa` or per-line ignores to make ruff green | Ruff is a hard CI gate. Fix the code or, if the rule is wrong here, lift the ignore to the file or project level with a one-line justification. |
 | Editing a generated artifact (e.g., `docs/.venv-docs/...`) because ruff complained about it | Delete the artifact instead. CI does not have it; you should not either. |
 
