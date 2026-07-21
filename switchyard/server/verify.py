@@ -486,7 +486,9 @@ def _proxy_roundtrip(port: int, model: str) -> str:
         "max_tokens": 2048,
     }
     start = time.monotonic()
-    with httpx.Client(timeout=_ROUNDTRIP_TIMEOUT_S) as client:
+    # Loopback probe to our own in-process proxy — bypass env proxies so a
+    # configured HTTP_PROXY doesn't intercept the 127.0.0.1 request.
+    with httpx.Client(timeout=_ROUNDTRIP_TIMEOUT_S, trust_env=False) as client:
         resp = client.post(url, json=body)
     elapsed_ms = (time.monotonic() - start) * 1000.0
     if resp.status_code != 200:
