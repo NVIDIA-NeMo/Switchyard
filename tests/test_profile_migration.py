@@ -3,13 +3,11 @@
 
 """Migration tests for replacing legacy serving paths with components-v2 profiles."""
 
-import argparse
 import errno
 import json
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -535,73 +533,3 @@ async def test_profile_runner_uses_same_profile_config(
     assert response.body["model"] == "provider/direct"
     assert response.body["mock_path"] == "/v2-direct/v1/chat/completions"
     assert [call["body"]["model"] for call in openai_stub.requests] == ["provider/direct"]
-
-
-def test_cli_serve_config_delegates_to_rust_profile_server(
-    mocker: MockerFixture,
-    tmp_path: Path,
-) -> None:
-    import switchyard.cli.switchyard_cli as cli
-    import switchyard_rust.server as rust_server
-
-    config_path = tmp_path / "profiles.yaml"
-    config_path.write_text("profiles:\n  bench:\n    type: noop\n", encoding="utf-8")
-    captured: dict[str, object] = {}
-
-    def _fake_run_profile_server(
-        config_path: str,
-        host: str = "127.0.0.1",
-        port: int = 4000,
-        backlog: int = 65_535,
-        dry_run: bool = False,
-    ) -> None:
-        captured["config_path"] = config_path
-        captured["host"] = host
-        captured["port"] = port
-        captured["backlog"] = backlog
-        captured["dry_run"] = dry_run
-
-    mocker.patch.object(
-        rust_server,
-        "run_profile_server",
-        side_effect=_fake_run_profile_server,
-    )
-
-    def _fail_build_and_serve(
-        args: argparse.Namespace,
-        switchyard: object,
-        inbound_default: str = "openai",
-        disable_backend_streaming: bool = False,
-        extra_endpoints: list[object] | None = None,
-    ) -> None:
-        _ = (
-            args,
-            switchyard,
-            inbound_default,
-            disable_backend_streaming,
-            extra_endpoints,
-        )
-        pytest.fail("route-bundle server should not run")
-
-    mocker.patch.object(cli, "build_and_serve", side_effect=_fail_build_and_serve)
-
-    args = cli._build_parser().parse_args(
-        [
-            "serve",
-            "--config",
-            str(config_path),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "4555",
-        ]
-    )
-    args.func(args)
-
-    assert captured == {
-        "config_path": str(config_path),
-        "host": "127.0.0.1",
-        "port": 4555,
-        "backlog": 65_535,
-        "dry_run": False,
-    }

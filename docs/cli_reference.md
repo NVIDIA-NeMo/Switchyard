@@ -21,7 +21,7 @@ These apply to the top-level `switchyard` command, before any verb.
 |---|---|
 | `--version` | Print the installed Switchyard version (`switchyard X.Y.Z`) and exit. Reads the version from the installed package metadata. |
 | `--routing-profiles PATH` / `-c PATH` | Deprecated legacy [Routing](#routing) bundle applied to `serve`, `launch`, and `configure`. Pass before the verb; separate with `--` for clarity. |
-| `--enable-rl-logging` | Write local [RL trace logs](#rl-trace-logging) (one `message_history` JSON file per turn) for `launch` and `serve` route-bundle sessions. Pass before the verb: `switchyard --enable-rl-logging launch claude`. Rejected by `serve --config` (the Rust profile server has no Python processor chain). |
+| `--enable-rl-logging` | Write local [RL trace logs](#rl-trace-logging) (one `message_history` JSON file per turn) for `launch` and `serve` route-bundle sessions. Pass before the verb: `switchyard --enable-rl-logging launch claude`. Rejected by `serve --config`. |
 | `--rl-log-dir DIR` | Output directory for `--enable-rl-logging` traces (default: `./rl_data`). No effect without `--enable-rl-logging`. |
 
 ## Cross-cutting flag families
@@ -147,8 +147,7 @@ matches the pre-1.0 trace format:
 ```
 
 Turns without an assistant choice (e.g. upstream errors) are skipped. The flag
-works on `launch` and on `serve` with a route bundle; `serve --config` (the Rust
-profile server) rejects it, since it has no Python processor chain to attach to.
+works on `launch` and on `serve` with a route bundle; `serve --config` rejects it.
 
 ### Transport (server verbs)
 
@@ -205,7 +204,7 @@ because the built-in default is `https://openrouter.ai/api/v1`.
 
 ## `switchyard serve`
 
-Serve a long-running proxy from a Switchyard v2 **profile config**: one YAML/JSON/TOML file declaring `endpoints`, `targets`, and `profiles`. Files whose profiles are all Rust-defined use the Rust profile server. Files that include Python-defined profiles use the Python FastAPI adapter, while keeping the same endpoint paths. Each profile id and each target id is exposed as a model on `GET /v1/models`, so a client selects a profile by setting the request `model` to that id.
+Serve a long-running proxy from a Switchyard v2 **profile config**: one YAML/JSON/TOML file declaring `endpoints`, `targets`, and `profiles`. Rust-defined and Python-defined profiles run through the same Python HTTP application and expose the same endpoint paths. Each profile id and each target id is exposed as a model on `GET /v1/models`, so a client selects a profile by setting the request `model` to that id.
 
 The server exposes the OpenAI Chat Completions (`/v1/chat/completions`), Anthropic Messages (`/v1/messages`), and OpenAI Responses (`/v1/responses`) APIs on the same host and port.
 

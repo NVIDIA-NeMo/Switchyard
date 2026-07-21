@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for serving a v2 profile config via `serve --config`.
-
-`dry_run` exercises the full load -> resolve -> build -> registry path of the
-Rust profile server without binding a socket. Files with Python-defined profiles
-use the Python FastAPI adapter so both profile implementations are routable on
-the same paths.
-"""
+"""Tests for serving a v2 profile config via `serve --config`."""
 
 import argparse
 import json
@@ -20,36 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from switchyard.cli.switchyard_cli import _cmd_serve_profile_config, _profile_config_route_table
-from switchyard.lib.profiles.loader import python_profile_ids
 from switchyard.server.switchyard_app import build_switchyard_app
-from switchyard_rust.core import SwitchyardConfigError
-from switchyard_rust.server import run_profile_server
-
-_RUST_CONFIG = """
-targets:
-  strong:
-    model: provider/strong
-    format: openai
-    base_url: http://127.0.0.1:9/strong/v1
-    api_key: test-key
-  weak:
-    model: provider/weak
-    format: openai
-    base_url: http://127.0.0.1:9/weak/v1
-    api_key: test-key
-
-profiles:
-  fast:
-    type: passthrough
-    target: weak
-  smart-stage-router:
-    type: stage_router
-    capable: strong
-    efficient: weak
-    fallback_target_on_evict: strong
-    picker: capable_first
-    confidence_threshold: 0.7
-"""
 
 _PYTHON_CONFIG = """
 targets:
@@ -155,36 +120,9 @@ def _write(tmp_path: Path, text: str, name: str = "profiles.yaml") -> Path:
     return path
 
 
-def test_dry_run_validates_rust_profiles_and_direct_targets(tmp_path: Path) -> None:
-    # passthrough + stage_router + the two targets (directly addressable).
-    path = _write(tmp_path, _RUST_CONFIG)
-    # dry_run loads, resolves, and builds the registry, then returns without
-    # binding a socket. No exception == a servable config.
-    run_profile_server(str(path), dry_run=True)
-
-
-def test_dry_run_rejects_invalid_config(tmp_path: Path) -> None:
-    path = _write(tmp_path, "profiles:\n  bad:\n    type: passthrough\n    target: ghost\n")
-    with pytest.raises(SwitchyardConfigError):
-        run_profile_server(str(path), dry_run=True)
-
-
-def test_shipped_example_config_is_servable(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Guards examples/profiles.yaml from rotting; dry_run never connects upstream.
-    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy-key")
-    example = Path(__file__).resolve().parents[1] / "examples" / "profiles.yaml"
-    run_profile_server(str(example), dry_run=True)
-
-
-def test_python_profile_ids_classifies_config(tmp_path: Path) -> None:
-    assert python_profile_ids(_write(tmp_path, _PYTHON_CONFIG)) == ["smart"]
-    assert python_profile_ids(_write(tmp_path, _RUST_CONFIG, name="rust.yaml")) == []
-
-
-def test_serve_config_uses_fastapi_for_python_profiles(
+def test_serve_config_uses_fastapi_profile_table(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = _write(tmp_path, _PYTHON_CONFIG)
     args = _serve_args(path)
@@ -211,10 +149,6 @@ def test_serve_config_uses_fastapi_for_python_profiles(
 
     assert captured["models"] == ["smart", "weak", "provider/weak"]
     assert captured["inbound_default"] == "both"
-    stderr = capsys.readouterr().err
-    assert "warning: Python-defined profile serving is deprecated." in stderr
-    assert "Python FastAPI adapter" in stderr
-    assert "Python profile(s): smart." in stderr
 
 
 def test_profile_config_route_table_serves_mixed_profiles(
@@ -283,24 +217,6 @@ def test_profile_config_route_table_serves_mixed_profiles(
         responses["/v1/responses"].json()["output"][0]["content"][0]["text"]
         == "ok"
     )
-
-
-def test_serve_config_fails_closed_when_python_profile_inspection_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    path = _write(tmp_path, _RUST_CONFIG)
-
-    def fail_inspection(_path: str) -> list[str]:
-        raise RuntimeError("inspection exploded")
-
-    monkeypatch.setattr(
-        "switchyard.lib.profiles.loader.python_profile_ids",
-        fail_inspection,
-    )
-
-    with pytest.raises(SystemExit, match="failed to inspect.*inspection exploded"):
-        _cmd_serve_profile_config(_serve_args(path))
 
 
 def _serve_args(path: Path) -> argparse.Namespace:
