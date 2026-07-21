@@ -5,37 +5,32 @@
 
 use std::error::Error;
 
-use axum::response::sse::Sse;
-use libsy::{LlmResponse, Response};
-use serde_json::Value;
+use axum::response::{IntoResponse, Response as HttpResponse};
+use axum::Json;
+use libsy::{LlmResponse, Response as AlgorithmResponse};
 use switchyard_translation::{encode_aggregated_response, encode_stream, WireFormat};
 
-use crate::sse::{frame_stream, SseFrameStream};
+use crate::sse::frame_stream;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
-pub(crate) enum TranslatedResponse {
-    /// Complete JSON response body ready for an Axum JSON response.
-    Buffered(Value),
-    /// Framed SSE response ready for Axum streaming.
-    Stream(Sse<SseFrameStream>),
-}
-
 /// Encodes a libsy response into the endpoint's wire format.
-pub(crate) fn translate_response(
-    response: Response,
+pub(crate) fn into_http_response(
+    response: AlgorithmResponse,
     target_format: WireFormat,
     requested_model: Option<String>,
-) -> Result<TranslatedResponse, BoxError> {
+) -> Result<HttpResponse, BoxError> {
     match response.llm_response {
-        LlmResponse::Agg(response) => Ok(TranslatedResponse::Buffered(encode_aggregated_response(
+        LlmResponse::Agg(response) => Ok(Json(encode_aggregated_response(
             &response,
             target_format,
             requested_model.as_deref(),
-        )?)),
-        LlmResponse::Stream(stream) => Ok(TranslatedResponse::Stream(frame_stream(
+        )?)
+        .into_response()),
+        LlmResponse::Stream(stream) => Ok(frame_stream(
             encode_stream(stream, target_format, requested_model)?,
             target_format,
-        ))),
+        )
+        .into_response()),
     }
 }

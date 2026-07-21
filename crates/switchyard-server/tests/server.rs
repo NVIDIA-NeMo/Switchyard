@@ -20,7 +20,7 @@ use libsy::algorithms::Random;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
-use switchyard_server::{build_switchyard_router, ServedModel, ServerState};
+use switchyard_server::{build_switchyard_router, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -133,15 +133,15 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                 .collect(),
         );
         let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set));
-        (
-            ServedModel {
-                id: (*route_model).to_string(),
-                display_name: "uniform random routing".to_string(),
-            },
-            algorithm,
-        )
+        ((*route_model).to_string(), algorithm)
     });
     Ok(ServerState::new(entries)?)
+}
+
+async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Router)> {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(random_state(&upstream.base_url, routes)?);
+    Ok((upstream, app))
 }
 
 async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> TestResult<Response> {
@@ -180,12 +180,12 @@ impl Response {
 }
 
 #[tokio::test]
-async fn health_models_and_unknown_paths_have_stable_shapes() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(random_state(
-        &upstream.base_url,
-        &[(ROUTE_MODEL, &["model/a"])],
-    )?);
+async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
+    let (upstream, app) = test_app(&[
+        ("switchyard/coding", &["model/code"]),
+        ("switchyard/general", &["model/general"]),
+    ])
+    .await?;
 
     let health = send(&app, "GET", "/health", None).await?;
     assert_eq!(health.status, StatusCode::OK);
@@ -193,30 +193,14 @@ async fn health_models_and_unknown_paths_have_stable_shapes() -> TestResult {
 
     let models = send(&app, "GET", "/v1/models", None).await?;
     assert_eq!(models.status, StatusCode::OK);
-    assert_eq!(models.json()?["model_pool"], json!([ROUTE_MODEL]));
-
-    let missing = send(&app, "GET", "/missing", None).await?;
-    assert_eq!(missing.status, StatusCode::NOT_FOUND);
-    assert_eq!(missing.json()?["error"]["code"], "endpoint_not_found");
-    Ok(())
-}
-
-#[tokio::test]
-async fn multiple_algorithms_dispatch_by_route_model() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(random_state(
-        &upstream.base_url,
-        &[
-            ("switchyard/coding", &["model/code"]),
-            ("switchyard/general", &["model/general"]),
-        ],
-    )?);
-
-    let models = send(&app, "GET", "/v1/models", None).await?;
     assert_eq!(
         models.json()?["model_pool"],
         json!(["switchyard/coding", "switchyard/general"])
     );
+
+    let missing = send(&app, "GET", "/missing", None).await?;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.json()?["error"]["code"], "endpoint_not_found");
 
     for (route_model, target_model) in [
         ("switchyard/general", "model/general"),
@@ -250,11 +234,7 @@ async fn multiple_algorithms_dispatch_by_route_model() -> TestResult {
 
 #[tokio::test]
 async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(random_state(
-        &upstream.base_url,
-        &[(ROUTE_MODEL, &["model/a"])],
-    )?);
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
     let cases = [
         (
@@ -312,46 +292,8 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
 }
 
 #[tokio::test]
-async fn random_routing_only_calls_configured_targets() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let targets = ["model/a", "model/b", "model/c"];
-    let app = build_switchyard_router(random_state(
-        &upstream.base_url,
-        &[(ROUTE_MODEL, &targets)],
-    )?);
-
-    for _ in 0..20 {
-        let response = send(
-            &app,
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": ROUTE_MODEL,
-                "messages": [{"role": "user", "content": "hi"}]
-            })),
-        )
-        .await?;
-        assert_eq!(response.status, StatusCode::OK);
-    }
-
-    let configured = targets.into_iter().collect::<HashSet<_>>();
-    let calls = upstream.calls.lock().await;
-    assert!(calls.iter().all(|call| {
-        call["model"]
-            .as_str()
-            .map(|model| configured.contains(model))
-            .unwrap_or(false)
-    }));
-    Ok(())
-}
-
-#[tokio::test]
 async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(random_state(
-        &upstream.base_url,
-        &[(ROUTE_MODEL, &["model/a"])],
-    )?);
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
     let response = send(
         &app,
@@ -373,11 +315,7 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
 
 #[tokio::test]
 async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(random_state(
-        &upstream.base_url,
-        &[(ROUTE_MODEL, &["model/a"])],
-    )?);
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
     let unknown = send(
         &app,

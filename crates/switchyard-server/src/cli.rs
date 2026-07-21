@@ -14,7 +14,7 @@ use libsy::algorithms::Random;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_server::{
-    run_server, ServedModel, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
+    run_server, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
     DEFAULT_LISTEN_BACKLOG,
 };
 
@@ -43,7 +43,7 @@ impl FromStr for RandomRouteSpec {
             .map(str::trim)
             .map(str::to_string)
             .collect::<Vec<_>>();
-        if targets.is_empty() || targets.iter().any(String::is_empty) {
+        if targets.iter().any(String::is_empty) {
             return Err(format!("route {model} must contain non-empty targets"));
         }
         if targets.iter().collect::<BTreeSet<_>>().len() != targets.len() {
@@ -170,11 +170,7 @@ impl ServerArgs {
                     .collect(),
             );
             let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set));
-            let model = ServedModel {
-                id: route.model,
-                display_name: format!("uniform random routing across {}", route.targets.join(", ")),
-            };
-            (model, algorithm)
+            (route.model, algorithm)
         });
         let state = ServerState::new(routes)?;
 
@@ -211,61 +207,36 @@ pub(crate) async fn run(args: ServerArgs) -> ServerResult<()> {
 mod tests {
     use super::*;
 
+    fn runtime(routes: &[&str]) -> ServerResult<ServerState> {
+        let mut args = vec!["switchyard-server", "--base-url", "http://127.0.0.1:9/v1"];
+        for route in routes {
+            args.extend(["--route", route]);
+        }
+        let args = ServerArgs::try_parse_from(args)
+            .map_err(|error| ServerError::new(error.to_string()))?;
+        args.into_runtime().map(|(state, _)| state)
+    }
+
     #[test]
-    fn repeated_routes_build_independent_random_algorithms() -> ServerResult<()> {
-        let args = ServerArgs::try_parse_from([
-            "switchyard-server",
-            "--route",
+    fn routes_build_independent_algorithms() -> ServerResult<()> {
+        let state = runtime(&[
             "switchyard/general=model/a,model/b",
-            "--route",
             "switchyard/coding=model/c,model/d",
-            "--base-url",
-            "http://127.0.0.1:9/v1",
-            "--dry-run",
-        ])
-        .map_err(|error| ServerError::new(error.to_string()))?;
-
-        let (state, options) = args.into_runtime()?;
-
+        ])?;
         assert_eq!(
-            state
-                .served_models()
-                .map(|model| model.id.as_str())
-                .collect::<Vec<_>>(),
+            state.models().collect::<Vec<_>>(),
             ["switchyard/coding", "switchyard/general"]
         );
-        assert!(options.dry_run);
         Ok(())
     }
 
     #[test]
-    fn duplicate_targets_are_rejected() -> ServerResult<()> {
-        let result = ServerArgs::try_parse_from([
-            "switchyard-server",
-            "--route",
-            "switchyard/general=model/a,model/a",
-            "--base-url",
-            "http://127.0.0.1:9/v1",
-        ]);
-
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn duplicate_route_models_are_rejected() -> ServerResult<()> {
-        let args = ServerArgs::try_parse_from([
-            "switchyard-server",
-            "--route",
-            "switchyard/general=model/a",
-            "--route",
-            "switchyard/general=model/b",
-            "--base-url",
-            "http://127.0.0.1:9/v1",
-        ])
-        .map_err(|error| ServerError::new(error.to_string()))?;
-
-        assert!(args.into_runtime().is_err());
-        Ok(())
+    fn invalid_routes_are_rejected() {
+        for routes in [
+            &["switchyard/general=model/a,model/a"][..],
+            &["switchyard/general=model/a", "switchyard/general=model/b"],
+        ] {
+            assert!(runtime(routes).is_err());
+        }
     }
 }

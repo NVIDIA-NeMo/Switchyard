@@ -6,7 +6,6 @@
 mod response;
 mod sse;
 
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -28,7 +27,7 @@ use tokio::net::{TcpListener, TcpSocket};
 
 use switchyard_translation::{decode_request, WireFormat};
 
-use crate::response::{translate_response, TranslatedResponse};
+use crate::response::into_http_response;
 
 /// Default TCP listen backlog used by the Rust server.
 pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
@@ -65,47 +64,25 @@ impl Error for ServerError {}
 /// Result returned by server setup and lifecycle operations.
 pub type ServerResult<T> = std::result::Result<T, ServerError>;
 
-/// Public model entry advertised by `/v1/models`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServedModel {
-    /// Public model or route ID accepted in inbound request bodies.
-    pub id: String,
-    /// Human-readable label shown by startup logs and `/v1/models`.
-    pub display_name: String,
-}
-
 /// Shared server state used by all endpoint handlers.
 #[derive(Clone)]
 pub struct ServerState {
-    routes: Arc<BTreeMap<String, AlgorithmEntry>>,
-}
-
-struct AlgorithmEntry {
-    algorithm: Arc<dyn Algorithm>,
-    model: ServedModel,
+    routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
 }
 
 impl ServerState {
-    /// Creates server state from public models and their libsy algorithms.
+    /// Creates server state from route model IDs and their libsy algorithms.
     pub fn new(
-        routes: impl IntoIterator<Item = (ServedModel, Arc<dyn Algorithm>)>,
+        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm>)>,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
         for (model, algorithm) in routes {
-            if model.id.trim().is_empty() {
+            let model = model.trim();
+            if model.is_empty() {
                 return Err(ServerError::new("route model must not be empty"));
             }
-            let id = model.id.clone();
-            match entries.entry(id) {
-                Entry::Vacant(entry) => {
-                    entry.insert(AlgorithmEntry { algorithm, model });
-                }
-                Entry::Occupied(entry) => {
-                    return Err(ServerError::new(format!(
-                        "duplicate route model {}",
-                        entry.key()
-                    )));
-                }
+            if entries.insert(model.to_string(), algorithm).is_some() {
+                return Err(ServerError::new(format!("duplicate route model {model}")));
             }
         }
         if entries.is_empty() {
@@ -116,32 +93,13 @@ impl ServerState {
         })
     }
 
-    /// Returns the public models served by the configured algorithms.
-    pub fn served_models(&self) -> impl Iterator<Item = &ServedModel> {
-        self.routes.values().map(|entry| &entry.model)
+    /// Returns the route model IDs served by the configured algorithms.
+    pub fn models(&self) -> impl Iterator<Item = &str> {
+        self.routes.keys().map(String::as_str)
     }
 
-    fn algorithm_for_model(
-        &self,
-        model: Option<&str>,
-    ) -> std::result::Result<Arc<dyn Algorithm>, Box<Response>> {
-        let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
-            return Err(Box::new(error_response(
-                StatusCode::BAD_REQUEST,
-                "request body must include a non-empty string `model`",
-                "invalid_request_error",
-                "invalid_request_error",
-            )));
-        };
-        let Some(entry) = self.routes.get(model) else {
-            return Err(Box::new(error_response(
-                StatusCode::NOT_FOUND,
-                format!("No route registered for model {model}"),
-                "model_not_found",
-                "model_not_found",
-            )));
-        };
-        Ok(Arc::clone(&entry.algorithm))
+    fn algorithm_for_model(&self, model: &str) -> Option<Arc<dyn Algorithm>> {
+        self.routes.get(model).map(Arc::clone)
     }
 }
 
@@ -298,22 +256,18 @@ async fn handle_endpoint(
 ) -> Response {
     let body = match llm_json_body(body) {
         Ok(body) => body,
-        Err(response) => return *response,
+        Err(message) => return invalid_body_error(message),
     };
     handle_llm_request(state, headers, body, wire_format).await
 }
 
 fn llm_json_body(
     body: std::result::Result<Json<Value>, JsonRejection>,
-) -> std::result::Result<Value, Box<Response>> {
+) -> std::result::Result<Value, String> {
     match body {
         Ok(Json(value)) if value.is_object() => Ok(value),
-        Ok(_) => Err(Box::new(invalid_body_error(
-            "Request body must be a JSON object",
-        ))),
-        Err(error) => Err(Box::new(invalid_body_error(format!(
-            "Request body must be valid JSON: {error}"
-        )))),
+        Ok(_) => Err("Request body must be a JSON object".to_string()),
+        Err(error) => Err(format!("Request body must be valid JSON: {error}")),
     }
 }
 
@@ -327,10 +281,25 @@ async fn handle_llm_request(
         Ok(request) => request,
         Err(error) => return invalid_body_error(error.to_string()),
     };
-    let requested_model = llm_request.model.clone();
-    let algorithm = match state.algorithm_for_model(requested_model.as_deref()) {
-        Ok(algorithm) => algorithm,
-        Err(response) => return *response,
+    let Some(requested_model) = llm_request
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+    else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "request body must include a non-empty string `model`",
+            "invalid_request_error",
+            "invalid_request_error",
+        );
+    };
+    let Some(algorithm) = state.algorithm_for_model(&requested_model) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("No route registered for model {requested_model}"),
+            "model_not_found",
+            "model_not_found",
+        );
     };
 
     let request = Request {
@@ -343,9 +312,8 @@ async fn handle_llm_request(
         Err(error) => return algorithm_error(error),
     };
 
-    let mut response = match translate_response(response, wire_format, requested_model) {
-        Ok(TranslatedResponse::Buffered(body)) => Json(body).into_response(),
-        Ok(TranslatedResponse::Stream(stream)) => stream.into_response(),
+    let mut response = match into_http_response(response, wire_format, Some(requested_model)) {
+        Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
     };
     if let Some(decision) = trace.last() {
@@ -494,7 +462,7 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(state.served_models()))
+    Json(model_list_payload(state.models()))
 }
 
 async fn health() -> Json<Value> {
@@ -510,17 +478,13 @@ async fn not_found() -> Response {
     )
 }
 
-fn model_list_payload<'a>(entries: impl IntoIterator<Item = &'a ServedModel>) -> Value {
-    let entries = entries.into_iter().collect::<Vec<_>>();
-    let model_ids = entries
-        .iter()
-        .map(|entry| entry.id.clone())
-        .collect::<Vec<_>>();
+fn model_list_payload<'a>(models: impl IntoIterator<Item = &'a str>) -> Value {
+    let model_ids = models.into_iter().map(str::to_string).collect::<Vec<_>>();
     let first_id = model_ids.first().cloned();
     let last_id = model_ids.last().cloned();
     json!({
         "object": "list",
-        "data": entries.into_iter().map(model_entry_json).collect::<Vec<_>>(),
+        "data": model_ids.iter().map(|model| model_entry_json(model)).collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
         "has_more": false,
@@ -529,14 +493,14 @@ fn model_list_payload<'a>(entries: impl IntoIterator<Item = &'a ServedModel>) ->
     })
 }
 
-fn model_entry_json(entry: &ServedModel) -> Value {
+fn model_entry_json(model: &str) -> Value {
     json!({
-        "id": entry.id,
+        "id": model,
         "object": "model",
         "type": "model",
         "created": 0,
         "owned_by": "switchyard",
-        "display_name": entry.display_name,
+        "display_name": model,
         "capabilities": {
             "streaming": true,
             "tool_calling": null,
@@ -552,82 +516,22 @@ fn model_entry_json(entry: &ServedModel) -> Value {
 
 fn startup_banner(options: &ServerRunOptions, state: &ServerState) -> String {
     let scheme = if options.is_tls() { "https" } else { "http" };
-    let listen_url = url_for_addr(scheme, options.addr);
-    let local_url = local_url_for_addr(scheme, options.addr);
-    let mut output = String::new();
-
-    push_line(&mut output, "Switchyard libsy server");
-    push_line(&mut output, format!("  listening: {listen_url}"));
-    if local_url != listen_url {
-        push_line(&mut output, format!("  local: {local_url}"));
-    }
-    push_line(&mut output, "");
-    push_line(&mut output, "  endpoints:");
-    push_line(&mut output, "    GET  /health");
-    push_line(&mut output, "    GET  /v1/models");
-    push_line(&mut output, "    POST /v1/chat/completions");
-    push_line(&mut output, "    POST /v1/messages");
-    push_line(&mut output, "    POST /v1/responses");
-    push_line(&mut output, "");
-    push_line(&mut output, "  routes:");
-    for model in state.served_models() {
-        push_line(
-            &mut output,
-            format!("    - {} ({})", model.id, model.display_name),
-        );
-    }
-    push_line(&mut output, "");
-    push_line(&mut output, "  try:");
-    push_line(&mut output, format!("    curl -s {local_url}/health"));
-    if let Some(model) = state.served_models().next() {
-        let chat_payload = json!({
-            "model": model.id,
-            "messages": [{"role": "user", "content": "Say OK"}],
-            "max_tokens": 256,
-        });
-        push_line(
-            &mut output,
-            format!("    curl -s {local_url}/v1/chat/completions -H 'content-type: application/json' -d '{chat_payload}'"),
-        );
-    }
-    if options.is_tls() {
-        push_line(
-            &mut output,
-            "    For self-signed certificates use `curl --insecure`.",
-        );
-    }
-    push_line(&mut output, "");
-    push_line(&mut output, "  stop: Ctrl-C");
-    output
+    format!(
+        "Switchyard libsy server\n  listening: {}\n  routes: {}",
+        url_for_addr(scheme, options.addr),
+        state.models().collect::<Vec<_>>().join(", ")
+    )
 }
 
 fn dry_run_summary(state: &ServerState) -> String {
-    let mut output = String::from("server OK:\n");
-    for model in state.served_models() {
-        push_line(
-            &mut output,
-            format!("  - {} ({})", model.id, model.display_name),
-        );
-    }
-    output
-}
-
-fn push_line(output: &mut String, line: impl AsRef<str>) {
-    output.push_str(line.as_ref());
-    output.push('\n');
+    format!(
+        "server OK: {}",
+        state.models().collect::<Vec<_>>().join(", ")
+    )
 }
 
 fn url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
     format!("{scheme}://{}:{}", host_for_url(addr.ip()), addr.port())
-}
-
-fn local_url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
-    let host = match addr.ip() {
-        std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
-        std::net::IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_string(),
-        ip => host_for_url(ip),
-    };
-    format!("{scheme}://{host}:{}", addr.port())
 }
 
 fn host_for_url(ip: std::net::IpAddr) -> String {
