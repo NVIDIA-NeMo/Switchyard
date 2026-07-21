@@ -27,6 +27,7 @@ from switchyard.cli.config.user_config import (
     resolve_provider_connectivity,
 )
 from switchyard.cli.configure_command import cmd_configure
+from switchyard.cli.configure_request import ConfigureRequest, ConfigureTarget
 from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launchers.launch_intake_config import LaunchIntakeConfig
 from switchyard.cli.output import format_dry_run
@@ -35,6 +36,7 @@ from switchyard.cli.routing import (
     build_deterministic_routing_config,
     require_route_model,
 )
+from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import BackendFormat
 from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
@@ -259,10 +261,12 @@ def maybe_bootstrap_launch_config(
     )
     resolved_api_key = connectivity.api_key
     print(f"Switchyard is missing {target} launch defaults. Starting setup.")
-    configure_args = argparse.Namespace(
-        show=False,
-        reset=False,
-        target=target,
+    # Build the same request `switchyard configure` would. Any field we don't
+    # set here — skill distillation, routing profiles, the --show/--list modes —
+    # takes its default from ConfigureRequest, so setup can't crash on one we
+    # forgot to pass.
+    cmd_configure(ConfigureRequest(
+        target=cast(ConfigureTarget, target),
         provider=connectivity.provider,
         base_url=connectivity.base_url,
         api_key=args.api_key,
@@ -276,31 +280,9 @@ def maybe_bootstrap_launch_config(
         claude_model=args.model if target == "claude" else None,
         codex_model=args.model if target == "codex" else None,
         openclaw_model=args.model if target == "openclaw" else None,
-        claude_base_url=None,
-        claude_api_key=None,
-        claude_weak_base_url=None,
-        claude_weak_api_key=None,
-        codex_base_url=None,
-        codex_api_key=None,
-        codex_weak_base_url=None,
-        codex_weak_api_key=None,
-        openclaw_base_url=None,
-        openclaw_api_key=None,
-        openclaw_weak_base_url=None,
-        openclaw_weak_api_key=None,
-        claude_routing=None,
-        codex_routing=None,
-        openclaw_routing=None,
-        claude_weak_model=None,
-        codex_weak_model=None,
-        openclaw_weak_model=None,
-        claude_strong_probability=None,
-        codex_strong_probability=None,
-        openclaw_strong_probability=None,
         no_model_discovery=getattr(args, "no_model_discovery", False),
         no_tui=getattr(args, "no_tui", False),
-    )
-    cmd_configure(configure_args)
+    ))
     if not args.api_key:
         configured_api_key = load_user_credentials().api_key(connectivity.provider)
         if configured_api_key:
@@ -458,7 +440,7 @@ def resolve_launch_intake_config(
         task=intake.task or "developer-session",
         session_id=intake.session_id,
         user_id=intake.user_id,
-        nvdataflow_project=intake.nvdataflow_project,
+        target_url=intake.target_url,
         target=target,
     )
 
@@ -480,6 +462,9 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
 
     Random / latency-aware routing live in the YAML schema.
     """
+    if getattr(args, "startup_timing", False):
+        startup_timing.enable()
+    startup_timing.mark("launch invoked")
     if args.routing_profiles and getattr(args, "smoke", False):
         raise SystemExit(
             "launch claude: --smoke and --routing-profiles cannot be combined. "
@@ -626,6 +611,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     intake = resolve_launch_intake_config(
         args, target="claude", default_app="claude-code-switchyard",
     )
+    startup_timing.mark("config + credentials resolved")
 
     if deterministic:
         primary_connectivity = require_launch_tier_key(

@@ -74,7 +74,7 @@ def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
 ) -> None:
     # Schema/key validation, not a full chain build: building README's routes
     # is NOT hermetic — `passthrough` with `discover: true` does a live catalog
-    # fetch, `routellm` pulls the [gpu] extra, and `latency_service` polls. The
+    # fetch and `latency_service` polls. The
     # schema layer (route type + per-type key allowlist) is what we can check
     # offline, and it catches the likeliest drift: a renamed `type:` or a key
     # that no longer exists on that type.

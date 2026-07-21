@@ -99,7 +99,7 @@ Benchmark runs started through `benchmark/run-baseline.sh --routing-profiles` re
 | `--intake-base-url URL` | Override intake base URL. |
 | `--intake-workspace NAME` | Override workspace for Intake records. |
 | `--intake-api-key VALUE` | Override bearer token. Disables the SDK's transparent refresh. |
-| `--intake-nvdataflow-project PROJECT` | Post flat per-request telemetry to this NVDataflow project instead of chat-completions ingest. Defaults to `$SWITCHYARD_NVDATAFLOW_PROJECT`. |
+| `--intake-target-url URL` | Post flat per-request telemetry to this full URL (a data-lake posting endpoint) instead of chat-completions ingest. Defaults to `$SWITCHYARD_INTAKE_TARGET_URL`. |
 
 Launchers additionally accept context fields stamped into each ingested request:
 
@@ -120,6 +120,12 @@ for aggregate routing/model cost estimates. When a session ID is present,
 Switchyard also maps the Intake app/task labels into top-level
 `evaluation_context.dataset_*` and `evaluation_context.test_case_id` for span
 queries while keeping the original labels under `request.switchyard`.
+
+Set `--intake-target-url` to a full posting URL to send captures to a different
+store instead. Switchyard then posts a flat, top-level, type-prefixed document
+(`s_` string, `l_` long, `f_` float, `b_` bool, `text_` debug — one indexable
+field per metric) to that URL, unauthenticated, rather than the nested
+nemo-platform payload. Unset, it uses the nemo-platform ingest above.
 
 ### RL trace logging
 
@@ -221,7 +227,7 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 | `--host`, `--port`/`-p`, `--reload` | [Transport](#transport-server-verbs). |
 | `--inbound FORMAT` | Valid only for legacy route-bundle serve (`--routing-profiles`); `serve --config` actively rejects it with an error. For legacy serve, the flag is a no-op — all request APIs are always registered regardless of the value (accepted for backwards compat only). |
 | `--workers` / `-w` | uvicorn worker count. |
-| `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-nvdataflow-project` | [Intake sink](#intake-sink-serve-and-launchers). |
+| `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-target-url` | [Intake sink](#intake-sink-serve-and-launchers). |
 
 **Notes**
 
@@ -252,8 +258,10 @@ curl localhost:4000/v1/chat/completions \
 # Legacy route bundle on port 4000
 switchyard --routing-profiles routes.yaml -- serve --port 4000
 
-# Use the bundle previously persisted by `switchyard --routing-profiles ... -- configure`
-switchyard --routing-profiles routes.yaml -- configure
+# Persist a bundle for later runs; no-TTY configure requires explicit provider credentials
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 switchyard serve --port 4000
 
 # Multi-worker uvicorn (route-bundle path)
@@ -467,7 +475,9 @@ The top-level key is omitted when skill distillation is not configured. `namespa
 switchyard configure
 
 # Save a routing bundle as the default for serve + launchers
-switchyard --routing-profiles routes.yaml -- configure
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 
 # Inspect what's stored, plus resolved provider / key source / harness paths
 switchyard configure --show
@@ -562,7 +572,7 @@ switchyard verify --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.
 | `OPENROUTER_BASE_URL`, `NVIDIA_BASE_URL`, `OPENAI_BASE_URL` | Backend base URL overrides paired with the selected provider credential. |
 | `OPENAI_API_BASE` | Legacy alias for `OPENAI_BASE_URL`. Consulted as a last fallback when neither `--base-url` nor `OPENAI_BASE_URL` is set. Prefer `OPENAI_BASE_URL` for new configurations. |
 | `SWITCHYARD_INTAKE_ENABLED` | Boolean equivalent of `--intake-enabled` / `--enable-intake`. Set to `1` or `true` to enable the intake sink without a CLI flag. Precedence: CLI flag first, then this env var. |
-| `SWITCHYARD_NVDATAFLOW_PROJECT` | NVDataflow project name for the alternate intake sink (paired with `--intake-nvdataflow-project`). Precedence: CLI flag first, then this env var. |
+| `SWITCHYARD_INTAKE_TARGET_URL` | Full posting URL for the alternate flat-document intake sink (paired with `--intake-target-url`). Precedence: CLI flag first, then this env var. |
 | `SWITCHYARD_WORKERS` | Default uvicorn worker count for `serve`. |
 | `SWITCHYARD_TELEMETRY_OPT_OUT` | Disable the `X-Switchyard-Version` telemetry header on outbound calls. `NEMO_SWITCHYARD_TELEMETRY_OPT_OUT` is honored for backwards compatibility. |
 | `SWITCHYARD_INTAKE_BASE_URL`, `SWITCHYARD_INTAKE_WORKSPACE`, `SWITCHYARD_INTAKE_API_KEY`, `SWITCHYARD_INTAKE_APP`, `SWITCHYARD_INTAKE_TASK`, `SWITCHYARD_SESSION_ID`, `SWITCHYARD_USER_ID` | Intake-sink overrides for CI / headless runs. Precedence: the matching CLI flag (e.g. `--intake-user-id`) first, then the env var, then any persisted / SDK default (e.g. `~/.switchyard/user_id`). |

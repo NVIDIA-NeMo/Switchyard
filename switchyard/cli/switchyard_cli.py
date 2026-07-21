@@ -50,7 +50,7 @@ Examples::
     switchyard --routing-profiles profiles.yaml -- launch claude -- --no-auto-approve
 
 Legacy routing policies that used to be top-level CLI verbs (``passthrough``,
-``random-routing``, ``routellm``, ``latency-service``) and launcher flags
+``random-routing``, ``latency-service``) and launcher flags
 (``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
 are expressed in deprecated routing-profile YAML files. ``serve`` and
 launchers still parse the YAML into profile-backed runtimes.
@@ -79,6 +79,7 @@ from switchyard.cli.config.user_config import (
 from switchyard.cli.configure_command import (
     cmd_configure,
 )
+from switchyard.cli.configure_request import ConfigureRequest
 from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launch_command import (
     cmd_launch_claude,
@@ -223,7 +224,7 @@ def _resolve_intake_config(args: argparse.Namespace) -> IntakeSinkConfig | None:
         intake_base_url=intake.base_url,
         workspace=intake.workspace,
         api_key=intake.api_key,
-        nvdataflow_project=intake.nvdataflow_project,
+        target_url=intake.target_url,
     )
 
 
@@ -233,7 +234,10 @@ def _resolve_intake_processors(
     intake = _resolve_intake_config(args)
     if intake is None:
         return [], []
-    return [IntakeRequestProcessor()], [IntakeResponseProcessor(intake)]
+    return (
+        [IntakeRequestProcessor()],
+        [IntakeResponseProcessor(intake)],
+    )
 
 
 def _add_intake_args(parser: argparse.ArgumentParser) -> None:
@@ -272,11 +276,11 @@ def _add_common_intake_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--intake-nvdataflow-project", type=str, default=None,
+        "--intake-target-url", type=str, default=None,
         help=(
-            "Post flat per-request telemetry to this NVDataflow project's "
-            "posting endpoint instead of nemo-platform chat-completions "
-            "ingest. Defaults to $SWITCHYARD_NVDATAFLOW_PROJECT."
+            "Post flat per-request telemetry to this full URL (a data-lake "
+            "posting endpoint) instead of nemo-platform chat-completions "
+            "ingest. Defaults to $SWITCHYARD_INTAKE_TARGET_URL."
         ),
     )
 
@@ -383,7 +387,7 @@ def _add_launch_intake_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_configure(args: argparse.Namespace) -> None:
-    cmd_configure(args)
+    cmd_configure(ConfigureRequest.from_namespace(args))
 
 
 def _cmd_launch_claude(args: argparse.Namespace) -> None:
@@ -484,7 +488,7 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         args.intake_base_url,
         args.intake_workspace,
         args.intake_api_key,
-        args.intake_nvdataflow_project,
+        args.intake_target_url,
     ))
     if unsupported_intake:
         raise SystemExit("serve --config does not support Intake options yet.")
@@ -1167,6 +1171,14 @@ def _build_parser() -> argparse.ArgumentParser:
     lc.add_argument(
         "--timeout", type=float, default=None,
         help="Request timeout in seconds for the backend LLM client",
+    )
+    lc.add_argument(
+        "--startup-timing", action="store_true",
+        help=(
+            "Print a per-stage startup timing breakdown to stderr before "
+            "claude starts (each backend-format probe on its own line). "
+            "Also enabled with SWITCHYARD_STARTUP_TIMING=1."
+        ),
     )
     _add_launch_deterministic_override_args(lc)
     _add_launch_intake_args(lc)

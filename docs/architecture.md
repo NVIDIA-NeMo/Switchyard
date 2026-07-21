@@ -58,17 +58,22 @@ OpenClaw is intentionally pinned to `OPENAI` for its equivalent target.
 ```mermaid
 flowchart TB
     auto["BackendFormat.AUTO"]
+    chat{"/v1/chat/completions works?"}
+    openai_chat["OPENAI<br/>/v1/chat/completions"]
     messages{"/v1/messages works?"}
     anthropic["ANTHROPIC<br/>/v1/messages"]
     responses{"/v1/responses works?"}
     responses_format["RESPONSES<br/>/v1/responses"]
-    openai["OPENAI<br/>/v1/chat/completions fallback"]
+    openai_fallback["OPENAI<br/>/v1/chat/completions fallback"]
 
-    auto -->|"Probe /v1/messages"| messages
+    auto -->|"Probe /v1/chat/completions"| chat
+    chat -->|"Timeout: assume Chat Completions"| openai_chat
+    chat -->|"Yes"| openai_chat
+    chat -->|"No (fast 404): probe /v1/messages"| messages
     messages -->|"Yes"| anthropic
     messages -->|"No: probe /v1/responses"| responses
     responses -->|"Yes"| responses_format
-    responses -->|"No"| openai
+    responses -->|"No"| openai_fallback
 ```
 
 Supported inbound and response formats are handled automatically.
@@ -82,6 +87,14 @@ upstream format.
 > Prefer an explicit format for controlled deployments. It skips capability
 > probes and makes the upstream contract clear. Use `AUTO` when provider
 > capabilities are unknown or vary across deployments.
+>
+> **`AUTO` costs startup latency.** Each probe is a live request to the upstream
+> made before the agent starts, so a slow endpoint adds a round-trip per probe
+> (up to three, tried in order). This is the main reason a launch that uses
+> `AUTO` (Claude Code, Codex) starts slower than one pinned to an explicit
+> format. Set `format:` explicitly to remove the probing entirely. To see the
+> per-probe cost of a launch, run it with `--startup-timing` (or
+> `SWITCHYARD_STARTUP_TIMING=1`), which prints each probe on its own line.
 ## Related Documentation
 
 - [Getting Started](getting_started.md): install Switchyard and run a first request

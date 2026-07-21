@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import argparse
 import getpass
 import logging
 import sys
@@ -53,10 +52,10 @@ def is_interactive_terminal() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def build_launch_config_wizard(args: argparse.Namespace) -> LaunchConfigWizard:
+def build_launch_config_wizard(no_tui: bool) -> LaunchConfigWizard:
     return LaunchConfigWizard(
         session=TuiSession.from_current_terminal(
-            force_plain=bool(getattr(args, "no_tui", False)),
+            force_plain=no_tui,
             input_fn=input,
             secret_fn=getpass.getpass,
             output_fn=print,

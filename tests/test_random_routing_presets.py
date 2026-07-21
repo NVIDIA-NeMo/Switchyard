@@ -141,7 +141,7 @@ class TestOpusNemotronSuperContract:
 
 
 class TestGpt5NemotronSuperContract:
-    """GPT-5.2 strong + Nemotron-3 Super v3 weak (matches default_routellm_recipe)."""
+    """GPT-5.2 strong + Nemotron-3 Super v3 weak."""
 
     def test_default_config(self):
         config = RandomRoutingPresets.gpt5_nemotron_super()

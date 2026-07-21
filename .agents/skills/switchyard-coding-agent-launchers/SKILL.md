@@ -89,7 +89,7 @@ Route YAML and launchers share this model-dispatch path:
   strong/weak passthrough entries.
 - `type: plan_execute` registers the route key plus the executor as a direct
   passthrough; the planner is internal routing logic.
-- `type: routellm`, `type: latency_service`, and `type: noop` register the
+- `type: latency_service` and `type: noop` register the
   route key.
 
 Runtime-only hooks such as intake are passed to route-table builders as kwargs;

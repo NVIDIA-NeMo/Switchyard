@@ -18,6 +18,31 @@ pub enum IntakeQueueFullPolicy {
     Block,
 }
 
+/// Payload shape a configured intake target expects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntakeFormat {
+    /// Nested OpenAI chat-completions JSON (the nemo-platform ingest shape).
+    ChatCompletions,
+    /// Flat, top-level type-prefixed telemetry document (data-lake posting shape).
+    FlatDocument,
+}
+
+/// A configurable intake destination.
+///
+/// When a sink has no target it posts nested chat-completions documents to the
+/// authenticated nemo-platform ingest URL built from `intake_base_url` +
+/// `workspace`. Set a target to post a chosen payload shape to an explicit URL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeTarget {
+    /// Full posting URL. The caller builds it; the sink POSTs to it verbatim.
+    pub url: String,
+    /// Payload shape to emit.
+    pub format: IntakeFormat,
+    /// Send the sink's `api_key` as a bearer token with each POST.
+    pub authenticated: bool,
+}
+
 /// Runtime configuration for the HTTP intake sink.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntakeSinkConfig {
@@ -29,9 +54,9 @@ pub struct IntakeSinkConfig {
     pub user_id: String,
     /// Bearer token used when posting intake payloads.
     pub api_key: Option<String>,
-    /// When set, post a flat NVDataflow telemetry document to this project's
-    /// posting endpoint instead of the nemo-platform chat-completions ingest.
-    pub nvdataflow_project: Option<String>,
+    /// Optional explicit destination. Unset posts nested chat-completions
+    /// documents to the authenticated nemo-platform ingest.
+    pub target: Option<IntakeTarget>,
     /// Maximum buffered payloads before applying `on_queue_full`.
     pub max_queue_size: usize,
     /// Per-request HTTP timeout in seconds.
@@ -53,7 +78,7 @@ impl fmt::Debug for IntakeSinkConfig {
             .field("workspace", &self.workspace)
             .field("user_id", &self.user_id)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
-            .field("nvdataflow_project", &self.nvdataflow_project)
+            .field("target", &self.target)
             .field("max_queue_size", &self.max_queue_size)
             .field("request_timeout_s", &self.request_timeout_s)
             .field("max_retries", &self.max_retries)
@@ -70,7 +95,7 @@ impl Default for IntakeSinkConfig {
             workspace: None,
             user_id: "switchyard".to_string(),
             api_key: None,
-            nvdataflow_project: None,
+            target: None,
             max_queue_size: 1000,
             request_timeout_s: 10.0,
             max_retries: 2,
@@ -80,25 +105,9 @@ impl Default for IntakeSinkConfig {
     }
 }
 
-/// Default NVDataflow host used when `intake_base_url` is unset.
-pub const DEFAULT_NVDATAFLOW_BASE_URL: &str = "https://nvdataflow.nvidia.com";
-
 impl IntakeSinkConfig {
     /// Returns the configured workspace or the Python-compatible default.
     pub fn workspace_or_default(&self) -> &str {
         self.workspace.as_deref().unwrap_or("default")
-    }
-
-    /// Posting URL for the configured NVDataflow project, or `None` when the
-    /// sink runs in chat-completions ingest mode.
-    pub fn nvdataflow_posting_url(&self) -> Option<String> {
-        self.nvdataflow_project.as_deref().map(|project| {
-            let base = self
-                .intake_base_url
-                .as_deref()
-                .unwrap_or(DEFAULT_NVDATAFLOW_BASE_URL)
-                .trim_end_matches('/');
-            format!("{base}/dataflow/{project}/posting")
-        })
     }
 }

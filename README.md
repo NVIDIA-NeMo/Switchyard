@@ -140,8 +140,13 @@ routes:
 
 ```bash
 switchyard --routing-profiles routes.yaml -- launch claude
-switchyard --routing-profiles routes.yaml -- configure
+switchyard --routing-profiles routes.yaml -- configure --target provider \
+  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 ```
+
+Non-interactive `configure` does not read provider credentials from the routing
+bundle; pass `--api-key` explicitly when persisting the bundle for CI.
 
 For profile selection and full configuration examples, start with
 [Routing Overview](docs/routing_algorithms/overview.md), then open the
@@ -211,7 +216,7 @@ Optional extras:
 ```bash
 pip install "nemo-switchyard[server]"   # FastAPI / Uvicorn HTTP endpoints
 pip install "nemo-switchyard[cli]"      # Interactive CLI launchers (Claude / Codex)
-pip install "nemo-switchyard[all]"      # Server, CLI, GPU routing, and tracing extras
+pip install "nemo-switchyard[all]"      # Server, CLI, and tracing extras
 ```
 
 See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds.

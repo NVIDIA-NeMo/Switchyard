@@ -342,7 +342,7 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
         config=None, routing_profiles="profiles.yaml",
         enable_rl_logging=True, rl_log_dir=str(tmp_path),
         intake_enabled=False, intake_base_url=None, intake_workspace=None,
-        intake_api_key=None, intake_nvdataflow_project=None,
+        intake_api_key=None, intake_target_url=None,
     )
     cli._cmd_serve(args)
 
@@ -358,7 +358,7 @@ def test_serve_config_rejects_rl_logging() -> None:
         config="profiles.yaml", routing_profiles=None, inbound=None,
         reload=False, workers=1,
         intake_enabled=False, intake_base_url=None, intake_workspace=None,
-        intake_api_key=None, intake_nvdataflow_project=None,
+        intake_api_key=None, intake_target_url=None,
         enable_rl_logging=True, rl_log_dir="./rl_data",
     )
     with pytest.raises(SystemExit, match="enable-rl-logging"):

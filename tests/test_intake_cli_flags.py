@@ -68,7 +68,7 @@ COMMON_INTAKE_ARGS = [
     "--intake-base-url", "https://nmp.example",
     "--intake-workspace", "workspace-a",
     "--intake-api-key", "ci-token",
-    "--intake-nvdataflow-project", "project-a",
+    "--intake-target-url", "https://data-lake.example/posting",
 ]
 
 
@@ -76,7 +76,7 @@ def _assert_common_intake_args(args: argparse.Namespace) -> None:
     assert args.intake_base_url == "https://nmp.example"
     assert args.intake_workspace == "workspace-a"
     assert args.intake_api_key == "ci-token"
-    assert args.intake_nvdataflow_project == "project-a"
+    assert args.intake_target_url == "https://data-lake.example/posting"
 
 
 def test_serve_accepts_common_intake_args() -> None:

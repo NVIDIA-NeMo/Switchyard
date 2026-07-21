@@ -5,7 +5,10 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_translation::{StreamTranslationState, TranslationEngine, WireFormat};
+use switchyard_protocol::{ResponseAccumulator, StopReason};
+use switchyard_translation::{
+    decode_stream_event, StreamTranslationState, TranslationEngine, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -414,5 +417,37 @@ fn anthropic_thinking_stream_deltas_do_not_become_openai_chat_content() -> TestR
     assert!(!events
         .iter()
         .any(|event| { event["choices"][0]["delta"]["content"] == "private chain of thought" }));
+    Ok(())
+}
+
+// A real Anthropic stream carries its stop reason on `message_delta` and then always
+// sends a reasonless `message_stop`. Decoding both and folding the chunks must preserve
+// the provider reason (here `max_tokens`) — the terminal `message_stop` must not emit a
+// second, reasonless `MessageStop` that the accumulator would fold to `EndTurn`.
+#[test]
+fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestResult {
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::AnthropicMessages);
+    let events = vec![
+        json!({"type": "message_start", "message": {"id": "msg_1", "model": "claude", "usage": {"input_tokens": 3}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi"}}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 5}}),
+        json!({"type": "message_stop"}),
+    ];
+
+    let mut accumulator = ResponseAccumulator::new();
+    for event in &events {
+        for chunk in decode_stream_event(&mut state, WireFormat::AnthropicMessages, event) {
+            accumulator.push(chunk);
+        }
+    }
+    let aggregate = accumulator.finish();
+
+    assert_eq!(
+        aggregate.outputs[0].stop_reason,
+        Some(StopReason::MaxTokens),
+        "the reasonless message_stop must not overwrite the max_tokens stop reason"
+    );
     Ok(())
 }

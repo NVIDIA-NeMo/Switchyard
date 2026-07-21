@@ -43,7 +43,6 @@ from switchyard.lib.profiles import (
     LatencyServiceProfileConfig,
     PlanExecuteProfileConfig,
     ProfileSwitchyard,
-    RouteLLMProfileConfig,
     StageRouterProfileConfig,
 )
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
@@ -51,7 +50,6 @@ from switchyard.lib.profiles.escalation_router_config import EscalationRouterCon
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
-from switchyard.lib.profiles.routellm import RouteLLMConfig
 from switchyard.lib.profiles.stage_router_config import StageRouterConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
 from switchyard.lib.route_table_builders import (
@@ -176,15 +174,6 @@ _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS |
     "enable_stats",
     "rng_seed",
     "preset",
-    "fallback_target_on_evict",
-})
-_ROUTELLM_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
-    "strong",
-    "weak",
-    "threshold",
-    "router_type",
-    "classifier_model",
-    "enable_stats",
     "fallback_target_on_evict",
 })
 _PASSTHROUGH_SETTING_KEYS = frozenset({
@@ -333,7 +322,6 @@ _CLASSIFIER_DEFAULT_KEYS = frozenset({
 _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _MODEL_ROUTE_KEYS,
     "random_routing": _RANDOM_ROUTING_ROUTE_KEYS,
-    "routellm": _ROUTELLM_ROUTE_KEYS,
     "latency_service": _LATENCY_SERVICE_ROUTE_KEYS,
     "noop": _NOOP_ROUTE_KEYS,
     "passthrough": _PASSTHROUGH_ROUTE_KEYS,
@@ -345,7 +333,6 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
     "random_routing": _TARGET_DEFAULT_KEYS,
-    "routellm": _TARGET_DEFAULT_KEYS,
     "latency_service": _LATENCY_ENDPOINT_DEFAULT_KEYS,
     "passthrough": _PASSTHROUGH_SETTING_KEYS,
     "noop": frozenset(),
@@ -420,7 +407,7 @@ def routing_profile_model_ids(
     """User-callable model ids from a parsed routing-profiles bundle.
 
     Returns each route's YAML key followed by its tier ``model`` fields
-    (``strong`` / ``weak`` for stage_router/deterministic/routellm/random_routing,
+    (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
     ``planner`` / ``executor`` for plan_execute, ``target`` for
     ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
@@ -830,21 +817,6 @@ def _build_switchyard_for_route(
             extra_response_processors=extra_response_processors,
         )
 
-    if route_type == "routellm":
-        routellm_config = RouteLLMConfig.model_validate(
-            _route_config(route, target_defaults, ("strong", "weak"))
-        )
-        return ProfileSwitchyard(
-            RouteLLMProfileConfig.from_config(routellm_config)
-            .build()
-            .with_runtime_components(
-                stats_accumulator=stats,
-                enable_stats=routellm_config.enable_stats,
-                pre_request_processors=pre_routing_request_processors,
-                response_processors=extra_response_processors,
-            )
-        )
-
     if route_type == "latency_service":
         return _latency_service_switchyard(
             model_id,
@@ -1250,7 +1222,7 @@ def _stage_router_switchyard(
             where=f"{model_id}.classifier",
         )
     # The deprecated bundle keeps the shared strong/weak tier keys (also used by
-    # deterministic/routellm); map them onto StageRouterConfig's capable/efficient fields.
+    # deterministic); map them onto StageRouterConfig's capable/efficient fields.
     resolved = _route_config(route, target_defaults, ("strong", "weak"))
     resolved["capable"] = resolved.pop("strong")
     resolved["efficient"] = resolved.pop("weak")
@@ -1522,8 +1494,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         if "latency_service_url" in route or "latency_url" in route:
             return "latency_service"
         if "strong" in route and "weak" in route:
-            if any(key in route for key in ("threshold", "router_type", "classifier_model")):
-                return "routellm"
             return "random_routing"
         if "target" in route or "model" in route:
             return "model"
@@ -1541,8 +1511,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "target": "model",
         "random": "random_routing",
         "random_routing": "random_routing",
-        "route_llm": "routellm",
-        "routellm": "routellm",
         "latency": "latency_service",
         "latency_service": "latency_service",
         "noop": "noop",

@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
+import httpx
 import pytest
 
+from switchyard.lib import startup_timing
 from switchyard.lib.backends import (
     backend_format_resolver as resolver_mod,
 )
@@ -215,6 +215,67 @@ def test_auto_falls_back_to_openai_when_all_probes_fail(
     )
 
     assert resolution.format is BackendFormat.OPENAI
+
+
+def test_auto_chat_completions_timeout_assumes_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Chat Completions probe that times out (raises, not a fast 404) resolves
+    to OPENAI without stacking the slower /v1/messages and /v1/responses probes.
+    A 404 returns False and still falls through — that path is covered by
+    test_auto_resolves_to_anthropic_when_chat_completions_unavailable."""
+    def timed_out(**_: object) -> bool:
+        raise httpx.ReadTimeout("probe timed out")
+
+    monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync",
+                        timed_out)
+    monkeypatch.setattr(resolver_mod, "probe_anthropic_messages_support_sync",
+                        _no_probe("anthropic"))
+    monkeypatch.setattr(resolver_mod, "probe_openai_responses_support_sync",
+                        _no_probe("responses"))
+
+    resolution = resolver_mod.BackendFormatResolver.resolve(
+        LlmTarget(
+            model="slow-endpoint-model",
+            format=BackendFormat.AUTO,
+            base_url="https://slow.test/v1",
+            api_key="sk-test",  # pragma: allowlist secret
+            timeout_secs=0.05,
+        ),
+    )
+
+    assert resolution.format is BackendFormat.OPENAI
+    assert "timed out" in resolution.reason
+
+
+def test_auto_records_each_probe_in_startup_timing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With timing on, each probe reached leaves its own mark so
+    `launch --startup-timing` can show a per-route breakdown."""
+    monkeypatch.setattr(startup_timing, "enabled", True)
+    startup_timing._marks.clear()
+
+    monkeypatch.setattr(resolver_mod, "probe_openai_chat_completions_support_sync",
+                        _RecordingProbe(result=False))
+    monkeypatch.setattr(resolver_mod, "probe_anthropic_messages_support_sync",
+                        _RecordingProbe(result=True))
+    monkeypatch.setattr(resolver_mod, "probe_openai_responses_support_sync",
+                        _no_probe("responses"))
+
+    resolution = resolver_mod.BackendFormatResolver.resolve(
+        LlmTarget(
+            model="some-model",
+            format=BackendFormat.AUTO,
+            base_url="https://api.anthropic.com/v1",
+            api_key="sk-test",  # pragma: allowlist secret
+        ),
+    )
+
+    assert resolution.format is BackendFormat.ANTHROPIC
+    labels = [label for label, _ in startup_timing._marks]
+    assert labels == ["chain init", "probe: /v1/chat/completions", "probe: /v1/messages"]
+    startup_timing._marks.clear()
 
 
 # ---------------------------------------------------------------------------

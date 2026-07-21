@@ -13,7 +13,7 @@ use switchyard_translation::util::{
     exact_preserved_response,
 };
 use switchyard_translation::{
-    FormatId, FormatRegistry, LlmRequest, LlmResponse, LlmStreamEvent, LossyConversionPolicy,
+    AggLlmResponse, FormatId, FormatRegistry, LlmRequest, LlmResponseChunk, LossyConversionPolicy,
     Message, PreservationPolicy, ResponseOutput, Role, StreamCodec, StreamCodecRegistry,
     StreamTranslationState, TargetCapabilities, TranslationEngine, TranslationPolicy, Usage,
     WireFormat,
@@ -181,7 +181,7 @@ impl FormatCodec for MinimalCustomCodec {
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<DecodedResponse> {
         Ok(DecodedResponse {
-            response: LlmResponse {
+            response: AggLlmResponse {
                 id: body
                     .get("id")
                     .and_then(Value::as_str)
@@ -203,7 +203,7 @@ impl FormatCodec for MinimalCustomCodec {
                 }],
                 usage: Usage::default(),
                 preservation: capture_response_preservation(self.format(), body, policy),
-                ..LlmResponse::default()
+                ..AggLlmResponse::default()
             },
             diagnostics: Vec::new(),
         })
@@ -211,7 +211,7 @@ impl FormatCodec for MinimalCustomCodec {
 
     fn encode_response(
         &self,
-        response: &LlmResponse,
+        response: &AggLlmResponse,
         policy: &TranslationPolicy,
     ) -> switchyard_translation::Result<EncodedResponse> {
         if let Some(body) = exact_preserved_response(&response.preservation, self.format(), policy)
@@ -254,9 +254,9 @@ impl StreamCodec for CustomStreamCodec {
         &self,
         _state: &mut StreamTranslationState,
         event: &Value,
-    ) -> Vec<LlmStreamEvent> {
+    ) -> Vec<LlmResponseChunk> {
         match event.get("kind").and_then(Value::as_str) {
-            Some("start") => vec![LlmStreamEvent::MessageStart {
+            Some("start") => vec![LlmResponseChunk::MessageStart {
                 id: event
                     .get("id")
                     .and_then(Value::as_str)
@@ -270,7 +270,7 @@ impl StreamCodec for CustomStreamCodec {
                 .get("text")
                 .and_then(Value::as_str)
                 .map(|text| {
-                    vec![LlmStreamEvent::TextDelta {
+                    vec![LlmResponseChunk::TextDelta {
                         index: 0,
                         text: text.to_string(),
                     }]
@@ -283,10 +283,10 @@ impl StreamCodec for CustomStreamCodec {
     fn encode_event(
         &self,
         _state: &mut StreamTranslationState,
-        event: LlmStreamEvent,
+        event: LlmResponseChunk,
     ) -> Vec<Value> {
         match event {
-            LlmStreamEvent::TextDelta { text, .. } => {
+            LlmResponseChunk::TextDelta { text, .. } => {
                 vec![json!({"kind": "delta", "text": text})]
             }
             _ => Vec::new(),

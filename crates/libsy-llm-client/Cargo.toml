@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-llm-client"
+version = "0.1.0"
+description = "HTTP LLM client speaking Switchyard's neutral IR directly"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+switchyard-protocol = { path = "../protocol", version = "0.1.0" }
+switchyard-translation = { path = "../switchyard-translation", version = "0.1.0" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
+async-trait = "0.1"
+futures-util = "0.3"
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
