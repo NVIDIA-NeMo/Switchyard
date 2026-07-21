@@ -15,7 +15,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libsy::LlmClassifierOrchAlgo;
+use libsy::algorithms::LlmClassifierOrch;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
     RoutedLlmClient,
@@ -91,8 +91,8 @@ impl ResearchAgent {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Configure routing once: an LLM classifier over three named targets. Swapping
-    // in `RandomAlgo` needs no change to the agent.
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
+    // in `Random` needs no change to the agent.
+    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrch::new(
         CLASSIFIER,
         STRONG,
         WEAK,

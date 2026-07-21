@@ -15,6 +15,14 @@ pub struct Context {
     pub values: HashMap<String, String>,
 }
 
+/// Agentic-stack events fed to an algorithm out of band (e.g. tool results, budget
+/// updates) — in libsy, via `Algorithm::process_signals`.
+///
+/// A placeholder today; a stateful algorithm can begin consuming signals as the enum
+/// grows without changing the orchestrator contract.
+#[derive(Clone)]
+pub struct Signals {}
+
 /// Correlation and routing metadata attached to a request or response.
 ///
 /// All fields are optional; algorithms and observers use whichever are present

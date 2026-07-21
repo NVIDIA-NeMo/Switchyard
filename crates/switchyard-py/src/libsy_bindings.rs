@@ -7,9 +7,10 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use libsy::algorithms::{Noop, Random};
 use libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, NoopAlgo,
-    RandomAlgo, Request, Response, RoutedLlmClient,
+    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request,
+    Response, RoutedLlmClient,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -148,7 +149,7 @@ impl PyAlgorithm {
 /// Construct the no-op reference algorithm.
 #[pyfunction(name = "noop")]
 fn noop_algorithm() -> PyAlgorithm {
-    PyAlgorithm::new(Arc::new(NoopAlgo {}))
+    PyAlgorithm::new(Arc::new(Noop {}))
 }
 
 /// Construct uniform random routing over targets with Python clients.
@@ -161,7 +162,7 @@ fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<P
         .iter()
         .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyAlgorithm::new(Arc::new(RandomAlgo::new(
+    Ok(PyAlgorithm::new(Arc::new(Random::new(
         LlmTargetSet::new(targets),
     ))))
 }

@@ -12,7 +12,7 @@ Build a target set, pick an algorithm, run a request:
 
 ```rust
 use libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
-use libsy::LlmClassifierOrchAlgo;
+use libsy::algorithms::LlmClassifierOrch;
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ use std::sync::Arc;
 let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
 let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
 
-let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
+let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrch::new(
     "classifier", "strong", "weak", 0.5,
     LlmTargetSet::new(vec![target("classifier"), target("strong"), target("weak")]),
 ));
@@ -221,7 +221,7 @@ Example — the LLM classifier (classify, then route; full version in
 
 ```rust
 #[async_trait]
-impl Algorithm for LlmClassifierOrchAlgo {
+impl Algorithm for LlmClassifierOrch {
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
         -> Result<Response, Box<dyn Error + Send + Sync>> {
         // Thread `ctx` into every offloaded call and decision — it carries the request's
@@ -256,9 +256,9 @@ agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
-- [`RandomAlgo`](src/algorithms/rand.rs) — uniform random over the set
+- [`Random`](src/algorithms/rand.rs) — uniform random over the set
   (one call).
-- [`LlmClassifierOrchAlgo`](src/algorithms/llm_class.rs) — classify, then route
+- [`LlmClassifierOrch`](src/algorithms/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
 - [`EnsembleOrchAlgo`](../libsy-examples/src/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.

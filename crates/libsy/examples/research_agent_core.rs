@@ -12,7 +12,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::LlmClassifierOrchAlgo;
+use libsy::algorithms::LlmClassifierOrch;
 use libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
 };
@@ -98,7 +98,7 @@ fn print_decision(decision: &dyn Decision) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
+    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrch::new(
         CLASSIFIER,
         STRONG,
         WEAK,
