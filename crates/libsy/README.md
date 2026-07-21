@@ -11,8 +11,8 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
-use libsy::LlmClassifierOrchAlgo;
+use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
+use switchyard_libsy::algorithms::LlmClassifier;
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ use std::sync::Arc;
 let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
 let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
 
-let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
+let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifier::new(
     "classifier", "strong", "weak", 0.5,
     LlmTargetSet::new(vec![target("classifier"), target("strong"), target("weak")]),
 ));
@@ -35,7 +35,7 @@ let req = Request {
 let (trace, response) = algo.clone().run(Context::default(), req).await?;  // calls in, trace + response out
 println!("routed to {}", trace.last().unwrap().selected_model());
 // `response.llm_response` is buffered or streamed; fold it to the aggregate to read text.
-println!("answer: {}", completion_text(&response.llm_response.aggregate().await?));
+println!("answer: {}", completion_text(&response.llm_response.into_agg().await?));
 ```
 
 Runnable: [`research_agent`](examples/research_agent.rs)
@@ -152,17 +152,17 @@ match response.llm_response {
 }
 ```
 
-Need the whole answer regardless of how it arrived? `aggregate()` folds a `Stream` (or
+Need the whole answer regardless of how it arrived? `into_agg()` folds a `Stream` (or
 returns an `Agg` unchanged) into a single `AggLlmResponse`, surfacing any mid-stream error:
 
 ```rust
-let agg = response.llm_response.aggregate().await?;   // drives the stream to completion
+let agg = response.llm_response.into_agg().await?;   // drives the stream to completion
 println!("{}", completion_text(&agg));
 ```
 
 An `LlmResponseChunk` is the provider-neutral streaming event (`MessageStart`, `TextDelta`,
 `ReasoningDelta`, `ToolCallDelta`, `Usage`, `MessageStop`, `Error`); `ResponseAccumulator`
-is the fold behind `aggregate()` if you need to assemble one yourself. Runnable end-to-end
+is the fold behind `into_agg()` if you need to assemble one yourself. Runnable end-to-end
 demo: [`streaming_agent`](examples/streaming_agent.rs).
 
 ## Driving the calls yourself (`run_stream`)
@@ -221,7 +221,7 @@ Example — the LLM classifier (classify, then route; full version in
 
 ```rust
 #[async_trait]
-impl Algorithm for LlmClassifierOrchAlgo {
+impl Algorithm for LlmClassifier {
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
         -> Result<Response, Box<dyn Error + Send + Sync>> {
         // Thread `ctx` into every offloaded call and decision — it carries the request's
@@ -233,8 +233,8 @@ impl Algorithm for LlmClassifierOrchAlgo {
         let classify_response =
             driver.call_llm_target(ctx.clone(), &classifier, classify_req, classify_decision).await?;
         // Abbreviated: fold the (buffered or streamed) response to its aggregate and read
-        // the completion text as a score. `.agg()` alone is `None` for an unfolded stream.
-        let score = classify_response.llm_response.aggregate().await
+        // the completion text as a score. `.as_agg()` alone is `None` for an unfolded stream.
+        let score = classify_response.llm_response.into_agg().await
             .ok()
             .and_then(|agg| completion_text(&agg).trim().parse::<f64>().ok());
 
@@ -256,9 +256,9 @@ agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
-- [`RandomAlgo`](src/algorithms/rand.rs) — uniform random over the set
+- [`Random`](src/algorithms/rand.rs) — uniform random over the set
   (one call).
-- [`LlmClassifierOrchAlgo`](src/algorithms/llm_class.rs) — classify, then route
+- [`LlmClassifier`](src/algorithms/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
 - [`EnsembleOrchAlgo`](../libsy-examples/src/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.

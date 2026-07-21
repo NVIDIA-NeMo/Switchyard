@@ -64,7 +64,7 @@ impl Decision for ClassifierDecision {
 }
 
 /// LLM-classifier router: classify with one target, then route to strong/weak.
-pub struct LlmClassifierOrchAlgo {
+pub struct LlmClassifier {
     classifier_model: String,
     strong_model: String,
     weak_model: String,
@@ -72,7 +72,7 @@ pub struct LlmClassifierOrchAlgo {
     target_set: LlmTargetSet,
 }
 
-impl LlmClassifierOrchAlgo {
+impl LlmClassifier {
     /// Configure the classifier: the model that scores each request, the strong
     /// and weak models to route to, the score `threshold` at or above which the
     /// strong model is chosen, and the `target_set` to route among. That set must
@@ -138,7 +138,7 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
 }
 
 #[async_trait]
-impl Algorithm for LlmClassifierOrchAlgo {
+impl Algorithm for LlmClassifier {
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -251,7 +251,7 @@ mod tests {
     }
 
     /// Build a classifier algo whose three targets share a scoring client.
-    fn algo(threshold: f64, score: &str) -> (LlmClassifierOrchAlgo, Arc<Mutex<Vec<Request>>>) {
+    fn algo(threshold: f64, score: &str) -> (LlmClassifier, Arc<Mutex<Vec<Request>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let client = Arc::new(ScoringClient {
             classifier_model: "router/classifier".to_string(),
@@ -267,7 +267,7 @@ mod tests {
             target("frontier/model"),
             target("cheap/model"),
         ]);
-        let algo = LlmClassifierOrchAlgo {
+        let algo = LlmClassifier {
             classifier_model: "router/classifier".to_string(),
             strong_model: "frontier/model".to_string(),
             weak_model: "cheap/model".to_string(),
@@ -286,7 +286,7 @@ mod tests {
     }
 
     /// Wrap a classifier algo as `Arc<dyn Algorithm>` we can drive to completion.
-    fn orch(algo: LlmClassifierOrchAlgo) -> Arc<dyn Algorithm> {
+    fn orch(algo: LlmClassifier) -> Arc<dyn Algorithm> {
         Arc::new(algo)
     }
 

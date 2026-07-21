@@ -13,9 +13,9 @@ use switchyard_protocol::{
 use crate::{Algorithm, Context, Decision, Driver};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
-pub struct NoopAlgo {}
+pub struct Noop {}
 
-/// How [`NoopAlgo`] records which model it chose. This will be the model on the Request if any,
+/// How [`Noop`] records which model it chose. This will be the model on the Request if any,
 /// otherwise a hard coded placeholder. Neither is actually used.
 pub struct NoopDecision {
     model: String,
@@ -34,7 +34,7 @@ impl Decision for NoopDecision {
 }
 
 #[async_trait::async_trait]
-impl Algorithm for NoopAlgo {
+impl Algorithm for Noop {
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
@@ -89,7 +89,7 @@ mod tests {
             metadata: None,
         };
 
-        let a: Arc<dyn Algorithm> = Arc::new(NoopAlgo {});
+        let a: Arc<dyn Algorithm> = Arc::new(Noop {});
         let (decisions, response) = a.run(Context::default(), request).await?;
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");

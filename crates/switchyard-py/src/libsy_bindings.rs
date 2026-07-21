@@ -7,13 +7,14 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, NoopAlgo,
-    RandomAlgo, Request, Response, RoutedLlmClient,
-};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
+use switchyard_libsy::algorithms::{Noop, Random};
+use switchyard_libsy::{
+    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request,
+    Response, RoutedLlmClient,
+};
 
 use crate::errors::py_libsy_error;
 use crate::py_serde::{from_python, to_python};
@@ -148,7 +149,7 @@ impl PyAlgorithm {
 /// Construct the no-op reference algorithm.
 #[pyfunction(name = "noop")]
 fn noop_algorithm() -> PyAlgorithm {
-    PyAlgorithm::new(Arc::new(NoopAlgo {}))
+    PyAlgorithm::new(Arc::new(Noop {}))
 }
 
 /// Construct uniform random routing over targets with Python clients.
@@ -161,9 +162,9 @@ fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<P
         .iter()
         .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyAlgorithm::new(Arc::new(RandomAlgo::new(
-        LlmTargetSet::new(targets),
-    ))))
+    Ok(PyAlgorithm::new(Arc::new(Random::new(LlmTargetSet::new(
+        targets,
+    )))))
 }
 
 fn boxed_python_error(error: PyErr) -> BoxError {

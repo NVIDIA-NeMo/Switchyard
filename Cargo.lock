@@ -858,25 +858,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
-name = "libsy"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "rand 0.8.7",
- "serde_json",
- "switchyard-protocol",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "libsy-examples"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
- "libsy",
+ "switchyard-libsy",
  "switchyard-protocol",
  "tokio",
  "tokio-stream",
@@ -1630,6 +1617,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-libsy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "rand 0.8.7",
+ "serde_json",
+ "switchyard-protocol",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "switchyard-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1645,7 +1645,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-util",
- "libsy",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",
@@ -1654,6 +1653,7 @@ dependencies = [
  "switchyard-components",
  "switchyard-components-v2",
  "switchyard-core",
+ "switchyard-libsy",
  "switchyard-server",
  "switchyard-translation",
  "tokio",
