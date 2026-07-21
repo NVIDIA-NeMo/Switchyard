@@ -51,6 +51,9 @@ profiles:
     strong: strong
     weak: weak
     strong_probability: 0.3
+    # Optional. Target retried once if the selected target overflows its context
+    # window. Must be `strong` or `weak`; defaults to the strong target.
+    fallback_target_on_evict: strong
 ```
 
 Run it with:
