@@ -24,6 +24,8 @@ routes:
   llm-classifier:                   # `type: deterministic` — LLM-as-classifier
     type: deterministic
     profile: coding_agent           # general | coding_agent | openclaw
+    fallback_target_on_evict: strong  # tier to retry on context-window evict
+
     classifier:
       model: google/gemini-3.5-flash
       api_key: ${OPENROUTER_API_KEY}

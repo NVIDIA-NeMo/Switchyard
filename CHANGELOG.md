@@ -34,14 +34,16 @@ traffic that sits between client applications and LLM backends.
 - **Observability** — Prometheus `/metrics`, a JSON `/v1/stats`
   (`/v1/routing/stats` alias), and per-request cost/token/latency stats. See
   [Metrics Reference](docs/METRICS_REFERENCE.md).
-- **Python library** — `SwitchyardRecipes` (`passthrough_recipe`,
-  `random_routing_recipe`, `stage_router_recipe`, `deterministic_routing_recipe`,
-  …) and typed `ChatRequest` / `ChatResponse` containers for in-process use.
+- **Python library** — `ProfileSwitchyard` driven by typed profile configs
+  (`PassthroughProfileConfig`, `RandomRoutingProfileConfig`,
+  `StageRouterProfileConfig`, …) and typed `ChatRequest` / `ChatResponse`
+  containers for in-process use.
 - **Rust core** (PyO3) — chain execution, the latency-aware router, and the
   tool-result signal collector are implemented in Rust and re-exported to
   Python.
 - **Packaging** — `pip install nemo-switchyard` with optional extras `[server]`,
-  `[cli]`, `[gpu]`, `[all]`. See [Installation](INSTALLATION.md).
+  `[cli]`, `[tracing]`, `[intake]`, `[affinity-redis]`, `[all]`. See
+  [Installation](INSTALLATION.md).
 
 ### Deprecated
 
