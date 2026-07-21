@@ -12,7 +12,10 @@
 //! no-op. Spans and logs use the `tracing` facade (the async-native surface the
 //! OpenTelemetry ecosystem bridges with `tracing-opentelemetry` /
 //! `opentelemetry-appender-tracing`), so the host's subscriber decides where
-//! they go.
+//! they go. Spans are attached to futures with [`Instrument`], never a
+//! [`Span::enter`] guard held across an `.await`: a suspended task would leave
+//! the span entered on its executor thread, mis-parenting every span other
+//! tasks create there (see the `tracing` docs on spans in asynchronous code).
 //!
 //! Instrument names use the OTel dotted form with the unit baked into the name
 //! (`libsy.run_duration_ms`), matching the switchyard metric surface; a

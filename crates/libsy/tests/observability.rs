@@ -452,6 +452,11 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> Result<(), B
 
     // The default-client serve inside `run` gets its own client-call span.
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    // Host-side span: `run`'s serve loop creates it outside the algorithm's
+    // spans, so it has no libsy parent. This pins the `Future::instrument`
+    // idiom — an `Entered` guard held across the offload `.await` would leave
+    // `libsy.llm_call` entered on the thread and leak it in as the parent.
+    assert_eq!(client_span.parent.as_deref(), None);
     assert_eq!(
         client_span.fields.get("algorithm").map(String::as_str),
         Some(ALGO)
