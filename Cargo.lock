@@ -907,18 +907,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
-name = "libsy-examples"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "switchyard-libsy",
- "switchyard-protocol",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "libyaml-rs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1712,6 +1700,7 @@ dependencies = [
  "futures",
  "rand 0.8.7",
  "serde_json",
+ "switchyard-llm-client",
  "switchyard-protocol",
  "tokio",
  "tokio-stream",

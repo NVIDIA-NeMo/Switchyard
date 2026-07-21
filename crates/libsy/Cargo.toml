@@ -21,4 +21,5 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
+switchyard-llm-client = { path = "../libsy-llm-client" }
 tokio = { version = "1", features = ["macros", "rt"] }
