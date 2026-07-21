@@ -3,8 +3,6 @@
 
 """LLM-backed planning request processor."""
 
-from __future__ import annotations
-
 import json
 import logging
 import sys
@@ -619,6 +617,20 @@ class PlanningRequestProcessor:
         # the planner declined to plan when ``plan_needed=False``.
         ctx.metadata[CTX_PLANNER_DECISION] = decision
 
+        prompt_tokens, completion_tokens, cached_tokens = _planner_token_counts(
+            completion.usage,
+        )
+        # Record usage so the intake sink emits the planner call as its own
+        # intake record; the routed-turn record never sees it.
+        ctx.record_submodel_call(
+            model=self._config.model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+            router_type="plan_execute",
+            routed_to="planner",
+        )
+
         # Record planner-side spend into the stats accumulator's
         # ``planner`` bucket (if wired).  Mirrors the classifier's
         # ``record_classifier_usage`` call.  Latency captures the full
@@ -628,7 +640,9 @@ class PlanningRequestProcessor:
         # audit line below remains the only observability path.
         if self._stats_accumulator is not None:
             await self._record_planner_call(
-                usage=completion.usage,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
                 latency_ms=(time.perf_counter() - started_at) * 1000,
             )
 
@@ -673,37 +687,39 @@ class PlanningRequestProcessor:
 
     async def _record_planner_call(
         self,
-        *,
-        usage: Any,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int,
         latency_ms: float,
     ) -> None:
-        """Extract token counts from the SDK ``usage`` object and record them.
+        """Record planner token spend into the ``StatsAccumulator``.
 
-        Records into the planner bucket on :class:`StatsAccumulator` so
-        the planner model's token spend doesn't merge with the
-        same-named executor backend (e.g. when running V4-Pro-as-planner
-        + V4-Pro-as-executor for self-planning sweeps).  Latency is
-        recorded too so the planner-side latency histogram shows up on
-        the snapshot's ``planner.models`` block.  Mirrors
+        Records into the planner bucket so the planner model's token spend
+        doesn't merge with the same-named executor backend (e.g. when running
+        V4-Pro-as-planner + V4-Pro-as-executor for self-planning sweeps).
+        Latency is recorded too so the planner-side latency histogram shows up
+        on the snapshot's ``planner.models`` block.  Mirrors
         :meth:`switchyard.lib.processors.llm_classifier.LLMClassifierRequestProcessor._record_classifier_call`.
         """
         assert self._stats_accumulator is not None
-        prompt = 0
-        completion_tokens = 0
-        cached = 0
-        if usage is not None:
-            prompt = getattr(usage, "prompt_tokens", 0) or 0
-            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-            ptd = getattr(usage, "prompt_tokens_details", None)
-            if ptd is not None:
-                cached = getattr(ptd, "cached_tokens", 0) or 0
         await self._stats_accumulator.record_planner_usage(
             model=self._config.model,
-            prompt_tokens=prompt,
+            prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            cached_tokens=cached,
+            cached_tokens=cached_tokens,
             latency_ms=latency_ms,
         )
+
+
+def _planner_token_counts(usage: Any | None) -> tuple[int, int, int]:
+    """Return ``(prompt, completion, cached)`` tokens from an SDK usage object."""
+    if usage is None:
+        return 0, 0, 0
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    ptd = getattr(usage, "prompt_tokens_details", None)
+    cached = (getattr(ptd, "cached_tokens", 0) or 0) if ptd is not None else 0
+    return prompt, completion, cached
 
 
 def _build_audit_payload(

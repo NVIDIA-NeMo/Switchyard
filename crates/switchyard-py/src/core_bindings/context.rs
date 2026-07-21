@@ -12,7 +12,9 @@ use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict};
 use std::time::Duration;
-use switchyard_components::{BackendSelection, BackendSelectionReason, StatsBackendLatency};
+use switchyard_components::{
+    BackendSelection, BackendSelectionReason, StatsBackendLatency, SubModelCall, SubModelCalls,
+};
 use switchyard_core::{EvictedTargets, LlmTargetId, ModelId, ProxyContext, RequestId};
 
 use crate::component_bindings::intake::request_metadata_from_mapping;
@@ -437,6 +439,67 @@ impl PyProxyContext {
     #[getter]
     fn metadata(&self, py: Python<'_>) -> Py<PyProxyMetadata> {
         self.metadata.clone_ref(py)
+    }
+
+    /// Records one routing-strategy sub-model call for intake capture.
+    ///
+    /// Routers that call a model to pick a route (the LLM classifier, the
+    /// stage-router tier classifier, the plan/execute planner) call this after a
+    /// successful routing call so the response-side intake processor can emit
+    /// each as its own anonymous record — model and token counts only, never the
+    /// messages. Appends to a Rust-typed slot the native intake sink reads, so
+    /// the routing record shares the primary record's transport and opt-in.
+    #[pyo3(signature = (model, prompt_tokens, completion_tokens, cached_tokens, router_type, routed_to))]
+    fn record_submodel_call(
+        &self,
+        model: String,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cached_tokens: i64,
+        router_type: String,
+        routed_to: String,
+    ) -> PyResult<()> {
+        let call = SubModelCall {
+            model,
+            prompt_tokens,
+            completion_tokens,
+            cached_tokens,
+            router_type,
+            routed_to,
+        };
+        let mut guard = self.lock()?;
+        match guard.get_mut::<SubModelCalls>() {
+            Some(calls) => calls.0.push(call),
+            None => {
+                guard.insert(SubModelCalls(vec![call]));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the routing sub-model calls recorded on this context.
+    ///
+    /// Each entry is a dict with `model`, `prompt_tokens`, `completion_tokens`,
+    /// `cached_tokens`, `router_type`, and `routed_to`; the list is empty when no
+    /// routing call was recorded. Lets Python observe what
+    /// [`record_submodel_call`] stashed for the intake sink.
+    #[getter]
+    fn submodel_calls(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
+        let calls = self.get_cloned::<SubModelCalls>()?.unwrap_or_default();
+        calls
+            .0
+            .into_iter()
+            .map(|call| {
+                let dict = PyDict::new(py);
+                dict.set_item("model", call.model)?;
+                dict.set_item("prompt_tokens", call.prompt_tokens)?;
+                dict.set_item("completion_tokens", call.completion_tokens)?;
+                dict.set_item("cached_tokens", call.cached_tokens)?;
+                dict.set_item("router_type", call.router_type)?;
+                dict.set_item("routed_to", call.routed_to)?;
+                Ok(dict.unbind())
+            })
+            .collect()
     }
 
     /// Returns the optional request ID.

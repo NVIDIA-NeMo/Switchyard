@@ -97,7 +97,9 @@ class IntakeSinkConfig:
     workspace: str | None
     user_id: str
     api_key: str | None
-    nvdataflow_project: str | None
+    target_url: str | None
+    target_format: str | None
+    target_authenticated: bool | None
     max_queue_size: int
     request_timeout_s: float
     max_retries: int
@@ -110,7 +112,9 @@ class IntakeSinkConfig:
         workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
-        nvdataflow_project: str | None = None,
+        target_url: str | None = None,
+        target_format: str | None = None,
+        target_authenticated: bool | None = None,
         max_queue_size: int | None = None,
         request_timeout_s: float | None = None,
         max_retries: int | None = None,

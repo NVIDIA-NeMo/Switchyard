@@ -1,24 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Live NVDataflow sandbox test. Ignored by default (needs the NVIDIA internal
-//! network / VPN). Run explicitly:
+//! Live flat-document posting test. Ignored by default (needs a reachable
+//! posting endpoint, typically on the NVIDIA internal network / VPN). Run:
 //!
-//!   cargo test -p switchyard-components --test nvdataflow_live -- --ignored
+//!   SWITCHYARD_INTAKE_TARGET_URL=<full posting url> \
+//!     cargo test -p switchyard-components --test flat_target_live -- --ignored
 //!
-//! Override the project with SWITCHYARD_NVDATAFLOW_PROJECT. Posting is
-//! fail-open, so this drives records through the real sink; verify they landed
-//! by querying df-<project>-<YYYYMM>.
+//! Posting is fail-open, so this drives records through the real sink; verify
+//! they landed by querying the target store. No-ops when the env var is unset.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use switchyard_components::intake::to_nvdataflow_document;
-use switchyard_components::{HttpIntakeSink, IntakeSink, IntakeSinkConfig};
+use switchyard_components::intake::to_flat_document;
+use switchyard_components::{
+    HttpIntakeSink, IntakeFormat, IntakeSink, IntakeSinkConfig, IntakeTarget,
+};
 use switchyard_core::Result;
 
 // A representative chat-completions intake payload, the input the production
-// builder produces before NVDataflow flattening.
+// builder produces before flattening.
 fn sample_chat_payload(
     session: &str,
     served: &str,
@@ -54,12 +56,18 @@ fn sample_chat_payload(
 }
 
 #[tokio::test]
-#[ignore = "live: posts to the NVDataflow sandbox; requires VPN. run with --ignored"]
-async fn posts_flat_documents_to_nvdataflow_sandbox() -> Result<()> {
-    let project = std::env::var("SWITCHYARD_NVDATAFLOW_PROJECT")
-        .unwrap_or_else(|_| "sandbox-switchyard".to_string());
+#[ignore = "live: posts to a real flat-document endpoint; requires VPN. run with --ignored"]
+async fn posts_flat_documents_to_live_target() -> Result<()> {
+    // No endpoint configured means nothing to exercise; keep the test a no-op.
+    let Ok(url) = std::env::var("SWITCHYARD_INTAKE_TARGET_URL") else {
+        return Ok(());
+    };
     let sink = HttpIntakeSink::new(IntakeSinkConfig {
-        nvdataflow_project: Some(project),
+        target: Some(IntakeTarget {
+            url,
+            format: IntakeFormat::FlatDocument,
+            authenticated: false,
+        }),
         ..IntakeSinkConfig::default()
     })?;
 
@@ -89,7 +97,8 @@ async fn posts_flat_documents_to_nvdataflow_sandbox() -> Result<()> {
             0.0061,
         ),
     ];
-    // NVDataflow rejects backdated documents per retention policy, so stamp now.
+    // The target store may reject backdated documents per retention policy, so
+    // stamp now.
     let base_ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
@@ -98,7 +107,7 @@ async fn posts_flat_documents_to_nvdataflow_sandbox() -> Result<()> {
         samples.iter().enumerate()
     {
         let chat = sample_chat_payload(session, served, routed_to, *prompt, *completion, *cost);
-        let doc = to_nvdataflow_document(&chat, Some(base_ts + index as i64));
+        let doc = to_flat_document(&chat, Some(base_ts + index as i64), None);
         sink.enqueue(doc).await?;
     }
     sink.shutdown().await?;

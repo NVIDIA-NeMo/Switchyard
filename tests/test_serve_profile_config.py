@@ -314,7 +314,7 @@ def _serve_args(path: Path) -> argparse.Namespace:
         intake_base_url=None,
         intake_workspace=None,
         intake_api_key=None,
-        intake_nvdataflow_project=None,
+        intake_target_url=None,
         host="127.0.0.1",
         port=4000,
     )

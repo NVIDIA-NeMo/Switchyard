@@ -130,6 +130,17 @@ class _ProxyContext(Protocol):
     selected_target: str | None
     backend_call_latency_ms: float | None
     evicted_targets: list[str] | None
+    submodel_calls: list[dict[str, Any]]
+
+    def record_submodel_call(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int,
+        router_type: str,
+        routed_to: str,
+    ) -> None: ...
 
 
 class _LLMBackend(Protocol):
@@ -551,11 +562,22 @@ if TYPE_CHECKING:
         selected_target: str | None
         backend_call_latency_ms: float | None
         evicted_targets: list[str] | None
+        submodel_calls: list[dict[str, Any]]
 
         def __init__(
             self,
             metadata: Mapping[str, Any] | None = None,
             request_id: str | None = None,
+        ) -> None: ...
+
+        def record_submodel_call(
+            self,
+            model: str,
+            prompt_tokens: int,
+            completion_tokens: int,
+            cached_tokens: int,
+            router_type: str,
+            routed_to: str,
         ) -> None: ...
 
     class LLMBackend:

@@ -8,7 +8,9 @@ mod support;
 use std::sync::Arc;
 
 use serde_json::json;
-use switchyard_components::{IntakeRequestState, IntakeResponseProcessor, IntakeSinkConfig};
+use switchyard_components::{
+    IntakeRequestState, IntakeResponseProcessor, IntakeSinkConfig, SubModelCall, SubModelCalls,
+};
 use switchyard_core::{
     ChatRequestType, ChatResponse, ModelId, ProxyContext, Result, StreamEvent, SwitchyardError,
 };
@@ -68,6 +70,85 @@ async fn response_processor_enqueues_non_streaming_payload() -> Result<()> {
     assert!(payloads[0]["request"]["switchyard"].get("app").is_none());
     assert_eq!(payloads[0]["session_id"], "session-123");
     assert_eq!(payloads[0]["response"]["id"], "chatcmpl-test");
+    Ok(())
+}
+
+// Routing sub-model calls stashed on context each emit their own record next to
+// the primary one, all through the same sink.
+#[tokio::test]
+async fn response_processor_emits_a_record_per_submodel_call() -> Result<()> {
+    let sink = Arc::new(RecordingSink::default());
+    let processor = IntakeResponseProcessor::new(
+        IntakeSinkConfig {
+            workspace: Some("default".to_string()),
+            ..IntakeSinkConfig::default()
+        },
+        sink.clone(),
+    );
+    let mut ctx = opted_in_context();
+    ctx.insert(SubModelCalls(vec![
+        SubModelCall {
+            model: "router-clf".to_string(),
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            cached_tokens: 0,
+            router_type: "deterministic".to_string(),
+            routed_to: "classifier".to_string(),
+        },
+        SubModelCall {
+            model: "planner".to_string(),
+            prompt_tokens: 50,
+            completion_tokens: 5,
+            cached_tokens: 0,
+            router_type: "plan_execute".to_string(),
+            routed_to: "planner".to_string(),
+        },
+    ]));
+
+    processor
+        .process(&mut ctx, completion("chatcmpl-test", "world"))
+        .await?;
+
+    // One primary record plus one per routing call.
+    let payloads = sink.payloads()?;
+    assert_eq!(payloads.len(), 3);
+    let routed: Vec<&str> = payloads
+        .iter()
+        .filter_map(|payload| payload["request"]["switchyard"]["routing"]["routed_to"].as_str())
+        .collect();
+    assert!(routed.contains(&"classifier"));
+    assert!(routed.contains(&"planner"));
+    Ok(())
+}
+
+// The opt-in gate covers sub-model records too: a skipped turn emits nothing,
+// even with routing calls stashed on context.
+#[tokio::test]
+async fn response_processor_skips_submodel_records_when_opted_out() -> Result<()> {
+    let sink = Arc::new(RecordingSink::default());
+    let processor = IntakeResponseProcessor::new(IntakeSinkConfig::default(), sink.clone());
+    let mut ctx = ProxyContext::new();
+    ctx.insert(IntakeRequestState {
+        started_at_ms: 1,
+        inbound_format: ChatRequestType::OpenAiChat,
+        session_id: None,
+        skip: true,
+        request_snapshot: None,
+    });
+    ctx.insert(SubModelCalls(vec![SubModelCall {
+        model: "router-clf".to_string(),
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        cached_tokens: 0,
+        router_type: "deterministic".to_string(),
+        routed_to: "classifier".to_string(),
+    }]));
+
+    processor
+        .process(&mut ctx, completion("chatcmpl-test", "world"))
+        .await?;
+
+    assert!(sink.payloads()?.is_empty());
     Ok(())
 }
 

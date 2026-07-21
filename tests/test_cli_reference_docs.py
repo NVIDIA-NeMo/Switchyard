@@ -131,7 +131,7 @@ def test_cli_reference_documents_shared_intake_flags_once() -> None:
     assert doc.count("`--intake-base-url URL`") == 1
     assert doc.count("`--intake-workspace NAME`") == 1
     assert doc.count("`--intake-api-key VALUE`") == 1
-    assert doc.count("`--intake-nvdataflow-project PROJECT`") == 1
+    assert doc.count("`--intake-target-url URL`") == 1
     assert "`--intake-app NAME`" in doc
 
 

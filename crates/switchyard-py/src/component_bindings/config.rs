@@ -9,7 +9,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyBool;
 use serde::Serialize;
 use switchyard_components::{
-    IntakeQueueFullPolicy, IntakeSinkConfig, RandomRoutingProcessorConfig,
+    IntakeFormat, IntakeQueueFullPolicy, IntakeSinkConfig, IntakeTarget,
+    RandomRoutingProcessorConfig,
 };
 use switchyard_core::{BackendFormat, EndpointConfig, LlmTarget, LlmTargetId, ModelId};
 
@@ -530,7 +531,9 @@ impl PyIntakeSinkConfig {
         workspace=None,
         user_id=None,
         api_key=None,
-        nvdataflow_project=None,
+        target_url=None,
+        target_format=None,
+        target_authenticated=None,
         max_queue_size=None,
         request_timeout_s=None,
         max_retries=None,
@@ -542,7 +545,9 @@ impl PyIntakeSinkConfig {
         workspace: Option<String>,
         user_id: Option<String>,
         api_key: Option<String>,
-        nvdataflow_project: Option<String>,
+        target_url: Option<String>,
+        target_format: Option<String>,
+        target_authenticated: Option<bool>,
         max_queue_size: Option<usize>,
         request_timeout_s: Option<f64>,
         max_retries: Option<u32>,
@@ -562,8 +567,12 @@ impl PyIntakeSinkConfig {
         if api_key.is_some() {
             config.api_key = api_key;
         }
-        if nvdataflow_project.is_some() {
-            config.nvdataflow_project = nvdataflow_project;
+        if let Some(url) = target_url {
+            config.target = Some(IntakeTarget {
+                url,
+                format: intake_format_from_str(target_format.as_deref())?,
+                authenticated: target_authenticated.unwrap_or(false),
+            });
         }
         if let Some(max_queue_size) = max_queue_size {
             config.max_queue_size = max_queue_size;
@@ -597,8 +606,24 @@ impl PyIntakeSinkConfig {
     }
 
     #[getter]
-    fn nvdataflow_project(&self) -> Option<String> {
-        self.inner.nvdataflow_project.clone()
+    fn target_url(&self) -> Option<String> {
+        self.inner.target.as_ref().map(|target| target.url.clone())
+    }
+
+    #[getter]
+    fn target_format(&self) -> Option<String> {
+        self.inner
+            .target
+            .as_ref()
+            .map(|target| intake_format_name(target.format).to_string())
+    }
+
+    #[getter]
+    fn target_authenticated(&self) -> Option<bool> {
+        self.inner
+            .target
+            .as_ref()
+            .map(|target| target.authenticated)
     }
 
     #[getter]
@@ -637,7 +662,7 @@ impl PyIntakeSinkConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "IntakeSinkConfig(intake_base_url={:?}, workspace={:?}, user_id={:?}, api_key={}, nvdataflow_project={:?}, max_queue_size={}, request_timeout_s={}, max_retries={}, on_queue_full='{}', capture_content={})",
+            "IntakeSinkConfig(intake_base_url={:?}, workspace={:?}, user_id={:?}, api_key={}, target={:?}, max_queue_size={}, request_timeout_s={}, max_retries={}, on_queue_full='{}', capture_content={})",
             self.inner.intake_base_url,
             self.inner.workspace,
             self.inner.user_id,
@@ -646,7 +671,7 @@ impl PyIntakeSinkConfig {
             } else {
                 "None"
             },
-            self.inner.nvdataflow_project,
+            self.inner.target,
             self.inner.max_queue_size,
             self.inner.request_timeout_s,
             self.inner.max_retries,
@@ -766,6 +791,27 @@ fn intake_queue_policy_name(policy: IntakeQueueFullPolicy) -> &'static str {
     match policy {
         IntakeQueueFullPolicy::Drop => "drop",
         IntakeQueueFullPolicy::Block => "block",
+    }
+}
+
+/// Parses the Python `target_format` kwarg into an `IntakeFormat`.
+///
+/// Defaults to the flat document shape, since an explicit target is a data-lake
+/// posting endpoint for every current caller.
+fn intake_format_from_str(value: Option<&str>) -> PyResult<IntakeFormat> {
+    match value.unwrap_or("flat_document") {
+        "flat_document" => Ok(IntakeFormat::FlatDocument),
+        "chat_completions" => Ok(IntakeFormat::ChatCompletions),
+        other => Err(PyValueError::new_err(format!(
+            "invalid target_format {other:?}; expected 'flat_document' or 'chat_completions'"
+        ))),
+    }
+}
+
+fn intake_format_name(format: IntakeFormat) -> &'static str {
+    match format {
+        IntakeFormat::FlatDocument => "flat_document",
+        IntakeFormat::ChatCompletions => "chat_completions",
     }
 }
 

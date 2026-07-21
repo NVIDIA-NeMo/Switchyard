@@ -3,8 +3,6 @@
 
 """Tests for the experimental LLM classifier request processor."""
 
-from __future__ import annotations
-
 import json
 from typing import Any, cast
 
@@ -123,6 +121,46 @@ async def test_request_processor_stamps_classifier_signals() -> None:
     assert fake.calls[0]["model"] == "router-model"
     assert '"request_type": "openai_chat"' in fake.calls[0]["request_summary"]
     assert "debug this traceback" in fake.calls[0]["request_summary"]
+
+
+async def test_request_processor_stashes_submodel_call_on_success() -> None:
+    """Success records the classifier's usage for the intake sink to emit."""
+    fake = _FakeClassifierClient(
+        _signals_json(),
+        usage=_FakeUsage(prompt_tokens=420, completion_tokens=80, cached_tokens=10),
+    )
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-classifier"),
+        client=fake,
+    )
+    ctx = ProxyContext()
+
+    await processor.process(ctx, _request())
+
+    assert ctx.submodel_calls == [
+        {
+            "model": "router-classifier",
+            "prompt_tokens": 420,
+            "completion_tokens": 80,
+            "cached_tokens": 10,
+            "router_type": "deterministic",
+            "routed_to": "classifier",
+        }
+    ]
+
+
+async def test_request_processor_stashes_no_submodel_call_on_fail_open() -> None:
+    """Fail-open (classifier errored) has no usage, so nothing is recorded."""
+    fake = _FakeClassifierClient(RuntimeError("upstream down"))
+    processor = LLMClassifierRequestProcessor(
+        LLMClassifierConfig(model="router-classifier", fail_open=True),
+        client=fake,
+    )
+    ctx = ProxyContext()
+
+    await processor.process(ctx, _request())
+
+    assert ctx.submodel_calls == []
 
 
 async def test_classifier_skips_llm_call_when_session_pinned() -> None:

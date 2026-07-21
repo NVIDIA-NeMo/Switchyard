@@ -19,8 +19,6 @@ env vars through both seams. CLI parsing lives in
 ``switchyard.cli.launch_command``.
 """
 
-from __future__ import annotations
-
 import re
 import secrets
 import sys
@@ -74,7 +72,7 @@ class LaunchIntakeConfig:
     task: str
     session_id: str
     user_id: str
-    nvdataflow_project: str | None = None
+    target_url: str | None = None
 
     @classmethod
     def from_resolved(
@@ -87,9 +85,9 @@ class LaunchIntakeConfig:
         task: str,
         session_id: str | None,
         user_id: str | None = None,
-        nvdataflow_project: str | None = None,
+        target_url: str | None = None,
         target: str,
-    ) -> LaunchIntakeConfig:
+    ) -> "LaunchIntakeConfig":
         """Resolve any blank fields and return the immutable config.
 
         ``session_id`` defaults to ``<target>-<unix-ms>-<uuid4-short>`` so each
@@ -108,7 +106,7 @@ class LaunchIntakeConfig:
             task=task,
             session_id=session_id or _default_session_id(target),
             user_id=user_id or resolve_machine_user_id(),
-            nvdataflow_project=nvdataflow_project,
+            target_url=target_url,
         )
 
     def opt_in_headers(self) -> dict[str, str]:
@@ -126,7 +124,7 @@ class LaunchIntakeConfig:
             "proxy_x_session_id": self.session_id,
         }
 
-    def to_sink_config(self) -> IntakeSinkConfig:
+    def to_sink_config(self) -> "IntakeSinkConfig":
         """Build the server-side intake sink config for this launch."""
         from switchyard.lib.config import IntakeSinkConfig
 
@@ -135,7 +133,7 @@ class LaunchIntakeConfig:
             workspace=self.workspace,
             api_key=self.api_key,
             user_id=self.user_id,
-            nvdataflow_project=self.nvdataflow_project,
+            target_url=self.target_url,
         )
 
 
@@ -150,7 +148,10 @@ def build_intake_processors(
     from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 
     config = intake.to_sink_config()
-    return [IntakeRequestProcessor()], [IntakeResponseProcessor(config)]
+    return (
+        [IntakeRequestProcessor()],
+        [IntakeResponseProcessor(config)],
+    )
 
 
 def build_launch_capture_processors(

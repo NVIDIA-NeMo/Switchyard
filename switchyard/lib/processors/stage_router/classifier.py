@@ -3,8 +3,6 @@
 
 """LLM tier classifier — invoked on low-confidence turns, fails open to ``None``."""
 
-from __future__ import annotations
-
 import json
 import logging
 import time
@@ -44,7 +42,7 @@ _SYSTEM_PROMPT: str = _load_system_prompt()
 
 
 def _summarise(
-    signal: ToolResultSignal,
+    signal: "ToolResultSignal",
     *,
     recent_messages: list[Any] | None = None,
 ) -> str:
@@ -158,7 +156,7 @@ class TierClassifier:
         recent_turn_window: int = 3,
         disable_reasoning: bool = True,
         client: _LLMClient | None = None,
-        stats_accumulator: StatsAccumulator | None = None,
+        stats_accumulator: "StatsAccumulator | None" = None,
     ) -> None:
         if recent_turn_window < 0:
             raise ValueError(f"recent_turn_window must be >= 0, got {recent_turn_window}")
@@ -183,11 +181,11 @@ class TierClassifier:
             ))
         self._client = client
 
-    def attach_stats_accumulator(self, stats_accumulator: StatsAccumulator) -> None:
+    def attach_stats_accumulator(self, stats_accumulator: "StatsAccumulator") -> None:
         """Attach the serving-level accumulator used for classifier overhead."""
         self._stats = stats_accumulator
 
-    async def classify(self, ctx: ProxyContext, signal: ToolResultSignal) -> str | None:
+    async def classify(self, ctx: "ProxyContext", signal: "ToolResultSignal") -> str | None:
         """Return ``"capable"``, ``"efficient"``, or ``None`` (fall-open)."""
         recent_messages: list[Any] = []
         if self._recent_turn_window > 0:
@@ -230,20 +228,43 @@ class TierClassifier:
                     pass
             return None
         latency_ms = (time.perf_counter() - started_at) * 1000.0
+        prompt_tokens, completion_tokens, cached_tokens = _tier_token_counts(
+            getattr(response, "usage", None),
+        )
+        # Record usage so the intake sink emits the tier-classifier call as its
+        # own intake record; the routed-turn record never sees it.
+        if hasattr(ctx, "record_submodel_call"):
+            ctx.record_submodel_call(
+                model=self._model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+                router_type="stage_router",
+                routed_to="tier_classifier",
+            )
         if self._stats is not None:
             try:
-                usage = getattr(response, "usage", None)
-                details = getattr(usage, "prompt_tokens_details", None)
                 await self._stats.record_classifier_usage(
                     self._model,
-                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                    cached_tokens=getattr(details, "cached_tokens", None) or 0,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cached_tokens=cached_tokens,
                     latency_ms=latency_ms,
                 )
             except Exception:
                 pass
         return _parse_tier(response)
+
+
+def _tier_token_counts(usage: Any) -> tuple[int, int, int]:
+    """Return ``(prompt, completion, cached)`` tokens from an SDK usage object."""
+    if usage is None:
+        return 0, 0, 0
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = (getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+    return prompt, completion, cached
 
 
 __all__ = ["CAPABLE_TIER", "TierClassifier", "EFFICIENT_TIER"]
