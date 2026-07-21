@@ -17,8 +17,8 @@ use std::io::Write;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use libsy::algorithms::Random;
-use libsy::{
+use switchyard_libsy::algorithms::Random;
+use switchyard_libsy::{
     Algorithm, Context, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget, LlmTargetSet,
     Request, Response, Step,
 };

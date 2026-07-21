@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
+use switchyard_libsy::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
 use switchyard_protocol::{completion_text, prompt_text, text_request};
 
 /// Which step of the ensemble flow produced a decision.
@@ -100,8 +100,8 @@ impl EnsembleOrchAlgo {
     /// exploring for `exploration_turns` before committing to the winningest
     /// candidate (`0` = never commit, ensemble every request), routing among
     /// `target_set`. Wrap it in an [`Arc`](std::sync::Arc) and drive it with
-    /// [`run`](libsy::Algorithm::run) or
-    /// [`run_stream`](libsy::Algorithm::run_stream).
+    /// [`run`](switchyard_libsy::Algorithm::run) or
+    /// [`run_stream`](switchyard_libsy::Algorithm::run_stream).
     pub fn new(
         candidate_models: Vec<String>,
         judge_model: impl Into<String>,
@@ -395,8 +395,8 @@ impl Algorithm for EnsembleOrchAlgo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient, Signals};
     use std::sync::Mutex as StdMutex;
+    use switchyard_libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient, Signals};
     use switchyard_protocol::text_response;
 
     /// Mock client that answers candidate calls with `answer from {model}` and,

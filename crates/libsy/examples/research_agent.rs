@@ -15,8 +15,8 @@ use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libsy::algorithms::LlmClassifier;
-use libsy::{
+use switchyard_libsy::algorithms::LlmClassifier;
+use switchyard_libsy::{
     Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
     RoutedLlmClient,
 };

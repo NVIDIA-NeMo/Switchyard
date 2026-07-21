@@ -11,7 +11,7 @@ members = [
     "crates/switchyard-components-v2-macros",
     "crates/switchyard-core",
     "crates/switchyard-py",
-    "crates/libsy-protocol",
+    "crates/protocol",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-translation",

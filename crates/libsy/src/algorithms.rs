@@ -3,7 +3,7 @@
 
 //! Concrete algorithms and the interfaces for building them.
 //!
-//! Reach for them by name — `use libsy::algorithms::Random` — rather than through the
+//! Reach for them by name — `use switchyard_libsy::algorithms::Random` — rather than through the
 //! per-algorithm submodules.
 
 pub mod llm_class;

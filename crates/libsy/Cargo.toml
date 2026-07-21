@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "libsy"
+name = "switchyard-libsy"
 version = "0.1.0"
 description = "Switchyard library crate"
 authors.workspace = true
@@ -16,7 +16,7 @@ async-trait = "0.1"
 serde_json = "1"
 futures = "0.3"
 rand = "0.8"
-switchyard-protocol = { path = "../libsy-protocol" }
+switchyard-protocol = { path = "../protocol" }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 

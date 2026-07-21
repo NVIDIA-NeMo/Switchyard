@@ -11,8 +11,8 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
-use libsy::algorithms::LlmClassifier;
+use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
+use switchyard_libsy::algorithms::LlmClassifier;
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
