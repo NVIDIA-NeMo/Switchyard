@@ -107,6 +107,14 @@ Two general-purpose entry points cover most tasks:
 - `.agents/skills/switchyard-testing-ci/SKILL.md` — picks the smallest trustworthy local validation set and maps failures to fixes.
 - `.agents/skills/switchyard-pr-reviewer/SKILL.md` — multi-mode PR-review workflow (correctness, tests, design-vs-ticket, simplify, docs, Rust-craft); adversarially verifies every finding and drafts comments before posting. Dispatches Rust to `rust-code-reviewer`. Use for any "review this PR / is this blocking? / post comments" request.
 
+Documentation work uses the scoped rules in `docs/AGENTS.md` plus the matching workflow skill:
+
+- `.agents/skills/switchyard-docs-draft/SKILL.md` — evidence-backed drafting.
+- `.agents/skills/switchyard-docs-polish/SKILL.md` — focused revision of existing pages.
+- `.agents/skills/switchyard-docs-example-audit/SKILL.md` — code, CLI, payload, and config example accuracy.
+- `.agents/skills/switchyard-docs-novice-review/SKILL.md` — onboarding review from a capable newcomer’s perspective.
+- `.agents/skills/switchyard-docs-pragmatist-review/SKILL.md` — copy-paste usability and scannability review.
+
 Task-specific skills (publish-package, run-pre-merge-checks, etc.) live alongside them — scan the directory and read the SKILL.md of any whose `description` matches the task. If no skill applies, say so explicitly and proceed; do not silently skip discovery.
 
 ### Keep skills in sync with the code they cover
