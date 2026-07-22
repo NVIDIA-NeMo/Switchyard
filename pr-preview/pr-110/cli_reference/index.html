@@ -2292,8 +2292,8 @@ Skill distillation config also lives in <code>~/.config/switchyard/config.json</
 </table>
 <blockquote>
 <p><strong>Saved bundles keep <code>${VAR}</code> references literal.</strong> A saved routing-profile
-bundle stores <code>${OPENROUTER_API_KEY}</code> (and any other <code>${VAR}</code>) verbatim —
-secrets are never baked in. The referenced environment variables must therefore
+bundle stores <code>${OPENROUTER_API_KEY}</code> (and any other <code>${VAR}</code>) verbatim. The
+referenced environment variables must therefore
 be present in the environment at <code>serve</code> / <code>launch</code> time; on another machine or
 shell, export them again or Switchyard aborts with
 <code>missing environment variable(s): NAME</code>.</p>
