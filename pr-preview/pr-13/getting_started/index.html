@@ -986,6 +986,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/escalation_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1368,8 +1396,14 @@
 </span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="s">    fallback_target_on_evict: strong</span>
 </span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="s">EOF</span>
 </span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
 </span></code></pre></div>
+<p><code>api_key</code> inside the route bundle is used when Switchyard serves or launches the
+bundle. <code>configure --no-tui</code> still requires provider credentials as explicit
+flags, so CI setup should pass <code>--api-key</code> even when the YAML contains
+<code>${OPENROUTER_API_KEY}</code>.</p>
 <blockquote>
 <p><strong>Format default and caching.</strong> Omitting <code>format:</code> from a tier silently defaults to <code>OPENAI</code> (Chat Completions) — not <code>AUTO</code>. For Claude/Anthropic/Bedrock tiers this is wrong: set <code>format: anthropic</code> explicitly. The native <code>/v1/messages</code> path preserves <code>cache_control</code>, which is what enables prompt caching. <code>format: openai</code> routes Claude through OpenAI-format translation that strips <code>cache_control</code>: the request still succeeds, but caching silently never engages and you pay full input price. Always use <code>format: openai</code> for NIM/non-Claude models and <code>format: anthropic</code> for Claude and Bedrock models. Use <code>format: auto</code> only when the upstream is genuinely unknown.</p>
 </blockquote>
@@ -1388,22 +1422,27 @@ OpenAI Chat Completions, Anthropic Messages, or OpenAI Responses API can connect
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hello&quot;}]}&#39;</span>
 </span></code></pre></div>
-<p><strong>CI pattern:</strong> run <code>switchyard --routing-profiles routes.yaml -- configure</code> in
-your environment setup, then <code>switchyard serve</code> in your service start step. No
-flags needed at serve time.</p>
+<p><strong>CI pattern:</strong> run configure in your environment setup with explicit provider
+credentials:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
+</span></code></pre></div>
+<p>Then run <code>switchyard serve</code> in your service start step. No flags needed at serve
+time.</p>
 <blockquote>
 <p><strong>Override (dev / one-off work):</strong> pass <code>--routing-profiles</code> to use a different
 bundle for a session without overwriting your saved config:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>dev.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4001</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>dev.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4001</span>
 </span></code></pre></div></p>
 </blockquote>
 <hr />
 <h2 id="path-b-agent-launcher">Path B: Agent launcher<a class="headerlink" href="#path-b-agent-launcher" title="Permanent link">&para;</a></h2>
 <p>Starts a proxy and spawns a coding agent against it in one command. The proxy
 shuts down when the agent exits. The live stats footer shows per-tier token usage.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w">      </span><span class="c1"># Claude Code</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w">       </span><span class="c1"># Codex CLI</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w">    </span><span class="c1"># OpenClaw</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w">      </span><span class="c1"># Claude Code</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w">       </span><span class="c1"># Codex CLI</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w">    </span><span class="c1"># OpenClaw</span>
 </span></code></pre></div>
 <p>Each launcher reads the routing bundle and provider credentials saved by
 <code>switchyard configure</code>. See <a href="../guides/agent_launchers/">Agent Launchers</a> for
@@ -1413,15 +1452,15 @@ aliasing.</p>
 <p><strong>Override (dev / one-off work):</strong> pass <code>--routing-profiles</code> (global switchyard
 flag) or <code>--model</code> (launcher flag) to use a different bundle or single model for
 a session without changing your saved config (the two are mutually exclusive):
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>dev.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>dev.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o
 </span></code></pre></div></p>
 </blockquote>
 <hr />
 <h2 id="routing-profiles">Routing profiles<a class="headerlink" href="#routing-profiles" title="Permanent link">&para;</a></h2>
 <p>All route types work with both <a href="#path-a-server-mode">Path A</a> and
-<a href="#path-b-agent-launcher">Path B</a>. Declare a type in your YAML, run
-<code>switchyard --routing-profiles routes.yaml -- configure</code>, then <code>serve</code> or <code>launch</code> as above.</p>
+<a href="#path-b-agent-launcher">Path B</a>. Declare a type in your YAML, run the
+non-interactive configure command above, then <code>serve</code> or <code>launch</code> as above.</p>
 <h3 id="choose-a-route-type">Choose a route type<a class="headerlink" href="#choose-a-route-type" title="Permanent link">&para;</a></h3>
 <p>This guide used <code>random_routing</code> so you can get a working proxy quickly. Choose
 another route type when the routing decision needs different inputs:</p>
@@ -1461,59 +1500,59 @@ strategy-specific pages for full examples and tuning notes.</p>
 <hr />
 <h2 id="path-c-python-library">Path C: Python library<a class="headerlink" href="#path-c-python-library" title="Permanent link">&para;</a></h2>
 <p>Embed Switchyard directly in your application without a separate proxy process:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChatRequest</span><span class="p">,</span> <span class="n">PassthroughProfileConfig</span><span class="p">,</span> <span class="n">ProfileSwitchyard</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">switchyard</span> <span class="o">=</span> <span class="n">ProfileSwitchyard</span><span class="p">(</span><span class="n">PassthroughProfileConfig</span><span class="p">(</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>  <span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span><span class="p">,</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">())</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">chat</span><span class="p">(</span><span class="n">user_message</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="n">request</span> <span class="o">=</span> <span class="n">ChatRequest</span><span class="o">.</span><span class="n">openai_chat</span><span class="p">({</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="s2">&quot;openai/gpt-4o&quot;</span><span class="p">,</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>        <span class="s2">&quot;messages&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">user_message</span><span class="p">}],</span>
-</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>    <span class="p">})</span>
-</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">switchyard</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
-</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>    <span class="k">return</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;choices&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;message&quot;</span><span class="p">][</span><span class="s2">&quot;content&quot;</span><span class="p">]</span>
-</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>
-</span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="nb">print</span><span class="p">(</span><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">chat</span><span class="p">(</span><span class="s2">&quot;What is 2+2?&quot;</span><span class="p">)))</span>
-</span></code></pre></div>
-<p>To host the chain as an HTTP server:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">uvicorn</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">PassthroughProfileConfig</span><span class="p">,</span> <span class="n">ProfileSwitchyard</span><span class="p">,</span> <span class="n">build_switchyard_app</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChatRequest</span><span class="p">,</span> <span class="n">PassthroughProfileConfig</span><span class="p">,</span> <span class="n">ProfileSwitchyard</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">switchyard</span> <span class="o">=</span> <span class="n">ProfileSwitchyard</span><span class="p">(</span><span class="n">PassthroughProfileConfig</span><span class="p">(</span>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>  <span class="c1"># pragma: allowlist secret</span>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span><span class="p">,</span>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">())</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="n">uvicorn</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">build_switchyard_app</span><span class="p">(</span><span class="n">switchyard</span><span class="p">),</span> <span class="n">port</span><span class="o">=</span><span class="mi">4000</span><span class="p">)</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">chat</span><span class="p">(</span><span class="n">user_message</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>    <span class="n">request</span> <span class="o">=</span> <span class="n">ChatRequest</span><span class="o">.</span><span class="n">openai_chat</span><span class="p">({</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>        <span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="s2">&quot;openai/gpt-4o&quot;</span><span class="p">,</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>        <span class="s2">&quot;messages&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">user_message</span><span class="p">}],</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>    <span class="p">})</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">switchyard</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>    <span class="k">return</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;choices&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;message&quot;</span><span class="p">][</span><span class="s2">&quot;content&quot;</span><span class="p">]</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="nb">print</span><span class="p">(</span><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">chat</span><span class="p">(</span><span class="s2">&quot;What is 2+2?&quot;</span><span class="p">)))</span>
+</span></code></pre></div>
+<p>To host the chain as an HTTP server:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">uvicorn</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">PassthroughProfileConfig</span><span class="p">,</span> <span class="n">ProfileSwitchyard</span><span class="p">,</span> <span class="n">build_switchyard_app</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">switchyard</span> <span class="o">=</span> <span class="n">ProfileSwitchyard</span><span class="p">(</span><span class="n">PassthroughProfileConfig</span><span class="p">(</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>  <span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span><span class="p">,</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">())</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">uvicorn</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">build_switchyard_app</span><span class="p">(</span><span class="n">switchyard</span><span class="p">),</span> <span class="n">port</span><span class="o">=</span><span class="mi">4000</span><span class="p">)</span>
 </span></code></pre></div>
 <hr />
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <p><strong>No API key / auth error</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>switchyard<span class="w"> </span>configure<span class="w">          </span><span class="c1"># re-run interactive setup to update credentials</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w">   </span><span class="c1"># confirm what key source is in use</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>switchyard<span class="w"> </span>configure<span class="w">          </span><span class="c1"># re-run interactive setup to update credentials</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w">   </span><span class="c1"># confirm what key source is in use</span>
 </span></code></pre></div>
 <p>For launchers and verification, you can pass <code>--api-key</code> directly. For <code>serve</code>, put credentials in the routing-profile YAML or saved config.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--api-key<span class="w"> </span>sk-...
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--api-key<span class="w"> </span>sk-...
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--api-key<span class="w"> </span>sk-...
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--api-key<span class="w"> </span>sk-...
 </span></code></pre></div>
 <p><strong>Connection refused</strong></p>
 <p>Check health: <code>curl http://localhost:4000/health</code></p>
 <p><strong>Telemetry header opt-out</strong></p>
 <p>Switchyard adds an <code>X-Switchyard-Version</code> header to outbound LLM calls for
 release attribution. No request or response content is included. To disable:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_TELEMETRY_OPT_OUT</span><span class="o">=</span><span class="m">1</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_TELEMETRY_OPT_OUT</span><span class="o">=</span><span class="m">1</span>
 </span></code></pre></div>
 <p><strong>Development setup</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="nb">cd</span><span class="w"> </span>Switchyard
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>uv<span class="w"> </span>sync
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="nb">source</span><span class="w"> </span>.venv/bin/activate
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-v
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>check<span class="w"> </span>.
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>uv<span class="w"> </span>run<span class="w"> </span>mypy<span class="w"> </span>switchyard
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="nb">cd</span><span class="w"> </span>Switchyard
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>uv<span class="w"> </span>sync
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="nb">source</span><span class="w"> </span>.venv/bin/activate
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-v
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>check<span class="w"> </span>.
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>uv<span class="w"> </span>run<span class="w"> </span>mypy<span class="w"> </span>switchyard
 </span></code></pre></div>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>

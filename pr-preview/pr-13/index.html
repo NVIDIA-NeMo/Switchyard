@@ -932,6 +932,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="routing_algorithms/escalation_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1347,8 +1375,12 @@ connectivity, upstream targets, and client-facing profiles:</p>
 <p>The deprecated <code>--routing-profiles</code> flag is retained only for launcher-owned
 legacy bundles and saved bundle paths:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
 </span></code></pre></div>
+<p>Non-interactive <code>configure</code> does not read provider credentials from the routing
+bundle; pass <code>--api-key</code> explicitly when persisting the bundle for CI.</p>
 <p>Profile ids, direct targets, legacy launcher compatibility, and persistence are
 covered in <a href="routing_algorithms/overview/">Routing Overview</a>.</p>
 <h2 id="routing-reference">Routing Reference<a class="headerlink" href="#routing-reference" title="Permanent link">&para;</a></h2>
