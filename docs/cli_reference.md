@@ -455,8 +455,8 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 | `--check` | With `--show`, call `GET /models` against the resolved provider and report pass/fail in the output. |
 
 > **Saved bundles keep `${VAR}` references literal.** A saved routing-profile
-> bundle stores `${OPENROUTER_API_KEY}` (and any other `${VAR}`) verbatim —
-> secrets are never baked in. The referenced environment variables must therefore
+> bundle stores `${OPENROUTER_API_KEY}` (and any other `${VAR}`) verbatim. The
+> referenced environment variables must therefore
 > be present in the environment at `serve` / `launch` time; on another machine or
 > shell, export them again or Switchyard aborts with
 > `missing environment variable(s): NAME`.
