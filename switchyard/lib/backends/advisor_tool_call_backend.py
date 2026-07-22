@@ -93,7 +93,10 @@ from switchyard.lib.backends.advisor_loop_backend import (
     _consume_openai_stream,
     _ev,
     _replay_events,
+    _seed_advice_for,
+    _session_key,
     _usage_tokens,
+    _with_length_line,
 )
 from switchyard.lib.backends.llm_target import BackendFormat
 from switchyard.lib.backends.multi_llm_backend import (
@@ -471,6 +474,8 @@ class AdvisorToolCallBackend(LLMBackend):
         # (cache_control breakpoints on Anthropic; prefix stability on OpenAI).
         self._executor_backend = executor_backend or build_native_backend(executor_target)
         self._advisor_caller = advisor_caller or _build_advisor_caller(config)
+        # Per-session seed advice cache for seed_plan_advice ("" = unseeded).
+        self._seed_advice: dict[str, str] = {}
 
     async def startup(self) -> None:
         await self._executor_backend.startup()
@@ -496,6 +501,20 @@ class AdvisorToolCallBackend(LLMBackend):
         body = dict(normalized.body)
         messages: list[dict[str, Any]] = list(body.get("messages") or [])
         base_tools: list[dict[str, Any]] = list(body.get("tools") or [])
+        # Seed the session with upfront advisor advice (consulted once at the
+        # session-opening request, cached, and re-injected identically on every
+        # later turn so the upstream cache prefix stays stable). Applied before
+        # steering so the advice directly follows the task text.
+        if self._config.seed_plan_advice:
+            session = _session_key(body.get("system"), messages)
+            advice = await _seed_advice_for(
+                self._seed_advice, session, messages,
+                caller=self._advisor_caller, config=self._config, stats=self._stats,
+            )
+            if advice:
+                messages = _with_length_line(
+                    messages, self._config.seed_advice_prefix + advice,
+                )
         if self._config.inject_steering:
             body, messages = self._dialect.inject_steering(
                 body,
@@ -759,31 +778,6 @@ def _prepend_system(system: Any, prefix: str) -> Any:
     if isinstance(system, list):
         return [{"type": "text", "text": prefix}, *system]
     return f"{prefix}\n\n{system}"
-
-
-def _with_length_line(
-    messages: list[dict[str, Any]], line: str,
-) -> list[dict[str, Any]]:
-    """Append the advisor length line to the **first** user message.
-
-    The doc suggests the latest user message, but the client never sees this
-    injection, so re-injecting into each turn's newest message would shift the
-    upstream cache prefix every turn. The first user message is constant across
-    a session, keeping the prefix stable; the advisor still reads the line via
-    the forwarded transcript. The list branch emits ``{"type": "text", ...}``
-    parts, valid on both the Anthropic and OpenAI wires.
-    """
-    msgs = [dict(m) for m in messages]
-    for msg in msgs:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, list):
-            msg["content"] = [*content, {"type": "text", "text": line}]
-        elif isinstance(content, str) or content is None:
-            msg["content"] = f"{content or ''}\n\n{line}".lstrip()
-        break
-    return msgs
 
 
 # ----------------------------------------------------------------------

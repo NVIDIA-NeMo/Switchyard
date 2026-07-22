@@ -49,6 +49,7 @@ from switchyard.lib.profiles.advisor_prompts import (
     EXECUTOR_STEERING,
     REDO_FEEDBACK_PREFIX,
     REVIEWER_SYSTEM_PROMPT,
+    SEED_ADVICE_PREFIX,
 )
 
 
@@ -101,6 +102,33 @@ class AdvisorConfig(BaseModel):
         gate_trigger_pattern: (review_gate) Regex searched against the
             executor turn's text when ``gate_trigger`` is ``"pattern"``
             (e.g. ``task_complete["\\s>:]*true`` for terminus).
+        max_reviews: (review_gate) Per-session budget of advisor reviews.
+            The default (1) preserves the original once-per-session gate;
+            higher values re-review later trigger turns (e.g. a re-declared
+            completion after a REDO), making the gate a sequential
+            best-of-(N+1) with the advisor as judge.
+        gate_stall_turns: (review_gate) When > 0, additionally trigger a
+            review (once per session, consuming review budget) at the first
+            request whose conversation already carries at least this many
+            assistant turns — a mid-task checkpoint for executors that grind
+            without ever declaring completion. 0 disables.
+        gate_min_tool_results: (review_gate) For the ``no_tool_call``
+            trigger: only review a no-tool-call turn when the conversation
+            carries at least this many tool results — skips reviewing early
+            commentary turns on chatty harnesses. 0 reviews as before.
+
+        seed_plan_advice: (both strategies) Consult the advisor once at the
+            start of each session — before the executor's first turn — and
+            inject its upfront plan into the session's first user message
+            (``seed_advice_prefix`` + advice). The advice is cached per
+            session (keyed by the conversation's stable prefix) and
+            re-injected identically on every turn, so it stays visible for
+            the whole session while the upstream cache prefix stays stable.
+            Proxy-triggered, so it fires even on executors/harnesses that
+            never call tools. The seed consult uses ``advisor_system_prompt``.
+            Fail-open: a failed seed consult leaves the session unseeded.
+        seed_advice_prefix: Prepended to the seeded advice when it is
+            injected into the first user message.
 
         advisor_max_tokens: Cap on the advisor's output per call (the doc's
             recommended starting point is 2048).
@@ -138,8 +166,13 @@ class AdvisorConfig(BaseModel):
     redo_feedback_prefix: str = REDO_FEEDBACK_PREFIX
     gate_trigger: Literal["no_tool_call", "pattern"] = "no_tool_call"
     gate_trigger_pattern: str = ""
+    max_reviews: int = Field(default=1, ge=1)
+    gate_stall_turns: int = Field(default=0, ge=0)
+    gate_min_tool_results: int = Field(default=0, ge=0)
 
     # shared
+    seed_plan_advice: bool = False
+    seed_advice_prefix: str = SEED_ADVICE_PREFIX
     advisor_max_tokens: int = Field(default=2048, ge=1)
     advisor_temperature: float | None = None
     transcript_max_chars: int = Field(default=24_000, ge=256)

@@ -92,6 +92,12 @@ REDO_FEEDBACK_PREFIX = (
     "working until it is genuinely done:\n\n"
 )
 
+#: Prepended to the advisor's upfront plan when ``seed_plan_advice`` injects it
+#: into the session's first user message (both strategies honor the flag).
+SEED_ADVICE_PREFIX = (
+    "\n\nA senior advisor reviewed this task before you started and suggests:\n"
+)
+
 __all__ = [
     "ADVISOR_LENGTH_LINE",
     "ADVISOR_SYSTEM_PROMPT",
@@ -99,4 +105,5 @@ __all__ = [
     "EXECUTOR_STEERING",
     "REDO_FEEDBACK_PREFIX",
     "REVIEWER_SYSTEM_PROMPT",
+    "SEED_ADVICE_PREFIX",
 ]

@@ -144,9 +144,14 @@ class AdvisorLoopBackend(LLMBackend):
         self._config = config
         self._stats = stats_accumulator if config.enable_stats else None
         self._translation = TranslationEngine()
-        # Sessions already reviewed (once-per-session), keyed by conversation
-        # prefix hash. In-process; a task's turns share one switchyard pod.
-        self._reviewed: set[str] = set()
+        # Reviews already spent per session (budgeted by ``max_reviews``),
+        # keyed by conversation prefix hash. In-process; a task's turns share
+        # one switchyard pod.
+        self._review_counts: dict[str, int] = {}
+        # Sessions whose stall checkpoint (gate_stall_turns) already fired.
+        self._stall_fired: set[str] = set()
+        # Per-session seed advice cache for seed_plan_advice ("" = unseeded).
+        self._seed_advice: dict[str, str] = {}
         # Resolve format: auto before wire selection; injected fakes must pin
         # a concrete format (probing a fake's endpoint makes no sense).
         executor_target = (
@@ -194,28 +199,60 @@ class AdvisorLoopBackend(LLMBackend):
         messages: list[dict[str, Any]] = list(body.get("messages") or [])
         session = _session_key(body.get("system"), messages)
 
-        # After the gate has fired for this session, every turn is pure
-        # passthrough — return the upstream stream directly (true streaming,
-        # caching intact, no buffering).
-        if session in self._reviewed:
+        # Seed the session with upfront advisor advice (consulted once at the
+        # session-opening request, cached, and re-injected identically on every
+        # later turn so the upstream cache prefix stays stable).
+        if self._config.seed_plan_advice:
+            advice = await _seed_advice_for(
+                self._seed_advice, session, messages,
+                caller=self._advisor_caller, config=self._config, stats=self._stats,
+            )
+            if advice:
+                messages = _with_length_line(
+                    messages, self._config.seed_advice_prefix + advice,
+                )
+                body = {**body, "messages": messages}
+                normalized = request_with_type(self._request_type_name, body)
+
+        # Once the session's review budget (``max_reviews``) is spent, every
+        # turn is pure passthrough — return the upstream stream directly
+        # (true streaming, caching intact, no buffering).
+        if self._review_counts.get(session, 0) >= self._config.max_reviews:
             return await self._passthrough(ctx, normalized)
 
-        # Not yet reviewed: run the executor and inspect its turn.
+        # Budget remains: run the executor and inspect its turn.
         turn = await self._run_executor(ctx, normalized)
 
+        # Stall checkpoint (once per session): the conversation has grown past
+        # ``gate_stall_turns`` assistant turns without the main trigger having
+        # fired — review mid-task regardless of the turn's shape.
+        stall = (
+            self._config.gate_stall_turns > 0
+            and session not in self._stall_fired
+            and sum(1 for m in messages if m.get("role") == "assistant")
+            >= self._config.gate_stall_turns
+        )
+
         # Trigger check. "no_tool_call" gates the first turn without tool
-        # calls (function-calling harnesses); "pattern" gates the first turn
-        # whose text matches the configured marker (text-protocol harnesses,
-        # e.g. terminus's ``task_complete: true`` declaration).
+        # calls (function-calling harnesses; ``gate_min_tool_results`` skips
+        # early commentary turns before any real work exists); "pattern"
+        # gates the first turn whose text matches the configured marker
+        # (text-protocol harnesses, e.g. terminus's ``task_complete: true``
+        # declaration).
         if self._trigger_pattern is not None:
-            if not self._trigger_pattern.search(turn.content or ""):
-                return await self._finish(ctx, turn)
-        elif turn.has_tool_use:
-            # Tool calls → executor is working; never gate mid-work.
+            triggered = bool(self._trigger_pattern.search(turn.content or ""))
+        else:
+            triggered = not turn.has_tool_use and (
+                _count_tool_results(messages) >= self._config.gate_min_tool_results
+            )
+        if not (triggered or stall):
             return await self._finish(ctx, turn)
 
-        # Trigger fired: a plan, a "done", or the marker. Gate it (once per session).
-        self._reviewed.add(session)
+        # Trigger fired: a plan, a "done", the marker, or a stall checkpoint.
+        # Gate it, spending review budget.
+        if stall and not triggered:
+            self._stall_fired.add(session)
+        self._review_counts[session] = self._review_counts.get(session, 0) + 1
         verdict, plan = await self._review(messages, turn.content)
         if verdict != "REDO":
             return await self._finish(ctx, turn)
@@ -646,6 +683,144 @@ def _ev(event: Any, key: str) -> Any:
     if isinstance(event, dict):
         return event.get(key)
     return getattr(event, key, None)
+
+
+def _with_length_line(
+    messages: list[dict[str, Any]], line: str,
+) -> list[dict[str, Any]]:
+    """Append a line of text to the **first** user message.
+
+    The doc suggests the latest user message, but the client never sees this
+    injection, so re-injecting into each turn's newest message would shift the
+    upstream cache prefix every turn. The first user message is constant across
+    a session, keeping the prefix stable; the advisor still reads the line via
+    the forwarded transcript. The list branch emits ``{"type": "text", ...}``
+    parts, valid on both the Anthropic and OpenAI wires. Shared by the advisor
+    length line, and by ``seed_plan_advice`` for the seeded upfront plan.
+    """
+    msgs = [dict(m) for m in messages]
+    for msg in msgs:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            msg["content"] = [*content, {"type": "text", "text": line}]
+        elif isinstance(content, str) or content is None:
+            msg["content"] = f"{content or ''}\n\n{line}".lstrip()
+        break
+    return msgs
+
+
+def _seed_transcript(messages: list[dict[str, Any]], cap: int) -> str:
+    """Serialize the session-opening messages for the seed consult."""
+    text = json.dumps(messages, default=str, ensure_ascii=False)
+    if len(text) > cap:
+        text = text[: cap - 16] + "...<truncated>"
+    return (
+        f"The task the executor is about to start (JSON):\n\n{text}\n\n"
+        "The executor has not begun yet. Review the task and give your best "
+        "upfront plan: the approach, the pitfalls to avoid, and the first "
+        "concrete steps."
+    )
+
+
+async def _seed_advice_for(
+    cache: dict[str, str],
+    session: str,
+    messages: list[dict[str, Any]],
+    *,
+    caller: AdvisorCaller,
+    config: AdvisorConfig,
+    stats: StatsAccumulator | None,
+) -> str:
+    """Per-session seed advice for ``seed_plan_advice`` (both strategies).
+
+    The advisor is consulted once per session, at a request that opens the
+    conversation (no assistant turns yet); the advice is cached so every later
+    turn of the session re-injects the identical text (stable cache prefix).
+    A session first seen mid-conversation (e.g. after a proxy restart) is
+    cached as unseeded — injecting new advice mid-session would shift the
+    upstream prefix. Fail-open: a failed consult caches "" (no retry storm).
+    """
+    cached = cache.get(session)
+    if cached is not None:
+        return cached
+    if any(m.get("role") == "assistant" for m in messages):
+        cache[session] = ""
+        return ""
+    advice = await _fetch_seed_advice(
+        caller=caller, config=config, messages=messages, stats=stats,
+    )
+    cache[session] = advice
+    return advice
+
+
+async def _fetch_seed_advice(
+    *,
+    caller: AdvisorCaller,
+    config: AdvisorConfig,
+    messages: list[dict[str, Any]],
+    stats: StatsAccumulator | None,
+) -> str:
+    """Consult the advisor for an upfront plan; "" on fail-open failure."""
+    transcript = _seed_transcript(messages, config.transcript_max_chars)
+    started = time.monotonic()
+    try:
+        advice, usage = await caller.advise(
+            system=config.advisor_system_prompt, transcript=transcript,
+        )
+    except Exception as exc:
+        if not config.fail_open:
+            raise
+        log.warning("seed_plan_advice: advisor call failed; proceeding unseeded: %s", exc)
+        if stats is not None:
+            await stats.record_planner_error(config.advisor.model)
+        _audit_seed(error=str(exc), usage=None,
+                    latency_ms=(time.monotonic() - started) * 1000.0)
+        return ""
+    latency_ms = (time.monotonic() - started) * 1000.0
+    if stats is not None:
+        prompt_tokens, completion_tokens = _usage_tokens(usage)
+        await stats.record_planner_usage(
+            model=config.advisor.model,
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
+            cached_tokens=0,
+            latency_ms=latency_ms,
+        )
+    _audit_seed(error=None, usage=usage, latency_ms=latency_ms)
+    return advice.strip()
+
+
+def _audit_seed(*, error: str | None, usage: Any, latency_ms: float) -> None:
+    """Emit a one-line ``advisor_seed=...`` audit record to stderr."""
+    payload: dict[str, Any] = {
+        "advisor_seed": True,
+        "error": error,
+        "latency_ms": round(latency_ms, 1),
+    }
+    prompt_tokens, completion_tokens = _usage_tokens(usage)
+    if prompt_tokens is not None:
+        payload["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        payload["completion_tokens"] = completion_tokens
+    sys.stderr.write(f"advisor_seed={json.dumps(payload, sort_keys=True)}\n")
+    sys.stderr.flush()
+
+
+def _count_tool_results(messages: list[dict[str, Any]]) -> int:
+    """Count tool results across both wires (OpenAI ``role: tool`` messages,
+    Anthropic ``tool_result`` blocks in user messages)."""
+    n = 0
+    for m in messages:
+        if m.get("role") == "tool":
+            n += 1
+        elif m.get("role") == "user" and isinstance(m.get("content"), list):
+            n += sum(
+                1 for b in m["content"]
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            )
+    return n
 
 
 def _session_key(system: Any, messages: list[dict[str, Any]]) -> str:

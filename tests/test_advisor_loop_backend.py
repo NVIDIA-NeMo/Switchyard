@@ -528,3 +528,198 @@ def test_anthropic_text_joins_text_blocks() -> None:
     data = {"content": [{"type": "text", "text": "RE"}, {"type": "thinking", "text": "x"},
                         {"type": "text", "text": "DO: fix it"}]}
     assert _anthropic_text(data) == "REDO: fix it"
+
+
+# ---------------------------------------------------------------------------
+# seed_plan_advice
+# ---------------------------------------------------------------------------
+
+
+async def test_seed_consults_once_and_injects_into_first_user_message() -> None:
+    """The session-opening request triggers one seed consult (advisor prompt,
+    not the reviewer prompt) and the advice lands in the first user message."""
+    exec_b = _exec_backend(_completion_resp(text="working", tool_use=True))
+    adv = _reviewer("1. plan the schema first")
+    config = _config(seed_plan_advice=True)
+    await _backend(config, exec_b, adv).call(ProxyContext(), _request())
+    assert adv.advise.await_count == 1
+    assert adv.advise.await_args.kwargs["system"] == config.advisor_system_prompt
+    sent = exec_b.call.await_args.args[1].to_body()
+    user = sent["messages"][0]
+    assert user["role"] == "user"
+    assert config.seed_advice_prefix.strip() in user["content"]
+    assert "1. plan the schema first" in user["content"]
+
+
+async def test_seed_reinjected_on_later_turns_without_reconsult() -> None:
+    """Later turns of the session re-inject the cached advice — one consult total."""
+    exec_b = _exec_backend(
+        _completion_resp(text="working", tool_use=True),
+        _completion_resp(text="still working", tool_use=True),
+    )
+    adv = _reviewer("1. plan")
+    backend = _backend(_config(seed_plan_advice=True), exec_b, adv)
+    await backend.call(ProxyContext(), _request())
+    await backend.call(ProxyContext(), _request(messages=[
+        {"role": "user", "content": "build X"},
+        {"role": "assistant", "content": "working"},
+        {"role": "user", "content": "output: ok"},
+    ]))
+    assert adv.advise.await_count == 1
+    second = exec_b.call.await_args_list[1].args[1].to_body()
+    assert "1. plan" in second["messages"][0]["content"]
+
+
+async def test_seed_skipped_for_session_first_seen_mid_conversation() -> None:
+    """A session whose first observed request already has assistant turns is
+    never seeded (injecting new advice mid-session would shift the prefix)."""
+    exec_b = _exec_backend(_completion_resp(text="w", tool_use=True))
+    adv = _reviewer()
+    await _backend(_config(seed_plan_advice=True), exec_b, adv).call(
+        ProxyContext(),
+        _request(messages=[
+            {"role": "user", "content": "build X"},
+            {"role": "assistant", "content": "already going"},
+            {"role": "user", "content": "go on"},
+        ]),
+    )
+    assert adv.advise.await_count == 0
+
+
+async def test_seed_fail_open_leaves_session_unseeded_without_retry() -> None:
+    """A failed seed consult proceeds unseeded and is cached — no retry storm."""
+    exec_b = _exec_backend(
+        _completion_resp(text="w", tool_use=True),
+        _completion_resp(text="w2", tool_use=True),
+    )
+    adv = _failing_reviewer(RuntimeError("advisor down"))
+    backend = _backend(_config(seed_plan_advice=True), exec_b, adv)
+    await backend.call(ProxyContext(), _request())
+    sent = exec_b.call.await_args_list[0].args[1].to_body()
+    assert "advisor reviewed" not in json.dumps(sent["messages"])
+    await backend.call(ProxyContext(), _request())
+    assert adv.advise.await_count == 1
+
+
+async def test_seed_composes_with_pattern_gate() -> None:
+    """Seed at session start + pattern gate at the done-claim, in one route:
+    first consult uses the advisor prompt, second the reviewer prompt, and the
+    REDO continuation still carries the seeded first user message."""
+    exec_b = _exec_backend(
+        _openai_completion_resp(text='{"task_complete": true}'),
+        _openai_completion_resp(text="resumed work"),
+    )
+    adv = MagicMock()
+    adv.advise = AsyncMock(side_effect=[("1. seeded plan", None), ("REDO fix X", None)])
+    config = _pattern_config(seed_plan_advice=True)
+    resp = await _backend(config, exec_b, adv).call(ProxyContext(), _openai_request())
+    assert adv.advise.await_count == 2
+    assert adv.advise.await_args_list[0].kwargs["system"] == config.advisor_system_prompt
+    assert adv.advise.await_args_list[1].kwargs["system"] == config.reviewer_system_prompt
+    body = resp.to_body()
+    assert body["choices"][0]["message"]["content"] == "resumed work"
+    redo = exec_b.call.await_args_list[1].args[1].to_body()
+    assert "1. seeded plan" in redo["messages"][1]["content"]
+    assert redo["messages"][-1]["content"].startswith(config.redo_feedback_prefix)
+
+
+# ---------------------------------------------------------------------------
+# Review budget (max_reviews), stall checkpoint, and min-tool-results guard
+# ---------------------------------------------------------------------------
+
+
+async def test_max_reviews_budget_reviews_redeclared_completion() -> None:
+    """With max_reviews=2, a completion re-declared after a REDO is reviewed
+    again (sequential best-of-3 with the advisor as judge); the budget then
+    exhausts and later turns pass through."""
+    exec_b = _exec_backend(
+        _openai_completion_resp(text='{"task_complete": true}'),   # req1: reviewed -> REDO
+        _openai_completion_resp(text="continuing"),                # req1: redo continuation
+        _openai_completion_resp(text='{"task_complete": true}'),   # req2: reviewed -> APPROVE
+        _openai_completion_resp(text='{"task_complete": true}'),   # req3: passthrough
+    )
+    adv = MagicMock()
+    adv.advise = AsyncMock(side_effect=[("REDO not done", None), ("APPROVE", None)])
+    config = _pattern_config(max_reviews=2)
+    backend = _backend(config, exec_b, adv)
+    later = [{"role": "user", "content": "build X"},
+             {"role": "assistant", "content": "working"},
+             {"role": "user", "content": "output"}]
+    await backend.call(ProxyContext(), _openai_request())
+    await backend.call(ProxyContext(), _openai_request(messages=list(later)))
+    await backend.call(ProxyContext(), _openai_request(messages=list(later)))
+    assert adv.advise.await_count == 2  # budget spent; third declaration unreviewed
+
+
+async def test_default_budget_keeps_once_per_session() -> None:
+    exec_b = _exec_backend(
+        _openai_completion_resp(text='{"task_complete": true}'),
+        _openai_completion_resp(text='{"task_complete": true}'),
+    )
+    adv = _reviewer("APPROVE")
+    backend = _backend(_pattern_config(), exec_b, adv)
+    await backend.call(ProxyContext(), _openai_request())
+    await backend.call(ProxyContext(), _openai_request())
+    assert adv.advise.await_count == 1
+
+
+async def test_stall_checkpoint_reviews_mid_task_once() -> None:
+    """gate_stall_turns fires a mid-task review when the conversation has
+    grown past the threshold without the pattern ever matching — and only
+    once per session."""
+    exec_b = _exec_backend(
+        _openai_completion_resp(text='{"commands": ["make"]}'),  # stall review -> REDO
+        _openai_completion_resp(text="course-corrected"),        # redo continuation
+        _openai_completion_resp(text='{"commands": ["ls"]}'),    # no re-fire (stall spent)
+    )
+    adv = MagicMock()
+    adv.advise = AsyncMock(side_effect=[("REDO try approach B", None)])
+    config = _pattern_config(max_reviews=2, gate_stall_turns=3)
+    backend = _backend(config, exec_b, adv)
+    long_history = [{"role": "user", "content": "build X"}]
+    for i in range(3):
+        long_history += [{"role": "assistant", "content": f"cmd {i}"},
+                         {"role": "user", "content": f"out {i}"}]
+    await backend.call(ProxyContext(), _openai_request(messages=list(long_history)))
+    assert adv.advise.await_count == 1
+    await backend.call(ProxyContext(), _openai_request(messages=list(long_history)))
+    assert adv.advise.await_count == 1  # stall fired once; budget remains for the marker
+
+
+async def test_stall_disabled_by_default() -> None:
+    exec_b = _exec_backend(_openai_completion_resp(text='{"commands": ["make"]}'))
+    adv = _reviewer()
+    long_history = [{"role": "user", "content": "build X"}]
+    for i in range(10):
+        long_history += [{"role": "assistant", "content": f"c{i}"},
+                         {"role": "user", "content": f"o{i}"}]
+    await _backend(_pattern_config(), exec_b, adv).call(
+        ProxyContext(), _openai_request(messages=long_history))
+    assert adv.advise.await_count == 0
+
+
+async def test_min_tool_results_skips_early_commentary() -> None:
+    """no_tool_call trigger with gate_min_tool_results: a text-only turn
+    before any tool results is NOT reviewed; one after enough results is."""
+    exec_b = _exec_backend(
+        _completion_resp(text="here is my plan"),   # 0 tool results -> no review
+        _completion_resp(text="all done"),          # 2 tool results -> reviewed
+    )
+    adv = _reviewer("APPROVE")
+    config = _config(gate_min_tool_results=2)
+    backend = _backend(config, exec_b, adv)
+    await backend.call(ProxyContext(), _request())
+    assert adv.advise.await_count == 0
+    worked = [
+        {"role": "user", "content": "build X"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "bash", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]},
+    ]
+    await backend.call(ProxyContext(), _request(messages=worked))
+    assert adv.advise.await_count == 1

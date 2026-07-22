@@ -521,3 +521,51 @@ def test_auto_format_with_injected_backend_raises() -> None:
                  "format": "auto"}
     with pytest.raises(ValueError, match="pin format"):
         _backend(_config(executor=auto_exec), _exec_backend(), _advisor())
+
+
+# ---------------------------------------------------------------------------
+# seed_plan_advice
+# ---------------------------------------------------------------------------
+
+
+async def test_seed_consults_before_first_executor_turn_and_injects() -> None:
+    """Seed advice is fetched before the executor runs and lands in the first
+    user message, ahead of the steering length line."""
+    exec_b = _exec_backend(_text_turn())
+    adv = _advisor("1. read the docs first")
+    config = _config(seed_plan_advice=True)
+    await _backend(config, exec_b, adv).call(ProxyContext(), _request())
+    assert adv.advise.await_count == 1
+    assert adv.advise.await_args.kwargs["system"] == config.advisor_system_prompt
+    user = _sent_body(exec_b, 0)["messages"][1]
+    assert user["role"] == "user"
+    assert config.seed_advice_prefix.strip() in user["content"]
+    assert "1. read the docs first" in user["content"]
+    assert "(LENGTH)" in user["content"]  # steering still applied after the seed
+
+
+async def test_seed_cached_for_later_turns_of_the_session() -> None:
+    """The second request of a session re-injects the cached advice without a
+    fresh consult; the advisor tool loop still works on top."""
+    exec_b = _exec_backend(_text_turn(), _text_turn())
+    adv = _advisor("1. plan")
+    backend = _backend(_config(seed_plan_advice=True), exec_b, adv)
+    await backend.call(ProxyContext(), _request())
+    await backend.call(ProxyContext(), _request(messages=[
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "build X"},
+        {"role": "assistant", "content": "working on it"},
+        {"role": "user", "content": "tool output: ok"},
+    ]))
+    assert adv.advise.await_count == 1
+    assert "1. plan" in str(_sent_body(exec_b, 1)["messages"][1]["content"])
+
+
+async def test_seed_fail_open_proceeds_unseeded() -> None:
+    exec_b = _exec_backend(_text_turn())
+    adv = _failing_advisor(RuntimeError("advisor down"))
+    config = _config(seed_plan_advice=True)
+    resp = await _backend(config, exec_b, adv).call(ProxyContext(), _request())
+    assert _content_text(resp.to_body()) == "done"
+    user = _sent_body(exec_b, 0)["messages"][1]
+    assert "advisor reviewed" not in str(user["content"])
