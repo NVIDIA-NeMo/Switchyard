@@ -260,7 +260,10 @@ pub fn extract_tool_signals_with_window(
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            (extract_from_messages_anthropic(messages, recent_window), messages)
+            (
+                extract_from_messages_anthropic(messages, recent_window),
+                messages,
+            )
         }
         ChatRequestType::OpenAiResponses => {
             let items = obj
@@ -276,7 +279,10 @@ pub fn extract_tool_signals_with_window(
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            (extract_from_messages_openai_chat(messages, recent_window), messages)
+            (
+                extract_from_messages_openai_chat(messages, recent_window),
+                messages,
+            )
         }
     };
 
@@ -807,16 +813,18 @@ mod tests {
 
     #[test]
     fn tests_passed_detects_pytest_output() {
-        assert!(detect_tests_passed(&[
-            "====== 5 passed in 0.12s ======".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(detect_tests_passed(
+            &["====== 5 passed in 0.12s ======".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_ignores_partial_failures() {
-        assert!(!detect_tests_passed(&[
-            "2 failed, 5 passed in 0.56s".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(!detect_tests_passed(
+            &["2 failed, 5 passed in 0.56s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
@@ -949,7 +957,10 @@ mod tests {
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
             ]
         }));
-        assert_eq!(extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio, 1.0);
+        assert_eq!(
+            extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio,
+            1.0
+        );
     }
 
     #[test]
@@ -987,7 +998,10 @@ mod tests {
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls e\"}"}}]},
             ]
         }));
-        assert_eq!(extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio, 0.2);
+        assert_eq!(
+            extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio,
+            0.2
+        );
     }
 
     #[test]
@@ -1052,42 +1066,47 @@ mod tests {
     #[test]
     fn tests_passed_detects_pytest_with_failure_block() {
         // Mixed pytest run: 2 failed + 5 passed → NOT considered tests_passed.
-        assert!(!detect_tests_passed(&[
-            "2 failed, 5 passed in 0.56s".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(!detect_tests_passed(
+            &["2 failed, 5 passed in 0.56s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_accepts_cargo_clean_summary() {
         // Cargo's clean-run summary contains "0 failed" — must not trip the
         // failure list (regression: previously substring-matched "failed").
-        assert!(detect_tests_passed(&[
-            "running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(detect_tests_passed(
+            &["running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_rejects_cargo_real_failure() {
         // Cargo's actual-failure summary: nonzero count before "failed".
-        assert!(!detect_tests_passed(&[
-            "running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(!detect_tests_passed(
+            &["running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_accepts_go_clean_summary() {
         // Go test's clean-run "0 errors" must not trip (regression).
-        assert!(detect_tests_passed(&[
-            "ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(detect_tests_passed(
+            &["ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_accepts_pytest_zero_errors() {
         // Pytest long-form: "0 errors in 0.3s" on a clean run.
-        assert!(detect_tests_passed(&[
-            "5 passed, 0 errors in 0.30s".to_string()
-        ], DEFAULT_RECENT_WINDOW));
+        assert!(detect_tests_passed(
+            &["5 passed, 0 errors in 0.30s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
