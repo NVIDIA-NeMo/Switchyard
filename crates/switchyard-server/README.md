@@ -8,20 +8,14 @@ and algorithm routes served by the process.
 # routes.yaml
 schema_version: 1
 
-llm_clients:
-  primary:
-    type: translating_http
-
 targets:
   model/a:
-    llm_client: primary
     backend:
       type: openai_chat
       base_url: https://example.com/v1
       api_key_env: API_KEY
 
   model/b:
-    llm_client: primary
     backend:
       type: openai_chat
       base_url: https://example.com/v1
@@ -50,7 +44,8 @@ cargo run -p switchyard-server -- --config routes.yaml
 Each target name is also the exact model ID sent upstream. Select an algorithm route by sending its
 `switchyard/*` route ID as the inbound request's `model`.
 
-Supported client type: `translating_http`. Supported backend types: `openai_chat`,
+Targets use a shared `translating_http` client by default. Define `llm_clients` and set a target's
+`llm_client` only when it needs a separate named client. Supported backend types: `openai_chat`,
 `openai_responses`, and `anthropic_messages`. Supported algorithms: `noop`, `random`, and
 `llm_classifier`. An `api_key_env` value names an environment variable; the YAML never contains the
 secret itself. If the field is omitted, the backend is called without authentication.

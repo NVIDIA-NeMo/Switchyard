@@ -203,22 +203,16 @@ async fn yaml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
     let state = load_test_config(&format!(
         r#"
 schema_version: 1
-llm_clients:
-  primary:
-    type: translating_http
 targets:
   model/classifier:
-    llm_client: primary
     backend:
       type: openai_chat
       base_url: {base_url}
   model/strong:
-    llm_client: primary
     backend:
       type: openai_chat
       base_url: {base_url}
   model/weak:
-    llm_client: primary
     backend:
       type: openai_chat
       base_url: {base_url}

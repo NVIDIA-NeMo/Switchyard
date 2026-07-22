@@ -41,6 +41,7 @@ fn server_state_from_yaml(yaml: &str) -> ServerResult<ServerState> {
 #[serde(deny_unknown_fields)]
 struct ServerConfig {
     schema_version: u32,
+    #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, AlgorithmConfig>,
@@ -68,26 +69,29 @@ impl ServerConfig {
         ServerState::new(routes)
     }
 
-    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<dyn RoutedLlmClient>>> {
+    fn build_clients(&self) -> ServerResult<BTreeMap<Option<String>, Arc<dyn RoutedLlmClient>>> {
         let mut models_by_client = self
             .llm_clients
             .keys()
-            .map(|name| (name.clone(), Vec::new()))
-            .collect::<BTreeMap<String, Vec<ModelConfig>>>();
+            .map(|name| (Some(name.clone()), Vec::new()))
+            .collect::<BTreeMap<Option<String>, Vec<ModelConfig>>>();
 
         for name in self.llm_clients.keys() {
             validate_name("llm client", name)?;
         }
         for (target_name, target) in &self.targets {
             validate_name("target", target_name)?;
+            match &target.llm_client {
+                Some(client_name) if !self.llm_clients.contains_key(client_name) => {
+                    return Err(ServerError::new(format!(
+                        "target {target_name} references unknown llm client {client_name}"
+                    )));
+                }
+                _ => {}
+            }
             let model_configs = models_by_client
-                .get_mut(&target.llm_client)
-                .ok_or_else(|| {
-                    ServerError::new(format!(
-                        "target {target_name} references unknown llm client {}",
-                        target.llm_client
-                    ))
-                })?;
+                .entry(target.llm_client.clone())
+                .or_default();
             model_configs.push(ModelConfig::new(
                 target_name,
                 build_backend(target_name, &target.backend)?,
@@ -96,31 +100,35 @@ impl ServerConfig {
         }
 
         let mut clients = BTreeMap::new();
-        for (name, config) in &self.llm_clients {
-            let model_configs = models_by_client.remove(name).unwrap_or_default();
+        for (name, model_configs) in models_by_client {
+            let config = match &name {
+                Some(name) => self
+                    .llm_clients
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| ServerError::new(format!("unknown llm client {name}")))?,
+                None => LlmClientConfig::TranslatingHttp,
+            };
             let client: Arc<dyn RoutedLlmClient> = match config {
                 LlmClientConfig::TranslatingHttp => Arc::new(
                     TranslatingLlmClient::new(&model_configs)
                         .map_err(|error| ServerError::new(error.to_string()))?,
                 ),
             };
-            clients.insert(name.clone(), client);
+            clients.insert(name, client);
         }
         Ok(clients)
     }
 
     fn build_targets(
         &self,
-        clients: &BTreeMap<String, Arc<dyn RoutedLlmClient>>,
+        clients: &BTreeMap<Option<String>, Arc<dyn RoutedLlmClient>>,
     ) -> ServerResult<BTreeMap<String, LlmTarget>> {
         self.targets
             .iter()
             .map(|(name, config)| {
                 let client = clients.get(&config.llm_client).ok_or_else(|| {
-                    ServerError::new(format!(
-                        "target {name} references unknown llm client {}",
-                        config.llm_client
-                    ))
+                    ServerError::new(format!("target {name} has no constructed llm client"))
                 })?;
                 Ok((
                     name.clone(),
@@ -134,7 +142,7 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum LlmClientConfig {
     TranslatingHttp,
@@ -143,7 +151,7 @@ enum LlmClientConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
-    llm_client: String,
+    llm_client: Option<String>,
     backend: BackendConfig,
 }
 
