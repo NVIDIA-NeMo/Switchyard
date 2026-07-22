@@ -122,6 +122,78 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
     Ok(())
 }
 
+// Verifies OpenAI cache usage survives the Chat-to-Responses translation used by Codex.
+#[test]
+fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-cached",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Cached answer"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_tokens_details": {"cached_tokens": 80}
+        }
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["usage"]["input_tokens"], 100);
+    assert_eq!(
+        output["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 80})
+    );
+    Ok(())
+}
+
+// Verifies OpenAI cache usage is expressed in Anthropic's standard sibling fields.
+#[test]
+fn openai_chat_cache_usage_translates_to_anthropic_usage_fields() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-cached",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Cached answer"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_tokens_details": {"cached_tokens": 80}
+        }
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["usage"]["input_tokens"], 20);
+    assert_eq!(output["usage"]["cache_read_input_tokens"], 80);
+    assert_eq!(output["usage"]["output_tokens"], 5);
+    Ok(())
+}
+
 // Verifies Anthropic thinking response blocks become OpenAI reasoning_content.
 #[test]
 fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestResult {

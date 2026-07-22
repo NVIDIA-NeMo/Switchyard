@@ -852,13 +852,21 @@ fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
         return Usage::default();
     };
     let input_tokens = value.get("input_tokens").and_then(Value::as_u64);
+    let cached_input_tokens = value.get("cache_read_input_tokens").and_then(Value::as_u64);
+    let cache_creation_input_tokens = value
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64);
     let output_tokens = value.get("output_tokens").and_then(Value::as_u64);
     Usage {
         input_tokens,
+        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens,
-        total_tokens: input_tokens
-            .zip(output_tokens)
-            .map(|(input, output)| input + output),
+        total_tokens: input_tokens.zip(output_tokens).map(|(input, output)| {
+            input
+                + cached_input_tokens.unwrap_or(0)
+                + cache_creation_input_tokens.unwrap_or(0)
+                + output
+        }),
         reasoning_tokens: value
             .get("output_tokens_details")
             .and_then(|details| details.get("reasoning_tokens"))
@@ -868,10 +876,17 @@ fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
 
 // Encodes normalized usage into Anthropic usage JSON.
 fn encode_anthropic_usage(usage: &Usage) -> Value {
-    json!({
+    let mut value = json!({
         "input_tokens": usage.input_tokens.unwrap_or(0),
         "output_tokens": usage.output_tokens.unwrap_or(0),
-    })
+    });
+    if let Some(cached_tokens) = usage.cached_input_tokens() {
+        value["cache_read_input_tokens"] = json!(cached_tokens);
+    }
+    if let Some(cache_creation_tokens) = usage.cache_creation_input_tokens() {
+        value["cache_creation_input_tokens"] = json!(cache_creation_tokens);
+    }
+    value
 }
 
 // Maps Anthropic stop reasons to normalized stop reasons.

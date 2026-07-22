@@ -265,6 +265,100 @@ fn openai_chat_stream_reasoning_usage_translates_to_responses_usage_details() ->
     Ok(())
 }
 
+// Verifies streamed cache usage reaches Responses clients in the standard details object.
+#[test]
+fn openai_chat_stream_cache_usage_translates_to_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let usage = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-cached",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_tokens_details": {"cached_tokens": 80}
+        }
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &usage,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(completed) = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+    else {
+        return Err("expected final Responses completion event".into());
+    };
+    assert_eq!(completed["response"]["usage"]["input_tokens"], 100);
+    assert_eq!(
+        completed["response"]["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 80})
+    );
+    Ok(())
+}
+
+// Verifies the streamed total-token fallback keeps cached tokens when upstream omits total_tokens.
+#[test]
+fn responses_stream_usage_without_total_keeps_cached_tokens_in_total() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let created = json!({
+        "type": "response.created",
+        "response": {"id": "resp_1", "model": "gpt-cached"}
+    });
+    engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &created,
+    )?;
+
+    // No total_tokens field: the codec must recompute it from the aggregate input.
+    let completed = json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_1",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "input_tokens_details": {"cached_tokens": 80}
+            }
+        }
+    });
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &completed,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
+
+    let Some(usage) = events
+        .iter()
+        .find_map(|event| event.get("usage").filter(|usage| !usage.is_null()))
+    else {
+        return Err("expected a terminal OpenAI chunk carrying usage".into());
+    };
+    assert_eq!(usage["prompt_tokens"], 100);
+    assert_eq!(usage["total_tokens"], 105);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 80);
+    Ok(())
+}
+
 // Verifies Responses text deltas become OpenAI Chat content chunks.
 #[test]
 fn responses_stream_delta_translates_to_openai_chat_chunk() -> TestResult {

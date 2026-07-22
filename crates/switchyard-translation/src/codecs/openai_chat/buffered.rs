@@ -1066,8 +1066,24 @@ pub(crate) fn decode_openai_usage(value: Option<&Value>) -> Usage {
     let Some(value) = value.and_then(Value::as_object) else {
         return Usage::default();
     };
+    let cached_input_tokens = value
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    let cache_creation_input_tokens = value
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cache_creation_tokens"))
+        .and_then(Value::as_u64);
     Usage {
-        input_tokens: value.get("prompt_tokens").and_then(Value::as_u64),
+        input_tokens: value
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .map(|tokens| {
+                tokens
+                    .saturating_sub(cached_input_tokens.unwrap_or(0))
+                    .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
+            }),
+        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens: value.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
         reasoning_tokens: value
@@ -1084,14 +1100,23 @@ pub(crate) fn decode_openai_usage(value: Option<&Value>) -> Usage {
 
 /// Encodes normalized usage into OpenAI Chat usage JSON.
 pub(crate) fn encode_openai_usage(usage: &Usage) -> Value {
+    let prompt_tokens = usage.input_tokens.unwrap_or(0)
+        + usage.cached_input_tokens().unwrap_or(0)
+        + usage.cache_creation_input_tokens().unwrap_or(0);
     let mut value = json!({
-        "prompt_tokens": usage.input_tokens.unwrap_or(0),
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": usage.output_tokens.unwrap_or(0),
         "total_tokens": usage
             .total_tokens
-            .or_else(|| Some(usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)))
+            .or_else(|| Some(prompt_tokens + usage.output_tokens.unwrap_or(0)))
             .unwrap_or(0),
     });
+    if usage.cached_input_tokens().is_some() || usage.cache_creation_input_tokens().is_some() {
+        value["prompt_tokens_details"] = json!({
+            "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
+            "cache_creation_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
+        });
+    }
     if let Some(reasoning_tokens) = usage.reasoning_tokens {
         value["completion_tokens_details"] = json!({
             "reasoning_tokens": reasoning_tokens,

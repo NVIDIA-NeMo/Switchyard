@@ -1150,22 +1150,30 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
     let Some(value) = value.and_then(Value::as_object) else {
         return Usage::default();
     };
-    let input_tokens = value
+    let aggregate_input_tokens = value
         .get("input_tokens")
         .or_else(|| value.get("prompt_tokens"))
         .and_then(Value::as_u64);
+    let cached_input_tokens = value
+        .get("input_tokens_details")
+        .or_else(|| value.get("prompt_tokens_details"))
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    let input_tokens = aggregate_input_tokens
+        .map(|tokens| tokens.saturating_sub(cached_input_tokens.unwrap_or(0)));
     let output_tokens = value
         .get("output_tokens")
         .or_else(|| value.get("completion_tokens"))
         .and_then(Value::as_u64);
     Usage {
         input_tokens,
+        cache: Usage::cache_details(cached_input_tokens, None),
         output_tokens,
         total_tokens: value
             .get("total_tokens")
             .and_then(Value::as_u64)
             .or_else(|| {
-                input_tokens
+                aggregate_input_tokens
                     .zip(output_tokens)
                     .map(|(input, output)| input + output)
             }),
@@ -1183,14 +1191,20 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
 
 // Encodes normalized usage into Responses usage JSON.
 fn encode_responses_usage(usage: &Usage) -> Value {
+    let input_tokens = usage.input_tokens.unwrap_or(0)
+        + usage.cached_input_tokens().unwrap_or(0)
+        + usage.cache_creation_input_tokens().unwrap_or(0);
     let mut value = json!({
-        "input_tokens": usage.input_tokens.unwrap_or(0),
+        "input_tokens": input_tokens,
         "output_tokens": usage.output_tokens.unwrap_or(0),
         "total_tokens": usage
             .total_tokens
-            .or_else(|| Some(usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)))
+            .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
             .unwrap_or(0),
     });
+    if let Some(cached_tokens) = usage.cached_input_tokens() {
+        value["input_tokens_details"] = json!({"cached_tokens": cached_tokens});
+    }
     if let Some(reasoning_tokens) = usage.reasoning_tokens {
         value["output_tokens_details"] = json!({
             "reasoning_tokens": reasoning_tokens,

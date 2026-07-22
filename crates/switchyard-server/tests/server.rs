@@ -109,7 +109,12 @@ async fn upstream_chat(
             "message": {"role": "assistant", "content": content},
             "finish_reason": "stop"
         }],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "total_tokens": 12,
+            "prompt_tokens_details": {"cached_tokens": 7}
+        }
     }))
     .into_response()
 }
@@ -363,6 +368,18 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
     assert_eq!(
         responses[2].json()?["output"][0]["content"][0]["text"],
         "ok"
+    );
+    assert_eq!(responses[0].json()?["usage"]["prompt_tokens"], 10);
+    assert_eq!(
+        responses[0].json()?["usage"]["prompt_tokens_details"]["cached_tokens"],
+        7
+    );
+    assert_eq!(responses[1].json()?["usage"]["input_tokens"], 3);
+    assert_eq!(responses[1].json()?["usage"]["cache_read_input_tokens"], 7);
+    assert_eq!(responses[2].json()?["usage"]["input_tokens"], 10);
+    assert_eq!(
+        responses[2].json()?["usage"]["input_tokens_details"]["cached_tokens"],
+        7
     );
     for response in &responses {
         assert_eq!(
