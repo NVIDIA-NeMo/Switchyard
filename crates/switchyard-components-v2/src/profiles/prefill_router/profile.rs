@@ -27,7 +27,8 @@ use super::policy::CostAwareRoutingPolicy;
 use super::scorer::{HiddenStateProbeScorer, ProbeScorer};
 
 const LEARNED_SCORE_THRESHOLD: f64 = 0.5;
-const PREFILL_PROBE_INPUT_FIELD: &str = "_switchyard_prefill_probe_input";
+const TERMINUS_TASK_DESCRIPTION_HEADER: &str = "Task Description:\n";
+const TERMINUS_TERMINAL_STATE_HEADER: &str = "\n\nCurrent terminal state:\n";
 const TIER_STRONG: &str = "strong";
 const TIER_WEAK: &str = "weak";
 
@@ -178,7 +179,7 @@ pub struct PrefillProbeProfile {
     score_threshold: f64,
     scorer: Arc<dyn ProbeScorer>,
     stats: StatsAccumulator,
-    // Successful scores are reused by the resolved probe input.
+    // Successful scores are reused by the internally resolved probe input.
     decision_cache: Arc<Mutex<HashMap<u64, f64>>>,
 }
 
@@ -193,21 +194,21 @@ impl PrefillProbeProfile {
         })
     }
 
-    // Removes the profile-local field and resolves the exact input to score and cache.
-    fn take_probe_input(request: &mut switchyard_core::ChatRequest) -> Result<Option<String>> {
-        let explicit = request
-            .body_mut()
-            .as_object_mut()
-            .and_then(|body| body.remove(PREFILL_PROBE_INPUT_FIELD));
-        match explicit {
-            Some(serde_json::Value::String(probe_input)) if !probe_input.is_empty() => {
-                Ok(Some(probe_input))
-            }
-            Some(_) => Err(SwitchyardError::InvalidRequest(format!(
-                "{PREFILL_PROBE_INPUT_FIELD} must be a non-empty string",
-            ))),
-            None => Ok(Self::first_user_instruction(request).map(str::to_owned)),
-        }
+    // Extracts the task-only portion of a stock Terminus 2 first-user prompt.
+    fn terminus_task_instruction(instruction: &str) -> Option<&str> {
+        let (_, task_and_terminal) = instruction.split_once(TERMINUS_TASK_DESCRIPTION_HEADER)?;
+        let (task, _) = task_and_terminal.split_once(TERMINUS_TERMINAL_STATE_HEADER)?;
+        (!task.is_empty()).then_some(task)
+    }
+
+    // Resolves the text used by both hidden-state scoring and decision caching.
+    fn probe_input(request: &switchyard_core::ChatRequest) -> Option<String> {
+        let first_user = Self::first_user_instruction(request)?;
+        Some(
+            Self::terminus_task_instruction(first_user)
+                .unwrap_or(first_user)
+                .to_owned(),
+        )
     }
 
     // Hashes the resolved probe input for successful-decision reuse.
@@ -219,7 +220,7 @@ impl PrefillProbeProfile {
 
     // Scores an uncached instruction and explicitly bypasses threshold routing on failure.
     async fn route(&self, mut input: ProfileInput) -> Result<PrefillProbeProcessedRequest> {
-        let probe_input = Self::take_probe_input(&mut input.request)?;
+        let probe_input = Self::probe_input(&input.request);
         let key = probe_input.as_deref().map(Self::instruction_key);
         let cached = key.and_then(|key| self.decision_cache.lock().get(&key).copied());
         let (score, strong_fallback) = if let Some(score) = cached {
@@ -530,12 +531,14 @@ mod tests {
         }
     }
 
-    fn input_with_probe_field(probe_input: Value, wrapped_instruction: &str) -> ProfileInput {
+    fn terminus_input(preamble: &str, instruction: &str, terminal_state: &str) -> ProfileInput {
+        let wrapped = format!(
+            "{preamble}\n\n{TERMINUS_TASK_DESCRIPTION_HEADER}{instruction}{TERMINUS_TERMINAL_STATE_HEADER}{terminal_state}"
+        );
         ProfileInput {
             request: ChatRequest::openai_chat(json!({
                 "model": "client/model",
-                "messages": [{"role": "user", "content": wrapped_instruction}],
-                (PREFILL_PROBE_INPUT_FIELD): probe_input,
+                "messages": [{"role": "user", "content": wrapped}],
             })),
             metadata: RequestMetadata::default(),
         }
@@ -618,7 +621,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_probe_input_controls_scoring_cache_and_not_backend_body() -> Result<()> {
+    async fn terminus_json_and_xml_wrappers_pass_exact_task_text_to_scorer() -> Result<()> {
+        let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
+        let (profile, _calls) = profile(
+            Arc::new(RecordingScorer {
+                inputs: scorer_inputs.clone(),
+                score: 1.0,
+            }),
+            false,
+            false,
+        )?;
+
+        let _json = profile
+            .process(terminus_input(
+                "Format your response as JSON.",
+                "  preserve JSON task whitespace  ",
+                "$ ",
+            ))
+            .await?;
+        let _xml = profile
+            .process(terminus_input(
+                "Format your response as XML.",
+                "preserve XML task",
+                "project files",
+            ))
+            .await?;
+
+        assert_eq!(
+            &*scorer_inputs.lock(),
+            &["  preserve JSON task whitespace  ", "preserve XML task"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminus_task_controls_cache_and_wrapped_backend_body_is_preserved() -> Result<()> {
         let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
         let (profile, calls) = profile(
             Arc::new(RecordingScorer {
@@ -629,49 +666,39 @@ mod tests {
             false,
         )?;
 
-        let first = profile
-            .run(input_with_probe_field(
-                json!("raw instruction"),
-                "wrapped instruction with terminal state one",
-            ))
-            .await?;
-        let second = profile
-            .run(input_with_probe_field(
-                json!("raw instruction"),
-                "wrapped instruction with terminal state two",
-            ))
-            .await?;
+        let first = terminus_input("Terminus protocol", "same raw task", "state one");
+        let second = terminus_input("Terminus protocol", "same raw task", "state two");
+        let first_messages = first.request.body()["messages"].clone();
+        let second_messages = second.request.body()["messages"].clone();
+
+        let first_response = profile.run(first).await?;
+        let second_response = profile.run(second).await?;
 
         assert_eq!(
-            first.routing_metadata.and_then(|data| data.selected_tier),
+            first_response
+                .routing_metadata
+                .and_then(|data| data.selected_tier),
             Some(TIER_WEAK.to_string())
         );
         assert_eq!(
-            second.routing_metadata.and_then(|data| data.selected_tier),
+            second_response
+                .routing_metadata
+                .and_then(|data| data.selected_tier),
             Some(TIER_WEAK.to_string())
         );
-        assert_eq!(&*scorer_inputs.lock(), &["raw instruction"]);
+        assert_eq!(&*scorer_inputs.lock(), &["same raw task"]);
         assert_eq!(profile.decision_cache.lock().len(), 1);
         let observed = observed(&calls);
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[0].backend, "weak-backend");
         assert_eq!(observed[1].backend, "weak-backend");
-        assert_eq!(
-            observed[0].body["messages"],
-            json!([{"role": "user", "content": "wrapped instruction with terminal state one"}])
-        );
-        assert_eq!(
-            observed[1].body["messages"],
-            json!([{"role": "user", "content": "wrapped instruction with terminal state two"}])
-        );
-        assert!(observed
-            .iter()
-            .all(|call| call.body.get(PREFILL_PROBE_INPUT_FIELD).is_none()));
+        assert_eq!(observed[0].body["messages"], first_messages);
+        assert_eq!(observed[1].body["messages"], second_messages);
         Ok(())
     }
 
     #[tokio::test]
-    async fn different_explicit_probe_inputs_create_distinct_cache_entries() -> Result<()> {
+    async fn different_terminus_tasks_create_distinct_cache_entries() -> Result<()> {
         let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
         let (profile, _calls) = profile(
             Arc::new(RecordingScorer {
@@ -683,10 +710,10 @@ mod tests {
         )?;
 
         let _first = profile
-            .process(input_with_probe_field(json!("raw one"), "same wrapper"))
+            .process(terminus_input("Terminus protocol", "raw one", "same state"))
             .await?;
         let _second = profile
-            .process(input_with_probe_field(json!("raw two"), "same wrapper"))
+            .process(terminus_input("Terminus protocol", "raw two", "same state"))
             .await?;
 
         assert_eq!(&*scorer_inputs.lock(), &["raw one", "raw two"]);
@@ -695,14 +722,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_probe_field_is_removed_on_strong_and_failure_paths() -> Result<()> {
+    async fn malformed_terminus_envelopes_fall_back_to_full_first_user_text() -> Result<()> {
+        let scorer_inputs = Arc::new(Mutex::new(Vec::new()));
+        let (profile, _calls) = profile(
+            Arc::new(RecordingScorer {
+                inputs: scorer_inputs.clone(),
+                score: 1.0,
+            }),
+            false,
+            false,
+        )?;
+        let missing_terminal = "protocol\n\nTask Description:\nraw task without terminal marker";
+        let reversed = "Current terminal state:\nstate\n\nTask Description:\nraw task";
+
+        let _first = profile.process(input(missing_terminal)).await?;
+        let _second = profile.process(input(reversed)).await?;
+
+        assert_eq!(&*scorer_inputs.lock(), &[missing_terminal, reversed]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminus_wrapper_is_preserved_on_strong_and_probe_failure_paths() -> Result<()> {
+        let strong_input = terminus_input("Terminus protocol", "raw strong", "strong state");
+        let strong_messages = strong_input.request.body()["messages"].clone();
         let (strong_profile, strong_calls) = profile(Arc::new(FixedScorer(0.0)), false, false)?;
-        let strong_response = strong_profile
-            .run(input_with_probe_field(
-                json!("raw strong"),
-                "wrapped strong",
-            ))
-            .await?;
+
+        let strong_response = strong_profile.run(strong_input).await?;
+
         assert_eq!(
             strong_response
                 .routing_metadata
@@ -711,18 +758,14 @@ mod tests {
         );
         let strong_observed = observed(&strong_calls);
         assert_eq!(strong_observed.len(), 1);
-        assert!(strong_observed[0]
-            .body
-            .get(PREFILL_PROBE_INPUT_FIELD)
-            .is_none());
+        assert_eq!(strong_observed[0].body["messages"], strong_messages);
 
+        let fallback_input = terminus_input("Terminus protocol", "raw fallback", "fallback state");
+        let fallback_messages = fallback_input.request.body()["messages"].clone();
         let (fallback_profile, fallback_calls) = profile(Arc::new(ErrorScorer), false, false)?;
-        let fallback_response = fallback_profile
-            .run(input_with_probe_field(
-                json!("raw fallback"),
-                "wrapped fallback",
-            ))
-            .await?;
+
+        let fallback_response = fallback_profile.run(fallback_input).await?;
+
         assert_eq!(
             fallback_response
                 .routing_metadata
@@ -732,17 +775,14 @@ mod tests {
         assert_eq!(fallback_profile.decision_cache.lock().len(), 0);
         let fallback_observed = observed(&fallback_calls);
         assert_eq!(fallback_observed.len(), 1);
-        assert!(fallback_observed[0]
-            .body
-            .get(PREFILL_PROBE_INPUT_FIELD)
-            .is_none());
+        assert_eq!(fallback_observed[0].body["messages"], fallback_messages);
         Ok(())
     }
 
     #[tokio::test]
-    async fn malformed_explicit_probe_input_is_rejected_without_scoring() -> Result<()> {
+    async fn missing_string_user_content_is_an_uncached_strong_fallback() -> Result<()> {
         let scorer_calls = Arc::new(AtomicUsize::new(0));
-        let (profile, calls) = profile(
+        let (profile, _calls) = profile(
             Arc::new(CountingScorer {
                 score: 1.0,
                 calls: scorer_calls.clone(),
@@ -750,22 +790,23 @@ mod tests {
             false,
             false,
         )?;
+        let no_string_user = ProfileInput {
+            request: ChatRequest::openai_chat(json!({
+                "model": "client/model",
+                "messages": [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": [{"type": "text", "text": "blocks"}]},
+                ],
+            })),
+            metadata: RequestMetadata::default(),
+        };
 
-        for invalid in [json!(""), Value::Null, json!([]), json!({}), json!(7)] {
-            let error = profile
-                .run(input_with_probe_field(invalid, "wrapped instruction"))
-                .await
-                .err()
-                .ok_or_else(|| {
-                    SwitchyardError::Other("malformed explicit input should fail".to_string())
-                })?;
-            assert!(matches!(error, SwitchyardError::InvalidRequest(_)));
-            assert!(format!("{error}").contains(PREFILL_PROBE_INPUT_FIELD));
-        }
+        let processed = profile.process(no_string_user).await?;
 
+        assert_eq!(processed.decision.tier, TIER_STRONG);
+        assert_eq!(processed.decision.score, 0.0);
         assert_eq!(scorer_calls.load(Ordering::SeqCst), 0);
         assert_eq!(profile.decision_cache.lock().len(), 0);
-        assert!(observed(&calls).is_empty());
         Ok(())
     }
 
