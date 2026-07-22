@@ -161,6 +161,8 @@ impl RandomRoutingProfile {
         (result, latency_ms)
     }
 
+    // Records success stats for the selected tier and finalizes the response,
+    // wrapping streams so usage is recorded when the stream ends.
     fn record_success(
         &self,
         decision: &RandomRoutingDecision,
@@ -183,6 +185,7 @@ impl RandomRoutingProfile {
         )
     }
 
+    // Records a failed call against the selected model and tier stats.
     fn record_error(&self, decision: &RandomRoutingDecision) -> Result<()> {
         self.stats.record_error(
             decision.selected_model.as_str(),
