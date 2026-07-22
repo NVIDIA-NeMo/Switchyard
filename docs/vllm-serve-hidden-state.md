@@ -64,56 +64,76 @@ margin becomes public score `0.0` and selects strong. The learned profile's
 threshold is fixed at `0.5`; tune routing only with `lambda`. The sample uses
 `lambda: 0.5`, `weak_cost: 0`, and `strong_cost: 1`.
 
-Successful decisions are cached by a hash of the resolved probe input: the
-explicit benchmark input when present, otherwise the first string-valued user
-instruction. A cache hit reuses the selected tier without another probe.
-Probe, artifact, or scoring failures route to strong and are not cached, so a
-later matching request retries the probe.
+Successful decisions are cached by a hash of the internally resolved probe
+input. A cache hit reuses the selected tier without another probe. Probe,
+artifact, or scoring failures route to strong and are not cached, so a later
+matching request retries the probe.
 
-## Explicit probe input for Terminal-Bench
+## Internal task extraction for Terminal-Bench
 
-Ordinary clients do not need special request fields. When no override is
-present, the profile scores and caches the first string-valued user message.
-Terminal-Bench's stock Terminus 2 agent, however, places the raw task
+For ordinary requests, the profile scores and caches the first string-valued
+user message. Terminal-Bench's stock Terminus 2 agent places the raw task
 instruction inside a larger first-user message containing its command protocol
-and current terminal state. That wrapped message does not reproduce a router
-checkpoint trained on the raw task instruction alone.
+and current terminal state. The profile recognizes the stock envelope:
 
-For prefill-probe benchmark runs, the repository provides
-`benchmark/prefill_probe_terminus_2.py`. Its `PrefillProbeTerminus2` adapter adds
-the exact `Terminus2.run()` instruction as this private top-level request field:
+```text
+Task Description:
+<raw task instruction>
 
-```json
-{
-  "_switchyard_prefill_probe_input": "<exact raw task instruction>"
-}
+Current terminal state:
+<initial terminal state>
 ```
 
-The `prefill-probe` profile uses a non-empty string value for both scoring and
-the decision-cache key. It removes the field before calling the selected
-completion target, so that target still receives the unmodified Terminus
-conversation. A present empty or non-string value is rejected as an invalid
-request instead of silently falling back to the wrapped message.
+When both headers occur in order and the task text is non-empty, Switchyard
+uses the exact text between them for hidden-state scoring and the decision-cache
+key. It does not trim or normalize that text. If the envelope is absent or
+malformed, the profile falls back to the complete first string-valued user
+message. If no such message exists, probing fails open to strong without
+caching the failure.
 
-Run Harbor from the repository root and select the adapter by import path:
+This extraction is internal to the `prefill-probe` profile. Clients send a
+normal chat request, and benchmark runs use Harbor's registered `terminus-2`
+agent without a custom subclass or private request field. The selected
+completion target still receives the original wrapped Terminus conversation;
+only its model is rewritten.
+
+After the probe is running, start Switchyard on an address reachable from the
+benchmark task containers:
 
 ```bash
-uv run --no-sync harbor run \
-  --agent-import-path benchmark.prefill_probe_terminus_2:PrefillProbeTerminus2 \
-  --model openai/router \
-  --path /path/to/terminal-bench-2-closed-book \
-  --jobs-dir /path/to/jobs \
-  --job-name prefill-probe-smoke \
-  --n-tasks 1 \
-  --n-concurrent 1 \
-  --max-retries 0 \
-  --yes
+export NVIDIA_API_KEY="..."
+export VLLM_BASE_URL=http://127.0.0.1:8000
+export PREFILL_ROUTER_ARTIFACT_DIR=/absolute/path/to/exported/router
+
+switchyard serve \
+  --config benchmark/routing-profiles/prefill-probe-local.yaml \
+  --host 0.0.0.0 \
+  --port 4000
 ```
 
-Replace the usual `--agent terminus-2` option with `--agent-import-path`; do
-not pass both. Harbor gives a registered agent name precedence over a custom
-import path. The adapter keeps the same explicit input in `extra_body` for all
-LLM calls during the task while leaving normal prompt construction unchanged.
+In another terminal, use the repository's benchmark wrapper with the stock
+agent. `SWITCHYARD_BENCHMARK_URL` must resolve from Docker task containers; do
+not use `127.0.0.1` unless Switchyard runs in that same container:
+
+```bash
+export UPSTREAM_API_KEY=switchyard-local
+export SWITCHYARD_BENCHMARK_URL=http://YOUR_DOCKER_REACHABLE_HOST:4000/v1
+
+bash benchmark/run-baseline.sh \
+  --harbor-path /path/to/terminal-bench-2-closed-book \
+  --upstream-base-url "${SWITCHYARD_BENCHMARK_URL}" \
+  --upstream-api-key-env UPSTREAM_API_KEY \
+  --agent terminus-2 \
+  --model openai/router \
+  --n-tasks 1 \
+  --n-concurrent 1 \
+  --max-retries 0
+```
+
+In this setup, the runner treats the separately launched Switchyard server as
+an OpenAI-compatible upstream. It manages the closed-book Harbor run and its
+artifacts but does not manage the Switchyard lifecycle or collect Switchyard
+routing statistics.
 
 ## Docker launch
 
