@@ -224,7 +224,11 @@ def _copy_if_present(source: Path | None, dest: Path | None) -> str:
 
 
 def summarize_routing_log(log_path: Path) -> dict[str, Any]:
-    """Aggregate a per-request routing JSONL log into per-task stats."""
+    """Aggregate a per-request routing JSONL log into per-task stats.
+
+    Each task entry lists one bucket per (model, tier) pair so a model that
+    served more than one tier is not merged into a single row.
+    """
     tasks: dict[str, dict[str, Any]] = {}
     total_requests = 0
     for raw in log_path.read_text().splitlines():
@@ -239,16 +243,18 @@ def summarize_routing_log(log_path: Path) -> dict[str, Any]:
             continue
         total_requests += 1
         task = record.get("task") or "unattributed"
-        entry = tasks.setdefault(task, {"requests": 0, "sessions": [], "models": {}})
+        entry = tasks.setdefault(task, {"requests": 0, "sessions": [], "_buckets": {}})
         entry["requests"] += 1
         session = record.get("session_id")
         if session and session not in entry["sessions"]:
             entry["sessions"].append(session)
         model = record.get("model") or "unknown"
-        bucket = entry["models"].setdefault(
-            model,
+        tier = record.get("tier") or ""
+        bucket = entry["_buckets"].setdefault(
+            (model, tier),
             {
-                "tier": record.get("tier") or "",
+                "model": model,
+                "tier": tier,
                 "calls": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
@@ -259,6 +265,9 @@ def summarize_routing_log(log_path: Path) -> dict[str, Any]:
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             value = record.get(key)
             bucket[key] += value if isinstance(value, int) else 0
+    for entry in tasks.values():
+        buckets = entry.pop("_buckets")
+        entry["models"] = [buckets[key] for key in sorted(buckets)]
     return {"total_requests": total_requests, "tasks": tasks}
 
 
@@ -271,6 +280,10 @@ def finalize_manifest(
     routing_log: Path | None = None,
     routing_stats_by_task: Path | None = None,
 ) -> int:
+    """Copy run artifacts into place, roll up the routing log, and record outcomes.
+
+    Returns 0 on success, 1 when the manifest is missing.
+    """
     if not path.is_file():
         print(f"ERROR: manifest not found: {path}")
         return 1

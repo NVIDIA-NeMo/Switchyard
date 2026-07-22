@@ -495,13 +495,33 @@ def test_summarize_routing_log_groups_by_task_and_model(tmp_path: Path) -> None:
     task_a = summary["tasks"]["task-a"]
     assert task_a["requests"] == 2
     assert task_a["sessions"] == ["s1"]
-    assert task_a["models"]["opus"] == {
-        "tier": "strong", "calls": 1, "prompt_tokens": 10,
-        "completion_tokens": 2, "total_tokens": 12,
-    }
-    assert task_a["models"]["kimi"]["calls"] == 1
-    assert summary["tasks"]["task-b"]["models"]["opus"]["total_tokens"] == 10
+    assert task_a["models"] == [
+        {"model": "kimi", "tier": "weak", "calls": 1, "prompt_tokens": 4,
+         "completion_tokens": 1, "total_tokens": 5},
+        {"model": "opus", "tier": "strong", "calls": 1, "prompt_tokens": 10,
+         "completion_tokens": 2, "total_tokens": 12},
+    ]
+    assert summary["tasks"]["task-b"]["models"][0]["total_tokens"] == 10
     assert summary["tasks"]["unattributed"]["requests"] == 1
+
+
+def test_summarize_routing_log_keeps_mixed_tiers_separate(tmp_path: Path) -> None:
+    module = _load_manifest_module()
+    log = tmp_path / "routing_requests.jsonl"
+    log.write_text(
+        "\n".join([
+            json.dumps({"task": "task-a", "model": "opus", "tier": "strong",
+                        "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}),
+            json.dumps({"task": "task-a", "model": "opus", "tier": "weak",
+                        "prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}),
+        ]) + "\n"
+    )
+
+    buckets = module.summarize_routing_log(log)["tasks"]["task-a"]["models"]
+
+    assert [(b["model"], b["tier"], b["calls"]) for b in buckets] == [
+        ("opus", "strong", 1), ("opus", "weak", 1),
+    ]
 
 
 def test_finalize_writes_routing_stats_by_task(tmp_path: Path) -> None:
@@ -523,7 +543,7 @@ def test_finalize_writes_routing_stats_by_task(tmp_path: Path) -> None:
 
     assert rc == 0
     summary = json.loads(by_task.read_text())
-    assert summary["tasks"]["task-a"]["models"]["opus"]["calls"] == 1
+    assert summary["tasks"]["task-a"]["models"][0]["calls"] == 1
     manifest = json.loads(out.read_text())
     assert manifest["outcomes"]["routing_stats_by_task_json_status"] == "present"
 
