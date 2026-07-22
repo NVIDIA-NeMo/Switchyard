@@ -148,6 +148,7 @@ def test_serve_config_uses_fastapi_profile_table(
         extra_endpoints: list[Any] | None = None,
     ) -> None:
         captured["models"] = table.registered_models()
+        captured["components"] = table.iter_components()
         captured["inbound_default"] = inbound_default
         captured["disable_backend_streaming"] = disable_backend_streaming
         captured["extra_endpoints"] = extra_endpoints
@@ -161,6 +162,13 @@ def test_serve_config_uses_fastapi_profile_table(
 
     assert captured["models"] == ["smart", "weak", "provider/weak"]
     assert captured["inbound_default"] == "both"
+    routing_log_processors = [
+        component
+        for component in captured["components"]
+        if isinstance(component, RoutingLogResponseProcessor)
+    ]
+    assert len(routing_log_processors) == 1
+    assert routing_log_processors[0]._log_file == tmp_path / "routing_requests.jsonl"
 
 
 def test_profile_config_route_table_serves_mixed_profiles(

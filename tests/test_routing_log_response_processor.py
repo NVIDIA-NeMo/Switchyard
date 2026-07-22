@@ -18,6 +18,7 @@ from openai.types.completion_usage import CompletionUsage
 
 from switchyard.cli.switchyard_cli import _build_parser
 from switchyard.lib.chat_response import ResponseStream
+from switchyard.lib.endpoints import RoutingLogStatsEndpoint
 from switchyard.lib.processors.routing_log_response_processor import (
     RoutingLogResponseProcessor,
 )
@@ -250,7 +251,9 @@ def test_session_stats_endpoint_returns_snapshot_and_404(tmp_path: Path) -> None
     log_file = tmp_path / "routing_requests.jsonl"
     processor = RoutingLogResponseProcessor(log_file)
     app = FastAPI()
-    processor.get_endpoint().register(app)
+    endpoint = processor.get_endpoint()
+    assert isinstance(endpoint, RoutingLogStatsEndpoint)
+    endpoint.register(app)
 
     with TestClient(app) as client:
         assert client.get(

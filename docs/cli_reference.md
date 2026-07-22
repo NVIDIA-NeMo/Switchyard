@@ -214,6 +214,7 @@ The server exposes the OpenAI Chat Completions (`/v1/chat/completions`), Anthrop
 switchyard [--routing-profiles PATH] serve [--config PATH]
                  [--host HOST] [--port PORT] [--workers N]
                  [--reload] [--inbound FORMAT]
+                 [--routing-log-file PATH]
                  [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
 ```
 

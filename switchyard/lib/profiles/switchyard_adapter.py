@@ -56,7 +56,12 @@ class ProfileSwitchyard:
         request: ChatRequest,
         ctx: ProxyContext | None = None,
     ) -> TranslatedResponse:
-        """Run the wrapped Profile and translate its response for the caller."""
+        """Run the wrapped Profile and translate its response for the caller.
+
+        Raises:
+            SwitchyardProcessorError: A response processor raises or returns a value that is not
+                a ``ChatResponse``.
+        """
         context = ctx if ctx is not None else ProxyContext()
         profile_input = ProfileInput(
             request,
