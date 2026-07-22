@@ -421,12 +421,16 @@ def cmd_configure(request: ConfigureRequest) -> None:
         existing_api_key = existing_credentials.api_key(provider)
         # Fall back to an env/secrets key so non-interactive `configure` (no
         # --api-key, no saved key) picks up e.g. OPENROUTER_API_KEY instead of
-        # erroring out that it "requires an API key".
+        # erroring out that it "requires an API key". Scope the env vars to the
+        # selected provider so `configure --provider nvidia` can't save an
+        # OPENROUTER_API_KEY under `nvidia`; if the provider's own key isn't set
+        # we fall through and require --api-key.
+        env_prefix = provider.upper().replace("-", "_")
         env_api_key = resolve_provider_connectivity(
             cli_api_key=None,
             cli_base_url=None,
-            api_key_env_vars=("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY"),
-            base_url_env_vars=("OPENROUTER_BASE_URL", "NVIDIA_BASE_URL", "OPENAI_BASE_URL"),
+            api_key_env_vars=(f"{env_prefix}_API_KEY",),
+            base_url_env_vars=(f"{env_prefix}_BASE_URL",),
             secrets=load_secrets(),
             secrets_section_priority=DEFAULT_SECRETS_SECTION_PRIORITY,
             default_provider=provider,
