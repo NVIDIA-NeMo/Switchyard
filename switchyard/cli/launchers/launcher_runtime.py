@@ -11,16 +11,13 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import uvicorn
 
 from switchyard.cli.config.user_config import get_user_config_dir
+from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.route_table import SwitchyardApp
 from switchyard.server.switchyard_app import build_switchyard_app
-
-if TYPE_CHECKING:
-    from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 
 _debug_file_handler: logging.FileHandler | None = None
 log = logging.getLogger(__name__)
@@ -287,7 +284,7 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
     return f"{route_type}: {route_key}"
 
 
-def deterministic_strategy_summary(config: "DeterministicRoutingConfig") -> str:
+def deterministic_strategy_summary(config: DeterministicRoutingConfig) -> str:
     """Return the strategy summary string for a deterministic (LLM-classifier) launch."""
     return (
         f"llm-classifier: classifier={config.classifier.model}, "
