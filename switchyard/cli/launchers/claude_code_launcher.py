@@ -46,6 +46,7 @@ from switchyard.cli.launchers.claude_alias import claude_alias_for, de_claude_al
 from switchyard.cli.launchers.launch_intake_config import (
     LaunchIntakeConfig,
     build_launch_capture_processors,
+    capture_session_headers,
     print_intake_warning,
 )
 from switchyard.cli.launchers.launcher_runtime import (
@@ -68,6 +69,7 @@ from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.launchers.session_summary import print_session_summary
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
+    route_bundle_declares_token_capture,
 )
 from switchyard.lib import startup_timing
 from switchyard.lib.backends.llm_target import (
@@ -173,6 +175,7 @@ def _claude_env(
     port: int,
     model: str,
     intake: LaunchIntakeConfig | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the env-var overrides that route Claude Code through our proxy.
 
@@ -201,6 +204,9 @@ def _claude_env(
             intake.opt_in_headers(),
         )
         env["SWITCHYARD_SESSION_ID"] = intake.session_id
+    elif capture_headers:
+        env["ANTHROPIC_CUSTOM_HEADERS"] = _format_anthropic_custom_headers(capture_headers)
+        env["SWITCHYARD_SESSION_ID"] = capture_headers["proxy_x_session_id"]
     return env
 
 
@@ -210,6 +216,7 @@ def _supervise_claude_plain(
     port: int,
     model: str,
     intake: LaunchIntakeConfig | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> int:
     """Run ``claude`` via plain subprocess (non-TTY / headless fallback).
 
@@ -217,7 +224,7 @@ def _supervise_claude_plain(
     ``KeyboardInterrupt`` is translated to exit code 130.
     """
     env = os.environ.copy()
-    env.update(_claude_env(port, model, intake=intake))
+    env.update(_claude_env(port, model, intake=intake, capture_headers=capture_headers))
     try:
         result = subprocess.run([claude_bin, *claude_args], env=env, check=False)
         return result.returncode
@@ -293,6 +300,7 @@ def _run_claude_with_switchyard(
     stats: StatsAccumulator,
     intake: LaunchIntakeConfig | None = None,
     strategy_summary: str | None = None,
+    capture_headers: dict[str, str] | None = None,
 ) -> int:
     """Chain-agnostic supervisor: host ``switchyard`` then spawn claude.
 
@@ -381,6 +389,7 @@ def _run_claude_with_switchyard(
             resolved_port,
             display_model,
             intake=intake,
+            capture_headers=capture_headers,
         )
         logger.debug(
             "claude env ANTHROPIC_BASE_URL=%s ANTHROPIC_MODEL=%s "
@@ -407,6 +416,7 @@ def _run_claude_with_switchyard(
         return _supervise_claude_plain(
             claude_bin, claude_args, resolved_port, display_model,
             intake=intake,
+            capture_headers=capture_headers,
         )
     finally:
         print_session_summary(stats)
@@ -444,7 +454,12 @@ def launch_claude(
     """
     _quiet_launch_loggers()
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
+    # Token capture activates when RL logging is on AND the bundle declares
+    # token_capture_engine on a route; the capture pair replaces the rl-logging pair.
+    capture = rl_log_dir is not None and route_bundle_declares_token_capture(routing_profiles)
+    intake_request, intake_response = build_launch_capture_processors(
+        intake, rl_log_dir, token_capture=capture,
+    )
     switchyard = _build_claude_switchyard(
         model=model,
         api_key=api_key,
@@ -467,6 +482,7 @@ def launch_claude(
             stats_accumulator=stats,
             pre_routing_request_processors=intake_request,
             extra_response_processors=intake_response,
+            token_capture_enabled=rl_log_dir is not None,
         )
         for sub_model, sub_chain, sub_metadata in yaml_table.items():
             table.register(sub_model, sub_chain, metadata=sub_metadata)
@@ -486,6 +502,7 @@ def launch_claude(
         stats=stats,
         intake=intake,
         strategy_summary=strategy_summary,
+        capture_headers=capture_session_headers(intake, capture, "claude"),
     )
 
 
@@ -519,7 +536,9 @@ def launch_claude_deterministic_routing(
 
     _quiet_launch_loggers()
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
+    intake_request, intake_response = build_launch_capture_processors(
+        intake, rl_log_dir,
+    )
     switchyard = build_deterministic_routing_switchyard(
         config,
         stats,
@@ -545,4 +564,5 @@ def launch_claude_deterministic_routing(
         stats=stats,
         intake=intake,
         strategy_summary=deterministic_strategy_summary(config),
+        capture_headers=capture_session_headers(intake, False, "claude"),
     )

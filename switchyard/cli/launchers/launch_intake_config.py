@@ -157,20 +157,70 @@ def build_intake_processors(
 def build_launch_capture_processors(
     intake: LaunchIntakeConfig | None,
     rl_log_dir: Path | None,
+    token_capture: bool = False,
 ) -> tuple[list[Any], list[Any]]:
-    """Combine intake + RL-logging request/response processor lists for launchers.
+    """Combine intake + RL-logging / token-capture processor lists for launchers.
 
     The intake sink (``intake``) and the local RL trace logger (``rl_log_dir``)
-    are independent: either, both, or neither may be active. Returns
-    ``([], [])`` when neither is.
+    are independent: any subset may be active. When ``token_capture`` is set
+    (the route bundle declares ``token_capture_engine`` on a route and RL logging is
+    on), the capture pair replaces the rl-logging pair — the unified record
+    carries the trace fields, so running both would double-write. Returns
+    ``([], [])`` when nothing is active.
     """
     from switchyard.lib.processors.rl_logging_response_processor import (
         build_rl_logging_processors,
     )
+    from switchyard.lib.processors.token_capture_response_processor import (
+        build_token_capture_processors,
+    )
 
     intake_request, intake_response = build_intake_processors(intake)
-    rl_request, rl_response = build_rl_logging_processors(rl_log_dir)
-    return [*intake_request, *rl_request], [*intake_response, *rl_response]
+    if token_capture:
+        log_request, log_response = build_token_capture_processors(rl_log_dir)
+    else:
+        log_request, log_response = build_rl_logging_processors(rl_log_dir)
+    return (
+        [*intake_request, *log_request],
+        [*intake_response, *log_response],
+    )
+
+
+def capture_session_headers(
+    intake: LaunchIntakeConfig | None,
+    capture_enabled: bool,
+    target: str,
+) -> dict[str, str]:
+    """Per-launch session header for token capture when intake is off.
+
+    Intake's opt-in headers already carry a per-launch session id; this covers
+    token capture without intake, so captured records group per launch instead
+    of going uncaptured for lack of a session. Returns ``{}`` when intake is
+    active (its headers win) or capture is disabled.
+    """
+    if intake is not None or not capture_enabled:
+        return {}
+    return {"proxy_x_session_id": _default_session_id(target)}
+
+
+def capture_session_id_for_api_key(
+    intake: LaunchIntakeConfig | None,
+    capture_enabled: bool,
+    target: str,
+) -> str | None:
+    """Per-launch session id for harnesses that ride it on the API-key field.
+
+    OpenClaw has no custom-header surface, so intake's opt-in headers never
+    reach it — unlike :func:`capture_session_headers`, intake being active
+    does not cover session delivery here. With capture on, the session id
+    (intake's when present, else a fresh one) is substituted for the harness's
+    opaque API-key placeholder and resolved proxy-side from the caller key.
+    """
+    if not capture_enabled:
+        return None
+    if intake is not None:
+        return intake.session_id
+    return _default_session_id(target)
 
 
 def _default_session_id(target: str) -> str:

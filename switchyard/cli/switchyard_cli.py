@@ -89,11 +89,15 @@ from switchyard.cli.launch_command import (
 from switchyard.cli.route_bundle import (
     RouteBundleConfigError,
     load_route_bundle_table,
+    route_bundle_declares_token_capture,
 )
 from switchyard.lib.config import IntakeSinkConfig
 from switchyard.lib.processors.intake_request_processor import IntakeRequestProcessor
 from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 from switchyard.lib.processors.rl_logging_response_processor import build_rl_logging_processors
+from switchyard.lib.processors.token_capture_response_processor import (
+    build_token_capture_processors,
+)
 from switchyard.server.server_util import (
     DEFAULT_SECRETS_FILE,
     add_transport_args,
@@ -405,20 +409,13 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         _cmd_serve_profile_config(args)
         return
 
-    # Intake sink + local RL trace logging both attach as chain processors;
-    # combine them so a single serve invocation can run either or both.
-    intake_request, intake_response = _resolve_intake_processors(args)
-    rl_request, rl_response = build_rl_logging_processors(resolve_rl_log_dir(args))
-    request_processors = [*intake_request, *rl_request]
-    response_processors = [*intake_response, *rl_response]
-    if routing_profiles:
-        table = load_route_bundle_table(
-            routing_profiles,
-            pre_routing_request_processors=request_processors,
-            extra_response_processors=response_processors,
-        )
-        source = routing_profiles
-    else:
+    # Intake sink and local RL trace logging attach as chain processors.
+    # Token capture activates when RL logging is on AND the bundle declares
+    # token_capture_engine on a route; the capture pair then replaces the
+    # rl-logging pair (the unified record carries the trace fields — running
+    # both would double-write).
+    saved = None
+    if not routing_profiles:
         saved = load_user_config().routing_profiles
         if not saved:
             raise SystemExit(
@@ -426,6 +423,26 @@ def _cmd_serve(args: argparse.Namespace) -> None:
                 "PATH or run `switchyard configure --routing-profiles PATH` "
                 "to save one."
             )
+    intake_request, intake_response = _resolve_intake_processors(args)
+    rl_log_dir = resolve_rl_log_dir(args)
+    capture = rl_log_dir is not None and route_bundle_declares_token_capture(
+        routing_profiles or saved
+    )
+    if capture:
+        log_request, log_response = build_token_capture_processors(rl_log_dir)
+    else:
+        log_request, log_response = build_rl_logging_processors(rl_log_dir)
+    request_processors = [*intake_request, *log_request]
+    response_processors = [*intake_response, *log_response]
+    if routing_profiles:
+        table = load_route_bundle_table(
+            routing_profiles,
+            pre_routing_request_processors=request_processors,
+            extra_response_processors=response_processors,
+            token_capture_enabled=rl_log_dir is not None,
+        )
+        source = routing_profiles
+    else:
         # Saved bundles are stored as parsed dicts, so we can skip the
         # YAML parse step and feed them straight into the dict-driven
         # entrypoint. Env-var references inside the dict expand inside
@@ -435,6 +452,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             saved,
             pre_routing_request_processors=request_processors,
             extra_response_processors=response_processors,
+            token_capture_enabled=rl_log_dir is not None,
         )
         source = f"<saved bundle, {len(table.registered_models())} route(s)>"
     logger.info(
@@ -848,9 +866,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Write per-turn RL training traces (message_history JSON, one "
-            "file per request/response pair) for `launch` sessions. Global "
-            "flag — place it before the subcommand, e.g. "
-            "switchyard --enable-rl-logging launch claude."
+            "file per request/response pair) for `launch` and `serve` sessions. "
+            "When the route bundle declares `token_capture_engine` on a route, "
+            "traces are token-level capture records grouped by session and "
+            "served via GET /v1/sessions. Global flag — place it before the "
+            "subcommand, e.g. switchyard --enable-rl-logging launch claude."
         ),
     )
     parser.add_argument(

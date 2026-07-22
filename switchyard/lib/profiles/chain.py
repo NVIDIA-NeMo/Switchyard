@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -108,12 +108,15 @@ class ComponentChainProfile:
         pre_request_processors: Sequence[Any] = (),
         post_request_processors: Sequence[Any] = (),
         response_processors: Sequence[Any] = (),
+        backend_wrapper: Callable[[LLMBackend], LLMBackend] | None = None,
     ) -> ComponentChainProfile:
         """Return a copy with serving-level stats and processor hooks applied.
 
         Profile configs stay user-facing and parseable; shared serving resources
         such as one route-table accumulator or Intake processors are attached by
-        the builder that hosts the profile.
+        the builder that hosts the profile. ``backend_wrapper`` wraps the
+        profile's backend (e.g. token injection) before stats attach, so stats
+        observe the wrapper's responses.
         """
         from switchyard.lib.processors.stats_request_processor import (
             StatsRequestProcessor,
@@ -125,6 +128,8 @@ class ComponentChainProfile:
         request_chain: list[Any] = []
         response_chain: list[Any] = list(self._response_processors)
         backend = self._backend
+        if backend_wrapper is not None:
+            backend = backend_wrapper(backend)
         stats: StatsAccumulator | None = None
 
         if enable_stats:

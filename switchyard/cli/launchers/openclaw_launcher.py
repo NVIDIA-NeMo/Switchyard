@@ -56,6 +56,7 @@ import uvicorn
 from switchyard.cli.launchers.launch_intake_config import (
     LaunchIntakeConfig,
     build_launch_capture_processors,
+    capture_session_id_for_api_key,
     print_intake_warning,
 )
 from switchyard.cli.launchers.launcher_runtime import (
@@ -77,11 +78,13 @@ from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
 from switchyard.cli.route_bundle import (
     load_route_bundle_table,
+    route_bundle_declares_token_capture,
 )
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.processors.model_rewrite_request_processor import (
     ModelRewriteRequestProcessor,
 )
+from switchyard.lib.processors.token_capture_request_processor import SESSION_API_KEY_MARKER
 from switchyard.lib.profiles import (
     DeterministicRoutingConfig,
 )
@@ -318,6 +321,7 @@ def _remove_openclaw_workspace(workspace: str | None) -> None:
 def _openclaw_env(
     workspace: str,
     intake: LaunchIntakeConfig | None = None,
+    capture_session_id: str | None = None,
 ) -> dict[str, str]:
     """Environment that points OpenClaw at the transient workspace.
 
@@ -341,7 +345,15 @@ def _openclaw_env(
     env["OPENCLAW_HOME"] = workspace
     env["OPENCLAW_CONFIG_PATH"] = str(Path(workspace) / "openclaw.json")
     env["OPENCLAW_HIDE_BANNER"] = "1"
-    env[_API_KEY_ENV] = _API_KEY_PLACEHOLDER
+    # OpenClaw has no custom-header surface; when token capture needs a
+    # session id, ride the apiKey field instead — OpenClaw echoes it as the
+    # Authorization bearer, and the capture processor recognizes the marker
+    # prefix to recover the session id (any id, not only a fixed shape).
+    if capture_session_id:
+        env[_API_KEY_ENV] = SESSION_API_KEY_MARKER + capture_session_id
+        env["SWITCHYARD_SESSION_ID"] = capture_session_id
+    else:
+        env[_API_KEY_ENV] = _API_KEY_PLACEHOLDER
     if intake is not None:
         env["SWITCHYARD_SESSION_ID"] = intake.session_id
     return env
@@ -373,6 +385,7 @@ def _supervise_openclaw(
     openclaw_args: list[str],
     workspace: str,
     intake: LaunchIntakeConfig | None = None,
+    capture_session_id: str | None = None,
 ) -> int:
     """Run ``openclaw chat`` with the transient workspace; return exit code.
 
@@ -383,7 +396,10 @@ def _supervise_openclaw(
     try:
         result = subprocess.run(
             _openclaw_command(openclaw_bin, openclaw_args),
-            env=_openclaw_env(workspace=workspace, intake=intake),
+            env=_openclaw_env(
+                workspace=workspace, intake=intake,
+                capture_session_id=capture_session_id,
+            ),
             check=False,
         )
         return result.returncode
@@ -400,6 +416,7 @@ def _run_openclaw_with_switchyard(
     catalog_entries: Sequence[OpenClawModelCatalogEntry],
     intake: LaunchIntakeConfig | None = None,
     strategy_summary: str | None = None,
+    capture_session_id: str | None = None,
 ) -> int:
     """Chain-agnostic supervisor: host ``switchyard`` then spawn openclaw."""
     openclaw_bin = _find_openclaw_binary()
@@ -461,12 +478,16 @@ def _run_openclaw_with_switchyard(
                 command=_openclaw_command(openclaw_bin, openclaw_args),
                 footer_fn=footer.as_footer_fn(),
                 footer_height=lambda: footer.height,
-                env=_openclaw_env(workspace=workspace, intake=intake),
+                env=_openclaw_env(
+                    workspace=workspace, intake=intake,
+                    capture_session_id=capture_session_id,
+                ),
             ).run()
 
         return _supervise_openclaw(
             openclaw_bin, openclaw_args,
             workspace=workspace, intake=intake,
+            capture_session_id=capture_session_id,
         )
     finally:
         if server is not None:
@@ -524,7 +545,12 @@ def launch_openclaw(
     binary wasn't found, ``130`` on Ctrl-C).
     """
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
+    # Token capture activates when RL logging is on AND the bundle declares
+    # token_capture_engine on a route; the capture pair replaces the rl-logging pair.
+    capture = rl_log_dir is not None and route_bundle_declares_token_capture(routing_profiles)
+    intake_request, intake_response = build_launch_capture_processors(
+        intake, rl_log_dir, token_capture=capture,
+    )
     switchyard = _build_switchyard(
         model,
         api_key,
@@ -556,6 +582,7 @@ def launch_openclaw(
             stats_accumulator=stats,
             pre_routing_request_processors=intake_request,
             extra_response_processors=intake_response,
+            token_capture_enabled=rl_log_dir is not None,
         )
         for sub_model, sub_chain, sub_metadata in yaml_table.items():
             table.register(sub_model, sub_chain, metadata=sub_metadata)
@@ -585,6 +612,7 @@ def launch_openclaw(
         catalog_entries=catalog_entries,
         intake=intake,
         strategy_summary=strategy_summary,
+        capture_session_id=capture_session_id_for_api_key(intake, capture, "openclaw"),
     )
 
 
@@ -649,7 +677,9 @@ def launch_openclaw_deterministic_routing(
         return fetch_model_ids(base_url, api_key)
 
     stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
+    intake_request, intake_response = build_launch_capture_processors(
+        intake, rl_log_dir,
+    )
     switchyard = build_deterministic_routing_switchyard(
         config,
         stats,
@@ -699,4 +729,5 @@ def launch_openclaw_deterministic_routing(
         catalog_entries=catalog_entries,
         intake=intake,
         strategy_summary=deterministic_strategy_summary(config),
+        capture_session_id=capture_session_id_for_api_key(intake, False, "openclaw"),
     )

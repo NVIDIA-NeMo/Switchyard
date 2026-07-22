@@ -98,28 +98,12 @@ class RlLoggingResponseProcessor:
         if not isinstance(message, dict):
             return None
 
-        messages = [dict(m) for m in request.get("messages", []) if isinstance(m, dict)]
-        assistant: JsonObject = {"role": "assistant"}
-        content = message.get("content")
-        if content is not None:
-            assistant["content"] = content
-        tool_calls = message.get("tool_calls")
-        if tool_calls:
-            assistant["tool_calls"] = tool_calls
-        messages.append(assistant)
-
-        usage = body.get("usage")
-        usage = usage if isinstance(usage, dict) else {}
         return {
             "uuid": str(uuid_lib.uuid4()),
-            "messages": messages,
-            "tools": _format_tools(request.get("tools", [])),
-            "tool_choice": _format_tool_choice(request.get("tool_choice")),
-            "token_count": {
-                "prompt_tokens": usage.get("prompt_tokens", 0),
-                "completion_tokens": usage.get("completion_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "messages": build_trace_messages(request, message),
+            "tools": format_trace_tools(request.get("tools", [])),
+            "tool_choice": format_trace_tool_choice(request.get("tool_choice")),
+            "token_count": build_trace_token_count(body.get("usage")),
             "is_valid": True,
         }
 
@@ -151,7 +135,35 @@ def _trace_filename() -> str:
     return f"{timestamp}_trace_{trace_id}_{suffix_id}.json"
 
 
-def _format_tools(raw_tools: object) -> list[JsonObject]:
+def build_trace_messages(request: JsonObject, message: JsonObject) -> list[JsonObject]:
+    """Request-snapshot history plus the appended assistant turn.
+
+    Shared by the RL trace logger and the token-capture record writer so the
+    text-trace shape stays identical across both outputs.
+    """
+    messages = [dict(m) for m in request.get("messages", []) if isinstance(m, dict)]
+    assistant: JsonObject = {"role": "assistant"}
+    content = message.get("content")
+    if content is not None:
+        assistant["content"] = content
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        assistant["tool_calls"] = tool_calls
+    messages.append(assistant)
+    return messages
+
+
+def build_trace_token_count(usage: object) -> JsonObject:
+    """Normalize a response ``usage`` block into the trace ``token_count`` shape."""
+    usage = usage if isinstance(usage, dict) else {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+
+
+def format_trace_tools(raw_tools: object) -> list[JsonObject]:
     """Port the V1 message_history tool shape: ``{id, description, inputSchema}``."""
     if not isinstance(raw_tools, list):
         return []
@@ -177,7 +189,8 @@ def _format_tools(raw_tools: object) -> list[JsonObject]:
     return tools
 
 
-def _format_tool_choice(tool_choice: object) -> str:
+def format_trace_tool_choice(tool_choice: object) -> str:
+    """Extract the tool-choice ``type`` string, defaulting to ``"auto"``."""
     if isinstance(tool_choice, str):
         return tool_choice
     if isinstance(tool_choice, dict):

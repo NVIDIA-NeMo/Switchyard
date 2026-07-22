@@ -41,7 +41,10 @@ from switchyard.lib.backends.llm_target import BackendFormat
 from switchyard.lib.profiles.random_routing import (
     RandomRoutingConfig,
 )
-from switchyard.server.server_util import load_secrets, resolve_rl_log_dir
+from switchyard.server.server_util import (
+    load_secrets,
+    resolve_rl_log_dir,
+)
 
 logger = logging.getLogger(__name__)
 
