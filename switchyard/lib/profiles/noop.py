@@ -220,13 +220,9 @@ class NoopProfile:
     ) -> ChatResponse:
         """Execute no-op response generation with an existing context."""
         processed = await self.process_with_context(input, ctx)
-        # Record the call under the "noop" model. Stamping ctx.selected_model
-        # lets the stats response processor attribute the response tokens to
-        # "noop" instead of "<unknown>"; record_success counts the request so
-        # the noop route shows up in /v1/routing/stats.
+        # Stamp ctx.selected_model so the stats response processor attributes
+        # the response tokens to "noop" instead of "<unknown>".
         ctx.selected_model = _NOOP_MODEL
-        if self._stats_accumulator is not None:
-            await self._stats_accumulator.record_success(_NOOP_MODEL, None, None)
         openai_request = self._translation.request_to_any_of(
             processed.request,
             _NOOP_SUPPORTED_TYPES,
@@ -245,6 +241,12 @@ class NoopProfile:
             response = ChatResponse.openai_completion(
                 _make_completion(request_id=request_id, created=created)
             )
+        # Count the request only after the response is built, so a translation
+        # failure does not leave a spurious success in /v1/routing/stats. Record
+        # success before rprocess records tokens, which is the order the stats
+        # response processor's record_usage_after_success_attribution expects.
+        if self._stats_accumulator is not None:
+            await self._stats_accumulator.record_success(_NOOP_MODEL, None, None)
         return await self.rprocess(processed, response)
 
 
