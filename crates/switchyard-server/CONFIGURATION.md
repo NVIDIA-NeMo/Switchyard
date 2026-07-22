@@ -2,8 +2,7 @@
 
 ## Add an LLM client and target
 
-Define the upstream once under `llm_clients`, then reference it from targets. `type` defaults to
-`translating`.
+Define the upstream once under `llm_clients`, then reference it from targets.
 
 ```toml
 [llm_clients.provider]
@@ -16,8 +15,8 @@ id = "provider/model"
 llm_client = "provider"
 ```
 
-To support another client implementation or wire format, add the corresponding enum variant and
-explicit construction match in `src/config.rs`.
+To support another wire format, add its `ClientFormat` variant and explicit construction match in
+`src/config.rs`. Add a client type only when a second implementation exists.
 
 ## Add an algorithm
 

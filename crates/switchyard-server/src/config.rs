@@ -60,8 +60,8 @@ impl ServerConfig {
         let targets = self.build_targets(&clients)?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
-            validate_name("route", route_name)?;
-            validate_id("route", route_name, config.id())?;
+            validate_value("route name", route_name)?;
+            validate_value(&format!("route {route_name} id"), config.id())?;
             routes.push((
                 config.id().to_string(),
                 build_algorithm(route_name, config, &targets)?,
@@ -78,11 +78,11 @@ impl ServerConfig {
             .collect::<BTreeMap<String, Vec<ModelConfig>>>();
 
         for name in self.llm_clients.keys() {
-            validate_name("llm client", name)?;
+            validate_value("llm client name", name)?;
         }
         for (target_name, target) in &self.targets {
-            validate_name("target", target_name)?;
-            validate_id("target", target_name, &target.id)?;
+            validate_value("target name", target_name)?;
+            validate_value(&format!("target {target_name} id"), &target.id)?;
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
                 ServerError::new(format!(
                     "target {target_name} references unknown llm client {}",
@@ -101,16 +101,10 @@ impl ServerConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let config = self
-                .llm_clients
-                .get(&name)
-                .ok_or_else(|| ServerError::new(format!("unknown llm client {name}")))?;
-            let client: Arc<dyn RoutedLlmClient> = match config.client_type {
-                LlmClientType::Translating => Arc::new(
-                    TranslatingLlmClient::new(&model_configs)
-                        .map_err(|error| ServerError::new(error.to_string()))?,
-                ),
-            };
+            let client: Arc<dyn RoutedLlmClient> = Arc::new(
+                TranslatingLlmClient::new(&model_configs)
+                    .map_err(|error| ServerError::new(error.to_string()))?,
+            );
             clients.insert(name, client);
         }
         Ok(clients)
@@ -138,18 +132,9 @@ impl ServerConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LlmClientType {
-    #[default]
-    Translating,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LlmClientConfig {
-    #[serde(default, rename = "type")]
-    client_type: LlmClientType,
     format: ClientFormat,
     base_url: String,
     api_key_env: Option<String>,
@@ -217,11 +202,17 @@ fn build_backend(client_name: &str, config: &LlmClientConfig) -> ServerResult<Ba
                     "llm client {client_name} api_key_env must not be empty"
                 )));
             }
-            std::env::var(variable).map_err(|error| {
+            let api_key = std::env::var(variable).map_err(|error| {
                 ServerError::new(format!(
                     "llm client {client_name} could not read api_key_env {variable}: {error}"
                 ))
-            })
+            })?;
+            if api_key.trim().is_empty() {
+                return Err(ServerError::new(format!(
+                    "llm client {client_name} api_key_env {variable} is empty"
+                )));
+            }
+            Ok(api_key)
         })
         .transpose()?;
     let http = HttpBackendConfig {
@@ -296,13 +287,7 @@ fn resolve_targets<'a>(
 ) -> ServerResult<LlmTargetSet> {
     let resolved = names
         .into_iter()
-        .map(|name| {
-            targets.get(name).cloned().ok_or_else(|| {
-                ServerError::new(format!(
-                    "route {route_name} references unknown target {name}"
-                ))
-            })
-        })
+        .map(|name| resolve_target(route_name, name, targets))
         .collect::<ServerResult<Vec<_>>>()?;
     Ok(LlmTargetSet::new(resolved))
 }
@@ -319,19 +304,10 @@ fn resolve_target(
     })
 }
 
-fn validate_name(kind: &str, name: &str) -> ServerResult<()> {
-    if name.trim().is_empty() || name.trim() != name {
+fn validate_value(label: &str, value: &str) -> ServerResult<()> {
+    if value.trim().is_empty() || value.trim() != value {
         return Err(ServerError::new(format!(
-            "{kind} name must be non-empty and have no surrounding whitespace"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_id(kind: &str, name: &str, id: &str) -> ServerResult<()> {
-    if id.trim().is_empty() || id.trim() != id {
-        return Err(ServerError::new(format!(
-            "{kind} {name} id must be non-empty and have no surrounding whitespace"
+            "{label} must be non-empty and have no surrounding whitespace"
         )));
     }
     Ok(())
@@ -349,7 +325,6 @@ format = "openai_chat"
 base_url = "https://example.test/v1"
 
 [llm_clients.responses]
-type = "translating"
 format = "openai_responses"
 base_url = "https://example.test/v1"
 
@@ -447,6 +422,10 @@ threshold = 0.5
                 VALID_CONFIG.replace("schema_version = 1", "schema_version = 2"),
                 "unsupported schema_version 2",
             ),
+            (
+                VALID_CONFIG.replace("[targets.strong]", "[targets.\" strong \"]"),
+                "target name must be non-empty and have no surrounding whitespace",
+            ),
         ];
 
         for (toml, expected) in cases {
@@ -458,12 +437,23 @@ threshold = 0.5
     }
 
     #[test]
-    fn api_key_environment_reference_is_explicit() {
-        let toml = VALID_CONFIG.replacen(
+    fn api_key_environment_reference_is_validated() {
+        let missing = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
             "base_url = \"https://example.test/v1\"\napi_key_env = \"SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET\"",
             1,
         );
-        assert!(error_message(&toml).contains("SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET"));
+        assert!(error_message(&missing).contains("SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET"));
+
+        const EMPTY_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_EMPTY_KEY";
+        std::env::set_var(EMPTY_KEY_ENV, "");
+        let empty = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            &format!("base_url = \"https://example.test/v1\"\napi_key_env = \"{EMPTY_KEY_ENV}\""),
+            1,
+        );
+        let message = error_message(&empty);
+        std::env::remove_var(EMPTY_KEY_ENV);
+        assert!(message.contains("is empty"));
     }
 }

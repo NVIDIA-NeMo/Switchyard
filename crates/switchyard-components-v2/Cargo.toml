@@ -23,7 +23,7 @@ serde_json = "1"
 switchyard-components = { path = "../switchyard-components" }
 switchyard-components-v2-macros = { path = "../switchyard-components-v2-macros" }
 switchyard-core = { path = "../switchyard-core" }
-toml = "0.8"
+toml = "1.1"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 yaml_serde = "0.10"
 

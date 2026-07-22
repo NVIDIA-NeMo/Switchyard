@@ -43,9 +43,10 @@ cargo run -p switchyard-server -- --config routes.toml
 Target and route table names are local references. A target's `id` is the exact model ID sent
 upstream, and a route's `id` is the model clients send to select that algorithm.
 
-Each target references an entry under `llm_clients`. The client `type` defaults to `translating`;
-supported formats are `openai_chat`, `openai_responses`, and `anthropic_messages`. Supported
-algorithms are `noop`, `random`, and `llm_classifier`. An `api_key_env` value names an environment
-variable; the TOML never contains the secret itself. If omitted, the client sends no authentication.
+Each target references an entry under `llm_clients`. All configured clients use
+`TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
+`anthropic_messages`. Supported algorithms are `noop`, `random`, and `llm_classifier`. An
+`api_key_env` value names an environment variable; the TOML never contains the secret itself. If
+omitted, the client sends no authentication.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.
