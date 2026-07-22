@@ -296,14 +296,42 @@ pub trait Algorithm: Send + Sync + 'static {
         // the algorithm task, and keep one to emit the terminal step. The task blocks
         // publishing a step until the consumer pulls the previous one.
         let driver = Driver::new();
-        let stream = driver.stream();
-        tokio::spawn(async move {
-            let outcome = self
-                .create_run_task(ctx.clone(), driver.clone(), request)
-                .await;
-            let _ = driver.finish(ctx, outcome).await;
+        let task_driver = driver.clone();
+        let task_ctx = ctx.clone();
+        let stream = task_driver.stream();
+        let handle = tokio::spawn(async move {
+            self.create_run_task(task_ctx, task_driver, request).await
         });
-        Box::pin(stream)
+
+        // On its own task, await the algorithm's completion and emit the terminal step:
+        // a panic (the `JoinError`) becomes a failed `finish`, a normal return is
+        // forwarded as-is. Returns the `finish` result so a failed terminal emit surfaces
+        // on the stream rather than panicking an unobserved task.
+        let finish_driver = driver.clone();
+        let finish_ctx = ctx.clone();
+        let err_handle = tokio::spawn(async move {
+            let result = match handle.await {
+                Ok(response) => response,
+                Err(e) => Err(format!("Algorithm task panicked: {e}").into()),
+            };
+            finish_driver.finish(finish_ctx, result).await
+        });
+
+        // After the step stream drains, surface a failed terminal emit (or a panic in the
+        // finish task itself) as the stream's final item. `chain` polls this only once the
+        // driver stream ends, which happens after the finish task has dropped its sender —
+        // so `err_handle` is already complete and the await resolves immediately.
+        let tail = futures::stream::once(err_handle).filter_map(
+            |joined| async move {
+                match joined {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(Err(e)),
+                    Err(e) => Some(Err(format!("Finish task panicked: {e}").into())),
+                }
+            },
+        );
+
+        Box::pin(stream.chain(tail))
     }
 
     /// Run one request to completion, serving each offloaded call with its
@@ -785,6 +813,44 @@ mod tests {
         }
 
         assert!(saw_error, "expected an error step");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_run_task_panic_surfaces_as_a_stream_error(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // An algorithm whose task panics must surface an `Err` step to the stream
+        // consumer, not abort the process from an unobserved detached task.
+        struct Panicky;
+
+        #[async_trait]
+        impl Algorithm for Panicky {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                panic!("boom");
+            }
+        }
+
+        let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
+        let stream = algo.run_stream(Context::default(), request());
+        tokio::pin!(stream);
+
+        let mut saw_error = false;
+        while let Some(step) = stream.next().await {
+            match step {
+                Err(err) => {
+                    assert!(err.to_string().contains("panicked"));
+                    saw_error = true;
+                }
+                Ok(_) => return Err("expected the panic to surface as an error step".into()),
+            }
+        }
+
+        assert!(saw_error, "expected an error step from the panicked task");
         Ok(())
     }
 
