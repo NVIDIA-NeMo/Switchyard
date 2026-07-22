@@ -491,13 +491,18 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
             "serve --config does not support --enable-rl-logging. "
             "Use serve --routing-profiles for local RL trace logging."
         )
+    response_processors: list[Any] = []
     if getattr(args, "routing_log_file", None):
-        raise SystemExit(
-            "serve --config does not support --routing-log-file. "
-            "Use serve --routing-profiles for per-request routing logs."
+        from switchyard.lib.processors.routing_log_response_processor import (
+            RoutingLogResponseProcessor,
         )
 
-    table = _profile_config_route_table(args.config)
+        response_processors.append(RoutingLogResponseProcessor(args.routing_log_file))
+
+    table = _profile_config_route_table(
+        args.config,
+        extra_response_processors=response_processors,
+    )
     logger.info(
         "Switchyard profile config loaded from %s",
         args.config,
@@ -505,7 +510,11 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
     build_and_serve(args, table, inbound_default="both")
 
 
-def _profile_config_route_table(config_path: str) -> Any:
+def _profile_config_route_table(
+    config_path: str,
+    *,
+    extra_response_processors: Sequence[Any] = (),
+) -> Any:
     from switchyard.lib.profiles import PassthroughProfileConfig, ProfileSwitchyard
     from switchyard.lib.profiles.loader import load_profiles_and_targets
     from switchyard.lib.route_table import RouteTable
@@ -516,11 +525,17 @@ def _profile_config_route_table(config_path: str) -> Any:
         _register_profile_config_model(
             table,
             profile_id,
-            ProfileSwitchyard(cast(Any, profile)),
+            ProfileSwitchyard(
+                cast(Any, profile),
+                response_processors=extra_response_processors,
+            ),
             kind="profile",
         )
     for target_id, target in targets.items():
-        target_switchyard = ProfileSwitchyard(PassthroughProfileConfig(target=target).build())
+        target_switchyard = ProfileSwitchyard(
+            PassthroughProfileConfig(target=target).build(),
+            response_processors=extra_response_processors,
+        )
         _register_profile_config_model(
             table,
             target_id,

@@ -497,8 +497,10 @@ def test_summarize_routing_log_groups_by_task_and_model(tmp_path: Path) -> None:
     assert task_a["sessions"] == ["s1"]
     assert task_a["models"] == [
         {"model": "kimi", "tier": "weak", "calls": 1, "prompt_tokens": 4,
+         "cached_tokens": 0, "cache_creation_tokens": 0,
          "completion_tokens": 1, "total_tokens": 5},
         {"model": "opus", "tier": "strong", "calls": 1, "prompt_tokens": 10,
+         "cached_tokens": 0, "cache_creation_tokens": 0,
          "completion_tokens": 2, "total_tokens": 12},
     ]
     assert summary["tasks"]["task-b"]["models"][0]["total_tokens"] == 10
@@ -532,7 +534,8 @@ def test_finalize_writes_routing_stats_by_task(tmp_path: Path) -> None:
     log = run_dir / "routing_requests.jsonl"
     log.write_text(json.dumps({
         "task": "task-a", "session_id": "s1", "model": "opus", "tier": "strong",
-        "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12,
+        "prompt_tokens": 10, "cached_tokens": 3, "cache_creation_tokens": 1,
+        "completion_tokens": 2, "total_tokens": 12,
     }) + "\n")
     by_task = run_dir / "routing_stats_by_task.json"
 
@@ -544,6 +547,7 @@ def test_finalize_writes_routing_stats_by_task(tmp_path: Path) -> None:
     assert rc == 0
     summary = json.loads(by_task.read_text())
     assert summary["tasks"]["task-a"]["models"][0]["calls"] == 1
+    assert summary["tasks"]["task-a"]["models"][0]["cached_tokens"] == 3
     manifest = json.loads(out.read_text())
     assert manifest["outcomes"]["routing_stats_by_task_json_status"] == "present"
 

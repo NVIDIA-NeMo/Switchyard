@@ -257,12 +257,20 @@ def summarize_routing_log(log_path: Path) -> dict[str, Any]:
                 "tier": tier,
                 "calls": 0,
                 "prompt_tokens": 0,
+                "cached_tokens": 0,
+                "cache_creation_tokens": 0,
                 "completion_tokens": 0,
                 "total_tokens": 0,
             },
         )
         bucket["calls"] += 1
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        for key in (
+            "prompt_tokens",
+            "cached_tokens",
+            "cache_creation_tokens",
+            "completion_tokens",
+            "total_tokens",
+        ):
             value = record.get(key)
             bucket[key] += value if isinstance(value, int) else 0
     for entry in tasks.values():
