@@ -70,6 +70,7 @@ pub struct PrefillProbeProfileConfig {
     /// Directory shared with vLLM's `ExampleHiddenStatesConnector`.
     pub hidden_states_dir: String,
     /// Directory containing `router.json` and `router.safetensors`.
+    #[serde(rename = "checkpoint_dir", alias = "inference_artifact_dir")]
     pub inference_artifact_dir: String,
     /// Policy that maps the two selected correctness probabilities to a binary score.
     pub routing_policy: PrefillProbeRoutingPolicyConfig,

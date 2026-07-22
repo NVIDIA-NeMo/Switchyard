@@ -223,7 +223,7 @@ profiles:
     weak: weak
     weak_checkpoint_head: nemotron-3-super
     hidden_states_dir: /dev/shm/hidden_states
-    inference_artifact_dir: {}
+    checkpoint_dir: {}
     routing_policy:
       type: cost-aware
       lambda: 0.5
@@ -273,7 +273,7 @@ fn config_schema_requires_every_field_and_rejects_unknown_fields() -> Result<()>
         "weak",
         "weak_checkpoint_head",
         "hidden_states_dir",
-        "inference_artifact_dir",
+        "checkpoint_dir",
         "routing_policy",
     ] {
         let mut missing = base.clone();
@@ -300,6 +300,26 @@ fn config_schema_requires_every_field_and_rejects_unknown_fields() -> Result<()>
     assert!(error
         .to_string()
         .contains("unknown field `unexpected_field`"));
+    Ok(())
+}
+
+#[test]
+fn legacy_inference_artifact_dir_alias_is_accepted() -> Result<()> {
+    let artifact = TestArtifactDirectory::create(ArtifactFault::None)?;
+    let config = config_with_artifact(artifact.path())?;
+    let mut value = serde_json::to_value(&config)
+        .map_err(|error| SwitchyardError::Other(format!("config encode failed: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| SwitchyardError::Other("config should encode as an object".to_string()))?;
+    let checkpoint_dir = object.remove("checkpoint_dir").ok_or_else(|| {
+        SwitchyardError::Other("serialized config should contain checkpoint_dir".to_string())
+    })?;
+    object.insert("inference_artifact_dir".to_string(), checkpoint_dir);
+
+    let parsed = serde_json::from_value::<PrefillProbeProfileConfig>(value)
+        .map_err(|error| SwitchyardError::Other(format!("legacy config parse failed: {error}")))?;
+    assert_eq!(parsed, config);
     Ok(())
 }
 

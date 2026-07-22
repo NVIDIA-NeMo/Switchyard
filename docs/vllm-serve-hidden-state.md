@@ -19,10 +19,10 @@ required by the protocol. Use Docker for a reproducible CUDA/vLLM runtime, or
 use `vllm serve` directly when the environment contains a build with
 `extract_hidden_states` and `ExampleHiddenStatesConnector`.
 
-## Router artifact contract
+## Router checkpoint contract
 
-The router artifact is external deployment data. Switchyard does not package
-or download it. Set `PREFILL_ROUTER_ARTIFACT_DIR` to a readable directory with:
+The router checkpoint is external deployment data. Switchyard does not package
+or download it. Set `PREFILL_ROUTER_CHECKPOINT_DIR` to a readable directory with:
 
 ```text
 router.json
@@ -103,7 +103,7 @@ benchmark task containers:
 ```bash
 export NVIDIA_API_KEY="..."
 export VLLM_BASE_URL=http://127.0.0.1:8000
-export PREFILL_ROUTER_ARTIFACT_DIR=/absolute/path/to/exported/router
+export PREFILL_ROUTER_CHECKPOINT_DIR=/absolute/path/to/exported/router
 
 switchyard serve \
   --config benchmark/routing-profiles/prefill-probe-local.yaml \

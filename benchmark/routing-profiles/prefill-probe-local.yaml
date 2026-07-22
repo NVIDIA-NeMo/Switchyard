@@ -5,7 +5,7 @@
 # documented in docs/vllm-serve-hidden-state.md and export:
 #   NVIDIA_API_KEY
 #   VLLM_BASE_URL=http://127.0.0.1:8000
-#   PREFILL_ROUTER_ARTIFACT_DIR=/absolute/path/to/exported/router
+#   PREFILL_ROUTER_CHECKPOINT_DIR=/absolute/path/to/exported/router
 #
 # Serve with:
 #   switchyard serve --config benchmark/routing-profiles/prefill-probe-local.yaml
@@ -42,7 +42,7 @@ profiles:
     weak: weak
     weak_checkpoint_head: nemotron-3-super
     hidden_states_dir: /tmp/switchyard-hidden-states
-    inference_artifact_dir: ${PREFILL_ROUTER_ARTIFACT_DIR}
+    checkpoint_dir: ${PREFILL_ROUTER_CHECKPOINT_DIR}
     routing_policy:
       type: cost-aware
       lambda: 0.5
