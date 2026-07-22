@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -20,6 +21,7 @@ use libsy::algorithms::Random;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_server::config::load_server_state;
 use switchyard_server::{build_switchyard_router, ServerState};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -93,13 +95,18 @@ async fn upstream_chat(
         return Sse::new(stream).into_response();
     }
 
+    let content = if model == "model/classifier" {
+        "0.9"
+    } else {
+        "ok"
+    };
     Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": "ok"},
+            "message": {"role": "assistant", "content": content},
             "finish_reason": "stop"
         }],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
@@ -144,6 +151,16 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     Ok((upstream, app))
 }
 
+fn load_test_config(toml: &str) -> TestResult<ServerState> {
+    let mut config = tempfile::Builder::new()
+        .prefix("switchyard-server-config-")
+        .suffix(".toml")
+        .tempfile()?;
+    config.write_all(toml.as_bytes())?;
+    config.flush()?;
+    Ok(load_server_state(config.path())?)
+}
+
 async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> TestResult<Response> {
     let mut builder = HttpRequest::builder().method(method).uri(path);
     let request_body = if let Some(body) = body {
@@ -177,6 +194,78 @@ impl Response {
     fn text(&self) -> TestResult<&str> {
         Ok(std::str::from_utf8(&self.bytes)?)
     }
+}
+
+#[tokio::test]
+async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["weak"]
+
+[routes.classifier]
+id = "switchyard/classifier"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+threshold = 0.5
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    for (route, selected) in [
+        ("switchyard/random", "model/weak"),
+        ("switchyard/classifier", "model/strong"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": "hi"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(selected)
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0]["model"], "model/weak");
+    assert_eq!(calls[1]["model"], "model/classifier");
+    assert_eq!(calls[2]["model"], "model/strong");
+    Ok(())
 }
 
 #[tokio::test]

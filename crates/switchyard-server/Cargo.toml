@@ -19,6 +19,8 @@ rustls = { version = "0.23" }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 libsy = { package = "switchyard-libsy", path = "../libsy" }
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
 switchyard-llm-client = { path = "../libsy-llm-client" }
 serde_json = "1"
 switchyard-translation = { path = "../switchyard-translation" }
@@ -28,5 +30,6 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 [dev-dependencies]
 async-trait = "0.1"
 http-body-util = "0.1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "net"] }
 tower = { version = "0.5", features = ["util"] }
