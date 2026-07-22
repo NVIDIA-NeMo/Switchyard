@@ -409,6 +409,40 @@ def test_configure_non_interactive_uses_env_api_key(
     assert load_user_credentials(tmp_path).api_key("openrouter") == "env-or-key"
 
 
+def test_configure_non_interactive_scopes_env_key_to_selected_provider(
+    monkeypatch,
+    tmp_path,
+):
+    """`configure --provider nvidia` must not save an OPENROUTER_API_KEY under
+    `nvidia`. With no NVIDIA_API_KEY set it requires an explicit --api-key."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setattr(
+        "switchyard.cli.command_utils.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr("switchyard.cli.configure_command.load_secrets", lambda: {})
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--provider", "nvidia",
+        "--no-model-discovery",
+        "--target", "provider",
+    ])
+
+    with pytest.raises(SystemExit, match="requires an API key"):
+        _cmd_configure(args)
+
+    assert load_user_credentials(tmp_path).api_key("nvidia") is None
+
+
 def test_redacted_snapshot_surfaces_only_route_ids(tmp_path):
     """The snapshot exposes route ids but never the full bundle (env-var
     references inside the bundle may resolve to secrets at run time)."""
