@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from switchyard.lib.processors.stage_router.picker import CAPABLE
+from switchyard.lib.processors.stage_router.picker import CAPABLE, EFFICIENT
 
 if TYPE_CHECKING:
     from switchyard_rust.core import ChatRequest
@@ -59,19 +59,23 @@ DEFAULT_DEESCALATION_NOTE: str = (
 _WRONG_ESCALATION_SOURCES: frozenset[str] = frozenset({"override", "dimensions"})
 
 class HandoffNoteInjector:
-    """Appends a guidance note to capable-tier requests driven by real signals.
+    """Appends a guidance note to a tier-picked request driven by real signals.
 
-    Stateless — no per-session tracking. Fires on every turn where the capable
-    tier is picked and the decision source was a real wrong signal.
+    Stateless — no per-session tracking. On the capable tier the note fires on
+    every turn where the decision source was a real wrong signal; on the
+    efficient tier a de-escalation note fires only when one is configured
+    (``deescalation_note``), which is off by default.
     """
 
     def __init__(
         self,
         *,
         escalation_note: str = DEFAULT_ESCALATION_NOTE,
+        deescalation_note: str | None = None,
         only_on_wrong_signal_escalation: bool = True,
     ) -> None:
         self._escalation_note = escalation_note
+        self._deescalation_note = deescalation_note
         self._only_on_wrong_signal = only_on_wrong_signal_escalation
 
     def maybe_inject(
@@ -81,17 +85,22 @@ class HandoffNoteInjector:
         tier: int,
         source: str | None,
     ) -> bool:
-        """Inject a note when the capable tier is picked due to a real signal.
+        """Inject the guidance note appropriate to the picked tier.
 
-        Returns ``True`` iff a note was appended to ``request``. Never raises —
-        any failure degrades to "no note" so it can't block routing.
+        Capable tier: the escalation note, gated to real wrong signals when
+        ``only_on_wrong_signal_escalation``. Efficient tier: the de-escalation
+        note, only when one is configured. Returns ``True`` iff a note was
+        appended. Never raises — any failure degrades to "no note" so it can't
+        block routing.
         """
         try:
-            if tier != CAPABLE:
-                return False
-            if self._only_on_wrong_signal and source not in _WRONG_ESCALATION_SOURCES:
-                return False
-            return _append_note(request, self._escalation_note)
+            if tier == CAPABLE:
+                if self._only_on_wrong_signal and source not in _WRONG_ESCALATION_SOURCES:
+                    return False
+                return _append_note(request, self._escalation_note)
+            if tier == EFFICIENT and self._deescalation_note is not None:
+                return _append_note(request, self._deescalation_note)
+            return False
         except Exception:
             log.debug("handoff-note injection failed; continuing without note", exc_info=True)
             return False

@@ -94,6 +94,7 @@ def _build_handoff_injector(config: HandoffNoteConfig | None) -> HandoffNoteInje
         return None
     return HandoffNoteInjector(
         escalation_note=config.escalation_note,
+        deescalation_note=config.deescalation_note,
         only_on_wrong_signal_escalation=config.only_on_wrong_signal_escalation,
     )
 

@@ -53,6 +53,9 @@ class HandoffNoteConfig(BaseModel):
     enabled: bool = False
     #: Note injected on every capable-tier turn driven by a real wrong signal.
     escalation_note: str = DEFAULT_ESCALATION_NOTE
+    #: Optional strong→weak note. When set, injected on every efficient-tier turn
+    #: (hand-back to the weak model); ``None`` (default) leaves de-escalation off.
+    deescalation_note: str | None = None
     #: When ``True`` (default) only inject when the decision source was a real
     #: signal (``dimensions`` or ``override``), not an ambiguous default
     #: (``fall_open``). Keeps "stalling" from being asserted without evidence.
