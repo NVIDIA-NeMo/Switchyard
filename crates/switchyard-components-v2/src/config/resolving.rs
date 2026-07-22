@@ -44,6 +44,16 @@ impl ProfileConfigDocument {
         let env = ProfileBuildEnv::new(targets);
         let mut profiles = BTreeMap::new();
         for (profile_id, profile) in &self.profiles {
+            // The envelope-level sub-agent override must name a resolvable target;
+            // an unknown reference is a startup configuration error.
+            if let Some(target_id) = profile.subagent_target() {
+                if !targets.contains_key(target_id) {
+                    return Err(SwitchyardError::InvalidConfig(format!(
+                        "profile {profile_id}: subagent_target references unknown target {}",
+                        target_id.as_str()
+                    )));
+                }
+            }
             profiles.insert(
                 profile_id.clone(),
                 resolve_profile(profile_id, profile, &env)?,

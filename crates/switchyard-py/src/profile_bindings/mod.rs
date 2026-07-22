@@ -66,6 +66,15 @@ impl PyProfileConfigDocument {
             .map(std::borrow::ToOwned::to_owned))
     }
 
+    /// Return a parsed profile's envelope `subagent_target` reference, or `None`.
+    fn profile_subagent_target(&self, profile_id: &str) -> PyResult<Option<String>> {
+        let profile_id = parse_profile_id(profile_id)?;
+        Ok(self
+            .inner
+            .profile_subagent_target(&profile_id)
+            .map(|target_id| target_id.as_str().to_owned()))
+    }
+
     /// Return a parsed profile's body without the `type` discriminator.
     fn profile_body(&self, py: Python<'_>, profile_id: &str) -> PyResult<Option<Py<PyAny>>> {
         let profile_id = parse_profile_id(profile_id)?;
@@ -264,6 +273,54 @@ fn py_parse_profile_config_path(path: PathBuf) -> PyResult<PyProfileConfigDocume
         .map_err(py_core_error)
 }
 
+/// Codex sub-agent kinds that carry delegated user work rather than harness
+/// maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds fall
+/// through to normal routing; extend deliberately, with captured fixtures.
+const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "review"];
+
+/// Report whether normalized request headers mark delegated sub-agent work.
+///
+/// An explicit `x-switchyard-is-subagent` boolean decides directly. Otherwise
+/// detection reuses the canonical harness header normalization
+/// (`switchyard_protocol::Metadata::from_headers`) — Claude Code agent
+/// lineage and Codex/relay parent or sub-agent markers — and a request whose
+/// normalized agent kind names anything other than known delegated-work kinds
+/// is not routed as sub-agent work, so Codex `compact` /
+/// `memory_consolidation` turns stay on normal profile routing.
+#[pyfunction]
+fn is_subagent_request(headers: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let headers = typed::metadata_headers_from_python(headers)?;
+    // Lineage headers are single-valued; keep the first value when repeated.
+    let headers: std::collections::BTreeMap<String, String> = headers
+        .into_iter()
+        .filter_map(|(name, values)| values.into_iter().next().map(|value| (name, value)))
+        .collect();
+    if let Some(explicit) = headers
+        .get("x-switchyard-is-subagent")
+        .and_then(|value| parse_bool_header(value))
+    {
+        return Ok(explicit);
+    }
+    let metadata = switchyard_protocol::Metadata::from_headers(&headers);
+    if !metadata.is_subagent {
+        return Ok(false);
+    }
+    Ok(match metadata.agent_kind.as_deref() {
+        None => true,
+        Some(kind) => SUBAGENT_WORK_KINDS.contains(&kind),
+    })
+}
+
+/// Parses the common textual spellings of a boolean header value, mirroring
+/// the protocol crate's header normalization.
+fn parse_bool_header(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 /// Parse and resolve a components-v2 profile config file.
 #[pyfunction]
 fn load_profile_config(path: PathBuf) -> PyResult<PyProfileConfigPlan> {
@@ -300,6 +357,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_parse_profile_config_str, module)?)?;
     module.add_function(wrap_pyfunction!(py_parse_profile_config_path, module)?)?;
     module.add_function(wrap_pyfunction!(load_profile_config, module)?)?;
+    module.add_function(wrap_pyfunction!(is_subagent_request, module)?)?;
     typed::register(module)?;
     Ok(())
 }

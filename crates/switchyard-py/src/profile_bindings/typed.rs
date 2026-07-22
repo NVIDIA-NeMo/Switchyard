@@ -190,7 +190,7 @@ fn parse_request_id(request_id: Option<String>) -> PyResult<Option<RequestId>> {
         .map_err(|error| PyValueError::new_err(format!("invalid request_id: {error}")))
 }
 
-fn metadata_headers_from_python(
+pub(crate) fn metadata_headers_from_python(
     headers: &Bound<'_, PyAny>,
 ) -> PyResult<BTreeMap<String, Vec<String>>> {
     let dict = PyDict::new(headers.py());

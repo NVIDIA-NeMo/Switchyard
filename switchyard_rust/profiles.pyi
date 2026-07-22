@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Mapping
 from os import PathLike
 from typing import Literal
 
@@ -33,6 +34,7 @@ def parse_profile_config_str(
 ) -> ProfileConfigDocument: ...
 def parse_profile_config_path(path: str | PathLike[str]) -> ProfileConfigDocument: ...
 def load_profile_config(path: str | PathLike[str]) -> ProfileConfigPlan: ...
+def is_subagent_request(headers: Mapping[str, str | list[str]]) -> bool: ...
 
 # --- Metadata for direct typed profile calls ----------------------------------
 
