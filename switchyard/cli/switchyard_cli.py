@@ -411,6 +411,12 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     rl_request, rl_response = build_rl_logging_processors(resolve_rl_log_dir(args))
     request_processors = [*intake_request, *rl_request]
     response_processors = [*intake_response, *rl_response]
+    if getattr(args, "routing_log_file", None):
+        from switchyard.lib.processors.routing_log_response_processor import (
+            RoutingLogResponseProcessor,
+        )
+
+        response_processors.append(RoutingLogResponseProcessor(args.routing_log_file))
     if routing_profiles:
         table = load_route_bundle_table(
             routing_profiles,
@@ -484,6 +490,11 @@ def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
         raise SystemExit(
             "serve --config does not support --enable-rl-logging. "
             "Use serve --routing-profiles for local RL trace logging."
+        )
+    if getattr(args, "routing_log_file", None):
+        raise SystemExit(
+            "serve --config does not support --routing-log-file. "
+            "Use serve --routing-profiles for per-request routing logs."
         )
 
     table = _profile_config_route_table(args.config)
@@ -884,6 +895,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Path to a Switchyard v2 profile config (YAML, JSON, or TOML)."
+        ),
+    )
+    serve.add_argument(
+        "--routing-log-file",
+        dest="routing_log_file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Append one JSONL routing record per request (task, session, "
+            "selected model, tier, token usage) to PATH."
         ),
     )
     serve.add_argument(
