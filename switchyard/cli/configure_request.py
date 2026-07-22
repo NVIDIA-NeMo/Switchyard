@@ -15,8 +15,6 @@ import argparse
 from dataclasses import dataclass, fields
 from typing import Literal
 
-from switchyard.cli.config.user_config import DEFAULT_PROVIDER
-
 # Which defaults `configure` writes. Matches the CLI's --target choices.
 ConfigureTarget = Literal["all", "provider", "claude", "codex", "openclaw"]
 
@@ -35,7 +33,7 @@ class ConfigureRequest:
     # Which provider and scope to configure.
     json: bool = False
     target: ConfigureTarget = "all"
-    provider: str | None = DEFAULT_PROVIDER
+    provider: str | None = None
     base_url: str | None = None
     api_key: str | None = None
 
