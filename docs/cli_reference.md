@@ -67,12 +67,12 @@ launchers:
 
 | Flag | Purpose |
 |---|---|
-| `--model ID` | Single-model passthrough. Every request is rewritten to `model=ID` and forwarded to `--base-url`. |
-| `--routing-profiles PATH` | Deprecated path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `stage_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
+| `--model ID` | Single-model route. Every request is rewritten to `model=ID` and forwarded to `--base-url`. |
+| `--routing-profiles PATH` | Deprecated path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `random_routing`, `routellm`, `latency_service`, `stage_router`, `deterministic`, and `plan_execute`; use `model` for standalone target execution. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
 
 On the launchers, the two flags are mutually exclusive: pass one or the other, not both.
 
-- `--model ID`: single-model passthrough. Any model id from `GET /v1/models` is accepted; every request is rewritten to `model=ID` and forwarded upstream.
+- `--model ID`: single-model route. Any model id from `GET /v1/models` is accepted; every request is rewritten to `model=ID` and forwarded upstream.
 - `--routing-profiles PATH`: loads a multi-chain YAML bundle; the first declared route becomes the initial model.
 
 For legacy route-bundle `type: deterministic` routes, the `classifier:` block also accepts:
@@ -284,7 +284,7 @@ switchyard [--routing-profiles PATH] launch claude [--model ID]
 ```
 
 When neither CLI routing flag is passed, `launch claude` uses a saved routing bundle
-first, then a saved `claude.model` as single-model passthrough. The built-in
+first, then a saved `claude.model` as single-model route. The built-in
 LLM-as-classifier route is the default only when neither a bundle nor a single-model
 default is resolved.
 
@@ -317,7 +317,7 @@ default is resolved.
 **Examples**
 
 ```bash
-# Single-model passthrough
+# Single-model route
 switchyard launch claude --model openai/gpt-4o-mini
 
 # Use a routing bundle
@@ -350,7 +350,7 @@ switchyard [--routing-profiles PATH] launch codex [--model ID]
 ```
 
 When neither CLI routing flag is passed, `launch codex` uses a saved routing bundle
-first, then a saved `codex.model` as single-model passthrough. The built-in
+first, then a saved `codex.model` as single-model route. The built-in
 LLM-as-classifier route is the default only when neither a bundle nor a single-model
 default is resolved. `--weak-model`, `--classifier-model`, `--profile`, and
 `--classifier-min-confidence` tune only that built-in route. `CODEX_ARGS` are forwarded
@@ -386,7 +386,7 @@ switchyard [--routing-profiles PATH] launch openclaw [--model ID]
 ```
 
 When neither CLI routing flag is passed, `launch openclaw` uses a saved routing bundle
-first, then a saved `openclaw.model` as single-model passthrough. The built-in
+first, then a saved `openclaw.model` as single-model route. The built-in
 LLM-as-classifier route is the default only when neither a bundle nor a single-model
 default is resolved. `--weak-model`, `--classifier-model`, `--profile`, and
 `--classifier-min-confidence` tune only that built-in route.

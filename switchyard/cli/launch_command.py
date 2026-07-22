@@ -106,7 +106,7 @@ def _is_deterministic_launch(
     """Return ``True`` when the resolved launch will use deterministic routing.
 
     For ``claude`` / ``codex``: deterministic is the implicit default when
-    no single-model passthrough (CLI ``--model`` or saved
+    no single-model route (CLI ``--model`` or saved
     ``configured_route.model``) and no routing-profiles bundle (CLI
     ``--routing-profiles`` or saved bundle) is in play. Pass
     ``route=None`` to check before the route is resolved (e.g. inside
@@ -456,7 +456,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
         validated coding-agent trio (Claude Opus 4.7 + Nemotron-3 Super
         + DeepSeek V4 Flash classifier). Override individual tiers with
         ``--weak-model`` / ``--classifier-model`` / ``--profile``.
-      * ``--model X`` — single-tier passthrough to X.
+      * ``--model X`` — single-model route to X.
       * ``--routing-profiles FILE`` (global flag) — YAML-driven multi-chain table.
         ``--model`` is optional; falls back to the first YAML route.
 
@@ -521,7 +521,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
         configured_route = LaunchRouteConfig()
     route = route_from_launch_args(args, configured_route)
     # Deterministic LLM-classifier routing is the implicit default for
-    # ``launch claude`` when neither single-model passthrough nor a
+    # ``launch claude`` when neither single-model route nor a
     # routing-profiles bundle is in play.
     deterministic = _is_deterministic_launch(
         target="claude", args=args, route=route, routing_profiles=routing_profiles,
@@ -721,7 +721,7 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
         configured_route = LaunchRouteConfig()
     route = route_from_launch_args(args, configured_route)
     # Deterministic LLM-classifier routing is the implicit default for
-    # ``launch codex`` when neither single-model passthrough nor a
+    # ``launch codex`` when neither single-model route nor a
     # routing-profiles bundle is in play.
     deterministic = _is_deterministic_launch(
         target="codex", args=args, route=route, routing_profiles=routing_profiles,
@@ -924,7 +924,7 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
         configured_route = LaunchRouteConfig()
     route = route_from_launch_args(args, configured_route)
     # LLM-classifier routing is the implicit default for ``launch openclaw``
-    # when neither single-model passthrough nor a routing-profiles bundle is
+    # when neither single-model route nor a routing-profiles bundle is
     # in play.
     deterministic = _is_deterministic_launch(
         target="openclaw", args=args, route=route, routing_profiles=routing_profiles,

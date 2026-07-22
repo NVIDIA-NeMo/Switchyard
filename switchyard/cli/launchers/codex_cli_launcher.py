@@ -6,8 +6,8 @@
 Sibling of :mod:`switchyard.cli.launchers.claude_code_launcher`, but
 spawns the OpenAI Codex CLI instead of Claude Code:
 
-* ``switchyard launch codex --model <name>`` — single-model
-  passthrough.  Spin up an in-process V2 passthrough proxy on a free
+* ``switchyard launch codex --model <name>`` — single-model route.
+  Spin up an in-process V2 proxy on a free
   local port, wire up a Responses-native OpenAI backend through the generic
   ``LlmTarget`` recipe, then spawn ``codex`` against the proxy.
 
@@ -214,7 +214,7 @@ def _codex_catalog_entry_for_registered_model(
     return (
         model_id,
         f"{_codex_model_display_name(model_id)} (Switchyard)",
-        f"Direct Switchyard passthrough to discovered model {model_id}.",
+        f"Direct Switchyard model route to discovered model {model_id}.",
     )
 
 
@@ -443,7 +443,7 @@ def launch_codex(
     routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a passthrough proxy and run ``codex`` against it.
+    """Start a single-model proxy and run ``codex`` against it.
 
     Single-model UX — ``model`` seeds the Codex session, while the proxy
     preserves any model Codex sends later so client-side model selection
@@ -451,7 +451,7 @@ def launch_codex(
 
     When ``routing_profiles`` is given, the launcher builds a
     :class:`RouteTable` instead of a single chain: ``model`` is
-    registered as a tier passthrough, then every entry from the YAML file
+    registered as a direct tier route, then every entry from the YAML file
     is merged on top (including each tier's ``GET /v1/models`` catalog
     hydration). Codex's ``/model`` picker is populated from the merged
     table, so YAML-declared models appear alongside the launcher-
@@ -482,7 +482,7 @@ def launch_codex(
     if routing_profiles is not None:
         # Wrap the single chain in a RouteTable so YAML routes can
         # merge on top. The launcher's `model` registers as a tier
-        # passthrough; YAML entries land alongside (override on id conflict).
+        # model route; YAML entries land alongside (override on id conflict).
         # Codex's /model picker iterates the table, so YAML-declared
         # models surface in the picker automatically.
         from switchyard.lib.route_table import RouteTable
@@ -565,7 +565,7 @@ def _codex_catalog_entry_for_deterministic_model(
     return (
         model_id,
         f"{_codex_model_display_name(model_id)} (Switchyard)",
-        f"Direct Switchyard passthrough to discovered model {model_id}.",
+        f"Direct Switchyard model route to discovered model {model_id}.",
     )
 
 
@@ -630,7 +630,7 @@ def launch_codex_deterministic_routing(
         model_table,
         # Boot codex on the virtual routing model so the LLM classifier runs by
         # default — matches launch_claude_deterministic_routing. Pinning the
-        # strong model id here would hit its direct passthrough and silently
+        # strong model id here would hit its direct model route and silently
         # bypass routing.
         display_model=routing_model,
         port=port,

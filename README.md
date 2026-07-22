@@ -20,7 +20,7 @@ write yourself.
 **Launcher routing is explicit.** By default, launchers use the built-in
 LLM-classifier router, which you tune with `--weak-model`, `--classifier-model`,
 `--profile`, and `--classifier-min-confidence`. Use `--model X` for
-single-model passthrough. The `--routing-profiles FILE` path is deprecated and
+single-model route. The `--routing-profiles FILE` path is deprecated and
 remains only for launcher-owned legacy bundles.
 
 ## Features
@@ -72,11 +72,11 @@ switchyard launch openclaw --model openai/gpt-4o-mini --api-key "$OPENROUTER_API
 ```
 
 Each launcher starts a local proxy, points the agent at it, and shuts the proxy
-down when the agent exits. Use `--model` for single-model passthrough. The
+down when the agent exits. Use `--model` for single-model route. The
 deprecated `--routing-profiles` flag remains for launcher-owned legacy bundles:
 
 ```bash
-switchyard launch claude --model openai/gpt-4o-mini --base-url https://openrouter.ai/api/v1       # single-model passthrough
+switchyard launch claude --model openai/gpt-4o-mini --base-url https://openrouter.ai/api/v1       # single-model route
 switchyard --routing-profiles routes.yaml -- launch claude                                        # legacy route bundle
 ```
 

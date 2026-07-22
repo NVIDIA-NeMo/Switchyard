@@ -37,7 +37,7 @@ Examples::
     switchyard --routing-profiles profiles.yaml -- launch claude
     switchyard --routing-profiles profiles.yaml -- launch codex
 
-    # Single-model passthrough (--model stays on the launcher subcommand)
+    # Single-model route (--model stays on the launcher subcommand)
     switchyard launch claude --model openai/gpt-5.2
     switchyard launch claude --smoke --model openai/gpt-5.2
     switchyard launch codex  --model openai/gpt-5.2
@@ -49,8 +49,8 @@ Examples::
     # Forwarding args to the launched tool (second -- after the subcommand)
     switchyard --routing-profiles profiles.yaml -- launch claude -- --no-auto-approve
 
-Legacy routing policies that used to be top-level CLI verbs (``passthrough``,
-``random-routing``, ``latency-service``) and launcher flags
+Legacy routing policies that used to be top-level CLI verbs
+(``random-routing``, ``latency-service``) and launcher flags
 (``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
 are expressed in deprecated routing-profile YAML files. ``serve`` and
 launchers still parse the YAML into profile-backed runtimes.
@@ -1054,10 +1054,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "spawns `claude` with ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, "
             "and ANTHROPIC_MODEL preset.  Proxy shuts down when claude exits.\n\n"
             "Route selection (mutually exclusive — pick one or neither):\n"
-            "  --model X               single-model passthrough — every request "
+            "  --model X               single-model route — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
             "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, plan_execute, passthrough, …); the first declared route "
+            "stage_router, plan_execute, model, …); the first declared route "
             "is the initial model.\n\n"
             "With neither flag, the saved routing bundle from "
             "`switchyard configure` is used."
@@ -1067,7 +1067,7 @@ def _build_parser() -> argparse.ArgumentParser:
     lc.add_argument(
         "--model", type=str, default=None,
         help=(
-            "Single-model passthrough: model id from GET /v1/models "
+            "Single-model route: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
             "`configure` default when omitted. Mutually exclusive with "
             "--routing-profiles (pass that as a global switchyard flag before "
@@ -1153,10 +1153,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "Completions for the upstream backend.  Proxy shuts down when "
             "codex exits.\n\n"
             "Route selection (mutually exclusive — pick one or neither):\n"
-            "  --model X               single-model passthrough — every request "
+            "  --model X               single-model route — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
             "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, plan_execute, passthrough, …); the first declared route "
+            "stage_router, plan_execute, model, …); the first declared route "
             "is the initial model.\n\n"
             "With neither flag, the saved routing bundle from "
             "`switchyard configure` is used."
@@ -1166,7 +1166,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cx.add_argument(
         "--model", type=str, default=None,
         help=(
-            "Single-model passthrough: model id from GET /v1/models "
+            "Single-model route: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
             "`configure` default when omitted. Mutually exclusive with "
             "--routing-profiles (pass that as a global switchyard flag before "
@@ -1248,10 +1248,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "the upstream backend. Proxy and the transient workspace "
             "are torn down when openclaw exits.\n\n"
             "Route selection (mutually exclusive — pick one or neither):\n"
-            "  --model X               single-model passthrough — every request "
+            "  --model X               single-model route — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
             "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, plan_execute, passthrough, …); the first declared route "
+            "stage_router, plan_execute, model, …); the first declared route "
             "is the initial model.\n\n"
             "With neither flag, the saved routing bundle from "
             "`switchyard configure` is used."
@@ -1261,7 +1261,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ow.add_argument(
         "--model", type=str, default=None,
         help=(
-            "Single-model passthrough: model id from GET /v1/models "
+            "Single-model route: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
             "`configure` default when omitted. Mutually exclusive with "
             "--routing-profiles (pass that as a global switchyard flag before "

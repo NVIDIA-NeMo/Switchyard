@@ -4,7 +4,7 @@
 #
 # Each profile id and each target id is exposed as a model on GET /v1/models, so
 # a client (or `switchyard launch claude --model <id>`) selects a profile by id:
-#   fast                 passthrough to the efficient model
+#   target ids           direct single-model routes
 #   smart-stage-router   signal-based stage-router routing between the efficient and capable models
 #   the model ids        the targets, addressable directly
 #
@@ -30,10 +30,6 @@ targets:
     format: openai
 
 profiles:
-  fast:
-    type: passthrough
-    target: moonshotai/kimi-k2.6
-
   smart-stage-router:
     type: stage_router
     capable: anthropic/claude-opus-4.7

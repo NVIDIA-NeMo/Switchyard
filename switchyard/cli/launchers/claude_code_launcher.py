@@ -5,8 +5,8 @@
 
 Implements two UXes on top of a single chain-agnostic runner:
 
-* ``switchyard launch claude --model <name>`` — single-model
-  passthrough.  Spin up an in-process V2 passthrough proxy on a free
+* ``switchyard launch claude --model <name>`` — single-model route.
+  Spin up an in-process V2 proxy on a free
   local port, probe the backend for native ``POST /v1/messages``
   support, build the matching chain
   (:class:`AnthropicNativeBackend` or :class:`OpenAiNativeBackend`
@@ -298,7 +298,7 @@ def _run_claude_with_switchyard(
 
     Takes a pre-built :class:`Switchyard` and a display-only model
     name.  The caller decides what's in the chain (single-model
-    passthrough, random routing across a preset, latency-service
+    single-model routing, random routing across a preset, latency-service
     pool, …) — this function owns only the uvicorn-in-a-thread +
     ``claude`` supervision + env-var injection boilerplate that is
     identical across those modes.
@@ -425,7 +425,7 @@ def launch_claude(
     routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a passthrough proxy and run ``claude`` against it.
+    """Start a single-model proxy and run ``claude`` against it.
 
     Single-model UX — ``model`` seeds Claude Code's session, while the
     proxy preserves any model Claude Code sends later so ``/model``
@@ -433,7 +433,7 @@ def launch_claude(
 
     When ``routing_profiles`` is given, the launcher builds a
     :class:`RouteTable` instead of a single chain: ``model`` is
-    registered as a tier passthrough, then every entry from the YAML file
+    registered as a direct tier route, then every entry from the YAML file
     is merged on top via :meth:`RouteTable.register`. YAML routes
     win on id conflict. The launcher's stats accumulator is threaded into
     both the launcher's chain and the YAML loader so all traffic records
@@ -504,7 +504,7 @@ def launch_claude_deterministic_routing(
     The LLM-classifier chain (classifier → tier selector → per-tier dispatch)
     is wrapped in a :class:`RouteTable` whose virtual model is the
     deterministic routing target. Configured strong + weak models register
-    as direct passthrough chains so the Claude Code ``/model`` picker can
+    as direct model-route chains so the Claude Code ``/model`` picker can
     override the routing policy. The classifier is not user-selectable.
     """
     from switchyard.cli.model_catalog.model_discovery import fetch_model_ids

@@ -8,8 +8,8 @@ Sibling of :mod:`switchyard.cli.launchers.claude_code_launcher` and
 `OpenClaw <https://github.com/openclaw/openclaw>`_ personal-agent CLI
 instead of Claude Code / Codex:
 
-* ``switchyard launch openclaw --model <name>`` — single-model
-  passthrough.  Spin up an in-process V2 passthrough proxy on a free
+* ``switchyard launch openclaw --model <name>`` — single-model route.
+  Spin up an in-process V2 proxy on a free
   local port, wire up an OpenAI Chat backend through the generic
   ``LlmTarget`` recipe, then spawn ``openclaw chat`` against the proxy.
 
@@ -506,7 +506,7 @@ def launch_openclaw(
     routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a passthrough proxy and run ``openclaw chat`` against it.
+    """Start a single-model proxy and run ``openclaw chat`` against it.
 
     Single-model UX — ``model`` seeds the OpenClaw session, while the
     proxy preserves any model OpenClaw sends later so a client-side
@@ -514,7 +514,7 @@ def launch_openclaw(
 
     When ``routing_profiles`` is given, the launcher builds a
     :class:`RouteTable` instead of a single chain: ``model`` is
-    registered as a tier passthrough, then every entry from the YAML
+    registered as a direct tier route, then every entry from the YAML
     file is merged on top (including each tier's ``GET /v1/models``
     catalog hydration). OpenClaw's ``/model`` picker is populated from
     the merged table via ``agents.defaults.models``, so YAML-declared
@@ -545,7 +545,7 @@ def launch_openclaw(
     if routing_profiles is not None:
         # Wrap the single chain in a RouteTable so YAML routes
         # can merge on top. The launcher's `model` registers as a tier
-        # passthrough; YAML entries land alongside (override on id
+        # model route; YAML entries land alongside (override on id
         # conflict). OpenClaw's /model picker iterates the catalog, so
         # YAML-declared models surface there automatically.
         from switchyard.lib.route_table import RouteTable
@@ -625,7 +625,7 @@ def _openclaw_catalog_entry_for_deterministic_model(
     return (
         model_id,
         f"{display} (Switchyard)",
-        f"Direct Switchyard passthrough to discovered model {model_id}.",
+        f"Direct Switchyard model route to discovered model {model_id}.",
     )
 
 

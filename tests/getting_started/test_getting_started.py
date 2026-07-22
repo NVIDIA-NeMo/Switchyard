@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import textwrap
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -157,43 +160,43 @@ def test_all_yaml_blocks_in_guide_validate_as_route_bundles(
             ) from exc
 
 
-@pytest.fixture
-def noop_routes_yaml(tmp_path: Path) -> Path:
-    # Same shape as the guide's Step 3 YAML (defaults + a single named route),
-    # but `type: noop` so the lifecycle test runs without an upstream.
+def _model_routes_yaml(tmp_path: Path, base_url: str) -> Path:
     path = tmp_path / "routes.yaml"
     path.write_text(
-        textwrap.dedent("""\
+        textwrap.dedent(f"""\
         defaults:
           api_key: dummy
-          base_url: https://upstream.invalid/v1
+          base_url: {base_url}
           format: openai
 
         routes:
           gpt-4o:
-            type: noop
+            type: model
+            target: gpt-4o
         """)
     )
     return path
 
 
-def test_step3_and_step4_serve_lifecycle_with_noop(noop_routes_yaml: Path) -> None:
+def test_step3_and_step4_serve_lifecycle_with_model_route(tmp_path: Path) -> None:
     port = find_free_port()
-    with _serve_in_background(noop_routes_yaml, port):
-        health_status, health_body = _http_get(f"http://127.0.0.1:{port}/health")
-        assert health_status == 200, f"GET /health → {health_status}: {health_body!r}"
+    with _openai_stub_server() as base_url:
+        routes_yaml = _model_routes_yaml(tmp_path, base_url)
+        with _serve_in_background(routes_yaml, port):
+            health_status, health_body = _http_get(f"http://127.0.0.1:{port}/health")
+            assert health_status == 200, f"GET /health → {health_status}: {health_body!r}"
 
-        status, body = _http_post_json(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            {
-                "model": "gpt-4o",
-                "messages": [{"role": "user", "content": "What is 2+2?"}],
-            },
-        )
-        assert status == 200, (
-            f"POST /v1/chat/completions → {status}: {body!r}"
-        )
-        assert b'"choices"' in body, f"Response missing 'choices': {body!r}"
+            status, body = _http_post_json(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                {
+                    "model": "gpt-4o",
+                    "messages": [{"role": "user", "content": "What is 2+2?"}],
+                },
+            )
+            assert status == 200, (
+                f"POST /v1/chat/completions → {status}: {body!r}"
+            )
+            assert b'"choices"' in body, f"Response missing 'choices': {body!r}"
 
 
 # Snippet execution lives in pytest-markdown-docs; this tripwire guards the
@@ -211,6 +214,48 @@ def test_python_snippet_tripwire(guide_text: str) -> None:
         "Python snippet no longer builds a passthrough profile — update the "
         "markdown-docs fixture in conftest.py."
     )
+
+
+class _OpenAIStubHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        if self.path != "/v1/chat/completions":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        body = json.dumps({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "4"},
+                "finish_reason": "stop",
+            }],
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+@contextmanager
+def _openai_stub_server() -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAIStubHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1"
+    finally:
+        server.shutdown()
+        thread.join(timeout=TEARDOWN_GRACE_S)
+        server.server_close()
 
 
 @contextmanager

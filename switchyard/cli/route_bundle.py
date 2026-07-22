@@ -176,17 +176,6 @@ _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS |
     "preset",
     "fallback_target_on_evict",
 })
-_PASSTHROUGH_SETTING_KEYS = frozenset({
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-})
-_PASSTHROUGH_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | frozenset({"defaults", "enable_stats"})
-    | _PASSTHROUGH_SETTING_KEYS
-)
 _LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
     "api_key",
     "base_url",
@@ -213,7 +202,6 @@ _LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
     "affinity_store_ttl_seconds",
     "affinity_key_prefix",
 }) | _LATENCY_ENDPOINT_DEFAULT_KEYS
-_NOOP_ROUTE_KEYS = _ROUTE_METADATA_KEYS
 _DETERMINISTIC_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
     | _TARGET_DEFAULT_ROUTE_KEYS
@@ -323,8 +311,6 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _MODEL_ROUTE_KEYS,
     "random_routing": _RANDOM_ROUTING_ROUTE_KEYS,
     "latency_service": _LATENCY_SERVICE_ROUTE_KEYS,
-    "noop": _NOOP_ROUTE_KEYS,
-    "passthrough": _PASSTHROUGH_ROUTE_KEYS,
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
     "escalation_router": _ESCALATION_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
@@ -334,8 +320,6 @@ _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
     "random_routing": _TARGET_DEFAULT_KEYS,
     "latency_service": _LATENCY_ENDPOINT_DEFAULT_KEYS,
-    "passthrough": _PASSTHROUGH_SETTING_KEYS,
-    "noop": frozenset(),
     "deterministic": _TARGET_DEFAULT_KEYS,
     "escalation_router": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
@@ -409,7 +393,7 @@ def routing_profile_model_ids(
     Returns each route's YAML key followed by its tier ``model`` fields
     (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
     ``planner`` / ``executor`` for plan_execute, ``target`` for
-    ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
+    ``model``). Declaration order, later duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
 
     Used by both the configure wizard (preview the picker) and the launchers
@@ -557,22 +541,6 @@ def build_table_from_bundle(
             )
             continue
 
-        # `passthrough` routes hydrate their single tier's catalog into the
-        # table alongside the configured target model. (`model` routes are
-        # pure aliases — they register under the route key only, no catalog.)
-        if route_type == "passthrough":
-            _merge_discovered_single_tier(
-                table,
-                model_id,
-                route,
-                route_type=route_type,
-                target_defaults=route_defaults,
-                stats=stats,
-                pre_routing_request_processors=pre_routing_request_processors,
-                extra_response_processors=extra_response_processors,
-            )
-            continue
-
         # `stage_router` and `deterministic` routes register the routing-policy chain
         # at the route key AND hydrate each tier's catalog (`strong` + `weak`)
         # into the table as direct passthroughs — same client-facing
@@ -664,69 +632,6 @@ def _merge_random_routing_route(
             table.set_default_model(default_model)
 
 
-def _merge_discovered_single_tier(
-    table: RouteTable,
-    model_id: str,
-    route: Mapping[str, object],
-    route_type: str,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> None:
-    """Expand a ``passthrough`` route with catalog discovery.
-
-    Builds a single ``LlmTarget`` from the route's fields, then goes through
-    :func:`build_passthrough_table` with the shared
-    :func:`_default_discovery_fn` — the same path the launcher's per-tier
-    passthrough registration takes. Follows the unified ordering rule:
-
-      - The YAML route key registered first (aliasing the tier's chain when
-        the key differs from ``tier.model``).
-      - The tier's configured model registered next.
-      - Every catalog entry from the tier's ``GET /v1/models`` after that.
-    """
-    tier = _passthrough_target(model_id, route, target_defaults, route_type)
-    sub_table = build_passthrough_table(
-        (tier,),
-        stats,
-        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
-        discovery_fn=_default_discovery_fn,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    was_empty = not table.registered_models()
-    items = list(sub_table.items())
-    alias_registered = False
-    if model_id != tier.model:
-        tier_chain, tier_metadata = next(
-            ((ch, md) for mid, ch, md in items if mid == tier.model),
-            (None, {}),
-        )
-        if tier_chain is not None:
-            # YAML key first as an alias to the tier's chain so
-            # `registered_models()[0]` is always the user-declared route key.
-            table.register(
-                model_id,
-                tier_chain,
-                metadata={**dict(tier_metadata), "display_name": model_id},
-            )
-            alias_registered = True
-    for sub_model, sub_chain, sub_metadata in items:
-        if sub_model == model_id:
-            if alias_registered:
-                continue
-            # When YAML key == tier.model this entry is the route key itself;
-            # let it register here so it lands at position 0 of the table.
-            table.register(sub_model, sub_chain, metadata=sub_metadata)
-            continue
-        table.register(sub_model, sub_chain, metadata=sub_metadata)
-    for warning in sub_table.model_listing_warnings():
-        table.add_model_listing_warning(warning)
-    if was_empty and model_id in table.registered_models():
-        table.set_default_model(model_id)
-
-
 def _merge_multi_target_discovery(
     table: RouteTable,
     model_id: str,
@@ -803,12 +708,8 @@ def _build_switchyard_for_route(
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
-    if route_type in ("model", "passthrough"):
-        # Both kinds resolve to a single-tier passthrough chain — same shape the
-        # launcher produces via build_passthrough_table's per-tier registration.
-        # The "passthrough" kind synthesizes a target whose model defaults to the
-        # route's table key when no explicit target/model is given.
-        target = _passthrough_target(model_id, route, target_defaults, route_type)
+    if route_type == "model":
+        target = _model_target(model_id, route, target_defaults)
         return build_tier_passthrough_switchyard(
             target,
             stats,
@@ -825,19 +726,6 @@ def _build_switchyard_for_route(
             stats=stats,
             extra_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "noop":
-        from switchyard.lib.profiles.noop import NoopProfileConfig
-
-        return ProfileSwitchyard(
-            NoopProfileConfig()
-            .build()
-            .with_runtime_components(
-                stats_accumulator=stats,
-                pre_request_processors=pre_routing_request_processors,
-                response_processors=extra_response_processors,
-            )
         )
 
     if route_type == "deterministic":
@@ -1280,24 +1168,15 @@ def _plan_execute_switchyard(
     )
 
 
-def _passthrough_target(
+def _model_target(
     model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
-    route_type: str,
 ) -> LlmTarget:
-    """Resolve the LlmTarget for a ``model`` or ``passthrough`` route.
-
-    ``model`` routes require an explicit ``target`` or ``model`` field. The
-    ``passthrough`` kind is permissive: if no target is given, the route's
-    table key becomes the model name and the rest of the target is
-    populated from defaults plus inline route fields.
-    """
+    """Resolve the target for a public ``type: model`` route."""
     target_raw = route.get("target", route.get("model"))
     if target_raw is None:
-        if route_type == "model":
-            raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
-        target_raw = model_id
+        raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
     return coerce_llm_target(
         _target_mapping(target_raw, target_defaults, default_id=model_id, where="target"),
         default_id=model_id,
@@ -1489,8 +1368,6 @@ def _normalize_route(model_id: str, raw: object) -> Mapping[str, object]:
 def _route_type(model_id: str, route: Mapping[str, object]) -> str:
     raw_type = route.get("type", route.get("kind"))
     if raw_type is None:
-        if not route:
-            return "noop"
         if "latency_service_url" in route or "latency_url" in route:
             return "latency_service"
         if "strong" in route and "weak" in route:
@@ -1505,17 +1382,11 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
 
     normalized = raw_type.lower().replace("-", "_")
     aliases = {
-        "direct": "model",
-        "llm_target": "model",
         "model": "model",
-        "target": "model",
         "random": "random_routing",
         "random_routing": "random_routing",
         "latency": "latency_service",
         "latency_service": "latency_service",
-        "noop": "noop",
-        "no_op": "noop",
-        "passthrough": "passthrough",
         "deterministic": "deterministic",
         "llm_classifier": "deterministic",
         "llm_classifier_routing": "deterministic",

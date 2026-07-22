@@ -122,7 +122,7 @@ def test_cli_write_records_routing_profile_digest(tmp_path: Path) -> None:
     out = tmp_path / "run_manifest.json"
     run_dir = tmp_path / "run"
     profile = tmp_path / "routes.yaml"
-    profile.write_text("routes:\n  tb-lite-random-routing:\n    type: noop\n")
+    profile.write_text("routes:\n  tb-lite-random-routing:\n    type: model\n    target: upstream/model\n")
     dataset = tmp_path / "dataset"
     dataset.mkdir()
 
