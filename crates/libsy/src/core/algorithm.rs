@@ -896,6 +896,94 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn run_returns_an_error_when_the_algorithm_task_panics(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // The panic surfaces as an `Err` step inside `run_stream`; `run` propagates it
+        // via `?`, so the caller gets an `Err` rather than a hang or a silent panic.
+        struct Panicky;
+
+        #[async_trait]
+        impl Algorithm for Panicky {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                panic!("boom");
+            }
+        }
+
+        let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
+        match algo.run(Context::default(), request()).await {
+            Ok(_) => Err("expected run to surface the algorithm panic as an error".into()),
+            Err(err) => {
+                assert!(err.to_string().contains("panicked"));
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_run_cancels_the_algorithm_task() -> Result<(), Box<dyn Error + Send + Sync>>
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use tokio::sync::mpsc;
+
+        // Sets a flag when dropped, so we can observe whether the algorithm task was
+        // cancelled once the `run` future driving it is dropped.
+        struct DropGuard(Arc<AtomicBool>);
+        impl Drop for DropGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        struct StuckAlgo {
+            started: mpsc::UnboundedSender<()>,
+            dropped: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Algorithm for StuckAlgo {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let _guard = DropGuard(self.dropped.clone());
+                let _ = self.started.send(());
+                // Hang forever without ever touching the driver, so only cancellation
+                // (not a dropped step channel) can stop this task.
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let algo: Arc<dyn Algorithm> = Arc::new(StuckAlgo {
+            started: started_tx,
+            dropped: dropped.clone(),
+        });
+
+        // Drive `run` on its own task, wait until the algorithm task is up, then cancel
+        // `run` — dropping its future (and the `run_stream` stream it holds).
+        let run_task = tokio::spawn(async move { algo.run(Context::default(), request()).await });
+        started_rx.recv().await.ok_or("task never started")?;
+        run_task.abort();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "algorithm task was NOT cancelled after cancelling run"
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn run_caps_concurrent_calls() -> Result<(), Box<dyn Error + Send + Sync>> {
         use std::sync::atomic::{AtomicUsize, Ordering};
