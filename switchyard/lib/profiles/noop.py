@@ -244,7 +244,7 @@ class NoopProfile:
         # success before rprocess records tokens, which is the order the stats
         # response processor's record_usage_after_success_attribution expects.
         if self._stats_accumulator is not None:
-            await self._stats_accumulator.record_success(_NOOP_MODEL, None, None)
+            await self._stats_accumulator.record_success(_NOOP_MODEL)
         return await self.rprocess(processed, response)
 
 
