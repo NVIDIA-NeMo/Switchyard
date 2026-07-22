@@ -50,8 +50,4 @@ Targets use a shared `translating_http` client by default. Define `llm_clients` 
 `llm_classifier`. An `api_key_env` value names an environment variable; the YAML never contains the
 secret itself. If the field is omitted, the backend is called without authentication.
 
-To add another built-in algorithm:
-
-1. Implement and export it from `libsy`.
-2. Add its typed fields to `AlgorithmConfig` in `src/config.rs`.
-3. Add one construction arm to `build_algorithm` and cover it with a config test.
+See [CONFIGURATION.md](CONFIGURATION.md) to add a target, backend type, or algorithm.
