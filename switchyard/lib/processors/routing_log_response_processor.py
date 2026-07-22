@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -39,12 +40,13 @@ class RoutingLogResponseProcessor:
         self._lock = threading.Lock()
 
     async def process(self, ctx: ProxyContext, response: ChatResponse) -> ChatResponse:
+        """Log one routing record for the completed request; return the response unchanged."""
         served_model: str = ctx.selected_model or ctx.metadata.get(
             CTX_PROXY_ACTUAL_MODEL, "unknown",
         )
 
         async def _emit(final: ChatResponse) -> None:
-            self._write_record(ctx, served_model, final)
+            await asyncio.to_thread(self._write_record, ctx, served_model, final)
 
         attached = attach_final_response_callback(
             response, served_model=served_model, callback=_emit,
