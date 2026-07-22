@@ -209,6 +209,15 @@ pub enum Step {
     ReturnToAgent(Box<Response>),
 }
 
+/// Abort guard
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// A named routing target: a `semantic_name` an algorithm routes by, and an optional
 /// [`RoutedLlmClient`] to serve its calls. An algorithm hands a target to
 /// [`Driver::call_llm_target`]; the client rides along as
@@ -285,37 +294,42 @@ pub trait Algorithm: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Run one request as a stream of [`Step`]s (provided). The algorithm runs on its
-    /// own task; drive the stream: serve each [`Step::CallLlm`] (via its
-    /// [`default_client`](RoutedRequest::default_client) or your own transport) and read
-    /// [`Step::Decision`]s until the final [`Step::ReturnToAgent`]. The step channel is
-    /// bounded, so pulling paces the algorithm; each call is independent, so many run
-    /// concurrently.
+    /// Process a request to completion, returning a stream of [`Step`]s.
+    /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
+    /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
     fn run_stream(self: Arc<Self>, ctx: Context, request: Request) -> StepStream {
-        // This call's own driver: take its consumer stream, hand a producer-side clone to
-        // the algorithm task, and keep one to emit the terminal step. The task blocks
-        // publishing a step until the consumer pulls the previous one.
         let driver = Driver::new();
-        let stream = driver.stream();
-        tokio::spawn(async move {
-            let outcome = self
-                .create_run_task(ctx.clone(), driver.clone(), request)
-                .await;
-            let _ = driver.finish(ctx, outcome).await;
-        });
-        Box::pin(stream)
+        let task_driver = driver.clone();
+        let task_ctx = ctx.clone();
+        let stream = task_driver.stream();
+        let handle =
+            tokio::spawn(async move { self.create_run_task(task_ctx, task_driver, request).await });
+        // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
+        let abort_guard = AbortOnDrop(handle.abort_handle());
+
+        let finish_driver = driver.clone();
+        let finish_ctx = ctx.clone();
+        let tail: StepStream = Box::pin(
+            futures::stream::once(async move {
+                let result = match handle.await {
+                    Ok(response) => response,
+                    Err(e) => Err(format!("Algorithm task panicked: {e}").into()),
+                };
+                finish_driver.finish(finish_ctx, result).await
+            })
+            .filter_map(|finish_result| async move { finish_result.err().map(Err) }),
+        );
+
+        let stream: StepStream = Box::pin(stream);
+        Box::pin(futures::stream::select(stream, tail).map(move |step| {
+            // link abort guard to stream
+            let _keep_alive = &abort_guard;
+            step
+        }))
     }
 
-    /// Run one request to completion, serving each offloaded call with its
-    /// [`RoutedRequest::default_client`], and return the decision trace plus the final
-    /// [`Response`]. Provided: drives [`run_stream`](Self::run_stream) internally,
-    /// collecting each [`Step::Decision`]. Use it when the algorithm holds its own model
-    /// clients and the host wants the answer (and the decisions behind it); drive
-    /// [`run_stream`](Self::run_stream) instead to serve the calls yourself. The returned
-    /// [`Response`] is whatever the algorithm produced — a buffered [`LlmResponse::Agg`]
-    /// or a live [`LlmResponse::Stream`]; the caller decides whether to
-    /// [`into_agg`](LlmResponse::into_agg) it or forward its chunks. Errors if a routed
-    /// target has no client to serve its call, or the algorithm fails.
+    /// Process a request to completion, returning the final [`Response`] and the trace of
+    /// [`Decision`]s the algorithm made along the way.
     async fn run(
         self: Arc<Self>,
         ctx: Context,
@@ -785,6 +799,188 @@ mod tests {
         }
 
         assert!(saw_error, "expected an error step");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_the_stream_cancels_the_algorithm_task(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use tokio::sync::mpsc;
+
+        // Sets a flag when dropped, so we can observe whether the algorithm task was
+        // cancelled/dropped.
+        struct DropGuard(Arc<AtomicBool>);
+        impl Drop for DropGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        struct StuckAlgo {
+            started: mpsc::UnboundedSender<()>,
+            dropped: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Algorithm for StuckAlgo {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let _guard = DropGuard(self.dropped.clone());
+                let _ = self.started.send(());
+                // Await forever without ever touching the driver.
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let algo: Arc<dyn Algorithm> = Arc::new(StuckAlgo {
+            started: started_tx,
+            dropped: dropped.clone(),
+        });
+
+        let stream = algo.run_stream(Context::default(), request());
+        started_rx.recv().await.ok_or("task never started")?;
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "algorithm task was NOT cancelled after dropping the stream"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_run_task_panic_surfaces_as_a_stream_error(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // An algorithm whose task panics must surface an `Err` step to the stream
+        // consumer, not abort the process from an unobserved detached task.
+        struct Panicky;
+
+        #[async_trait]
+        impl Algorithm for Panicky {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                panic!("boom");
+            }
+        }
+
+        let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
+        let stream = algo.run_stream(Context::default(), request());
+        tokio::pin!(stream);
+
+        let mut saw_error = false;
+        while let Some(step) = stream.next().await {
+            match step {
+                Err(err) => {
+                    assert!(err.to_string().contains("panicked"));
+                    saw_error = true;
+                }
+                Ok(_) => return Err("expected the panic to surface as an error step".into()),
+            }
+        }
+
+        assert!(saw_error, "expected an error step from the panicked task");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_returns_an_error_when_the_algorithm_task_panics(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // The panic surfaces as an `Err` step inside `run_stream`; `run` propagates it
+        // via `?`, so the caller gets an `Err` rather than a hang or a silent panic.
+        struct Panicky;
+
+        #[async_trait]
+        impl Algorithm for Panicky {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                panic!("boom");
+            }
+        }
+
+        let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
+        match algo.run(Context::default(), request()).await {
+            Ok(_) => Err("expected run to surface the algorithm panic as an error".into()),
+            Err(err) => {
+                assert!(err.to_string().contains("panicked"));
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_run_cancels_the_algorithm_task() -> Result<(), Box<dyn Error + Send + Sync>>
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use tokio::sync::mpsc;
+
+        // Sets a flag when dropped, so we can observe whether the algorithm task was
+        // cancelled once the `run` future driving it is dropped.
+        struct DropGuard(Arc<AtomicBool>);
+        impl Drop for DropGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        struct StuckAlgo {
+            started: mpsc::UnboundedSender<()>,
+            dropped: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Algorithm for StuckAlgo {
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let _guard = DropGuard(self.dropped.clone());
+                let _ = self.started.send(());
+                // Hang forever without ever touching the driver, so only cancellation
+                // (not a dropped step channel) can stop this task.
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let algo: Arc<dyn Algorithm> = Arc::new(StuckAlgo {
+            started: started_tx,
+            dropped: dropped.clone(),
+        });
+
+        // Drive `run` on its own task, wait until the algorithm task is up, then cancel
+        // `run` — dropping its future (and the `run_stream` stream it holds).
+        let run_task = tokio::spawn(async move { algo.run(Context::default(), request()).await });
+        started_rx.recv().await.ok_or("task never started")?;
+        run_task.abort();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "algorithm task was NOT cancelled after cancelling run"
+        );
         Ok(())
     }
 
