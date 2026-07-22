@@ -1764,6 +1764,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "rustls",
+ "serde",
  "serde_json",
  "switchyard-libsy",
  "switchyard-llm-client",
@@ -1771,6 +1772,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "yaml_serde",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@
 
 //! Rust HTTP server for libsy algorithms.
 
+pub mod config;
 mod response;
 mod sse;
 

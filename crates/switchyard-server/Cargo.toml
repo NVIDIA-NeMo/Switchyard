@@ -19,6 +19,8 @@ rustls = { version = "0.23" }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 libsy = { package = "switchyard-libsy", path = "../libsy" }
+serde = { version = "1", features = ["derive"] }
+yaml_serde = "0.10"
 switchyard-llm-client = { path = "../libsy-llm-client" }
 serde_json = "1"
 switchyard-translation = { path = "../switchyard-translation" }
