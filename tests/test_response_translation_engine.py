@@ -294,7 +294,7 @@ class TestStreamOpenAIToAnthropicUsage:
 
     @pytest.mark.asyncio
     async def test_cached_tokens_propagated(self):
-        """cache_read_input_tokens is set when prompt_tokens_details.cached_tokens is present."""
+        """Anthropic usage splits uncached input from cache-read tokens."""
         usage = SimpleNamespace(
             prompt_tokens=1000,
             completion_tokens=10,
@@ -306,7 +306,7 @@ class TestStreamOpenAIToAnthropicUsage:
         msg_delta = _find_event(events, "message_delta")
 
         assert msg_delta["usage"]["cache_read_input_tokens"] == 800
-        assert msg_delta["usage"]["input_tokens"] == 1000
+        assert msg_delta["usage"]["input_tokens"] == 200
 
     @pytest.mark.asyncio
     async def test_heuristic_fallback_when_no_backend_usage(self):

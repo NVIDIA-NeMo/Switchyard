@@ -232,10 +232,60 @@ pub struct LlmRequest {
 /// Normalized token usage counts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Non-cached input tokens. Provider codecs normalize aggregate OpenAI
+    /// input counts by subtracting the cache detail fields.
     pub input_tokens: Option<u64>,
+    #[serde(flatten)]
+    pub cache: Option<Box<InputCacheUsage>>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
+}
+
+/// Optional cache-token detail kept out of the common, cache-free usage allocation.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InputCacheUsage {
+    pub cached_input_tokens: Option<u64>,
+    pub cache_creation_input_tokens: Option<u64>,
+}
+
+impl Usage {
+    pub fn cache_details(
+        cached_input_tokens: Option<u64>,
+        cache_creation_input_tokens: Option<u64>,
+    ) -> Option<Box<InputCacheUsage>> {
+        if cached_input_tokens.is_none() && cache_creation_input_tokens.is_none() {
+            return None;
+        }
+        Some(Box::new(InputCacheUsage {
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        }))
+    }
+
+    pub fn cached_input_tokens(&self) -> Option<u64> {
+        self.cache
+            .as_ref()
+            .and_then(|cache| cache.cached_input_tokens)
+    }
+
+    pub fn cache_creation_input_tokens(&self) -> Option<u64> {
+        self.cache
+            .as_ref()
+            .and_then(|cache| cache.cache_creation_input_tokens)
+    }
+
+    pub fn set_cached_input_tokens(&mut self, value: u64) {
+        self.cache
+            .get_or_insert_with(|| Box::new(InputCacheUsage::default()))
+            .cached_input_tokens = Some(value);
+    }
+
+    pub fn set_cache_creation_input_tokens(&mut self, value: u64) {
+        self.cache
+            .get_or_insert_with(|| Box::new(InputCacheUsage::default()))
+            .cache_creation_input_tokens = Some(value);
+    }
 }
 
 /// Normalized reason a model stopped producing output.

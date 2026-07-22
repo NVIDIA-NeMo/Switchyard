@@ -70,7 +70,6 @@ fn decode_openai_chat_stream(
 
     if let Some(usage) = object.get("usage").and_then(Value::as_object) {
         let usage = openai_usage(usage);
-        capture_openai_usage_extras(state, object.get("usage"));
         state.usage = usage.clone();
         state.saw_backend_usage = true;
         out.push(LlmResponseChunk::Usage(usage));
@@ -225,8 +224,24 @@ fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 
 // Normalizes OpenAI token usage fields.
 fn openai_usage(usage: &Map<String, Value>) -> Usage {
+    let cached_input_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    let cache_creation_input_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cache_creation_tokens"))
+        .and_then(Value::as_u64);
     Usage {
-        input_tokens: usage.get("prompt_tokens").and_then(Value::as_u64),
+        input_tokens: usage
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .map(|tokens| {
+                tokens
+                    .saturating_sub(cached_input_tokens.unwrap_or(0))
+                    .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
+            }),
+        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
         reasoning_tokens: usage
@@ -238,19 +253,6 @@ fn openai_usage(usage: &Map<String, Value>) -> Usage {
                     .and_then(|details| details.get("reasoning_tokens"))
             })
             .and_then(Value::as_u64),
-    }
-}
-
-// Preserves OpenAI cache usage fields that have Anthropic equivalents.
-fn capture_openai_usage_extras(state: &mut StreamTranslationState, usage: Option<&Value>) {
-    if let Some(cached_tokens) = usage
-        .and_then(|usage| usage.get("prompt_tokens_details"))
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64)
-    {
-        state
-            .usage_extras
-            .insert("cache_read_input_tokens".to_string(), cached_tokens);
     }
 }
 
@@ -310,16 +312,8 @@ fn openai_tool_call_chunk(
 
 // Builds OpenAI usage payloads from normalized and provider-extra state.
 fn openai_usage_value(state: &StreamTranslationState) -> Value {
-    let cache_creation_tokens = state
-        .usage_extras
-        .get("cache_creation_input_tokens")
-        .copied()
-        .unwrap_or(0);
-    let cache_read_tokens = state
-        .usage_extras
-        .get("cache_read_input_tokens")
-        .copied()
-        .unwrap_or(0);
+    let cache_creation_tokens = state.usage.cache_creation_input_tokens().unwrap_or(0);
+    let cache_read_tokens = state.usage.cached_input_tokens().unwrap_or(0);
     let prompt_tokens =
         state.usage.input_tokens.unwrap_or(0) + cache_creation_tokens + cache_read_tokens;
     let completion_tokens = state.usage.output_tokens.unwrap_or(0);
@@ -333,7 +327,9 @@ fn openai_usage_value(state: &StreamTranslationState) -> Value {
             "reasoning_tokens": reasoning_tokens,
         });
     }
-    if cache_creation_tokens > 0 || cache_read_tokens > 0 {
+    if state.usage.cache_creation_input_tokens().is_some()
+        || state.usage.cached_input_tokens().is_some()
+    {
         usage["prompt_tokens_details"] = json!({
             "cached_tokens": cache_read_tokens,
             "cache_creation_tokens": cache_creation_tokens,
