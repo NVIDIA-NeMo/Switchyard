@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
-use std::fs;
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
@@ -152,14 +152,13 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
 }
 
 fn load_test_config(toml: &str) -> TestResult<ServerState> {
-    let path = std::env::temp_dir().join(format!(
-        "switchyard-server-config-{}.toml",
-        std::process::id()
-    ));
-    fs::write(&path, toml)?;
-    let state = load_server_state(&path);
-    fs::remove_file(path)?;
-    Ok(state?)
+    let mut config = tempfile::Builder::new()
+        .prefix("switchyard-server-config-")
+        .suffix(".toml")
+        .tempfile()?;
+    config.write_all(toml.as_bytes())?;
+    config.flush()?;
+    Ok(load_server_state(config.path())?)
 }
 
 async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> TestResult<Response> {

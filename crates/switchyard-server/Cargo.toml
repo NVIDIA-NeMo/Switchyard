@@ -30,5 +30,6 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 [dev-dependencies]
 async-trait = "0.1"
 http-body-util = "0.1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "net"] }
 tower = { version = "0.5", features = ["util"] }
