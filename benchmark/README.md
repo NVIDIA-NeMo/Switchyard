@@ -273,6 +273,8 @@ run_manifest.json
 server.log
 harbor.log
 routing_stats_final.json
+routing_requests.jsonl
+routing_stats_by_task.json
 jobs/<job-name>/result.json
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
@@ -283,6 +285,11 @@ settings, agent version pins, log paths, and final Harbor status. When the routi
 deterministic LLM-classifier routes, `server.classifier_prompts` records each route's effective
 prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` for reproducibility. Direct
 runs mark routing stats as `not-requested`.
+
+Switchyard runs also write `routing_requests.jsonl` (one record per router request: task, session,
+selected model, tier, token usage) and roll it up into `routing_stats_by_task.json` at finalize.
+The task identity comes from the per-task proxy sidecar, which stamps `x-switchyard-intake-task`
+and a per-trial `proxy_x_session_id` on model-bound requests.
 
 ## Docker Image Notes
 

@@ -223,12 +223,53 @@ def _copy_if_present(source: Path | None, dest: Path | None) -> str:
     return "present"
 
 
+def summarize_routing_log(log_path: Path) -> dict[str, Any]:
+    """Aggregate a per-request routing JSONL log into per-task stats."""
+    tasks: dict[str, dict[str, Any]] = {}
+    total_requests = 0
+    for raw in log_path.read_text().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        total_requests += 1
+        task = record.get("task") or "unattributed"
+        entry = tasks.setdefault(task, {"requests": 0, "sessions": [], "models": {}})
+        entry["requests"] += 1
+        session = record.get("session_id")
+        if session and session not in entry["sessions"]:
+            entry["sessions"].append(session)
+        model = record.get("model") or "unknown"
+        bucket = entry["models"].setdefault(
+            model,
+            {
+                "tier": record.get("tier") or "",
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        bucket["calls"] += 1
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = record.get(key)
+            bucket[key] += value if isinstance(value, int) else 0
+    return {"total_requests": total_requests, "tasks": tasks}
+
+
 def finalize_manifest(
     path: Path,
     *,
     harbor_rc: int | None,
     harbor_job_dir: Path | None = None,
     routing_stats: Path | None = None,
+    routing_log: Path | None = None,
+    routing_stats_by_task: Path | None = None,
 ) -> int:
     if not path.is_file():
         print(f"ERROR: manifest not found: {path}")
@@ -263,6 +304,20 @@ def finalize_manifest(
             if strip_source is not None:
                 break
         closed_book["proxy_strip_log_status"] = _copy_if_present(strip_source, strip_dest)
+
+    if routing_stats_by_task is not None:
+        status = "missing"
+        if routing_log is not None and routing_log.is_file():
+            try:
+                summary = summarize_routing_log(routing_log)
+                routing_stats_by_task.write_text(
+                    json.dumps(summary, indent=2, sort_keys=False) + "\n"
+                )
+                status = "present"
+            except OSError:
+                status = "missing"
+        outcomes["routing_stats_by_task_json"] = str(routing_stats_by_task.resolve())
+        outcomes["routing_stats_by_task_json_status"] = status
 
     outcomes["harbor_rc"] = harbor_rc
     outcomes["completed_at"] = _iso_timestamp()
@@ -341,6 +396,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
     finalize.add_argument("--harbor-rc", type=int, default=None)
     finalize.add_argument("--harbor-job-dir", type=Path, default=None)
     finalize.add_argument("--routing-stats", type=Path, default=None)
+    finalize.add_argument("--routing-log", type=Path, default=None)
+    finalize.add_argument("--routing-stats-by-task", type=Path, default=None)
 
     ns = parser.parse_args(argv)
     if ns.command == "finalize":
@@ -349,6 +406,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
             harbor_rc=ns.harbor_rc,
             harbor_job_dir=ns.harbor_job_dir,
             routing_stats=ns.routing_stats,
+            routing_log=ns.routing_log,
+            routing_stats_by_task=ns.routing_stats_by_task,
         )
     if ns.command != "write":
         parser.print_help()
