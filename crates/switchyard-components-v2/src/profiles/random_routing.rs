@@ -267,17 +267,9 @@ impl Profile for RandomRoutingProfile {
                             retry_backend_latency_ms,
                         )?;
                         let response = self.rprocess(&retry, response).await?;
-                        // The random-draw rationale describes the original tier, which
-                        // is now wrong after the fallback switched targets. Replace it
-                        // with the overflow-and-retry explanation.
-                        let mut routing_metadata = self.routing_metadata(&retry.decision);
-                        routing_metadata.rationale = Some(format!(
-                            "selected target {} exceeded its context window; retried fallback target {}",
-                            processed.decision.selected_target, retry.decision.selected_target
-                        ));
                         Ok(ProfileResponse::with_routing_metadata(
                             response,
-                            routing_metadata,
+                            self.routing_metadata(&retry.decision),
                         ))
                     }
                     Err(SwitchyardError::ContextWindowExceeded { target_id, .. }) => {
@@ -751,12 +743,6 @@ mod tests {
             Some("frontier/model")
         );
         assert_eq!(routing_metadata.selected_tier.as_deref(), Some("strong"));
-        // After the fallback switches tiers, the rationale describes the
-        // overflow-and-retry, not the original random draw.
-        assert_eq!(
-            routing_metadata.rationale.as_deref(),
-            Some("selected target weak exceeded its context window; retried fallback target strong")
-        );
         let response = response.response;
 
         let calls = observed(&calls)?;
