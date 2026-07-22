@@ -873,9 +873,21 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
     DOCKER_RUN_ARGS=(
         -d --rm
         --name "\${SWITCHYARD_DOCKER_CONTAINER}"
-        --network "\${SWITCHYARD_DOCKER_NETWORK}"
-        --network-alias "\${SWITCHYARD_DOCKER_SERVICE_NAME}"
-        -p "127.0.0.1:$(q "${PORT}"):$(q "${PORT}")"
+    )
+    if [[ "\${SWITCHYARD_DOCKER_NETWORK_MODE:-bridge}" == "host" ]]; then
+        # Host networking: for upstreams only routable from the host (VPN /
+        # corp-internal gateways that Docker bridge networks cannot reach).
+        # Pair with --harbor-server-url http://<host-ip>:<port> so task
+        # containers reach the server at the host address.
+        DOCKER_RUN_ARGS+=(--network host)
+    else
+        DOCKER_RUN_ARGS+=(
+            --network "\${SWITCHYARD_DOCKER_NETWORK}"
+            --network-alias "\${SWITCHYARD_DOCKER_SERVICE_NAME}"
+            -p "127.0.0.1:$(q "${PORT}"):$(q "${PORT}")"
+        )
+    fi
+    DOCKER_RUN_ARGS+=(
         -v "\${REPO_ROOT}:\${REPO_ROOT}:ro"
     )
     if [[ -n "\${ROUTING_PROFILES_DIR}" && "\${ROUTING_PROFILES_DIR}" != "\${REPO_ROOT}"* ]]; then
