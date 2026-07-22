@@ -1,17 +1,23 @@
 # Extending Server Configuration
 
-## Add a target
+## Add an LLM client and target
 
-Add the exact upstream model ID under `targets`. The default translating HTTP client is used unless
-`llm_client` names an entry under `llm_clients`.
+Define the upstream once under `llm_clients`, then reference it from targets. `type` defaults to
+`translating`.
 
 ```toml
-[targets."provider/model"]
-backend = { type = "openai_chat", base_url = "https://example.com/v1", api_key_env = "PROVIDER_API_KEY" }
+[llm_clients.provider]
+format = "openai_chat"
+base_url = "https://example.com/v1"
+api_key_env = "PROVIDER_API_KEY"
+
+[targets.model]
+id = "provider/model"
+llm_client = "provider"
 ```
 
-No Rust change is needed unless the target requires a new backend type. In that case, add a
-`BackendType` variant and its explicit `build_backend` match arm in `src/config.rs`.
+To support another client implementation or wire format, add the corresponding enum variant and
+explicit construction match in `src/config.rs`.
 
 ## Add an algorithm
 

@@ -204,24 +204,33 @@ async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
         r#"
 schema_version = 1
 
-[targets."model/classifier"]
-backend = {{ type = "openai_chat", base_url = "{base_url}" }}
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
 
-[targets."model/strong"]
-backend = {{ type = "openai_chat", base_url = "{base_url}" }}
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
 
-[targets."model/weak"]
-backend = {{ type = "openai_chat", base_url = "{base_url}" }}
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
 
-[routes."switchyard/random"]
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.random]
+id = "switchyard/random"
 type = "random"
-targets = ["model/weak"]
+targets = ["weak"]
 
-[routes."switchyard/classifier"]
+[routes.classifier]
+id = "switchyard/classifier"
 type = "llm_classifier"
-classifier_target = "model/classifier"
-strong_target = "model/strong"
-weak_target = "model/weak"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
 threshold = 0.5
 "#,
         base_url = upstream.base_url

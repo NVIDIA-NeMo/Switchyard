@@ -44,7 +44,7 @@ struct ServerConfig {
     #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
-    routes: BTreeMap<String, AlgorithmConfig>,
+    routes: BTreeMap<String, RouteConfig>,
 }
 
 impl ServerConfig {
@@ -61,56 +61,52 @@ impl ServerConfig {
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             validate_name("route", route_name)?;
+            validate_id("route", route_name, config.id())?;
             routes.push((
-                route_name.clone(),
+                config.id().to_string(),
                 build_algorithm(route_name, config, &targets)?,
             ));
         }
         ServerState::new(routes)
     }
 
-    fn build_clients(&self) -> ServerResult<BTreeMap<Option<String>, Arc<dyn RoutedLlmClient>>> {
+    fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<dyn RoutedLlmClient>>> {
         let mut models_by_client = self
             .llm_clients
             .keys()
-            .map(|name| (Some(name.clone()), Vec::new()))
-            .collect::<BTreeMap<Option<String>, Vec<ModelConfig>>>();
+            .map(|name| (name.clone(), Vec::new()))
+            .collect::<BTreeMap<String, Vec<ModelConfig>>>();
 
         for name in self.llm_clients.keys() {
             validate_name("llm client", name)?;
         }
         for (target_name, target) in &self.targets {
             validate_name("target", target_name)?;
-            match &target.llm_client {
-                Some(client_name) if !self.llm_clients.contains_key(client_name) => {
-                    return Err(ServerError::new(format!(
-                        "target {target_name} references unknown llm client {client_name}"
-                    )));
-                }
-                _ => {}
-            }
+            validate_id("target", target_name, &target.id)?;
+            let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+                ServerError::new(format!(
+                    "target {target_name} references unknown llm client {}",
+                    target.llm_client
+                ))
+            })?;
             let model_configs = models_by_client
-                .entry(target.llm_client.clone())
-                .or_default();
+                .get_mut(&target.llm_client)
+                .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
             model_configs.push(ModelConfig::new(
-                target_name,
-                build_backend(target_name, &target.backend)?,
+                &target.id,
+                build_backend(&target.llm_client, client_config)?,
                 None,
             ));
         }
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let config = match &name {
-                Some(name) => self
-                    .llm_clients
-                    .get(name)
-                    .copied()
-                    .ok_or_else(|| ServerError::new(format!("unknown llm client {name}")))?,
-                None => LlmClientConfig::TranslatingHttp,
-            };
-            let client: Arc<dyn RoutedLlmClient> = match config {
-                LlmClientConfig::TranslatingHttp => Arc::new(
+            let config = self
+                .llm_clients
+                .get(&name)
+                .ok_or_else(|| ServerError::new(format!("unknown llm client {name}")))?;
+            let client: Arc<dyn RoutedLlmClient> = match config.client_type {
+                LlmClientType::Translating => Arc::new(
                     TranslatingLlmClient::new(&model_configs)
                         .map_err(|error| ServerError::new(error.to_string()))?,
                 ),
@@ -122,7 +118,7 @@ impl ServerConfig {
 
     fn build_targets(
         &self,
-        clients: &BTreeMap<Option<String>, Arc<dyn RoutedLlmClient>>,
+        clients: &BTreeMap<String, Arc<dyn RoutedLlmClient>>,
     ) -> ServerResult<BTreeMap<String, LlmTarget>> {
         self.targets
             .iter()
@@ -133,7 +129,7 @@ impl ServerConfig {
                 Ok((
                     name.clone(),
                     LlmTarget {
-                        semantic_name: name.clone(),
+                        semantic_name: config.id.clone(),
                         llm_client: Some(Arc::clone(client)),
                     },
                 ))
@@ -142,21 +138,34 @@ impl ServerConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum LlmClientConfig {
-    TranslatingHttp,
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LlmClientType {
+    #[default]
+    Translating,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LlmClientConfig {
+    #[serde(default, rename = "type")]
+    client_type: LlmClientType,
+    format: ClientFormat,
+    base_url: String,
+    api_key_env: Option<String>,
+    #[serde(default)]
+    extra_headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
-    llm_client: Option<String>,
-    backend: BackendConfig,
+    id: String,
+    llm_client: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum BackendType {
+enum ClientFormat {
     #[serde(rename = "openai_chat")]
     OpenAiChat,
     #[serde(rename = "openai_responses")]
@@ -166,24 +175,17 @@ enum BackendType {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BackendConfig {
-    #[serde(rename = "type")]
-    backend_type: BackendType,
-    base_url: String,
-    api_key_env: Option<String>,
-    #[serde(default)]
-    extra_headers: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum AlgorithmConfig {
-    Noop,
+enum RouteConfig {
+    Noop {
+        id: String,
+    },
     Random {
+        id: String,
         targets: Vec<String>,
     },
     LlmClassifier {
+        id: String,
         classifier_target: String,
         strong_target: String,
         weak_target: String,
@@ -191,11 +193,19 @@ enum AlgorithmConfig {
     },
 }
 
-fn build_backend(target_name: &str, config: &BackendConfig) -> ServerResult<Backend> {
+impl RouteConfig {
+    fn id(&self) -> &str {
+        match self {
+            Self::Noop { id } | Self::Random { id, .. } | Self::LlmClassifier { id, .. } => id,
+        }
+    }
+}
+
+fn build_backend(client_name: &str, config: &LlmClientConfig) -> ServerResult<Backend> {
     let base_url = config.base_url.trim();
     if base_url.is_empty() {
         return Err(ServerError::new(format!(
-            "target {target_name} backend base_url must not be empty"
+            "llm client {client_name} base_url must not be empty"
         )));
     }
     let api_key = config
@@ -204,12 +214,12 @@ fn build_backend(target_name: &str, config: &BackendConfig) -> ServerResult<Back
         .map(|variable| {
             if variable.trim().is_empty() {
                 return Err(ServerError::new(format!(
-                    "target {target_name} api_key_env must not be empty"
+                    "llm client {client_name} api_key_env must not be empty"
                 )));
             }
             std::env::var(variable).map_err(|error| {
                 ServerError::new(format!(
-                    "target {target_name} could not read api_key_env {variable}: {error}"
+                    "llm client {client_name} could not read api_key_env {variable}: {error}"
                 ))
             })
         })
@@ -219,21 +229,21 @@ fn build_backend(target_name: &str, config: &BackendConfig) -> ServerResult<Back
         api_key,
         extra_headers: config.extra_headers.clone(),
     };
-    Ok(match config.backend_type {
-        BackendType::OpenAiChat => Backend::OpenAiChat(http),
-        BackendType::OpenAiResponses => Backend::OpenAiResponses(http),
-        BackendType::AnthropicMessages => Backend::Anthropic(http),
+    Ok(match config.format {
+        ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
+        ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
+        ClientFormat::AnthropicMessages => Backend::Anthropic(http),
     })
 }
 
 fn build_algorithm(
     route_name: &str,
-    config: &AlgorithmConfig,
+    config: &RouteConfig,
     targets: &BTreeMap<String, LlmTarget>,
 ) -> ServerResult<Arc<dyn Algorithm>> {
     match config {
-        AlgorithmConfig::Noop => Ok(Arc::new(Noop {})),
-        AlgorithmConfig::Random { targets: names } => {
+        RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
+        RouteConfig::Random { targets: names, .. } => {
             if names.is_empty() {
                 return Err(ServerError::new(format!(
                     "random route {route_name} requires at least one target"
@@ -251,27 +261,27 @@ fn build_algorithm(
                 targets,
             )?)))
         }
-        AlgorithmConfig::LlmClassifier {
+        RouteConfig::LlmClassifier {
             classifier_target,
             strong_target,
             weak_target,
             threshold,
+            ..
         } => {
             if !threshold.is_finite() || !(0.0..=1.0).contains(threshold) {
                 return Err(ServerError::new(format!(
                     "llm_classifier route {route_name} threshold must be between 0 and 1"
                 )));
             }
-            let names = [
-                classifier_target.as_str(),
-                strong_target.as_str(),
-                weak_target.as_str(),
-            ];
-            let target_set = resolve_targets(route_name, names, targets)?;
+            let classifier = resolve_target(route_name, classifier_target, targets)?;
+            let strong = resolve_target(route_name, strong_target, targets)?;
+            let weak = resolve_target(route_name, weak_target, targets)?;
+            let target_set =
+                LlmTargetSet::new(vec![classifier.clone(), strong.clone(), weak.clone()]);
             Ok(Arc::new(LlmClassifier::new(
-                classifier_target,
-                strong_target,
-                weak_target,
+                classifier.semantic_name,
+                strong.semantic_name,
+                weak.semantic_name,
                 *threshold,
                 target_set,
             )))
@@ -297,10 +307,31 @@ fn resolve_targets<'a>(
     Ok(LlmTargetSet::new(resolved))
 }
 
+fn resolve_target(
+    route_name: &str,
+    name: &str,
+    targets: &BTreeMap<String, LlmTarget>,
+) -> ServerResult<LlmTarget> {
+    targets.get(name).cloned().ok_or_else(|| {
+        ServerError::new(format!(
+            "route {route_name} references unknown target {name}"
+        ))
+    })
+}
+
 fn validate_name(kind: &str, name: &str) -> ServerResult<()> {
     if name.trim().is_empty() || name.trim() != name {
         return Err(ServerError::new(format!(
             "{kind} name must be non-empty and have no surrounding whitespace"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_id(kind: &str, name: &str, id: &str) -> ServerResult<()> {
+    if id.trim().is_empty() || id.trim() != id {
+        return Err(ServerError::new(format!(
+            "{kind} {name} id must be non-empty and have no surrounding whitespace"
         )));
     }
     Ok(())
@@ -314,32 +345,45 @@ mod tests {
 schema_version = 1
 
 [llm_clients.primary]
-type = "translating_http"
+format = "openai_chat"
+base_url = "https://example.test/v1"
 
-[targets."classifier/model"]
+[llm_clients.responses]
+type = "translating"
+format = "openai_responses"
+base_url = "https://example.test/v1"
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "https://example.test"
+
+[targets.classifier]
+id = "classifier/model"
 llm_client = "primary"
-backend = { type = "openai_chat", base_url = "https://example.test/v1" }
 
-[targets."strong/model"]
-llm_client = "primary"
-backend = { type = "openai_responses", base_url = "https://example.test/v1" }
+[targets.strong]
+id = "strong/model"
+llm_client = "responses"
 
-[targets."weak/model"]
-llm_client = "primary"
-backend = { type = "anthropic_messages", base_url = "https://example.test" }
+[targets.weak]
+id = "weak/model"
+llm_client = "anthropic"
 
-[routes."switchyard/noop"]
+[routes.noop]
+id = "switchyard/noop"
 type = "noop"
 
-[routes."switchyard/random"]
+[routes.random]
+id = "switchyard/random"
 type = "random"
-targets = ["strong/model", "weak/model"]
+targets = ["strong", "weak"]
 
-[routes."switchyard/classifier"]
+[routes.classifier]
+id = "switchyard/classifier"
 type = "llm_classifier"
-classifier_target = "classifier/model"
-strong_target = "strong/model"
-weak_target = "weak/model"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
 threshold = 0.5
 "#;
 
@@ -383,15 +427,15 @@ threshold = 0.5
             ),
             (
                 VALID_CONFIG.replace(
-                    "targets = [\"strong/model\", \"weak/model\"]",
-                    "targets = [\"strong/model\", \"missing/model\"]",
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"missing\"]",
                 ),
-                "unknown target missing/model",
+                "unknown target missing",
             ),
             (
                 VALID_CONFIG.replace(
-                    "targets = [\"strong/model\", \"weak/model\"]",
-                    "targets = [\"strong/model\", \"strong/model\"]",
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"strong\"]",
                 ),
                 "duplicate targets",
             ),
@@ -417,7 +461,7 @@ threshold = 0.5
     fn api_key_environment_reference_is_explicit() {
         let toml = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
-            "base_url = \"https://example.test/v1\", api_key_env = \"SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET\"",
+            "base_url = \"https://example.test/v1\"\napi_key_env = \"SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET\"",
             1,
         );
         assert!(error_message(&toml).contains("SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET"));
