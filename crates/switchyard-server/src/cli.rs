@@ -24,7 +24,7 @@ const DEFAULT_PORT: u16 = 4000;
     version
 )]
 pub(crate) struct ServerArgs {
-    /// YAML file defining LLM clients, targets, and algorithm routes.
+    /// TOML file defining LLM clients, targets, and algorithm routes.
     #[arg(long, value_name = "PATH")]
     config: PathBuf,
 

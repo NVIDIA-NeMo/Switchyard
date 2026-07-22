@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed YAML configuration and explicit construction for the Rust server.
+//! Typed TOML configuration and explicit construction for the Rust server.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,23 +17,23 @@ use crate::{ServerError, ServerResult, ServerState};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 
-/// Loads a YAML deployment file and constructs the complete server state.
+/// Loads a TOML deployment file and constructs the complete server state.
 pub fn load_server_state(path: impl AsRef<Path>) -> ServerResult<ServerState> {
     let path = path.as_ref();
-    let yaml = fs::read_to_string(path).map_err(|error| {
+    let toml = fs::read_to_string(path).map_err(|error| {
         ServerError::new(format!(
             "failed to read server config {}: {error}",
             path.display()
         ))
     })?;
-    server_state_from_yaml(&yaml).map_err(|error| {
+    server_state_from_toml(&toml).map_err(|error| {
         ServerError::new(format!("invalid server config {}: {error}", path.display()))
     })
 }
 
-fn server_state_from_yaml(yaml: &str) -> ServerResult<ServerState> {
-    let config: ServerConfig = yaml_serde::from_str(yaml)
-        .map_err(|error| ServerError::new(format!("failed to parse YAML: {error}")))?;
+fn server_state_from_toml(toml: &str) -> ServerResult<ServerState> {
+    let config: ServerConfig = toml::from_str(toml)
+        .map_err(|error| ServerError::new(format!("failed to parse TOML: {error}")))?;
     config.build()
 }
 
@@ -311,44 +311,40 @@ mod tests {
     use super::*;
 
     const VALID_CONFIG: &str = r#"
-schema_version: 1
-llm_clients:
-  primary:
-    type: translating_http
-targets:
-  classifier/model:
-    llm_client: primary
-    backend:
-      type: openai_chat
-      base_url: https://example.test/v1
-  strong/model:
-    llm_client: primary
-    backend:
-      type: openai_responses
-      base_url: https://example.test/v1
-  weak/model:
-    llm_client: primary
-    backend:
-      type: anthropic_messages
-      base_url: https://example.test
-routes:
-  switchyard/noop:
-    type: noop
-  switchyard/random:
-    type: random
-    targets:
-      - strong/model
-      - weak/model
-  switchyard/classifier:
-    type: llm_classifier
-    classifier_target: classifier/model
-    strong_target: strong/model
-    weak_target: weak/model
-    threshold: 0.5
+schema_version = 1
+
+[llm_clients.primary]
+type = "translating_http"
+
+[targets."classifier/model"]
+llm_client = "primary"
+backend = { type = "openai_chat", base_url = "https://example.test/v1" }
+
+[targets."strong/model"]
+llm_client = "primary"
+backend = { type = "openai_responses", base_url = "https://example.test/v1" }
+
+[targets."weak/model"]
+llm_client = "primary"
+backend = { type = "anthropic_messages", base_url = "https://example.test" }
+
+[routes."switchyard/noop"]
+type = "noop"
+
+[routes."switchyard/random"]
+type = "random"
+targets = ["strong/model", "weak/model"]
+
+[routes."switchyard/classifier"]
+type = "llm_classifier"
+classifier_target = "classifier/model"
+strong_target = "strong/model"
+weak_target = "weak/model"
+threshold = 0.5
 "#;
 
-    fn error_message(yaml: &str) -> String {
-        match server_state_from_yaml(yaml) {
+    fn error_message(toml: &str) -> String {
+        match server_state_from_toml(toml) {
             Ok(_) => "configuration unexpectedly succeeded".to_string(),
             Err(error) => error.to_string(),
         }
@@ -356,7 +352,7 @@ routes:
 
     #[test]
     fn builds_all_supported_algorithm_types() -> ServerResult<()> {
-        let state = server_state_from_yaml(VALID_CONFIG)?;
+        let state = server_state_from_toml(VALID_CONFIG)?;
         assert_eq!(
             state.models().collect::<Vec<_>>(),
             [
@@ -371,10 +367,10 @@ routes:
     #[test]
     fn rejects_unknown_fields_and_algorithm_types() {
         let unknown_field =
-            VALID_CONFIG.replace("schema_version: 1", "schema_version: 1\nmagic: true");
+            VALID_CONFIG.replace("schema_version = 1", "schema_version = 1\nmagic = true");
         assert!(error_message(&unknown_field).contains("unknown field"));
 
-        let unknown_algorithm = VALID_CONFIG.replace("type: noop", "type: imaginary");
+        let unknown_algorithm = VALID_CONFIG.replace("type = \"noop\"", "type = \"imaginary\"");
         assert!(error_message(&unknown_algorithm).contains("unknown variant"));
     }
 
@@ -382,30 +378,36 @@ routes:
     fn rejects_invalid_references_and_parameters() {
         let cases = [
             (
-                VALID_CONFIG.replace("llm_client: primary", "llm_client: missing"),
+                VALID_CONFIG.replace("llm_client = \"primary\"", "llm_client = \"missing\""),
                 "unknown llm client missing",
             ),
             (
-                VALID_CONFIG.replace("      - weak/model", "      - missing/model"),
+                VALID_CONFIG.replace(
+                    "targets = [\"strong/model\", \"weak/model\"]",
+                    "targets = [\"strong/model\", \"missing/model\"]",
+                ),
                 "unknown target missing/model",
             ),
             (
-                VALID_CONFIG.replace("      - weak/model", "      - strong/model"),
+                VALID_CONFIG.replace(
+                    "targets = [\"strong/model\", \"weak/model\"]",
+                    "targets = [\"strong/model\", \"strong/model\"]",
+                ),
                 "duplicate targets",
             ),
             (
-                VALID_CONFIG.replace("threshold: 0.5", "threshold: 1.5"),
+                VALID_CONFIG.replace("threshold = 0.5", "threshold = 1.5"),
                 "threshold must be between 0 and 1",
             ),
             (
-                VALID_CONFIG.replace("schema_version: 1", "schema_version: 2"),
+                VALID_CONFIG.replace("schema_version = 1", "schema_version = 2"),
                 "unsupported schema_version 2",
             ),
         ];
 
-        for (yaml, expected) in cases {
+        for (toml, expected) in cases {
             assert!(
-                error_message(&yaml).contains(expected),
+                error_message(&toml).contains(expected),
                 "expected error containing {expected}"
             );
         }
@@ -413,11 +415,11 @@ routes:
 
     #[test]
     fn api_key_environment_reference_is_explicit() {
-        let yaml = VALID_CONFIG.replacen(
-            "base_url: https://example.test/v1",
-            "base_url: https://example.test/v1\n      api_key_env: SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET",
+        let toml = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\", api_key_env = \"SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET\"",
             1,
         );
-        assert!(error_message(&yaml).contains("SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET"));
+        assert!(error_message(&toml).contains("SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET"));
     }
 }

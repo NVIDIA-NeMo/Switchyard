@@ -151,12 +151,12 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     Ok((upstream, app))
 }
 
-fn load_test_config(yaml: &str) -> TestResult<ServerState> {
+fn load_test_config(toml: &str) -> TestResult<ServerState> {
     let path = std::env::temp_dir().join(format!(
-        "switchyard-server-config-{}.yaml",
+        "switchyard-server-config-{}.toml",
         std::process::id()
     ));
-    fs::write(&path, yaml)?;
+    fs::write(&path, toml)?;
     let state = load_server_state(&path);
     fs::remove_file(path)?;
     Ok(state?)
@@ -198,35 +198,31 @@ impl Response {
 }
 
 #[tokio::test]
-async fn yaml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
+async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
-schema_version: 1
-targets:
-  model/classifier:
-    backend:
-      type: openai_chat
-      base_url: {base_url}
-  model/strong:
-    backend:
-      type: openai_chat
-      base_url: {base_url}
-  model/weak:
-    backend:
-      type: openai_chat
-      base_url: {base_url}
-routes:
-  switchyard/random:
-    type: random
-    targets:
-      - model/weak
-  switchyard/classifier:
-    type: llm_classifier
-    classifier_target: model/classifier
-    strong_target: model/strong
-    weak_target: model/weak
-    threshold: 0.5
+schema_version = 1
+
+[targets."model/classifier"]
+backend = {{ type = "openai_chat", base_url = "{base_url}" }}
+
+[targets."model/strong"]
+backend = {{ type = "openai_chat", base_url = "{base_url}" }}
+
+[targets."model/weak"]
+backend = {{ type = "openai_chat", base_url = "{base_url}" }}
+
+[routes."switchyard/random"]
+type = "random"
+targets = ["model/weak"]
+
+[routes."switchyard/classifier"]
+type = "llm_classifier"
+classifier_target = "model/classifier"
+strong_target = "model/strong"
+weak_target = "model/weak"
+threshold = 0.5
 "#,
         base_url = upstream.base_url
     ))?;

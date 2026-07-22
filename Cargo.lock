@@ -1770,9 +1770,9 @@ dependencies = [
  "switchyard-llm-client",
  "switchyard-translation",
  "tokio",
+ "toml",
  "tower",
  "tracing",
- "yaml_serde",
 ]
 
 [[package]]
