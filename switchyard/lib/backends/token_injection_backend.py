@@ -31,6 +31,13 @@ JsonObject = dict[str, Any]
 #: making the generation's final token usable as the EOT split marker.
 _NATURAL_STOP_REASONS = frozenset({"stop", "tool_calls", "stop_sequence"})
 
+#: Clamp headroom: the chat endpoint can render the prompt a few tokens longer
+#: than /tokenize does (measured on vLLM 0.24.0 + Qwen3: the chat path's
+#: disabled-thinking render pre-fills an empty think block, exactly 4 tokens).
+#: The pre-fill size is a template property, so keep headroom beyond the
+#: observed value rather than pinning to it.
+_CONTEXT_MARGIN_TOKENS = 8
+
 #: Chat request params forwarded verbatim onto the completions request.
 _FORWARDED_SAMPLING_KEYS = (
     "temperature",
@@ -43,52 +50,50 @@ _FORWARDED_SAMPLING_KEYS = (
 )
 
 
-class _ChainMismatch(ValueError):
-    """This call does not extend the session's token chain.
-
-    Raised for history-shape conditions (interleaved side-calls like
-    opencode's title generator, rewritten history, no observed end-of-turn
-    token). The call is served via the chat path but the session state is
-    kept, so later calls that do extend the chain still inject — unlike hard
-    errors, which pin the session to the fallback path.
-    """
-
-
 @dataclass
-class _SessionState:
-    """Canonical token history for one capture session.
+class _Chain:
+    """Canonical token history of one conversation within a capture session.
 
-    ``prefix`` is the no-generation-prompt template tokenization of the last
-    call's messages — the stable split offset for the next call's env-suffix
-    extraction (the generation-prompt suffix differs between ``/tokenize`` and
-    chat completions when a reasoning parser is active, so full-prompt offsets
-    are not comparable).
+    Harnesses interleave several conversations under one session id (e.g.
+    opencode's title-generator side-call rides the main agent's session), so a
+    session holds a list of chains and each call is routed to the chain it
+    extends. ``prefix`` is the no-generation-prompt template tokenization of
+    the chain's last call — the stable split offset for env-suffix extraction
+    (the generation-prompt suffix differs between ``/tokenize`` and chat
+    completions when a reasoning parser is active, so full-prompt offsets are
+    not comparable).
     """
 
     accumulated: list[int]
     prefix: list[int]
+    #: The chain's last raw generation; its final token on a natural stop is
+    #: the end-of-turn marker used to slice the env suffix. Verified: vLLM
+    #: includes the stop token in token_ids on both 0.11 and 0.24.
     last_generation: list[int]
+    #: End-of-turn token id, observed from a naturally stopped generation.
+    #: None (e.g. after a length-stop) means the chain cannot be extended and
+    #: is reseeded by the next matching call instead.
     eot_token_id: int | None
-    fallen_back: bool = False
 
 
 class TokenInjectionBackend(LLMBackend):
     """Guarantee per-session token continuity by injecting raw prompt token IDs.
 
-    Wraps the normal chat backend. The first call of a session delegates to it
-    and seeds the session's canonical token history from the captured engine
-    fields; every later call bypasses chat-template re-rendering — which
-    strips historical reasoning for reasoning models — by sending the
-    accumulated history plus the newly tokenized environment suffix directly
-    to vLLM's ``/v1/completions`` as token IDs. The raw generation is parsed
-    with vLLM's own parsers and returned as a chat-shaped response carrying
-    the same engine token fields the capture processor already reads.
+    Wraps the normal chat backend. Each call is matched to the session chain
+    whose history it extends; matched calls bypass chat-template re-rendering
+    — which strips historical reasoning for reasoning models — by sending the
+    chain's accumulated history plus the newly tokenized environment suffix
+    directly to vLLM's ``/v1/completions`` as token IDs. The raw generation is
+    parsed with vLLM's own parsers and returned as a chat-shaped response
+    carrying the same engine token fields the capture processor already reads.
 
-    Any failure (prefix mismatch from history rewrites, missing token fields,
-    parser errors, transport errors) falls back to the wrapped backend and
-    pins the session to the fallback path — behavior then equals capture-only
-    mode and Gym's validation masks the sample. Session state is in-process
-    only: one proxy instance must own all calls of a session.
+    A call that matches no chain is served via the wrapped backend and seeds a
+    new chain from its response, so interleaved side-calls and arrival order
+    never disable injection for the real conversation. Any failure (missing
+    token fields, parser errors, transport errors) also falls back to the
+    wrapped backend — behavior then equals capture-only mode and Gym's
+    validation masks the affected sample. Chain state is in-process only: one
+    proxy instance must own all calls of a session.
     """
 
     def __init__(
@@ -111,69 +116,87 @@ class TokenInjectionBackend(LLMBackend):
         self._tool_parser = tool_parser
         self._reasoning_parser = reasoning_parser
         self._timeout = timeout_secs
-        self._sessions: dict[str, _SessionState] = {}
+        self._sessions: dict[str, list[_Chain]] = {}
         # Model context length, learned from /tokenize responses; used to clamp
-        # the completion budget the way the chat endpoint does implicitly.
+        # the completion budget the way older vLLM chat endpoints did implicitly
+        # (newer versions reject over-budget requests outright, on both paths).
         self._max_model_len: int | None = None
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
-        """Serve one model call, injecting the canonical history when possible."""
+        """Serve one model call, injecting the matching chain's history when possible."""
         session_id = ctx.metadata.get(CTX_TOKEN_CAPTURE_SESSION)
         if not isinstance(session_id, str) or not session_id:
             return await self._inner.call(ctx, request)
-
-        state = self._sessions.get(session_id)
-        if state is not None and state.fallen_back:
-            return await self._inner.call(ctx, request)
-
-        if state is None:
-            return await self._first_call(ctx, request, session_id)
-
         body = dict(request.body)
         if body.get("n", 1) not in (None, 1):
-            self._fall_back(session_id, "n>1 is unsupported for injection")
-            return await self._inner.call(ctx, request)
-        try:
-            return await self._injected_call(session_id, state, body)
-        except _ChainMismatch as exc:
-            # Harnesses interleave side-calls on the main session (e.g.
-            # opencode's title generator); serve this call via the chat path
-            # but keep the chain state so later extending calls still inject.
-            logger.info(
-                "token injection: session %s: call does not extend the chain (%s); "
-                "serving via the chat path",
-                session_id,
-                exc,
-            )
-            return await self._inner.call(ctx, request)
-        except (httpx.HTTPError, VllmParserError, KeyError, ValueError) as exc:
-            self._fall_back(session_id, f"injection failed: {exc}")
             return await self._inner.call(ctx, request)
 
-    async def _first_call(
-        self, ctx: ProxyContext, request: ChatRequest, session_id: str
+        chains = self._sessions.setdefault(session_id, [])
+        rendered: list[int] | None = None
+        try:
+            chain = None
+            if chains:
+                rendered = await self._tokenize(body, add_generation_prompt=True)
+                chain = _longest_matching_chain(chains, rendered)
+            if rendered is not None and chain is not None and chain.eot_token_id is not None:
+                return await self._injected_call(chain, body, rendered)
+
+            # No chain extends this call (first call, side-call, rewritten
+            # history) or the matched chain has no end-of-turn marker: serve
+            # via the chat path and (re)seed a chain from the response.
+            prefix = await self._tokenize(body, add_generation_prompt=False)
+            response = await self._serve_inner(ctx, request, body, prompt_len=len(prefix))
+            self._seed_chain(chains, chain, response, prefix)
+            return response
+        except (httpx.HTTPError, VllmParserError, KeyError, ValueError) as exc:
+            logger.warning(
+                "token injection: session %s: serving via the chat path: %s", session_id, exc
+            )
+            if rendered is not None:
+                # The budget clamp must apply on this path too, or the call
+                # trades an injection error for a context-window rejection.
+                return await self._serve_inner(ctx, request, body, prompt_len=len(rendered))
+            return await self._inner.call(ctx, request)
+
+    async def _serve_inner(
+        self, ctx: ProxyContext, request: ChatRequest, body: JsonObject, prompt_len: int
     ) -> ChatResponse:
-        """Delegate the session's first call and seed its token history."""
-        response = await self._inner.call(ctx, request)
+        """Delegate to the chat backend with the completion budget clamped.
+
+        The clamp applies on this path too: newer vLLM rejects
+        ``prompt + max_tokens > max_model_len`` on chat completions as well.
+        """
+        max_tokens = self._resolve_max_tokens(body, prompt_len)
+        if max_tokens is not None and max_tokens != body.get("max_tokens"):
+            body = dict(body)
+            body["max_tokens"] = max_tokens
+            body.pop("max_completion_tokens", None)
+            request.replace_body(body)
+        return await self._inner.call(ctx, request)
+
+    def _seed_chain(
+        self,
+        chains: list[_Chain],
+        chain: _Chain | None,
+        response: ChatResponse,
+        prefix: list[int],
+    ) -> None:
+        """Start (or refresh) a chain from a chat-path response's token fields.
+
+        Responses without engine token fields seed nothing — the call stays
+        capture-only and a later call may seed the chain instead.
+        """
         try:
             body = dict(response.body)
         except (TypeError, ValueError):
-            self._fall_back(session_id, "first response body is not readable")
-            return response
+            return
         harvested = _harvest_token_fields(body)
         if harvested is None:
-            self._fall_back(session_id, "first response carries no engine token fields")
-            return response
+            return
         prompt_ids, generation_ids, finish_reason = harvested
-        try:
-            prefix = await self._tokenize(dict(request.body), add_generation_prompt=False)
-        except (httpx.HTTPError, KeyError, ValueError) as exc:
-            self._fall_back(session_id, f"prefix tokenization failed: {exc}")
-            return response
         if prompt_ids[: len(prefix)] != prefix:
-            self._fall_back(session_id, "no-generation-prompt prefix does not match the prompt")
-            return response
-        self._sessions[session_id] = _SessionState(
+            return
+        seeded = _Chain(
             accumulated=prompt_ids + generation_ids,
             prefix=prefix,
             last_generation=generation_ids,
@@ -181,21 +204,21 @@ class TokenInjectionBackend(LLMBackend):
                 generation_ids[-1] if finish_reason in _NATURAL_STOP_REASONS else None
             ),
         )
-        return response
+        if chain is not None:
+            chains[chains.index(chain)] = seeded
+        else:
+            chains.append(seeded)
 
     async def _injected_call(
-        self, session_id: str, state: _SessionState, body: JsonObject
+        self, chain: _Chain, body: JsonObject, rendered: list[int]
     ) -> ChatResponse:
-        """Generate through ``/v1/completions`` with the canonical token history."""
-        if state.eot_token_id is None:
-            raise _ChainMismatch("no end-of-turn token observed (prior turn did not stop naturally)")
-        rendered = await self._tokenize(body, add_generation_prompt=True)
-        if rendered[: len(state.prefix)] != state.prefix:
-            raise _ChainMismatch("templated prompt does not extend the session prefix")
+        """Generate through ``/v1/completions`` with the chain's token history."""
+        if chain.eot_token_id is None:  # caller guarantees; narrows the type
+            raise ValueError("chain has no end-of-turn marker")
         env_tokens = _slice_env_suffix(
-            rendered[len(state.prefix):], state.last_generation, state.eot_token_id
+            rendered[len(chain.prefix):], chain.last_generation, chain.eot_token_id
         )
-        injected_prompt = state.accumulated + env_tokens
+        injected_prompt = chain.accumulated + env_tokens
 
         completion = await self._completions(body, injected_prompt)
         choice = completion["choices"][0]
@@ -210,12 +233,11 @@ class TokenInjectionBackend(LLMBackend):
 
         # State advances only after a fully successful call, so a failed call
         # falls back without corrupting the history.
-        state.accumulated = injected_prompt + generation_ids
-        state.prefix = await self._tokenize(body, add_generation_prompt=False)
-        state.last_generation = generation_ids
-        finish_reason = choice.get("finish_reason")
-        if finish_reason in _NATURAL_STOP_REASONS:
-            state.eot_token_id = generation_ids[-1]
+        chain.accumulated = injected_prompt + generation_ids
+        chain.prefix = await self._tokenize(body, add_generation_prompt=False)
+        chain.last_generation = generation_ids
+        if choice.get("finish_reason") in _NATURAL_STOP_REASONS:
+            chain.eot_token_id = generation_ids[-1]
         return ChatResponse.openai_completion(chat_body)
 
     def _synthesize_chat_body(
@@ -252,7 +274,10 @@ class TokenInjectionBackend(LLMBackend):
 
         message: JsonObject = {"role": "assistant", "content": content}
         if reasoning_content:
+            # Both spellings: vLLM chat responses renamed reasoning_content ->
+            # reasoning around 0.24; harnesses may read either.
             message["reasoning_content"] = reasoning_content
+            message["reasoning"] = reasoning_content
         if tool_calls:
             message["tool_calls"] = tool_calls
 
@@ -280,13 +305,13 @@ class TokenInjectionBackend(LLMBackend):
         }
 
     def _resolve_max_tokens(self, body: JsonObject, prompt_len: int) -> int | None:
-        """The effective completion budget for the injected call.
+        """The effective completion budget for a call with a *prompt_len*-token prompt.
 
         Honors the smaller of ``max_tokens`` / ``max_completion_tokens`` when
-        both are present, then clamps to the model context: the chat endpoint
-        caps the budget to the remaining context automatically, but
-        ``/v1/completions`` rejects the request outright, so the clamp must
-        happen here. ``max_model_len`` is learned from ``/tokenize`` responses.
+        both are present, clamped to the remaining model context when the
+        context length is known (learned from ``/tokenize`` responses). When
+        no budget fits at all, the requested value is returned unchanged — a
+        genuinely exhausted context should surface as the engine's own error.
         """
         requested = [
             value
@@ -296,12 +321,9 @@ class TokenInjectionBackend(LLMBackend):
         max_tokens = min(requested) if requested else None
         if max_tokens is None or self._max_model_len is None:
             return max_tokens
-        remaining = self._max_model_len - prompt_len
+        remaining = self._max_model_len - prompt_len - _CONTEXT_MARGIN_TOKENS
         if remaining <= 0:
-            raise ValueError(
-                f"injected prompt ({prompt_len} tokens) leaves no room in the model "
-                f"context ({self._max_model_len})"
-            )
+            return max_tokens
         return min(max_tokens, remaining)
 
     async def _tokenize(self, body: JsonObject, *, add_generation_prompt: bool) -> list[int]:
@@ -355,18 +377,15 @@ class TokenInjectionBackend(LLMBackend):
             raise ValueError(f"{url} returned a non-object JSON body")
         return data
 
-    def _fall_back(self, session_id: str, reason: str) -> None:
-        """Pin the session to the wrapped chat path for all remaining calls."""
-        logger.warning(
-            "token injection: session %s falls back to the chat path: %s", session_id, reason
-        )
-        state = self._sessions.get(session_id)
-        if state is None:
-            state = _SessionState(
-                accumulated=[], prefix=[], last_generation=[], eot_token_id=None
-            )
-            self._sessions[session_id] = state
-        state.fallen_back = True
+
+def _longest_matching_chain(chains: list[_Chain], rendered: list[int]) -> _Chain | None:
+    """The chain whose prefix the rendered prompt extends; longest match wins."""
+    best: _Chain | None = None
+    for chain in chains:
+        n = len(chain.prefix)
+        if (best is None or n > len(best.prefix)) and rendered[:n] == chain.prefix:
+            best = chain
+    return best
 
 
 def _harvest_token_fields(body: JsonObject) -> tuple[list[int], list[int], Any] | None:
@@ -395,19 +414,24 @@ def _is_token_list(value: object) -> bool:
 def _slice_env_suffix(
     canonical_tail: list[int], last_generation: list[int], eot_token_id: int
 ) -> list[int]:
-    """Environment tokens added since the last call (tool results, user turns, glue).
+    """Environment tokens added since the chain's last call (tool results, user turns, glue).
 
-    ``canonical_tail`` re-renders the previous assistant turn (with reasoning
+    ``canonical_tail`` re-renders the previous assistant turn (reasoning
     stripped by the template) followed by the new environment messages; the
-    first end-of-turn token marks where the re-rendered turn ends. When the
-    raw generation already ended with the end-of-turn token it is skipped in
-    the tail to avoid duplication; otherwise it is kept so the stream still
-    closes the assistant turn.
+    first end-of-turn token marks where the re-rendered turn ends. This never
+    renders a conversation ENDING with an assistant message, so thinking
+    templates' special-casing of a final assistant turn cannot affect it.
+    When the raw generation already ended with the end-of-turn token it is
+    skipped in the tail to avoid duplication; otherwise it is kept so the
+    stream still closes the assistant turn.
     """
     try:
         index = canonical_tail.index(eot_token_id)
     except ValueError:
-        raise _ChainMismatch("end-of-turn token not found in the re-rendered prompt tail") from None
+        raise ValueError(
+            "end-of-turn token not found in the re-rendered prompt tail "
+            f"(eot={eot_token_id}, tail starts {canonical_tail[:8]})"
+        ) from None
     if last_generation and last_generation[-1] == eot_token_id:
         return canonical_tail[index + 1:]
     return canonical_tail[index:]

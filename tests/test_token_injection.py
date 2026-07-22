@@ -40,15 +40,23 @@ _TOOLS = [
 
 
 class _FakeInner(LLMBackend):
-    """Chat backend double returning a preset vLLM-shaped completion."""
+    """Chat backend double returning preset vLLM-shaped completions.
 
-    def __init__(self, body: dict[str, Any] | None = None) -> None:
+    Accepts one body (returned for every call) or a list of bodies (consumed
+    in call order, last one repeating). Records each request body it serves.
+    """
+
+    def __init__(self, body: dict[str, Any] | list[dict[str, Any]] | None = None) -> None:
         self.calls = 0
-        self._body = body if body is not None else _first_turn_body()
+        self.seen_bodies: list[dict[str, Any]] = []
+        bodies = body if body is not None else _first_turn_body()
+        self._bodies = bodies if isinstance(bodies, list) else [bodies]
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        self.seen_bodies.append(dict(request.body))
+        body = self._bodies[min(self.calls, len(self._bodies) - 1)]
         self.calls += 1
-        return ChatResponse.openai_completion(self._body)
+        return ChatResponse.openai_completion(body)
 
 
 def _first_turn_body() -> dict[str, Any]:
@@ -93,6 +101,11 @@ def _chat_request(turns: int = 1) -> ChatRequest:
     if turns > 1:
         messages += [
             {"role": "assistant", "content": "step one"},
+            {"role": "user", "content": "continue"},
+        ]
+    if turns > 2:
+        messages += [
+            {"role": "assistant", "content": "step two"},
             {"role": "user", "content": "continue"},
         ]
     return ChatRequest.openai_chat({"model": _MODEL, "messages": messages})
@@ -210,7 +223,7 @@ async def test_third_call_extends_advanced_state(respx_mock: respx.MockRouter) -
 
     await backend.call(ctx, _chat_request())
     await backend.call(ctx, _chat_request(turns=2))
-    await backend.call(ctx, _chat_request(turns=2))
+    await backend.call(ctx, _chat_request(turns=3))
 
     sent = json.loads(completions.calls[1].request.content)
     assert sent["prompt"] == injected_3
@@ -230,7 +243,7 @@ async def test_max_tokens_takes_smaller_of_both_keys(respx_mock: respx.MockRoute
     await backend.call(ctx, _chat_request())
     request = ChatRequest.openai_chat({
         "model": _MODEL,
-        "messages": [{"role": "user", "content": "hello"}],
+        "messages": dict(_chat_request(turns=2).body)["messages"],
         "max_tokens": 32000,
         "max_completion_tokens": 512,
     })
@@ -259,11 +272,11 @@ async def test_max_tokens_clamped_to_model_context(respx_mock: respx.MockRouter)
     await backend.call(ctx, _chat_request())
     request = ChatRequest.openai_chat({
         "model": _MODEL,
-        "messages": [{"role": "user", "content": "hello"}],
+        "messages": dict(_chat_request(turns=2).body)["messages"],
         "max_tokens": 32000,
     })
     await backend.call(ctx, request)
-    assert json.loads(completions.calls[0].request.content)["max_tokens"] == 33
+    assert json.loads(completions.calls[0].request.content)["max_tokens"] == 25  # 40 - 7 - margin 8
 
 
 @respx.mock
@@ -279,7 +292,7 @@ async def test_sampling_params_forwarded(respx_mock: respx.MockRouter) -> None:
     await backend.call(ctx, _chat_request())
     request = ChatRequest.openai_chat({
         "model": _MODEL,
-        "messages": [{"role": "user", "content": "hello"}],
+        "messages": dict(_chat_request(turns=2).body)["messages"],
         "temperature": 0.7,
         "max_completion_tokens": 128,
         "stop": ["\n\n"],
@@ -307,7 +320,7 @@ async def test_required_tool_choice_uses_guided_decoding(respx_mock: respx.MockR
     await backend.call(ctx, _chat_request())
     request = ChatRequest.openai_chat({
         "model": _MODEL,
-        "messages": [{"role": "user", "content": "weather?"}],
+        "messages": dict(_chat_request(turns=2).body)["messages"],
         "tools": _TOOLS,
         "tool_choice": "required",
     })
@@ -324,7 +337,7 @@ async def test_required_tool_choice_uses_guided_decoding(respx_mock: respx.MockR
 
 
 # ---------------------------------------------------------------------------
-# Fallback pinning
+# Chain routing and fallback
 # ---------------------------------------------------------------------------
 
 
@@ -336,33 +349,38 @@ async def test_no_session_delegates_without_state() -> None:
     assert backend._sessions == {}
 
 
-async def test_missing_token_fields_pins_fallback() -> None:
+@respx.mock
+async def test_missing_token_fields_seeds_nothing_and_retries(
+    respx_mock: respx.MockRouter,
+) -> None:
     inner = _FakeInner(body={"id": "x", "model": _MODEL, "choices": [{"message": {}}]})
     backend = _backend(inner)
     ctx = _ctx()
+    _mock_tokenize(respx_mock, [[1, 2], [1, 2, 30]])
+
     await backend.call(ctx, _chat_request())
     await backend.call(ctx, _chat_request(turns=2))
-    assert inner.calls == 2  # second call went straight to the chat path
-    assert backend._sessions["sess-1"].fallen_back
+    assert inner.calls == 2  # both served via the chat path
+    assert backend._sessions["sess-1"] == []  # nothing seeded, retried each call
 
 
 @respx.mock
-async def test_prefix_mismatch_falls_back_per_call_without_pinning(
+async def test_side_call_is_served_without_disturbing_the_chain(
     respx_mock: respx.MockRouter,
 ) -> None:
-    """A non-extending call (e.g. opencode's title generator on the same
-    session) is served via the chat path, but the chain state survives and the
-    next extending call still injects."""
+    """A non-extending side-call (opencode's title generator) is served via the
+    chat path; the main chain survives and the next extending call injects."""
     inner = _FakeInner()
     backend = _backend(inner)
     ctx = _ctx()
     _mock_tokenize(
         respx_mock,
         [
-            [1, 2],  # seed prefix
-            [99, 98],  # title-gen call: does NOT start with [1, 2]
-            [1, 2, _EOT, 20, 21, 30],  # main turn 2: extends the chain
-            [1, 2, _EOT, 20, 21],
+            [1, 2],  # c1 (main) seed prefix
+            [99, 98],  # c2 (title-gen) rendered: matches nothing
+            [99],  # c2 seed-attempt prefix (harvest prefix check fails -> no seed)
+            [1, 2, _EOT, 20, 21, 30],  # c3 (main turn 2) rendered: matches the chain
+            [1, 2, _EOT, 20, 21],  # c3 post-injection prefix
         ],
     )
     injected = [1, 2, 3, 4, 5, _EOT, 20, 21, 30]
@@ -370,17 +388,72 @@ async def test_prefix_mismatch_falls_back_per_call_without_pinning(
         return_value=_completion_response(injected, [40, 41], "back on chain")
     )
 
-    await backend.call(ctx, _chat_request())  # seed (chat path)
+    await backend.call(ctx, _chat_request())  # seed main chain
     await backend.call(ctx, _chat_request(turns=2))  # title-gen: chat path
     await backend.call(ctx, _chat_request(turns=2))  # main turn 2: injected
 
-    assert inner.calls == 2  # seed + title-gen only
-    assert not backend._sessions["sess-1"].fallen_back
+    assert inner.calls == 2
     assert json.loads(completions.calls[0].request.content)["prompt"] == injected
 
 
 @respx.mock
-async def test_length_stop_leaves_no_eot_and_falls_back_per_call(
+async def test_side_call_arriving_first_seeds_its_own_chain(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Arrival order must not matter: a title-gen call arriving FIRST seeds its
+    own chain, and the main conversation still gets injected."""
+    title_body = dict(_first_turn_body())
+    title_body["prompt_token_ids"] = [9, 9, 3]
+    title_body["choices"] = [dict(_first_turn_body()["choices"][0])]
+    title_body["choices"][0]["token_ids"] = [7, _EOT]
+    inner = _FakeInner(body=[title_body, _first_turn_body()])
+    backend = _backend(inner)
+    ctx = _ctx()
+    _mock_tokenize(
+        respx_mock,
+        [
+            [9, 9],  # c1 (title-gen) seed prefix -> chain B
+            [1, 2, 30],  # c2 (main) rendered: matches nothing
+            [1, 2],  # c2 seed prefix -> chain A
+            [1, 2, _EOT, 20, 21, 30],  # c3 (main turn 2) rendered: matches chain A
+            [1, 2, _EOT, 20, 21],  # c3 post-injection prefix
+        ],
+    )
+    injected = [1, 2, 3, 4, 5, _EOT, 20, 21, 30]
+    completions = respx_mock.post(f"{_BASE_URL}/completions").mock(
+        return_value=_completion_response(injected, [40, 41], "main injects")
+    )
+
+    await backend.call(ctx, _chat_request())  # title-gen first
+    await backend.call(ctx, _chat_request(turns=2))  # main call 1: seeds chain A
+    await backend.call(ctx, _chat_request(turns=3))  # main turn 2: injected
+
+    assert inner.calls == 2
+    assert len(backend._sessions["sess-1"]) == 2
+    assert json.loads(completions.calls[0].request.content)["prompt"] == injected
+
+
+@respx.mock
+async def test_chat_path_max_tokens_clamped(respx_mock: respx.MockRouter) -> None:
+    """Newer vLLM rejects over-budget chat calls too; the seed call is clamped."""
+    inner = _FakeInner()
+    backend = _backend(inner)
+    ctx = _ctx()
+    respx_mock.post("http://vllm.test/tokenize").mock(
+        return_value=httpx.Response(200, json={"tokens": [1, 2], "max_model_len": 40})
+    )
+
+    request = ChatRequest.openai_chat({
+        "model": _MODEL,
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 32000,
+    })
+    await backend.call(ctx, request)
+    assert inner.seen_bodies[0]["max_tokens"] == 30  # 40 - len([1, 2]) - margin 8
+
+
+@respx.mock
+async def test_length_stop_reseeds_instead_of_injecting(
     respx_mock: respx.MockRouter,
 ) -> None:
     body = _first_turn_body()
@@ -388,16 +461,16 @@ async def test_length_stop_leaves_no_eot_and_falls_back_per_call(
     inner = _FakeInner(body=body)
     backend = _backend(inner)
     ctx = _ctx()
-    _mock_tokenize(respx_mock, [[1, 2]])
+    _mock_tokenize(respx_mock, [[1, 2], [1, 2, 30], [1, 2]])
 
-    await backend.call(ctx, _chat_request())
-    await backend.call(ctx, _chat_request(turns=2))
+    await backend.call(ctx, _chat_request())  # seeds with no EOT marker
+    await backend.call(ctx, _chat_request(turns=2))  # matches, but cannot inject
     assert inner.calls == 2
-    assert not backend._sessions["sess-1"].fallen_back
+    assert len(backend._sessions["sess-1"]) == 1  # reseeded in place, not duplicated
 
 
 @respx.mock
-async def test_multi_choice_falls_back(respx_mock: respx.MockRouter) -> None:
+async def test_multi_choice_delegates(respx_mock: respx.MockRouter) -> None:
     inner = _FakeInner()
     backend = _backend(inner)
     ctx = _ctx()
@@ -409,12 +482,15 @@ async def test_multi_choice_falls_back(respx_mock: respx.MockRouter) -> None:
     )
     await backend.call(ctx, request)
     assert inner.calls == 2
-    assert backend._sessions["sess-1"].fallen_back
+    assert len(backend._sessions["sess-1"]) == 1  # chain untouched
 
 
 @respx.mock
-async def test_prompt_echo_mismatch_falls_back(respx_mock: respx.MockRouter) -> None:
-    """A completions response that does not echo the injected prompt is rejected."""
+async def test_prompt_echo_mismatch_falls_back_keeping_chain(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """A completions response that does not echo the injected prompt is rejected;
+    the call is served via the chat path and the chain survives."""
     inner = _FakeInner()
     backend = _backend(inner)
     ctx = _ctx()
@@ -426,7 +502,7 @@ async def test_prompt_echo_mismatch_falls_back(respx_mock: respx.MockRouter) -> 
     await backend.call(ctx, _chat_request())
     await backend.call(ctx, _chat_request(turns=2))
     assert inner.calls == 2
-    assert backend._sessions["sess-1"].fallen_back
+    assert len(backend._sessions["sess-1"]) == 1
 
 
 # ---------------------------------------------------------------------------
