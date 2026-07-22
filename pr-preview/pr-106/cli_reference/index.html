@@ -1675,7 +1675,7 @@
 </tr>
 <tr>
 <td><code>--enable-rl-logging</code></td>
-<td>Write local <a href="#rl-trace-logging">RL trace logs</a> (one <code>message_history</code> JSON file per turn) for <code>launch</code> and <code>serve</code> route-bundle sessions. Pass before the verb: <code>switchyard --enable-rl-logging launch claude</code>. Rejected by <code>serve --config</code> (the Rust profile server has no Python processor chain).</td>
+<td>Write local <a href="#rl-trace-logging">RL trace logs</a> (one <code>message_history</code> JSON file per turn) for <code>launch</code> and <code>serve</code> route-bundle sessions. Pass before the verb: <code>switchyard --enable-rl-logging launch claude</code>. Rejected by <code>serve --config</code>.</td>
 </tr>
 <tr>
 <td><code>--rl-log-dir DIR</code></td>
@@ -1897,8 +1897,7 @@ matches the pre-1.0 trace format:</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>Turns without an assistant choice (e.g. upstream errors) are skipped. The flag
-works on <code>launch</code> and on <code>serve</code> with a route bundle; <code>serve --config</code> (the Rust
-profile server) rejects it, since it has no Python processor chain to attach to.</p>
+works on <code>launch</code> and on <code>serve</code> with a route bundle; <code>serve --config</code> rejects it.</p>
 <h3 id="transport-server-verbs">Transport (server verbs)<a class="headerlink" href="#transport-server-verbs" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1964,7 +1963,7 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 </span></code></pre></div>
 <p><code>secrets/</code> is gitignored. Never commit this file.</p>
 <h2 id="switchyard-serve"><code>switchyard serve</code><a class="headerlink" href="#switchyard-serve" title="Permanent link">&para;</a></h2>
-<p>Serve a long-running proxy from a Switchyard v2 <strong>profile config</strong>: one YAML/JSON/TOML file declaring <code>endpoints</code>, <code>targets</code>, and <code>profiles</code>. Files whose profiles are all Rust-defined use the Rust profile server. Files that include Python-defined profiles use the Python FastAPI adapter, while keeping the same endpoint paths. Each profile id and each target id is exposed as a model on <code>GET /v1/models</code>, so a client selects a profile by setting the request <code>model</code> to that id.</p>
+<p>Serve a long-running proxy from a Switchyard v2 <strong>profile config</strong>: one YAML/JSON/TOML file declaring <code>endpoints</code>, <code>targets</code>, and <code>profiles</code>. Rust-defined and Python-defined profiles run through the same Python HTTP application and expose the same endpoint paths. Each profile id and each target id is exposed as a model on <code>GET /v1/models</code>, so a client selects a profile by setting the request <code>model</code> to that id.</p>
 <p>The server exposes the OpenAI Chat Completions (<code>/v1/chat/completions</code>), Anthropic Messages (<code>/v1/messages</code>), and OpenAI Responses (<code>/v1/responses</code>) APIs on the same host and port.</p>
 <p><strong>Synopsis</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard [--routing-profiles PATH] serve [--config PATH]
