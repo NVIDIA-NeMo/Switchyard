@@ -35,7 +35,7 @@ _NOOP_CONTENT = "pong"
 _NOOP_MODEL = "noop"
 
 
-def _make_completion(*, request_id: str, created: int) -> ChatCompletion:
+def _make_completion(request_id: str, created: int) -> ChatCompletion:
     """Build the fixed no-op non-streaming completion."""
     return ChatCompletion(
         id=f"chatcmpl-{request_id}",
@@ -54,7 +54,6 @@ def _make_completion(*, request_id: str, created: int) -> ChatCompletion:
 
 
 async def _noop_stream(
-    *,
     request_id: str,
     created: int,
 ) -> AsyncIterator[ChatCompletionChunk]:
@@ -115,7 +114,6 @@ class NoopProfile:
 
     def __init__(
         self,
-        *,
         request_processors: tuple[Any, ...] = (),
         response_processors: tuple[Any, ...] = (),
         stats_accumulator: StatsAccumulator | None = None,

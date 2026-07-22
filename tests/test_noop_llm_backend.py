@@ -9,7 +9,7 @@ from switchyard_rust.core import ChatRequest, ChatResponseType, response_type_ma
 from switchyard_rust.profiles import ProfileInput
 
 
-def _openai_request(*, stream: bool = False) -> ChatRequest:
+def _openai_request(stream: bool = False) -> ChatRequest:
     return ChatRequest.openai_chat(
         {"model": "noop", "messages": [{"role": "user", "content": "ping"}], "stream": stream}
     )
