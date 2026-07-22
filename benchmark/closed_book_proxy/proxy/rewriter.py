@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ STRIP_PATH_SUFFIXES = (
     "/v1/messages",
     "/v1/responses",
 )
+INTAKE_TASK_HEADER = "x-switchyard-intake-task"
+SESSION_ID_HEADER = "proxy_x_session_id"
 
 
 def _truthy(value: str | None) -> bool:
@@ -63,6 +66,10 @@ class ClosedBookProxy:
             os.environ.get("SWITCHYARD_PROXY_STRIP_LOG", "/etc/proxy-public/strip.jsonl")
         )
         self.allowed_hosts = self._load_allowed_hosts()
+        self.task_id = os.environ.get("SWITCHYARD_TASK_ID", "")
+        # One id per proxy boot; the sidecar boots once per trial, so this
+        # distinguishes trials of the same task.
+        self.session_id = uuid.uuid4().hex
 
     def _load_allowed_hosts(self) -> set[str]:
         hosts: set[str] = set()
@@ -112,9 +119,16 @@ class ClosedBookProxy:
         self._deny_if_needed(flow)
 
     def request(self, flow: http.HTTPFlow) -> None:
-        if self._deny_if_needed(flow) or not self.closed_book:
+        if self._deny_if_needed(flow):
             return
-        if not any(flow.request.path.endswith(suffix) for suffix in STRIP_PATH_SUFFIXES):
+        # flow.request.path includes the query string (e.g. /v1/messages?beta=true).
+        path = flow.request.path.split("?", 1)[0]
+        if not any(path.endswith(suffix) for suffix in STRIP_PATH_SUFFIXES):
+            return
+        if self.task_id:
+            flow.request.headers[INTAKE_TASK_HEADER] = self.task_id
+            flow.request.headers[SESSION_ID_HEADER] = self.session_id
+        if not self.closed_book:
             return
         if "application/json" not in flow.request.headers.get("content-type", ""):
             return

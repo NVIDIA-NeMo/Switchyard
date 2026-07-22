@@ -411,6 +411,7 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
             "CLOSED_BOOK_MODE=${CLOSED_BOOK_MODE:-1}",
             "OPENAI_BASE_URL=${OPENAI_BASE_URL:-}",
             "SWITCHYARD_BASE_URL=${SWITCHYARD_BASE_URL:-}",
+            f"SWITCHYARD_TASK_ID={task_dir.name}",
             "VERIFIER_PROXY_TOKEN=${SWITCHYARD_VERIFIER_PROXY_TOKEN:-}",
         ],
         "healthcheck": {

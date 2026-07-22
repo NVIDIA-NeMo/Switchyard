@@ -503,6 +503,12 @@ SERVER_LOG="${RUN_DIR}/server.log"
 HARBOR_LOG="${RUN_DIR}/harbor.log"
 HARBOR_RESULT_JSON="${RUN_DIR}/harbor_result.json"
 ROUTING_STATS_JSON="${RUN_DIR}/routing_stats_final.json"
+ROUTING_LOG_JSONL="${RUN_DIR}/routing_requests.jsonl"
+ROUTING_STATS_BY_TASK_JSON="${RUN_DIR}/routing_stats_by_task.json"
+if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
+    SERVER_CMD+=(--routing-log-file "${ROUTING_LOG_JSONL}")
+    SERVER_DOCKER_CMD+=(--routing-log-file "${ROUTING_LOG_JSONL}")
+fi
 DOCKER_RUN_ID="$(printf '%s-%s' "${TS##*_}" "$$" | tr -c '[:alnum:]_.-' '-')"
 SWITCHYARD_DOCKER_NETWORK="${SWITCHYARD_DOCKER_NETWORK:-switchyard-${DOCKER_RUN_ID}}"
 SWITCHYARD_DOCKER_CONTAINER="${SWITCHYARD_DOCKER_CONTAINER:-switchyard-${DOCKER_RUN_ID}}"
@@ -822,6 +828,8 @@ REPO_ROOT=$(q "${REPO_ROOT}")
 SERVER_LOG=$(q "${SERVER_LOG}")
 HARBOR_LOG=$(q "${HARBOR_LOG}")
 ROUTING_STATS_JSON=$(q "${ROUTING_STATS_JSON}")
+ROUTING_LOG_JSONL=$(q "${ROUTING_LOG_JSONL}")
+ROUTING_STATS_BY_TASK_JSON=$(q "${ROUTING_STATS_BY_TASK_JSON}")
 HARBOR_JOB_DIR=$(q "${HARBOR_JOB_DIR}")
 SKIP_HEALTH_CHECK=$(q "${SKIP_HEALTH_CHECK}")
 BOOK_MODE=$(q "${BOOK_MODE}")
@@ -877,6 +885,7 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
         --network-alias "\${SWITCHYARD_DOCKER_SERVICE_NAME}"
         -p "127.0.0.1:$(q "${PORT}"):$(q "${PORT}")"
         -v "\${REPO_ROOT}:\${REPO_ROOT}:ro"
+        -v "\${RUN_DIR}:\${RUN_DIR}"
     )
     if [[ -n "\${ROUTING_PROFILES_DIR}" && "\${ROUTING_PROFILES_DIR}" != "\${REPO_ROOT}"* ]]; then
         DOCKER_RUN_ARGS+=(-v "\${ROUTING_PROFILES_DIR}:\${ROUTING_PROFILES_DIR}:ro")
@@ -1029,7 +1038,9 @@ FINALIZE_CMD=(python3 benchmark/run_manifest.py finalize \\
     --harbor-job-dir "\${HARBOR_JOB_DIR}")
 if [[ "\${SERVER_ENABLED}" == "1" ]]; then
     curl -fsS "\${SERVER_STATS_URL}" -o "\${ROUTING_STATS_JSON}" >/dev/null 2>&1 || true
-    FINALIZE_CMD+=(--routing-stats "\${ROUTING_STATS_JSON}")
+    FINALIZE_CMD+=(--routing-stats "\${ROUTING_STATS_JSON}"
+        --routing-log "\${ROUTING_LOG_JSONL}"
+        --routing-stats-by-task "\${ROUTING_STATS_BY_TASK_JSON}")
 fi
 "\${FINALIZE_CMD[@]}" || true
 

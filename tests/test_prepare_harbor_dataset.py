@@ -292,3 +292,16 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
     assert {task["name"] for task in manifest["tasks"]} == {"task-a", "task-b"}
     assert all(task["dockerfile_digest"].startswith("sha256:") for task in manifest["tasks"])
     assert all(task["compose_digest"].startswith("sha256:") for task in manifest["tasks"])
+
+
+def test_generated_compose_bakes_task_id_into_proxy_env(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_task(source, "task-id-check", "[environment]\n", "FROM ubuntu:22.04\n")
+
+    output = _prepare(tmp_path, source)
+    compose = yaml.safe_load(
+        (output / "task-id-check" / "environment" / "docker-compose.yaml").read_text()
+    )
+
+    proxy_env = "\n".join(compose["services"]["proxy"]["environment"])
+    assert "SWITCHYARD_TASK_ID=task-id-check" in proxy_env

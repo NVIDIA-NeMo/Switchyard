@@ -226,6 +226,7 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 | `--host`, `--port`/`-p`, `--reload` | [Transport](#transport-server-verbs). |
 | `--inbound FORMAT` | Valid only for legacy route-bundle serve (`--routing-profiles`); `serve --config` actively rejects it with an error. For legacy serve, the flag is a no-op — all request APIs are always registered regardless of the value (accepted for backwards compat only). |
 | `--workers` / `-w` | uvicorn worker count. |
+| `--routing-log-file PATH` | Append one JSONL routing record per request (task, session, selected model, tier, token usage) to PATH. Route-bundle serve only; rejected by `serve --config`. |
 | `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-target-url` | [Intake sink](#intake-sink-serve-and-launchers). |
 
 **Notes**
@@ -233,7 +234,7 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 - `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health`. There is no flag to expose just one request API.
 - `GET /v1/stats` and `GET /v1/routing/stats` are available on both serve paths.
 - The deprecated route-bundle path accepts `--inbound` for compatibility but ignores it; all supported request APIs are always registered.
-- `serve --config` does not support `--reload`, `--workers > 1`, Intake options, `--enable-rl-logging`, or any explicit `--inbound` value.
+- `serve --config` does not support `--reload`, `--workers > 1`, Intake options, `--enable-rl-logging`, `--routing-log-file`, or any explicit `--inbound` value.
 - Rust-defined and Python-defined profiles use the same profile-config schema. The profile `type` decides which implementation builds that profile.
 - Python-defined profiles are registered via `@profile_config`; the shipped `header-routing` profile is an example. A config can mix a Rust-defined profile and a Python-defined profile, and both profile ids are routable on the same served host and port.
 
