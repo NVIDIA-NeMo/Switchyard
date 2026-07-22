@@ -99,6 +99,37 @@ async def test_invalid_request_is_rejected_at_the_boundary() -> None:
         )
 
 
+async def test_subagent_override_routes_marked_work_to_the_worker() -> None:
+    orchestrator = EchoClient("orchestrator")
+    worker = EchoClient("worker")
+    algorithm = algorithms.subagent_override(
+        algorithms.random([LlmTarget("orchestrator", orchestrator)]),
+        LlmTarget("worker", worker),
+    )
+
+    # No headers: the wrapped algorithm serves the request.
+    _, response = await algorithm.run(request_body())
+    assert response["model"] == "orchestrator"
+
+    # Claude Code child-agent lineage routes to the fixed worker target.
+    decisions, response = await algorithm.run(
+        request_body(),
+        headers={
+            "x-claude-code-session-id": "root",
+            "x-claude-code-agent-id": "child-1",
+        },
+    )
+    assert response["model"] == "worker"
+    assert decisions[-1]["selected_model"] == "worker"
+
+    # Harness maintenance stays on the wrapped algorithm.
+    _, response = await algorithm.run(
+        request_body(), headers={"x-openai-subagent": "compact"}
+    )
+    assert response["model"] == "orchestrator"
+    assert len(worker.calls) == 1
+
+
 async def test_client_failure_becomes_libsy_error() -> None:
     class FailingClient:
         async def call(self, request: dict[str, Any]) -> dict[str, Any]:
