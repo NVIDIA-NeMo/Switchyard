@@ -165,10 +165,11 @@ def _subagent_input() -> ProfileInput:
         ({"x-openai-subagent": "compact"}, False),
         ({"x-openai-subagent": "memory_consolidation"}, False),
         ({"x-openai-subagent": "brand_new_kind"}, False),
-        # The explicit Switchyard header decides directly, in both directions.
+        # The explicit Switchyard header decides the lineage fact, in both
+        # directions; the work-kind policy still applies on top of it.
         ({"x-switchyard-is-subagent": "true"}, True),
         ({"x-switchyard-is-subagent": "false", "x-openai-subagent": "review"}, False),
-        ({"x-switchyard-is-subagent": "true", "x-openai-subagent": "compact"}, True),
+        ({"x-switchyard-is-subagent": "true", "x-openai-subagent": "compact"}, False),
         # Header names are case-insensitive and values are trimmed.
         ({"X-OpenAI-Subagent": " review "}, True),
     ],

@@ -65,6 +65,11 @@ const TASK_ID_HEADER: &str = "x-task-id";
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 
+/// Harness-defined sub-agent kinds that carry delegated user work rather than
+/// harness maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds
+/// are excluded deliberately; extend with captured request fixtures.
+const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "review"];
+
 /// Header/JSON-path signals that, when any is present, mark a request as a sub-agent.
 const SUBAGENT_SIGNAL_PATHS: &[&str] = &[
     SWITCHYARD_PARENT_AGENT_ID_HEADER,
@@ -228,38 +233,47 @@ impl Metadata {
             ..Metadata::default()
         }
     }
-}
 
-/// Returns `(parent_agent_id, is_subagent)` from the headers
-fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool) {
-    let mut is_subagent = false;
-    let sy_is_sub_agent = header(headers, SWITCHYARD_IS_SUBAGENT_HEADER).and_then(parse_bool);
-    let mut parent: Option<String> = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER);
-    if let Some(is_sub) = sy_is_sub_agent {
-        if parent.is_some() {
-            return (parent, is_sub);
+    /// Whether this request should be treated as delegated sub-agent *work*.
+    ///
+    /// `is_subagent` records the lineage fact — the harness identified a child
+    /// agent. This method layers the routing policy on top: the kind, when
+    /// present, must name delegated user work. Harness-maintenance turns
+    /// (Codex `compact`, `memory_consolidation`) and unrecognized kinds are
+    /// excluded so they stay on normal routing; kindless lineage signals
+    /// (Claude Code child agents, explicit flags, parent ids) count as work.
+    pub fn is_subagent_work(&self) -> bool {
+        if !self.is_subagent {
+            return false;
+        }
+        match self.agent_kind.as_deref() {
+            None => true,
+            Some(kind) => SUBAGENT_WORK_KINDS.contains(&kind),
         }
     }
-    is_subagent |= sy_is_sub_agent.unwrap_or(false);
+}
+
+/// Returns `(parent_agent_id, is_subagent)` from the headers.
+///
+/// An explicit `x-switchyard-is-subagent` boolean decides sub-agent status in
+/// both directions; harness lineage and presence signals are inference used
+/// only when the explicit header is absent or unparseable. The parent id is
+/// resolved independently so lineage survives an explicit `false`.
+fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool) {
+    let explicit = header(headers, SWITCHYARD_IS_SUBAGENT_HEADER).and_then(parse_bool);
 
     let (claude_parent, claude_subagent) = claude_lineage(headers);
-    is_subagent |= claude_subagent;
-    parent = parent.or_else(|| claude_parent.map(str::to_string));
-    if is_subagent && parent.is_some() {
-        return (parent, is_subagent);
-    }
+    let parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
+        .or_else(|| claude_parent.map(str::to_string))
+        .or_else(|| opencode_parent(headers).map(str::to_string));
 
-    parent = parent.or_else(|| opencode_parent(headers).map(str::to_string));
-    is_subagent = parent.is_some() || is_subagent;
-    if is_subagent && parent.is_some() {
-        return (parent, is_subagent);
-    }
+    let inferred = claude_subagent
+        || parent.is_some()
+        || SUBAGENT_SIGNAL_PATHS
+            .iter()
+            .any(|path| resolve_path(headers, path).is_some());
 
-    is_subagent |= SUBAGENT_SIGNAL_PATHS
-        .iter()
-        .any(|path| resolve_path(headers, path).is_some());
-
-    (parent, is_subagent)
+    (parent, explicit.unwrap_or(inferred))
 }
 
 /// Claude Code's `(parent_agent, is_subagent)` from its native lineage headers.
@@ -602,5 +616,53 @@ mod tests {
             "codex-run".to_string(),
         )]));
         assert_eq!(metadata.session_id.as_deref(), Some("codex-run"));
+    }
+
+    #[test]
+    fn explicit_subagent_flag_decides_without_a_parent_header() {
+        // Explicit `false` wins over presence-based inference even when no
+        // parent id accompanies it; the flag decides in both directions.
+        let metadata = Metadata::from_headers(&BTreeMap::from([
+            ("x-switchyard-is-subagent".to_string(), "false".to_string()),
+            ("x-openai-subagent".to_string(), "review".to_string()),
+        ]));
+        assert!(!metadata.is_subagent);
+
+        let metadata = Metadata::from_headers(&BTreeMap::from([(
+            "x-switchyard-is-subagent".to_string(),
+            "true".to_string(),
+        )]));
+        assert!(metadata.is_subagent);
+    }
+
+    #[test]
+    fn subagent_work_requires_a_delegated_work_kind_when_kinded() {
+        // Kindless lineage (Claude Code child agent) counts as delegated work.
+        let claude_child = Metadata::from_headers(&BTreeMap::from([
+            ("x-claude-code-session-id".to_string(), "root".to_string()),
+            ("x-claude-code-agent-id".to_string(), "worker".to_string()),
+        ]));
+        assert!(claude_child.is_subagent_work());
+
+        // Codex delegated-work kinds route as sub-agent work.
+        let review = Metadata::from_headers(&BTreeMap::from([(
+            "x-openai-subagent".to_string(),
+            "review".to_string(),
+        )]));
+        assert!(review.is_subagent_work());
+
+        // Harness maintenance and unknown kinds stay on normal routing even
+        // though the lineage fact still marks them as child-agent requests.
+        for kind in ["compact", "memory_consolidation", "brand_new_kind"] {
+            let metadata = Metadata::from_headers(&BTreeMap::from([(
+                "x-openai-subagent".to_string(),
+                kind.to_string(),
+            )]));
+            assert!(metadata.is_subagent, "{kind} keeps the lineage fact");
+            assert!(!metadata.is_subagent_work(), "{kind} is not routed as work");
+        }
+
+        // A non-subagent request is never work, whatever its kind says.
+        assert!(!Metadata::default().is_subagent_work());
     }
 }

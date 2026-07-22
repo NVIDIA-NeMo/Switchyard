@@ -273,19 +273,13 @@ fn py_parse_profile_config_path(path: PathBuf) -> PyResult<PyProfileConfigDocume
         .map_err(py_core_error)
 }
 
-/// Codex sub-agent kinds that carry delegated user work rather than harness
-/// maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds fall
-/// through to normal routing; extend deliberately, with captured fixtures.
-const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "review"];
-
 /// Report whether normalized request headers mark delegated sub-agent work.
 ///
-/// An explicit `x-switchyard-is-subagent` boolean decides directly. Otherwise
-/// detection reuses the canonical harness header normalization
-/// (`switchyard_protocol::Metadata::from_headers`) — Claude Code agent
-/// lineage and Codex/relay parent or sub-agent markers — and a request whose
-/// normalized agent kind names anything other than known delegated-work kinds
-/// is not routed as sub-agent work, so Codex `compact` /
+/// A thin binding over the canonical detection and routing policy owned by
+/// the protocol crate: `switchyard_protocol::Metadata::from_headers` for the
+/// lineage fact (explicit `x-switchyard-is-subagent`, Claude Code agent
+/// lineage, Codex/relay markers) and `Metadata::is_subagent_work` for the
+/// work-vs-maintenance kind policy, so Codex `compact` /
 /// `memory_consolidation` turns stay on normal profile routing.
 #[pyfunction]
 fn is_subagent_request(headers: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -295,30 +289,7 @@ fn is_subagent_request(headers: &Bound<'_, PyAny>) -> PyResult<bool> {
         .into_iter()
         .filter_map(|(name, values)| values.into_iter().next().map(|value| (name, value)))
         .collect();
-    if let Some(explicit) = headers
-        .get("x-switchyard-is-subagent")
-        .and_then(|value| parse_bool_header(value))
-    {
-        return Ok(explicit);
-    }
-    let metadata = switchyard_protocol::Metadata::from_headers(&headers);
-    if !metadata.is_subagent {
-        return Ok(false);
-    }
-    Ok(match metadata.agent_kind.as_deref() {
-        None => true,
-        Some(kind) => SUBAGENT_WORK_KINDS.contains(&kind),
-    })
-}
-
-/// Parses the common textual spellings of a boolean header value, mirroring
-/// the protocol crate's header normalization.
-fn parse_bool_header(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
+    Ok(switchyard_protocol::Metadata::from_headers(&headers).is_subagent_work())
 }
 
 /// Parse and resolve a components-v2 profile config file.
