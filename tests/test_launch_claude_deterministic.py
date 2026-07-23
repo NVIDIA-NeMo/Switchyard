@@ -265,7 +265,7 @@ class TestDispatch:
         parser = _build_parser()
         args = parser.parse_args([
             "--routing-profiles", str(yaml_path),
-            "--", "launch", "claude", "--dry-run",
+            "launch", "claude", "--dry-run",
         ])
 
         monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
