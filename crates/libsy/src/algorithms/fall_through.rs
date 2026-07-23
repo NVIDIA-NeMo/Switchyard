@@ -113,7 +113,9 @@ impl Algorithm<SharedState> for FallThrough {
             }
         }
         let Some(winner) = winner else {
-            return Err(LibsyError::AllClassifiersAbstained);
+            return Err(LibsyError::AlgorithmError {
+                message: "every classifier abstained".to_string(),
+            });
         };
 
         // 3. Resolve the target and publish the decision.
@@ -311,7 +313,10 @@ mod tests {
             .await
             .err()
             .ok_or_else(|| test_error("expected classifiers to abstain"))?;
-        assert!(matches!(error, LibsyError::AllClassifiersAbstained));
+        assert!(matches!(
+            error,
+            LibsyError::AlgorithmError { message } if message == "every classifier abstained"
+        ));
         Ok(())
     }
 

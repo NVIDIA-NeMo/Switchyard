@@ -257,9 +257,9 @@ impl Algorithm for LlmClassifier {
 
 All libsy-owned APIs return [`switchyard_libsy::Result<T>`], whose error is
 `LibsyError`. Callers can match routing failures (`TargetNotFound`, `NoTargets`,
-`AllClassifiersAbstained`, `InvalidConfidence`, `MissingClient`), driver failures,
-algorithm task failures, incomplete runs, and client-call failures without inspecting
-error strings.
+`MissingClient`), algorithm-specific failures (`AlgorithmError`), driver failures,
+algorithm task failures, incomplete runs, and client-call failures without inspecting error
+strings.
 
 `RoutedLlmClient` is owned by `switchyard-protocol` and still returns a boxed error.
 When [`Algorithm::run`] serves a target, libsy preserves that error as the source of

@@ -51,8 +51,11 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     let mut best: Option<&Score> = None;
     for score in scores.iter() {
         if score.confidence.is_nan() {
-            return Err(LibsyError::InvalidConfidence {
-                target: score.target.clone(),
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "classifier returned NaN confidence for target {:?}",
+                    score.target
+                ),
             });
         }
         match best {
@@ -122,12 +125,14 @@ mod tests {
         let scores = vec![score("weak", 0.3), score("strong", f64::NAN)];
         assert!(matches!(
             Classification::Scores(scores).argmax(false),
-            Err(LibsyError::InvalidConfidence { target }) if target == "strong"
+            Err(LibsyError::AlgorithmError { message })
+                if message == "classifier returned NaN confidence for target \"strong\""
         ));
         // A lone NaN errors too, even with nothing to compare it against.
         assert!(matches!(
             Classification::Scores(vec![score("only", f64::NAN)]).argmax(false),
-            Err(LibsyError::InvalidConfidence { target }) if target == "only"
+            Err(LibsyError::AlgorithmError { message })
+                if message == "classifier returned NaN confidence for target \"only\""
         ));
     }
 

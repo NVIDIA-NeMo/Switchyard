@@ -24,15 +24,11 @@ pub enum LibsyError {
     #[error("no routing targets are configured")]
     NoTargets,
 
-    /// Every classifier in a fall-through cascade abstained.
-    #[error("every classifier abstained")]
-    AllClassifiersAbstained,
-
-    /// A classifier returned an unorderable confidence.
-    #[error("classifier returned NaN confidence for target {target:?}")]
-    InvalidConfidence {
-        /// Target associated with the invalid score.
-        target: String,
+    /// An algorithm could not complete for an algorithm-specific reason.
+    #[error("{message}")]
+    AlgorithmError {
+        /// Description of the algorithm failure.
+        message: String,
     },
 
     /// A routed target had no default client for [`crate::Algorithm::run`].
