@@ -481,6 +481,10 @@ fn model_list_payload<'a>(models: impl IntoIterator<Item = &'a str>) -> Value {
     })
 }
 
+// One OpenAI-compatible `/v1/models` entry. `model` is a symbolic route/algorithm id
+// (e.g. "random"), not an upstream model, so the served model's context window and
+// tool-calling support are unknown here — report null rather than inferring from the id,
+// which would be wrong. `streaming` and the inbound formats are facts about this server.
 fn model_entry_json(model: &str) -> Value {
     json!({
         "id": model,

@@ -327,6 +327,25 @@ async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
 }
 
 #[tokio::test]
+async fn models_report_null_capabilities_for_symbolic_routes() -> TestResult {
+    // A /v1/models id is a symbolic algorithm/route name (e.g. "random"), not an upstream
+    // model, so its context window and tool-calling support are unknown and must stay null.
+    // The big-context target makes this a discriminating guard: any inference from the route
+    // id *or* the target would report a number here and fail this test.
+    let (_upstream, app) = test_app(&[("random", &["deepseek-v4-pro"])]).await?;
+
+    let models = send(&app, "GET", "/v1/models", None).await?;
+    assert_eq!(models.status, StatusCode::OK);
+    let entry = models.json()?["data"][0].clone();
+    assert_eq!(entry["id"], "random");
+    assert_eq!(entry["capabilities"]["context_window"], json!(null));
+    assert_eq!(entry["capabilities"]["tool_calling"], json!(null));
+    // Facts the server does know stay populated.
+    assert_eq!(entry["capabilities"]["streaming"], json!(true));
+    Ok(())
+}
+
+#[tokio::test]
 async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
     let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
