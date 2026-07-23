@@ -1365,11 +1365,10 @@ stack used by <code>switchyard serve</code>.</p>
 </span></code></pre></div>
 <p>Each launcher reads saved provider credentials from <code>~/.config/switchyard/</code>.
 Interactive Claude Code and Codex sessions show live request and token totals
-in the status footer. A saved legacy route bundle is still honored for
-compatibility, but route bundles and <code>--routing-profiles</code> are deprecated.</p>
+in the status footer. A saved route bundle is used when configured.</p>
 <h2 id="default-routing-behavior">Default routing behavior<a class="headerlink" href="#default-routing-behavior" title="Permanent link">&para;</a></h2>
 <p>The built-in LLM-as-classifier route is the default only when there is no
-<code>--model</code>, no CLI <code>--routing-profiles</code>, no saved legacy route bundle, and no
+<code>--model</code>, no CLI <code>--routing-profiles</code>, no saved route bundle, and no
 saved model default. Each turn is classified and dispatched to a weak or
 strong tier using the validated coding-agent trio:</p>
 <table>
@@ -1396,14 +1395,14 @@ strong tier using the validated coding-agent trio:</p>
 </table>
 <p><code>--weak-model</code>, <code>--classifier-model</code>, <code>--profile</code>, and
 <code>--classifier-min-confidence</code> tune only this built-in route. They are ignored
-when route resolution selects an explicit or saved legacy route bundle or
-single model.</p>
+when route resolution selects an explicit or saved route bundle or single
+model.</p>
 <h2 id="override-the-default-route">Override the default route<a class="headerlink" href="#override-the-default-route" title="Permanent link">&para;</a></h2>
 <p>Use <code>--model</code> for a single-model passthrough session:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
 </span></code></pre></div>
-<p>For launcher-owned legacy route-bundle routing, whether the bundle contains one
-route or several, use:</p>
+<p>For launcher route-bundle routing, whether the bundle contains one route or
+several, use:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
 </span></code></pre></div>
 <p><code>--model</code> and <code>--routing-profiles</code> are mutually exclusive. The first route in
@@ -1412,14 +1411,8 @@ picker expose the registered routes.</p>
 <p>For route-bundle sessions, the footer reports active-model and aggregate
 request/token counts, including errors. <code>/v1/routing/stats</code> aggregates usage
 across the registered chains.</p>
-<div class="admonition note">
-<p class="admonition-title">Profile-config boundary</p>
-<p><code>--config profiles.yaml</code> belongs to <code>switchyard serve</code> and is the primary
-profile configuration path. Launcher subcommands do not accept <code>--config</code>
-today. Use the deprecated <code>--routing-profiles</code> flag only for launcher-owned
-legacy route-bundle routing; use <code>switchyard serve --config profiles.yaml</code>
-for standalone deployments.</p>
-</div>
+<p>The same <code>--routing-profiles</code> bundle can be served directly with
+<code>switchyard --routing-profiles routes.yaml -- serve</code>.</p>
 <h2 id="model-requirements">Model requirements<a class="headerlink" href="#model-requirements" title="Permanent link">&para;</a></h2>
 <p>Coding agents need models that support streaming and tool calling together. If
 you pass <code>--model</code> explicitly, verify that model with a direct streaming +
@@ -1484,7 +1477,7 @@ always has either an existing <code>claude</code>/<code>anthropic</code> prefix 
 <code>claude-</code> alias, so Claude Code's initial selection passes the picker filter.</p>
 <p>This aliasing applies only to the Claude launcher. <code>switchyard launch codex</code>,
 <code>switchyard launch openclaw</code>, and <code>switchyard serve</code> expose route ids verbatim.</p>
-<p>You can also write the <code>claude-</code> prefix directly in legacy route YAML if you
+<p>You can also write the <code>claude-</code> prefix directly in route YAML if you
 want the route ids to match exactly what appears in <code>/model</code>:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">routes</span><span class="p">:</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">claude-opus-ds</span><span class="p">:</span>

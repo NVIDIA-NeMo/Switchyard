@@ -646,10 +646,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#endpoints-targets-and-profiles" class="md-nav__link">
+  <a href="#routes-and-targets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Endpoints, targets, and profiles
+        Routes and targets
       
     </span>
   </a>
@@ -683,6 +683,28 @@
     <span class="md-ellipsis">
       
         Formats and translation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#programmatic-python-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Programmatic Python profiles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-server-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust server configuration
       
     </span>
   </a>
@@ -1185,10 +1207,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#endpoints-targets-and-profiles" class="md-nav__link">
+  <a href="#routes-and-targets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Endpoints, targets, and profiles
+        Routes and targets
       
     </span>
   </a>
@@ -1229,6 +1251,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#programmatic-python-profiles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Programmatic Python profiles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-server-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust server configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-to-go-next" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1260,103 +1304,69 @@
 
 
 <h1 id="core-concepts">Core Concepts<a class="headerlink" href="#core-concepts" title="Permanent link">&para;</a></h1>
-<p>This page explains the vocabulary the rest of the documentation takes for
-granted. Read it once and the configuration examples elsewhere will make sense.
-It is not a setup guide: to install and run Switchyard, see
-<a href="../getting_started/">Getting Started</a>, and to follow a request through the
-system, see <a href="../architecture/">Architecture</a>.</p>
+<p>This page explains the vocabulary used throughout the documentation. For setup,
+see <a href="../getting_started/">Getting Started</a>. For the request lifecycle, see
+<a href="../architecture/">Architecture</a>.</p>
 <h2 id="how-it-fits-together">How it fits together<a class="headerlink" href="#how-it-fits-together" title="Permanent link">&para;</a></h2>
-<p>Switchyard is a proxy. Clients (coding agents, SDKs, your own services) talk to
-it on one side, and model backends (hosted providers, private endpoints, local
-models) sit on the other. A client never asks for a backend by name. It sends a
-model ID, and the configuration behind that ID decides what actually runs.</p>
+<p>Switchyard is a proxy. Clients such as coding agents and SDKs talk to it on one
+side, while hosted providers, private endpoints, and local model servers sit on
+the other. A client sends a model ID, and the route registered under that ID
+decides what runs.</p>
 <pre class="mermaid"><code>flowchart LR
     client["Client&lt;br/&gt;picks a model ID"]
-    profile["Profile&lt;br/&gt;routing policy"]
+    route["Route&lt;br/&gt;routing policy"]
     target["Target&lt;br/&gt;upstream model"]
-    endpoint["Endpoint&lt;br/&gt;provider connection"]
     backend["Model backend"]
 
-    client --&gt;|"model field"| profile
-    profile --&gt;|"selects"| target
-    target --&gt;|"uses"| endpoint
-    endpoint --&gt; backend</code></pre>
-<h2 id="endpoints-targets-and-profiles">Endpoints, targets, and profiles<a class="headerlink" href="#endpoints-targets-and-profiles" title="Permanent link">&para;</a></h2>
-<p>A standalone deployment is described by a profile config: one file with three
-sections that keep provider connectivity, upstream models, and client-facing
-policy apart. Three terms carry most of the weight.</p>
-<table>
-<thead>
-<tr>
-<th>Term</th>
-<th>What it is</th>
-<th>YAML section</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Endpoint</td>
-<td>A provider connection: a <code>base_url</code> and its credentials. Many targets can share one.</td>
-<td><code>endpoints:</code></td>
-</tr>
-<tr>
-<td>Target</td>
-<td>A single upstream model you can call. It names an endpoint, a <code>model</code>, and a wire <code>format</code>.</td>
-<td><code>targets:</code></td>
-</tr>
-<tr>
-<td>Profile</td>
-<td>A client-facing routing policy over one or more targets. Its <code>type</code> is the routing strategy.</td>
-<td><code>profiles:</code></td>
-</tr>
-</tbody>
-</table>
-<p>The three nest. An endpoint is reused by targets, and targets are referenced by
-profiles. You set credentials in one place, add a model once, and build as many
-policies on top as you need. The <a href="../routing_algorithms/overview/">Routing Overview</a>
-has a complete, runnable config and the full schema.</p>
+    client --&gt;|"model field"| route
+    route --&gt;|"selects"| target
+    target --&gt; backend</code></pre>
+<h2 id="routes-and-targets">Routes and targets<a class="headerlink" href="#routes-and-targets" title="Permanent link">&para;</a></h2>
+<p>The Python CLI loads a YAML bundle with a <code>routes:</code> section. Each route has a
+client-facing name and a <code>type</code> that chooses its behavior. Depending on that
+type, the route owns one target, two routing tiers, or a larger endpoint list.</p>
+<p>Shared <code>defaults:</code> can provide a base URL, API key, and backend format without
+repeating them in every target. The <a href="../routing_algorithms/overview/">Routing Overview</a>
+has a complete runnable bundle.</p>
 <h2 id="model-ids">Model IDs<a class="headerlink" href="#model-ids" title="Permanent link">&para;</a></h2>
-<p>Clients choose what happens through the <code>model</code> field on a request. Switchyard
-registers three kinds of model IDs and lists them all on <code>GET /v1/models</code>:
-profile IDs, which apply a routing policy; target IDs, which skip routing and
-call that one model; and the upstream model name itself, registered as an alias
-whenever it differs from its target ID. Send a profile ID when you want routing,
-or a target or upstream name when you want to pin a single model.</p>
+<p>Every route name is registered as a model ID and listed on <code>GET /v1/models</code>.
+Clients select a route by putting that name in the request's <code>model</code> field.
+Some route types also discover or register direct upstream model IDs.</p>
 <h2 id="tiers-and-routing-strategies">Tiers and routing strategies<a class="headerlink" href="#tiers-and-routing-strategies" title="Permanent link">&para;</a></h2>
 <p>Most routing strategies divide traffic between two tiers: a strong target that
 is more capable and more expensive, and a weak target that is cheaper and
-faster. A tier is a role you hand to a target rather than a fixed property of it,
-so the same target can be the strong tier in one profile and the weak tier in
-another.</p>
-<p>A profile's <code>type</code> sets the strategy. <code>passthrough</code> sends everything to one
-target with no routing. <code>random-routing</code> splits traffic on a fixed probability.
-<code>llm-routing</code> asks a classifier model to pick a tier for each turn. <code>stage_router</code>
-escalates from weak to strong when request signals call for it. The
-<a href="../routing_algorithms/overview/">Routing Overview</a> covers when to use each and
-how to tune it.</p>
-<div class="admonition warning">
-<p class="admonition-title">There is no <code>type: model</code></p>
-<p>The current profile config does not have a <code>type: model</code>. To expose a single
-model, point clients at a target ID directly, or add a <code>passthrough</code> profile
-when you want a second name for it. <code>type: model</code> survives only in the
-deprecated <code>--routing-profiles</code> bundles used by the launcher compatibility
-path.</p>
-</div>
-<p>Session affinity, or sticky routing, pins a conversation to one tier so later
-turns reuse it instead of being classified again. It belongs to <code>llm-routing</code>
-and is not a strategy of its own; random and stage-router routing decide every
-request on its own merits. <a href="../routing_algorithms/sticky_routing/">Sticky Routing</a>
-covers it in full.</p>
+faster. A tier is a role assigned inside a route, not a fixed property of a
+model.</p>
+<p>A route's <code>type</code> sets the strategy. <code>model</code> and <code>passthrough</code> call one target.
+<code>random_routing</code> splits traffic on a fixed probability. <code>deterministic</code> asks a
+classifier model to pick a tier. <code>stage_router</code> uses agent-progress signals,
+with an optional classifier fallback. <code>escalation_router</code> starts on the weak
+tier and uses an LLM judge to escalate when needed. The
+<a href="../routing_algorithms/overview/">Routing Overview</a> explains when to use each.</p>
+<p>Session affinity pins a conversation to one tier so later turns reuse it
+instead of being classified again. It belongs to deterministic classifier
+routing and is not a strategy of its own. Random and stage-router routing make
+a decision for every request. <a href="../routing_algorithms/sticky_routing/">Sticky Routing</a>
+covers affinity in full.</p>
 <h2 id="formats-and-translation">Formats and translation<a class="headerlink" href="#formats-and-translation" title="Permanent link">&para;</a></h2>
-<p>Clients reach Switchyard in one of three inbound formats: OpenAI Chat
-Completions, Anthropic Messages, or OpenAI Responses. Each target has its own
-backend format, set by its <code>format:</code> field, which is one of <code>openai</code>,
-<code>anthropic</code>, <code>responses</code>, or <code>auto</code>. When the two differ, Switchyard translates
-the request on the way out and the response on the way back.</p>
-<p>That translation is what lets Claude Code, which speaks Anthropic Messages, run
-against an OpenAI-compatible model, and the reverse. The
-<a href="../architecture/">Architecture</a> page documents every backend format, the <code>auto</code>
-probe, and the neutral representation used to convert between them.</p>
+<p>Clients reach Switchyard through OpenAI Chat Completions, Anthropic Messages,
+or OpenAI Responses. Each target has a backend format: <code>openai</code>, <code>anthropic</code>,
+<code>responses</code>, or <code>auto</code>. When the inbound and backend formats differ,
+Switchyard translates the request on the way out and the response on the way
+back.</p>
+<p>That translation lets Claude Code, which speaks Anthropic Messages, run against
+an OpenAI-compatible model. The <a href="../architecture/">Architecture</a> page documents
+the supported formats and request lifecycle.</p>
+<h2 id="programmatic-python-profiles">Programmatic Python profiles<a class="headerlink" href="#programmatic-python-profiles" title="Permanent link">&para;</a></h2>
+<p>Embedded Python callers can construct typed profile configs and runtimes
+directly instead of loading a route bundle. <code>ProfileInput</code> carries the request
+and request metadata, while the profile protocols define <code>run</code>, <code>process</code>, and
+<code>rprocess</code>. This programmatic API is separate from CLI configuration.</p>
+<h2 id="rust-server-configuration">Rust server configuration<a class="headerlink" href="#rust-server-configuration" title="Permanent link">&para;</a></h2>
+<p>The <code>switchyard-server</code> binary is built directly on libsy. Its TOML file
+explicitly defines LLM clients, targets, and algorithm routes; it does not load
+Python route bundles. See the
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4ccec5d371f28d6aec912451a7e8d06b98af4f1a/crates/switchyard-server/README.md">Rust server README</a> for details.</p>
 <h2 id="where-to-go-next">Where to go next<a class="headerlink" href="#where-to-go-next" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a> to install and send a first request.</li>
