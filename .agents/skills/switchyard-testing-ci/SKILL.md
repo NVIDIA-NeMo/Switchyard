@@ -24,7 +24,7 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 
 | Situation | Command |
 |---|---|
-| Inspect the current diff | `git status -sb && git diff --stat && git diff --name-only` |
+| Inspect all local changes | `git status -sb && git diff HEAD --stat && git diff HEAD --name-only && git ls-files --others --exclude-standard` |
 | Pre-PR hermetic gate (default) | `uv run ruff check . && uv run mypy switchyard && env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Mirror CI pytest with no live creds | `env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Rust component crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-components` |
@@ -41,8 +41,9 @@ From the repo root, inspect the diff before choosing focused gates:
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 git status -sb
-git diff --stat
-git diff --name-only
+git diff HEAD --stat
+git diff HEAD --name-only
+git ls-files --others --exclude-standard
 ```
 
 For a not-yet-edited area, search likely owners and their tests explicitly:
