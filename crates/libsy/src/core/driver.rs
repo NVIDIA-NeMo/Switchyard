@@ -333,9 +333,9 @@ mod tests {
         tokio::pin!(stream);
         match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Done(payload) => {
-                let value = payload
-                    .downcast::<String>()
-                    .map_err(|_| LibsyError::from(DriverError::TypeMismatch { expected: "u64" }))?;
+                let value = payload.downcast::<String>().map_err(|_| {
+                    LibsyError::from(DriverError::TypeMismatch { expected: "String" })
+                })?;
                 assert_eq!(*value, "finished");
             }
             _ => return Err(test_error("expected a Done step")),

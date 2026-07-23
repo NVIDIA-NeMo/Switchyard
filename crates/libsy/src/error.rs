@@ -51,7 +51,6 @@ pub enum LibsyError {
     AlgorithmTask {
         /// Tokio task failure, including panic and unexpected cancellation details.
         #[from]
-        #[source]
         source: tokio::task::JoinError,
     },
 
