@@ -76,7 +76,7 @@ prompt determine the verdict.
 
 ## Useful options
 
-| Option | Use it when |
+| Configuration path | Use it when |
 |---|---|
 | `classifier.min_confidence` | Low-confidence results should use the default tier instead of the classifier policy. |
 | `classifier.fail_open` | Classifier errors should use the default tier rather than fail the client request. |

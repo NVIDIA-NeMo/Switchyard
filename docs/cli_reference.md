@@ -66,7 +66,7 @@ on the launchers; `serve` uses `--routing-profiles`:
 | Flag | Purpose |
 |---|---|
 | `--model ID` | Single-model passthrough. Every request is rewritten to `model=ID` and forwarded to `--base-url`. |
-| `--routing-profiles PATH` | Path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `stage_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
+| `--routing-profiles PATH` | Path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `stage_router`, `escalation_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
 
 On the launchers, the two flags are mutually exclusive: pass one or the other, not both.
 

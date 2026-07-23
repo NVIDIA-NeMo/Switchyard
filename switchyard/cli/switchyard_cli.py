@@ -388,7 +388,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         if not saved:
             raise SystemExit(
                 "serve: no routing-profiles given. Pass --routing-profiles "
-                "PATH or run `switchyard configure --routing-profiles PATH` "
+                "PATH or run `switchyard --routing-profiles PATH configure` "
                 "to save one."
             )
         # Saved bundles are stored as parsed dicts, so we can skip the

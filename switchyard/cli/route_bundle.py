@@ -499,7 +499,12 @@ def _parse_route_bundle_dict(raw: object) -> RouteBundle:
     validation runs inside :func:`build_table_from_bundle` so callers
     that construct a bundle programmatically still benefit.
     """
-    bundle = _require_mapping(_expand_env(raw), "route bundle")
+    return _validate_route_bundle_dict(_expand_env(raw))
+
+
+def _validate_route_bundle_dict(raw: object) -> RouteBundle:
+    """Validate bundle structure without expanding environment references."""
+    bundle = _require_mapping(raw, "route bundle")
     _validate_allowed_keys(bundle, frozenset({"defaults", "routes"}), "route bundle")
     defaults = _optional_mapping(bundle.get("defaults", {}), "defaults")
     _validate_allowed_keys(defaults, _TARGET_DEFAULT_KEYS, "defaults")

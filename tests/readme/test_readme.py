@@ -81,7 +81,14 @@ def _validate_route_blocks(text: str, source: Path) -> int:
         payload = pyyaml.safe_load(block)
         if not isinstance(payload, dict) or "routes" not in payload:
             continue
-        for model_id, route_raw in payload["routes"].items():
+        try:
+            bundle = rb._validate_route_bundle_dict(payload)
+        except rb.RouteBundleConfigError as exc:
+            raise AssertionError(
+                f"YAML block {idx} in {source} failed bundle schema "
+                f"validation: {exc}\n\nBlock:\n{block}"
+            ) from exc
+        for model_id, route_raw in bundle.routes.items():
             route = rb._normalize_route(model_id, route_raw)
             try:
                 route_type = rb._route_type(model_id, route)
@@ -93,6 +100,19 @@ def _validate_route_blocks(text: str, source: Path) -> int:
                 ) from exc
             validated_routes += 1
     return validated_routes
+
+
+def test_route_block_validation_rejects_invalid_bundle_defaults() -> None:
+    text = """```yaml
+defaults:
+  unsupported: true
+routes:
+  noop:
+    type: noop
+```
+"""
+    with pytest.raises(AssertionError, match="unknown key.*defaults: unsupported"):
+        _validate_route_blocks(text, Path("example.md"))
 
 
 def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
