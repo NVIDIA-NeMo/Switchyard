@@ -1744,9 +1744,10 @@ upstream requests. Configuration files use these lowercase values:</p>
 </table>
 <p><code>auto</code> resolves formats in this order:</p>
 <ol>
+<li>Probe <code>/v1/chat/completions</code>; use <code>openai</code> when supported.</li>
 <li>Probe <code>/v1/messages</code>; use <code>anthropic</code> when supported.</li>
 <li>Probe <code>/v1/responses</code>; use <code>responses</code> when supported.</li>
-<li>Fall back to <code>openai</code> and <code>/v1/chat/completions</code>.</li>
+<li>Fall back to <code>openai</code> (<code>/v1/chat/completions</code>).</li>
 </ol>
 <p>Single-model Claude Code and Codex launches use <code>auto</code>. OpenClaw is pinned to
 <code>openai</code>. Prefer an explicit format when the upstream contract is known so
@@ -2273,6 +2274,14 @@ Skill distillation config also lives in <code>~/.config/switchyard/config.json</
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Saved bundles keep <code>${VAR}</code> references literal.</strong> A saved routing-profile
+bundle stores <code>${OPENROUTER_API_KEY}</code> (and any other <code>${VAR}</code>) verbatim. The
+referenced environment variables must therefore
+be present in the environment at <code>serve</code> / <code>launch</code> time; on another machine or
+shell, export them again or Switchyard aborts with
+<code>missing environment variable(s): NAME</code>.</p>
+</blockquote>
 <p><strong>Skill distillation config</strong></p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;skill_distillation&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
