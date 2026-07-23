@@ -286,10 +286,16 @@ deterministic LLM-classifier routes, `server.classifier_prompts` records each ro
 prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` for reproducibility. Direct
 runs mark routing stats as `not-requested`.
 
-Switchyard runs also write `routing_requests.jsonl` (one record per router request: task, session,
-selected model, tier, token usage) and roll it up into `routing_stats_by_task.json` at finalize.
-The task identity comes from the per-task proxy sidecar, which stamps `x-switchyard-intake-task`
-and a per-trial `proxy_x_session_id` on model-bound requests.
+Switchyard runs also write `routing_requests.jsonl` (one record per router request: task, trial,
+session, served model, tier, and the six token fields from the global schema) and roll it up into
+`routing_stats_by_task.json` at finalize. The per-task proxy sidecar stamps the identity headers on
+model-bound requests: `x-switchyard-intake-task`, `x-switchyard-trial-id` (Harbor's trial name), and
+a per-attempt `proxy_x_session_id`.
+
+Each task in `routing_stats_by_task.json` splits into `final` and `retries`. Requests are grouped by
+trial, and within a trial the latest attempt is the one Harbor kept (it retries sequentially and
+discards earlier attempts), so tokens spent on retried-away attempts land in `retries` and can be
+netted out of cost.
 
 ## Docker Image Notes
 

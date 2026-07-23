@@ -44,6 +44,14 @@ STRIP_PATH_SUFFIXES = (
 )
 INTAKE_TASK_HEADER = "x-switchyard-intake-task"
 SESSION_ID_HEADER = "proxy_x_session_id"
+TRIAL_ID_HEADER = "x-switchyard-trial-id"
+
+
+def _trial_id_from_env() -> str:
+    # Harbor sets HOST_AGENT_LOGS_PATH to <trials_dir>/<trial_name>/agent, passed
+    # into the proxy as SWITCHYARD_TRIAL_DIR; the trial name is that dir's parent.
+    trial_dir = os.environ.get("SWITCHYARD_TRIAL_DIR", "").strip()
+    return Path(trial_dir).parent.name if trial_dir else ""
 
 
 def _truthy(value: str | None) -> bool:
@@ -67,8 +75,9 @@ class ClosedBookProxy:
         )
         self.allowed_hosts = self._load_allowed_hosts()
         self.task_id = os.environ.get("SWITCHYARD_TASK_ID", "")
-        # One id per proxy boot; the sidecar boots once per trial, so this
-        # distinguishes trials of the same task.
+        self.trial_id = _trial_id_from_env()
+        # One id per proxy boot; the sidecar boots once per attempt, so this
+        # distinguishes retries of the same trial.
         self.session_id = uuid.uuid4().hex
 
     def _load_allowed_hosts(self) -> set[str]:
@@ -128,6 +137,8 @@ class ClosedBookProxy:
         if self.task_id:
             flow.request.headers[INTAKE_TASK_HEADER] = self.task_id
             flow.request.headers[SESSION_ID_HEADER] = self.session_id
+            if self.trial_id:
+                flow.request.headers[TRIAL_ID_HEADER] = self.trial_id
         if not self.closed_book:
             return
         if "application/json" not in flow.request.headers.get("content-type", ""):
