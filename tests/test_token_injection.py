@@ -585,6 +585,31 @@ def test_bundle_injection_stripped_when_capture_disabled() -> None:
     assert not any(isinstance(c, TokenInjectionBackend) for c in components)
 
 
+@respx.mock
+def test_bundle_capture_route_exposes_max_model_len(respx_mock: respx.MockRouter) -> None:
+    """Token-capture routes surface the engine's context length on /v1/models."""
+    from switchyard.cli.route_bundle import build_route_bundle_table
+
+    respx_mock.get(f"{_BASE_URL}/models").mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"id": _MODEL, "max_model_len": 32768}]}
+        )
+    )
+    table = build_route_bundle_table(_bundle(_injection_route()), token_capture_enabled=True)
+    entry = next(e for e in table.registered_model_entries() if e["id"] == "policy-model")
+    assert entry["max_model_len"] == 32768
+
+
+@respx.mock
+def test_bundle_max_model_len_absent_on_fetch_failure(respx_mock: respx.MockRouter) -> None:
+    from switchyard.cli.route_bundle import build_route_bundle_table
+
+    respx_mock.get(f"{_BASE_URL}/models").mock(return_value=httpx.Response(503))
+    table = build_route_bundle_table(_bundle(_injection_route()), token_capture_enabled=True)
+    entry = next(e for e in table.registered_model_entries() if e["id"] == "policy-model")
+    assert "max_model_len" not in entry
+
+
 def test_bundle_without_injection_key_is_unwrapped() -> None:
     from switchyard.cli.route_bundle import build_route_bundle_table
 

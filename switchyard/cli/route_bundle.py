@@ -669,7 +669,10 @@ def build_table_from_bundle(
         table.register(
             model_id,
             switchyard,
-            metadata=_route_metadata(model_id, route, route_type),
+            metadata={
+                **_route_metadata(model_id, route, route_type),
+                **_capture_route_metadata_extras(model_id, route, route_type, route_defaults),
+            },
         )
     return table
 
@@ -1539,6 +1542,54 @@ def _validate_allowed_keys(
         raise RouteBundleConfigError(
             f"unknown key(s) for {where}: {', '.join(unknown)}"
         )
+
+
+def _capture_route_metadata_extras(
+    model_id: str,
+    route: Mapping[str, object],
+    route_type: str,
+    target_defaults: Mapping[str, object],
+) -> dict[str, object]:
+    """Upstream-model facts exposed on ``/v1/models`` for token-capture routes.
+
+    Training consumers (e.g. NeMo Gym's opencode provider config) need the
+    served model's context length; the route target is the only component that
+    always knows the engine's address, so the fact is surfaced here. Absent on
+    fetch failure — consumers degrade gracefully.
+    """
+    if route_type not in ("model", "passthrough") or route.get("token_capture_engine") is None:
+        return {}
+    try:
+        target = _passthrough_target(model_id, route, target_defaults, route_type)
+    except (RouteBundleConfigError, TypeError, ValueError):
+        return {}
+    endpoint = target.endpoint
+    base_url = endpoint.base_url if endpoint is not None else None
+    if not base_url:
+        return {}
+    max_model_len = _fetch_upstream_max_model_len(base_url, endpoint.api_key)
+    return {"max_model_len": max_model_len} if max_model_len is not None else {}
+
+
+def _fetch_upstream_max_model_len(base_url: str, api_key: str | None) -> int | None:
+    """The engine's ``max_model_len`` from its ``/v1/models`` card, or ``None``."""
+    import httpx
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models", headers=headers, timeout=5.0
+        )
+        response.raise_for_status()
+        data = response.json().get("data")
+    except Exception:  # noqa: BLE001 - metadata is best-effort at startup
+        logger.debug("could not fetch max_model_len from %s", base_url, exc_info=True)
+        return None
+    for entry in data if isinstance(data, list) else []:
+        value = entry.get("max_model_len") if isinstance(entry, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
 
 
 def _route_metadata(
