@@ -39,6 +39,7 @@ nav:
       - CLI Reference: cli_reference.md
 
 exclude_docs: |
+  AGENTS.md
   internal/**
   research/**
   vllm-serve-hidden-state.md
