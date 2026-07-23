@@ -85,6 +85,38 @@ profiles:
 Use the profile ID to select policy behavior (`fast` or `smart`) and a target ID
 to bypass routing (`weak` or `strong`).
 
+## Sub-agent override (`subagent_target`)
+
+Any profile can name an optional `subagent_target` in its common envelope,
+alongside `type`. When a request carries a recognized sub-agent signal —
+Codex delegated-work kinds (`x-openai-subagent: collab_spawn` or `review`),
+Claude Code agent lineage headers, or an explicit
+`x-switchyard-is-subagent: true` — it bypasses the profile's routing and runs
+as a direct passthrough to that target:
+
+```yaml
+profiles:
+  smart:
+    type: random-routing
+    strong: strong
+    weak: weak
+    strong_probability: 0.3
+    subagent_target: weak
+```
+
+This keeps a sub-agent loop on one intentional, cache-compatible target
+instead of re-routing every worker turn. Codex harness-maintenance turns
+(`compact`, `memory_consolidation`) and unrecognized kinds stay on normal
+profile routing, as does everything else when the field is absent. An unknown
+target reference fails at startup, and a sub-agent target failure surfaces as
+a normal target error — it is never silently re-routed through the profile.
+
+To suppress sub-agent routing for a request that carries a recognized signal,
+send `x-switchyard-is-subagent: false`. This explicit header overrides Codex
+and Claude Code lineage signals in either direction: `false` keeps the request
+on normal profile routing even when delegated-work headers are present, and
+`true` marks a request as a sub-agent even when no harness headers appear.
+
 ## Direct targets and passthrough aliases
 
 For new profile configs, use one public model concept:

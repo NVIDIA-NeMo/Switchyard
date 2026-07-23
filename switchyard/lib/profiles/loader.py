@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from switchyard.lib.profiles.protocols import ProfileInput, ProfileRunner
+from switchyard.lib.profiles.subagent_override import SubagentOverrideProfile
 from switchyard.lib.profiles.table import (
     ProfileConfigError,
     build_profile,
@@ -63,7 +64,41 @@ def load_profiles_and_targets(
         built[profile_id] = _RustProfileRunner(plan.build_profile(profile_id))
     for profile_id, (profile_type, body) in python_profiles.items():
         built[profile_id] = _build_python_profile(profile_id, profile_type, body, plan)
+    for profile_id in list(built):
+        built[profile_id] = _wrap_subagent_override(profile_id, built[profile_id], document, plan)
     return built, _targets(plan)
+
+
+def _wrap_subagent_override(
+    profile_id: str,
+    profile: ProfileRunner,
+    document: Any,
+    plan: ProfileConfigPlan,
+) -> ProfileRunner:
+    """Wrap a built profile when its envelope names a ``subagent_target``.
+
+    Rust profiles already apply :class:`SubagentOverrideProfile` internally at
+    build time, so Python-level wrapping is skipped for them. Python-defined
+    profiles receive the Python wrapper here, which adds sub-agent routing
+    without Rust-level stats (stats for Python profiles remain in the
+    Python stats pipeline).
+
+    An unknown target reference is a startup configuration error.
+    """
+    target_id = document.profile_subagent_target(profile_id)
+    if target_id is None:
+        return profile
+    # Rust profiles handle subagent routing internally; skip double-wrapping.
+    if isinstance(profile, _RustProfileRunner):
+        return profile
+    target = plan.target(target_id)
+    if target is None:
+        raise ProfileConfigError(
+            f"profile {profile_id}: subagent_target references unknown target {target_id!r}"
+        )
+    from switchyard.lib.profiles.passthrough import PassthroughProfileConfig
+
+    return SubagentOverrideProfile(profile, PassthroughProfileConfig(target=target).build())
 
 
 class _RustProfileRunner:

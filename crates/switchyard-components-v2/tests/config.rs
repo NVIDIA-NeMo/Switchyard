@@ -696,3 +696,100 @@ fn profile_config_format_rejects_unknown_extension() {
         .unwrap_or_else(|| "expected extension failure".to_string());
     assert!(error.contains("unsupported profile config extension"));
 }
+
+// The envelope-level `subagent_target` is consumed before profile-owned parsing,
+// so profile types that deny unknown fields still resolve, and the reference
+// stays readable from the parsed document.
+#[test]
+fn subagent_target_envelope_field_is_stripped_and_exposed() -> Result<()> {
+    let input = r#"
+targets:
+  weak:
+    model: weak/model
+    format: openai
+profiles:
+  direct:
+    type: passthrough
+    target: weak
+    subagent_target: weak
+"#;
+    let config = parse_yaml(input)?;
+    let profile_id = ProfileId::new("direct")?;
+    assert_eq!(
+        config.profile_subagent_target(&profile_id),
+        Some(&LlmTargetId::new("weak")?)
+    );
+    let body_has_field = config
+        .profile_body(&profile_id)
+        .and_then(|body| body.get("subagent_target"))
+        .is_some();
+    assert!(!body_has_field);
+    config.resolve()?;
+    Ok(())
+}
+
+// A profile without the envelope field reports no sub-agent target.
+#[test]
+fn subagent_target_is_absent_by_default() -> Result<()> {
+    let input = r#"
+targets:
+  weak:
+    model: weak/model
+    format: openai
+profiles:
+  direct:
+    type: passthrough
+    target: weak
+"#;
+    let config = parse_yaml(input)?;
+    assert_eq!(
+        config.profile_subagent_target(&ProfileId::new("direct")?),
+        None
+    );
+    Ok(())
+}
+
+// An unknown `subagent_target` reference is a startup configuration error.
+#[test]
+fn subagent_target_referencing_unknown_target_is_rejected_at_resolve() -> Result<()> {
+    let input = r#"
+targets:
+  weak:
+    model: weak/model
+    format: openai
+profiles:
+  direct:
+    type: passthrough
+    target: weak
+    subagent_target: ghost
+"#;
+    let error = parse_yaml(input)?
+        .resolve()
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "expected resolve failure".to_string());
+    assert!(error.contains("profile direct"));
+    assert!(error.contains("subagent_target references unknown target ghost"));
+    Ok(())
+}
+
+// The envelope field must be a target id string, not a structured value.
+#[test]
+fn subagent_target_must_be_a_target_id_string() {
+    let input = r#"
+targets:
+  weak:
+    model: weak/model
+    format: openai
+profiles:
+  direct:
+    type: passthrough
+    target: weak
+    subagent_target: [weak]
+"#;
+    let error = parse_yaml(input)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "expected parse failure".to_string());
+    assert!(error.contains("`subagent_target` must be a target id string"));
+}

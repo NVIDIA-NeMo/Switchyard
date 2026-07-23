@@ -57,6 +57,13 @@ impl ProfileConfigDocument {
             .map(SerializedProfileConfig::body)
     }
 
+    /// Returns a profile's envelope `subagent_target` reference, if configured.
+    pub fn profile_subagent_target(&self, profile_id: &ProfileId) -> Option<&LlmTargetId> {
+        self.profiles
+            .get(profile_id)
+            .and_then(SerializedProfileConfig::subagent_target)
+    }
+
     /// Returns a copy of this document with the selected profiles removed.
     pub fn without_profiles(&self, profile_ids: &[ProfileId]) -> Self {
         let omitted = profile_ids.iter().collect::<BTreeSet<_>>();
@@ -68,16 +75,22 @@ impl ProfileConfigDocument {
     }
 }
 
-/// Serialized profile body split into a type discriminator and profile-owned fields.
+/// Serialized profile body split into a type discriminator, common envelope
+/// fields, and profile-owned fields.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SerializedProfileConfig {
     profile_type: String,
+    subagent_target: Option<LlmTargetId>,
     body: Value,
 }
 
 impl SerializedProfileConfig {
     /// Creates a serialized profile config after verifying the body is an object.
-    fn new(profile_type: impl Into<String>, body: Value) -> Result<Self> {
+    fn new(
+        profile_type: impl Into<String>,
+        subagent_target: Option<LlmTargetId>,
+        body: Value,
+    ) -> Result<Self> {
         let profile_type = profile_type.into();
         if profile_type.trim().is_empty() {
             return Err(SwitchyardError::InvalidConfig(
@@ -89,7 +102,11 @@ impl SerializedProfileConfig {
                 "profile config body must be an object".to_string(),
             ));
         }
-        Ok(Self { profile_type, body })
+        Ok(Self {
+            profile_type,
+            subagent_target,
+            body,
+        })
     }
 
     /// Returns the profile type discriminator from the file's `type` field.
@@ -97,7 +114,12 @@ impl SerializedProfileConfig {
         &self.profile_type
     }
 
-    /// Returns the profile-owned config fields without the `type` discriminator.
+    /// Returns the envelope `subagent_target` reference from the file, if any.
+    pub(super) fn subagent_target(&self) -> Option<&LlmTargetId> {
+        self.subagent_target.as_ref()
+    }
+
+    /// Returns the profile-owned config fields without the envelope fields.
     pub(super) fn body(&self) -> &Value {
         &self.body
     }
@@ -118,7 +140,21 @@ impl<'de> Deserialize<'de> for SerializedProfileConfig {
         let Value::String(profile_type) = profile_type else {
             return Err(de::Error::custom("profile config `type` must be a string"));
         };
-        SerializedProfileConfig::new(profile_type, value).map_err(de::Error::custom)
+        // `subagent_target` is a common envelope field consumed here, like `type`,
+        // so profile-owned bodies (which deny unknown fields) never see it.
+        let subagent_target = match map.remove("subagent_target") {
+            None => None,
+            Some(Value::String(target_id)) => {
+                Some(LlmTargetId::new(target_id).map_err(de::Error::custom)?)
+            }
+            Some(_) => {
+                return Err(de::Error::custom(
+                    "profile config `subagent_target` must be a target id string",
+                ));
+            }
+        };
+        SerializedProfileConfig::new(profile_type, subagent_target, value)
+            .map_err(de::Error::custom)
     }
 }
 
@@ -131,6 +167,12 @@ impl Serialize for SerializedProfileConfig {
             return Err(ser::Error::custom("profile config body must be an object"));
         };
         map.insert("type".to_string(), Value::String(self.profile_type.clone()));
+        if let Some(subagent_target) = &self.subagent_target {
+            map.insert(
+                "subagent_target".to_string(),
+                Value::String(subagent_target.as_str().to_owned()),
+            );
+        }
         Value::Object(map).serialize(serializer)
     }
 }

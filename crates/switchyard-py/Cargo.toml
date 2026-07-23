@@ -25,6 +25,7 @@ pythonize = "0.28.0"
 serde = "1"
 serde_json = "1"
 switchyard-core = { path = "../switchyard-core" }
+switchyard-protocol = { path = "../protocol" }
 switchyard-components = { path = "../switchyard-components" }
 switchyard-components-v2 = { path = "../switchyard-components-v2" }
 switchyard-translation = { path = "../switchyard-translation" }

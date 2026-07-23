@@ -11,6 +11,7 @@ mod passthrough;
 mod profile_types;
 mod random_routing;
 mod stage_router;
+mod subagent_override;
 
 pub use latency_service::{
     EndpointHealth, EndpointHealthStatus, LatencyServiceProcessedRequest, LatencyServiceProfile,
@@ -31,3 +32,4 @@ pub use stage_router::{
     StageRouterPickerMode, StageRouterProcessedRequest, StageRouterProfile,
     StageRouterProfileConfig, StageRouterTier,
 };
+pub(crate) use subagent_override::SubagentOverrideProfile;
