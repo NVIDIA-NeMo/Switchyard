@@ -1340,7 +1340,8 @@ model.</p>
 <p>A route's <code>type</code> sets the strategy. <code>model</code> and <code>passthrough</code> call one target.
 <code>random_routing</code> splits traffic on a fixed probability. <code>deterministic</code> asks a
 classifier model to pick a tier. <code>stage_router</code> uses agent-progress signals,
-with an optional classifier fallback. The
+with an optional classifier fallback. <code>escalation_router</code> starts on the weak
+tier and uses an LLM judge to escalate when needed. The
 <a href="../routing_algorithms/overview/">Routing Overview</a> explains when to use each.</p>
 <p>Session affinity pins a conversation to one tier so later turns reuse it
 instead of being classified again. It belongs to deterministic classifier
@@ -1365,7 +1366,7 @@ and request metadata, while the profile protocols define <code>run</code>, <code
 <p>The <code>switchyard-server</code> binary is built directly on libsy. Its TOML file
 explicitly defines LLM clients, targets, and algorithm routes; it does not load
 Python route bundles. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1a3f4721ec3ef82899ab91fd8dd456ac9e974aa4/crates/switchyard-server/README.md">Rust server README</a> for details.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0fdbb63b00151ad30be1bb5a4c7d82de9b88aa53/crates/switchyard-server/README.md">Rust server README</a> for details.</p>
 <h2 id="where-to-go-next">Where to go next<a class="headerlink" href="#where-to-go-next" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a> to install and send a first request.</li>
