@@ -4,6 +4,7 @@
 //! Rust HTTP server for libsy algorithms.
 
 pub mod config;
+mod metrics;
 mod response;
 mod sse;
 
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{rejection::JsonRejection, State};
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -69,6 +71,7 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 #[derive(Clone)]
 pub struct ServerState {
     routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
+    metrics: prometheus::Registry,
 }
 
 impl ServerState {
@@ -89,8 +92,10 @@ impl ServerState {
         if entries.is_empty() {
             return Err(ServerError::new("at least one algorithm route is required"));
         }
+        let metrics = metrics::registry().map_err(ServerError::new)?;
         Ok(Self {
             routes: Arc::new(entries),
+            metrics,
         })
     }
 
@@ -193,6 +198,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/models", get(models))
+        .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .fallback(not_found)
         .with_state(state)
@@ -455,6 +461,13 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
 
 async fn health() -> Json<Value> {
     Json(json!({"status": "ok"}))
+}
+
+async fn prometheus_metrics(State(state): State<ServerState>) -> Response {
+    match metrics::encode(&state.metrics) {
+        Ok(body) => ([(CONTENT_TYPE, metrics::CONTENT_TYPE)], body).into_response(),
+        Err(error) => server_error(error),
+    }
 }
 
 async fn not_found() -> Response {

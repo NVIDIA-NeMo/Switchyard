@@ -19,6 +19,10 @@ rustls = { version = "0.23" }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 libsy = { package = "switchyard-libsy", path = "../libsy" }
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+opentelemetry-prometheus = "0.32"
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics"] }
+prometheus = "0.14"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 switchyard-llm-client = { path = "../libsy-llm-client" }

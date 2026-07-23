@@ -156,6 +156,50 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     Ok((upstream, app))
 }
 
+#[tokio::test]
+async fn metrics_exposes_libsy_otel_instruments() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    let before = send(&app, "GET", "/metrics", None).await?;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(
+        before
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    let metrics = after.text()?;
+    for expected in [
+        "# TYPE libsy_runs_total counter",
+        "# TYPE libsy_llm_calls_total counter",
+        "# TYPE libsy_run_duration_ms histogram",
+        "# TYPE libsy_llm_call_duration_ms histogram",
+        "algorithm=\"random\"",
+        "selected_model=\"model/a\"",
+    ] {
+        assert!(
+            metrics.contains(expected),
+            "missing {expected:?} in metrics:\n{metrics}"
+        );
+    }
+    Ok(())
+}
+
 fn load_test_config(toml: &str) -> TestResult<ServerState> {
     let mut config = tempfile::Builder::new()
         .prefix("switchyard-server-config-")
