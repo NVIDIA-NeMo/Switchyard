@@ -910,7 +910,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "file per request/response pair) for `launch` and `serve` sessions. "
             "When the route bundle declares `token_capture_engine` on a route, "
             "traces are token-level capture records grouped by session and "
-            "served via GET /v1/sessions. Global flag — place it before the "
+            "served via GET /v1/sessions; `token_injection: true` additionally "
+            "preserves multi-turn token continuity for reasoning models. "
+            "Global flag — place it before the "
             "subcommand, e.g. switchyard --enable-rl-logging launch claude."
         ),
     )
