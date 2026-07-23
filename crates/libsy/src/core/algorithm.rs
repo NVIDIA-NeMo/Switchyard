@@ -5,10 +5,11 @@
 //! routing/optimization algorithm implements, and the offload channel it makes model
 //! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
 
-use std::{error::Error, pin::Pin, sync::Arc};
+use std::{error::Error, pin::Pin, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use tracing::Instrument;
 
 /// The request/response protocol types, re-exported from [`switchyard_protocol`].
 /// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered response;
@@ -16,10 +17,11 @@ use futures::{Stream, StreamExt};
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals,
+    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals, Usage,
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
+use crate::observability;
 
 /// Shorthand for the crate's boxed, thread-safe error type.
 type BoxErr = Box<dyn Error + Send + Sync>;
@@ -126,10 +128,42 @@ impl Driver {
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
     /// consumer's [`Response`]. The call's context travels inside
     /// [`routed.ctx`](RoutedRequest::ctx). Errors if the stream is closed or the call failed.
+    /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
+    /// the algorithm observes it (host queueing/serving included; a streamed
+    /// response resolves when its stream handle arrives); latency, outcome, and
+    /// token usage are recorded when it resolves. The provider call itself gets a
+    /// `libsy.client_call` span when [`Algorithm::run`] serves it.
+    #[tracing::instrument(
+        target = "libsy",
+        name = "libsy.llm_call",
+        skip_all,
+        fields(
+            algorithm = observability::algorithm_label(&routed.ctx),
+            selected_model = routed.decision.selected_model(),
+            outcome = tracing::field::Empty,
+            error = tracing::field::Empty,
+            input_tokens = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+            total_tokens = tracing::field::Empty,
+            reasoning_tokens = tracing::field::Empty,
+        )
+    )]
     pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
-        self.driver
+        let algorithm = observability::algorithm_label(&routed.ctx).to_string();
+        let selected_model = routed.decision.selected_model().to_string();
+        let started = Instant::now();
+        let result = self
+            .driver
             .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
-            .await
+            .await;
+        observability::record_llm_call(
+            &algorithm,
+            &selected_model,
+            started.elapsed(),
+            &result,
+            &tracing::Span::current(),
+        );
+        result
     }
 
     /// Offload a call to `target`: pair `request` with `decision` and the target's
@@ -154,8 +188,12 @@ impl Driver {
     }
 
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
+    /// Each successfully published decision is counted and logged with its
+    /// reasoning; a decision the stream never accepted is not recorded.
     pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
-        self.driver.info(ctx, decision).await
+        self.driver.info(ctx.clone(), decision.clone()).await?;
+        observability::record_decision(&ctx, decision.as_ref());
+        Ok(())
     }
 
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
@@ -280,10 +318,16 @@ pub trait Algorithm<S = ()>: Send + Sync + 'static
 where
     S: Clone + Send + Sync + 'static,
 {
+    /// Stable, low-cardinality name identifying this algorithm — the
+    /// `algorithm` attribute on every span, metric, and log line the crate
+    /// emits for its runs (see the crate docs' Observability section).
+    fn name(&self) -> &str;
+
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
     /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
-    /// drive it. `ctx` carries the request's cross-cutting values and per-session `state`.
+    /// drive it. `ctx` carries the request's cross-cutting values (today: the
+    /// algorithm's telemetry label in [`Context::values`]) and per-session `state`.
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context<S>,
@@ -306,12 +350,31 @@ where
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
     fn run_stream(self: Arc<Self>, ctx: Context<S>, request: Request) -> StepStream {
+        // Stamp the algorithm's telemetry label into the request context; the
+        // context rides on every driver call, so its telemetry is attributed.
+        let mut ctx = ctx;
+        ctx.values.insert(
+            observability::ALGORITHM_KEY.to_string(),
+            self.name().to_string(),
+        );
         let driver = Driver::new();
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
         let stream = task_driver.stream();
-        let handle =
-            tokio::spawn(async move { self.create_run_task(task_ctx, task_driver, request).await });
+        // One `libsy.run` span covers the whole algorithm task; the driver's
+        // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
+        // contextual parenting.
+        let span = observability::run_span(self.name(), request.metadata.as_ref());
+        let handle = tokio::spawn(
+            async move {
+                observability::observe_run(
+                    task_ctx.clone(),
+                    self.create_run_task(task_ctx, task_driver, request),
+                )
+                .await
+            }
+            .instrument(span),
+        );
         // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
         let abort_guard = AbortOnDrop(handle.abort_handle());
 
@@ -347,6 +410,19 @@ where
         // Serve one offloaded call with its target's default client. A failed *model*
         // call is forwarded to the algorithm via `respond`; this errors only on an
         // infrastructure failure (no default client, or the promise was dropped).
+        // `serve` makes the one API call libsy itself performs, so it gets its
+        // own `libsy.client_call` span.
+        #[tracing::instrument(
+            target = "libsy",
+            name = "libsy.client_call",
+            skip_all,
+            fields(
+                algorithm = observability::algorithm_label(&call.get_routed().ctx),
+                selected_model = call.get_decision().selected_model(),
+                outcome = tracing::field::Empty,
+                error = tracing::field::Empty,
+            )
+        )]
         async fn serve(call: CallLlmRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
             let routed = call.get_routed().clone();
             let client = routed.default_client.clone().ok_or_else(|| {
@@ -355,11 +431,11 @@ where
                     routed.decision.selected_model()
                 )
             })?;
-            call.respond(
-                client
-                    .call(routed.ctx, routed.request, routed.decision)
-                    .await,
-            )
+            let result = client
+                .call(routed.ctx, routed.request, routed.decision)
+                .await;
+            observability::record_client_call(&result);
+            call.respond(result)
         }
 
         let stream = self.run_stream(ctx, request);
@@ -448,6 +524,10 @@ mod tests {
 
     #[async_trait]
     impl Algorithm for TestAlgo {
+        fn name(&self) -> &str {
+            "test"
+        }
+
         async fn create_run_task(
             self: Arc<Self>,
             ctx: Context,
@@ -827,6 +907,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for StuckAlgo {
+            fn name(&self) -> &str {
+                "stuck"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -869,6 +953,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for Panicky {
+            fn name(&self) -> &str {
+                "panicky"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -907,6 +995,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for Panicky {
+            fn name(&self) -> &str {
+                "panicky"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -950,6 +1042,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for StuckAlgo {
+            fn name(&self) -> &str {
+                "stuck"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 _ctx: Context,
@@ -1053,6 +1149,10 @@ mod tests {
 
     #[async_trait]
     impl Algorithm for Hedge {
+        fn name(&self) -> &str {
+            "hedge"
+        }
+
         async fn create_run_task(
             self: Arc<Self>,
             ctx: Context,
@@ -1176,6 +1276,10 @@ mod tests {
 
         #[async_trait]
         impl Algorithm for FanOutThenError {
+            fn name(&self) -> &str {
+                "fan_out_then_error"
+            }
+
             async fn create_run_task(
                 self: Arc<Self>,
                 ctx: Context,

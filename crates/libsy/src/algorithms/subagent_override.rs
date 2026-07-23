@@ -59,6 +59,10 @@ impl SubagentOverride {
 
 #[async_trait]
 impl Algorithm for SubagentOverride {
+    fn name(&self) -> &str {
+        "subagent_override"
+    }
+
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,

@@ -52,6 +52,22 @@
 //! responsible for its own thread-safety — stateless (like the reference routers) or
 //! interior mutability over just its own state.
 //!
+//! ## Observability
+//!
+//! The provided run methods instrument every algorithm from the outside — at the
+//! [`Decision`] hook and the offload boundary — so algorithms carry no telemetry
+//! code. Each run gets a `libsy.run` tracing span (correlation ids from
+//! [`Metadata`] attached) with a child `libsy.llm_call` span per model call
+//! (fulfillment time as the algorithm observes it) plus a `libsy.client_call`
+//! span around the actual API call when [`run`](Algorithm::run) serves it;
+//! each [`Driver::info`] decision is logged with its reasoning; and OpenTelemetry
+//! metrics record run/call counts, latency, token usage, and published
+//! decisions, keyed by [`Algorithm::name`] plus `selected_model` and `outcome`.
+//! Metrics use the global meter provider and spans/logs the `tracing` facade: a
+//! host that installs an OTel SDK and a `tracing` subscriber (bridged with
+//! `tracing-opentelemetry` for OTLP spans) gets the full signal set; with
+//! neither installed, everything is a no-op.
+//!
 //! ## Algorithms
 //!
 //! Concrete algorithms live in [`algorithms`]:
@@ -65,3 +81,5 @@ mod core;
 pub use core::*;
 
 pub mod algorithms;
+
+mod observability;

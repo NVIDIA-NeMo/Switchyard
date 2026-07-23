@@ -55,6 +55,10 @@ impl Random {
 
 #[async_trait]
 impl Algorithm for Random {
+    fn name(&self) -> &str {
+        "random"
+    }
+
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,

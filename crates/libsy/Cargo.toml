@@ -15,11 +15,18 @@ rust-version.workspace = true
 async-trait = "0.1"
 serde_json = "1"
 futures = "0.3"
+# Metrics-only OTel API: instruments record through the host-installed global
+# meter provider. Pinned to the 0.32 line used across the workspace.
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
 rand = "0.8"
 switchyard-protocol = { path = "../protocol" }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 
 [dev-dependencies]
+# SDK + in-memory exporter to assert what the observability layer records.
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing"] }
 switchyard-llm-client = { path = "../libsy-llm-client" }
 tokio = { version = "1", features = ["macros", "rt"] }
+tracing-subscriber = "0.3"

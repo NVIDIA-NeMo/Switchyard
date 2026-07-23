@@ -79,6 +79,10 @@ impl FallThrough {
 }
 #[async_trait]
 impl Algorithm<SharedState> for FallThrough {
+    fn name(&self) -> &str {
+        "fall_through"
+    }
+
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context<SharedState>,

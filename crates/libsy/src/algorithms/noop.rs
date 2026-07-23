@@ -35,6 +35,10 @@ impl Decision for NoopDecision {
 
 #[async_trait::async_trait]
 impl Algorithm for Noop {
+    fn name(&self) -> &str {
+        "noop"
+    }
+
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
