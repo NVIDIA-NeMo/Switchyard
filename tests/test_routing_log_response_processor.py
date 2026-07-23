@@ -9,6 +9,8 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
@@ -16,6 +18,7 @@ from openai.types.completion_usage import CompletionUsage
 
 from switchyard.cli.switchyard_cli import _build_parser
 from switchyard.lib.chat_response import ResponseStream
+from switchyard.lib.endpoints import RoutingLogStatsEndpoint
 from switchyard.lib.processors.routing_log_response_processor import (
     RoutingLogResponseProcessor,
 )
@@ -54,7 +57,10 @@ def _openai_completion() -> ChatResponse:
             "prompt_tokens": 8,
             "completion_tokens": 3,
             "total_tokens": 11,
-            "prompt_tokens_details": {"cached_tokens": 6},
+            "prompt_tokens_details": {
+                "cached_tokens": 6,
+                "cache_creation_tokens": 1,
+            },
             "completion_tokens_details": {"reasoning_tokens": 2},
         },
     })
@@ -111,6 +117,7 @@ def _records(log_file: Path) -> list[dict]:
 async def test_openai_completion_record_carries_task_and_usage(tmp_path: Path) -> None:
     log_file = tmp_path / "routing_requests.jsonl"
     ctx = _ctx(headers=TASK_HEADERS)
+    ctx.selected_model = "configured-profile"
     ctx.metadata["_random_routing_tier"] = "weak"
     await RoutingLogResponseProcessor(log_file).process(ctx, _openai_completion())
 
@@ -122,7 +129,7 @@ async def test_openai_completion_record_carries_task_and_usage(tmp_path: Path) -
     assert record["tier"] == "weak"
     assert record["prompt_tokens"] == 8
     assert record["cached_tokens"] == 6
-    assert record["cache_creation_tokens"] == 0
+    assert record["cache_creation_tokens"] == 1
     assert record["completion_tokens"] == 3
     assert record["reasoning_tokens"] == 2
     assert record["total_tokens"] == 11
@@ -205,7 +212,79 @@ async def test_appends_one_line_per_request(tmp_path: Path) -> None:
     assert len(_records(log_file)) == 3
 
 
+def test_snapshot_session_aggregates_models_and_ignores_bad_records(tmp_path: Path) -> None:
+    log_file = tmp_path / "routing_requests.jsonl"
+    log_file.write_text(
+        "\n".join([
+            json.dumps({
+                "session_id": "trial-session-1", "model": "model-a",
+                "prompt_tokens": 8, "cached_tokens": 2,
+                "cache_creation_tokens": 1, "completion_tokens": 3,
+            }),
+            json.dumps({
+                "session_id": "trial-session-1", "model": "model-b",
+                "prompt_tokens": 13, "cached_tokens": 4,
+                "cache_creation_tokens": 2, "completion_tokens": 5,
+            }),
+            json.dumps({"session_id": "other", "model": "model-a"}),
+            json.dumps(["not", "an", "object"]),
+            "not json",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = RoutingLogResponseProcessor(log_file).snapshot_session("trial-session-1")
+
+    assert snapshot == {
+        "session_id": "trial-session-1",
+        "total_calls": 2,
+        "total_prompt_tokens": 21,
+        "total_cached_tokens": 6,
+        "total_cache_creation_tokens": 3,
+        "total_completion_tokens": 8,
+        "models": {
+            "model-a": {
+                "calls": 1, "prompt_tokens": 8, "cached_tokens": 2,
+                "cache_creation_tokens": 1, "completion_tokens": 3,
+            },
+            "model-b": {
+                "calls": 1, "prompt_tokens": 13, "cached_tokens": 4,
+                "cache_creation_tokens": 2, "completion_tokens": 5,
+            },
+        },
+    }
+
+
+def test_session_stats_endpoint_returns_snapshot_and_404(tmp_path: Path) -> None:
+    log_file = tmp_path / "routing_requests.jsonl"
+    processor = RoutingLogResponseProcessor(log_file)
+    app = FastAPI()
+    endpoint = processor.get_endpoint()
+    assert isinstance(endpoint, RoutingLogStatsEndpoint)
+    endpoint.register(app)
+
+    with TestClient(app) as client:
+        assert client.get(
+            "/v1/routing/session-stats", params={"session_id": "missing"}
+        ).status_code == 404
+
+    log_file.write_text(
+        json.dumps({
+            "session_id": "trial-session-1", "model": "model-a",
+            "prompt_tokens": 8, "cached_tokens": 2,
+            "cache_creation_tokens": 1, "completion_tokens": 3,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/routing/session-stats", params={"session_id": "trial-session-1"}
+        )
+    assert response.status_code == 200
+    assert response.json()["models"]["model-a"]["cached_tokens"] == 2
+
+
 def test_serve_parser_accepts_routing_log_file() -> None:
     parser = _build_parser()
-    args = parser.parse_args(["serve", "--routing-log-file", "/tmp/routing.jsonl"])
-    assert args.routing_log_file == "/tmp/routing.jsonl"
+    args = parser.parse_args(["serve", "--routing-log-file", "tmp/routing.jsonl"])
+    assert args.routing_log_file == "tmp/routing.jsonl"

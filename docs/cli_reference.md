@@ -214,6 +214,7 @@ The server exposes the OpenAI Chat Completions (`/v1/chat/completions`), Anthrop
 switchyard [--routing-profiles PATH] serve
                  [--host HOST] [--port PORT] [--workers N]
                  [--reload] [--inbound FORMAT]
+                 [--routing-log-file PATH]
                  [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
 ```
 
@@ -225,7 +226,7 @@ switchyard [--routing-profiles PATH] serve
 | `--host`, `--port`/`-p`, `--reload` | [Transport](#transport-server-verbs). |
 | `--inbound FORMAT` | Backwards-compatible no-op; all request APIs are always registered. |
 | `--workers` / `-w` | uvicorn worker count. |
-| `--routing-log-file PATH` | Append one JSONL routing record per request (task, session, selected model, tier, token usage) to PATH. |
+| `--routing-log-file PATH` | Append one JSONL routing record per request (task, session, actual model, tier, token and cache usage) to PATH. Also exposes `GET /v1/routing/session-stats?session_id=...`. |
 | `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-target-url` | [Intake sink](#intake-sink-serve-and-launchers). |
 
 **Notes**

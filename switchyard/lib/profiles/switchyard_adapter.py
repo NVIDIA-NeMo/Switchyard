@@ -3,14 +3,19 @@
 
 """Compatibility adapter that serves a Profile through the legacy endpoint contract."""
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 from switchyard.lib.profiles.protocols import ContextAwareProfile, Profile, ProfileLifecycle
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.request_metadata import CTX_PROFILE_REQUEST_HEADERS
 from switchyard.lib.roles import TranslatedResponse
-from switchyard_rust.core import ChatRequest, request_type_value
+from switchyard_rust.core import (
+    ChatRequest,
+    ChatResponse,
+    SwitchyardProcessorError,
+    request_type_value,
+)
 from switchyard_rust.profiles import ProfileInput, ProfileRequestMetadata
 from switchyard_rust.translation import TranslationEngine
 
@@ -31,10 +36,12 @@ class ProfileSwitchyard:
         self,
         profile: Profile[Any],
         translator: TranslationEngine | None = None,
+        response_processors: Sequence[Any] = (),
     ) -> None:
         """Create an adapter around one concrete Profile runtime."""
         self._profile = profile
         self._translator = translator or TranslationEngine()
+        self._response_processors = tuple(response_processors)
 
     def iter_components(self) -> list[object]:
         """Return lifecycle components in startup order."""
@@ -42,14 +49,19 @@ class ProfileSwitchyard:
             components = self._profile.iter_components()
         else:
             components = [self._profile]
-        return [*components, self._translator]
+        return [*components, *self._response_processors, self._translator]
 
     async def call(
         self,
         request: ChatRequest,
         ctx: ProxyContext | None = None,
     ) -> TranslatedResponse:
-        """Run the wrapped Profile and translate its response for the caller."""
+        """Run the wrapped Profile and translate its response for the caller.
+
+        Raises:
+            SwitchyardProcessorError: A response processor raises or returns a value that is not
+                a ``ChatResponse``.
+        """
         context = ctx if ctx is not None else ProxyContext()
         profile_input = ProfileInput(
             request,
@@ -59,7 +71,22 @@ class ProfileSwitchyard:
             response = await self._profile.run_with_context(profile_input, context)
         else:
             response = await self._profile.run(profile_input)
-        return await self._translator.translate(context, request, response)
+        current: Any = response
+        for processor in self._response_processors:
+            try:
+                current = await processor.process(context, current)
+            except Exception as error:
+                raise SwitchyardProcessorError(str(error)) from error
+            if not isinstance(current, ChatResponse):
+                actual = type(current).__name__
+                raise SwitchyardProcessorError(
+                    f"Response processor returned {actual}, expected ChatResponse"
+                )
+        return await self._translator.translate(
+            context,
+            request,
+            cast(ChatResponse, current),
+        )
 
 
 def _profile_metadata_from_context(context: ProxyContext) -> ProfileRequestMetadata:
