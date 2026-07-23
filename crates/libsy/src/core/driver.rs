@@ -57,11 +57,15 @@ use crate::Context;
 
 use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{timeout, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 
 type BoxErr = Box<dyn Error + Send + Sync>;
 type BoxAny = Box<dyn Any + Send>;
 type StepResult = Result<DriverStep, BoxErr>;
+
+// TODO make request timeout configurable
+const FULFILL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One item on the stream returned by [`TypeErasedDriver::stream`].
 pub enum DriverStep {
@@ -139,6 +143,19 @@ impl TypeErasedDriver {
         }
     }
 
+    fn ensure_started(&self) -> Result<(), BoxErr> {
+        let guard = self
+            .inner
+            .step_rx
+            .lock()
+            .map_err(|_| "driver: lock poisoned")?;
+        if guard.is_none() {
+            Ok(())
+        } else {
+            Err("get this driver's stream with driver.stream() before calling this method".into())
+        }
+    }
+
     /// Enqueue `req` as a [`DriverStep::Request`], await the consumer's response, and
     /// downcast it to `RES`. Errors if the stream is closed, the promise is dropped
     /// unfulfilled, the consumer responded with `Err`, or the response was not a `RES`.
@@ -147,6 +164,8 @@ impl TypeErasedDriver {
         REQ: Any + Send + 'static,
         RES: Any + Send + 'static,
     {
+        self.ensure_started()?;
+
         let (tx, rx) = oneshot::channel::<Result<BoxAny, BoxErr>>();
         let promise = DriverRequest {
             request: Box::new(req),
@@ -160,10 +179,10 @@ impl TypeErasedDriver {
 
         // Outer error: the promise was dropped without a response. Inner error: the
         // consumer fulfilled it with an explicit `Err` — propagate it as-is.
-        let response = match rx.await {
-            Ok(result) => result?,
-            Err(_) => return Err("driver: promise dropped without a response".into()),
-        };
+        let response = timeout(FULFILL_REQUEST_TIMEOUT, rx)
+            .await
+            .map_err(|_| "driver: response timed out")?
+            .map_err(|_| "driver: error receiving response")??;
         response
             .downcast::<RES>()
             .map(|boxed| *boxed)
@@ -177,6 +196,8 @@ impl TypeErasedDriver {
     where
         INFO: Any + Send + 'static,
     {
+        self.ensure_started()?;
+
         self.inner
             .step_tx
             .send(Ok(DriverStep::Info(Box::new(info))))
@@ -192,6 +213,8 @@ impl TypeErasedDriver {
     where
         T: Any + Send + 'static,
     {
+        self.ensure_started()?;
+
         self.inner
             .step_tx
             .send(Ok(DriverStep::Done(Box::new(payload))))
@@ -204,6 +227,8 @@ impl TypeErasedDriver {
     /// step). Awaits channel capacity and errors only if the stream is
     /// already closed.
     pub async fn fail(&self, _ctx: Context, err: BoxErr) -> Result<(), BoxErr> {
+        self.ensure_started()?;
+
         self.inner
             .step_tx
             .send(Err(err))
@@ -532,6 +557,26 @@ mod tests {
         // With the consumer gone, the producer's next publish errors and it stops.
         let sent = handle.await?;
         assert!(sent >= 2, "producer should have published the paced steps");
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_started_requires_the_stream_be_taken_first() -> Result<(), BoxErr> {
+        let driver = TypeErasedDriver::new();
+
+        // Before the consumer takes the stream, the receiver is still present, so producing
+        // is refused — with a message that points at the fix.
+        match driver.ensure_started() {
+            Ok(()) => return Err("expected ensure_started to reject an untaken stream".into()),
+            Err(err) => assert!(
+                err.to_string().contains("driver.stream()"),
+                "error should point at driver.stream(), got: {err}"
+            ),
+        }
+
+        // Taking the stream claims the receiver (`Some` -> `None`), so the driver is started.
+        let _stream = driver.stream();
+        assert!(driver.ensure_started().is_ok());
         Ok(())
     }
 }
