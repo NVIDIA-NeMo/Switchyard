@@ -8,13 +8,14 @@
 //! shape: one `driver.call_llm_target` inside `create_run_task`. Weighted selection
 //! can be layered on later; the set defines the candidates.
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use rand::seq::SliceRandom;
 
-use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
+use crate::{
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
+};
 
 /// Decision produced by [`Random`]: which target was chosen and why.
 pub struct RandomDecision {
@@ -64,14 +65,14 @@ impl Algorithm for Random {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         // Scope the non-Send ThreadRng before the await so the future remains Send.
         let target = {
             let mut rng = rand::thread_rng();
             self.target_set
                 .targets()
                 .choose(&mut rng)
-                .ok_or("no targets available")?
+                .ok_or(LibsyError::NoTargets)?
                 .clone()
         };
 
@@ -107,7 +108,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
                 metadata: None,
@@ -140,8 +141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_target_is_always_selected_and_called(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn single_target_is_always_selected_and_called() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"]);
         let (trace, response) = algorithm.run(Context::default(), request()).await?;
 
@@ -159,8 +159,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selected_target_is_in_the_set_and_matches_the_trace(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn selected_target_is_in_the_set_and_matches_the_trace() -> Result<()> {
         let names = ["a/model", "b/model", "c/model"];
         let algorithm = shared_algorithm(&names);
 
@@ -181,8 +180,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selection_covers_all_targets_over_many_runs(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn selection_covers_all_targets_over_many_runs() -> Result<()> {
         let algorithm = shared_algorithm(&["a/model", "b/model"]);
         let mut seen = HashSet::new();
 
@@ -209,11 +207,12 @@ mod tests {
     #[tokio::test]
     async fn empty_target_set_errors() {
         let algorithm = shared_algorithm(&[]);
-        assert!(algorithm.run(Context::default(), request()).await.is_err());
+        let error = algorithm.run(Context::default(), request()).await.err();
+        assert!(matches!(error, Some(LibsyError::NoTargets)));
     }
 
     #[tokio::test]
-    async fn process_signals_is_a_noop() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn process_signals_is_a_noop() -> Result<()> {
         Arc::new(algorithm(&["only/model"]))
             .process_signals(Signals {})
             .await?;
@@ -221,7 +220,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_is_inspectable_and_downcasts() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn decision_is_inspectable_and_downcasts() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"]);
         let (trace, _) = algorithm.run(Context::default(), request()).await?;
         let decision = &trace[0];
@@ -234,7 +233,11 @@ mod tests {
         let concrete = decision
             .as_any()
             .downcast_ref::<RandomDecision>()
-            .ok_or("expected a RandomDecision")?;
+            .ok_or_else(|| {
+                LibsyError::from(crate::DriverError::TypeMismatch {
+                    expected: "RandomDecision",
+                })
+            })?;
         assert_eq!(concrete.selected_model, "only/model");
         Ok(())
     }

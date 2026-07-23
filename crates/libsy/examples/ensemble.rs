@@ -19,14 +19,13 @@
 //! so this state is per-session.
 
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use switchyard_libsy::{
-    Algorithm, Context, Decision, Driver, LlmTarget, LlmTargetSet, Request, Response,
-    RoutedLlmClient,
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
+    Result, RoutedLlmClient,
 };
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_protocol::{completion_text, prompt_text, text_request};
@@ -37,6 +36,10 @@ const CANDIDATE_MODELS: [&str; 3] = [
     "nvidia/openai/gpt-oss-20b",
 ];
 const JUDGE_MODEL: &str = "nvidia/deepseek-ai/deepseek-v4-flash";
+
+fn ensemble_error(message: &'static str) -> LibsyError {
+    LibsyError::external("ensemble", std::io::Error::other(message))
+}
 
 /// Which step of the ensemble flow produced a decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,11 +143,11 @@ impl EnsembleOrchAlgo {
     /// The lock is taken and dropped here, never across an `await`. Under
     /// concurrency two requests may both commit; they pick the same model from
     /// the same tally (with a stable tie-break), so the result is identical.
-    fn resolve_committed(&self) -> Result<Option<String>, Box<dyn Error + Send + Sync>> {
+    fn resolve_committed(&self) -> Result<Option<String>> {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "ensemble state lock poisoned")?;
+            .map_err(|_| ensemble_error("state lock poisoned"))?;
         if let Some(model) = &state.committed {
             return Ok(Some(model.clone()));
         }
@@ -160,14 +163,8 @@ impl EnsembleOrchAlgo {
     /// The candidate with the most judge-wins, breaking ties toward the earlier
     /// candidate (stable and deterministic). Errors only if there are no
     /// candidates configured.
-    fn pick_best(
-        &self,
-        wins: &BTreeMap<String, u64>,
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let mut best = self
-            .candidate_models
-            .first()
-            .ok_or("no candidate models configured")?;
+    fn pick_best(&self, wins: &BTreeMap<String, u64>) -> Result<String> {
+        let mut best = self.candidate_models.first().ok_or(LibsyError::NoTargets)?;
         let mut best_wins = wins.get(best).copied().unwrap_or(0);
         for model in &self.candidate_models[1..] {
             let w = wins.get(model).copied().unwrap_or(0);
@@ -186,7 +183,7 @@ impl EnsembleOrchAlgo {
         ctx: Context,
         request: Request,
         model: String,
-    ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
+    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
         let target = self.target_set.get_target(&model)?;
         let decision: Arc<dyn Decision> = Arc::new(EnsembleDecision {
             reasoning: format!(
@@ -219,7 +216,7 @@ impl EnsembleOrchAlgo {
         driver: &Driver,
         ctx: Context,
         request: Request,
-    ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
+    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
         let user_prompt = prompt_text(&request.llm_request);
         // The agent's inbound name rides through every sub-call unchanged; the model
         // each call hits is carried by its decision, not stamped onto the request.
@@ -265,7 +262,7 @@ impl EnsembleOrchAlgo {
             }
         }
         if survivors.is_empty() {
-            return Err("all ensemble candidates failed".into());
+            return Err(ensemble_error("all candidate calls failed"));
         }
 
         // Pick the winner: judge only when there is a real choice to make.
@@ -273,7 +270,7 @@ impl EnsembleOrchAlgo {
             let (model, response) = survivors
                 .into_iter()
                 .next()
-                .ok_or("survivor unexpectedly missing")?;
+                .ok_or_else(|| ensemble_error("survivor unexpectedly missing"))?;
             (model, response, None)
         } else {
             let judge_prompt = build_judge_prompt(&user_prompt, &survivors);
@@ -303,7 +300,7 @@ impl EnsembleOrchAlgo {
             let (model, response) = survivors
                 .into_iter()
                 .nth(choice)
-                .ok_or("judge choice out of range")?;
+                .ok_or_else(|| ensemble_error("judge choice out of range"))?;
             (model, response, Some(judge_decision))
         };
 
@@ -313,7 +310,7 @@ impl EnsembleOrchAlgo {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| "ensemble state lock poisoned")?;
+                .map_err(|_| ensemble_error("state lock poisoned"))?;
             *state.wins.entry(winner_model.clone()).or_insert(0) += 1;
             state.turns += 1;
         }
@@ -390,7 +387,7 @@ impl Algorithm for EnsembleOrchAlgo {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         // Fast path: exploration is over — route straight to the committed model;
         // otherwise run a full ensemble turn. Both return a decision trace plus the
         // final response.
@@ -410,11 +407,14 @@ impl Algorithm for EnsembleOrchAlgo {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> Result<()> {
     let backend = HttpBackendConfig {
         base_url: std::env::var("NVIDIA_BASE_URL")
             .unwrap_or_else(|_| "https://inference-api.nvidia.com/v1".to_string()),
-        api_key: Some(std::env::var("NVIDIA_API_KEY")?),
+        api_key: Some(
+            std::env::var("NVIDIA_API_KEY")
+                .map_err(|error| LibsyError::external("reading NVIDIA_API_KEY", error))?,
+        ),
         extra_headers: BTreeMap::new(),
     };
     let models: Vec<_> = CANDIDATE_MODELS
@@ -423,7 +423,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .chain(std::iter::once(JUDGE_MODEL))
         .map(|model| ModelConfig::new(model, Backend::OpenAiChat(backend.clone()), None))
         .collect();
-    let client = Arc::new(TranslatingLlmClient::new(&models)?) as Arc<dyn RoutedLlmClient>;
+    let client = Arc::new(
+        TranslatingLlmClient::new(&models)
+            .map_err(|error| LibsyError::external("building LLM client", error))?,
+    ) as Arc<dyn RoutedLlmClient>;
     let targets = LlmTargetSet::new(
         CANDIDATE_MODELS
             .iter()
@@ -453,7 +456,13 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (_, response) = algorithm.run(Context::default(), request).await?;
     println!(
         "{}",
-        completion_text(&response.llm_response.into_agg().await?)
+        completion_text(
+            &response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|error| LibsyError::external_boxed("aggregating response", error))?,
+        )
     );
     Ok(())
 }
@@ -482,7 +491,7 @@ mod tests {
             _ctx: Context,
             request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             let name = decision.selected_model().to_string();
             self.calls
                 .lock()
@@ -583,17 +592,19 @@ mod tests {
         Arc::new(algo)
     }
 
-    fn as_ensemble(
-        d: &Arc<dyn Decision>,
-    ) -> Result<&EnsembleDecision, Box<dyn Error + Send + Sync>> {
+    fn as_ensemble(d: &Arc<dyn Decision>) -> Result<&EnsembleDecision> {
         d.as_any()
             .downcast_ref::<EnsembleDecision>()
-            .ok_or_else(|| "expected an EnsembleDecision".into())
+            .ok_or_else(|| {
+                switchyard_libsy::DriverError::TypeMismatch {
+                    expected: "EnsembleDecision",
+                }
+                .into()
+            })
     }
 
     #[tokio::test]
-    async fn exploration_turn_fans_out_judges_and_returns_the_winner(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn exploration_turn_fans_out_judges_and_returns_the_winner() -> Result<()> {
         // Judge prefers b/model; it should win and be returned.
         let (algo, calls) = algo(&["a/model", "b/model"], "judge/haiku", "b/model", 100);
         let (trace, response) = orch(algo)
@@ -609,7 +620,9 @@ mod tests {
         );
 
         // Both candidates and the judge were called.
-        let calls = calls.lock().map_err(|_| "lock poisoned")?;
+        let calls = calls
+            .lock()
+            .map_err(|_| ensemble_error("test call-log lock poisoned"))?;
         assert!(calls.contains(&"a/model".to_string()));
         assert!(calls.contains(&"b/model".to_string()));
         assert!(calls.contains(&"judge/haiku".to_string()));
@@ -625,8 +638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commits_to_the_winningest_model_after_exploration(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn commits_to_the_winningest_model_after_exploration() -> Result<()> {
         // Judge always prefers b/model over 2 exploration turns, so the algo
         // commits to b/model even though a/model is listed first.
         let (algo, calls) = algo(&["a/model", "b/model"], "judge/haiku", "b/model", 2);
@@ -637,7 +649,7 @@ mod tests {
         orch.clone().run(Context::default(), request("t2")).await?;
         let judge_calls_after_exploration = calls
             .lock()
-            .map_err(|_| "lock poisoned")?
+            .map_err(|_| ensemble_error("test call-log lock poisoned"))?
             .iter()
             .filter(|c| *c == "judge/haiku")
             .count();
@@ -659,7 +671,9 @@ mod tests {
         assert_eq!(decision.phase, EnsemblePhase::Committed);
         assert_eq!(decision.selected_model, "b/model");
 
-        let calls = calls.lock().map_err(|_| "lock poisoned")?;
+        let calls = calls
+            .lock()
+            .map_err(|_| ensemble_error("test call-log lock poisoned"))?;
         // Judge was not called again on the committed turn.
         assert_eq!(calls.iter().filter(|c| *c == "judge/haiku").count(), 2);
         // a/model was called only on the two exploration turns, not the third.
@@ -668,7 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_candidate_skips_the_judge() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn single_candidate_skips_the_judge() -> Result<()> {
         let (algo, calls) = algo(&["only/model"], "judge/haiku", "only/model", 100);
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
@@ -682,7 +696,7 @@ mod tests {
         // No judge call for a lone candidate.
         assert!(!calls
             .lock()
-            .map_err(|_| "lock poisoned")?
+            .map_err(|_| ensemble_error("test call-log lock poisoned"))?
             .contains(&"judge/haiku".to_string()));
         // Trace: [candidate, winner] — no judge entry.
         assert_eq!(trace.len(), 2);
@@ -691,7 +705,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_exploration_turns_never_commits() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn zero_exploration_turns_never_commits() -> Result<()> {
         // exploration_turns == 0 keeps ensembling forever.
         let (algo, calls) = algo(&["a/model", "b/model"], "judge/haiku", "b/model", 0);
         let orch = orch(algo);
@@ -707,7 +721,7 @@ mod tests {
         assert_eq!(
             calls
                 .lock()
-                .map_err(|_| "lock poisoned")?
+                .map_err(|_| ensemble_error("test call-log lock poisoned"))?
                 .iter()
                 .filter(|c| *c == "judge/haiku")
                 .count(),
@@ -717,7 +731,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_candidates_failing_errors() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn all_candidates_failing_errors() -> Result<()> {
         /// Client whose every call fails.
         struct FailingClient;
         #[async_trait]
@@ -727,7 +741,8 @@ mod tests {
                 _ctx: Context,
                 _request: Request,
                 _decision: Arc<dyn Decision>,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>>
+            {
                 Err("upstream down".into())
             }
         }
@@ -754,7 +769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_signals_is_a_noop() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn process_signals_is_a_noop() -> Result<()> {
         let (algo, _) = algo(&["a/model"], "judge/haiku", "a/model", 1);
         Arc::new(algo).process_signals(Signals {}).await?;
         Ok(())
@@ -771,7 +786,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn two_sessions_process_in_parallel() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn two_sessions_process_in_parallel() -> Result<()> {
         use std::time::Duration;
         use tokio::sync::Barrier;
 
@@ -794,7 +809,8 @@ mod tests {
                 _ctx: Context,
                 request: Request,
                 decision: Arc<dyn Decision>,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>>
+            {
                 let name = decision.selected_model().to_string();
                 let completion = if name == self.judge_model {
                     // Judge runs after the barrier releases; it must not wait.
@@ -853,16 +869,19 @@ mod tests {
         let handle_b = run(session_b, "from B");
 
         // The timeout converts a serialization deadlock into a failure, not a hang.
-        let completion_a = tokio::time::timeout(Duration::from_secs(5), handle_a).await???;
-        let completion_b = tokio::time::timeout(Duration::from_secs(5), handle_b).await???;
+        let completion_a = tokio::time::timeout(Duration::from_secs(5), handle_a)
+            .await
+            .map_err(|error| LibsyError::external("waiting for session A", error))???;
+        let completion_b = tokio::time::timeout(Duration::from_secs(5), handle_b)
+            .await
+            .map_err(|error| LibsyError::external("waiting for session B", error))???;
         assert_eq!(completion_a, "answer from a/model");
         assert_eq!(completion_b, "answer from a/model");
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn two_parallel_sessions_keep_independent_state(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn two_parallel_sessions_keep_independent_state() -> Result<()> {
         // Two sessions run concurrently with judges that prefer different models:
         // session A prefers a/model, session B prefers b/model. Each explores for
         // two turns then commits; because the win tally is per-session, they must
@@ -891,8 +910,8 @@ mod tests {
                     .last()
                     .and_then(|d| d.as_any().downcast_ref::<EnsembleDecision>())
                     .map(|d| d.phase)
-                    .ok_or("missing final decision")?;
-                Ok::<(String, EnsemblePhase), Box<dyn Error + Send + Sync>>((
+                    .ok_or_else(|| ensemble_error("missing final decision"))?;
+                Ok::<(String, EnsemblePhase), LibsyError>((
                     response
                         .llm_response
                         .as_agg()

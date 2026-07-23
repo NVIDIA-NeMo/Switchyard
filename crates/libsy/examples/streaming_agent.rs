@@ -12,15 +12,14 @@
 //! answer. Run with:
 //!   cargo run -p libsy --example streaming_agent
 
-use std::error::Error;
 use std::io::Write;
 use std::sync::Arc;
 
 use futures::StreamExt;
 use switchyard_libsy::algorithms::Random;
 use switchyard_libsy::{
-    Algorithm, Context, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget, LlmTargetSet,
-    Request, Response, Step,
+    Algorithm, Context, LibsyError, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget,
+    LlmTargetSet, Request, Response, Result, Step,
 };
 use switchyard_protocol::{completion_text, text_request};
 
@@ -50,7 +49,7 @@ fn streaming_response(model: &str, tokens: &[&str]) -> Response {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> Result<()> {
     // One client-less target -> its call is offloaded for us to serve.
     let targets = LlmTargetSet::new(vec![LlmTarget {
         semantic_name: "stream/model".to_string(),
@@ -86,7 +85,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 LlmResponse::Stream(mut chunks) => {
                     print!("agent sees: ");
                     while let Some(chunk) = chunks.next().await {
-                        if let LlmResponseChunk::TextDelta { text, .. } = chunk? {
+                        let chunk = chunk.map_err(|error| {
+                            LibsyError::external_boxed("reading response stream", error)
+                        })?;
+                        if let LlmResponseChunk::TextDelta { text, .. } = chunk {
                             print!("{text}");
                             std::io::stdout().flush().ok();
                         }

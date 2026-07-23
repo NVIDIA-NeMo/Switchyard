@@ -27,12 +27,20 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
 use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, Driver, LlmResponse, LlmTarget, LlmTargetSet,
-    Metadata, Request, Response, RoutedLlmClient, Step, Usage,
+    AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmTarget,
+    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
 };
 use switchyard_protocol::text_request;
 
 type BoxErr = Box<dyn Error + Send + Sync>;
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct TestError(&'static str);
+
+fn test_error(message: &'static str) -> LibsyError {
+    LibsyError::external("test", TestError(message))
+}
 
 /// Locks a mutex, recovering the inner value if a panicking test poisoned it.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -303,12 +311,12 @@ impl Algorithm for SingleCallAlgo {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, BoxErr> {
+    ) -> switchyard_libsy::Result<Response> {
         let target = self
             .target_set
             .targets()
             .first()
-            .ok_or("no targets")?
+            .ok_or(LibsyError::NoTargets)?
             .clone();
         let decision: Arc<dyn Decision> = Arc::new(StaticDecision {
             reasoning: format!("picked '{}'", target.semantic_name),
@@ -358,7 +366,7 @@ fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> Span
 }
 
 #[tokio::test]
-async fn successful_run_records_metrics_spans_and_decision_log() -> Result<(), BoxErr> {
+async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_libsy::Result<()> {
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-success-algo";
     const MODEL: &str = "obs-success-model";
@@ -515,7 +523,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> Result<(), B
 }
 
 #[tokio::test]
-async fn failed_call_records_error_outcome_and_warn_logs() -> Result<(), BoxErr> {
+async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
@@ -531,11 +539,11 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> Result<(), BoxErr>
     while let Some(step) = stream.next().await {
         match step {
             Ok(Step::CallLlm(call)) => {
-                call.respond(Err("synthetic upstream failure".into()))?;
+                call.respond(Err(test_error("synthetic upstream failure")))?;
             }
             Ok(Step::Decision(_)) => {}
             Ok(Step::ReturnToAgent(_)) => {
-                return Err("expected the failed call to fail the run".into());
+                return Err(test_error("expected the failed call to fail the run"));
             }
             Err(_) => saw_error_step = true,
         }

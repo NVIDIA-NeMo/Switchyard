@@ -12,12 +12,11 @@
 //! failure surfaces as a normal target error rather than re-entering the
 //! wrapped algorithm.
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{Algorithm, Context, Decision, Driver, LlmTarget, Metadata, Request, Response};
+use crate::{Algorithm, Context, Decision, Driver, LlmTarget, Metadata, Request, Response, Result};
 
 /// Decision produced by [`SubagentOverride`] when it routes to the worker target.
 pub struct SubagentDecision {
@@ -68,7 +67,7 @@ impl Algorithm for SubagentOverride {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         let is_subagent_work = request
             .metadata
             .as_ref()
@@ -111,7 +110,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
                 metadata: None,
@@ -149,9 +148,7 @@ mod tests {
         Arc::new(SubagentOverride::new(inner, target("worker")))
     }
 
-    async fn selected_model(
-        headers: &[(&str, &str)],
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+    async fn selected_model(headers: &[(&str, &str)]) -> Result<String> {
         let (trace, response) = algorithm()
             .run(Context::default(), request(headers))
             .await?;
@@ -168,15 +165,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requests_without_metadata_delegate_to_the_wrapped_algorithm(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn requests_without_metadata_delegate_to_the_wrapped_algorithm() -> Result<()> {
         assert_eq!(selected_model(&[]).await?, "orchestrator");
         Ok(())
     }
 
     #[tokio::test]
-    async fn subagent_work_is_routed_to_the_worker_target(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn subagent_work_is_routed_to_the_worker_target() -> Result<()> {
         // Claude Code child-agent lineage.
         let claude = &[
             ("x-claude-code-session-id", "root"),
@@ -197,8 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn harness_maintenance_turns_stay_on_the_wrapped_algorithm(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn harness_maintenance_turns_stay_on_the_wrapped_algorithm() -> Result<()> {
         assert_eq!(
             selected_model(&[("x-openai-subagent", "compact")]).await?,
             "orchestrator"

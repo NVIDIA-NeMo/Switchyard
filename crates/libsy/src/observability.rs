@@ -37,10 +37,7 @@ use opentelemetry::metrics::Meter;
 use opentelemetry::{global, KeyValue};
 use tracing::Span;
 
-use crate::{Context, Decision, Metadata, Response};
-
-/// Shorthand for the crate's boxed, thread-safe error type.
-type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+use crate::{Context, Decision, Metadata, Response, Result};
 
 /// Instrumentation scope for every libsy meter, span, and log line.
 const SCOPE: &str = "libsy";
@@ -63,7 +60,7 @@ fn meter() -> Meter {
 }
 
 /// `outcome` attribute value for a result: `ok` or `error`.
-fn outcome_value<T>(result: &Result<T, BoxErr>) -> &'static str {
+fn outcome_value<T>(result: &Result<T>) -> &'static str {
     if result.is_ok() {
         "ok"
     } else {
@@ -114,8 +111,8 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
 /// the `libsy.run` span its caller instruments the task with.
 pub(crate) async fn observe_run<S>(
     ctx: Context<S>,
-    run: impl Future<Output = Result<Response, BoxErr>>,
-) -> Result<Response, BoxErr> {
+    run: impl Future<Output = Result<Response>>,
+) -> Result<Response> {
     let started = Instant::now();
     let result = run.await;
     record_run(
@@ -130,7 +127,7 @@ pub(crate) async fn observe_run<S>(
 /// Records the outcome fields on the enclosing `libsy.client_call` span. The
 /// failure itself is not logged here — it propagates to the algorithm, where
 /// the `libsy.llm_call` recording logs it once.
-pub(crate) fn record_client_call(result: &Result<Response, BoxErr>) {
+pub(crate) fn record_client_call(result: &Result<Response>) {
     let span = Span::current();
     span.record("outcome", outcome_value(result));
     if let Err(error) = result {
@@ -141,7 +138,7 @@ pub(crate) fn record_client_call(result: &Result<Response, BoxErr>) {
 /// Records the end of one algorithm run: the run counter and duration
 /// histogram, the `outcome`/`error` fields on `span`, and a warn log when the
 /// run failed.
-fn record_run(algorithm: &str, duration: Duration, result: &Result<Response, BoxErr>, span: &Span) {
+fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
     if let Err(error) = result {
@@ -169,7 +166,7 @@ pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
     duration: Duration,
-    result: &Result<Response, BoxErr>,
+    result: &Result<Response>,
     span: &Span,
 ) {
     let outcome = outcome_value(result);

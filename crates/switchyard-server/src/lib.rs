@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, Metadata, Request};
+use libsy::{Algorithm, Context, Decision, LibsyError, Metadata, Request};
 use serde_json::{json, Value};
 use switchyard_llm_client::LlmClientError;
 use tokio::net::{TcpListener, TcpSocket};
@@ -36,8 +36,6 @@ pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
 const HEADER_RATIONALE: &str = "x-model-router-rationale";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
-
-type BoxError = Box<dyn Error + Send + Sync>;
 
 /// Error returned while configuring or running the server.
 #[derive(Debug)]
@@ -366,8 +364,11 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.chars().take(MAX_ROUTING_HEADER_VALUE_LEN).collect())
 }
 
-fn algorithm_error(error: BoxError) -> Response {
-    let Some(error) = error.downcast_ref::<LlmClientError>() else {
+fn algorithm_error(error: LibsyError) -> Response {
+    let LibsyError::ClientCall { source, .. } = &error else {
+        return server_error(error.to_string());
+    };
+    let Some(error) = source.downcast_ref::<LlmClientError>() else {
         return server_error(error.to_string());
     };
     match error {

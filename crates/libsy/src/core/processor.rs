@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::State;
+use crate::{Result, State};
 use async_trait::async_trait;
 use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
 
@@ -19,13 +19,11 @@ pub enum Event<'a> {
     ModelResponse(&'a AggLlmResponse),
 }
 
-type BoxErr = Box<dyn std::error::Error + Send + Sync>;
-
 /// Collects events as the algorithm runs and mutates [`State`]
 #[async_trait]
 pub trait Processor: Send + Sync {
     /// Process an event, accumulating facts into `state`.
-    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr>;
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -58,7 +56,7 @@ mod tests {
 
     #[async_trait]
     impl Processor for CountingProcessor {
-        async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
+        async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
             let entry = state
                 .extra
                 .entry(event_key(&event).to_string())
@@ -94,7 +92,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processor_tallies_each_event_variant_into_state() -> Result<(), BoxErr> {
+    async fn processor_tallies_each_event_variant_into_state() -> Result<()> {
         let processor = CountingProcessor;
         let mut state = State::default();
         let req = request();
@@ -126,7 +124,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_accumulates_state_across_repeated_events() -> Result<(), BoxErr> {
+    async fn process_accumulates_state_across_repeated_events() -> Result<()> {
         let processor = CountingProcessor;
         let mut state = State::default();
         let req = request();
