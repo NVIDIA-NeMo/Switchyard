@@ -1756,6 +1756,8 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-core",
+ "switchyard-libsy",
+ "switchyard-protocol",
  "switchyard-translation",
  "tokio",
  "tracing",
