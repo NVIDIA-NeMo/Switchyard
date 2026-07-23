@@ -6,7 +6,7 @@ This page is the canonical reference for every `switchyard` subcommand. It mirro
 
 | Verb | Audience | What it does |
 |---|---|---|
-| [`serve`](#switchyard-serve) | Ops | Long-running proxy server. Serve a v2 profile config with `serve --config`; each profile id and target id appears on `GET /v1/models`, and clients select one by setting the request `model`. |
+| [`serve`](#switchyard-serve) | Ops | Long-running proxy server. Serve a YAML route bundle selected with the global `--routing-profiles` flag. |
 | [`launch claude`](#switchyard-launch-claude) | Dev | Spawns Claude Code against a local proxy. Auto-picks a free port, sets `ANTHROPIC_*` env vars, tears the proxy down when Claude exits. `--smoke` runs a one-shot harness round-trip and exits. |
 | [`launch codex`](#switchyard-launch-codex) | Dev | Spawns OpenAI Codex CLI against a local proxy and injects a transient `switchyard` provider via repeated `-c` flags. `--smoke` runs a one-shot Codex round-trip. |
 | [`launch openclaw`](#switchyard-launch-openclaw) | Dev | Spawns `openclaw chat` against a local proxy using a transient `openclaw.json`; the user's OpenClaw configuration is untouched. `--smoke` runs a one-shot agent turn. |
@@ -20,8 +20,8 @@ These apply to the top-level `switchyard` command, before any verb.
 | Flag | Purpose |
 |---|---|
 | `--version` | Print the installed Switchyard version (`switchyard X.Y.Z`) and exit. Reads the version from the installed package metadata. |
-| `--routing-profiles PATH` / `-c PATH` | Deprecated legacy [Routing](#routing) bundle applied to `serve`, `launch`, and `configure`. Pass before the verb; separate with `--` for clarity. |
-| `--enable-rl-logging` | Write local [RL trace logs](#rl-trace-logging) (one `message_history` JSON file per turn) for `launch` and `serve` route-bundle sessions. Pass before the verb: `switchyard --enable-rl-logging launch claude`. Rejected by `serve --config`. |
+| `--routing-profiles PATH` / `-c PATH` | [Routing](#routing) bundle applied to `serve`, `launch`, and `configure`. Pass before the verb; separate with `--` for clarity. |
+| `--enable-rl-logging` | Write local [RL trace logs](#rl-trace-logging) (one `message_history` JSON file per turn) for `launch` and `serve` route-bundle sessions. Pass before the verb: `switchyard --enable-rl-logging launch claude`. |
 | `--rl-log-dir DIR` | Output directory for `--enable-rl-logging` traces (default: `./rl_data`). No effect without `--enable-rl-logging`. |
 
 ## Cross-cutting flag families
@@ -60,22 +60,20 @@ startup does not require capability probes.
 
 ### Routing
 
-Legacy routing policies that used to be standalone CLI verbs live in
-routing-profile YAML files. Route bundles are deprecated; use v2 profile
-configs for new `serve` setups. Two flags drive routing on `serve` and the
-launchers:
+Routing policies live in routing-profile YAML files. Two flags drive routing
+on the launchers; `serve` uses `--routing-profiles`:
 
 | Flag | Purpose |
 |---|---|
 | `--model ID` | Single-model passthrough. Every request is rewritten to `model=ID` and forwarded to `--base-url`. |
-| `--routing-profiles PATH` | Deprecated path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `stage_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
+| `--routing-profiles PATH` | Path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `passthrough`, `random_routing`, `stage_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
 
 On the launchers, the two flags are mutually exclusive: pass one or the other, not both.
 
 - `--model ID`: single-model passthrough. Any model id from `GET /v1/models` is accepted; every request is rewritten to `model=ID` and forwarded upstream.
 - `--routing-profiles PATH`: loads a multi-chain YAML bundle; the first declared route becomes the initial model.
 
-For legacy route-bundle `type: deterministic` routes, the `classifier:` block also accepts:
+For `type: deterministic` routes, the `classifier:` block also accepts:
 
 | Key | Purpose |
 |---|---|
@@ -85,7 +83,8 @@ For legacy route-bundle `type: deterministic` routes, the `classifier:` block al
 
 Benchmark runs started through `benchmark/run-baseline.sh --routing-profiles` record the effective classifier prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` in `run_manifest.json` under `server.classifier_prompts`.
 
-**Selecting a v2 profile by id.** A `serve --config` proxy exposes every profile id (and every target id) as a model on `GET /v1/models`. There is no separate "profile" flag. A client, or a launcher using `--model <profile-id>`, selects a profile simply by naming its id as the model. This is the v2 counterpart to picking a route from a bundle. This selection pattern is specific to v2 profile configs; legacy route-bundle configs still use route names as model IDs.
+Each route name becomes a model ID on `GET /v1/models`. Clients select a route
+by setting the request's `model` field to that name.
 
 ### Intake sink (serve and launchers)
 
@@ -147,7 +146,7 @@ matches the pre-1.0 trace format:
 ```
 
 Turns without an assistant choice (e.g. upstream errors) are skipped. The flag
-works on `launch` and on `serve` with a route bundle; `serve --config` rejects it.
+works on `launch` and on `serve` with a route bundle.
 
 ### Transport (server verbs)
 
@@ -204,14 +203,15 @@ because the built-in default is `https://openrouter.ai/api/v1`.
 
 ## `switchyard serve`
 
-Serve a long-running proxy from a Switchyard v2 **profile config**: one YAML/JSON/TOML file declaring `endpoints`, `targets`, and `profiles`. Rust-defined and Python-defined profiles run through the same Python HTTP application and expose the same endpoint paths. Each profile id and each target id is exposed as a model on `GET /v1/models`, so a client selects a profile by setting the request `model` to that id.
+Serve a long-running proxy from a YAML route bundle. Each entry under `routes:`
+builds a runnable chain and is exposed as a model on `GET /v1/models`.
 
 The server exposes the OpenAI Chat Completions (`/v1/chat/completions`), Anthropic Messages (`/v1/messages`), and OpenAI Responses (`/v1/responses`) APIs on the same host and port.
 
 **Synopsis**
 
 ```text
-switchyard [--routing-profiles PATH] serve [--config PATH]
+switchyard [--routing-profiles PATH] serve
                  [--host HOST] [--port PORT] [--workers N]
                  [--reload] [--inbound FORMAT]
                  [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
@@ -221,41 +221,23 @@ switchyard [--routing-profiles PATH] serve [--config PATH]
 
 | Flag | Source |
 |---|---|
-| `--routing-profiles PATH` / `-c PATH` | Deprecated legacy [Routing](#routing) path. Global flag; pass before `serve`. Falls back to the saved path from `switchyard --routing-profiles PATH -- configure`. |
-| `--config PATH` | Switchyard v2 profile-config YAML/JSON/TOML entrypoint. This is the primary serve path. Mutually exclusive with `--routing-profiles`. |
+| `--routing-profiles PATH` / `-c PATH` | [Routing](#routing) path. Global flag; pass before `serve`. Falls back to the saved path from `switchyard --routing-profiles PATH -- configure`. |
 | `--host`, `--port`/`-p`, `--reload` | [Transport](#transport-server-verbs). |
-| `--inbound FORMAT` | Valid only for legacy route-bundle serve (`--routing-profiles`); `serve --config` actively rejects it with an error. For legacy serve, the flag is a no-op — all request APIs are always registered regardless of the value (accepted for backwards compat only). |
+| `--inbound FORMAT` | Backwards-compatible no-op; all request APIs are always registered. |
 | `--workers` / `-w` | uvicorn worker count. |
-| `--routing-log-file PATH` | Append one JSONL routing record per request (task, session, selected model, tier, token usage) to PATH. Route-bundle serve only; rejected by `serve --config`. |
+| `--routing-log-file PATH` | Append one JSONL routing record per request (task, session, selected model, tier, token usage) to PATH. |
 | `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-target-url` | [Intake sink](#intake-sink-serve-and-launchers). |
 
 **Notes**
 
 - `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health`. There is no flag to expose just one request API.
-- `GET /v1/stats` and `GET /v1/routing/stats` are available on both serve paths.
-- The deprecated route-bundle path accepts `--inbound` for compatibility but ignores it; all supported request APIs are always registered.
-- `serve --config` does not support `--reload`, `--workers > 1`, Intake options, `--enable-rl-logging`, `--routing-log-file`, or any explicit `--inbound` value.
-- Rust-defined and Python-defined profiles use the same profile-config schema. The profile `type` decides which implementation builds that profile.
-- Python-defined profiles are registered via `@profile_config`; the shipped `header-routing` profile is an example. A config can mix a Rust-defined profile and a Python-defined profile, and both profile ids are routable on the same served host and port.
+- `GET /v1/stats` and `GET /v1/routing/stats` expose route statistics.
+- `--inbound` is retained as a compatibility no-op; all supported request APIs are always registered.
 
 **Examples**
 
 ```bash
-# v2 profile config (primary): each profile id + target id is a model on /v1/models
-switchyard serve --config examples/profiles.yaml --port 4000
-# select a profile by id (the `model` field):
-curl localhost:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "smart-stage-router", "messages": [{"role": "user", "content": "hi"}]}'
-
-# mixed Rust/Python profile config on the same request APIs
-switchyard serve --config examples/python_profile.yaml --port 4000
-curl localhost:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'x-switchyard-tier: strong' \
-  -d '{"model": "smart", "messages": [{"role": "user", "content": "hi"}]}'
-
-# Legacy route bundle on port 4000
+# Route bundle on port 4000
 switchyard --routing-profiles routes.yaml -- serve --port 4000
 
 # Persist a bundle for later runs; no-TTY configure requires explicit provider credentials
@@ -264,7 +246,7 @@ switchyard --routing-profiles routes.yaml -- configure --target provider \
   --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 switchyard serve --port 4000
 
-# Multi-worker uvicorn (route-bundle path)
+# Multi-worker uvicorn
 SWITCHYARD_WORKERS=4 switchyard --routing-profiles routes.yaml -- serve
 ```
 

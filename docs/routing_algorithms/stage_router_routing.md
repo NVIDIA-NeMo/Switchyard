@@ -89,23 +89,14 @@ clears the threshold to escalate to capable.
 (If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)
 
-**Set `0.5` explicitly.** It's the recommended starting point and is what the
-example below uses. The default when you omit the field depends on which config
-path you take:
-
-| Configuration path | Default when omitted |
-|---|---|
-| Profile config (`switchyard serve --config`) | `0.7` |
-| Deprecated route bundle (`--routing-profiles`) | `0.5` |
-
-Rather than rely on either default, set `confidence_threshold: 0.5` yourself.
+**Start with `0.5`.** It is the default and the recommended starting point.
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
 | `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
 | `0.5` | no | Recommended starting point. A single strong signal clears the threshold on its own; derived from SWE-Bench Pro calibration. |
-| `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. `0.7` is the profile-config default when the field is omitted. |
-| `1.0` | yes (required) | Classifier-driven. Equivalent to the legacy `coding_agent` profile. |
+| `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. |
+| `1.0` | yes (required) | Classifier-driven. Equivalent to classifier-only `coding_agent` routing. |
 
 The signal-vs-classifier split is dataset-dependent. Measure it in
 production via `routing_decisions.stage_router` on `/v1/stats` rather than relying on
@@ -187,46 +178,37 @@ In stage-router, the efficient model may inherit partial context from the capabl
 fresh, so RESCUE is a conservative lower bound. Efficient performs at least as
 well in stage-router as it does alone.
 
-## Profile configuration
+## Route configuration
 
 ```yaml
-endpoints:
-  openrouter:
-    base_url: https://openrouter.ai/api/v1
-    api_key: ${OPENROUTER_API_KEY}
+defaults:
+  base_url: https://openrouter.ai/api/v1
+  api_key: ${OPENROUTER_API_KEY}
+  format: openai
 
-# Targets are named by the model id they serve.
-targets:
-  openai/gpt-4o:
-    endpoint: openrouter
-    model: openai/gpt-4o
-    format: openai
-  openai/gpt-4o-mini:
-    endpoint: openrouter
-    model: openai/gpt-4o-mini
-    format: openai
-
-profiles:
+routes:
   smart-stage-router:
     type: stage_router
-    picker: capable_first        # or efficient_first
-    confidence_threshold: 0.5              # recommended; range [0.0, 1.0]
-    signal_recent_window: 3                # sliding window for recent signal counts
-    fallback_target_on_evict: openai/gpt-4o   # required; see Context-Window Handling
-    capable: openai/gpt-4o                     # capable tier target id
-    efficient: openai/gpt-4o-mini             # efficient tier target id
-    enable_stats: true                     # default true
+    picker: capable_first
+    confidence_threshold: 0.5
+    signal_recent_window: 3
+    fallback_target_on_evict: strong
+    strong:
+      id: strong
+      model: openai/gpt-4o
+    weak:
+      id: weak
+      model: openai/gpt-4o-mini
+    enable_stats: true
 ```
 
-Save the file as `profiles.yaml` and start it with:
+Save the file as `routes.yaml` and start it with:
 
 ```bash
-switchyard serve --config profiles.yaml --port 4000
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
-If you omit `confidence_threshold`, the profile-config default of `0.7` applies;
-the example sets `0.5` explicitly.
 
 `fallback_target_on_evict` is required and must reference one of the
 declared target ids. See [Context-Window Handling](../operations/context_window.md) for
@@ -252,10 +234,7 @@ Give the classifier its own credential or quota bucket where you can. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
 and can cause sustained 429s at scale.
 
-**Launcher compatibility.** Launcher subcommands don't accept `--config`. A
-launcher-owned stage-router still needs the deprecated `--routing-profiles` path
-and its legacy `routes:` schema. Use the same `type: stage_router`, picker,
-target, classifier, and explicit `confidence_threshold: 0.5` values there.
+The same route bundle works with the launchers.
 
 ## Observability
 
@@ -271,9 +250,8 @@ harnesses usually capture this same snapshot to a file (see below).
 
 ### Decision-source metadata (stage-router-specific)
 
-The profile counts why each turn was routed the way it was, under
-`routing_decisions.stage_router` in the stats JSON. For the `serve --config`
-profile the values are:
+The route counts why each turn was routed the way it was under
+`routing_decisions.stage_router` in the stats JSON:
 
 | Source | When |
 |---|---|
@@ -281,11 +259,7 @@ profile the values are:
 | `dimensions` | The signals crossed `confidence_threshold` and picked the tier. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a verdict. |
 | `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured, so the default tier was used. |
-| `context_overflow_fallback` | A context-window overflow rerouted the turn to `fallback_target_on_evict`. |
-
-The deprecated `--routing-profiles` path reports the same sources except
-`context_overflow_fallback`, plus `no_signal` for turns that arrive before any
-tool-result history exists.
+| `no_signal` | The request arrived before any tool-result history existed. |
 
 To capture a snapshot for a batch run, redirect the endpoint to a file:
 
@@ -295,9 +269,9 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 
 ## When *not* to use stage-router
 
-- **Single-model deployments.** Use a plain passthrough profile instead.
+- **Single-model deployments.** Use a `model` or `passthrough` route instead.
 - **Probabilistic A/B splits.** Use
-  [Random Routing](random_routing.md) (`type: random-routing` in profile configs).
+  [Random Routing](random_routing.md) (`type: random_routing`).
   The stage-router's signals are wasted on a fixed traffic ratio.
 - **No tool-result history.** Stage-router needs meaningful tool-call traffic to
   populate the tool-result signal. For pure chat-completion workloads every

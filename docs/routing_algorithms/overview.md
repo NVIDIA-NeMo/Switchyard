@@ -1,198 +1,113 @@
 # Routing Overview
 
-Switchyard profile configs register profiles and targets as model IDs that
-clients can select through OpenAI Chat Completions, Anthropic Messages, or
-OpenAI Responses API requests. Start a profile config with:
+The Python CLI loads routing policies from a YAML bundle. Each key under
+`routes:` becomes a model ID available through OpenAI Chat Completions,
+Anthropic Messages, and OpenAI Responses requests:
 
 ```bash
-switchyard serve --config profiles.yaml --port 4000
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
-Use this page to choose a routing strategy first, then open its detailed page
-for configuration and tuning.
+Use this page to choose a routing strategy, then open its detailed page for
+configuration and tuning.
 
 ## Choose a strategy
 
-| Strategy | Use it when | Profile `type` |
+| Strategy | Use it when | Route `type` |
 |---|---|---|
-| [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random-routing` |
-| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm-routing` |
+| [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random_routing` |
+| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `deterministic` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
-| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and let an LLM judge escalate to strong — one-way per task — when the run is in trouble. | `escalation_router` (`routes:` bundle) |
+| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `escalation_router` |
 
 [Session Affinity (Sticky Routing)](sticky_routing.md) is an opt-in feature of
-LLM classifier routing, not a standalone routing strategy. The classifier
-integrates the pin into its decision path. See
-[How session affinity composes](#how-session-affinity-composes) for the exact
-behavior.
+LLM classifier routing, not a standalone routing strategy.
 
-## Common profile shape
+## Common route shape
 
-Profile configs separate provider connectivity, upstream targets, and
-client-facing profiles:
+Provider defaults can be shared across all routes, while each route owns its
+target configuration:
 
 ```yaml
-endpoints:
-  openrouter:
-    api_key: ${OPENROUTER_API_KEY}
-    base_url: https://openrouter.ai/api/v1
+defaults:
+  api_key: ${OPENROUTER_API_KEY}
+  base_url: https://openrouter.ai/api/v1
+  format: openai
 
-targets:
-  strong:
-    endpoint: openrouter
-    model: openai/gpt-4o
-    format: openai
-  weak:
-    endpoint: openrouter
-    model: openai/gpt-4o-mini
-    format: openai
+routes:
+  fast:
+    type: model
+    target: openai/gpt-4o-mini
 
-profiles:
   smart:
-    type: random-routing
-    strong: strong
-    weak: weak
+    type: random_routing
+    strong:
+      model: openai/gpt-4o
+    weak:
+      model: openai/gpt-4o-mini
     strong_probability: 0.3
+    fallback_target_on_evict: strong
 ```
 
-The profile ID (`smart`) is the model ID clients send when they want the
-routing policy. Target IDs (`strong` and `weak`) are also directly selectable.
-When an upstream model ID differs from its target ID, the profile server
-registers that model ID as an additional direct alias.
+Use the route name (`fast` or `smart`) as the request's model ID. A single
+bundle can serve multiple routes on the same host and port.
 
 The examples use model IDs from the
 [OpenRouter model catalog](https://openrouter.ai/api/v1/models). Select IDs
 available to your account before deploying; catalog availability can change.
 
-## Multiple profiles
+## Model and passthrough routes
 
-A single file can declare multiple profiles over the same targets. Each
-profile and target appears on `GET /v1/models`:
+- `type: model` registers one explicit model alias without model discovery.
+- `type: passthrough` queries the upstream model catalog and registers the
+  discovered models.
 
-```yaml
-profiles:
-  fast:
-    type: passthrough
-    target: weak
-
-  smart:
-    type: random-routing
-    strong: strong
-    weak: weak
-    strong_probability: 0.3
-```
-
-Use the profile ID to select policy behavior (`fast` or `smart`) and a target ID
-to bypass routing (`weak` or `strong`).
-
-## Sub-agent override (`subagent_target`)
-
-Any profile can name an optional `subagent_target` in its common envelope,
-alongside `type`. When a request carries a recognized sub-agent signal —
-Codex delegated-work kinds (`x-openai-subagent: collab_spawn` or `review`),
-Claude Code agent lineage headers, or an explicit
-`x-switchyard-is-subagent: true` — it bypasses the profile's routing and runs
-as a direct passthrough to that target:
-
-```yaml
-profiles:
-  smart:
-    type: random-routing
-    strong: strong
-    weak: weak
-    strong_probability: 0.3
-    subagent_target: weak
-```
-
-This keeps a sub-agent loop on one intentional, cache-compatible target
-instead of re-routing every worker turn. Codex harness-maintenance turns
-(`compact`, `memory_consolidation`) and unrecognized kinds stay on normal
-profile routing, as does everything else when the field is absent. An unknown
-target reference fails at startup, and a sub-agent target failure surfaces as
-a normal target error — it is never silently re-routed through the profile.
-
-To suppress sub-agent routing for a request that carries a recognized signal,
-send `x-switchyard-is-subagent: false`. This explicit header overrides Codex
-and Claude Code lineage signals in either direction: `false` keeps the request
-on normal profile routing even when delegated-work headers are present, and
-`true` marks a request as a sub-agent even when no harness headers appear.
-
-## Direct targets and passthrough aliases
-
-For new profile configs, use one public model concept:
-
-- Select a target ID directly when its configured name is the client-facing
-  name you want.
-- Add a `type: passthrough` profile only when you need another stable alias for
-  that target, such as `fast` above.
-
-Both choices call the same single target. There is no `type: model` profile in
-the current profile schema.
-
-The deprecated `--routing-profiles` route-bundle format has a separate legacy
-distinction: `type: model` registers one explicit alias without model discovery,
-while `type: passthrough` queries the upstream model catalog and registers the
-discovered models too. That distinction applies only to legacy `routes:`
-bundles used by the launcher compatibility path.
+Both create direct, single-target chains. Use a routing policy when requests
+must be split or classified across targets.
 
 ## Self-hosted targets
 
-Any profile target can point at an OpenAI-compatible model server you operate.
+Any route target can point at an OpenAI-compatible model server you operate.
 For example, start a local vLLM server:
 
 ```bash
 vllm serve ./my-rl-qwen --served-model-name my-rl-qwen --port 8000
 ```
 
-Then declare it as a normal endpoint and target:
+Then configure it as a normal route:
 
 ```yaml
-endpoints:
+routes:
   local:
+    type: model
+    target: my-rl-qwen
     base_url: http://localhost:8000/v1
     api_key: dummy
-
-targets:
-  local-weak:
-    endpoint: local
-    model: my-rl-qwen
     format: openai
-
-profiles:
-  fast-local:
-    type: passthrough
-    target: local-weak
 ```
 
-Reference `local-weak` from any routing profile field that accepts a target ID,
-including `strong`, `weak`, `target`, or `targets`. Switchyard does not start or
-manage the model server; it only sends requests to the configured endpoint.
+Switchyard does not start or manage the model server; it only sends requests
+to the configured endpoint.
 
 ## How session affinity composes
 
-Session affinity is configured directly on the LLM classifier router. It is not
-a generic wrapper applied after every routing strategy. After the configured
-warmup, the first confident policy, tool-planning, or alignment verdict pins
-the tier. Abstain, low-confidence, missing-signal, and fail-open decisions never
-pin. The classifier and tier selector share one affinity store, and later turns
-check that store before classification, reuse the tier, and skip the classifier
-call.
+Session affinity is configured directly on the LLM classifier router. After
+the configured warmup, the first confident policy, tool-planning, or alignment
+verdict pins the tier. Abstain, low-confidence, missing-signal, and fail-open
+decisions never pin. Later turns reuse the tier and skip the classifier call.
 
 Pins use a bounded in-process LRU keyed from the stable conversation prefix.
 They are not shared across workers or restarts. See
 [Sticky Routing](sticky_routing.md) for configuration and key derivation.
 
-Random and stage-router routing do not expose session-affinity settings; they
-continue to make a routing decision for each request.
+Random and stage-router routing make a fresh routing decision for each request.
+The escalation router instead uses affinity as a one-way escalation latch: only
+the strong tier is pinned, and the judge runs until that latch fires.
 
-The escalation router uses the same affinity store with the opposite policy:
-affinity is always on (the pin *is* the escalation latch), only the strong
-tier is ever pinned, and once the judge starts (a configurable minimum turn),
-it keeps running each judged turn until the latch fires. See
-[Escalation-Router Routing](escalation_router_routing.md).
+## Rust server configuration
 
-!!! note "CLI schema availability"
-    The CLI currently accepts these settings in a `deterministic` entry in a
-    `routes:` bundle loaded with `--routing-profiles`. The Rust `llm-routing`
-    profile loaded by `switchyard serve --config` does not yet expose
-    session-affinity fields.
+The `switchyard-server` binary has a separate TOML schema that explicitly
+constructs LLM clients, targets, and libsy algorithms. It does not load Python
+route bundles. See the
+[Rust server README](../../crates/switchyard-server/README.md) for its supported
+configuration.

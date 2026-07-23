@@ -1221,8 +1221,8 @@ def _stage_router_switchyard(
             allowed_keys=_STAGE_ROUTER_CLASSIFIER_KEYS,
             where=f"{model_id}.classifier",
         )
-    # The deprecated bundle keeps the shared strong/weak tier keys (also used by
-    # deterministic); map them onto StageRouterConfig's capable/efficient fields.
+    # The YAML schema shares strong/weak tier keys with deterministic routing;
+    # map them onto StageRouterConfig's capable/efficient fields.
     resolved = _route_config(route, target_defaults, ("strong", "weak"))
     resolved["capable"] = resolved.pop("strong")
     resolved["efficient"] = resolved.pop("weak")

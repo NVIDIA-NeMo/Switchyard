@@ -913,12 +913,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
-name = "libyaml-rs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1672,38 +1666,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "switchyard-components-v2"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "futures-core",
- "futures-util",
- "parking_lot",
- "rand 0.8.7",
- "reqwest",
- "serde",
- "serde_json",
- "switchyard-components",
- "switchyard-components-v2-macros",
- "switchyard-core",
- "switchyard-protocol",
- "tokio",
- "toml",
- "tracing",
- "yaml_serde",
-]
-
-[[package]]
-name = "switchyard-components-v2-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "switchyard-core"
 version = "0.1.0"
 dependencies = [
@@ -1770,7 +1732,6 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-components",
- "switchyard-components-v2",
  "switchyard-core",
  "switchyard-libsy",
  "switchyard-protocol",
@@ -2356,19 +2317,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "yaml_serde"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08c7c1b1a6a7c8a6b2741a6c21a4f8918e51899b111cfa08d1288202656e3975"
-dependencies = [
- "indexmap",
- "itoa",
- "libyaml-rs",
- "ryu",
- "serde",
-]
 
 [[package]]
 name = "yansi"

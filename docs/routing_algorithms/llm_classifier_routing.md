@@ -12,66 +12,50 @@ policies default to `strong`.
 
 ## Choose a policy
 
-Set `profile_name` for the traffic you expect:
+Set `profile` for the traffic you expect:
 
-| `profile_name` | Use for | Default tier mapping |
+| `profile` | Use for | Default tier mapping |
 |---|---|---|
 | `general` | Mixed chat or API traffic | `simple` uses `weak`; all higher tiers use `strong`. |
 | `coding_agent` | Claude Code, Codex, Cursor-style agents | `simple` and `medium` use `weak`; `complex` and `reasoning` use `strong`. Tool-planning turns can escalate. |
 | `openclaw` | OpenClaw personal-assistant traffic | `simple` and `medium` use `weak`; `complex` and `reasoning` use `strong`. Tool orchestration and high-risk external actions can escalate. |
 
-For coding-agent traffic, start with `profile_name: coding_agent`.
+For coding-agent traffic, start with `profile: coding_agent`.
 
-## Configure a classifier profile
+## Configure a classifier route
 
-Define the strong, weak, and classifier models as targets, then reference those
-target IDs from an `llm-routing` profile:
+Define the strong, weak, and classifier models in a `deterministic` route:
 
 ```yaml
-endpoints:
-  openrouter:
-    api_key: ${OPENROUTER_API_KEY}
-    base_url: https://openrouter.ai/api/v1
+defaults:
+  api_key: ${OPENROUTER_API_KEY}
+  base_url: https://openrouter.ai/api/v1
+  format: openai
 
-targets:
-  strong:
-    endpoint: openrouter
-    model: openai/gpt-4o
-    format: openai
-  weak:
-    endpoint: openrouter
-    model: openai/gpt-4o-mini
-    format: openai
-  classifier:
-    endpoint: openrouter
-    model: nvidia/nemotron-3-nano-30b-a3b
-    format: openai
-    extra_body:
-      reasoning:
-        enabled: false
-
-profiles:
+routes:
   smart:
-    type: llm-routing
-    profile_name: coding_agent
-    strong: strong
-    weak: weak
-    classifier: classifier
+    type: deterministic
+    profile: coding_agent
+    classifier:
+      model: nvidia/nemotron-3-nano-30b-a3b
+      min_confidence: 0.6
+      fail_open: true
+      recent_turn_window: 4
+    strong:
+      model: openai/gpt-4o
+    weak:
+      model: openai/gpt-4o-mini
     fallback_target_on_evict: strong
-    classifier_min_confidence: 0.6
-    classifier_fail_open: true
-    classifier_recent_turn_window: 4
 ```
 
-The classifier target must use `format: openai`. Start the profile server with:
+Start the server with:
 
 ```bash
-switchyard serve --config profiles.yaml --port 4000
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
-The profile ID (`smart`) is the model ID clients select for classifier-based
-routing. The target IDs remain directly selectable when a client needs to
-bypass the classifier.
+The route ID (`smart`) is the model ID clients select for classifier-based
+routing.
 
 Try the profile with representative requests:
 
@@ -94,10 +78,9 @@ prompt determine the verdict.
 
 | Option | Use it when |
 |---|---|
-| `classifier_min_confidence` | Low-confidence results should use `default_tier` instead of the classifier policy. |
-| `classifier_fail_open` | Classifier errors should use `default_tier` rather than fail the client request. |
-| `classifier_recent_turn_window` | The classifier needs more or less recent conversation and tool context. |
-| `classifier_max_tokens` | You need to cap the classifier tool-call response. |
+| `classifier.min_confidence` | Low-confidence results should use the default tier instead of the classifier policy. |
+| `classifier.fail_open` | Classifier errors should use the default tier rather than fail the client request. |
+| `classifier.recent_turn_window` | The classifier needs more or less recent conversation and tool context. |
 | `alignment_min_confidence` | A classifier recommendation should only raise the policy tier above this confidence. |
 | `default_tier` | Abstain, low-confidence, and fail-open decisions should use a tier other than the default `strong`. |
 | `tier_mapping` | The four classifier policy tiers need a custom mapping to `weak` or `strong`. |
@@ -115,10 +98,8 @@ store between the classifier and tier selector. After any configured
 reuse that tier before classification, so they skip the classifier call;
 abstain, low-confidence, missing-signal, and fail-open decisions do not pin.
 
-The CLI currently exposes these fields on a `type: deterministic` entry in a
-`routes:` bundle loaded with `--routing-profiles`. The Rust `llm-routing`
-profile loaded by `switchyard serve --config` does not yet expose them. See
-[Session Affinity](sticky_routing.md) for YAML and
+Configure these fields on the `type: deterministic` entry in the `routes:`
+bundle. See [Session Affinity](sticky_routing.md) for YAML and
 [How session affinity composes](overview.md#how-session-affinity-composes) for
 the interaction with routing decisions.
 

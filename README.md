@@ -20,8 +20,7 @@ write yourself.
 **Launcher routing is explicit.** By default, launchers use the built-in
 LLM-classifier router, which you tune with `--weak-model`, `--classifier-model`,
 `--profile`, and `--classifier-min-confidence`. Use `--model X` for
-single-model passthrough. The `--routing-profiles FILE` path is deprecated and
-remains only for launcher-owned legacy bundles.
+single-model passthrough or `--routing-profiles FILE` for a YAML route bundle.
 
 ## Features
 
@@ -72,12 +71,12 @@ switchyard launch openclaw --model openai/gpt-4o-mini --api-key "$OPENROUTER_API
 ```
 
 Each launcher starts a local proxy, points the agent at it, and shuts the proxy
-down when the agent exits. Use `--model` for single-model passthrough. The
-deprecated `--routing-profiles` flag remains for launcher-owned legacy bundles:
+down when the agent exits. Use `--model` for single-model passthrough or
+`--routing-profiles` for a route bundle:
 
 ```bash
 switchyard launch claude --model openai/gpt-4o-mini --base-url https://openrouter.ai/api/v1       # single-model passthrough
-switchyard --routing-profiles routes.yaml -- launch claude                                        # legacy route bundle
+switchyard --routing-profiles routes.yaml -- launch claude                                        # route bundle
 ```
 
 > **Bedrock-backed profile caveat (Claude Code + MCP):** Bedrock enforces a 64-character `toolSpec.name` cap. Claude Code's MCP bridge can auto-inject longer tool names, producing `BedrockException` 400s on tool-bearing requests. If you use a Bedrock-backed route and hit this, swap to an OpenAI-compatible model with `--model openai/gpt-4o` or a routing-profile YAML.
@@ -86,56 +85,37 @@ See [Agent Launchers](docs/guides/agent_launchers.md) for supported harness
 versions, model requirements, troubleshooting, and Claude Code `/model` picker
 aliasing.
 
-### 2. Run a standalone profile-config server
+### 2. Run a standalone Python server
 
-New standalone deployments use a profile config that separates provider
-connectivity, upstream targets, and client-facing profiles. A complete
-OpenRouter-backed random-routing config looks like this:
+Define one or more client-facing routes in YAML. A complete OpenRouter-backed
+random-routing bundle looks like this:
 
 ```yaml
-endpoints:
-  openrouter:
-    api_key: ${OPENROUTER_API_KEY}
-    base_url: https://openrouter.ai/api/v1
+defaults:
+  api_key: ${OPENROUTER_API_KEY}
+  base_url: https://openrouter.ai/api/v1
+  format: openai
 
-targets:
-  strong:
-    endpoint: openrouter
-    model: openai/gpt-4o
-    format: openai
-  weak:
-    endpoint: openrouter
-    model: openai/gpt-4o-mini
-    format: openai
-
-profiles:
+routes:
   smart:
-    type: random-routing
-    strong: strong
-    weak: weak
+    type: random_routing
+    strong:
+      model: openai/gpt-4o
+    weak:
+      model: openai/gpt-4o-mini
     strong_probability: 0.3
+    fallback_target_on_evict: strong
 ```
 
-Serve it as a proxy. The `smart` profile and both target ids are exposed as
-models; clients select one through the request's `model` field:
+Serve it as a proxy. The route name is exposed as a model ID, and clients
+select it through the request's `model` field:
 
 ```bash
-switchyard serve --config profiles.yaml --port 4000
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 curl http://localhost:4000/v1/models
 curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "smart", "messages": [{"role": "user", "content": "hi"}]}'
-```
-
-> **Launcher compatibility:** Launcher subcommands do not accept `--config`.
-> The deprecated `--routing-profiles` flag remains for launcher-owned legacy
-> `routes:` bundles and saved bundle paths:
-
-```yaml
-routes:
-  fast:
-    type: model
-    target: openai/gpt-4o-mini
 ```
 
 ```bash
@@ -147,6 +127,10 @@ switchyard --routing-profiles routes.yaml -- configure --target provider \
 
 Non-interactive `configure` does not read provider credentials from the routing
 bundle; pass `--api-key` explicitly when persisting the bundle for CI.
+
+The Rust `switchyard-server` binary has a separate explicit TOML schema for
+LLM clients, targets, and libsy algorithms. See
+[`crates/switchyard-server/README.md`](crates/switchyard-server/README.md).
 
 For profile selection and full configuration examples, start with
 [Routing Overview](docs/routing_algorithms/overview.md), then open the

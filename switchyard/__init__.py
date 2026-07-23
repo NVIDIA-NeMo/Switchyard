@@ -80,7 +80,6 @@ from switchyard.lib.profiles import (
     StageRouterProfileConfig,
     TranslateProfileConfig,
     build_profile,
-    load_profiles,
     profile_config,
     profile_config_type,
 )
@@ -178,7 +177,6 @@ __all__ = [
     "RandomRoutingProfileConfig",
     "TranslateProfileConfig",
     "build_profile",
-    "load_profiles",
     "profile_config",
     "profile_config_type",
     "AnthropicNativeBackend",

@@ -1,98 +1,88 @@
 # Core Concepts
 
-This page explains the vocabulary the rest of the documentation takes for
-granted. Read it once and the configuration examples elsewhere will make sense.
-It is not a setup guide: to install and run Switchyard, see
-[Getting Started](getting_started.md), and to follow a request through the
-system, see [Architecture](architecture.md).
+This page explains the vocabulary used throughout the documentation. For setup,
+see [Getting Started](getting_started.md). For the request lifecycle, see
+[Architecture](architecture.md).
 
 ## How it fits together
 
-Switchyard is a proxy. Clients (coding agents, SDKs, your own services) talk to
-it on one side, and model backends (hosted providers, private endpoints, local
-models) sit on the other. A client never asks for a backend by name. It sends a
-model ID, and the configuration behind that ID decides what actually runs.
+Switchyard is a proxy. Clients such as coding agents and SDKs talk to it on one
+side, while hosted providers, private endpoints, and local model servers sit on
+the other. A client sends a model ID, and the route registered under that ID
+decides what runs.
 
 ```mermaid
 flowchart LR
     client["Client<br/>picks a model ID"]
-    profile["Profile<br/>routing policy"]
+    route["Route<br/>routing policy"]
     target["Target<br/>upstream model"]
-    endpoint["Endpoint<br/>provider connection"]
     backend["Model backend"]
 
-    client -->|"model field"| profile
-    profile -->|"selects"| target
-    target -->|"uses"| endpoint
-    endpoint --> backend
+    client -->|"model field"| route
+    route -->|"selects"| target
+    target --> backend
 ```
 
-## Endpoints, targets, and profiles
+## Routes and targets
 
-A standalone deployment is described by a profile config: one file with three
-sections that keep provider connectivity, upstream models, and client-facing
-policy apart. Three terms carry most of the weight.
+The Python CLI loads a YAML bundle with a `routes:` section. Each route has a
+client-facing name and a `type` that chooses its behavior. Depending on that
+type, the route owns one target, two routing tiers, or a larger endpoint list.
 
-| Term | What it is | YAML section |
-|---|---|---|
-| Endpoint | A provider connection: a `base_url` and its credentials. Many targets can share one. | `endpoints:` |
-| Target | A single upstream model you can call. It names an endpoint, a `model`, and a wire `format`. | `targets:` |
-| Profile | A client-facing routing policy over one or more targets. Its `type` is the routing strategy. | `profiles:` |
-
-The three nest. An endpoint is reused by targets, and targets are referenced by
-profiles. You set credentials in one place, add a model once, and build as many
-policies on top as you need. The [Routing Overview](routing_algorithms/overview.md)
-has a complete, runnable config and the full schema.
+Shared `defaults:` can provide a base URL, API key, and backend format without
+repeating them in every target. The [Routing Overview](routing_algorithms/overview.md)
+has a complete runnable bundle.
 
 ## Model IDs
 
-Clients choose what happens through the `model` field on a request. Switchyard
-registers three kinds of model IDs and lists them all on `GET /v1/models`:
-profile IDs, which apply a routing policy; target IDs, which skip routing and
-call that one model; and the upstream model name itself, registered as an alias
-whenever it differs from its target ID. Send a profile ID when you want routing,
-or a target or upstream name when you want to pin a single model.
+Every route name is registered as a model ID and listed on `GET /v1/models`.
+Clients select a route by putting that name in the request's `model` field.
+Some route types also discover or register direct upstream model IDs.
 
 ## Tiers and routing strategies
 
 Most routing strategies divide traffic between two tiers: a strong target that
 is more capable and more expensive, and a weak target that is cheaper and
-faster. A tier is a role you hand to a target rather than a fixed property of it,
-so the same target can be the strong tier in one profile and the weak tier in
-another.
+faster. A tier is a role assigned inside a route, not a fixed property of a
+model.
 
-A profile's `type` sets the strategy. `passthrough` sends everything to one
-target with no routing. `random-routing` splits traffic on a fixed probability.
-`llm-routing` asks a classifier model to pick a tier for each turn. `stage_router`
-escalates from weak to strong when request signals call for it. The
-[Routing Overview](routing_algorithms/overview.md) covers when to use each and
-how to tune it.
+A route's `type` sets the strategy. `model` and `passthrough` call one target.
+`random_routing` splits traffic on a fixed probability. `deterministic` asks a
+classifier model to pick a tier. `stage_router` uses agent-progress signals,
+with an optional classifier fallback. The
+[Routing Overview](routing_algorithms/overview.md) explains when to use each.
 
-!!! warning "There is no `type: model`"
-    The current profile config does not have a `type: model`. To expose a single
-    model, point clients at a target ID directly, or add a `passthrough` profile
-    when you want a second name for it. `type: model` survives only in the
-    deprecated `--routing-profiles` bundles used by the launcher compatibility
-    path.
-
-Session affinity, or sticky routing, pins a conversation to one tier so later
-turns reuse it instead of being classified again. It belongs to `llm-routing`
-and is not a strategy of its own; random and stage-router routing decide every
-request on its own merits. [Sticky Routing](routing_algorithms/sticky_routing.md)
-covers it in full.
+Session affinity pins a conversation to one tier so later turns reuse it
+instead of being classified again. It belongs to deterministic classifier
+routing and is not a strategy of its own. Random and stage-router routing make
+a decision for every request. [Sticky Routing](routing_algorithms/sticky_routing.md)
+covers affinity in full.
 
 ## Formats and translation
 
-Clients reach Switchyard in one of three inbound formats: OpenAI Chat
-Completions, Anthropic Messages, or OpenAI Responses. Each target has its own
-backend format, set by its `format:` field, which is one of `openai`,
-`anthropic`, `responses`, or `auto`. When the two differ, Switchyard translates
-the request on the way out and the response on the way back.
+Clients reach Switchyard through OpenAI Chat Completions, Anthropic Messages,
+or OpenAI Responses. Each target has a backend format: `openai`, `anthropic`,
+`responses`, or `auto`. When the inbound and backend formats differ,
+Switchyard translates the request on the way out and the response on the way
+back.
 
-That translation is what lets Claude Code, which speaks Anthropic Messages, run
-against an OpenAI-compatible model, and the reverse. The
-[Architecture](architecture.md) page documents every backend format, the `auto`
-probe, and the neutral representation used to convert between them.
+That translation lets Claude Code, which speaks Anthropic Messages, run against
+an OpenAI-compatible model. The [Architecture](architecture.md) page documents
+the supported formats and request lifecycle.
+
+## Programmatic Python profiles
+
+Embedded Python callers can construct typed profile configs and runtimes
+directly instead of loading a route bundle. `ProfileInput` carries the request
+and request metadata, while the profile protocols define `run`, `process`, and
+`rprocess`. This programmatic API is separate from CLI configuration.
+
+## Rust server configuration
+
+The `switchyard-server` binary is built directly on libsy. Its TOML file
+explicitly defines LLM clients, targets, and algorithm routes; it does not load
+Python route bundles. See the
+[Rust server README](../crates/switchyard-server/README.md) for details.
 
 ## Where to go next
 

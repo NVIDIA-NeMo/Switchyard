@@ -7,8 +7,7 @@ Companion to ``tests/getting_started/``. Three guards:
 
 * the "Use as a Python library" snippet executes (via ``--markdown-docs`` +
   the passthrough→noop fixture in ``conftest.py``);
-* README route examples validate against the route-bundle schema;
-* canonical routing pages still build stage_router and LLM-routing profile examples;
+* README and routing-guide examples validate against the route-bundle schema;
 * every CLI subcommand / flag the README names still exists.
 """
 
@@ -23,14 +22,14 @@ from markdown_it import MarkdownIt
 
 from switchyard.cli import route_bundle as rb
 from switchyard.cli.switchyard_cli import _build_parser
-from switchyard_rust.profiles import parse_profile_config_str
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPO_ROOT / "README.md"
 ROUTING_DOC_PATHS = (
-    REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.md",
-    REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.md",
     REPO_ROOT / "docs" / "routing_algorithms" / "overview.md",
+    REPO_ROOT / "docs" / "routing_algorithms" / "random_routing.md",
+    REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.md",
+    REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.md",
 )
 
 
@@ -69,18 +68,14 @@ def test_python_snippet_tripwire(readme_text: str) -> None:
     )
 
 
-def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
-    readme_text: str,
-) -> None:
-    # Schema/key validation, not a full chain build: building README's routes
+def _validate_route_blocks(text: str, source: Path) -> int:
+    # Schema/key validation, not a full chain build: building documented routes
     # is NOT hermetic — `passthrough` with `discover: true` does a live catalog
     # fetch and `latency_service` polls. The
     # schema layer (route type + per-type key allowlist) is what we can check
     # offline, and it catches the likeliest drift: a renamed `type:` or a key
     # that no longer exists on that type.
-    blocks = _code_blocks(readme_text, "yaml")
-    assert blocks, "README unexpectedly has no yaml blocks"
-
+    blocks = _code_blocks(text, "yaml")
     validated_routes = 0
     for idx, block in enumerate(blocks):
         payload = pyyaml.safe_load(block)
@@ -93,48 +88,27 @@ def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
                 rb._validate_route_keys(model_id, route, route_type)
             except rb.RouteBundleConfigError as exc:
                 raise AssertionError(
-                    f"YAML block {idx} route {model_id!r} in README.md failed "
+                    f"YAML block {idx} route {model_id!r} in {source} failed "
                     f"schema validation: {exc}\n\nBlock:\n{block}"
                 ) from exc
             validated_routes += 1
+    return validated_routes
 
-    assert validated_routes, "no README yaml block parsed as a route bundle"
 
-
-def test_stage_router_and_llm_routing_yaml_blocks_in_canonical_docs_build(
-    monkeypatch: pytest.MonkeyPatch,
+def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
+    readme_text: str,
 ) -> None:
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-readme")
+    assert _validate_route_blocks(readme_text, README_PATH), (
+        "no README yaml block parsed as a route bundle"
+    )
 
-    built_profiles = 0
-    for path in ROUTING_DOC_PATHS:
-        for idx, block in enumerate(_code_blocks(path.read_text(), "yaml")):
-            payload = pyyaml.safe_load(block)
-            if not isinstance(payload, dict) or not {
-                "endpoints",
-                "targets",
-                "profiles",
-            }.issubset(payload):
-                continue
-            relevant_profile_ids = [
-                profile_id
-                for profile_id, profile in payload["profiles"].items()
-                if profile.get("type") in {"stage_router", "llm-routing"}
-            ]
-            if not relevant_profile_ids:
-                continue
-            try:
-                plan = parse_profile_config_str(block).resolve()
-                for profile_id in relevant_profile_ids:
-                    plan.build_profile(profile_id)
-            except Exception as exc:
-                raise AssertionError(
-                    f"YAML block {idx} profiles {relevant_profile_ids!r} in {path} "
-                    f"failed profile-config build: {exc}\n\nBlock:\n{block}"
-                ) from exc
-            built_profiles += len(relevant_profile_ids)
 
-    assert built_profiles >= 2
+def test_canonical_routing_docs_validate_against_the_route_bundle_schema() -> None:
+    validated_routes = sum(
+        _validate_route_blocks(path.read_text(), path) for path in ROUTING_DOC_PATHS
+    )
+
+    assert validated_routes >= len(ROUTING_DOC_PATHS)
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
