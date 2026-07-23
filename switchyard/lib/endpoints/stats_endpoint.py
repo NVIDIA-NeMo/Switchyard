@@ -21,15 +21,12 @@ from fastapi.responses import Response
 from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.endpoints.base import Endpoint as NemoSwitchyardEndpoint
 from switchyard.lib.endpoints.prometheus_emitter import render as render_extra_metrics
-from switchyard.lib.live_stats_collector import LiveStatsCollector
 from switchyard.lib.prometheus_exposition import render_prometheus
 from switchyard.lib.stats_accumulator import StatsAccumulator
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-
-StatsSource = StatsAccumulator | LiveStatsCollector
 
 # Prometheus text exposition format 0.0.4 content-type.
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
@@ -52,7 +49,7 @@ class StatsEndpoint(NemoSwitchyardEndpoint):
 
     register_once = True
 
-    def __init__(self, stats: StatsSource) -> None:
+    def __init__(self, stats: StatsAccumulator) -> None:
         self._stats = stats
 
     def register(self, app: FastAPI) -> None:
@@ -61,16 +58,11 @@ class StatsEndpoint(NemoSwitchyardEndpoint):
 
         async def get_stats() -> dict[str, Any]:
             """Snapshot of per-model request / token / latency / cost stats."""
-            if isinstance(stats, LiveStatsCollector):
-                return stats.to_dict()
             return await stats.snapshot()
 
         async def reset_stats() -> dict[str, str]:
             """Zero all stats counters."""
-            if isinstance(stats, LiveStatsCollector):
-                stats.reset()
-            else:
-                await stats.reset()
+            await stats.reset()
             return {"status": "reset"}
 
         async def get_metrics() -> Response:
@@ -81,11 +73,7 @@ class StatsEndpoint(NemoSwitchyardEndpoint):
             :mod:`switchyard.lib.endpoints.prometheus_emitter` so a single
             ``/metrics`` scrape carries both surfaces.
             """
-            snapshot = (
-                stats.to_dict()
-                if isinstance(stats, LiveStatsCollector)
-                else await stats.snapshot()
-            )
+            snapshot = await stats.snapshot()
             outcome_block = "\n".join(outcome_metrics.render_lines()) + "\n"
             return Response(
                 content=(
