@@ -1969,7 +1969,8 @@ builds a runnable chain and is exposed as a model on <code>GET /v1/models</code>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard [--routing-profiles PATH] serve
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                 [--host HOST] [--port PORT] [--workers N]
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>                 [--reload] [--inbound FORMAT]
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>                 [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>                 [--routing-log-file PATH]
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>                 [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
 </span></code></pre></div>
 <p><strong>Flags</strong></p>
 <table>
@@ -1998,7 +1999,7 @@ builds a runnable chain and is exposed as a model on <code>GET /v1/models</code>
 </tr>
 <tr>
 <td><code>--routing-log-file PATH</code></td>
-<td>Append one JSONL routing record per request (task, session, selected model, tier, token usage) to PATH.</td>
+<td>Append one JSONL routing record per request (task, session, actual model, tier, token and cache usage) to PATH. Also exposes <code>GET /v1/routing/session-stats?session_id=...</code>.</td>
 </tr>
 <tr>
 <td><code>--intake-enabled</code> / <code>--enable-intake</code>, <code>--intake-base-url</code>, <code>--intake-workspace</code>, <code>--intake-api-key</code>, <code>--intake-target-url</code></td>
