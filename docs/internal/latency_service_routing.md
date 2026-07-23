@@ -275,10 +275,6 @@ policy-specific CLI flags. Run it with:
 switchyard --routing-profiles my_routes.yaml -- serve --port 4100
 ```
 
-The Rust `type: latency-service` profile loaded by `switchyard serve --config`
-is a separate schema and does not yet expose `session_affinity` or
-`affinity_max_sessions`.
-
 ### Config schema
 
 `LatencyServiceBackendConfig`

@@ -126,7 +126,7 @@ class UserConfig:
     """Non-secret Switchyard defaults stored under the user config dir.
 
     ``routing_profiles`` is a parsed routing-profile YAML bundle saved by
-    ``switchyard configure --routing-profiles PATH``. Stored as a parsed
+    ``switchyard --routing-profiles PATH configure``. Stored as a parsed
     JSON object inline (not as a path — paths rot when files move); env
     var references inside the bundle are preserved verbatim and
     re-expanded on each load. Consumed by ``switchyard serve`` (and as a

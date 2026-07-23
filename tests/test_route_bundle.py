@@ -421,54 +421,6 @@ def test_serve_subcommand_hands_table_to_server(
     assert captured["inbound_default"] == "both"
 
 
-def test_serve_config_and_routing_profiles_are_mutually_exclusive(
-    tmp_path,
-) -> None:
-    config_path = tmp_path / "profiles.yaml"
-    routes_path = tmp_path / "routes.yaml"
-    config_path.write_text("profiles:\n  bench:\n    type: noop\n")
-    routes_path.write_text("routes:\n  bench:\n    type: noop\n")
-
-    args = cli._build_parser().parse_args([
-        "--routing-profiles",
-        str(routes_path),
-        "serve",
-        "--config",
-        str(config_path),
-    ])
-
-    with pytest.raises(SystemExit, match="cannot be combined"):
-        args.func(args)
-
-
-@pytest.mark.parametrize(
-    "serve_args, match",
-    [
-        (["--reload"], "--reload"),
-        (["--workers", "2"], "--workers"),
-        (["--inbound", "openai"], "--inbound"),
-        (["--inbound", "both"], "--inbound"),
-        (["--intake-enabled"], "Intake"),
-    ],
-)
-def test_serve_config_rejects_python_only_options(
-    tmp_path,
-    serve_args: list[str],
-    match: str,
-) -> None:
-    config_path = tmp_path / "profiles.yaml"
-    config_path.write_text("profiles:\n  bench:\n    type: noop\n")
-    args = cli._build_parser().parse_args([
-        "serve",
-        "--config",
-        str(config_path),
-        *serve_args,
-    ])
-
-    with pytest.raises(SystemExit, match=match):
-        args.func(args)
-
-
 def test_main_reports_route_bundle_config_error_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -554,7 +506,7 @@ def test_main_reports_non_utf8_route_bundle_without_traceback(
     assert "\n" not in str(excinfo.value.code)
 
 
-def test_main_warns_when_routing_profiles_flag_is_used(
+def test_main_accepts_routing_profiles_flag(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     capsys: pytest.CaptureFixture[str],
@@ -578,13 +530,10 @@ def test_main_warns_when_routing_profiles_flag_is_used(
 
     cli.main()
 
-    stderr = capsys.readouterr().err
-    assert "warning: --routing-profiles is deprecated." in stderr
-    assert "switchyard serve --config PATH" in stderr
-    assert "removed in a future release" in stderr
+    assert capsys.readouterr().err == ""
 
 
-def test_serve_warns_when_saved_route_bundle_is_used(
+def test_serve_accepts_saved_route_bundle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     capsys: pytest.CaptureFixture[str],
@@ -607,10 +556,7 @@ def test_serve_warns_when_saved_route_bundle_is_used(
 
     cli._cmd_serve(args)
 
-    stderr = capsys.readouterr().err
-    assert "warning: saved routing-profile bundle is deprecated." in stderr
-    assert "switchyard serve --config PATH" in stderr
-    assert "Clear the saved bundle" in stderr
+    assert capsys.readouterr().err == ""
 
 
 def test_serve_subcommand_enables_intake_from_cli_args(

@@ -14,11 +14,8 @@ a drop-in scrape config and starter alert rules.
 | Auth | None. Designed as a public scrape endpoint |
 | Default scrape interval | 15s (the Latency Service poll cycle is 10s by default, so finer scrape resolution captures no extra state) |
 
-!!! note "Availability: legacy route-bundle serve only"
-    `GET /metrics` is served by the **legacy route-bundle path**
-    (`switchyard --routing-profiles PATH serve`). The v2 profile-config path
-    (`switchyard serve --config`) returns **404** for `/metrics` — use `GET /v1/stats`
-    (or its alias `GET /v1/routing/stats`) on that path instead.
+`GET /metrics` is served by the Python route-bundle server started with
+`switchyard --routing-profiles PATH -- serve`.
 
 A JSON variant of the same underlying data lives at `GET /v1/stats`, with
 `GET /v1/routing/stats` as a backwards-compatible alias.

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Python profile abstractions matching the components-v2 design."""
+"""Python profile abstractions for programmatic routing profiles."""
 
 from switchyard.lib.profiles.deterministic_routing_config import (
     DeterministicRoutingConfig,
@@ -22,7 +22,6 @@ from switchyard.lib.profiles.header_routing import (
     HeaderRoutingProfile,
 )
 from switchyard.lib.profiles.latency_service import LatencyServiceProfileConfig
-from switchyard.lib.profiles.loader import load_profiles
 from switchyard.lib.profiles.noop import NoopProfile, NoopProfileConfig
 from switchyard.lib.profiles.passthrough import PassthroughProfileConfig
 from switchyard.lib.profiles.plan_execute import PlanExecuteProfileConfig
@@ -86,7 +85,6 @@ __all__ = [
     "RandomRoutingProfileConfig",
     "TranslateProfileConfig",
     "build_profile",
-    "load_profiles",
     "profile_config",
     "profile_config_type",
 ]

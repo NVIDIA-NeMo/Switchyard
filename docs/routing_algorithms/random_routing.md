@@ -30,40 +30,7 @@ tier model instead of the routing model.
 
 ## Enable It
 
-Use `serve --config` with a profile config:
-
-```yaml
-targets:
-  strong:
-    model: openai/gpt-4o
-    format: openai
-    base_url: https://openrouter.ai/api/v1
-    api_key: ${OPENROUTER_API_KEY}
-  weak:
-    model: openai/gpt-4o-mini
-    format: openai
-    base_url: https://openrouter.ai/api/v1
-    api_key: ${OPENROUTER_API_KEY}
-
-profiles:
-  ab-test:
-    type: random-routing
-    strong: strong
-    weak: weak
-    strong_probability: 0.3
-```
-
-Run it with:
-
-```bash
-switchyard serve --config routes.yaml --port 4000
-```
-
-The profile id (`ab-test`) is the model id clients select when they want the
-weighted split.
-
-For routing-profile YAML used by launchers, use `type: random_routing` under
-`routes:`:
+Use `type: random_routing` under `routes:`:
 
 ```yaml
 defaults:
@@ -82,3 +49,12 @@ routes:
     rng_seed: 42
     fallback_target_on_evict: strong
 ```
+
+Run it with:
+
+```bash
+switchyard --routing-profiles routes.yaml -- serve --port 4000
+```
+
+The route id (`ab-test`) is the model id clients select when they want the
+weighted split.

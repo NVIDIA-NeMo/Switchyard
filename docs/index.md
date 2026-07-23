@@ -81,42 +81,33 @@ For source installs, non-interactive configuration, and a curl sanity check, use
 
 ## Configuration Model
 
-Standalone deployments start with a profile config that separates provider
-connectivity, upstream targets, and client-facing profiles:
+Python CLI deployments define client-facing routes in a YAML bundle:
 
 ```yaml
-endpoints:
-  openrouter:
-    api_key: ${OPENROUTER_API_KEY}
-    base_url: https://openrouter.ai/api/v1
+defaults:
+  api_key: ${OPENROUTER_API_KEY}
+  base_url: https://openrouter.ai/api/v1
+  format: openai
 
-targets:
-  strong:
-    endpoint: openrouter
-    model: openai/gpt-4o
-    format: openai
-  weak:
-    endpoint: openrouter
-    model: openai/gpt-4o-mini
-    format: openai
-
-profiles:
+routes:
   smart:
-    type: random-routing
-    strong: strong
-    weak: weak
+    type: random_routing
+    strong:
+      model: openai/gpt-4o
+    weak:
+      model: openai/gpt-4o-mini
     strong_probability: 0.3
+    fallback_target_on_evict: strong
 ```
 
-Run it as a long-lived proxy. Profile and target ids appear as models on
-`GET /v1/models`, and clients select one with the request's `model` field:
+Run it as a long-lived proxy. Route names appear as models on `GET /v1/models`,
+and clients select one with the request's `model` field:
 
 ```bash
-switchyard serve --config profiles.yaml --port 4000
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
-The deprecated `--routing-profiles` flag is retained only for launcher-owned
-legacy bundles and saved bundle paths:
+The same bundle can drive a launcher or be saved as the default:
 
 ```bash
 switchyard --routing-profiles routes.yaml -- launch claude
@@ -128,8 +119,9 @@ switchyard --routing-profiles routes.yaml -- configure --target provider \
 Non-interactive `configure` does not read provider credentials from the routing
 bundle; pass `--api-key` explicitly when persisting the bundle for CI.
 
-Profile ids, direct targets, legacy launcher compatibility, and persistence are
-covered in [Routing Overview](routing_algorithms/overview.md).
+Route types, launcher use, and persistence are covered in
+[Routing Overview](routing_algorithms/overview.md). The Rust server uses its
+own explicit TOML configuration for LLM clients, targets, and libsy algorithms.
 
 ## Routing Reference
 

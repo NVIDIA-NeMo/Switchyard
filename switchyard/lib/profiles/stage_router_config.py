@@ -49,7 +49,7 @@ class StageRouterConfig(BaseModel):
     #: Scorer confidence in ``[0, 1]`` below which the picker consults the
     #: classifier (if configured) or returns its default tier. ``0.0`` forces
     #: pure-deterministic routing; ``1.0`` forces every turn through the
-    #: classifier (equivalent to the legacy ``coding_agent`` profile).
+    #: classifier (equivalent to classifier-only ``coding_agent`` routing).
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     #: Sliding-window size for the Rust signal extractor's ``recent_*``
     #: counts (``recent_write_count``, ``recent_edit_count``, etc.).

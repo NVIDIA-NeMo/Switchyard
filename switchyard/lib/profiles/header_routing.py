@@ -1,16 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""A header-routing Python profile: pick a tier from a request header.
+"""A programmatic Python profile that selects a tier from a request header."""
 
-A small, real example of a Python-defined v2 profile. It exercises the pieces
-the v2 profile system enables: a typed config with ``profile_target`` fields, a
-profile-owned processed-request type, and delegation of the actual backend call
-through a passthrough profile per target. The architecture mirrors the Rust
-profiles in ``switchyard-components-v2``; only the authoring language differs.
-"""
-
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from switchyard.lib.backends.llm_target import LlmTarget
 from switchyard.lib.profiles.chain import ComponentChainProfile
@@ -29,12 +22,11 @@ class HeaderRoutingConfig:
     """Route to ``strong`` or ``weak`` based on a request header.
 
     A header value of ``strong`` selects the strong target; anything else, or a
-    missing header, selects ``weak``. Both targets are Rust-owned ``LlmTarget``s
-    resolved by the shared config loader, exactly like a Rust profile's targets.
+    missing header, selects ``weak``.
     """
 
-    strong: LlmTarget = field(metadata={"profile_target": True})
-    weak: LlmTarget = field(metadata={"profile_target": True})
+    strong: LlmTarget
+    weak: LlmTarget
     header: str = _DEFAULT_HEADER
 
     def build(self) -> "HeaderRoutingProfile":

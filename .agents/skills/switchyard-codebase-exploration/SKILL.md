@@ -7,8 +7,8 @@ description: Use when modifying, debugging, reviewing, refactoring, renaming, re
 
 > Rust crates under `crates/` are active on the Rust core branch. Inspect
 > `crates/switchyard-core`, `crates/switchyard-components`,
-> `crates/switchyard-components-v2`, `crates/switchyard-server`,
-> `crates/switchyard-translation`, `crates/switchyard-py`, and `crates/*/tests`
+> `crates/switchyard-server`, `crates/switchyard-translation`,
+> `crates/switchyard-py`, and `crates/*/tests`
 > directly when a change touches Rust.
 > Direct PyO3 bindings for concrete components live under
 > `crates/switchyard-py/src/component_bindings/` with Python lazy exports in
