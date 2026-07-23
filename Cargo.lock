@@ -1859,6 +1859,7 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-llm-client",
+ "switchyard-test-server",
  "switchyard-translation",
  "tempfile",
  "tokio",
@@ -1876,6 +1877,21 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "switchyard-test-server"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "rand 0.9.5",
+ "reqwest",
+ "serde_json",
+ "switchyard-protocol",
+ "switchyard-translation",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

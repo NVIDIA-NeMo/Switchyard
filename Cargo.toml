@@ -12,6 +12,7 @@ members = [
     "crates/protocol",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
+    "crates/switchyard-test-server",
     "crates/switchyard-translation",
 ]
 
