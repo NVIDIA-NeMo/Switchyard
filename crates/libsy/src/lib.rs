@@ -84,3 +84,4 @@ pub mod algorithms;
 
 mod observability;
 mod signal;
+pub use signal::{ToolSignals, DEFAULT_RECENT_WINDOW};

@@ -12,7 +12,7 @@
 //! All logic is pure and deterministic — no I/O, no shared state.
 
 use serde_json::Value;
-use switchyard_protocol::{Metadata, Request, WireFormat};
+use switchyard_protocol::{Request, WireFormat};
 
 // ─── severity constants ───────────────────────────────────────────────────────
 
@@ -729,6 +729,7 @@ fn has_nonzero_failure_count(lower: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use switchyard_protocol::Metadata;
 
     /// Build a `Request` carrying `body` as its raw payload, tagged with `wire_format`.
     fn request_with(wire_format: WireFormat, body: Value) -> Request {
