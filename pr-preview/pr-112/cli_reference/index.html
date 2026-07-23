@@ -2001,6 +2001,10 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 <td>uvicorn worker count.</td>
 </tr>
 <tr>
+<td><code>--routing-log-file PATH</code></td>
+<td>Append one JSONL routing record per request (task, session, selected model, tier, token usage) to PATH. Route-bundle serve only; rejected by <code>serve --config</code>.</td>
+</tr>
+<tr>
 <td><code>--intake-enabled</code> / <code>--enable-intake</code>, <code>--intake-base-url</code>, <code>--intake-workspace</code>, <code>--intake-api-key</code>, <code>--intake-target-url</code></td>
 <td><a href="#intake-sink-serve-and-launchers">Intake sink</a>.</td>
 </tr>
@@ -2011,7 +2015,7 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 <li><code>serve</code> always registers <code>POST /v1/chat/completions</code>, <code>POST /v1/messages</code>, <code>POST /v1/responses</code>, <code>GET /v1/models</code>, and <code>GET /health</code>. There is no flag to expose just one request API.</li>
 <li><code>GET /v1/stats</code> and <code>GET /v1/routing/stats</code> are available on both serve paths.</li>
 <li>The deprecated route-bundle path accepts <code>--inbound</code> for compatibility but ignores it; all supported request APIs are always registered.</li>
-<li><code>serve --config</code> does not support <code>--reload</code>, <code>--workers &gt; 1</code>, Intake options, <code>--enable-rl-logging</code>, or any explicit <code>--inbound</code> value.</li>
+<li><code>serve --config</code> does not support <code>--reload</code>, <code>--workers &gt; 1</code>, Intake options, <code>--enable-rl-logging</code>, <code>--routing-log-file</code>, or any explicit <code>--inbound</code> value.</li>
 <li>Rust-defined and Python-defined profiles use the same profile-config schema. The profile <code>type</code> decides which implementation builds that profile.</li>
 <li>Python-defined profiles are registered via <code>@profile_config</code>; the shipped <code>header-routing</code> profile is an example. A config can mix a Rust-defined profile and a Python-defined profile, and both profile ids are routable on the same served host and port.</li>
 </ul>
