@@ -1626,7 +1626,7 @@
 <tr>
 <td><a href="#switchyard-serve"><code>serve</code></a></td>
 <td>Ops</td>
-<td>Long-running proxy server. Serve a v2 profile config with <code>serve --config</code>; each profile id and target id appears on <code>GET /v1/models</code>, and clients select one by setting the request <code>model</code>.</td>
+<td>Long-running proxy server. Serve a YAML route bundle selected with the global <code>--routing-profiles</code> flag.</td>
 </tr>
 <tr>
 <td><a href="#switchyard-launch-claude"><code>launch claude</code></a></td>
@@ -1671,11 +1671,11 @@
 </tr>
 <tr>
 <td><code>--routing-profiles PATH</code> / <code>-c PATH</code></td>
-<td>Deprecated legacy <a href="#routing">Routing</a> bundle applied to <code>serve</code>, <code>launch</code>, and <code>configure</code>. Pass before the verb; separate with <code>--</code> for clarity.</td>
+<td><a href="#routing">Routing</a> bundle applied to <code>serve</code>, <code>launch</code>, and <code>configure</code>. Pass before the verb; separate with <code>--</code> for clarity.</td>
 </tr>
 <tr>
 <td><code>--enable-rl-logging</code></td>
-<td>Write local <a href="#rl-trace-logging">RL trace logs</a> (one <code>message_history</code> JSON file per turn) for <code>launch</code> and <code>serve</code> route-bundle sessions. Pass before the verb: <code>switchyard --enable-rl-logging launch claude</code>. Rejected by <code>serve --config</code>.</td>
+<td>Write local <a href="#rl-trace-logging">RL trace logs</a> (one <code>message_history</code> JSON file per turn) for <code>launch</code> and <code>serve</code> route-bundle sessions. Pass before the verb: <code>switchyard --enable-rl-logging launch claude</code>.</td>
 </tr>
 <tr>
 <td><code>--rl-log-dir DIR</code></td>
@@ -1744,18 +1744,17 @@ upstream requests. Configuration files use these lowercase values:</p>
 </table>
 <p><code>auto</code> resolves formats in this order:</p>
 <ol>
+<li>Probe <code>/v1/chat/completions</code>; use <code>openai</code> when supported.</li>
 <li>Probe <code>/v1/messages</code>; use <code>anthropic</code> when supported.</li>
 <li>Probe <code>/v1/responses</code>; use <code>responses</code> when supported.</li>
-<li>Fall back to <code>openai</code> and <code>/v1/chat/completions</code>.</li>
+<li>Fall back to <code>openai</code> (<code>/v1/chat/completions</code>).</li>
 </ol>
 <p>Single-model Claude Code and Codex launches use <code>auto</code>. OpenClaw is pinned to
 <code>openai</code>. Prefer an explicit format when the upstream contract is known so
 startup does not require capability probes.</p>
 <h3 id="routing">Routing<a class="headerlink" href="#routing" title="Permanent link">&para;</a></h3>
-<p>Legacy routing policies that used to be standalone CLI verbs live in
-routing-profile YAML files. Route bundles are deprecated; use v2 profile
-configs for new <code>serve</code> setups. Two flags drive routing on <code>serve</code> and the
-launchers:</p>
+<p>Routing policies live in routing-profile YAML files. Two flags drive routing
+on the launchers; <code>serve</code> uses <code>--routing-profiles</code>:</p>
 <table>
 <thead>
 <tr>
@@ -1770,7 +1769,7 @@ launchers:</p>
 </tr>
 <tr>
 <td><code>--routing-profiles PATH</code></td>
-<td>Deprecated path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>stage_router</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
+<td>Path to a routing-profile YAML bundle. Each entry under <code>routes:</code> builds its own chain. Public route types are <code>model</code>, <code>passthrough</code>, <code>random_routing</code>, <code>stage_router</code>, <code>escalation_router</code>, and <code>deterministic</code>. Falls back to the path persisted by <code>switchyard --routing-profiles PATH -- configure</code> when omitted.</td>
 </tr>
 </tbody>
 </table>
@@ -1779,7 +1778,7 @@ launchers:</p>
 <li><code>--model ID</code>: single-model passthrough. Any model id from <code>GET /v1/models</code> is accepted; every request is rewritten to <code>model=ID</code> and forwarded upstream.</li>
 <li><code>--routing-profiles PATH</code>: loads a multi-chain YAML bundle; the first declared route becomes the initial model.</li>
 </ul>
-<p>For legacy route-bundle <code>type: deterministic</code> routes, the <code>classifier:</code> block also accepts:</p>
+<p>For <code>type: deterministic</code> routes, the <code>classifier:</code> block also accepts:</p>
 <table>
 <thead>
 <tr>
@@ -1803,7 +1802,8 @@ launchers:</p>
 </tbody>
 </table>
 <p>Benchmark runs started through <code>benchmark/run-baseline.sh --routing-profiles</code> record the effective classifier prompt, prompt SHA-256, <code>max_request_chars</code>, and <code>recent_turn_window</code> in <code>run_manifest.json</code> under <code>server.classifier_prompts</code>.</p>
-<p><strong>Selecting a v2 profile by id.</strong> A <code>serve --config</code> proxy exposes every profile id (and every target id) as a model on <code>GET /v1/models</code>. There is no separate "profile" flag. A client, or a launcher using <code>--model &lt;profile-id&gt;</code>, selects a profile simply by naming its id as the model. This is the v2 counterpart to picking a route from a bundle. This selection pattern is specific to v2 profile configs; legacy route-bundle configs still use route names as model IDs.</p>
+<p>Each route name becomes a model ID on <code>GET /v1/models</code>. Clients select a route
+by setting the request's <code>model</code> field to that name.</p>
 <h3 id="intake-sink-serve-and-launchers">Intake sink (serve and launchers)<a class="headerlink" href="#intake-sink-serve-and-launchers" title="Permanent link">&para;</a></h3>
 <p><code>serve</code> and launchers share the same Intake sink connection flags. <code>serve</code> wires intake processors into every route in the loaded bundle; requests still opt in with <code>store=true</code> or <code>x-switchyard-intake-enabled=true</code>. Launchers also inject those opt-in headers into the spawned client.</p>
 <blockquote>
@@ -1897,7 +1897,7 @@ matches the pre-1.0 trace format:</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>Turns without an assistant choice (e.g. upstream errors) are skipped. The flag
-works on <code>launch</code> and on <code>serve</code> with a route bundle; <code>serve --config</code> rejects it.</p>
+works on <code>launch</code> and on <code>serve</code> with a route bundle.</p>
 <h3 id="transport-server-verbs">Transport (server verbs)<a class="headerlink" href="#transport-server-verbs" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1963,13 +1963,15 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 </span></code></pre></div>
 <p><code>secrets/</code> is gitignored. Never commit this file.</p>
 <h2 id="switchyard-serve"><code>switchyard serve</code><a class="headerlink" href="#switchyard-serve" title="Permanent link">&para;</a></h2>
-<p>Serve a long-running proxy from a Switchyard v2 <strong>profile config</strong>: one YAML/JSON/TOML file declaring <code>endpoints</code>, <code>targets</code>, and <code>profiles</code>. Rust-defined and Python-defined profiles run through the same Python HTTP application and expose the same endpoint paths. Each profile id and each target id is exposed as a model on <code>GET /v1/models</code>, so a client selects a profile by setting the request <code>model</code> to that id.</p>
+<p>Serve a long-running proxy from a YAML route bundle. Each entry under <code>routes:</code>
+builds a runnable chain and is exposed as a model on <code>GET /v1/models</code>.</p>
 <p>The server exposes the OpenAI Chat Completions (<code>/v1/chat/completions</code>), Anthropic Messages (<code>/v1/messages</code>), and OpenAI Responses (<code>/v1/responses</code>) APIs on the same host and port.</p>
 <p><strong>Synopsis</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard [--routing-profiles PATH] serve [--config PATH]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard [--routing-profiles PATH] serve
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                 [--host HOST] [--port PORT] [--workers N]
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>                 [--reload] [--inbound FORMAT]
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>                 [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>                 [--routing-log-file PATH]
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>                 [--intake-enabled|--enable-intake [INTAKE OVERRIDES]]
 </span></code></pre></div>
 <p><strong>Flags</strong></p>
 <table>
@@ -1982,11 +1984,7 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 <tbody>
 <tr>
 <td><code>--routing-profiles PATH</code> / <code>-c PATH</code></td>
-<td>Deprecated legacy <a href="#routing">Routing</a> path. Global flag; pass before <code>serve</code>. Falls back to the saved path from <code>switchyard --routing-profiles PATH -- configure</code>.</td>
-</tr>
-<tr>
-<td><code>--config PATH</code></td>
-<td>Switchyard v2 profile-config YAML/JSON/TOML entrypoint. This is the primary serve path. Mutually exclusive with <code>--routing-profiles</code>.</td>
+<td><a href="#routing">Routing</a> path. Global flag; pass before <code>serve</code>. Falls back to the saved path from <code>switchyard --routing-profiles PATH -- configure</code>.</td>
 </tr>
 <tr>
 <td><code>--host</code>, <code>--port</code>/<code>-p</code>, <code>--reload</code></td>
@@ -1994,11 +1992,15 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 </tr>
 <tr>
 <td><code>--inbound FORMAT</code></td>
-<td>Valid only for legacy route-bundle serve (<code>--routing-profiles</code>); <code>serve --config</code> actively rejects it with an error. For legacy serve, the flag is a no-op — all request APIs are always registered regardless of the value (accepted for backwards compat only).</td>
+<td>Backwards-compatible no-op; all request APIs are always registered.</td>
 </tr>
 <tr>
 <td><code>--workers</code> / <code>-w</code></td>
 <td>uvicorn worker count.</td>
+</tr>
+<tr>
+<td><code>--routing-log-file PATH</code></td>
+<td>Append one JSONL routing record per request (task, session, actual model, tier, token and cache usage) to PATH. Also exposes <code>GET /v1/routing/session-stats?session_id=...</code>.</td>
 </tr>
 <tr>
 <td><code>--intake-enabled</code> / <code>--enable-intake</code>, <code>--intake-base-url</code>, <code>--intake-workspace</code>, <code>--intake-api-key</code>, <code>--intake-target-url</code></td>
@@ -2009,38 +2011,21 @@ because the built-in default is <code>https://openrouter.ai/api/v1</code>.</p>
 <p><strong>Notes</strong></p>
 <ul>
 <li><code>serve</code> always registers <code>POST /v1/chat/completions</code>, <code>POST /v1/messages</code>, <code>POST /v1/responses</code>, <code>GET /v1/models</code>, and <code>GET /health</code>. There is no flag to expose just one request API.</li>
-<li><code>GET /v1/stats</code> and <code>GET /v1/routing/stats</code> are available on both serve paths.</li>
-<li>The deprecated route-bundle path accepts <code>--inbound</code> for compatibility but ignores it; all supported request APIs are always registered.</li>
-<li><code>serve --config</code> does not support <code>--reload</code>, <code>--workers &gt; 1</code>, Intake options, <code>--enable-rl-logging</code>, or any explicit <code>--inbound</code> value.</li>
-<li>Rust-defined and Python-defined profiles use the same profile-config schema. The profile <code>type</code> decides which implementation builds that profile.</li>
-<li>Python-defined profiles are registered via <code>@profile_config</code>; the shipped <code>header-routing</code> profile is an example. A config can mix a Rust-defined profile and a Python-defined profile, and both profile ids are routable on the same served host and port.</li>
+<li><code>GET /v1/stats</code> and <code>GET /v1/routing/stats</code> expose route statistics.</li>
+<li><code>--inbound</code> is retained as a compatibility no-op; all supported request APIs are always registered.</li>
 </ul>
 <p><strong>Examples</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># v2 profile config (primary): each profile id + target id is a model on /v1/models</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/profiles.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># select a profile by id (the `model` field):</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>curl<span class="w"> </span>localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart-stage-router&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># mixed Rust/Python profile config on the same request APIs</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/python_profile.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>curl<span class="w"> </span>localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;x-switchyard-tier: strong&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hi&quot;}]}&#39;</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="c1"># Legacy route bundle on port 4000</span>
-</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>
-</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="c1"># Persist a bundle for later runs; no-TTY configure requires explicit provider credentials</span>
-</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
-</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>
-</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="c1"># Multi-worker uvicorn (route-bundle path)</span>
-</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="nv">SWITCHYARD_WORKERS</span><span class="o">=</span><span class="m">4</span><span class="w"> </span>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Route bundle on port 4000</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Persist a bundle for later runs; no-TTY configure requires explicit provider credentials</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Multi-worker uvicorn</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="nv">SWITCHYARD_WORKERS</span><span class="o">=</span><span class="m">4</span><span class="w"> </span>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve
 </span></code></pre></div>
 <h2 id="switchyard-launch-claude"><code>switchyard launch claude</code><a class="headerlink" href="#switchyard-launch-claude" title="Permanent link">&para;</a></h2>
 <p>Start a proxy on a free local port, spawn <code>claude</code> against it, and tear the proxy down when Claude exits.</p>
@@ -2289,6 +2274,14 @@ Skill distillation config also lives in <code>~/.config/switchyard/config.json</
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Saved bundles keep <code>${VAR}</code> references literal.</strong> A saved routing-profile
+bundle stores <code>${OPENROUTER_API_KEY}</code> (and any other <code>${VAR}</code>) verbatim. The
+referenced environment variables must therefore
+be present in the environment at <code>serve</code> / <code>launch</code> time; on another machine or
+shell, export them again or Switchyard aborts with
+<code>missing environment variable(s): NAME</code>.</p>
+</blockquote>
 <p><strong>Skill distillation config</strong></p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;skill_distillation&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>

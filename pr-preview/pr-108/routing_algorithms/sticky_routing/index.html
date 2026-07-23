@@ -1246,10 +1246,8 @@ distinct tasks differ. The key is derived per request and the pin store is a bou
 <p>Opt in with <code>session_affinity: true</code> on the route. <code>affinity_max_sessions</code>
 (default <code>10000</code>) caps the number of pinned conversations.</p>
 <p>These fields are part of the deterministic router configuration, not a
-standalone route type. In CLI YAML, configure them under a <code>deterministic</code>
-entry in a <code>routes:</code> bundle loaded with <code>--routing-profiles</code>. The Rust
-<code>profiles:</code> schema loaded by <code>switchyard serve --config</code> does not yet expose
-them.</p>
+standalone route type. Configure them under a <code>deterministic</code> entry in the
+<code>routes:</code> bundle loaded with <code>--routing-profiles</code>.</p>
 <p>For deterministic routes, <code>affinity_warmup_turns</code> controls how many initial
 turns remain non-sticky. The default is <code>0</code>, which preserves the historical
 "pin the first confident verdict" behavior.</p>
