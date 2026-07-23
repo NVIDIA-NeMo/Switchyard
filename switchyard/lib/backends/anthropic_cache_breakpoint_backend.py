@@ -22,10 +22,9 @@ honors prompt caching:
    request and passes the body through verbatim (preserving the
    markers all the way to the wire).
 
-Why this lives in a wrapper instead of in
-:class:`switchyard.lib.processors.turn_based_router_request_processor.TurnBasedRouterRequestProcessor`:
-mutating the chain-level :attr:`ChatRequest.request_type` at the
-request-processor layer propagates through the rest of the chain.
+Why this lives in a wrapper instead of a request processor: mutating the
+chain-level :attr:`ChatRequest.request_type` before the backend call propagates
+through the rest of the chain.
 The terminal :class:`TranslationEngine` step then reads the modified
 type, decides "the client wanted Anthropic," and skips translation
 of the Anthropic response back to the client's original wire format.
