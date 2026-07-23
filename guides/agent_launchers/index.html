@@ -1397,6 +1397,12 @@ strong tier using the validated coding-agent trio:</p>
 <code>--classifier-min-confidence</code> tune only this built-in route. They are ignored
 when route resolution selects an explicit or saved route bundle or single
 model.</p>
+<p>The default trio uses OpenRouter model ids and therefore requires OpenRouter
+connectivity (<code>OPENROUTER_API_KEY</code>). If the resolved provider is not OpenRouter,
+the launcher fails fast. The strong tier stays <code>anthropic/claude-opus-4.7</code>, so
+<code>--weak-model</code>/<code>--classifier-model</code> don't make the trio reachable — pass
+<code>--model</code> for a single model, use <code>--routing-profiles</code> for a bundle, or set
+<code>OPENROUTER_API_KEY</code>.</p>
 <h2 id="override-the-default-route">Override the default route<a class="headerlink" href="#override-the-default-route" title="Permanent link">&para;</a></h2>
 <p>Use <code>--model</code> for a single-model passthrough session:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o-mini
