@@ -761,10 +761,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#common-profile-shape" class="md-nav__link">
+  <a href="#common-route-shape" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Common profile shape
+        Common route shape
       
     </span>
   </a>
@@ -772,21 +772,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#multiple-profiles" class="md-nav__link">
+  <a href="#model-and-passthrough-routes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Multiple profiles
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#direct-targets-and-passthrough-aliases" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Direct targets and passthrough aliases
+        Model and passthrough routes
       
     </span>
   </a>
@@ -809,6 +798,17 @@
     <span class="md-ellipsis">
       
         How session affinity composes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-server-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust server configuration
       
     </span>
   </a>
@@ -1185,10 +1185,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#common-profile-shape" class="md-nav__link">
+  <a href="#common-route-shape" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Common profile shape
+        Common route shape
       
     </span>
   </a>
@@ -1196,21 +1196,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#multiple-profiles" class="md-nav__link">
+  <a href="#model-and-passthrough-routes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Multiple profiles
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#direct-targets-and-passthrough-aliases" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Direct targets and passthrough aliases
+        Model and passthrough routes
       
     </span>
   </a>
@@ -1239,6 +1228,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rust-server-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust server configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1260,32 +1260,32 @@
 
 
 <h1 id="routing-overview">Routing Overview<a class="headerlink" href="#routing-overview" title="Permanent link">&para;</a></h1>
-<p>Switchyard profile configs register profiles and targets as model IDs that
-clients can select through OpenAI Chat Completions, Anthropic Messages, or
-OpenAI Responses API requests. Start a profile config with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>profiles.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<p>The Python CLI loads routing policies from a YAML bundle. Each key under
+<code>routes:</code> becomes a model ID available through OpenAI Chat Completions,
+Anthropic Messages, and OpenAI Responses requests:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
-<p>Use this page to choose a routing strategy first, then open its detailed page
-for configuration and tuning.</p>
+<p>Use this page to choose a routing strategy, then open its detailed page for
+configuration and tuning.</p>
 <h2 id="choose-a-strategy">Choose a strategy<a class="headerlink" href="#choose-a-strategy" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Strategy</th>
 <th>Use it when</th>
-<th>Profile <code>type</code></th>
+<th>Route <code>type</code></th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><a href="../random_routing/">Random Routing</a></td>
 <td>You need a fixed strong/weak split for A/B tests, baselines, or cost experiments.</td>
-<td><code>random-routing</code></td>
+<td><code>random_routing</code></td>
 </tr>
 <tr>
 <td><a href="../llm_classifier_routing/">LLM Classifier Routing</a></td>
 <td>Request content should decide whether a turn needs the weak or strong tier.</td>
-<td><code>llm-routing</code></td>
+<td><code>deterministic</code></td>
 </tr>
 <tr>
 <td><a href="../stage_router_routing/">Stage-Router Routing</a></td>
@@ -1294,129 +1294,81 @@ for configuration and tuning.</p>
 </tr>
 <tr>
 <td><a href="../escalation_router_routing/">Escalation-Router Routing</a></td>
-<td>Start every task on the weak tier and let an LLM judge escalate to strong — one-way per task — when the run is in trouble.</td>
-<td><code>escalation_router</code> (<code>routes:</code> bundle)</td>
+<td>Start every task on the weak tier and escalate to strong when an LLM judge detects trouble.</td>
+<td><code>escalation_router</code></td>
 </tr>
 </tbody>
 </table>
 <p><a href="../sticky_routing/">Session Affinity (Sticky Routing)</a> is an opt-in feature of
-LLM classifier routing, not a standalone routing strategy. The classifier
-integrates the pin into its decision path. See
-<a href="#how-session-affinity-composes">How session affinity composes</a> for the exact
-behavior.</p>
-<h2 id="common-profile-shape">Common profile shape<a class="headerlink" href="#common-profile-shape" title="Permanent link">&para;</a></h2>
-<p>Profile configs separate provider connectivity, upstream targets, and
-client-facing profiles:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">endpoints</span><span class="p">:</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">openrouter</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
+LLM classifier routing, not a standalone routing strategy.</p>
+<h2 id="common-route-shape">Common route shape<a class="headerlink" href="#common-route-shape" title="Permanent link">&para;</a></h2>
+<p>Provider defaults can be shared across all routes, while each route owns its
+target configuration:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nt">targets</span><span class="p">:</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openrouter</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openrouter</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="nt">profiles</span><span class="p">:</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="nt">smart</span><span class="p">:</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random-routing</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nt">routes</span><span class="p">:</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">fast</span><span class="p">:</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">model</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">smart</span><span class="p">:</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random_routing</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
 </span></code></pre></div>
-<p>The profile ID (<code>smart</code>) is the model ID clients send when they want the
-routing policy. Target IDs (<code>strong</code> and <code>weak</code>) are also directly selectable.
-When an upstream model ID differs from its target ID, the profile server
-registers that model ID as an additional direct alias.</p>
+<p>Use the route name (<code>fast</code> or <code>smart</code>) as the request's model ID. A single
+bundle can serve multiple routes on the same host and port.</p>
 <p>The examples use model IDs from the
 <a href="https://openrouter.ai/api/v1/models">OpenRouter model catalog</a>. Select IDs
 available to your account before deploying; catalog availability can change.</p>
-<h2 id="multiple-profiles">Multiple profiles<a class="headerlink" href="#multiple-profiles" title="Permanent link">&para;</a></h2>
-<p>A single file can declare multiple profiles over the same targets. Each
-profile and target appears on <code>GET /v1/models</code>:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">profiles</span><span class="p">:</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">fast</span><span class="p">:</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">passthrough</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">smart</span><span class="p">:</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random-routing</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
-</span></code></pre></div>
-<p>Use the profile ID to select policy behavior (<code>fast</code> or <code>smart</code>) and a target ID
-to bypass routing (<code>weak</code> or <code>strong</code>).</p>
-<h2 id="direct-targets-and-passthrough-aliases">Direct targets and passthrough aliases<a class="headerlink" href="#direct-targets-and-passthrough-aliases" title="Permanent link">&para;</a></h2>
-<p>For new profile configs, use one public model concept:</p>
+<h2 id="model-and-passthrough-routes">Model and passthrough routes<a class="headerlink" href="#model-and-passthrough-routes" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Select a target ID directly when its configured name is the client-facing
-  name you want.</li>
-<li>Add a <code>type: passthrough</code> profile only when you need another stable alias for
-  that target, such as <code>fast</code> above.</li>
+<li><code>type: model</code> registers one explicit model alias without model discovery.</li>
+<li><code>type: passthrough</code> queries the upstream model catalog and registers the
+  discovered models.</li>
 </ul>
-<p>Both choices call the same single target. There is no <code>type: model</code> profile in
-the current profile schema.</p>
-<p>The deprecated <code>--routing-profiles</code> route-bundle format has a separate legacy
-distinction: <code>type: model</code> registers one explicit alias without model discovery,
-while <code>type: passthrough</code> queries the upstream model catalog and registers the
-discovered models too. That distinction applies only to legacy <code>routes:</code>
-bundles used by the launcher compatibility path.</p>
+<p>Both create direct, single-target chains. Use a routing policy when requests
+must be split or classified across targets.</p>
 <h2 id="self-hosted-targets">Self-hosted targets<a class="headerlink" href="#self-hosted-targets" title="Permanent link">&para;</a></h2>
-<p>Any profile target can point at an OpenAI-compatible model server you operate.
+<p>Any route target can point at an OpenAI-compatible model server you operate.
 For example, start a local vLLM server:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>vllm<span class="w"> </span>serve<span class="w"> </span>./my-rl-qwen<span class="w"> </span>--served-model-name<span class="w"> </span>my-rl-qwen<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vllm<span class="w"> </span>serve<span class="w"> </span>./my-rl-qwen<span class="w"> </span>--served-model-name<span class="w"> </span>my-rl-qwen<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </span></code></pre></div>
-<p>Then declare it as a normal endpoint and target:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">endpoints</span><span class="p">:</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">local</span><span class="p">:</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8000/v1</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dummy</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="nt">targets</span><span class="p">:</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">local-weak</span><span class="p">:</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-rl-qwen</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="nt">profiles</span><span class="p">:</span>
-</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="nt">fast-local</span><span class="p">:</span>
-</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">passthrough</span>
-</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local-weak</span>
+<p>Then configure it as a normal route:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">routes</span><span class="p">:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">local</span><span class="p">:</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">model</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-rl-qwen</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8000/v1</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dummy</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
 </span></code></pre></div>
-<p>Reference <code>local-weak</code> from any routing profile field that accepts a target ID,
-including <code>strong</code>, <code>weak</code>, <code>target</code>, or <code>targets</code>. Switchyard does not start or
-manage the model server; it only sends requests to the configured endpoint.</p>
+<p>Switchyard does not start or manage the model server; it only sends requests
+to the configured endpoint.</p>
 <h2 id="how-session-affinity-composes">How session affinity composes<a class="headerlink" href="#how-session-affinity-composes" title="Permanent link">&para;</a></h2>
-<p>Session affinity is configured directly on the LLM classifier router. It is not
-a generic wrapper applied after every routing strategy. After the configured
-warmup, the first confident policy, tool-planning, or alignment verdict pins
-the tier. Abstain, low-confidence, missing-signal, and fail-open decisions never
-pin. The classifier and tier selector share one affinity store, and later turns
-check that store before classification, reuse the tier, and skip the classifier
-call.</p>
+<p>Session affinity is configured directly on the LLM classifier router. After
+the configured warmup, the first confident policy, tool-planning, or alignment
+verdict pins the tier. Abstain, low-confidence, missing-signal, and fail-open
+decisions never pin. Later turns reuse the tier and skip the classifier call.</p>
 <p>Pins use a bounded in-process LRU keyed from the stable conversation prefix.
 They are not shared across workers or restarts. See
 <a href="../sticky_routing/">Sticky Routing</a> for configuration and key derivation.</p>
-<p>Random and stage-router routing do not expose session-affinity settings; they
-continue to make a routing decision for each request.</p>
-<p>The escalation router uses the same affinity store with the opposite policy:
-affinity is always on (the pin <em>is</em> the escalation latch), only the strong
-tier is ever pinned, and once the judge starts (a configurable minimum turn),
-it keeps running each judged turn until the latch fires. See
-<a href="../escalation_router_routing/">Escalation-Router Routing</a>.</p>
-<div class="admonition note">
-<p class="admonition-title">CLI schema availability</p>
-<p>The CLI currently accepts these settings in a <code>deterministic</code> entry in a
-<code>routes:</code> bundle loaded with <code>--routing-profiles</code>. The Rust <code>llm-routing</code>
-profile loaded by <code>switchyard serve --config</code> does not yet expose
-session-affinity fields.</p>
-</div>
+<p>Random and stage-router routing make a fresh routing decision for each request.
+The escalation router instead uses affinity as a one-way escalation latch: only
+the strong tier is pinned, and the judge runs until that latch fires.</p>
+<h2 id="rust-server-configuration">Rust server configuration<a class="headerlink" href="#rust-server-configuration" title="Permanent link">&para;</a></h2>
+<p>The <code>switchyard-server</code> binary has a separate TOML schema that explicitly
+constructs LLM clients, targets, and libsy algorithms. It does not load Python
+route bundles. See the
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a82e6bcfc876f7d2658ca580231de05b101bff04/crates/switchyard-server/README.md">Rust server README</a> for its supported
+configuration.</p>
 
 
 

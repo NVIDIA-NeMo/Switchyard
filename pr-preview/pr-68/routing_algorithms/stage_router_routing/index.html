@@ -912,15 +912,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#profile-configuration" class="md-nav__link">
+  <a href="#route-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Profile configuration
+        Route configuration
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Profile configuration">
+    <nav class="md-nav" aria-label="Route configuration">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1297,15 +1297,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#profile-configuration" class="md-nav__link">
+  <a href="#route-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Profile configuration
+        Route configuration
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Profile configuration">
+    <nav class="md-nav" aria-label="Route configuration">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1627,36 +1627,29 @@ stable result.</p>
 (conversation history up to the escalation point). Pure-efficient runs start
 fresh, so RESCUE is a conservative lower bound. Efficient performs at least as
 well in stage-router as it does alone.</p>
-<h2 id="profile-configuration">Profile configuration<a class="headerlink" href="#profile-configuration" title="Permanent link">&para;</a></h2>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">endpoints</span><span class="p">:</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">openrouter</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
+<h2 id="route-configuration">Route configuration<a class="headerlink" href="#route-configuration" title="Permanent link">&para;</a></h2>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">defaults</span><span class="p">:</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># Targets are named by the model id they serve.</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nt">targets</span><span class="p">:</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">openai/gpt-4o</span><span class="p">:</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openrouter</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">openai/gpt-4o-mini</span><span class="p">:</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openrouter</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="nt">profiles</span><span class="p">:</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">smart-stage-router</span><span class="p">:</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">stage_router</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nt">picker</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">capable_first</span><span class="w">        </span><span class="c1"># or efficient_first</span>
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="nt">confidence_threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span><span class="w">              </span><span class="c1"># recommended; range [0.0, 1.0]</span>
-</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="nt">signal_recent_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">                </span><span class="c1"># sliding window for recent signal counts</span>
-</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span><span class="w">   </span><span class="c1"># required; see Context-Window Handling</span>
-</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="nt">capable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span><span class="w">                     </span><span class="c1"># capable tier target id</span>
-</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">    </span><span class="nt">efficient</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span><span class="w">             </span><span class="c1"># efficient tier target id</span>
-</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">    </span><span class="nt">enable_stats</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                     </span><span class="c1"># default true</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nt">routes</span><span class="p">:</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">smart-stage-router</span><span class="p">:</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">stage_router</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">picker</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">capable_first</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">confidence_threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">signal_recent_window</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">      </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="nt">enable_stats</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </span></code></pre></div>
-<p>Save the file as <code>profiles.yaml</code> and start it with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>profiles.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<p>Save the file as <code>routes.yaml</code> and start it with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <p>This is the recommended default: routing on tool signals alone, no classifier.
 If you omit <code>confidence_threshold</code>, the config default of <code>0.5</code> applies; the
@@ -1679,10 +1672,7 @@ that fall below the threshold:</p>
 <p>Give the classifier its own credential or quota bucket where you can. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
 and can cause sustained 429s at scale.</p>
-<p><strong>Launcher compatibility.</strong> Launcher subcommands don't accept <code>--config</code>. A
-launcher-owned stage-router still needs the deprecated <code>--routing-profiles</code> path
-and its legacy <code>routes:</code> schema. Use the same <code>type: stage_router</code>, picker,
-target, classifier, and explicit <code>confidence_threshold: 0.5</code> values there.</p>
+<p>The same route bundle works with the launchers.</p>
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
 <h3 id="per-tier-token-cost-stats-standard">Per-tier token / cost stats (standard)<a class="headerlink" href="#per-tier-token-cost-stats-standard" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/stats
@@ -1691,9 +1681,8 @@ target, classifier, and explicit <code>confidence_threshold: 0.5</code> values t
 by served model, each tagged with a <code>capable</code> or <code>efficient</code> <code>tier</code>. Batch
 harnesses usually capture this same snapshot to a file (see below).</p>
 <h3 id="decision-source-metadata-stage-router-specific">Decision-source metadata (stage-router-specific)<a class="headerlink" href="#decision-source-metadata-stage-router-specific" title="Permanent link">&para;</a></h3>
-<p>The profile counts why each turn was routed the way it was, under
-<code>routing_decisions.stage_router</code> in the stats JSON. For the <code>serve --config</code>
-profile the values are:</p>
+<p>The route counts why each turn was routed the way it was under
+<code>routing_decisions.stage_router</code> in the stats JSON:</p>
 <table>
 <thead>
 <tr>
@@ -1723,22 +1712,19 @@ profile the values are:</p>
 <td>The signals were ambiguous and the classifier failed or wasn't configured, so the default tier was used.</td>
 </tr>
 <tr>
-<td><code>context_overflow_fallback</code></td>
-<td>A context-window overflow rerouted the turn to <code>fallback_target_on_evict</code>.</td>
+<td><code>no_signal</code></td>
+<td>The request arrived before any tool-result history existed.</td>
 </tr>
 </tbody>
 </table>
-<p>The deprecated <code>--routing-profiles</code> path reports the same sources except
-<code>context_overflow_fallback</code>, plus <code>no_signal</code> for turns that arrive before any
-tool-result history exists.</p>
 <p>To capture a snapshot for a batch run, redirect the endpoint to a file:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats<span class="w"> </span>&gt;<span class="w"> </span>routing_stats_final.json
 </span></code></pre></div>
 <h2 id="when-not-to-use-stage-router">When <em>not</em> to use stage-router<a class="headerlink" href="#when-not-to-use-stage-router" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Single-model deployments.</strong> Use a plain passthrough profile instead.</li>
+<li><strong>Single-model deployments.</strong> Use a <code>model</code> or <code>passthrough</code> route instead.</li>
 <li><strong>Probabilistic A/B splits.</strong> Use
-  <a href="../random_routing/">Random Routing</a> (<code>type: random-routing</code> in profile configs).
+  <a href="../random_routing/">Random Routing</a> (<code>type: random_routing</code>).
   The stage-router's signals are wasted on a fixed traffic ratio.</li>
 <li><strong>No tool-result history.</strong> Stage-router needs meaningful tool-call traffic to
   populate the tool-result signal. For pure chat-completion workloads every

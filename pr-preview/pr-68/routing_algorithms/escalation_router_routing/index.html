@@ -1364,10 +1364,8 @@ the strong-tier latch fires:</p>
 <p>A judge failure provides no evidence either way: it routes the turn to weak
 without clearing an existing confirmation streak.</p>
 <h2 id="configure-an-escalation-route">Configure an escalation route<a class="headerlink" href="#configure-an-escalation-route" title="Permanent link">&para;</a></h2>
-<p>Escalation routing is currently available through the legacy <code>routes:</code> bundle
-used by <code>--routing-profiles</code>. This path remains necessary for launcher-owned
-routing; route bundles and <code>--routing-profiles</code> are otherwise deprecated in
-favor of <code>switchyard serve --config</code> profiles.</p>
+<p>Configure escalation routing in the <code>routes:</code> bundle loaded by
+<code>--routing-profiles</code>.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">routes</span><span class="p">:</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">agent-escalation</span><span class="p">:</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">escalation_router</span>
