@@ -77,12 +77,19 @@ def _wrap_subagent_override(
 ) -> ProfileRunner:
     """Wrap a built profile when its envelope names a ``subagent_target``.
 
-    The wrapper sends recognized sub-agent requests through a passthrough to
-    the resolved target and leaves every other request on the profile's own
-    routing. An unknown target reference is a startup configuration error.
+    Rust profiles already apply :class:`SubagentOverrideProfile` internally at
+    build time, so Python-level wrapping is skipped for them. Python-defined
+    profiles receive the Python wrapper here, which adds sub-agent routing
+    without Rust-level stats (stats for Python profiles remain in the
+    Python stats pipeline).
+
+    An unknown target reference is a startup configuration error.
     """
     target_id = document.profile_subagent_target(profile_id)
     if target_id is None:
+        return profile
+    # Rust profiles handle subagent routing internally; skip double-wrapping.
+    if isinstance(profile, _RustProfileRunner):
         return profile
     target = plan.target(target_id)
     if target is None:

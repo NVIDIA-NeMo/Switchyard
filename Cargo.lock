@@ -1687,6 +1687,7 @@ dependencies = [
  "switchyard-components",
  "switchyard-components-v2-macros",
  "switchyard-core",
+ "switchyard-protocol",
  "tokio",
  "toml",
  "tracing",

@@ -174,6 +174,15 @@ def _subagent_input() -> ProfileInput:
         ({"x-switchyard-is-subagent": "true", "x-openai-subagent": "compact"}, False),
         # Header names are case-insensitive and values are trimmed.
         ({"X-OpenAI-Subagent": " review "}, True),
+        # Bug #2 fix: operator label x-switchyard-agent-kind must not suppress
+        # routing signals from the harness (x-openai-subagent, x-switchyard-is-subagent).
+        ({"x-openai-subagent": "review", "x-switchyard-agent-kind": "researcher"}, True),
+        ({"x-switchyard-is-subagent": "true", "x-switchyard-agent-kind": "researcher"}, True),
+        # Bug #1 fix: correlation-only headers are not routing signals.
+        ({"x-switchyard-parent-agent-id": "parent"}, False),
+        ({"x-nemo-relay-subagent-id": "relay-child"}, False),
+        ({"x-dynamo-parent-session-id": "dynamo-parent"}, False),
+        ({"x-session-id": "s", "x-parent-session-id": "p"}, False),
     ],
 )
 def test_is_subagent_request_detection(headers: dict[str, str], expected: bool) -> None:
@@ -186,7 +195,10 @@ def test_is_subagent_request_detection(headers: dict[str, str], expected: bool) 
 def test_loader_wraps_profiles_with_subagent_target(tmp_path: Path) -> None:
     path = _write(tmp_path, _config("http://127.0.0.1:9"))
     profiles = load_profiles(path)
-    assert isinstance(profiles["direct"], SubagentOverrideProfile)
+    # Rust profiles (direct / passthrough) handle subagent routing at the Rust level;
+    # the Python loader must not double-wrap them with SubagentOverrideProfile.
+    assert not isinstance(profiles["direct"], SubagentOverrideProfile)
+    # Python profiles (smart / header-routing) still receive the Python wrapper.
     assert isinstance(profiles["smart"], SubagentOverrideProfile)
     assert not isinstance(profiles["plain"], SubagentOverrideProfile)
 
