@@ -40,6 +40,16 @@ export API_KEY="..."
 cargo run -p switchyard-server -- --config routes.toml
 ```
 
+The same server can run from the repository's Docker image:
+
+```bash
+docker run --rm -p 4000:4000 \
+  --env API_KEY \
+  --mount type=bind,src="$PWD/routes.toml",dst=/etc/switchyard/routes.toml,readonly \
+  ghcr.io/nvidia-nemo/switchyard-server:main \
+  --config /etc/switchyard/routes.toml
+```
+
 Target and route table names are local references. A target's `id` is the exact model ID sent
 upstream, and a route's `id` is the model clients send to select that algorithm.
 
