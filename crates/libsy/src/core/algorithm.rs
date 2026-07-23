@@ -344,10 +344,6 @@ where
         ctx: Context<S>,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
-        // Serve up to this many offloaded calls concurrently, so an algorithm that
-        // fans out (e.g. an ensemble) isn't serialized on the client.
-        const MAX_CONCURRENT_CALLS: usize = 10;
-
         // Serve one offloaded call with its target's default client. A failed *model*
         // call is forwarded to the algorithm via `respond`; this errors only on an
         // infrastructure failure (no default client, or the promise was dropped).
@@ -372,31 +368,28 @@ where
         let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
         let mut in_flight = futures::stream::FuturesUnordered::new();
         let mut final_response: Option<Response> = None;
-        let mut stream_open = true;
 
-        while stream_open || !in_flight.is_empty() {
+        loop {
             tokio::select! {
-                // Surface a failed serve as soon as it completes.
-                Some(result) = in_flight.next(), if !in_flight.is_empty() => result?,
-                // Pull the next step, unless the stream ended or we're at the cap.
-                step = stream.next(), if stream_open && in_flight.len() < MAX_CONCURRENT_CALLS => {
+                Some(result) = in_flight.next() => match result {
+                    Ok(()) => {}, // CallLlm completed successfully
+                    Err(err) => return Err(err), // CallLlm failed, propagate the error
+                },
+                step = stream.next() => {
                     match step {
-                        None => stream_open = false,
+                        None => break, // stream has ended, no more steps
                         Some(item) => match item? {
                             Step::CallLlm(call) => in_flight.push(serve(*call)),
                             Step::Decision(decision) => trace.push(decision),
                             Step::ReturnToAgent(response) => {
                                 final_response = Some(*response);
-                                stream_open = false;
+                                break;
                             }
-                        },
+                        }
                     }
-                }
+                },
             }
         }
-
-        // Return whatever the algorithm produced — buffered or streamed. The caller
-        // decides whether to aggregate the response or forward its chunks.
         final_response
             .map(|response| (trace, response))
             .ok_or_else(|| "run: stream ended without a final response".into())
@@ -993,144 +986,246 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn run_caps_concurrent_calls() -> Result<(), Box<dyn Error + Send + Sync>> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::time::Duration;
-        use tokio::sync::{mpsc, Semaphore};
+    // --- first-wins hedging: `run` must not wait on losing speculative calls -------------
 
-        // Mirrors `run`'s private `MAX_CONCURRENT_CALLS`. The algorithm fans out more
-        // calls than the cap; only `CAP` should ever be in flight, the rest wait.
-        const CAP: usize = 10;
-        const TOTAL_CALLS: usize = CAP + 5;
+    /// The loser: signals it has started serving (so the winner can then win with the
+    /// loser's serve guaranteed in flight), then finishes late (`Some(delay)`) or never
+    /// (`None`).
+    struct LoserClient {
+        started: Arc<tokio::sync::Notify>,
+        delay: Option<std::time::Duration>,
+    }
 
-        // Records peak concurrency and holds each call open until the gate is released,
-        // so calls pile up and the cap can be observed.
-        struct ProbeClient {
-            current: Arc<AtomicUsize>,
-            max: Arc<AtomicUsize>,
-            entered: mpsc::UnboundedSender<()>,
-            gate: Arc<Semaphore>,
+    #[async_trait]
+    impl RoutedLlmClient for LoserClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            self.started.notify_one();
+            match self.delay {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => std::future::pending::<()>().await,
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
         }
+    }
 
-        #[async_trait]
-        impl RoutedLlmClient for ProbeClient {
-            async fn call(
-                &self,
-                _ctx: Context,
-                _request: Request,
-                decision: Arc<dyn Decision>,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-                let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
-                self.max.fetch_max(now, Ordering::SeqCst);
-                let _ = self.entered.send(());
-                // Block until the test opens the gate.
-                let permit = self.gate.acquire().await.map_err(|e| e.to_string())?;
-                drop(permit);
-                self.current.fetch_sub(1, Ordering::SeqCst);
-                Ok(Response {
-                    llm_response: LlmResponse::Agg(text_response(
-                        None,
-                        decision.selected_model().to_string(),
-                    )),
-                    metadata: None,
-                })
+    /// The winner: waits until the loser's serve has started, then echoes immediately, so
+    /// the loser's serve is guaranteed in flight when the winner wins.
+    struct GatedEchoClient {
+        gate: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for GatedEchoClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            self.gate.notified().await;
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
+        }
+    }
+
+    /// Offloads two targets concurrently and returns the first to resolve, dropping the
+    /// loser's call (first-wins hedging).
+    struct Hedge {
+        winner: LlmTarget,
+        loser: LlmTarget,
+    }
+
+    #[async_trait]
+    impl Algorithm for Hedge {
+        async fn create_run_task(
+            self: Arc<Self>,
+            ctx: Context,
+            driver: Driver,
+            request: Request,
+        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            let dec_w: Arc<dyn Decision> = Arc::new(TestDecision {
+                model: self.winner.semantic_name.clone(),
+            });
+            let dec_l: Arc<dyn Decision> = Arc::new(TestDecision {
+                model: self.loser.semantic_name.clone(),
+            });
+            let win = driver.call_llm_target(ctx.clone(), &self.winner, request.clone(), dec_w);
+            let lose = driver.call_llm_target(ctx, &self.loser, request, dec_l);
+            // First to resolve wins; `select!` drops the losing future (and its promise).
+            tokio::select! {
+                res = win => res,
+                res = lose => res,
             }
         }
+    }
 
-        // Fans out `n` concurrent calls to one target.
-        struct FanOut {
-            n: usize,
-            target: LlmTarget,
-        }
-
-        #[async_trait]
-        impl Algorithm for FanOut {
-            async fn create_run_task(
-                self: Arc<Self>,
-                ctx: Context,
-                driver: Driver,
-                _request: Request,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-                let calls = (0..self.n).map(|i| {
-                    let driver = driver.clone();
-                    let ctx = ctx.clone();
-                    let target = self.target.clone();
-                    async move {
-                        let decision: Arc<dyn Decision> = Arc::new(TestDecision {
-                            model: format!("m{i}"),
-                        });
-                        driver
-                            .call_llm_target(ctx, &target, request(), decision)
-                            .await
-                    }
-                });
-                futures::future::join_all(calls).await;
-                Ok(Response {
-                    llm_response: LlmResponse::Agg(text_response(None, "done".to_string())),
-                    metadata: None,
-                })
-            }
-        }
-
-        let current = Arc::new(AtomicUsize::new(0));
-        let max = Arc::new(AtomicUsize::new(0));
-        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
-        let gate = Arc::new(Semaphore::new(0)); // starts closed
-
-        let client = Arc::new(ProbeClient {
-            current: current.clone(),
-            max: max.clone(),
-            entered: entered_tx,
-            gate: gate.clone(),
-        }) as Arc<dyn RoutedLlmClient>;
-        let target = LlmTarget {
-            semantic_name: "m".to_string(),
-            llm_client: Some(client),
+    /// Builds a hedging algo whose winner is gated behind the loser starting, and whose
+    /// loser finishes after `loser_delay` (or never, when `None`).
+    fn hedge(loser_delay: Option<std::time::Duration>) -> Arc<dyn Algorithm> {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let winner = LlmTarget {
+            semantic_name: "winner".to_string(),
+            llm_client: Some(Arc::new(GatedEchoClient {
+                gate: started.clone(),
+            })),
         };
+        let loser = LlmTarget {
+            semantic_name: "loser".to_string(),
+            llm_client: Some(Arc::new(LoserClient {
+                started,
+                delay: loser_delay,
+            })),
+        };
+        Arc::new(Hedge { winner, loser })
+    }
 
-        let algo: Arc<dyn Algorithm> = Arc::new(FanOut {
-            n: TOTAL_CALLS,
-            target,
-        });
-        let handle = tokio::spawn(async move { algo.run(Context::default(), request()).await });
-
-        // Exactly `CAP` calls should enter; each `recv` times out into an error if the
-        // run dispatched fewer than the cap.
-        for _ in 0..CAP {
-            tokio::time::timeout(Duration::from_secs(5), entered_rx.recv())
-                .await
-                .map_err(|_| "timed out waiting for a call to enter")?;
-        }
-        assert_eq!(
-            current.load(Ordering::SeqCst),
-            CAP,
-            "exactly the cap should be in flight"
-        );
-        // No further call enters while the cap is saturated — extra steps wait for capacity.
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), entered_rx.recv())
-                .await
-                .is_err(),
-            "a call beyond the cap entered while {CAP} were already in flight"
-        );
-
-        // Release the gate; every call completes and the run finishes.
-        gate.add_permits(TOTAL_CALLS);
-        let (_trace, response) = tokio::time::timeout(Duration::from_secs(5), handle).await???;
+    #[tokio::test]
+    async fn run_returns_the_winner_without_a_late_loser_overwriting_it(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // The loser responds 50ms after the winner has already won. `run` must return the
+        // winner, not the loser's `respond`-to-a-dropped-receiver error.
+        let (_trace, response) = hedge(Some(std::time::Duration::from_millis(50)))
+            .run(Context::default(), request())
+            .await?;
         assert_eq!(
             response
                 .llm_response
                 .as_agg()
                 .map(completion_text)
                 .unwrap_or_default(),
-            "done"
-        );
-        assert_eq!(
-            max.load(Ordering::SeqCst),
-            CAP,
-            "peak in-flight should equal the cap"
+            "winner"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_returns_the_winner_without_hanging_on_a_pending_loser(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // The loser never resolves. `run` must return the winner promptly, not hang
+        // waiting for the in-flight loser.
+        let run = hedge(None).run(Context::default(), request());
+        let (_trace, response) = tokio::time::timeout(std::time::Duration::from_secs(1), run)
+            .await
+            .map_err(|_| "run hung waiting for a pending loser")??;
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "winner"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_surfaces_a_terminal_error_with_many_calls_in_flight(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A large fan-out (10 matched the old, now-removed concurrency cap). The terminal
+        // error must still reach the caller with all of these calls pending.
+        const N: usize = 10;
+
+        // Enters each call; once all N are in flight, signals, then pends forever.
+        struct EnterThenPend {
+            started: Arc<AtomicUsize>,
+            all_started: Arc<tokio::sync::Notify>,
+            n: usize,
+        }
+
+        #[async_trait]
+        impl RoutedLlmClient for EnterThenPend {
+            async fn call(
+                &self,
+                _ctx: Context,
+                _request: Request,
+                _decision: Arc<dyn Decision>,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                if self.started.fetch_add(1, Ordering::SeqCst) + 1 == self.n {
+                    self.all_started.notify_one();
+                }
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+        }
+
+        // Fans out N calls, then errors as soon as all N are in flight — exercising a
+        // terminal failure emitted while the offloaded calls are still pending.
+        struct FanOutThenError {
+            target: LlmTarget,
+            all_started: Arc<tokio::sync::Notify>,
+            n: usize,
+        }
+
+        #[async_trait]
+        impl Algorithm for FanOutThenError {
+            async fn create_run_task(
+                self: Arc<Self>,
+                ctx: Context,
+                driver: Driver,
+                request: Request,
+            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+                let offloads = futures::future::join_all((0..self.n).map(|i| {
+                    let decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                        model: format!("m{i}"),
+                    });
+                    driver.call_llm_target(ctx.clone(), &self.target, request.clone(), decision)
+                }));
+                tokio::select! {
+                    _ = offloads => Err("offloads unexpectedly completed".into()),
+                    _ = self.all_started.notified() => {
+                        Err("terminal error while calls pending".into())
+                    }
+                }
+            }
+        }
+
+        let all_started = Arc::new(tokio::sync::Notify::new());
+        let target = LlmTarget {
+            semantic_name: "pending".to_string(),
+            llm_client: Some(Arc::new(EnterThenPend {
+                started: Arc::new(AtomicUsize::new(0)),
+                all_started: all_started.clone(),
+                n: N,
+            })),
+        };
+        let algo: Arc<dyn Algorithm> = Arc::new(FanOutThenError {
+            target,
+            all_started,
+            n: N,
+        });
+
+        // With the cap gone, `run` keeps polling the stream even with N calls in flight, so
+        // the terminal error surfaces promptly instead of hanging.
+        let run = algo.run(Context::default(), request());
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+            .await
+            .map_err(|_| "run hung: terminal error not surfaced with the cap full")?;
+        match result {
+            Ok(_) => Err("expected the terminal error, got a response".into()),
+            Err(err) => {
+                assert!(err
+                    .to_string()
+                    .contains("terminal error while calls pending"));
+                Ok(())
+            }
+        }
     }
 }
