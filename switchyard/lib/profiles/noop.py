@@ -35,7 +35,7 @@ _NOOP_CONTENT = "pong"
 _NOOP_MODEL = "noop"
 
 
-def _make_completion(*, request_id: str, created: int) -> ChatCompletion:
+def _make_completion(request_id: str, created: int) -> ChatCompletion:
     """Build the fixed no-op non-streaming completion."""
     return ChatCompletion(
         id=f"chatcmpl-{request_id}",
@@ -54,7 +54,6 @@ def _make_completion(*, request_id: str, created: int) -> ChatCompletion:
 
 
 async def _noop_stream(
-    *,
     request_id: str,
     created: int,
 ) -> AsyncIterator[ChatCompletionChunk]:
@@ -115,14 +114,15 @@ class NoopProfile:
 
     def __init__(
         self,
-        *,
         request_processors: tuple[Any, ...] = (),
         response_processors: tuple[Any, ...] = (),
+        stats_accumulator: StatsAccumulator | None = None,
     ) -> None:
         """Create a no-op profile with a local translation helper."""
         self._translation = TranslationEngine()
         self._request_processors = request_processors
         self._response_processors = response_processors
+        self._stats_accumulator = stats_accumulator
 
     def iter_components(self) -> list[object]:
         """Return lifecycle components in startup order."""
@@ -162,6 +162,7 @@ class NoopProfile:
         return NoopProfile(
             request_processors=tuple(request_chain),
             response_processors=tuple(response_chain),
+            stats_accumulator=stats if enable_stats else None,
         )
 
     async def process(self, input: ProfileInput) -> NoopProcessedRequest:
@@ -217,6 +218,9 @@ class NoopProfile:
     ) -> ChatResponse:
         """Execute no-op response generation with an existing context."""
         processed = await self.process_with_context(input, ctx)
+        # Stamp ctx.selected_model so the stats response processor attributes
+        # the response tokens to "noop" instead of "<unknown>".
+        ctx.selected_model = _NOOP_MODEL
         openai_request = self._translation.request_to_any_of(
             processed.request,
             _NOOP_SUPPORTED_TYPES,
@@ -235,6 +239,12 @@ class NoopProfile:
             response = ChatResponse.openai_completion(
                 _make_completion(request_id=request_id, created=created)
             )
+        # Count the request only after the response is built, so a translation
+        # failure does not leave a spurious success in /v1/routing/stats. Record
+        # success before rprocess records tokens, which is the order the stats
+        # response processor's record_usage_after_success_attribution expects.
+        if self._stats_accumulator is not None:
+            await self._stats_accumulator.record_success(_NOOP_MODEL)
         return await self.rprocess(processed, response)
 
 
