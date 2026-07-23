@@ -305,3 +305,4 @@ def test_generated_compose_bakes_task_id_into_proxy_env(tmp_path: Path) -> None:
 
     proxy_env = "\n".join(compose["services"]["proxy"]["environment"])
     assert "SWITCHYARD_TASK_ID=task-id-check" in proxy_env
+    assert "SWITCHYARD_TRIAL_DIR=${HOST_AGENT_LOGS_PATH:-}" in proxy_env

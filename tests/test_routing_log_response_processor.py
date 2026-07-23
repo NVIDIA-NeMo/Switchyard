@@ -26,6 +26,7 @@ from switchyard_rust.core import ChatResponse, ProxyContext
 
 TASK_HEADERS = {
     "x-switchyard-intake-task": "hello-world-abc1",
+    "x-switchyard-trial-id": "hello-world-abc1-Xy7",
     "proxy_x_session_id": "trial-session-1",
 }
 
@@ -49,7 +50,13 @@ def _openai_completion() -> ChatResponse:
             "message": {"role": "assistant", "content": "hi"},
             "finish_reason": "stop",
         }],
-        "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        "usage": {
+            "prompt_tokens": 8,
+            "completion_tokens": 3,
+            "total_tokens": 11,
+            "prompt_tokens_details": {"cached_tokens": 6},
+            "completion_tokens_details": {"reasoning_tokens": 2},
+        },
     })
 
 
@@ -87,7 +94,13 @@ def _responses_completion() -> ChatResponse:
         "parallel_tool_calls": False,
         "tool_choice": "auto",
         "tools": [],
-        "usage": {"input_tokens": 6, "output_tokens": 2, "total_tokens": 8},
+        "usage": {
+            "input_tokens": 6,
+            "output_tokens": 2,
+            "total_tokens": 8,
+            "input_tokens_details": {"cached_tokens": 3},
+            "output_tokens_details": {"reasoning_tokens": 1},
+        },
     })
 
 
@@ -103,12 +116,16 @@ async def test_openai_completion_record_carries_task_and_usage(tmp_path: Path) -
 
     (record,) = _records(log_file)
     assert record["task"] == "hello-world-abc1"
+    assert record["trial_id"] == "hello-world-abc1-Xy7"
     assert record["session_id"] == "trial-session-1"
     assert record["model"] == "gpt-test"
     assert record["tier"] == "weak"
-    assert record["prompt_tokens"] == 5
+    assert record["prompt_tokens"] == 8
+    assert record["cached_tokens"] == 6
+    assert record["cache_creation_tokens"] == 0
     assert record["completion_tokens"] == 3
-    assert record["total_tokens"] == 8
+    assert record["reasoning_tokens"] == 2
+    assert record["total_tokens"] == 11
 
 
 async def test_anthropic_usage_sums_cache_siblings(tmp_path: Path) -> None:
@@ -119,7 +136,10 @@ async def test_anthropic_usage_sums_cache_siblings(tmp_path: Path) -> None:
 
     (record,) = _records(log_file)
     assert record["prompt_tokens"] == 13  # input + cache_creation + cache_read
+    assert record["cached_tokens"] == 4
+    assert record["cache_creation_tokens"] == 2
     assert record["completion_tokens"] == 3
+    assert record["reasoning_tokens"] == 0
 
 
 async def test_responses_completion_uses_input_output_tokens(tmp_path: Path) -> None:
@@ -130,7 +150,10 @@ async def test_responses_completion_uses_input_output_tokens(tmp_path: Path) -> 
 
     (record,) = _records(log_file)
     assert record["prompt_tokens"] == 6
+    assert record["cached_tokens"] == 3
+    assert record["cache_creation_tokens"] == 0
     assert record["completion_tokens"] == 2
+    assert record["reasoning_tokens"] == 1
 
 
 async def test_missing_headers_log_null_task_and_session(tmp_path: Path) -> None:
@@ -139,6 +162,7 @@ async def test_missing_headers_log_null_task_and_session(tmp_path: Path) -> None
 
     (record,) = _records(log_file)
     assert record["task"] is None
+    assert record["trial_id"] is None
     assert record["session_id"] is None
 
 

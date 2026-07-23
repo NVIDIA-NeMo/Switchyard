@@ -223,13 +223,67 @@ def _copy_if_present(source: Path | None, dest: Path | None) -> str:
     return "present"
 
 
-def summarize_routing_log(log_path: Path) -> dict[str, Any]:
-    """Aggregate a per-request routing JSONL log into per-task stats.
+_TOKEN_FIELDS = (
+    "prompt_tokens",
+    "cached_tokens",
+    "cache_creation_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+)
 
-    Each task entry lists one bucket per (model, tier) pair so a model that
-    served more than one tier is not merged into a single row.
+
+def _new_section() -> dict[str, Any]:
+    return {"calls": 0, "totals": dict.fromkeys(_TOKEN_FIELDS, 0), "_buckets": {}}
+
+
+def _accumulate(section: dict[str, Any], record: dict[str, Any]) -> None:
+    section["calls"] += 1
+    model = record.get("model") or "unknown"
+    tier = record.get("tier") or ""
+    bucket = section["_buckets"].setdefault(
+        (model, tier),
+        {"model": model, "tier": tier, "calls": 0, **dict.fromkeys(_TOKEN_FIELDS, 0)},
+    )
+    bucket["calls"] += 1
+    for field in _TOKEN_FIELDS:
+        value = record.get(field)
+        value = value if isinstance(value, int) else 0
+        bucket[field] += value
+        section["totals"][field] += value
+
+
+def _finalize_section(section: dict[str, Any]) -> None:
+    buckets = section.pop("_buckets")
+    section["models"] = [buckets[key] for key in sorted(buckets)]
+
+
+def _kept_sessions(records: list[dict[str, Any]]) -> set[str]:
+    """The kept attempt of each trial is its latest-timestamped session.
+
+    Harbor retries sequentially and keeps only the final attempt, so within a
+    trial the session with the newest timestamp is the one that survived.
+    Records without a ``trial_id`` are all treated as kept (no netting).
     """
-    tasks: dict[str, dict[str, Any]] = {}
+    latest: dict[str, tuple[str, str]] = {}
+    for record in records:
+        trial = record.get("trial_id")
+        session = record.get("session_id")
+        if not trial or not session:
+            continue
+        ts = record.get("ts") or ""
+        if trial not in latest or ts > latest[trial][0]:
+            latest[trial] = (ts, session)
+    return {session for _, session in latest.values()}
+
+
+def summarize_routing_log(log_path: Path) -> dict[str, Any]:
+    """Roll the routing log into per-task ``final`` and ``retries`` sections.
+
+    Requests are grouped by trial; the latest attempt in each trial is ``final``
+    and earlier attempts are ``retries`` (see :func:`_kept_sessions`).
+    """
+    by_task: dict[str, list[dict[str, Any]]] = {}
     total_requests = 0
     for raw in log_path.read_text().splitlines():
         raw = raw.strip()
@@ -242,32 +296,30 @@ def summarize_routing_log(log_path: Path) -> dict[str, Any]:
         if not isinstance(record, dict):
             continue
         total_requests += 1
-        task = record.get("task") or "unattributed"
-        entry = tasks.setdefault(task, {"requests": 0, "sessions": [], "_buckets": {}})
-        entry["requests"] += 1
-        session = record.get("session_id")
-        if session and session not in entry["sessions"]:
-            entry["sessions"].append(session)
-        model = record.get("model") or "unknown"
-        tier = record.get("tier") or ""
-        bucket = entry["_buckets"].setdefault(
-            (model, tier),
-            {
-                "model": model,
-                "tier": tier,
-                "calls": 0,
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
-        )
-        bucket["calls"] += 1
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            value = record.get(key)
-            bucket[key] += value if isinstance(value, int) else 0
-    for entry in tasks.values():
-        buckets = entry.pop("_buckets")
-        entry["models"] = [buckets[key] for key in sorted(buckets)]
+        by_task.setdefault(record.get("task") or "unattributed", []).append(record)
+
+    tasks: dict[str, dict[str, Any]] = {}
+    for task, records in by_task.items():
+        kept = _kept_sessions(records)
+        entry = {
+            "requests": len(records),
+            "n_retries": 0,
+            "final": _new_section(),
+            "retries": _new_section(),
+        }
+        retry_sessions: set[str] = set()
+        for record in records:
+            session = record.get("session_id")
+            # A record is a retry only when it has a trial_id and its session was
+            # not the kept one; untagged records default to final.
+            is_retry = bool(record.get("trial_id")) and session not in kept
+            _accumulate(entry["retries" if is_retry else "final"], record)
+            if is_retry and session:
+                retry_sessions.add(session)
+        entry["n_retries"] = len(retry_sessions)
+        _finalize_section(entry["final"])
+        _finalize_section(entry["retries"])
+        tasks[task] = entry
     return {"total_requests": total_requests, "tasks": tasks}
 
 
