@@ -20,10 +20,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::core::{Classifier, Event, Processor, Score, SharedState};
-use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
-
-/// Boxed, thread-safe error type used across the SDK.
-type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+use crate::{
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
+};
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
@@ -88,7 +87,7 @@ impl Algorithm<SharedState> for FallThrough {
         ctx: Context<SharedState>,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, BoxErr> {
+    ) -> Result<Response> {
         // Hold the session state (carried in the threaded context) for the whole
         // request→decision fold, so a turn's fact accumulation is atomic and concurrent
         // turns of the same session serialize on it.
@@ -114,7 +113,7 @@ impl Algorithm<SharedState> for FallThrough {
             }
         }
         let Some(winner) = winner else {
-            return Err("fall-through: every classifier abstained".into());
+            return Err(LibsyError::AllClassifiersAbstained);
         };
 
         // 3. Resolve the target and publish the decision.
@@ -153,6 +152,14 @@ mod tests {
 
     use crate::{LlmResponse, LlmTarget, RoutedLlmClient};
 
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct TestError(&'static str);
+
+    fn test_error(message: &'static str) -> LibsyError {
+        LibsyError::external("test", TestError(message))
+    }
+
     // --- fixtures ----------------------------------------------------------------------
 
     /// A client that echoes the routed model name back as the completion.
@@ -165,7 +172,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, BoxErr> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
                     None,
@@ -199,7 +206,7 @@ mod tests {
             _state: &mut State,
             _request: &Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification, BoxErr> {
+        ) -> Result<Classification> {
             Ok(Classification::Scores(
                 self.0
                     .iter()
@@ -243,25 +250,28 @@ mod tests {
     async fn run_turn(
         router: &Arc<FallThrough>,
         ctx: Context<SharedState>,
-    ) -> Result<(String, Vec<Arc<dyn Decision>>), BoxErr> {
+    ) -> Result<(String, Vec<Arc<dyn Decision>>)> {
         let (trace, response) = router.clone().run(ctx, request()).await?;
         let text = response
             .llm_response
             .into_agg()
             .await
-            .map(|agg| completion_text(&agg))?;
+            .map(|agg| completion_text(&agg))
+            .map_err(|error| {
+                LibsyError::external_boxed("aggregating fall-through response", error)
+            })?;
         Ok((text, trace))
     }
 
     /// Drives a fresh router through one turn on a fresh session.
-    async fn run(router: FallThrough) -> Result<(String, Vec<Arc<dyn Decision>>), BoxErr> {
+    async fn run(router: FallThrough) -> Result<(String, Vec<Arc<dyn Decision>>)> {
         run_turn(&Arc::new(router), Context::default()).await
     }
 
     // --- tests -------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn argmax_picks_the_highest_confidence_target() -> Result<(), BoxErr> {
+    async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
         let router = FallThrough::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("weak", 0.2), score("strong", 0.9)]));
         let (model, trace) = run(router).await?;
@@ -272,7 +282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falls_through_the_first_abstaining_classifier() -> Result<(), BoxErr> {
+    async fn falls_through_the_first_abstaining_classifier() -> Result<()> {
         // First classifier abstains (empty); the second decides.
         let router = FallThrough::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![]))
@@ -283,7 +293,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_deciding_classifier_wins_the_cascade() -> Result<(), BoxErr> {
+    async fn first_deciding_classifier_wins_the_cascade() -> Result<()> {
         // The first classifier decides; the second is never consulted.
         let router = FallThrough::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("strong", 0.6)]))
@@ -294,15 +304,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_abstaining_is_an_error() -> Result<(), BoxErr> {
+    async fn all_abstaining_is_an_error() -> Result<()> {
         let router =
             FallThrough::new(target_set(&["strong", "weak"])).with_classifier(fixed(vec![]));
-        assert!(run(router).await.is_err());
+        let error = run(router)
+            .await
+            .err()
+            .ok_or_else(|| test_error("expected classifiers to abstain"))?;
+        assert!(matches!(error, LibsyError::AllClassifiersAbstained));
         Ok(())
     }
 
     #[tokio::test]
-    async fn classifiers_receive_the_per_request_driver() -> Result<(), BoxErr> {
+    async fn classifiers_receive_the_per_request_driver() -> Result<()> {
         // A classifier that only decides when handed a driver — proving the cascade offers
         // the per-request driver to every classifier (driver-backed ones need it).
         struct NeedsDriver;
@@ -314,10 +328,10 @@ mod tests {
                 _state: &mut State,
                 _request: &Request,
                 driver: Option<&Driver>,
-            ) -> Result<Classification, BoxErr> {
+            ) -> Result<Classification> {
                 match driver {
                     Some(_) => Ok(Classification::Scores(vec![score("strong", 1.0)])),
-                    None => Err("expected a driver".into()),
+                    None => Err(test_error("expected a driver")),
                 }
             }
         }
@@ -330,7 +344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processor_observes_request_and_decision() -> Result<(), BoxErr> {
+    async fn processor_observes_request_and_decision() -> Result<()> {
         use std::sync::Mutex;
 
         // Records which event kinds it saw, proving the request-then-decision replay.
@@ -338,13 +352,16 @@ mod tests {
 
         #[async_trait]
         impl Processor for RecordingProcessor {
-            async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
+            async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
                 let kind = match event {
                     Event::Request(_) => "request",
                     Event::Decision(_) => "decision",
                     _ => "other",
                 };
-                self.0.lock().map_err(|_| "lock poisoned")?.push(kind);
+                self.0
+                    .lock()
+                    .map_err(|_| test_error("lock poisoned"))?
+                    .push(kind);
                 Ok(())
             }
         }
@@ -356,20 +373,20 @@ mod tests {
         run(router).await?;
 
         assert_eq!(
-            *seen.lock().map_err(|_| "lock poisoned")?,
+            *seen.lock().map_err(|_| test_error("lock poisoned"))?,
             vec!["request", "decision"]
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn state_persists_across_turns() -> Result<(), BoxErr> {
+    async fn state_persists_across_turns() -> Result<()> {
         // Increments the session turn count on every request.
         struct CountingProcessor;
 
         #[async_trait]
         impl Processor for CountingProcessor {
-            async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
+            async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
                 if let Event::Request(_) = event {
                     state.turn_count += 1;
                 }
@@ -388,7 +405,7 @@ mod tests {
                 state: &mut State,
                 _request: &Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification, BoxErr> {
+            ) -> Result<Classification> {
                 let target = if state.turn_count >= 2 {
                     "strong"
                 } else {

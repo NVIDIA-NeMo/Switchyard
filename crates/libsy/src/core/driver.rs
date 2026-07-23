@@ -49,20 +49,18 @@
 
 use std::{
     any::Any,
-    error::Error,
     sync::{Arc, Mutex},
 };
 
-use crate::Context;
+use crate::{Context, DriverError, LibsyError, Result};
 
 use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 
-type BoxErr = Box<dyn Error + Send + Sync>;
 type BoxAny = Box<dyn Any + Send>;
-type StepResult = Result<DriverStep, BoxErr>;
+type StepResult = Result<DriverStep>;
 
 // TODO make request timeout configurable
 const FULFILL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -87,27 +85,30 @@ pub enum DriverStep {
 pub struct DriverRequest {
     request: BoxAny,
     // Fulfilled exactly once — `respond` consumes `self` to send, so no `Option`.
-    tx: oneshot::Sender<Result<BoxAny, BoxErr>>,
+    tx: oneshot::Sender<Result<BoxAny>>,
 }
 
 impl DriverRequest {
     /// Borrow the request payload as `REQ`. Errors if the producer enqueued a
     /// different type than the consumer expected.
-    pub fn request<REQ: Any>(&self) -> Result<&REQ, BoxErr> {
-        self.request
-            .downcast_ref::<REQ>()
-            .ok_or_else(|| "driver: request type mismatch".into())
+    pub fn request<REQ: Any>(&self) -> Result<&REQ> {
+        self.request.downcast_ref::<REQ>().ok_or_else(|| {
+            DriverError::TypeMismatch {
+                expected: std::any::type_name::<REQ>(),
+            }
+            .into()
+        })
     }
 
     /// Fulfill the promise with a typed response, or an `Err` to propagate a failure
     /// back to the producer. Consumes `self`: a promise is fulfilled exactly once.
-    pub fn respond<RES: Any + Send>(self, res: Result<RES, BoxErr>) -> Result<(), BoxErr> {
+    pub fn respond<RES: Any + Send>(self, res: Result<RES>) -> Result<()> {
         // Erase the response so the single stream item type can carry any RES; the
         // producer downcasts it back in `fulfill_request`.
-        let boxed: Result<BoxAny, BoxErr> = res.map(|r| Box::new(r) as BoxAny);
+        let boxed: Result<BoxAny> = res.map(|r| Box::new(r) as BoxAny);
         self.tx
             .send(boxed)
-            .map_err(|_| "driver: response receiver dropped".into())
+            .map_err(|_| DriverError::ResponseDropped.into())
     }
 }
 
@@ -143,30 +144,30 @@ impl TypeErasedDriver {
         }
     }
 
-    fn ensure_started(&self) -> Result<(), BoxErr> {
+    fn ensure_started(&self) -> Result<()> {
         let guard = self
             .inner
             .step_rx
             .lock()
-            .map_err(|_| "driver: lock poisoned")?;
+            .map_err(|_| DriverError::LockPoisoned)?;
         if guard.is_none() {
             Ok(())
         } else {
-            Err("get this driver's stream with driver.stream() before calling this method".into())
+            Err(DriverError::NotStarted.into())
         }
     }
 
     /// Enqueue `req` as a [`DriverStep::Request`], await the consumer's response, and
     /// downcast it to `RES`. Errors if the stream is closed, the promise is dropped
     /// unfulfilled, the consumer responded with `Err`, or the response was not a `RES`.
-    pub async fn fulfill_request<REQ, RES>(&self, _ctx: Context, req: REQ) -> Result<RES, BoxErr>
+    pub async fn fulfill_request<REQ, RES>(&self, _ctx: Context, req: REQ) -> Result<RES>
     where
         REQ: Any + Send + 'static,
         RES: Any + Send + 'static,
     {
         self.ensure_started()?;
 
-        let (tx, rx) = oneshot::channel::<Result<BoxAny, BoxErr>>();
+        let (tx, rx) = oneshot::channel::<Result<BoxAny>>();
         let promise = DriverRequest {
             request: Box::new(req),
             tx,
@@ -175,24 +176,28 @@ impl TypeErasedDriver {
             .step_tx
             .send(Ok(DriverStep::Request(promise)))
             .await
-            .map_err(|_| "driver: stream closed")?;
+            .map_err(|_| DriverError::StreamClosed)?;
 
         // Outer error: the promise was dropped without a response. Inner error: the
         // consumer fulfilled it with an explicit `Err` — propagate it as-is.
         let response = timeout(FULFILL_REQUEST_TIMEOUT, rx)
             .await
-            .map_err(|_| "driver: response timed out")?
-            .map_err(|_| "driver: error receiving response")??;
-        response
-            .downcast::<RES>()
-            .map(|boxed| *boxed)
-            .map_err(|_| "driver: response type mismatch".into())
+            .map_err(|_| DriverError::ResponseTimedOut {
+                timeout: FULFILL_REQUEST_TIMEOUT,
+            })?
+            .map_err(|_| DriverError::ResponseDropped)??;
+        response.downcast::<RES>().map(|boxed| *boxed).map_err(|_| {
+            DriverError::TypeMismatch {
+                expected: std::any::type_name::<RES>(),
+            }
+            .into()
+        })
     }
 
     /// Push a fire-and-forget [`DriverStep::Info`] payload; there is no promise to
     /// await for a response. Awaits channel capacity (the consumer pacing the stream)
     /// and errors only if the stream is closed.
-    pub async fn info<INFO>(&self, _ctx: Context, info: INFO) -> Result<(), BoxErr>
+    pub async fn info<INFO>(&self, _ctx: Context, info: INFO) -> Result<()>
     where
         INFO: Any + Send + 'static,
     {
@@ -202,14 +207,14 @@ impl TypeErasedDriver {
             .step_tx
             .send(Ok(DriverStep::Info(Box::new(info))))
             .await
-            .map_err(|_| "driver: stream closed".into())
+            .map_err(|_| DriverError::StreamClosed.into())
     }
 
     /// Emit the terminal [`DriverStep::Done`] with a final payload. Does not close the
     /// stream (that happens when every `TypeErasedDriver` clone drops); the consumer treats it
     /// as the last meaningful step. Awaits channel capacity and errors only if the
     /// stream is closed.
-    pub async fn done<T>(&self, _ctx: Context, payload: T) -> Result<(), BoxErr>
+    pub async fn done<T>(&self, _ctx: Context, payload: T) -> Result<()>
     where
         T: Any + Send + 'static,
     {
@@ -219,37 +224,35 @@ impl TypeErasedDriver {
             .step_tx
             .send(Ok(DriverStep::Done(Box::new(payload))))
             .await
-            .map_err(|_| "driver: stream closed".into())
+            .map_err(|_| DriverError::StreamClosed.into())
     }
 
     /// Terminate the stream with an error item — the producer-side way to surface a
     /// failure to the consumer (mirrors how the crate's `run_stream` yields an `Err`
     /// step). Awaits channel capacity and errors only if the stream is
     /// already closed.
-    pub async fn fail(&self, _ctx: Context, err: BoxErr) -> Result<(), BoxErr> {
+    pub async fn fail(&self, _ctx: Context, err: LibsyError) -> Result<()> {
         self.ensure_started()?;
 
         self.inner
             .step_tx
             .send(Err(err))
             .await
-            .map_err(|_| "driver: stream closed".into())
+            .map_err(|_| DriverError::StreamClosed.into())
     }
 
     /// Take the single consumer stream of [`DriverStep`]s. Callable once: a second
     /// call yields a one-item stream carrying an `Err`, since the receiver is gone.
-    pub fn stream(&self) -> impl Stream<Item = Result<DriverStep, BoxErr>> {
-        // Take the receiver out; `None` means already taken (or the lock was poisoned).
-        let taken = match self.inner.step_rx.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(_) => None,
+    pub fn stream(&self) -> impl Stream<Item = Result<DriverStep>> {
+        let receiver = match self.inner.step_rx.lock() {
+            Ok(mut guard) => guard
+                .take()
+                .ok_or_else(|| LibsyError::from(DriverError::StreamAlreadyTaken)),
+            Err(_) => Err(DriverError::LockPoisoned.into()),
         };
-        match taken {
-            Some(rx) => ReceiverStream::new(rx).left_stream(),
-            None => futures::stream::once(async {
-                Err::<DriverStep, BoxErr>("driver: stream already taken".into())
-            })
-            .right_stream(),
+        match receiver {
+            Ok(rx) => ReceiverStream::new(rx).left_stream(),
+            Err(error) => futures::stream::once(async move { Err(error) }).right_stream(),
         }
     }
 }
@@ -265,8 +268,16 @@ mod tests {
     use super::*;
     use futures::StreamExt;
 
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct TestError(&'static str);
+
+    fn test_error(message: &'static str) -> LibsyError {
+        LibsyError::external("test", TestError(message))
+    }
+
     #[tokio::test]
-    async fn fulfill_request_round_trips_typed_values() -> Result<(), BoxErr> {
+    async fn fulfill_request_round_trips_typed_values() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
 
@@ -279,13 +290,13 @@ mod tests {
         });
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Request(promise) => {
                 let req = *promise.request::<u32>()?;
                 assert_eq!(req, 7);
                 promise.respond::<String>(Ok(format!("got {req}")))?;
             }
-            _ => return Err("expected a Request step".into()),
+            _ => return Err(test_error("expected a Request step")),
         }
 
         assert_eq!(handle.await??, "got 7");
@@ -293,24 +304,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn info_pushes_a_typed_payload() -> Result<(), BoxErr> {
+    async fn info_pushes_a_typed_payload() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
         driver.info(Context::default(), 42u64).await?;
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Info(payload) => {
-                let value = payload.downcast::<u64>().map_err(|_| "wrong info type")?;
+                let value = payload
+                    .downcast::<u64>()
+                    .map_err(|_| LibsyError::from(DriverError::TypeMismatch { expected: "u64" }))?;
                 assert_eq!(*value, 42);
             }
-            _ => return Err("expected an Info step".into()),
+            _ => return Err(test_error("expected an Info step")),
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn done_emits_the_terminal_payload() -> Result<(), BoxErr> {
+    async fn done_emits_the_terminal_payload() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
         driver
@@ -318,20 +331,20 @@ mod tests {
             .await?;
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Done(payload) => {
                 let value = payload
                     .downcast::<String>()
-                    .map_err(|_| "wrong done type")?;
+                    .map_err(|_| LibsyError::from(DriverError::TypeMismatch { expected: "u64" }))?;
                 assert_eq!(*value, "finished");
             }
-            _ => return Err("expected a Done step".into()),
+            _ => return Err(test_error("expected a Done step")),
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn respond_error_propagates_to_the_producer() -> Result<(), BoxErr> {
+    async fn respond_error_propagates_to_the_producer() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
 
@@ -343,15 +356,15 @@ mod tests {
         });
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Request(promise) => {
-                promise.respond::<u32>(Err("upstream failed".into()))?;
+                promise.respond::<u32>(Err(test_error("upstream failed")))?;
             }
-            _ => return Err("expected a Request step".into()),
+            _ => return Err(test_error("expected a Request step")),
         }
 
         match handle.await? {
-            Ok(_) => Err("expected the error to propagate".into()),
+            Ok(_) => Err(test_error("expected the error to propagate")),
             Err(err) => {
                 assert!(err.to_string().contains("upstream failed"));
                 Ok(())
@@ -360,7 +373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_type_mismatch_errors() -> Result<(), BoxErr> {
+    async fn response_type_mismatch_errors() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
 
@@ -373,25 +386,29 @@ mod tests {
         });
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Request(promise) => {
                 // But the consumer responds with a u32.
                 promise.respond::<u32>(Ok(99u32))?;
             }
-            _ => return Err("expected a Request step".into()),
+            _ => return Err(test_error("expected a Request step")),
         }
 
         match handle.await? {
-            Ok(_) => Err("expected a response type mismatch".into()),
+            Ok(_) => Err(test_error("expected a response type mismatch")),
             Err(err) => {
-                assert!(err.to_string().contains("response type mismatch"));
+                assert!(matches!(
+                    err,
+                    LibsyError::Driver(DriverError::TypeMismatch { expected })
+                        if expected == std::any::type_name::<String>()
+                ));
                 Ok(())
             }
         }
     }
 
     #[tokio::test]
-    async fn request_downcast_to_wrong_type_errors() -> Result<(), BoxErr> {
+    async fn request_downcast_to_wrong_type_errors() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
 
@@ -403,13 +420,13 @@ mod tests {
         });
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             DriverStep::Request(promise) => {
                 assert!(promise.request::<String>().is_err());
                 // Unblock the producer so its task can finish.
                 promise.respond::<u32>(Ok(5u32))?;
             }
-            _ => return Err("expected a Request step".into()),
+            _ => return Err(test_error("expected a Request step")),
         }
 
         assert_eq!(handle.await??, 5);
@@ -417,7 +434,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_stream_errors_on_send() -> Result<(), BoxErr> {
+    async fn closed_stream_errors_on_send() -> Result<()> {
         let driver = TypeErasedDriver::new();
         // Drop the consumer stream (and its receiver) before producing anything.
         drop(driver.stream());
@@ -432,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promise_dropped_without_response_errors() -> Result<(), BoxErr> {
+    async fn promise_dropped_without_response_errors() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
 
@@ -444,10 +461,10 @@ mod tests {
         });
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no step")?? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)?? {
             // Drop the promise without responding.
             DriverStep::Request(_promise) => {}
-            _ => return Err("expected a Request step".into()),
+            _ => return Err(test_error("expected a Request step")),
         }
 
         assert!(handle.await?.is_err());
@@ -455,7 +472,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_producers_do_not_cross_responses() -> Result<(), BoxErr> {
+    async fn concurrent_producers_do_not_cross_responses() -> Result<()> {
         const N: usize = 8;
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
@@ -478,13 +495,13 @@ mod tests {
         tokio::pin!(stream);
         let mut served = 0;
         while served < N {
-            match stream.next().await.ok_or("stream ended early")?? {
+            match stream.next().await.ok_or(DriverError::StreamClosed)?? {
                 DriverStep::Request(promise) => {
                     let req = *promise.request::<usize>()?;
                     promise.respond::<usize>(Ok(req * 10))?;
                     served += 1;
                 }
-                _ => return Err("expected a Request step".into()),
+                _ => return Err(test_error("expected a Request step")),
             }
         }
 
@@ -496,39 +513,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_taken_twice_yields_an_error_item() -> Result<(), BoxErr> {
+    async fn stream_taken_twice_yields_an_error_item() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let _first = driver.stream();
         let second = driver.stream();
 
         tokio::pin!(second);
-        match second.next().await.ok_or("expected an item")? {
+        match second.next().await.ok_or(DriverError::StreamClosed)? {
             Err(err) => {
                 assert!(err.to_string().contains("already taken"));
                 Ok(())
             }
-            Ok(_) => Err("expected an error item".into()),
+            Ok(_) => Err(test_error("expected an error item")),
         }
     }
 
     #[tokio::test]
-    async fn fail_surfaces_an_error_item_on_the_stream() -> Result<(), BoxErr> {
+    async fn fail_surfaces_an_error_item_on_the_stream() -> Result<()> {
         let driver = TypeErasedDriver::new();
         let stream = driver.stream();
-        driver.fail(Context::default(), "kaboom".into()).await?;
+        driver
+            .fail(Context::default(), test_error("kaboom"))
+            .await?;
 
         tokio::pin!(stream);
-        match stream.next().await.ok_or("no item")? {
+        match stream.next().await.ok_or(DriverError::StreamClosed)? {
             Err(err) => {
                 assert!(err.to_string().contains("kaboom"));
                 Ok(())
             }
-            Ok(_) => Err("expected an error item".into()),
+            Ok(_) => Err(test_error("expected an error item")),
         }
     }
 
     #[tokio::test]
-    async fn dropping_the_stream_terminates_the_producer() -> Result<(), BoxErr> {
+    async fn dropping_the_stream_terminates_the_producer() -> Result<()> {
         let driver = TypeErasedDriver::new();
         // Box::pin so the stream is owned here and `drop` actually drops the receiver.
         // (`tokio::pin!` would rebind to a `Pin<&mut _>`, making `drop` a no-op.)
@@ -547,9 +566,9 @@ mod tests {
 
         // Pace two steps, then terminate by dropping the stream.
         for _ in 0..2 {
-            match stream.next().await.ok_or("stream ended early")?? {
+            match stream.next().await.ok_or(DriverError::StreamClosed)?? {
                 DriverStep::Info(_) => {}
-                _ => return Err("expected an Info step".into()),
+                _ => return Err(test_error("expected an Info step")),
             }
         }
         drop(stream);
@@ -561,17 +580,18 @@ mod tests {
     }
 
     #[test]
-    fn ensure_started_requires_the_stream_be_taken_first() -> Result<(), BoxErr> {
+    fn ensure_started_requires_the_stream_be_taken_first() -> Result<()> {
         let driver = TypeErasedDriver::new();
 
         // Before the consumer takes the stream, the receiver is still present, so producing
         // is refused — with a message that points at the fix.
         match driver.ensure_started() {
-            Ok(()) => return Err("expected ensure_started to reject an untaken stream".into()),
-            Err(err) => assert!(
-                err.to_string().contains("driver.stream()"),
-                "error should point at driver.stream(), got: {err}"
-            ),
+            Ok(()) => {
+                return Err(test_error(
+                    "expected ensure_started to reject an untaken stream",
+                ))
+            }
+            Err(err) => assert!(matches!(err, LibsyError::Driver(DriverError::NotStarted))),
         }
 
         // Taking the stream claims the receiver (`Some` -> `None`), so the driver is started.

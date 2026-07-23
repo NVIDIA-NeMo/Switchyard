@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Driver, State};
+use crate::{Driver, LibsyError, Result, State};
 use async_trait::async_trait;
 use switchyard_protocol::Request;
 
@@ -13,8 +13,6 @@ pub struct Score {
     /// The target (model / tier) being recommended.
     pub target: String,
 }
-
-type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
 /// A classifier's verdict for a request: a set of target [`Score`]s, flagged by how
 /// confident the classifier is that they are decisive.
@@ -32,7 +30,7 @@ impl Classification {
     /// An [`Ambiguous`](Self::Ambiguous) classification also yields `None` unless
     /// `ignore_ambiguous` is set, in which case it falls back to the plain argmax.
     /// Errors if any confidence is `NaN` (an unorderable score the caller should surface).
-    pub fn argmax(&self, ignore_ambiguous: bool) -> Result<Option<Score>, BoxErr> {
+    pub fn argmax(&self, ignore_ambiguous: bool) -> Result<Option<Score>> {
         match self {
             Classification::Scores(scores) => argmax(scores),
             Classification::Ambiguous(scores) => {
@@ -49,11 +47,13 @@ impl Classification {
 /// The highest-confidence score, or `None` when the set is empty (the classifier abstained).
 /// Ties keep the first. Errors on a `NaN` confidence,
 /// which has no defined ordering.
-fn argmax(scores: &[Score]) -> Result<Option<Score>, BoxErr> {
+fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     let mut best: Option<&Score> = None;
     for score in scores.iter() {
         if score.confidence.is_nan() {
-            return Err(format!("argmax: NaN confidence for target '{}'", score.target).into());
+            return Err(LibsyError::InvalidConfidence {
+                target: score.target.clone(),
+            });
         }
         match best {
             Some(cur_best) if score.confidence > cur_best.confidence => best = Some(score),
@@ -74,7 +74,7 @@ pub trait Classifier: Send + Sync {
         state: &mut State,
         request: &Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification, BoxErr>;
+    ) -> Result<Classification>;
 }
 
 #[cfg(test)]
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn argmax_picks_the_highest_confidence_score() -> Result<(), BoxErr> {
+    fn argmax_picks_the_highest_confidence_score() -> Result<()> {
         let scores = vec![score("weak", 0.2), score("strong", 0.9), score("mid", 0.5)];
         let best = Classification::Scores(scores).argmax(false)?;
         assert_eq!(best, Some(score("strong", 0.9)));
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn argmax_breaks_ties_by_cascade_order() -> Result<(), BoxErr> {
+    fn argmax_breaks_ties_by_cascade_order() -> Result<()> {
         // Equal confidence: the earlier target in cascade order wins the tie.
         let scores = vec![score("first", 0.7), score("second", 0.7)];
         let best = Classification::Scores(scores).argmax(false)?;
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn argmax_on_an_empty_set_abstains() -> Result<(), BoxErr> {
+    fn argmax_on_an_empty_set_abstains() -> Result<()> {
         // No scores means the classifier abstained — no choice to make.
         assert_eq!(Classification::Scores(vec![]).argmax(false)?, None);
         assert_eq!(Classification::Ambiguous(vec![]).argmax(true)?, None);
@@ -120,15 +120,19 @@ mod tests {
     fn argmax_errors_on_nan_confidence() {
         // A NaN confidence has no defined ordering — surface it rather than guess.
         let scores = vec![score("weak", 0.3), score("strong", f64::NAN)];
-        assert!(Classification::Scores(scores).argmax(false).is_err());
+        assert!(matches!(
+            Classification::Scores(scores).argmax(false),
+            Err(LibsyError::InvalidConfidence { target }) if target == "strong"
+        ));
         // A lone NaN errors too, even with nothing to compare it against.
-        assert!(Classification::Scores(vec![score("only", f64::NAN)])
-            .argmax(false)
-            .is_err());
+        assert!(matches!(
+            Classification::Scores(vec![score("only", f64::NAN)]).argmax(false),
+            Err(LibsyError::InvalidConfidence { target }) if target == "only"
+        ));
     }
 
     #[test]
-    fn ambiguous_without_ignore_makes_no_choice() -> Result<(), BoxErr> {
+    fn ambiguous_without_ignore_makes_no_choice() -> Result<()> {
         // Ambiguous means "don't pick" unless the caller opts to ignore ambiguity.
         let scores = vec![score("strong", 0.9)];
         assert_eq!(Classification::Ambiguous(scores).argmax(false)?, None);
@@ -136,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_with_ignore_falls_back_to_argmax() -> Result<(), BoxErr> {
+    fn ambiguous_with_ignore_falls_back_to_argmax() -> Result<()> {
         let scores = vec![score("weak", 0.3), score("strong", 0.8)];
         let best = Classification::Ambiguous(scores).argmax(true)?;
         assert_eq!(best, Some(score("strong", 0.8)));
@@ -144,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn scores_variant_ignores_the_ambiguous_flag() -> Result<(), BoxErr> {
+    fn scores_variant_ignores_the_ambiguous_flag() -> Result<()> {
         // A definitive classification always yields its argmax, regardless of the flag.
         let scores = vec![score("a", 0.4), score("b", 0.6)];
         let with_ignore = Classification::Scores(scores.clone()).argmax(true)?;
@@ -164,7 +168,7 @@ mod tests {
             state: &mut State,
             request: &Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification, BoxErr> {
+        ) -> Result<Classification> {
             // Stash a marker in `extra` to prove state is threaded mutably.
             state.extra.insert("ran".to_string(), StateValue::Count(1));
             let target = request.requested_model().unwrap_or("auto").to_string();
@@ -176,7 +180,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn classifier_reads_request_and_mutates_state() -> Result<(), BoxErr> {
+    async fn classifier_reads_request_and_mutates_state() -> Result<()> {
         let mut state = State::default();
         let request = Request {
             llm_request: text_request(Some("strong".to_string()), "hi"),

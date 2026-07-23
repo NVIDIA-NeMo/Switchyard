@@ -1788,6 +1788,7 @@ dependencies = [
  "serde_json",
  "switchyard-llm-client",
  "switchyard-protocol",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tracing",

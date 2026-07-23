@@ -11,14 +11,13 @@
 //! `Algorithm::run_stream`. Run with:
 //!   cargo run -p libsy --example research_agent
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use switchyard_libsy::algorithms::LlmClassifier;
 use switchyard_libsy::{
-    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response,
-    RoutedLlmClient,
+    Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
+    Response, Result, RoutedLlmClient,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 
@@ -36,7 +35,7 @@ impl RoutedLlmClient for StubClient {
         _ctx: Context,
         _request: Request,
         decision: Arc<dyn Decision>,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         // The model to call is the routed decision's selection, not the inbound name.
         let model = decision.selected_model().to_string();
         println!("  -> model call: {model}");
@@ -72,7 +71,7 @@ impl ResearchAgent {
         vec![format!("look up: {question}")]
     }
 
-    async fn run(&self, question: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    async fn run(&self, question: &str) -> Result<String> {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
@@ -82,14 +81,19 @@ impl ResearchAgent {
             };
 
             let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
-            notes.push(completion_text(&response.llm_response.into_agg().await?));
+            let aggregate = response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|error| LibsyError::external_boxed("aggregating response", error))?;
+            notes.push(completion_text(&aggregate));
         }
         Ok(notes.join("\n"))
     }
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> Result<()> {
     // Configure routing once: an LLM classifier over three named targets. Swapping
     // in `Random` needs no change to the agent.
     let algo: Arc<dyn Algorithm> =

@@ -4,13 +4,13 @@
 //! No-op router. Always returns a hard coded response. Does not route to a backend.
 //! For testing.
 
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
 use switchyard_protocol::{
     AggLlmResponse, ContentBlock, LlmResponse, Request, Response, ResponseOutput, Role, StopReason,
 };
 
-use crate::{Algorithm, Context, Decision, Driver};
+use crate::{Algorithm, Context, Decision, Driver, Result};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
 pub struct Noop {}
@@ -44,7 +44,7 @@ impl Algorithm for Noop {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         let model = request
             .requested_model()
             .unwrap_or("switchyard/noop")
@@ -81,7 +81,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_noop_algo() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn test_noop_algo() -> Result<()> {
         const TEST_MODEL: &str = "test_noop_algo";
         let request = Request {
             llm_request: LlmRequest {

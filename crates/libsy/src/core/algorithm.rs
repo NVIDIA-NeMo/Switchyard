@@ -5,7 +5,7 @@
 //! routing/optimization algorithm implements, and the offload channel it makes model
 //! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
 
-use std::{error::Error, pin::Pin, sync::Arc, time::Instant};
+use std::{pin::Pin, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -21,15 +21,12 @@ pub use switchyard_protocol::{
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
-use crate::observability;
-
-/// Shorthand for the crate's boxed, thread-safe error type.
-type BoxErr = Box<dyn Error + Send + Sync>;
+use crate::{observability, DriverError, LibsyError, Result};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
 /// `Arc<dyn Algorithm>` object-safe.
-pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step, BoxErr>> + Send>>;
+pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 
 /// A request paired with the routing [`Decision`] that produced it — the offload
 /// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
@@ -100,7 +97,7 @@ impl CallLlmRequest {
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
-    pub fn respond(self, result: Result<Response, BoxErr>) -> Result<(), BoxErr> {
+    pub fn respond(self, result: Result<Response>) -> Result<()> {
         self.inner.respond::<Response>(result)
     }
 }
@@ -148,7 +145,7 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response, BoxErr> {
+    pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response> {
         let algorithm = observability::algorithm_label(&routed.ctx).to_string();
         let selected_model = routed.decision.selected_model().to_string();
         let started = Instant::now();
@@ -177,7 +174,7 @@ impl Driver {
         target: &LlmTarget,
         request: Request,
         decision: Arc<dyn Decision>,
-    ) -> Result<Response, BoxErr> {
+    ) -> Result<Response> {
         self.call_llm(RoutedRequest {
             request,
             decision,
@@ -190,7 +187,7 @@ impl Driver {
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
-    pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<(), BoxErr> {
+    pub async fn info(&self, ctx: Context, decision: Arc<dyn Decision>) -> Result<()> {
         self.driver.info(ctx.clone(), decision.clone()).await?;
         observability::record_decision(&ctx, decision.as_ref());
         Ok(())
@@ -199,11 +196,7 @@ impl Driver {
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
-    pub(crate) async fn finish(
-        &self,
-        ctx: Context,
-        result: Result<Response, BoxErr>,
-    ) -> Result<(), BoxErr> {
+    pub(crate) async fn finish(&self, ctx: Context, result: Result<Response>) -> Result<()> {
         match result {
             Ok(response) => self.driver.done(ctx, response).await,
             Err(err) => self.driver.fail(ctx, err).await,
@@ -213,17 +206,27 @@ impl Driver {
     /// Transform the raw driver stream into a stream of [`Step`]s. Internal: the
     /// consumer stream is taken (once) by [`run_stream`](Algorithm::run_stream). A
     /// payload that does not match the expected type for its step becomes an `Err` item.
-    pub(crate) fn stream(&self) -> impl Stream<Item = Result<Step, BoxErr>> {
+    pub(crate) fn stream(&self) -> impl Stream<Item = Result<Step>> {
         self.driver.stream().map(|item| match item? {
             DriverStep::Request(req) => Ok(Step::CallLlm(Box::new(CallLlmRequest::new(req)))),
             DriverStep::Info(payload) => payload
                 .downcast::<Arc<dyn Decision>>()
                 .map(|decision| Step::Decision(*decision))
-                .map_err(|_| "driver: info payload was not a Decision".into()),
+                .map_err(|_| {
+                    DriverError::TypeMismatch {
+                        expected: "Arc<dyn Decision>",
+                    }
+                    .into()
+                }),
             DriverStep::Done(payload) => payload
                 .downcast::<Response>()
                 .map(Step::ReturnToAgent)
-                .map_err(|_| "driver: done payload was not a Response".into()),
+                .map_err(|_| {
+                    DriverError::TypeMismatch {
+                        expected: "Response",
+                    }
+                    .into()
+                }),
         })
     }
 }
@@ -291,12 +294,14 @@ impl LlmTargetSet {
     }
 
     /// Look up a target by name; errors if no target has that name.
-    pub fn get_target(&self, name: &str) -> Result<LlmTarget, Box<dyn Error + Send + Sync>> {
+    pub fn get_target(&self, name: &str) -> Result<LlmTarget> {
         self.targets
             .iter()
             .find(|t| t.semantic_name == name)
             .cloned()
-            .ok_or(format!("Target {} not found", name).into())
+            .ok_or_else(|| LibsyError::TargetNotFound {
+                target: name.to_string(),
+            })
     }
 }
 
@@ -333,16 +338,13 @@ where
         ctx: Context<S>,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>>;
+    ) -> Result<Response>;
 
     /// Feed the algorithm agentic-stack events (tool results, budgets, etc.). The
     /// reference algorithms ignore signals; a stateful algorithm updates its own
     /// (interior-mutable) state. Takes `self: Arc<Self>` like the other run methods.
     #[allow(unused_variables)]
-    async fn process_signals(
-        self: Arc<Self>,
-        signals: Signals,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn process_signals(self: Arc<Self>, signals: Signals) -> Result<()> {
         Ok(())
     }
 
@@ -385,7 +387,7 @@ where
             futures::stream::once(async move {
                 let result = match handle.await {
                     Ok(response) => response,
-                    Err(e) => Err(format!("Algorithm task panicked: {e}").into()),
+                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
                 };
                 finish_driver.finish(finish_ctx, result).await
             })
@@ -406,7 +408,7 @@ where
         self: Arc<Self>,
         ctx: Context<S>,
         request: Request,
-    ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
+    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
         // Serve one offloaded call with its target's default client. A failed *model*
         // call is forwarded to the algorithm via `respond`; this errors only on an
         // infrastructure failure (no default client, or the promise was dropped).
@@ -423,17 +425,20 @@ where
                 error = tracing::field::Empty,
             )
         )]
-        async fn serve(call: CallLlmRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
+        async fn serve(call: CallLlmRequest) -> Result<()> {
             let routed = call.get_routed().clone();
-            let client = routed.default_client.clone().ok_or_else(|| {
-                format!(
-                    "run: target '{}' has no client to serve the call",
-                    routed.decision.selected_model()
-                )
-            })?;
+            let target = routed.decision.selected_model().to_string();
+            let client =
+                routed
+                    .default_client
+                    .clone()
+                    .ok_or_else(|| LibsyError::MissingClient {
+                        target: target.clone(),
+                    })?;
             let result = client
                 .call(routed.ctx, routed.request, routed.decision)
-                .await;
+                .await
+                .map_err(|source| LibsyError::client_call(target, source));
             observability::record_client_call(&result);
             call.respond(result)
         }
@@ -468,7 +473,7 @@ where
         }
         final_response
             .map(|response| (trace, response))
-            .ok_or_else(|| "run: stream ended without a final response".into())
+            .ok_or(LibsyError::MissingFinalResponse)
     }
 }
 
@@ -477,6 +482,14 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use switchyard_protocol::{completion_text, text_request, text_response};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct TestError(&'static str);
+
+    fn test_error(message: &'static str) -> LibsyError {
+        LibsyError::external("test", TestError(message))
+    }
 
     /// Mock client that echoes back the target name it was called with.
     struct EchoClient;
@@ -488,7 +501,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
@@ -533,12 +546,12 @@ mod tests {
             ctx: Context,
             driver: Driver,
             request: Request,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> Result<Response> {
             let target = self
                 .target_set
                 .targets()
                 .first()
-                .ok_or("no targets")?
+                .ok_or(LibsyError::NoTargets)?
                 .clone();
             let decision: Arc<dyn Decision> = Arc::new(TestDecision {
                 model: target.semantic_name.clone(),
@@ -575,6 +588,15 @@ mod tests {
         LlmTargetSet::new(targets)
     }
 
+    #[test]
+    fn target_lookup_returns_the_missing_target() {
+        let error = target_set(&[]).get_target("missing").err();
+        assert!(matches!(
+            error,
+            Some(LibsyError::TargetNotFound { target }) if target == "missing"
+        ));
+    }
+
     /// Client that serves a call as a token stream — its `call` returns
     /// [`LlmResponse::Stream`] replaying `chunks` in order (as `Ok` items).
     struct StreamingClient {
@@ -588,7 +610,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             _decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             let stream = futures::stream::iter(self.chunks.clone().into_iter().map(Ok)).boxed();
             Ok(Response {
                 llm_response: LlmResponse::Stream(stream),
@@ -607,8 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_returns_a_streamed_response_the_caller_aggregates(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_returns_a_streamed_response_the_caller_aggregates() -> Result<()> {
         // A streaming client -> its chunks flow through the promise and `ReturnToAgent`,
         // and `run` returns the live stream untouched for the caller to fold.
         let orch = streaming_orch(vec![
@@ -630,7 +651,10 @@ mod tests {
         ]);
         let (trace, response) = orch.run(Context::default(), request()).await?;
         // `run` handed back the live stream; the caller folds it to a buffered aggregate.
-        let agg = response.llm_response.into_agg().await?;
+        let agg =
+            response.llm_response.into_agg().await.map_err(|error| {
+                LibsyError::external_boxed("aggregating response stream", error)
+            })?;
         assert_eq!(completion_text(&agg), "hello");
         assert_eq!(agg.model.as_deref(), Some("stream/model"));
         assert_eq!(trace.len(), 1);
@@ -638,8 +662,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aggregating_a_streamed_response_propagates_a_mid_stream_error(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn aggregating_a_streamed_response_propagates_a_mid_stream_error() -> Result<()> {
         // `run` succeeds and returns the stream; the in-band `Error` chunk surfaces only
         // when the caller aggregates it.
         let orch = streaming_orch(vec![
@@ -653,7 +676,7 @@ mod tests {
         ]);
         let (_, response) = orch.run(Context::default(), request()).await?;
         match response.llm_response.into_agg().await {
-            Ok(_) => Err("expected a mid-stream error, got an aggregate".into()),
+            Ok(_) => Err(test_error("expected a mid-stream error, got an aggregate")),
             Err(err) => {
                 assert!(err.to_string().contains("upstream exploded"));
                 Ok(())
@@ -662,8 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_offloads_via_promise_then_returns_to_agent(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_offloads_via_promise_then_returns_to_agent() -> Result<()> {
         // A client-less target -> its call is offloaded via a promise the
         // orchestrator surfaces as a `CallLlm` step for us to fulfill.
         let stream =
@@ -704,15 +726,14 @@ mod tests {
 
         assert!(saw_call, "expected a CallLlm step before ReturnToAgent");
         assert_eq!(
-            final_completion.ok_or("no ReturnToAgent step")?,
+            final_completion.ok_or_else(|| test_error("no ReturnToAgent step"))?,
             "fulfilled"
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn client_backed_target_offloads_with_a_default_client(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn client_backed_target_offloads_with_a_default_client() -> Result<()> {
         // Every call now offloads to the stream; a client-backed target rides its
         // client along as `default_client` so the consumer can serve it by default.
         let stream =
@@ -727,10 +748,12 @@ mod tests {
                     let client = routed
                         .default_client
                         .clone()
-                        .ok_or("expected a default client")?;
+                        .ok_or_else(|| test_error("expected a default client"))?;
+                    let target = routed.decision.selected_model().to_string();
                     let result = client
                         .call(routed.ctx, routed.request, routed.decision)
-                        .await;
+                        .await
+                        .map_err(|error| LibsyError::client_call(target, error));
                     call.respond(result)?;
                 }
                 Step::Decision(_) => {}
@@ -747,13 +770,15 @@ mod tests {
         }
 
         // EchoClient echoes the model name back as the completion.
-        assert_eq!(final_completion.ok_or("no ReturnToAgent")?, "direct/model");
+        assert_eq!(
+            final_completion.ok_or_else(|| test_error("no ReturnToAgent"))?,
+            "direct/model"
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn run_returns_the_response_when_all_targets_have_clients(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_returns_the_response_when_all_targets_have_clients() -> Result<()> {
         // Every target has a client, so run serves every call via the
         // default client and returns the trace + final response.
         let (trace, response) = orch(target_set(&[("direct/model", true)]))
@@ -773,18 +798,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_errors_when_a_target_lacks_a_client() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_errors_when_a_target_lacks_a_client() -> Result<()> {
         // A client-less target has no default client to serve its offloaded call, so
         // driving it to completion errors.
-        assert!(orch(target_set(&[("offload/model", false)]))
+        let error = orch(target_set(&[("offload/model", false)]))
             .run(Context::default(), request())
             .await
-            .is_err());
+            .err()
+            .ok_or_else(|| test_error("expected a missing-client error"))?;
+        assert!(matches!(
+            error,
+            LibsyError::MissingClient { target } if target == "offload/model"
+        ));
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
-    async fn requests_are_processed_in_parallel() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn requests_are_processed_in_parallel() -> Result<()> {
         use std::time::Duration;
         use tokio::sync::Barrier;
 
@@ -806,7 +836,8 @@ mod tests {
                 _ctx: Context,
                 _request: Request,
                 decision: Arc<dyn Decision>,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>>
+            {
                 self.barrier.wait().await;
                 Ok(Response {
                     llm_response: LlmResponse::Agg(text_response(
@@ -846,15 +877,17 @@ mod tests {
 
         for handle in handles {
             // The timeout turns a serialization deadlock into a failure, not a hang.
-            let completion = tokio::time::timeout(Duration::from_secs(5), handle).await???;
+            let completion = tokio::time::timeout(Duration::from_secs(5), handle)
+                .await
+                .map_err(|error| LibsyError::external("waiting for test task", error))?
+                .map_err(|source| LibsyError::AlgorithmTask { source })??;
             assert_eq!(completion, "m");
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn offload_error_propagates_back_to_the_algorithm(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn offload_error_propagates_back_to_the_algorithm() -> Result<()> {
         // A client-less target offloads its call; we fulfill the promise with an
         // Err, which must flow back through `call_llm_target` into the algorithm and
         // out as an error step — not a response.
@@ -866,11 +899,13 @@ mod tests {
         while let Some(step) = stream.next().await {
             match step {
                 Ok(Step::CallLlm(call)) => {
-                    call.respond(Err("upstream model call failed".into()))?;
+                    call.respond(Err(test_error("upstream model call failed")))?;
                 }
                 Ok(Step::Decision(_)) => {}
                 Ok(Step::ReturnToAgent(..)) => {
-                    return Err("expected the offload error to propagate, got a response".into());
+                    return Err(test_error(
+                        "expected the offload error to propagate, got a response",
+                    ));
                 }
                 Err(err) => {
                     // The algorithm's `call_llm_target` saw the error via the promise.
@@ -885,8 +920,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_the_stream_cancels_the_algorithm_task(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn dropping_the_stream_cancels_the_algorithm_task() -> Result<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::Duration;
         use tokio::sync::mpsc;
@@ -916,7 +950,7 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> Result<Response> {
                 let _guard = DropGuard(self.dropped.clone());
                 let _ = self.started.send(());
                 // Await forever without ever touching the driver.
@@ -933,7 +967,10 @@ mod tests {
         });
 
         let stream = algo.run_stream(Context::default(), request());
-        started_rx.recv().await.ok_or("task never started")?;
+        started_rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("task never started"))?;
         drop(stream);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -945,8 +982,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_run_task_panic_surfaces_as_a_stream_error(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn create_run_task_panic_surfaces_as_a_stream_error() -> Result<()> {
         // An algorithm whose task panics must surface an `Err` step to the stream
         // consumer, not abort the process from an unobserved detached task.
         struct Panicky;
@@ -962,7 +998,7 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> Result<Response> {
                 panic!("boom");
             }
         }
@@ -975,10 +1011,10 @@ mod tests {
         while let Some(step) = stream.next().await {
             match step {
                 Err(err) => {
-                    assert!(err.to_string().contains("panicked"));
+                    assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
                     saw_error = true;
                 }
-                Ok(_) => return Err("expected the panic to surface as an error step".into()),
+                Ok(_) => return Err(test_error("expected the panic to surface as an error step")),
             }
         }
 
@@ -987,8 +1023,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_returns_an_error_when_the_algorithm_task_panics(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_returns_an_error_when_the_algorithm_task_panics() -> Result<()> {
         // The panic surfaces as an `Err` step inside `run_stream`; `run` propagates it
         // via `?`, so the caller gets an `Err` rather than a hang or a silent panic.
         struct Panicky;
@@ -1004,24 +1039,25 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> Result<Response> {
                 panic!("boom");
             }
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
         match algo.run(Context::default(), request()).await {
-            Ok(_) => Err("expected run to surface the algorithm panic as an error".into()),
+            Ok(_) => Err(test_error(
+                "expected run to surface the algorithm panic as an error",
+            )),
             Err(err) => {
-                assert!(err.to_string().contains("panicked"));
+                assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
                 Ok(())
             }
         }
     }
 
     #[tokio::test]
-    async fn cancelling_run_cancels_the_algorithm_task() -> Result<(), Box<dyn Error + Send + Sync>>
-    {
+    async fn cancelling_run_cancels_the_algorithm_task() -> Result<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::Duration;
         use tokio::sync::mpsc;
@@ -1051,7 +1087,7 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> Result<Response> {
                 let _guard = DropGuard(self.dropped.clone());
                 let _ = self.started.send(());
                 // Hang forever without ever touching the driver, so only cancellation
@@ -1071,7 +1107,10 @@ mod tests {
         // Drive `run` on its own task, wait until the algorithm task is up, then cancel
         // `run` — dropping its future (and the `run_stream` stream it holds).
         let run_task = tokio::spawn(async move { algo.run(Context::default(), request()).await });
-        started_rx.recv().await.ok_or("task never started")?;
+        started_rx
+            .recv()
+            .await
+            .ok_or_else(|| test_error("task never started"))?;
         run_task.abort();
         tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -1099,7 +1138,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             self.started.notify_one();
             match self.delay {
                 Some(delay) => tokio::time::sleep(delay).await,
@@ -1128,7 +1167,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             self.gate.notified().await;
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
@@ -1158,7 +1197,7 @@ mod tests {
             ctx: Context,
             driver: Driver,
             request: Request,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> Result<Response> {
             let dec_w: Arc<dyn Decision> = Arc::new(TestDecision {
                 model: self.winner.semantic_name.clone(),
             });
@@ -1196,8 +1235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_returns_the_winner_without_a_late_loser_overwriting_it(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_returns_the_winner_without_a_late_loser_overwriting_it() -> Result<()> {
         // The loser responds 50ms after the winner has already won. `run` must return the
         // winner, not the loser's `respond`-to-a-dropped-receiver error.
         let (_trace, response) = hedge(Some(std::time::Duration::from_millis(50)))
@@ -1215,14 +1253,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_returns_the_winner_without_hanging_on_a_pending_loser(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_returns_the_winner_without_hanging_on_a_pending_loser() -> Result<()> {
         // The loser never resolves. `run` must return the winner promptly, not hang
         // waiting for the in-flight loser.
         let run = hedge(None).run(Context::default(), request());
         let (_trace, response) = tokio::time::timeout(std::time::Duration::from_secs(1), run)
             .await
-            .map_err(|_| "run hung waiting for a pending loser")??;
+            .map_err(|error| LibsyError::external("waiting for pending loser", error))??;
         assert_eq!(
             response
                 .llm_response
@@ -1235,8 +1272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_surfaces_a_terminal_error_with_many_calls_in_flight(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn run_surfaces_a_terminal_error_with_many_calls_in_flight() -> Result<()> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         // A large fan-out (10 matched the old, now-removed concurrency cap). The terminal
@@ -1257,7 +1293,8 @@ mod tests {
                 _ctx: Context,
                 _request: Request,
                 _decision: Arc<dyn Decision>,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>>
+            {
                 if self.started.fetch_add(1, Ordering::SeqCst) + 1 == self.n {
                     self.all_started.notify_one();
                 }
@@ -1285,7 +1322,7 @@ mod tests {
                 ctx: Context,
                 driver: Driver,
                 request: Request,
-            ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            ) -> Result<Response> {
                 let offloads = futures::future::join_all((0..self.n).map(|i| {
                     let decision: Arc<dyn Decision> = Arc::new(TestDecision {
                         model: format!("m{i}"),
@@ -1293,9 +1330,9 @@ mod tests {
                     driver.call_llm_target(ctx.clone(), &self.target, request.clone(), decision)
                 }));
                 tokio::select! {
-                    _ = offloads => Err("offloads unexpectedly completed".into()),
+                    _ = offloads => Err(test_error("offloads unexpectedly completed")),
                     _ = self.all_started.notified() => {
-                        Err("terminal error while calls pending".into())
+                        Err(test_error("terminal error while calls pending"))
                     }
                 }
             }
@@ -1321,9 +1358,11 @@ mod tests {
         let run = algo.run(Context::default(), request());
         let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
             .await
-            .map_err(|_| "run hung: terminal error not surfaced with the cap full")?;
+            .map_err(|error| {
+                LibsyError::external("waiting for terminal error with full call cap", error)
+            })?;
         match result {
-            Ok(_) => Err("expected the terminal error, got a response".into()),
+            Ok(_) => Err(test_error("expected the terminal error, got a response")),
             Err(err) => {
                 assert!(err
                     .to_string()
