@@ -783,6 +783,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sub-agent-override-subagent_target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sub-agent override (subagent_target)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#direct-targets-and-passthrough-aliases" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1207,6 +1218,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sub-agent-override-subagent_target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sub-agent override (subagent_target)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#direct-targets-and-passthrough-aliases" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1352,6 +1374,32 @@ profile and target appears on <code>GET /v1/models</code>:</p>
 </span></code></pre></div>
 <p>Use the profile ID to select policy behavior (<code>fast</code> or <code>smart</code>) and a target ID
 to bypass routing (<code>weak</code> or <code>strong</code>).</p>
+<h2 id="sub-agent-override-subagent_target">Sub-agent override (<code>subagent_target</code>)<a class="headerlink" href="#sub-agent-override-subagent_target" title="Permanent link">&para;</a></h2>
+<p>Any profile can name an optional <code>subagent_target</code> in its common envelope,
+alongside <code>type</code>. When a request carries a recognized sub-agent signal —
+Codex delegated-work kinds (<code>x-openai-subagent: collab_spawn</code> or <code>review</code>),
+Claude Code agent lineage headers, or an explicit
+<code>x-switchyard-is-subagent: true</code> — it bypasses the profile's routing and runs
+as a direct passthrough to that target:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">profiles</span><span class="p">:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">smart</span><span class="p">:</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random-routing</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="nt">subagent_target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weak</span>
+</span></code></pre></div>
+<p>This keeps a sub-agent loop on one intentional, cache-compatible target
+instead of re-routing every worker turn. Codex harness-maintenance turns
+(<code>compact</code>, <code>memory_consolidation</code>) and unrecognized kinds stay on normal
+profile routing, as does everything else when the field is absent. An unknown
+target reference fails at startup, and a sub-agent target failure surfaces as
+a normal target error — it is never silently re-routed through the profile.</p>
+<p>To suppress sub-agent routing for a request that carries a recognized signal,
+send <code>x-switchyard-is-subagent: false</code>. This explicit header overrides Codex
+and Claude Code lineage signals in either direction: <code>false</code> keeps the request
+on normal profile routing even when delegated-work headers are present, and
+<code>true</code> marks a request as a sub-agent even when no harness headers appear.</p>
 <h2 id="direct-targets-and-passthrough-aliases">Direct targets and passthrough aliases<a class="headerlink" href="#direct-targets-and-passthrough-aliases" title="Permanent link">&para;</a></h2>
 <p>For new profile configs, use one public model concept:</p>
 <ul>
@@ -1370,24 +1418,24 @@ bundles used by the launcher compatibility path.</p>
 <h2 id="self-hosted-targets">Self-hosted targets<a class="headerlink" href="#self-hosted-targets" title="Permanent link">&para;</a></h2>
 <p>Any profile target can point at an OpenAI-compatible model server you operate.
 For example, start a local vLLM server:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>vllm<span class="w"> </span>serve<span class="w"> </span>./my-rl-qwen<span class="w"> </span>--served-model-name<span class="w"> </span>my-rl-qwen<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>vllm<span class="w"> </span>serve<span class="w"> </span>./my-rl-qwen<span class="w"> </span>--served-model-name<span class="w"> </span>my-rl-qwen<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </span></code></pre></div>
 <p>Then declare it as a normal endpoint and target:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">endpoints</span><span class="p">:</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">local</span><span class="p">:</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8000/v1</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dummy</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="nt">targets</span><span class="p">:</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">local-weak</span><span class="p">:</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-rl-qwen</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="nt">profiles</span><span class="p">:</span>
-</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="nt">fast-local</span><span class="p">:</span>
-</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">passthrough</span>
-</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local-weak</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">endpoints</span><span class="p">:</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">local</span><span class="p">:</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8000/v1</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dummy</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="nt">targets</span><span class="p">:</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="nt">local-weak</span><span class="p">:</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-rl-qwen</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="nt">profiles</span><span class="p">:</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">  </span><span class="nt">fast-local</span><span class="p">:</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">passthrough</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">local-weak</span>
 </span></code></pre></div>
 <p>Reference <code>local-weak</code> from any routing profile field that accepts a target ID,
 including <code>strong</code>, <code>weak</code>, <code>target</code>, or <code>targets</code>. Switchyard does not start or
