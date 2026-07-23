@@ -12,6 +12,7 @@ pub mod dimension_collector;
 pub mod intake;
 pub mod request_processors;
 pub mod response_processors;
+pub mod stage_router;
 pub mod stats;
 mod telemetry;
 
@@ -20,8 +21,7 @@ pub use backends::{
     MultiLlmBackend, OpenAiNativeBackend, OpenAiPassthroughBackend, StatsLlmBackend,
 };
 pub use dimension_collector::{
-    extract_tool_signals, ContextSignals, DimensionScore, Keywords, ResponseFlag, ResponseSignals,
-    ScoringConfig, ToolResultSignal,
+    extract_tool_signals, ResponseFlag, ResponseSignals, ToolResultSignal,
 };
 pub use intake::{
     HttpIntakeSink, IntakeFormat, IntakePayloadBuilder, IntakeQueueFullPolicy,

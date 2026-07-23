@@ -13,9 +13,7 @@ _COMPONENT_EXPORTS = frozenset(
     {
         "AnthropicNativeBackend",
         "BackendFormat",
-        "ContextSignals",
         "DimensionCollector",
-        "DimensionScore",
         "EndpointConfig",
         "IntakeQueueFullPolicy",
         "IntakeRequestMetadata",
@@ -27,31 +25,30 @@ _COMPONENT_EXPORTS = frozenset(
         "MultiLlmBackend",
         "OpenAiNativeBackend",
         "OpenAiPassthroughBackend",
+        "PickOutcome",
         "RandomRoutingProcessorConfig",
         "RequestMetadata",
         "ResponseFlag",
         "ResponseSignalCollector",
         "ResponseSignals",
-        "ScoringConfig",
         "StatsAccumulator",
         "StatsLlmBackend",
         "StatsRequestProcessor",
         "StatsResponseProcessor",
         "ToolResultSignal",
         "extract_response_signals",
-        "get_context_signals",
         "get_response_signals",
         "get_tool_result_signal",
         "set_stats_route_label",
+        "stage_pick_tier",
+        "stage_score_signal",
     }
 )
 
 if TYPE_CHECKING:
     AnthropicNativeBackend: type[Any]
     BackendFormat: type[Any]
-    ContextSignals: type[Any]
     DimensionCollector: type[Any]
-    DimensionScore: type[Any]
     EndpointConfig: type[Any]
     IntakeQueueFullPolicy: type[Any]
     IntakeRequestMetadata: type[Any]
@@ -63,22 +60,23 @@ if TYPE_CHECKING:
     MultiLlmBackend: type[Any]
     OpenAiNativeBackend: type[Any]
     OpenAiPassthroughBackend: type[Any]
+    PickOutcome: type[Any]
     RandomRoutingProcessorConfig: type[Any]
     RequestMetadata: type[Any]
     ResponseFlag: type[Any]
     ResponseSignalCollector: type[Any]
     ResponseSignals: type[Any]
-    ScoringConfig: type[Any]
     StatsAccumulator: type[Any]
     StatsLlmBackend: type[Any]
     StatsRequestProcessor: type[Any]
     StatsResponseProcessor: type[Any]
     ToolResultSignal: type[Any]
     extract_response_signals: Any
-    get_context_signals: Any
     get_response_signals: Any
     get_tool_result_signal: Any
     set_stats_route_label: Any
+    stage_pick_tier: Any
+    stage_score_signal: Any
 
 
 def __getattr__(name: str) -> object:

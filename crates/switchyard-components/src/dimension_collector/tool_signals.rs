@@ -1,22 +1,20 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tool-result context signals — thin adapter over libsy's extractor.
+//! Tool-result context signals extracted from the conversation history.
 //!
-//! The extraction logic lives in [`switchyard_libsy::ToolSignals`]. This module
-//! bridges the crate's [`ChatRequest`] (a format-tagged JSON body) to libsy's
-//! [`switchyard_protocol::Request`] (raw body + wire-format metadata) so the two
-//! request models share one implementation.
-
-use std::collections::HashMap;
+//! The [`DimensionCollector`][`crate::DimensionCollector`] runs this
+//! alongside the 15 prompt-text scorers: it walks the `messages[]` /
+//! `input[]` array of the incoming request, finds tool-execution results,
+//! pattern-matches their text against a curated error table, and aggregates
+//! conversation-history metrics that the stage_router pickers need.
+//!
+//! All logic is pure and deterministic — no I/O, no shared state.
 
 use serde_json::Value;
 use switchyard_core::{ChatRequest, ChatRequestType};
-use switchyard_protocol::{Metadata, Request, WireFormat};
 
-/// The tool-signal output type. Re-exported from libsy so downstream consumers
-/// (the `ToolResultSignal` stamped on `ProxyContext`) see a single type.
-pub use switchyard_libsy::{ToolSignals as ToolResultSignal, DEFAULT_RECENT_WINDOW};
+// ─── severity constants ───────────────────────────────────────────────────────
 
 const SOFT: f32 = 0.3;
 const HARD: f32 = 0.7;
@@ -195,8 +193,6 @@ pub struct ToolResultSignal {
     /// Windowed so an error persists through the recovery turns instead of clearing
     /// the instant the next result is clean.
     pub severity: f32,
-    /// Error pattern names from the highest-severity result in the recent window.
-    pub patterns: Vec<String>,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
     pub edit_count: u32,
@@ -223,13 +219,6 @@ pub struct ToolResultSignal {
     /// tool results into fewer messages than OpenAI-chat), so gates keyed on it are
     /// approximate across request origins.
     pub turn_depth: u32,
-    /// Char count of the last user message.
-    pub prompt_char_count: u32,
-    /// Over the recent window, the largest share taken by a single identical
-    /// command-bearing tool call (Bash name + command), in `[0, 1]`. A weak model
-    /// looping the same command (e.g. `cd /tmp` many times) spikes this even when it
-    /// errors little and keeps "producing" — churn the error/stall signals miss.
-    pub repeated_cmd_ratio: f32,
     /// The request carries a context-compaction summary (the agent's context was
     /// summarised after overflowing). Compaction resets the router's accumulated
     /// signals, so a task that was on the strong tier de-escalates back to weak — the
@@ -238,12 +227,78 @@ pub struct ToolResultSignal {
     pub compacted: bool,
 }
 
-/// Extract tool-execution signals using the default `recent_*` window.
-pub fn extract_tool_signals(request: &ChatRequest) -> ToolResultSignal {
-    ToolResultSignal::from_request(&to_protocol_request(request), None)
+// `command` is the lowercased Bash command line; None for non-Bash tools.
+#[derive(Debug, Clone)]
+struct ObservedToolCall {
+    name: String,
+    command: Option<String>,
 }
 
-/// Extract tool-execution signals with a caller-supplied `recent_*` window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolCategory {
+    Write,
+    Edit,
+    Read,
+    Plan,
+    Other,
+}
+
+fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
+    let lower = name.to_lowercase();
+    if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
+        return ToolCategory::Write;
+    }
+    if EDIT_TOOL_NAMES.contains(&lower.as_str()) {
+        return ToolCategory::Edit;
+    }
+    if READ_TOOL_NAMES.contains(&lower.as_str()) {
+        return ToolCategory::Read;
+    }
+    if PLAN_TOOL_NAMES.contains(&lower.as_str()) {
+        return ToolCategory::Plan;
+    }
+    if BASH_TOOL_NAMES.contains(&lower.as_str()) {
+        if let Some(cmd) = command {
+            // Write/edit redirection trumps read-like operands.
+            if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
+                return ToolCategory::Write;
+            }
+            if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
+                return ToolCategory::Edit;
+            }
+            if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) {
+                return ToolCategory::Read;
+            }
+        }
+    }
+    ToolCategory::Other
+}
+
+// ─── extraction entry point ───────────────────────────────────────────────────
+
+/// Extract all tool-execution signals from a [`ChatRequest`].
+///
+/// Uses [`DEFAULT_RECENT_WINDOW`] for the sliding-window `recent_*` counts.
+/// Callers wanting a different window should use
+/// [`extract_tool_signals_with_window`] directly.
+///
+/// Dispatches on the request's wire format:
+///
+/// * **OpenAI chat** — `messages[]` with `role: "tool"` for results;
+///   `role: "assistant"` with `tool_calls[]` for call names.
+/// * **Anthropic** — `messages[]` with `role: "user"` + `content[].type:
+///   "tool_result"`; `role: "assistant"` with `content[].type: "tool_use"`.
+/// * **OpenAI responses** — `input[]` with `type: "function_call_output"`;
+///   `type: "function_call"` for call names.
+///
+/// Returns [`ToolResultSignal::default()`] when the body is absent or
+/// the messages list is empty — callers can always read `signal.severity`.
+pub fn extract_tool_signals(request: &ChatRequest) -> ToolResultSignal {
+    extract_tool_signals_with_window(request, DEFAULT_RECENT_WINDOW)
+}
+
+/// Like [`extract_tool_signals`] but with a caller-supplied sliding-window
+/// size for the `recent_*` counts.
 pub fn extract_tool_signals_with_window(
     request: &ChatRequest,
     recent_window: usize,
@@ -319,7 +374,6 @@ fn content_has_compaction_marker(content: Option<&Value>) -> bool {
 fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolResultSignal {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut prompt_char_count: u32 = 0;
 
     for msg in messages {
         let Some(obj) = msg.as_object() else { continue };
@@ -360,26 +414,16 @@ fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -
                     }
                 }
             }
-            "user" => {
-                prompt_char_count = user_message_char_count(obj.get("content"));
-            }
             _ => {}
         }
     }
 
-    build_signal(
-        tool_texts,
-        tool_calls,
-        messages.len() as u32,
-        prompt_char_count,
-        recent_window,
-    )
+    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
 }
 
 fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> ToolResultSignal {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut prompt_char_count: u32 = 0;
 
     for msg in messages {
         let Some(obj) = msg.as_object() else { continue };
@@ -389,31 +433,14 @@ fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> 
         match role {
             "user" => {
                 if let Some(Value::Array(blocks)) = content {
-                    let mut saw_text = false;
                     for block in blocks {
                         let Some(b) = block.as_object() else { continue };
-                        match b.get("type").and_then(Value::as_str) {
-                            Some("tool_result") => {
-                                if let Some(text) = content_to_text(b.get("content")) {
-                                    tool_texts.push(text);
-                                }
+                        if b.get("type").and_then(Value::as_str) == Some("tool_result") {
+                            if let Some(text) = content_to_text(b.get("content")) {
+                                tool_texts.push(text);
                             }
-                            Some("text") => {
-                                if let Some(t) = b.get("text").and_then(Value::as_str) {
-                                    prompt_char_count = t.len() as u32;
-                                    saw_text = true;
-                                }
-                            }
-                            _ => {}
                         }
                     }
-                    if !saw_text {
-                        if let Some(text_val) = content {
-                            prompt_char_count = user_message_char_count(Some(text_val));
-                        }
-                    }
-                } else {
-                    prompt_char_count = user_message_char_count(content);
                 }
             }
             "assistant" => {
@@ -443,26 +470,18 @@ fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> 
         }
     }
 
-    build_signal(
-        tool_texts,
-        tool_calls,
-        messages.len() as u32,
-        prompt_char_count,
-        recent_window,
-    )
+    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
 }
 
 fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolResultSignal {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut prompt_char_count: u32 = 0;
 
     for item in items {
         let Some(obj) = item.as_object() else {
             continue;
         };
         let item_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
-        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
 
         match item_type {
             "function_call_output" => {
@@ -488,21 +507,11 @@ fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolRe
                     command,
                 });
             }
-            _ => {
-                if role == "user" {
-                    prompt_char_count = user_message_char_count(obj.get("content"));
-                }
-            }
+            _ => {}
         }
     }
 
-    build_signal(
-        tool_texts,
-        tool_calls,
-        items.len() as u32,
-        prompt_char_count,
-        recent_window,
-    )
+    build_signal(tool_texts, tool_calls, items.len() as u32, recent_window)
 }
 
 // ─── aggregation ─────────────────────────────────────────────────────────────
@@ -511,23 +520,19 @@ fn build_signal(
     tool_texts: Vec<String>,
     tool_calls: Vec<ObservedToolCall>,
     turn_depth: u32,
-    prompt_char_count: u32,
     recent_window: usize,
 ) -> ToolResultSignal {
     // Windowed severity: take the MAX severity across the last `recent_window` tool
     // results rather than only the last one. An error's severity then persists for
     // the recent window and decays out of it — parallel to the windowed `recent_*`
-    // counts and `stuck_exploring` — so a fix written a couple of turns after an error
-    // still routes on the error signal instead of the router flapping straight back to
-    // the weak tier. `patterns` carries the labels of the highest-severity result.
+    // counts — so a fix written a couple of turns after an error still routes on the
+    // error signal instead of the router flapping straight back to the weak tier.
     let sev_start = tool_texts.len().saturating_sub(recent_window.max(1));
     let mut severity = 0.0f32;
-    let mut patterns: Vec<String> = Vec::new();
     for text in &tool_texts[sev_start..] {
-        let (sev, pats) = classify_text(text);
+        let (sev, _patterns) = classify_text(text);
         if sev > severity {
             severity = sev;
-            patterns = pats;
         }
     }
 
@@ -587,26 +592,8 @@ fn build_signal(
 
     let tests_passed = detect_tests_passed(&tool_texts, recent_window);
 
-    // repeated_cmd_ratio: over the recent window, the largest count of an identical
-    // command-bearing call (Bash name + command) / window. Catches a weak model
-    // looping the same command with no progress — the churn that severity/spinning
-    // miss because it errors little and still "produces". Only command-bearing calls
-    // count, so distinct reads/writes don't false-positive.
-    let mut cmd_counts: HashMap<(&str, &str), u32> = HashMap::new();
-    for tc in tool_calls.iter().skip(recent_start) {
-        if let Some(cmd) = tc.command.as_deref() {
-            *cmd_counts.entry((tc.name.as_str(), cmd)).or_insert(0) += 1;
-        }
-    }
-    let repeated_cmd_ratio = if recent_window > 0 {
-        cmd_counts.values().copied().max().unwrap_or(0) as f32 / recent_window as f32
-    } else {
-        0.0
-    };
-
     ToolResultSignal {
         severity,
-        patterns,
         no_error_streak,
         edit_count,
         write_count,
@@ -619,8 +606,6 @@ fn build_signal(
         pure_bash_streak,
         tests_passed,
         turn_depth,
-        prompt_char_count,
-        repeated_cmd_ratio,
         // Set by extract_tool_signals_with_window after the format-specific extract,
         // which scans all message contents for the compaction marker.
         compacted: false,
@@ -650,24 +635,6 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
             }
         }
         _ => None,
-    }
-}
-
-/// Character count of a user-message content value.
-fn user_message_char_count(content: Option<&Value>) -> u32 {
-    match content {
-        Some(Value::String(s)) => s.len() as u32,
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter_map(|b| {
-                b.as_object()
-                    .filter(|o| o.get("type").and_then(Value::as_str) == Some("text"))
-                    .and_then(|o| o.get("text"))
-                    .and_then(Value::as_str)
-            })
-            .map(|s| s.len() as u32)
-            .sum(),
-        _ => 0,
     }
 }
 
@@ -855,7 +822,6 @@ mod tests {
         }));
         let sig = extract_tool_signals(&request);
         assert_eq!(sig.severity, HARD);
-        assert!(sig.patterns.contains(&"traceback".to_string()));
         assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.turn_depth, 3);
     }
@@ -946,24 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn repeated_cmd_ratio_spikes_on_a_looping_command() {
-        // Five identical `cd /tmp` calls fill a window of 5 → ratio 1.0 (churn).
-        let request = ChatRequest::openai_chat(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"cd /tmp\"}"}}]},
-            ]
-        }));
-        assert_eq!(
-            extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio,
-            1.0
-        );
-    }
-
-    #[test]
     fn compaction_marker_sets_compacted() {
         // The compaction summary is a user message carrying Claude Code's preamble.
         let request = ChatRequest::openai_chat(json!({
@@ -984,24 +932,6 @@ mod tests {
             ]
         }));
         assert!(!extract_tool_signals(&request).compacted);
-    }
-
-    #[test]
-    fn repeated_cmd_ratio_stays_low_for_distinct_commands() {
-        // Five distinct commands → max repeat 1 / window 5 = 0.2, no false churn.
-        let request = ChatRequest::openai_chat(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls a\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls b\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls c\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls d\"}"}}]},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls e\"}"}}]},
-            ]
-        }));
-        assert_eq!(
-            extract_tool_signals_with_window(&request, 5).repeated_cmd_ratio,
-            0.2
-        );
     }
 
     #[test]

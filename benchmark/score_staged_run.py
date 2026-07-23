@@ -20,16 +20,16 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from switchyard.lib.processors.stage_router.dimensions import from_signal
 from switchyard.lib.processors.stage_router.picker import (
     CAPABLE,
     pick_capable_first,
     pick_efficient_first,
 )
-from switchyard.lib.processors.stage_router.scorer import score as scorer_score
-from switchyard_rust.components import DimensionCollector, get_tool_result_signal
+from switchyard_rust.components import (
+    DimensionCollector,
+    get_tool_result_signal,
+    stage_score_signal,
+)
 from switchyard_rust.core import ChatRequest, ProxyContext
 
 RECENT_WINDOW = 3
@@ -112,11 +112,10 @@ async def score_trajectory(
         if signal is None:
             continue
 
-        # Raw score for analysis: wrong signals score positive (→CAPABLE),
-        # progress signals negative (→EFFICIENT). Picker-independent, so the
+        # Raw score for analysis (Rust scorer): wrong signals score positive
+        # (→CAPABLE), progress negative (→EFFICIENT). Picker-independent, so the
         # histogram shows the capable/efficient separation directly.
-        dims = from_signal(signal)
-        sr = scorer_score(dims)  # fixed weights; threshold dials corroboration
+        score, confidence = stage_score_signal(signal)
 
         # Actual picker decisions on the same ctx — both just read the signal,
         # no extra dc.process() calls needed
@@ -129,8 +128,8 @@ async def score_trajectory(
             "run_id":           run_id,
             "reward":           reward,
             "turn_depth":       signal.turn_depth,
-            "score":            sr.score,
-            "confidence":       sr.confidence,
+            "score":            score,
+            "confidence":       confidence,
             "tool_name":        tool_name,
             "is_error":         is_error,
             "write_count":      signal.write_count,
