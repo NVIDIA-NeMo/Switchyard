@@ -268,17 +268,25 @@ impl LlmTargetSet {
 ///
 /// Methods take `self: Arc<Self>`: one algorithm (`Arc<dyn Algorithm>`) is shared across
 /// requests and run concurrently, so it owns its thread-safety. Stateless algorithms
-/// (the reference routers) get this for free; a stateful one uses interior mutability
-/// over just its own state.
+/// (the reference routers) get this for free; a stateful one keeps its per-session state
+/// in the threaded [`Context<S>`], not in the shared algorithm.
+///
+/// The `S` type parameter is the per-session state carried in `Context<S>`. It defaults
+/// to `()`, so stateless algorithms just write `impl Algorithm for MyRouter` and callers
+/// keep using `Arc<dyn Algorithm>`. A stateful algorithm picks its own state type (e.g.
+/// `impl Algorithm<SharedState> for FallThrough`).
 #[async_trait]
-pub trait Algorithm: Send + Sync + 'static {
+pub trait Algorithm<S = ()>: Send + Sync + 'static
+where
+    S: Clone + Send + Sync + 'static,
+{
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
     /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
-    /// drive it. `ctx` carries cross-cutting request state (empty today).
+    /// drive it. `ctx` carries the request's cross-cutting values and per-session `state`.
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
+        ctx: Context<S>,
         driver: Driver,
         request: Request,
     ) -> Result<Response, Box<dyn Error + Send + Sync>>;
@@ -297,7 +305,7 @@ pub trait Algorithm: Send + Sync + 'static {
     /// Process a request to completion, returning a stream of [`Step`]s.
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
-    fn run_stream(self: Arc<Self>, ctx: Context, request: Request) -> StepStream {
+    fn run_stream(self: Arc<Self>, ctx: Context<S>, request: Request) -> StepStream {
         let driver = Driver::new();
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
@@ -308,7 +316,8 @@ pub trait Algorithm: Send + Sync + 'static {
         let abort_guard = AbortOnDrop(handle.abort_handle());
 
         let finish_driver = driver.clone();
-        let finish_ctx = ctx.clone();
+        // The terminal step carries no session state; hand `finish` the base context.
+        let finish_ctx = ctx.without_state();
         let tail: StepStream = Box::pin(
             futures::stream::once(async move {
                 let result = match handle.await {
@@ -332,7 +341,7 @@ pub trait Algorithm: Send + Sync + 'static {
     /// [`Decision`]s the algorithm made along the way.
     async fn run(
         self: Arc<Self>,
-        ctx: Context,
+        ctx: Context<S>,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response), Box<dyn Error + Send + Sync>> {
         // Serve up to this many offloaded calls concurrently, so an algorithm that

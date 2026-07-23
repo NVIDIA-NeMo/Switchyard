@@ -80,6 +80,7 @@ pub trait Classifier: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StateValue;
     use switchyard_protocol::text_request;
 
     /// Terse `Score` builder for the assertions below.
@@ -153,9 +154,6 @@ mod tests {
         Ok(())
     }
 
-    /// Marker item a classifier stashes in `State` to prove state is threaded mutably.
-    struct Ran(bool);
-
     /// Scores the request's requested model at full confidence and records that it ran.
     struct RecordingClassifier;
 
@@ -167,7 +165,8 @@ mod tests {
             request: &Request,
             _driver: Option<&Driver>,
         ) -> Result<Classification, BoxErr> {
-            state.insert(Ran(true));
+            // Stash a marker in `extra` to prove state is threaded mutably.
+            state.extra.insert("ran".to_string(), StateValue::Count(1));
             let target = request.requested_model().unwrap_or("auto").to_string();
             Ok(Classification::Scores(vec![Score {
                 target,
@@ -192,7 +191,7 @@ mod tests {
             classification.argmax(false)?.map(|s| s.target),
             Some("strong".to_string())
         );
-        assert!(matches!(state.get::<Ran>(), Some(Ran(true))));
+        assert!(matches!(state.extra.get("ran"), Some(StateValue::Count(1))));
         Ok(())
     }
 }

@@ -31,31 +31,40 @@ pub trait Processor: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StateValue;
     use switchyard_protocol::{text_request, text_response};
 
-    /// Per-variant tally the test processor accumulates into `State`.
-    #[derive(Default, Debug, PartialEq)]
-    struct Counts {
-        requests: u32,
-        signals: u32,
-        decisions: u32,
-        model_requests: u32,
-        model_responses: u32,
+    /// The `State::extra` key each event variant tallies under.
+    fn event_key(event: &Event<'_>) -> &'static str {
+        match event {
+            Event::Request(_) => "requests",
+            Event::Signal(_) => "signals",
+            Event::Decision(_) => "decisions",
+            Event::ModelRequest(_) => "model_requests",
+            Event::ModelResponse(_) => "model_responses",
+        }
     }
 
-    /// Records every event it observes into a `Counts` kept in `State`.
+    /// Reads a `StateValue::Count` from `extra`, treating a missing key as zero.
+    fn count(state: &State, key: &str) -> u32 {
+        match state.extra.get(key) {
+            Some(StateValue::Count(n)) => *n,
+            _ => 0,
+        }
+    }
+
+    /// Tallies each event variant under its own key in [`State::extra`].
     struct CountingProcessor;
 
     #[async_trait]
     impl Processor for CountingProcessor {
         async fn process(&self, state: &mut State, event: Event<'_>) -> Result<(), BoxErr> {
-            let counts = state.entry_or_insert_with(Counts::default);
-            match event {
-                Event::Request(_) => counts.requests += 1,
-                Event::Signal(_) => counts.signals += 1,
-                Event::Decision(_) => counts.decisions += 1,
-                Event::ModelRequest(_) => counts.model_requests += 1,
-                Event::ModelResponse(_) => counts.model_responses += 1,
+            let entry = state
+                .extra
+                .entry(event_key(&event).to_string())
+                .or_insert(StateValue::Count(0));
+            if let StateValue::Count(n) = entry {
+                *n += 1;
             }
             Ok(())
         }
@@ -108,16 +117,11 @@ mod tests {
             .process(&mut state, Event::Signal(&signals))
             .await?;
 
-        assert_eq!(
-            state.get::<Counts>(),
-            Some(&Counts {
-                requests: 1,
-                signals: 1,
-                decisions: 1,
-                model_requests: 1,
-                model_responses: 1,
-            })
-        );
+        assert_eq!(count(&state, "requests"), 1);
+        assert_eq!(count(&state, "signals"), 1);
+        assert_eq!(count(&state, "decisions"), 1);
+        assert_eq!(count(&state, "model_requests"), 1);
+        assert_eq!(count(&state, "model_responses"), 1);
         Ok(())
     }
 
@@ -131,7 +135,7 @@ mod tests {
             processor.process(&mut state, Event::Request(&req)).await?;
         }
 
-        assert_eq!(state.get::<Counts>().map(|c| c.requests), Some(3));
+        assert_eq!(count(&state, "requests"), 3);
         Ok(())
     }
 }
