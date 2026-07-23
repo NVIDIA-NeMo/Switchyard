@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::extract::{OriginalUri, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -27,17 +27,16 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-/// Representative assistant text used when a test does not configure a response.
-pub const DEFAULT_RESPONSE_BANK: &[&str] = &[
-    "Done.",
-    "The request completed successfully.",
-    "Short answer: 42.",
-    "Here is the result:\n\n- first item\n- second item",
-    "```json\n{\"status\":\"ok\",\"items\":[]}\n```",
-    "```python\nprint(\"hello from the mock server\")\n```",
-    "I checked the available context and found no additional action is required.",
-    "The operation succeeded. Review the returned metadata for details.",
-];
+const RESPONSE_CORPUS: &str = include_str!("../../../README.md");
+
+/// Representative Markdown responses sourced from the repository README.
+pub static DEFAULT_RESPONSE_BANK: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    RESPONSE_CORPUS
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|response| (40..=1_200).contains(&response.len()))
+        .collect()
+});
 
 /// A request received by the mock server.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +64,7 @@ impl Default for MockLlmServerBuilder {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             response_bank: DEFAULT_RESPONSE_BANK
                 .iter()
-                .map(|response| (*response).to_string())
+                .map(|response| response.to_string())
                 .collect(),
             model_responses: BTreeMap::new(),
             model_errors: BTreeMap::new(),

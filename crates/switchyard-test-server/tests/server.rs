@@ -115,6 +115,7 @@ async fn serves_streams_for_all_provider_formats() -> TestResult {
 
 #[tokio::test]
 async fn default_response_is_selected_from_the_built_in_bank() -> TestResult {
+    assert!(DEFAULT_RESPONSE_BANK.len() >= 40);
     let server = MockLlmServer::start().await?;
     let body: Value = Client::new()
         .post(format!("{}/v1/chat/completions", server.url()))
