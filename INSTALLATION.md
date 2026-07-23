@@ -67,7 +67,7 @@ All optional dependencies for complete feature set:
 pip install nemo-switchyard[all]
 ```
 
-Equivalent to: `switchyard[server,cli]`
+Equivalent to: `nemo-switchyard[server,cli,tracing,intake,affinity-redis]`
 
 ### Common Combinations
 
@@ -114,13 +114,13 @@ pip install nemo-switchyard[all]
 Embed Switchyard with minimal overhead:
 
 ```python
-from switchyard import SwitchyardRecipes
+from switchyard import PassthroughProfileConfig, ProfileSwitchyard
 
 # Core library only — no server/CLI dependencies
-switchyard = SwitchyardRecipes.passthrough_recipe(
+switchyard = ProfileSwitchyard(PassthroughProfileConfig(
     api_key="sk-...",
     base_url="https://api.openai.com/v1",
-)
+).build())
 ```
 
 ## Troubleshooting

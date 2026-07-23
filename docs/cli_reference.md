@@ -50,9 +50,10 @@ upstream requests. Configuration files use these lowercase values:
 
 `auto` resolves formats in this order:
 
-1. Probe `/v1/messages`; use `anthropic` when supported.
-2. Probe `/v1/responses`; use `responses` when supported.
-3. Fall back to `openai` and `/v1/chat/completions`.
+1. Probe `/v1/chat/completions`; use `openai` when supported.
+2. Probe `/v1/messages`; use `anthropic` when supported.
+3. Probe `/v1/responses`; use `responses` when supported.
+4. Fall back to `openai` (`/v1/chat/completions`).
 
 Single-model Claude Code and Codex launches use `auto`. OpenClaw is pinned to
 `openai`. Prefer an explicit format when the upstream contract is known so
@@ -436,6 +437,13 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 | `--no-model-discovery` | Skip `GET /models` and rely on explicit or existing model values during interactive setup. |
 | `--no-tui` | Use plain text prompts instead of the TUI selector. |
 | `--check` | With `--show`, call `GET /models` against the resolved provider and report pass/fail in the output. |
+
+> **Saved bundles keep `${VAR}` references literal.** A saved routing-profile
+> bundle stores `${OPENROUTER_API_KEY}` (and any other `${VAR}`) verbatim. The
+> referenced environment variables must therefore
+> be present in the environment at `serve` / `launch` time; on another machine or
+> shell, export them again or Switchyard aborts with
+> `missing environment variable(s): NAME`.
 
 **Skill distillation config**
 

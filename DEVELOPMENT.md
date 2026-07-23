@@ -46,7 +46,7 @@ switchyard/
 │   ├── lib/                       # Core library
 │   │   ├── roles.py               # RequestProcessor, LLMBackend, ResponseProcessor ABCs
 │   │   ├── switchyard.py          # Switchyard chain executor
-│   │   ├── recipes.py             # SwitchyardRecipes (passthrough, random_routing, …)
+│   │   ├── profiles/              # Profile configs/runtimes (passthrough, random_routing, …)
 │   │   ├── proxy_context.py       # ProxyContext — per-request state
 │   │   ├── chat_request/          # Typed request hierarchy
 │   │   ├── chat_response/         # Typed response hierarchy

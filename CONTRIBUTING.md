@@ -171,7 +171,7 @@ See [Agents](AGENTS.md) for the full architecture guide. Key points:
 
 - **Typed requests/responses** — use `ChatRequest` and `ChatResponse` subtypes
 - **Composable chain** — `RequestProcessor` → `LLMBackend` → `ResponseProcessor` → `TranslationEngine`
-- **Recipes** — pre-built chains in `switchyard/lib/recipes.py`
+- **Profiles** — pre-built chains in `switchyard/lib/profiles/`
 
 When adding a new component:
 

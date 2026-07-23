@@ -200,7 +200,7 @@ Optional extras:
 ```bash
 pip install "nemo-switchyard[server]"   # FastAPI / Uvicorn HTTP endpoints
 pip install "nemo-switchyard[cli]"      # Interactive CLI launchers (Claude / Codex)
-pip install "nemo-switchyard[all]"      # Server, CLI, and tracing extras
+pip install "nemo-switchyard[all]"      # Server, CLI, tracing, intake, and affinity-redis extras
 ```
 
 See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds.
