@@ -24,7 +24,7 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 
 | Situation | Command |
 |---|---|
-| Pick gates from the current diff | `python .agents/skills/switchyard-testing-ci/scripts/select_validation.py --changed` |
+| Inspect the current diff | `git status -sb && git diff --stat && git diff --name-only` |
 | Pre-PR hermetic gate (default) | `uv run ruff check . && uv run mypy switchyard && env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Mirror CI pytest with no live creds | `env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Rust component crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-components` |
@@ -34,31 +34,33 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 | Live e2e (only on explicit user request) | `NVIDIA_API_KEY=… uv run pytest tests/e2e/ -v -m integration -o addopts= --maxfail=10` |
 | Skill/docs change only | YAML frontmatter check + `git diff --check` (see [Skill/docs-only gate](#skilldocs-only-gate)) |
 
-## Dynamic Selection First
+## Diff Selection First
 
-From the repo root, inspect the diff and let the selector propose focused gates:
+From the repo root, inspect the diff before choosing focused gates:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 git status -sb
 git diff --stat
-python .agents/skills/switchyard-testing-ci/scripts/select_validation.py --changed
+git diff --name-only
 ```
 
-For a not-yet-edited area, pass likely owners explicitly:
+For a not-yet-edited area, search likely owners and their tests explicitly:
 
 ```bash
-python .agents/skills/switchyard-testing-ci/scripts/select_validation.py \
-  --path switchyard/lib/translation/request_engine.py \
-  --path tests/test_request_translation_engine.py
+rg -n "request_engine|RequestTranslationEngine" switchyard tests
 ```
 
-Use the output as the starting plan, then add any tests revealed by code search or by the failure.
+Use the changed paths and search results to choose the smallest trustworthy gate, then add any tests
+revealed by code search or by a failure.
 
 ## CI Gates and Local Equivalence
 
 The hard GitHub Actions gates live in `.github/workflows/ci.yml`:
 
+- A lightweight change-detection job keeps the required `CI Success` check present on every pull
+  request. Clearly documentation-only pull requests skip the full lint, test, Rust, typecheck, and
+  install-smoke suite; pushes to `main` always run the complete suite.
 - `uv run ruff check .`
 - SPDX header check for every Python file found by CI, including `.agents/skills/**/scripts/*.py`
 - `uv run pytest tests/ -v -m "not integration"` on Python 3.12 through 3.14
@@ -72,6 +74,10 @@ The hard GitHub Actions gates live in `.github/workflows/ci.yml`:
 The local pre-commit config also runs the Rust fmt/clippy gate when Rust files,
 `Cargo.toml`, or `Cargo.lock` change. Treat those hooks as hard failures; do not
 bypass them with `--no-verify`.
+
+Documentation-only classification is intentionally narrow: `docs/**`, repository-root Markdown,
+README files, GitHub issue/PR templates, benchmark Markdown, and skill Markdown. Markdown used as
+runtime prompt content is not excluded and still runs full CI.
 
 A CI-equivalent `ruff` claim means a clean checkout or generated artifacts removed. Do not treat
 `uv run ruff check . --exclude docs/.venv-docs --exclude docs/_build` as canonical PR validation;

@@ -14,9 +14,36 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      full_ci: ${{ github.event_name != 'pull_request' || steps.filter.outputs.full_ci == 'true' }}
+    steps:
+      - name: Detect non-documentation changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: every
+          filters: |
+            full_ci:
+              - "**"
+              - "!docs/**"
+              - "!*.md"
+              - "!**/README.md"
+              - "!benchmark/*.md"
+              - "!.github/ISSUE_TEMPLATE/**"
+              - "!.github/PULL_REQUEST_TEMPLATE.md"
+              - "!.agents/skills/**/*.md"
+
   # ruff is a hard gate — the codebase passes today, keep it that way.
   lint:
     name: Lint (ruff)
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +63,8 @@ jobs:
   # within the first four lines.
   spdx-headers:
     name: SPDX License Headers
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +101,8 @@ jobs:
 
   rust:
     name: Rust
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +117,8 @@ jobs:
 
   typecheck:
     name: Typecheck (mypy)
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -104,6 +137,8 @@ jobs:
   # credentials, or network egress.
   test:
     name: Tests (Python ${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -128,6 +163,8 @@ jobs:
   # This is the actual hard gate on the workflow.
   slim-install-smoke:
     name: Slim install smoke test
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     env:
       SWITCHYARD_DEFAULT_PACKAGE: "nemo-switchyard @ file://${{ github.workspace }}"
@@ -197,7 +234,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [lint, spdx-headers, rust, typecheck, test, slim-install-smoke]
+    needs: [changes, lint, spdx-headers, rust, typecheck, test, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

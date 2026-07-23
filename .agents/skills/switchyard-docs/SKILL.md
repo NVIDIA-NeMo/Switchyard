@@ -73,6 +73,9 @@ Run `ls docs/` and `grep -A20 "^nav:" mkdocs.yml` to see the current set in one 
 
 - **Path-filtered triggers** on `docs/**`, `mkdocs_hooks.py`, `mkdocs.yml`, `pyproject.toml`,
   `uv.lock`, and the workflow file. Keeps unrelated PRs out of the docs job graph.
+- **Docs-only PRs skip full CI.** The lightweight change detector and required `CI Success` job
+  still run, while published-site validation remains owned by this workflow and the focused README
+  or getting-started workflows run when their source pages change.
 - **Read-only default permissions** at the workflow level. Each job re-declares write scopes only when it needs them (`contents: write` for the Pages deploy, `pull-requests: write` for the preview comment).
 - **`concurrency` group `${{ github.workflow }}-${{ github.ref }}`** with `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`. Superseded PR runs are cancelled; main runs queue so the `gh-pages` writes don't race.
 - **Workflow-level `MKDOCS_SOURCE_REF`** resolves from
