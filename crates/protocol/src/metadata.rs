@@ -71,13 +71,16 @@ const CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "review"];
 
 /// Header/JSON-path signals that, when any is present, mark a request as a sub-agent.
+///
+/// Codex parent-thread-id fields (`x-codex-parent-thread-id`,
+/// `x-codex-turn-metadata.parent_thread_id`) are intentionally absent: the
+/// design contract says parent identifiers are correlation-only; the
+/// `x-openai-subagent` subtype is the Codex routing signal.
 const SUBAGENT_SIGNAL_PATHS: &[&str] = &[
     SWITCHYARD_PARENT_AGENT_ID_HEADER,
     RELAY_SUBAGENT_ID_HEADER,
     DYNAMO_PARENT_SESSION_ID_HEADER,
-    CODEX_PARENT_THREAD_ID_PATH,
     CODEX_SUBAGENT_KIND_PATH,
-    CODEX_PARENT_THREAD_ID_HEADER,
     OPENAI_SUBAGENT_HEADER,
 ];
 
@@ -263,12 +266,17 @@ fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool)
     let explicit = header(headers, SWITCHYARD_IS_SUBAGENT_HEADER).and_then(parse_bool);
 
     let (claude_parent, claude_subagent) = claude_lineage(headers);
+    let opencode = opencode_parent(headers);
     let parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
         .or_else(|| claude_parent.map(str::to_string))
-        .or_else(|| opencode_parent(headers).map(str::to_string));
+        .or_else(|| opencode.map(str::to_string));
 
+    // `parent.is_some()` is intentionally NOT used here: the parent field is
+    // populated for observability from several correlation-only sources (e.g.
+    // Codex parent-thread-id via HEADER_CONFIG). Those sources must not
+    // silently drive routing. Each routing signal is explicit below.
     let inferred = claude_subagent
-        || parent.is_some()
+        || opencode.is_some()
         || SUBAGENT_SIGNAL_PATHS
             .iter()
             .any(|path| resolve_path(headers, path).is_some());
@@ -278,13 +286,14 @@ fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool)
 
 /// Claude Code's `(parent_agent, is_subagent)` from its native lineage headers.
 ///
-/// A request naming an `x-claude-code-agent-id` distinct from its session is a child
-/// agent; its parent is the explicit parent-agent header, else the session it was
-/// spawned under. A root agent (no distinct child id) has no parent.
+/// Claude Code only sends `x-claude-code-agent-id` for spawned sub-agents and
+/// teammates; root agents omit it. Any non-empty value is therefore a
+/// sub-agent signal. The parent is the explicit parent-agent header when
+/// present, else the session the child was spawned under.
 fn claude_lineage(headers: &BTreeMap<String, String>) -> (Option<&str>, bool) {
     let session = header(headers, CLAUDE_SESSION_ID_HEADER);
     let agent = header(headers, CLAUDE_AGENT_ID_HEADER);
-    let is_subagent = matches!((agent, session), (Some(a), Some(s)) if a != s);
+    let is_subagent = agent.is_some();
     let parent = is_subagent
         .then(|| header(headers, CLAUDE_PARENT_AGENT_ID_HEADER).or(session))
         .flatten();
@@ -408,6 +417,31 @@ mod tests {
     }
 
     #[test]
+    fn codex_parent_thread_id_alone_is_not_a_subagent_signal() {
+        // Parent-thread-id is correlation data, not a routing signal. A Codex
+        // turn that carries a parent thread id but no `x-openai-subagent` must
+        // not be treated as sub-agent work.
+        let headers = BTreeMap::from([(
+            CODEX_TURN_METADATA_HEADER.to_string(),
+            serde_json::json!({
+                "session_id": "root-session",
+                "thread_id": "child-thread",
+                "parent_thread_id": "root-thread",
+                "turn_id": "turn-3",
+                // no subagent_kind
+            })
+            .to_string(),
+        )]);
+
+        let metadata = Metadata::from_headers(&headers);
+        // Parent id is still captured for observability.
+        assert_eq!(metadata.parent_agent_id.as_deref(), Some("root-thread"));
+        // But it must not drive routing.
+        assert!(!metadata.is_subagent);
+        assert!(!metadata.is_subagent_work());
+    }
+
+    #[test]
     fn explicit_switchyard_subagent_flag_overrides_inference() {
         let headers = BTreeMap::from([
             ("x-switchyard-is-subagent".to_string(), "false".to_string()),
@@ -462,8 +496,8 @@ mod tests {
 
     #[test]
     fn claude_code_agent_lineage_marks_subagent_and_infers_parent() {
-        // A distinct agent id under a session is a child agent; with no explicit
-        // parent header its parent is inferred to be the session it was spawned under.
+        // Any non-empty agent id is a child agent. Without an explicit parent
+        // header the parent is inferred to be the session it was spawned under.
         let metadata = Metadata::from_headers(&BTreeMap::from([
             (
                 "x-claude-code-session-id".to_string(),
@@ -478,6 +512,19 @@ mod tests {
         assert_eq!(metadata.agent_id.as_deref(), Some("claude-agent"));
         assert!(metadata.is_subagent);
         assert_eq!(metadata.parent_agent_id.as_deref(), Some("claude-session"));
+    }
+
+    #[test]
+    fn claude_code_agent_id_alone_marks_subagent() {
+        // The agent-id header is the detection predicate; the session header is
+        // correlation data. A request with only agent-id is still a child agent.
+        let metadata = Metadata::from_headers(&BTreeMap::from([(
+            "x-claude-code-agent-id".to_string(),
+            "claude-agent".to_string(),
+        )]));
+        assert!(metadata.is_subagent);
+        assert_eq!(metadata.agent_id.as_deref(), Some("claude-agent"));
+        assert_eq!(metadata.parent_agent_id, None);
     }
 
     #[test]
@@ -503,9 +550,9 @@ mod tests {
     }
 
     #[test]
-    fn claude_root_agent_without_distinct_child_is_not_a_subagent() {
-        // Session but no distinct agent id: a root agent. A stray parent-agent header
-        // is only meaningful for a distinct child, so it must not leak in.
+    fn claude_root_agent_without_agent_id_is_not_a_subagent() {
+        // Root agents omit x-claude-code-agent-id entirely. A stray parent-agent
+        // header without an agent-id must not mark the request as a child.
         let metadata = Metadata::from_headers(&BTreeMap::from([
             (
                 "x-claude-code-session-id".to_string(),

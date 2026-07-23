@@ -154,10 +154,12 @@ def _subagent_input() -> ProfileInput:
     [
         # No signal at all.
         ({}, False),
-        # Claude Code lineage: a distinct child agent under a session.
+        # Claude Code lineage: any non-empty agent id marks a child agent.
         (SUBAGENT_HEADERS, True),
-        # Claude Code root agent (agent id equals the session) is not a worker.
-        ({"x-claude-code-session-id": "s", "x-claude-code-agent-id": "s"}, False),
+        # Agent id alone (no session header) is still a child agent.
+        ({"x-claude-code-agent-id": "child-1"}, True),
+        # Session alone — root agent, no agent-id sent.
+        ({"x-claude-code-session-id": "s"}, False),
         # Codex delegated-work kinds route as sub-agent work.
         ({"x-openai-subagent": "review"}, True),
         ({"x-openai-subagent": "collab_spawn"}, True),

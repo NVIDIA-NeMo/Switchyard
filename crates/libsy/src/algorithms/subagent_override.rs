@@ -180,9 +180,13 @@ mod tests {
         ];
         assert_eq!(selected_model(claude).await?, "worker");
 
-        // Codex delegated-work kind.
+        // Codex delegated-work kinds.
         assert_eq!(
             selected_model(&[("x-openai-subagent", "review")]).await?,
+            "worker"
+        );
+        assert_eq!(
+            selected_model(&[("x-openai-subagent", "collab_spawn")]).await?,
             "worker"
         );
         Ok(())

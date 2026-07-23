@@ -111,6 +111,12 @@ profile routing, as does everything else when the field is absent. An unknown
 target reference fails at startup, and a sub-agent target failure surfaces as
 a normal target error — it is never silently re-routed through the profile.
 
+To suppress sub-agent routing for a request that carries a recognized signal,
+send `x-switchyard-is-subagent: false`. This explicit header overrides Codex
+and Claude Code lineage signals in either direction: `false` keeps the request
+on normal profile routing even when delegated-work headers are present, and
+`true` marks a request as a sub-agent even when no harness headers appear.
+
 ## Direct targets and passthrough aliases
 
 For new profile configs, use one public model concept:
