@@ -1195,11 +1195,11 @@ class TestServeRoutingProfilesFallback:
         args = parser.parse_args(["serve", "--port", "4000"])
         with pytest.raises(SystemExit) as excinfo:
             _cmd_serve(args)
-        assert "routing-profiles" in str(excinfo.value)
+        assert "switchyard --routing-profiles PATH configure" in str(excinfo.value)
 
 
 class TestConfigurePersistsRoutingProfiles:
-    """`switchyard configure --routing-profiles PATH` parses + snapshots the bundle."""
+    """`switchyard --routing-profiles PATH configure` snapshots the bundle."""
 
     def test_cli_path_persists_parsed_bundle(self, monkeypatch, tmp_path):
         from switchyard.cli.config.user_config import load_user_config

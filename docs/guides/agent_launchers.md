@@ -28,13 +28,12 @@ switchyard launch openclaw
 
 Each launcher reads saved provider credentials from `~/.config/switchyard/`.
 Interactive Claude Code and Codex sessions show live request and token totals
-in the status footer. A saved legacy route bundle is still honored for
-compatibility, but route bundles and `--routing-profiles` are deprecated.
+in the status footer. A saved route bundle is used when configured.
 
 ## Default routing behavior
 
 The built-in LLM-as-classifier route is the default only when there is no
-`--model`, no CLI `--routing-profiles`, no saved legacy route bundle, and no
+`--model`, no CLI `--routing-profiles`, no saved route bundle, and no
 saved model default. Each turn is classified and dispatched to a weak or
 strong tier using the validated coding-agent trio:
 
@@ -46,8 +45,8 @@ strong tier using the validated coding-agent trio:
 
 `--weak-model`, `--classifier-model`, `--profile`, and
 `--classifier-min-confidence` tune only this built-in route. They are ignored
-when route resolution selects an explicit or saved legacy route bundle or
-single model.
+when route resolution selects an explicit or saved route bundle or single
+model.
 
 ## Override the default route
 
@@ -57,8 +56,8 @@ Use `--model` for a single-model passthrough session:
 switchyard launch claude --model openai/gpt-4o-mini
 ```
 
-For launcher-owned legacy route-bundle routing, whether the bundle contains one
-route or several, use:
+For launcher route-bundle routing, whether the bundle contains one route or
+several, use:
 
 ```bash
 switchyard --routing-profiles routes.yaml -- launch claude
@@ -72,12 +71,8 @@ For route-bundle sessions, the footer reports active-model and aggregate
 request/token counts, including errors. `/v1/routing/stats` aggregates usage
 across the registered chains.
 
-!!! note "Profile-config boundary"
-    `--config profiles.yaml` belongs to `switchyard serve` and is the primary
-    profile configuration path. Launcher subcommands do not accept `--config`
-    today. Use the deprecated `--routing-profiles` flag only for launcher-owned
-    legacy route-bundle routing; use `switchyard serve --config profiles.yaml`
-    for standalone deployments.
+The same `--routing-profiles` bundle can be served directly with
+`switchyard --routing-profiles routes.yaml -- serve`.
 
 ## Model requirements
 
@@ -143,7 +138,7 @@ always has either an existing `claude`/`anthropic` prefix or the generated
 This aliasing applies only to the Claude launcher. `switchyard launch codex`,
 `switchyard launch openclaw`, and `switchyard serve` expose route ids verbatim.
 
-You can also write the `claude-` prefix directly in legacy route YAML if you
+You can also write the `claude-` prefix directly in route YAML if you
 want the route ids to match exactly what appears in `/model`:
 
 ```yaml

@@ -339,7 +339,7 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
     monkeypatch.setattr(cli, "build_and_serve", lambda *a, **k: None)
 
     args = argparse.Namespace(
-        config=None, routing_profiles="profiles.yaml",
+        routing_profiles="profiles.yaml",
         enable_rl_logging=True, rl_log_dir=str(tmp_path),
         intake_enabled=False, intake_base_url=None, intake_workspace=None,
         intake_api_key=None, intake_target_url=None,
@@ -348,18 +348,3 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
 
     assert [type(p).__name__ for p in captured["request"]] == ["RlLoggingRequestProcessor"]
     assert [type(p).__name__ for p in captured["response"]] == ["RlLoggingResponseProcessor"]
-
-
-def test_serve_config_rejects_rl_logging() -> None:
-    """The Rust profile-server path has no Python chain, so it must reject the flag."""
-    from switchyard.cli.switchyard_cli import _cmd_serve_profile_config
-
-    args = argparse.Namespace(
-        config="profiles.yaml", routing_profiles=None, inbound=None,
-        reload=False, workers=1,
-        intake_enabled=False, intake_base_url=None, intake_workspace=None,
-        intake_api_key=None, intake_target_url=None,
-        enable_rl_logging=True, rl_log_dir="./rl_data",
-    )
-    with pytest.raises(SystemExit, match="enable-rl-logging"):
-        _cmd_serve_profile_config(args)

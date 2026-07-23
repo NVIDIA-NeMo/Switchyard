@@ -5,7 +5,7 @@
 //!
 //! `switchyard-core` owns traits and wire wrappers. This crate owns built-in
 //! compatibility implementations: backends, request processors, and response
-//! processors. New Rust orchestration belongs in components-v2 profiles.
+//! processors. New Rust orchestration belongs in libsy algorithms and clients.
 
 pub mod backends;
 pub mod dimension_collector;

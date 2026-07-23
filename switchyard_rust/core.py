@@ -9,7 +9,6 @@ import importlib
 import importlib.metadata
 import os
 from collections.abc import ItemsView, Iterable, Iterator, KeysView, Mapping, ValuesView
-from os import PathLike
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeAlias, cast
 
 JsonScalar: TypeAlias = bool | int | float | str | None
@@ -177,47 +176,6 @@ class _Switchyard(Protocol):
     ) -> Any: ...
 
 
-class _ProfileConfigDocument(Protocol):
-    """Rust-owned profile config document exposed through PyO3."""
-
-    def resolve(self) -> _ProfileConfigPlan: ...
-
-
-class _ProfileConfigPlan(Protocol):
-    """Rust-owned resolved profile config plan exposed through PyO3."""
-
-    def profile_ids(self) -> list[str]: ...
-    def target_ids(self) -> list[str]: ...
-    def profile_type(self, profile_id: str) -> str | None: ...
-    def target(self, target_id: str) -> object | None: ...
-    def build_profile(self, profile_id: str) -> _Profile: ...
-    def build_profiles(self) -> dict[str, _Profile]: ...
-
-
-class _Profile(Protocol):
-    """Rust-owned profile runtime exposed through PyO3."""
-
-    profile_id: str
-
-    async def run(self, request: _ChatRequest) -> _ChatResponse: ...
-
-
-class _ParseProfileConfigStr(Protocol):
-    def __call__(
-        self,
-        input: str,
-        format: str = "yaml",
-    ) -> _ProfileConfigDocument: ...
-
-
-class _ParseProfileConfigPath(Protocol):
-    def __call__(self, path: str | PathLike[str]) -> _ProfileConfigDocument: ...
-
-
-class _LoadProfileConfig(Protocol):
-    def __call__(self, path: str | PathLike[str]) -> _ProfileConfigPlan: ...
-
-
 class _NativeModule(Protocol):
     ChatRequest: type[_ChatRequest]
     ChatRequestType: type[_ChatRequestType]
@@ -239,15 +197,6 @@ class _NativeModule(Protocol):
     SwitchyardUpstreamError: type[RuntimeError]
     SwitchyardContextWindowExceededError: type[RuntimeError]
     SwitchyardContextPoolExhaustedError: type[RuntimeError]
-    ProfileConfigDocument: type[_ProfileConfigDocument]
-    ProfileConfigPlan: type[_ProfileConfigPlan]
-    Profile: type[_Profile]
-    load_profile_config: _LoadProfileConfig
-    parse_profile_config_path: _ParseProfileConfigPath
-    parse_profile_config_str: _ParseProfileConfigStr
-    # Shared profile input bindings re-exported through `switchyard_rust.profiles`.
-    ProfileRequestMetadata: type[Any]
-    ProfileInput: type[Any]
     # Session-affinity primitives.
     SessionCache: type[Any]
     session_key_from_body: Any

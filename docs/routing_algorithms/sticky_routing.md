@@ -24,10 +24,8 @@ Opt in with `session_affinity: true` on the route. `affinity_max_sessions`
 (default `10000`) caps the number of pinned conversations.
 
 These fields are part of the deterministic router configuration, not a
-standalone route type. In CLI YAML, configure them under a `deterministic`
-entry in a `routes:` bundle loaded with `--routing-profiles`. The Rust
-`profiles:` schema loaded by `switchyard serve --config` does not yet expose
-them.
+standalone route type. Configure them under a `deterministic` entry in the
+`routes:` bundle loaded with `--routing-profiles`.
 
 For deterministic routes, `affinity_warmup_turns` controls how many initial
 turns remain non-sticky. The default is `0`, which preserves the historical

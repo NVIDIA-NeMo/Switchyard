@@ -246,10 +246,8 @@ and their transitives never appear in downstream vulnerability scans.
 export OPENAI_API_KEY="sk-..."       # or NVIDIA_API_KEY / ANTHROPIC_API_KEY where supported
 export OPENROUTER_API_KEY="sk-or-..." # pass with --api-key or save via configure
 
-# Serve a profile config (passthrough, random-routing, llm-routing, stage_router).
-# Endpoints, targets, and profiles live in the YAML; see docs/routing_algorithms/overview.md.
-switchyard serve --config profiles.yaml --port 4000
-switchyard serve --config profiles.yaml --inbound anthropic --port 4000
+# Serve a routing bundle. Routes live in YAML; see docs/routing_algorithms/overview.md.
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 
 # One-command launchers — single-model passthrough via --model
 switchyard launch claude --model openai/gpt-4o-mini \
@@ -291,7 +289,7 @@ uv run mypy switchyard
 1. Pick the right stage: request component (pre-call), response component (post-call), `LLMBackend` (rare), or Rust translation codec work.
 2. Create a file with the explicit name (`snake_case` of the class name), one class per file.
 3. Implement the async method for that stage (`process` for components, `call` for backends).
-4. Wire into the owning profile config.
+4. Wire into the owning programmatic profile config or route-bundle builder.
 5. Add tests under `tests/`.
 6. Export from the relevant `__init__.py` and from `switchyard/__init__.py`'s `__all__`.
 

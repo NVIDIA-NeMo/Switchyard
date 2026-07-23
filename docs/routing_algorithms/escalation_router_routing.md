@@ -71,10 +71,8 @@ without clearing an existing confirmation streak.
 
 ## Configure an escalation route
 
-Escalation routing is currently available through the legacy `routes:` bundle
-used by `--routing-profiles`. This path remains necessary for launcher-owned
-routing; route bundles and `--routing-profiles` are otherwise deprecated in
-favor of `switchyard serve --config` profiles.
+Configure escalation routing in the `routes:` bundle loaded by
+`--routing-profiles`.
 
 ```yaml
 routes:

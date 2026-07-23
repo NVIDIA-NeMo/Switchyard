@@ -157,6 +157,29 @@ def _request(*, msg: str = "hi") -> ChatRequest:
     })
 
 
+def test_profile_request_metadata_normalizes_headers() -> None:
+    metadata = ProfileRequestMetadata.from_headers(
+        {
+            "X-Request-ID": "req-123",
+            "X-Switchyard-Trace": ["trace-a", "trace-b"],
+        },
+        inbound_format=ChatRequestType.OPENAI_CHAT,
+    )
+
+    assert metadata.request_id == "req-123"
+    assert metadata.inbound_format == ChatRequestType.OPENAI_CHAT
+    assert metadata.headers == {
+        "x-request-id": ["req-123"],
+        "x-switchyard-trace": ["trace-a", "trace-b"],
+    }
+    assert metadata.to_dict()["inbound_format"] == "openai_chat"
+
+
+def test_profile_request_metadata_rejects_empty_request_id() -> None:
+    with pytest.raises(ValueError, match="RequestId must not be empty"):
+        ProfileRequestMetadata(request_id=" ")
+
+
 async def test_profile_config_decorator_builds_dataclass_and_profile_runtime() -> None:
     @profile_config("unit-python-static", register=False)
     class StaticProfileConfig:

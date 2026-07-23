@@ -499,7 +499,12 @@ def _parse_route_bundle_dict(raw: object) -> RouteBundle:
     validation runs inside :func:`build_table_from_bundle` so callers
     that construct a bundle programmatically still benefit.
     """
-    bundle = _require_mapping(_expand_env(raw), "route bundle")
+    return _validate_route_bundle_dict(_expand_env(raw))
+
+
+def _validate_route_bundle_dict(raw: object) -> RouteBundle:
+    """Validate bundle structure without expanding environment references."""
+    bundle = _require_mapping(raw, "route bundle")
     _validate_allowed_keys(bundle, frozenset({"defaults", "routes"}), "route bundle")
     defaults = _optional_mapping(bundle.get("defaults", {}), "defaults")
     _validate_allowed_keys(defaults, _TARGET_DEFAULT_KEYS, "defaults")
@@ -1221,8 +1226,8 @@ def _stage_router_switchyard(
             allowed_keys=_STAGE_ROUTER_CLASSIFIER_KEYS,
             where=f"{model_id}.classifier",
         )
-    # The deprecated bundle keeps the shared strong/weak tier keys (also used by
-    # deterministic); map them onto StageRouterConfig's capable/efficient fields.
+    # The YAML schema shares strong/weak tier keys with deterministic routing;
+    # map them onto StageRouterConfig's capable/efficient fields.
     resolved = _route_config(route, target_defaults, ("strong", "weak"))
     resolved["capable"] = resolved.pop("strong")
     resolved["efficient"] = resolved.pop("weak")
