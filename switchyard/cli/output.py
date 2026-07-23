@@ -143,12 +143,19 @@ def format_dry_run(
     classifier_model: str | None = None,
     profile: str | None = None,
     classifier_min_confidence: float | None = None,
+    routing_profiles: str | None = None,
 ) -> str:
     """Render resolved launch settings without exposing secrets.
 
     The optional ``classifier_*`` / ``profile`` kwargs are populated by the
     deterministic-routing dispatch path — the routing-policy fields that
     aren't carried on :class:`LaunchRouteConfig`.
+
+    ``routing_profiles`` is the resolved routing-profiles YAML path for a
+    multi-chain bundle launch. When set, the summary reports ``route: bundle``
+    plus the bundle path and its route ids instead of the single-tier
+    :func:`format_route_config` view (``route`` is a placeholder single-tier
+    config in that case).
     """
 
     lines = [
@@ -158,15 +165,28 @@ def format_dry_run(
         f"port: {port if port is not None else 'auto'}",
         f"timeout: {timeout if timeout is not None else 'default'}",
     ]
-    for route_line in format_route_config(route):
-        lines.append(route_line)
-    if route.type == "deterministic":
-        if classifier_model:
-            lines.append(f"classifier model: {classifier_model}")
-        if profile:
-            lines.append(f"profile: {profile}")
-        if classifier_min_confidence is not None:
-            lines.append(f"min confidence: {classifier_min_confidence:.2f}")
+    if routing_profiles:
+        from switchyard.cli.route_bundle import (
+            parse_routing_profiles_file,
+            routing_profile_model_ids,
+        )
+
+        lines.append("route: bundle")
+        lines.append(f"routing profiles: {routing_profiles}")
+        for route_id in routing_profile_model_ids(
+            parse_routing_profiles_file(routing_profiles)
+        ):
+            lines.append(f"  {route_id}")
+    else:
+        for route_line in format_route_config(route):
+            lines.append(route_line)
+        if route.type == "deterministic":
+            if classifier_model:
+                lines.append(f"classifier model: {classifier_model}")
+            if profile:
+                lines.append(f"profile: {profile}")
+            if classifier_min_confidence is not None:
+                lines.append(f"min confidence: {classifier_min_confidence:.2f}")
     if forwarded_args:
         lines.append(f"forwarded args: {' '.join(forwarded_args)}")
     return "\n".join(lines)

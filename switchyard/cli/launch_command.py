@@ -97,6 +97,36 @@ def resolve_launch_connectivity(
     return connectivity.api_key, connectivity.base_url
 
 
+# Marker for the OpenRouter gateway. The zero-flag deterministic default trio
+# uses OpenRouter-only model ids, so a resolved endpoint that isn't OpenRouter
+# cannot serve them.
+_OPENROUTER_URL_MARKER = "openrouter.ai"
+
+
+def _reject_openrouter_only_default_trio(target: str, base_url: str) -> None:
+    """Fail fast when the zero-config default trio can't reach the provider.
+
+    The deterministic zero-flag default uses OpenRouter-only model ids
+    (``anthropic/claude-opus-4.7`` / ``moonshotai/kimi-k2.6`` /
+    ``google/gemini-3.5-flash``). This runs only on the deterministic path, so
+    ``--model`` has already been ruled out, and ``--weak-model`` /
+    ``--classifier-model`` do not help because the strong tier stays
+    ``anthropic/claude-opus-4.7``. So when the resolved endpoint is not
+    OpenRouter, raise :class:`SystemExit` pointing the user at ``--model``,
+    ``--routing-profiles``, or ``OPENROUTER_API_KEY`` instead of launching a
+    trio that can't work.
+    """
+    if _OPENROUTER_URL_MARKER in base_url:
+        return
+    raise SystemExit(
+        f"launch {target}: the zero-config default trio "
+        f"(anthropic/claude-opus-4.7, moonshotai/kimi-k2.6, "
+        f"google/gemini-3.5-flash) is OpenRouter-only, but the resolved "
+        f"endpoint is {base_url!r}. Pass --model, use --routing-profiles, or "
+        f"set OPENROUTER_API_KEY."
+    )
+
+
 def _is_deterministic_launch(
     target: str,
     args: argparse.Namespace,
@@ -605,6 +635,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
+            routing_profiles=routing_profiles,
         ))
         return
 
@@ -614,6 +645,10 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     startup_timing.mark("config + credentials resolved")
 
     if deterministic:
+        _reject_openrouter_only_default_trio(
+            target="claude",
+            base_url=primary_connectivity.base_url,
+        )
         primary_connectivity = require_launch_tier_key(
             target="claude",
             tier=PRIMARY_TIER,
@@ -798,6 +833,7 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
+            routing_profiles=routing_profiles,
         ))
         return
 
@@ -806,6 +842,10 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
     )
 
     if deterministic:
+        _reject_openrouter_only_default_trio(
+            target="codex",
+            base_url=primary_connectivity.base_url,
+        )
         primary_connectivity = require_launch_tier_key(
             target="codex",
             tier=PRIMARY_TIER,
@@ -1006,6 +1046,7 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
+            routing_profiles=routing_profiles,
         ))
         return
 
@@ -1014,6 +1055,10 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
     )
 
     if deterministic:
+        _reject_openrouter_only_default_trio(
+            target="openclaw",
+            base_url=primary_connectivity.base_url,
+        )
         primary_connectivity = require_launch_tier_key(
             target="openclaw",
             tier=PRIMARY_TIER,
