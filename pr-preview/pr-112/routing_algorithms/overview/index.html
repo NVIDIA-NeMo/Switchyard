@@ -1395,6 +1395,11 @@ instead of re-routing every worker turn. Codex harness-maintenance turns
 profile routing, as does everything else when the field is absent. An unknown
 target reference fails at startup, and a sub-agent target failure surfaces as
 a normal target error — it is never silently re-routed through the profile.</p>
+<p>To suppress sub-agent routing for a request that carries a recognized signal,
+send <code>x-switchyard-is-subagent: false</code>. This explicit header overrides Codex
+and Claude Code lineage signals in either direction: <code>false</code> keeps the request
+on normal profile routing even when delegated-work headers are present, and
+<code>true</code> marks a request as a sub-agent even when no harness headers appear.</p>
 <h2 id="direct-targets-and-passthrough-aliases">Direct targets and passthrough aliases<a class="headerlink" href="#direct-targets-and-passthrough-aliases" title="Permanent link">&para;</a></h2>
 <p>For new profile configs, use one public model concept:</p>
 <ul>
