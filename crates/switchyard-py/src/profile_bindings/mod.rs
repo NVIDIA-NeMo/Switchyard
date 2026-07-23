@@ -66,6 +66,15 @@ impl PyProfileConfigDocument {
             .map(std::borrow::ToOwned::to_owned))
     }
 
+    /// Return a parsed profile's envelope `subagent_target` reference, or `None`.
+    fn profile_subagent_target(&self, profile_id: &str) -> PyResult<Option<String>> {
+        let profile_id = parse_profile_id(profile_id)?;
+        Ok(self
+            .inner
+            .profile_subagent_target(&profile_id)
+            .map(|target_id| target_id.as_str().to_owned()))
+    }
+
     /// Return a parsed profile's body without the `type` discriminator.
     fn profile_body(&self, py: Python<'_>, profile_id: &str) -> PyResult<Option<Py<PyAny>>> {
         let profile_id = parse_profile_id(profile_id)?;
@@ -264,6 +273,25 @@ fn py_parse_profile_config_path(path: PathBuf) -> PyResult<PyProfileConfigDocume
         .map_err(py_core_error)
 }
 
+/// Report whether normalized request headers mark delegated sub-agent work.
+///
+/// A thin binding over the canonical detection and routing policy owned by
+/// the protocol crate: `switchyard_protocol::Metadata::from_headers` for the
+/// lineage fact (explicit `x-switchyard-is-subagent`, Claude Code agent
+/// lineage, Codex/relay markers) and `Metadata::is_subagent_work` for the
+/// work-vs-maintenance kind policy, so Codex `compact` /
+/// `memory_consolidation` turns stay on normal profile routing.
+#[pyfunction]
+fn is_subagent_request(headers: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let headers = typed::metadata_headers_from_python(headers)?;
+    // Lineage headers are single-valued; keep the first value when repeated.
+    let headers: std::collections::BTreeMap<String, String> = headers
+        .into_iter()
+        .filter_map(|(name, values)| values.into_iter().next().map(|value| (name, value)))
+        .collect();
+    Ok(switchyard_protocol::Metadata::from_headers(&headers).is_subagent_work())
+}
+
 /// Parse and resolve a components-v2 profile config file.
 #[pyfunction]
 fn load_profile_config(path: PathBuf) -> PyResult<PyProfileConfigPlan> {
@@ -300,6 +328,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_parse_profile_config_str, module)?)?;
     module.add_function(wrap_pyfunction!(py_parse_profile_config_path, module)?)?;
     module.add_function(wrap_pyfunction!(load_profile_config, module)?)?;
+    module.add_function(wrap_pyfunction!(is_subagent_request, module)?)?;
     typed::register(module)?;
     Ok(())
 }

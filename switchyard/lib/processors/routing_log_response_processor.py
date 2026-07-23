@@ -18,7 +18,7 @@ from switchyard.lib.chat_response.streaming_response_accumulator import (
     attach_final_response_callback,
 )
 from switchyard.lib.proxy_context import CTX_PROXY_ACTUAL_MODEL, ProxyContext
-from switchyard.lib.request_metadata import CTX_REQUEST_METADATA
+from switchyard.lib.request_metadata import CTX_PROFILE_REQUEST_HEADERS, CTX_REQUEST_METADATA
 from switchyard_rust.core import ChatResponse
 
 if TYPE_CHECKING:
@@ -60,10 +60,14 @@ class RoutingLogResponseProcessor:
 
     def _write_record(self, ctx: ProxyContext, served_model: str, response: ChatResponse) -> None:
         metadata = ctx.metadata.get(CTX_REQUEST_METADATA)
+        headers = ctx.metadata.get(CTX_PROFILE_REQUEST_HEADERS) or {}
+        # Prefer the model id the backend actually served so buckets reconcile
+        # with the global routing_stats schema, which keys on the served id.
         actual_model = _field(response.body, "model")
         record = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "task": getattr(getattr(metadata, "intake", None), "task", None),
+            "trial_id": headers.get("x-switchyard-trial-id"),
             "session_id": getattr(metadata, "session_id", None),
             "model": actual_model if isinstance(actual_model, str) and actual_model else served_model,
             "tier": ctx.metadata.get("_random_routing_tier", "") or (ctx.selected_target or ""),
@@ -149,34 +153,43 @@ class RoutingLogResponseProcessor:
 
 
 def _usage_tokens(body: object) -> dict[str, int]:
-    """Token counts from any native usage shape (OpenAI Chat/Responses, Anthropic)."""
+    """Six-field token breakdown matching the global routing-stats schema.
+
+    cached/cache_creation are subsets of prompt_tokens, reasoning a subset of
+    completion_tokens, total = prompt + completion.
+    """
     usage = _field(body, "usage")
     prompt = _int_field(usage, "prompt_tokens")
     completion = _int_field(usage, "completion_tokens")
-    prompt_details = _field(usage, "prompt_tokens_details")
-    cached = _int_field(prompt_details, "cached_tokens")
-    cache_creation = _int_field(prompt_details, "cache_creation_tokens")
-    if not prompt and not completion:
-        input_tokens = _int_field(usage, "input_tokens")
+    cached = 0
+    cache_creation = 0
+    reasoning = 0
+    if prompt or completion:
+        # OpenAI Chat Completions.
+        prompt_details = _field(usage, "prompt_tokens_details")
+        cached = _int_field(prompt_details, "cached_tokens")
+        cache_creation = _int_field(prompt_details, "cache_creation_tokens")
+        reasoning = _int_field(_field(usage, "completion_tokens_details"), "reasoning_tokens")
+    else:
+        completion = _int_field(usage, "output_tokens")
+        reasoning = _int_field(_field(usage, "output_tokens_details"), "reasoning_tokens")
         input_details = _field(usage, "input_tokens_details")
         if input_details is not None:
-            cached = cached or _int_field(input_details, "cached_tokens")
-            cache_creation = cache_creation or _int_field(
-                input_details, "cache_creation_tokens"
-            )
-            prompt = input_tokens
+            # OpenAI Responses API: prompt_tokens already includes cached.
+            prompt = _int_field(usage, "input_tokens")
+            cached = _int_field(input_details, "cached_tokens")
+            cache_creation = _int_field(input_details, "cache_creation_tokens")
         else:
-            cached = cached or _int_field(usage, "cache_read_input_tokens")
-            cache_creation = cache_creation or _int_field(
-                usage, "cache_creation_input_tokens"
-            )
-            prompt = input_tokens + cached + cache_creation
-        completion = _int_field(usage, "output_tokens")
+            # Anthropic Messages: cache tokens are prompt siblings, so fold in.
+            cached = _int_field(usage, "cache_read_input_tokens")
+            cache_creation = _int_field(usage, "cache_creation_input_tokens")
+            prompt = _int_field(usage, "input_tokens") + cached + cache_creation
     return {
         "prompt_tokens": prompt,
         "cached_tokens": cached,
         "cache_creation_tokens": cache_creation,
         "completion_tokens": completion,
+        "reasoning_tokens": reasoning,
         "total_tokens": prompt + completion,
     }
 

@@ -469,61 +469,107 @@ def test_finalize_copies_proxy_strip_log_artifact(tmp_path: Path) -> None:
     assert (run_dir / "proxy_strip_log.jsonl").read_text() == '{"removed":["web_search"]}\n'
 
 
+def _record(task: str, ts: str, model: str, tier: str, *, trial: str = "t", session: str = "s",
+            **tokens: int) -> str:
+    base = {"prompt_tokens": 0, "cached_tokens": 0, "cache_creation_tokens": 0,
+            "completion_tokens": 0, "reasoning_tokens": 0, "total_tokens": 0}
+    base.update(tokens)
+    return json.dumps({"task": task, "ts": ts, "trial_id": trial, "session_id": session,
+                       "model": model, "tier": tier, **base})
+
+
 def test_summarize_routing_log_groups_by_task_and_model(tmp_path: Path) -> None:
     module = _load_manifest_module()
     log = tmp_path / "routing_requests.jsonl"
     log.write_text(
         "\n".join([
-            json.dumps({"task": "task-a", "session_id": "s1", "model": "opus",
-                        "tier": "strong", "prompt_tokens": 10, "completion_tokens": 2,
-                        "total_tokens": 12}),
-            json.dumps({"task": "task-a", "session_id": "s1", "model": "kimi",
-                        "tier": "weak", "prompt_tokens": 4, "completion_tokens": 1,
-                        "total_tokens": 5}),
-            json.dumps({"task": "task-b", "session_id": "s2", "model": "opus",
-                        "tier": "strong", "prompt_tokens": 7, "completion_tokens": 3,
-                        "total_tokens": 10}),
+            _record("task-a", "2026-01-01T00:00:01Z", "opus", "strong",
+                    prompt_tokens=10, cached_tokens=6, completion_tokens=2,
+                    reasoning_tokens=1, total_tokens=12),
+            _record("task-a", "2026-01-01T00:00:02Z", "kimi", "weak",
+                    prompt_tokens=4, completion_tokens=1, total_tokens=5),
             "not json",
-            json.dumps({"model": "opus", "prompt_tokens": 1, "completion_tokens": 1,
-                        "total_tokens": 2}),
+            json.dumps(["not", "a", "dict"]),
         ]) + "\n"
     )
 
     summary = module.summarize_routing_log(log)
 
-    assert summary["total_requests"] == 4
+    assert summary["total_requests"] == 2
     task_a = summary["tasks"]["task-a"]
     assert task_a["requests"] == 2
-    assert task_a["sessions"] == ["s1"]
-    assert task_a["models"] == [
-        {"model": "kimi", "tier": "weak", "calls": 1, "prompt_tokens": 4,
-         "cached_tokens": 0, "cache_creation_tokens": 0,
-         "completion_tokens": 1, "total_tokens": 5},
-        {"model": "opus", "tier": "strong", "calls": 1, "prompt_tokens": 10,
-         "cached_tokens": 0, "cache_creation_tokens": 0,
-         "completion_tokens": 2, "total_tokens": 12},
+    assert task_a["n_retries"] == 0
+    assert task_a["retries"]["calls"] == 0
+    assert task_a["final"]["calls"] == 2
+    assert task_a["final"]["totals"] == {
+        "prompt_tokens": 14, "cached_tokens": 6, "cache_creation_tokens": 0,
+        "completion_tokens": 3, "reasoning_tokens": 1, "total_tokens": 17,
+    }
+    assert [(b["model"], b["tier"], b["calls"]) for b in task_a["final"]["models"]] == [
+        ("kimi", "weak", 1), ("opus", "strong", 1),
     ]
-    assert summary["tasks"]["task-b"]["models"][0]["total_tokens"] == 10
-    assert summary["tasks"]["unattributed"]["requests"] == 1
 
 
-def test_summarize_routing_log_keeps_mixed_tiers_separate(tmp_path: Path) -> None:
+def test_summarize_routing_log_nets_out_retried_attempt(tmp_path: Path) -> None:
     module = _load_manifest_module()
     log = tmp_path / "routing_requests.jsonl"
+    # Same trial, two attempts: the earlier session was retried away.
     log.write_text(
         "\n".join([
-            json.dumps({"task": "task-a", "model": "opus", "tier": "strong",
-                        "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}),
-            json.dumps({"task": "task-a", "model": "opus", "tier": "weak",
-                        "prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}),
+            _record("task-a", "2026-01-01T00:00:01Z", "opus", "strong",
+                    trial="trial-1", session="retry-sess",
+                    prompt_tokens=100, completion_tokens=10, total_tokens=110),
+            _record("task-a", "2026-01-01T00:05:01Z", "opus", "strong",
+                    trial="trial-1", session="final-sess",
+                    prompt_tokens=20, completion_tokens=3, total_tokens=23),
         ]) + "\n"
     )
 
-    buckets = module.summarize_routing_log(log)["tasks"]["task-a"]["models"]
+    task_a = module.summarize_routing_log(log)["tasks"]["task-a"]
 
-    assert [(b["model"], b["tier"], b["calls"]) for b in buckets] == [
-        ("opus", "strong", 1), ("opus", "weak", 1),
-    ]
+    assert task_a["n_retries"] == 1
+    assert task_a["final"]["totals"]["total_tokens"] == 23
+    assert task_a["retries"]["totals"]["total_tokens"] == 110
+    assert task_a["final"]["calls"] == 1
+    assert task_a["retries"]["calls"] == 1
+
+
+def test_summarize_routing_log_keeps_all_concurrent_trials(tmp_path: Path) -> None:
+    module = _load_manifest_module()
+    log = tmp_path / "routing_requests.jsonl"
+    # Two trials of the same task (k>1). Neither retried, so both are final even
+    # though their calls interleave in time.
+    log.write_text(
+        "\n".join([
+            _record("task-a", "2026-01-01T00:00:01Z", "opus", "strong",
+                    trial="trial-1", session="s1", total_tokens=10),
+            _record("task-a", "2026-01-01T00:00:02Z", "opus", "strong",
+                    trial="trial-2", session="s2", total_tokens=20),
+        ]) + "\n"
+    )
+
+    task_a = module.summarize_routing_log(log)["tasks"]["task-a"]
+
+    assert task_a["n_retries"] == 0
+    assert task_a["final"]["calls"] == 2
+    assert task_a["final"]["totals"]["total_tokens"] == 30
+    assert task_a["retries"]["calls"] == 0
+
+
+def test_summarize_routing_log_untagged_records_all_final(tmp_path: Path) -> None:
+    module = _load_manifest_module()
+    log = tmp_path / "routing_requests.jsonl"
+    # No trial_id -> no netting, everything counts as final.
+    log.write_text(json.dumps({
+        "task": "task-a", "ts": "2026-01-01T00:00:01Z", "session_id": "s1",
+        "model": "opus", "tier": "strong", "total_tokens": 5,
+    }) + "\n")
+
+    task_a = module.summarize_routing_log(log)["tasks"]["task-a"]
+
+    assert task_a["final"]["calls"] == 1
+    assert task_a["retries"]["calls"] == 0
+    assert task_a["n_retries"] == 0
 
 
 def test_finalize_writes_routing_stats_by_task(tmp_path: Path) -> None:
@@ -546,8 +592,8 @@ def test_finalize_writes_routing_stats_by_task(tmp_path: Path) -> None:
 
     assert rc == 0
     summary = json.loads(by_task.read_text())
-    assert summary["tasks"]["task-a"]["models"][0]["calls"] == 1
-    assert summary["tasks"]["task-a"]["models"][0]["cached_tokens"] == 3
+    assert summary["tasks"]["task-a"]["final"]["models"][0]["calls"] == 1
+    assert summary["tasks"]["task-a"]["final"]["models"][0]["cached_tokens"] == 3
     manifest = json.loads(out.read_text())
     assert manifest["outcomes"]["routing_stats_by_task_json_status"] == "present"
 

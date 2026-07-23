@@ -11,16 +11,18 @@ use switchyard_core::{
 };
 
 use super::parsing::{ProfileConfigDocument, SerializedProfileConfig, TargetConfig};
-use crate::profiles::ProfileConfigEntry;
+use crate::profiles::{ProfileConfigEntry, SubagentOverrideProfile};
 use crate::{Profile, ProfileHooks};
 
 impl ProfileConfigDocument {
     /// Resolves endpoints and validates every profile through its owning profile type.
     pub fn resolve(&self) -> Result<ProfileConfigPlan> {
         let targets = self.resolve_targets()?;
+        let (profiles, profile_subagent_targets) = self.resolve_profiles(&targets)?;
         Ok(ProfileConfigPlan {
-            profiles: self.resolve_profiles(&targets)?,
             targets,
+            profiles,
+            profile_subagent_targets,
         })
     }
 
@@ -37,19 +39,35 @@ impl ProfileConfigDocument {
     }
 
     // Parses profile-specific config bodies into the generated typed profile enum.
+    // Also collects resolved sub-agent targets for profiles that declare one.
     fn resolve_profiles(
         &self,
         targets: &BTreeMap<LlmTargetId, LlmTarget>,
-    ) -> Result<BTreeMap<ProfileId, ProfileConfigEntry>> {
+    ) -> Result<(
+        BTreeMap<ProfileId, ProfileConfigEntry>,
+        BTreeMap<ProfileId, LlmTarget>,
+    )> {
         let env = ProfileBuildEnv::new(targets);
         let mut profiles = BTreeMap::new();
+        let mut subagent_targets: BTreeMap<ProfileId, LlmTarget> = BTreeMap::new();
         for (profile_id, profile) in &self.profiles {
+            // The envelope-level sub-agent override must name a resolvable target;
+            // an unknown reference is a startup configuration error.
+            if let Some(target_id) = profile.subagent_target() {
+                let target = targets.get(target_id).ok_or_else(|| {
+                    SwitchyardError::InvalidConfig(format!(
+                        "profile {profile_id}: subagent_target references unknown target {}",
+                        target_id.as_str()
+                    ))
+                })?;
+                subagent_targets.insert(profile_id.clone(), target.clone());
+            }
             profiles.insert(
                 profile_id.clone(),
                 resolve_profile(profile_id, profile, &env)?,
             );
         }
-        Ok(profiles)
+        Ok((profiles, subagent_targets))
     }
 }
 
@@ -150,6 +168,8 @@ pub struct ProfileConfigPlan {
     targets: BTreeMap<LlmTargetId, LlmTarget>,
     /// Typed profile configs keyed by the user-facing profile ID.
     profiles: BTreeMap<ProfileId, ProfileConfigEntry>,
+    /// Resolved sub-agent override targets for profiles that declare one.
+    profile_subagent_targets: BTreeMap<ProfileId, LlmTarget>,
 }
 
 impl fmt::Debug for ProfileConfigPlan {
@@ -227,14 +247,26 @@ impl ProfileConfigPlan {
     }
 
     // Builds one typed profile config with profile-ID context in errors.
+    // Wraps with SubagentOverrideProfile when the profile declares a subagent_target.
     fn build_typed_profile(
         &self,
         profile_id: &ProfileId,
         profile: &ProfileConfigEntry,
     ) -> Result<Box<dyn Profile>> {
-        profile.build_boxed().map_err(|error| {
+        let inner = profile.build_boxed().map_err(|error| {
             SwitchyardError::InvalidConfig(format!("profile {profile_id}: {error}"))
-        })
+        })?;
+        if let Some(target) = self.profile_subagent_targets.get(profile_id) {
+            SubagentOverrideProfile::new(inner, target.clone())
+                .map(|p| Box::new(p) as Box<dyn Profile>)
+                .map_err(|error| {
+                    SwitchyardError::InvalidConfig(format!(
+                        "profile {profile_id}: subagent override: {error}"
+                    ))
+                })
+        } else {
+            Ok(inner)
+        }
     }
 }
 

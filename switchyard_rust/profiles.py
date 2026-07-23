@@ -26,6 +26,7 @@ _PROFILE_EXPORTS = (
     "parse_profile_config_str",
     "ProfileInput",
     "ProfileRequestMetadata",
+    "is_subagent_request",
 )
 __all__ = _PROFILE_EXPORTS
 

@@ -56,10 +56,10 @@
 //!
 //! Concrete algorithms live in [`algorithms`]:
 //!
-//! [`algorithms::Random`](crate::algorithms::Random) provides uniform random routing.
+//! [`algorithms::Random`] provides uniform random routing.
 //!
-//! [`algorithms::LlmClassifier`](crate::algorithms::LlmClassifier) classifies
-//! with one model, then routes to a strong/weak model depending on the classifier's choice.
+//! [`algorithms::LlmClassifier`] classifies with one model, then routes to a strong/weak
+//! model depending on the classifier's choice.
 
 mod core;
 pub use core::*;
