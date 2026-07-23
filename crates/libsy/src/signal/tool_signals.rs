@@ -12,7 +12,7 @@
 //! All logic is pure and deterministic — no I/O, no shared state.
 
 use serde_json::Value;
-use switchyard_core::{ChatRequest, ChatRequestType};
+use switchyard_protocol::{Metadata, Request, WireFormat};
 
 // ─── severity constants ───────────────────────────────────────────────────────
 
@@ -181,7 +181,7 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 /// Tool-execution signals stamped on `ProxyContext`. Read by stage_router pickers
 /// via [`crate::get_tool_result_signal`].
 #[derive(Clone, Debug, Default)]
-pub struct ToolResultSignal {
+pub struct ToolSignals {
     /// `0.0` clean · `0.3` soft (exit_nonzero) · `0.7` hard · `1.0` critical.
     pub severity: f32,
     /// Error pattern names that fired in the most recent tool result.
@@ -212,6 +212,12 @@ pub struct ToolResultSignal {
     pub turn_depth: u32,
     /// Char count of the last user message.
     pub prompt_char_count: u32,
+}
+
+impl ToolSignals {
+    pub fn from_request(request: &Request, window_size: Option<usize>) -> Self {
+        extract_tool_signals_with_window(request, window_size.unwrap_or(DEFAULT_RECENT_WINDOW))
+    }
 }
 
 // `command` is the lowercased Bash command line; None for non-Bash tools.
@@ -265,10 +271,6 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 
 /// Extract all tool-execution signals from a [`ChatRequest`].
 ///
-/// Uses [`DEFAULT_RECENT_WINDOW`] for the sliding-window `recent_*` counts.
-/// Callers wanting a different window should use
-/// [`extract_tool_signals_with_window`] directly.
-///
 /// Dispatches on the request's wire format:
 ///
 /// * **OpenAI chat** — `messages[]` with `role: "tool"` for results;
@@ -278,41 +280,21 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 /// * **OpenAI responses** — `input[]` with `type: "function_call_output"`;
 ///   `type: "function_call"` for call names.
 ///
-/// Returns [`ToolResultSignal::default()`] when the body is absent or
+/// Returns [`ToolSignals::default()`] when the body is absent or
 /// the messages list is empty — callers can always read `signal.severity`.
-pub fn extract_tool_signals(request: &ChatRequest) -> ToolResultSignal {
-    extract_tool_signals_with_window(request, DEFAULT_RECENT_WINDOW)
-}
-
-/// Like [`extract_tool_signals`] but with a caller-supplied sliding-window
-/// size for the `recent_*` counts.
-pub fn extract_tool_signals_with_window(
-    request: &ChatRequest,
-    recent_window: usize,
-) -> ToolResultSignal {
-    let body = request.body();
+fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
+    let Some(Some(wire_format)) = request.metadata.as_ref().map(|m| m.wire_format) else {
+        return ToolSignals::default();
+    };
+    let Some(body) = request.raw_request.as_ref() else {
+        return ToolSignals::default();
+    };
     let Some(obj) = body.as_object() else {
-        return ToolResultSignal::default();
+        return ToolSignals::default();
     };
 
-    match request.request_type() {
-        ChatRequestType::Anthropic => {
-            let messages = obj
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            extract_from_messages_anthropic(messages, recent_window)
-        }
-        ChatRequestType::OpenAiResponses => {
-            let items = obj
-                .get("input")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            extract_from_input_responses(items, recent_window)
-        }
-        ChatRequestType::OpenAiChat => {
+    match wire_format {
+        WireFormat::OpenAiChat => {
             let messages = obj
                 .get("messages")
                 .and_then(Value::as_array)
@@ -320,12 +302,28 @@ pub fn extract_tool_signals_with_window(
                 .unwrap_or(&[]);
             extract_from_messages_openai_chat(messages, recent_window)
         }
+        WireFormat::AnthropicMessages => {
+            let messages = obj
+                .get("messages")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            extract_from_messages_anthropic(messages, recent_window)
+        }
+        WireFormat::OpenAiResponses => {
+            let items = obj
+                .get("input")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            extract_from_input_responses(items, recent_window)
+        }
     }
 }
 
 // ─── format-specific extractors ──────────────────────────────────────────────
 
-fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolResultSignal {
+fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolSignals {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut prompt_char_count: u32 = 0;
@@ -385,7 +383,7 @@ fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -
     )
 }
 
-fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> ToolResultSignal {
+fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> ToolSignals {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut prompt_char_count: u32 = 0;
@@ -461,7 +459,7 @@ fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> 
     )
 }
 
-fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolResultSignal {
+fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolSignals {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut prompt_char_count: u32 = 0;
@@ -522,7 +520,7 @@ fn build_signal(
     turn_depth: u32,
     prompt_char_count: u32,
     recent_window: usize,
-) -> ToolResultSignal {
+) -> ToolSignals {
     let (severity, patterns) = if let Some(last) = tool_texts.last() {
         classify_text(last)
     } else {
@@ -585,7 +583,7 @@ fn build_signal(
 
     let tests_passed = detect_tests_passed(&tool_texts);
 
-    ToolResultSignal {
+    ToolSignals {
         severity,
         patterns,
         no_error_streak,
@@ -732,6 +730,30 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Build a `Request` carrying `body` as its raw payload, tagged with `wire_format`.
+    fn request_with(wire_format: WireFormat, body: Value) -> Request {
+        Request {
+            raw_request: Some(body),
+            metadata: Some(Metadata {
+                wire_format: Some(wire_format),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn openai_chat_request(body: Value) -> Request {
+        request_with(WireFormat::OpenAiChat, body)
+    }
+
+    fn anthropic_request(body: Value) -> Request {
+        request_with(WireFormat::AnthropicMessages, body)
+    }
+
+    fn openai_responses_request(body: Value) -> Request {
+        request_with(WireFormat::OpenAiResponses, body)
+    }
+
     #[test]
     fn clean_text_has_zero_severity() {
         let (sev, patterns) = classify_text("everything went fine");
@@ -791,14 +813,22 @@ mod tests {
 
     #[test]
     fn extract_openai_chat_tool_results() {
-        let request = ChatRequest::openai_chat(json!({
+        let raw_request = Some(json!({
             "messages": [
                 {"role": "user", "content": "do something"},
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Edit"}}]},
                 {"role": "tool", "tool_call_id": "1", "content": "Traceback (most recent call last):\n  ValueError"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let request = Request {
+            raw_request,
+            metadata: Some(Metadata {
+                wire_format: Some(WireFormat::OpenAiChat),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, HARD);
         assert!(sig.patterns.contains(&"traceback".to_string()));
         assert_eq!(sig.edit_count, 1);
@@ -807,7 +837,7 @@ mod tests {
 
     #[test]
     fn extract_anthropic_tool_results() {
-        let request = ChatRequest::anthropic(json!({
+        let request = anthropic_request(json!({
             "messages": [
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "1",
@@ -815,20 +845,20 @@ mod tests {
                 ]},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, HARD);
     }
 
     #[test]
     fn extract_responses_api_tool_results() {
-        let request = ChatRequest::openai_responses(json!({
+        let request = openai_responses_request(json!({
             "input": [
                 {"type": "function_call", "name": "Write"},
                 {"type": "function_call_output", "call_id": "1",
                  "output": "file written successfully"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
     }
@@ -837,7 +867,7 @@ mod tests {
     fn recent_window_counts_only_last_three_tool_calls() {
         // 5 writes + 1 edit at the end → recent window of 3 should see
         // 1 edit + 2 writes (not all 5 writes).
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
                 {"role": "tool", "content": "ok"},
@@ -853,7 +883,7 @@ mod tests {
                 {"role": "tool", "content": "ok"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 5);
         assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.recent_write_count, 2);
@@ -865,7 +895,7 @@ mod tests {
         // Same six tool calls (1 edit at the end, 5 writes before).
         // With recent_window=3 → recent_writes=2, recent_edits=1.
         // With recent_window=6 → recent_writes=5, recent_edits=1 (all calls).
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
                 {"role": "tool", "content": "ok"},
@@ -893,7 +923,7 @@ mod tests {
     #[test]
     fn bash_heredoc_counts_as_write() {
         // Claude Code's pattern on TB 2.0 — write a scratch file via heredoc.
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{
                     "function": {
@@ -903,7 +933,7 @@ mod tests {
                 }]},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.write_count, 1,
             "Bash heredoc should bucket into write_count"
@@ -913,7 +943,7 @@ mod tests {
 
     #[test]
     fn bash_sed_inplace_counts_as_edit() {
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{
                     "function": {
@@ -923,7 +953,7 @@ mod tests {
                 }]},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.edit_count, 1,
             "Bash sed -i should bucket into edit_count"
@@ -934,7 +964,7 @@ mod tests {
     #[test]
     fn bash_non_mutating_does_not_count() {
         // ls, cat, grep — should not increment either counter.
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{
                     "function": {"name": "Bash", "arguments": "{\"command\": \"ls -la /app\"}"}
@@ -944,7 +974,7 @@ mod tests {
                 }]},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 0);
         assert_eq!(sig.edit_count, 0);
     }
@@ -998,7 +1028,7 @@ mod tests {
     #[test]
     fn anthropic_bash_heredoc_extracts_command() {
         // Anthropic format: tool_use.input is an object, not a JSON string.
-        let request = ChatRequest::anthropic(json!({
+        let request = anthropic_request(json!({
             "messages": [
                 {"role": "assistant", "content": [
                     {"type": "tool_use", "name": "Bash",
@@ -1006,7 +1036,7 @@ mod tests {
                 ]},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.write_count, 1,
             "Anthropic Bash heredoc must also be detected"
@@ -1015,25 +1045,25 @@ mod tests {
 
     #[test]
     fn recent_window_falls_back_to_full_history_when_short() {
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.recent_write_count, 1);
         assert_eq!(sig.recent_edit_count, 0);
     }
 
     #[test]
     fn clean_tool_result_has_zero_severity_and_non_empty_streak() {
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "tool", "tool_call_id": "1", "content": "output ok"},
                 {"role": "tool", "tool_call_id": "2", "content": "another ok"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.no_error_streak, 2);
     }
@@ -1106,7 +1136,7 @@ mod tests {
     #[test]
     fn pure_bash_streak_counts_trailing_other() {
         // 5 trailing non-classified Bash calls → streak == 5.
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
                     "arguments": "{\"command\": \"make\"}"}}]},
@@ -1125,7 +1155,7 @@ mod tests {
                 {"role": "tool", "content": "ok"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.pure_bash_streak, 5);
         assert_eq!(sig.write_count, 0);
         assert_eq!(sig.read_count, 0);
@@ -1133,7 +1163,7 @@ mod tests {
 
     #[test]
     fn pure_bash_streak_resets_on_write() {
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
                     "arguments": "{\"command\": \"make\"}"}}]},
@@ -1142,7 +1172,7 @@ mod tests {
                 {"role": "tool", "content": "ok"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.pure_bash_streak, 0);
         assert_eq!(sig.write_count, 1);
     }
@@ -1150,7 +1180,7 @@ mod tests {
     #[test]
     fn recent_window_tracks_todowrite_and_read() {
         // Final 3 tool calls: TodoWrite, Read, TodoWrite.
-        let request = ChatRequest::openai_chat(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
                     "arguments": "{\"command\": \"make\"}"}}]},
@@ -1163,7 +1193,7 @@ mod tests {
                 {"role": "tool", "content": "ok"},
             ]
         }));
-        let sig = extract_tool_signals(&request);
+        let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.todowrite_count, 2);
         assert_eq!(sig.recent_todowrite_count, 2);
         assert_eq!(sig.read_count, 1);
