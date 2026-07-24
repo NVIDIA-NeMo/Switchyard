@@ -131,6 +131,37 @@ async def test_runtime_stats_reach_profile_classifier(
     assert snapshot["routing_decisions"]["stage_router"]["llm-classifier"] == 1
 
 
+def test_anthropic_capable_tier_wrapped_for_cache_breakpoints() -> None:
+    """The Anthropic tier is cache-wrapped so Opus prompt caching works for any
+    client format; the OpenAI tier passes through unwrapped."""
+    from switchyard.lib.backends.anthropic_cache_breakpoint_backend import (
+        AnthropicCacheBreakpointBackend,
+    )
+
+    config = StageRouterConfig.model_validate({
+        "picker": "efficient_first",
+        "confidence_threshold": 0.5,
+        "fallback_target_on_evict": "capable",
+        "capable": {
+            "id": "capable",
+            "model": "claude-opus-4-8",
+            "format": "anthropic",
+            "api_key": "capable-key",
+            "base_url": "http://127.0.0.1:9/capable/v1",
+        },
+        "efficient": {
+            "id": "efficient",
+            "model": "glm-5.2",
+            "format": "openai",
+            "api_key": "efficient-key",
+            "base_url": "http://127.0.0.1:9/efficient/v1",
+        },
+    })
+    tiers = StageRouterProfileConfig.from_config(config).build()._backend._backends
+    assert isinstance(tiers["capable"], AnthropicCacheBreakpointBackend)
+    assert not isinstance(tiers["efficient"], AnthropicCacheBreakpointBackend)
+
+
 def _chat_request() -> ChatRequest:
     """Build the OpenAI request shape passed through the stage_router profile."""
     return ChatRequest.openai_chat({
