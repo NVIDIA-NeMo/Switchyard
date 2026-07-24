@@ -7,6 +7,7 @@ Switchyard currently follows the OSS-style NeMo path for GitHub builds:
 - regular CI runs tests, linting, type checks, Rust checks, and slim-install smoke checks;
 - manual dev builds create one Linux x86_64 wheel as a one-day GitHub Actions artifact;
 - manual dev matrix builds create the full sdist and wheel set as GitHub Actions artifacts;
+- manual internal scan triggers send explicit wheel URLs to the NVIDIA GitLab scan pipeline;
 - root `vMAJOR.MINOR.PATCH` tags run the complete release validation and wheel matrix;
 - public PyPI/GitHub publishing happens only from approved `vMAJOR.MINOR.PATCH` tag releases.
 
@@ -56,6 +57,33 @@ Use this to prove the complete release matrix before cutting an official tag:
 This path stamps the requested `.dev` version, runs the release checks, builds the sdist, builds the
 full abi3 wheel matrix, and uploads the distributions as GitHub Actions artifacts. It does not
 publish anything to PyPI.
+
+## Manual Internal Security Scan
+
+Use this to test the NVIDIA GitLab scan pipeline against already-accessible wheel URLs:
+
+| Input | Value |
+|---|---|
+| `trigger_internal_scan` | `true` |
+| `internal_scan_wheel_urls` | Comma-separated HTTPS wheel URLs |
+| `internal_scan_wheel_version` | Optional explicit version label |
+
+The scan trigger calls the internal GitLab project:
+
+```text
+https://gitlab-master.nvidia.com/aire/agents/nemo-switchyard-pipeline
+```
+
+The GitHub repository needs these secrets before the trigger can work:
+
+| Secret | Value |
+|---|---|
+| `GITLAB_PIPELINE_URL` | GitLab pipeline trigger endpoint for the internal scan project |
+| `GITLAB_TRIGGER_TOKEN` | GitLab pipeline trigger token for the scan project |
+
+The GitLab scan project also needs nSpect credentials and the Switchyard nSpect program id. This
+manual path is URL-based for the first pass; it does not stage GitHub artifacts into Artifactory and
+does not publish anything.
 
 ## Official Release Build
 

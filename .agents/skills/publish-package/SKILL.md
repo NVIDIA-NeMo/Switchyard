@@ -12,6 +12,7 @@ wheels separate from official tag-gated release builds.
 |---|---|---|---|---|
 | Dev wheel artifact | Manual `publish.yml` dispatch with `build_dev_artifact=true` | GitHub Actions | One-day GitHub artifact | `docs/internal/release_workflow.md` |
 | Dev matrix artifact | Manual `publish.yml` dispatch with `build_dev_matrix=true` | GitHub Actions | Full matrix GitHub artifacts | `docs/internal/release_workflow.md` |
+| Internal scan trigger | Manual `publish.yml` dispatch with `trigger_internal_scan=true` and explicit wheel URLs | GitHub Actions → GitLab | NVIDIA GitLab nSpect/wheeltamer pipeline | `docs/internal/release_workflow.md` |
 | Official release build | Root `vMAJOR.MINOR.PATCH` tag | GitHub Actions `.github/workflows/publish.yml` | Full release artifact matrix + PyPI Trusted Publishing via `uv publish` | `.github/workflows/publish.yml` |
 
 Release publishing stays on the public GitHub/PyPI path. Manual branch builds only produce
@@ -25,6 +26,7 @@ artifacts; root release tags publish through PyPI Trusted Publishing.
 - Keep `.dev` artifacts public-safe because GitHub Actions artifacts may be shared for review.
 - Full wheel matrices may run manually for validation, but PyPI publishing belongs only on root
   `vMAJOR.MINOR.PATCH` tag releases.
+- Internal scan triggers must pass explicit wheel URLs; they do not publish or stage artifacts.
 - Manual dev builds should build exactly one Linux x86_64 wheel artifact with one-day retention.
 - Use PyPI Trusted Publishing with the GitHub environment named `pypi`; do not add long-lived PyPI tokens.
 
@@ -41,10 +43,16 @@ and `Version`.
 | `build_dev_artifact` | `false` | Set to `true` to build one temporary wheel artifact |
 | `build_dev_matrix` | `false` | Set to `true` to build the complete sdist and wheel matrix as artifacts |
 | `dev_version` | `0.0.1.dev0` | PEP 440 `.dev` version for wheel metadata |
+| `trigger_internal_scan` | `false` | Set to `true` to trigger the internal GitLab scan pipeline |
+| `internal_scan_wheel_urls` | `""` | Comma-separated HTTPS wheel URLs to scan/register |
+| `internal_scan_wheel_version` | `""` | Optional version label; defaults to `dev_version` |
 
 ## Required Secrets
 
 The artifact-only dev build does not require release secrets.
+
+The internal scan trigger requires `GITLAB_PIPELINE_URL` and `GITLAB_TRIGGER_TOKEN` in GitHub, plus
+nSpect credentials on the GitLab scan project.
 
 The official publish job uses `uv publish --trusted-publishing always`; no PyPI token is required.
 Manual dev builds never publish to PyPI.
