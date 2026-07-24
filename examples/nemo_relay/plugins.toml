@@ -1,0 +1,55 @@
+# NeMo Relay plugin config: in-process libsy routing.
+# Place at .nemo-relay/plugins.toml in the project you launch from.
+#
+# Routes between a strong and a weak model served by OpenRouter's
+# Anthropic-compatible endpoint. Set OPENROUTER_AUTHORIZATION to
+# "Bearer <your OpenRouter API key>" before launching. The observability
+# component writes routing events to nemo-relay-events-*.jsonl in the
+# working directory.
+version = 1
+
+[[components]]
+kind = "switchyard"
+enabled = true
+
+[components.config]
+mode = "enforce"
+decision_backend = "libsy"
+request_materialization = "summary_only"
+context_mode = "payload_only"
+enabled_inbound_profiles = ["anthropic_messages"]
+
+[components.config.libsy]
+algorithm = "random"
+
+[components.config.default_targets]
+anthropic_messages = "strong"
+
+[components.config.targets.strong]
+model = "anthropic/claude-opus-4.8"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://openrouter.ai/api"
+
+[components.config.targets.strong.header_env]
+authorization = "OPENROUTER_AUTHORIZATION"
+
+[components.config.targets.weak]
+model = "anthropic/claude-sonnet-5"
+protocol = "anthropic_messages"
+endpoint = "/v1/messages"
+base_url = "https://openrouter.ai/api"
+
+[components.config.targets.weak.header_env]
+authorization = "OPENROUTER_AUTHORIZATION"
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+mode = "append"
