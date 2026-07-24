@@ -4,18 +4,13 @@
 //! Integration tests for the libsy Rust server.
 
 use std::collections::{BTreeMap, HashSet};
-use std::convert::Infallible;
 use std::error::Error;
 use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
 use axum::http::{Request as HttpRequest, StatusCode};
-use axum::response::sse::{Event, Sse};
-use axum::response::{IntoResponse, Response as HttpResponse};
-use axum::routing::post;
-use axum::{Json, Router};
+use axum::Router;
 use http_body_util::BodyExt;
 use libsy::algorithms::Random;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
@@ -23,101 +18,13 @@ use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_server::config::load_server_state;
 use switchyard_server::{build_switchyard_router, ServerState};
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
+use switchyard_test_server::MockLlmServer;
 use tower::ServiceExt;
 
 type TestError = Box<dyn Error + Send + Sync>;
 type TestResult<T = ()> = Result<T, TestError>;
 
 const ROUTE_MODEL: &str = "switchyard/random";
-
-struct MockUpstream {
-    base_url: String,
-    calls: Arc<Mutex<Vec<Value>>>,
-    task: JoinHandle<()>,
-}
-
-impl MockUpstream {
-    async fn start() -> TestResult<Self> {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let app = Router::new()
-            .route("/v1/chat/completions", post(upstream_chat))
-            .with_state(Arc::clone(&calls));
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let task = tokio::spawn(async move {
-            if let Err(error) = axum::serve(listener, app).await {
-                tracing::error!(error = %error, "mock upstream stopped");
-            }
-        });
-        Ok(Self {
-            base_url: format!("http://{addr}/v1"),
-            calls,
-            task,
-        })
-    }
-}
-
-impl Drop for MockUpstream {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn upstream_chat(
-    State(calls): State<Arc<Mutex<Vec<Value>>>>,
-    Json(body): Json<Value>,
-) -> HttpResponse {
-    calls.lock().await.push(body.clone());
-    if body["messages"][0]["content"] == "fail" {
-        return (
-            StatusCode::IM_A_TEAPOT,
-            Json(json!({"error": {"message": "upstream rejected request"}})),
-        )
-            .into_response();
-    }
-
-    let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    if body["stream"].as_bool() == Some(true) {
-        let events = [
-            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
-            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "hello"}}]}).to_string(),
-            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}).to_string(),
-            "[DONE]".to_string(),
-        ];
-        let stream = futures_util::stream::iter(
-            events
-                .into_iter()
-                .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
-        );
-        return Sse::new(stream).into_response();
-    }
-
-    let content = if model == "model/classifier" {
-        "0.9"
-    } else {
-        "ok"
-    };
-    Json(json!({
-        "id": "chatcmpl-test",
-        "object": "chat.completion",
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": content},
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 2,
-            "total_tokens": 12,
-            "prompt_tokens_details": {"cached_tokens": 7}
-        }
-    }))
-    .into_response()
-}
 
 fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<ServerState> {
     let backend = Backend::OpenAiChat(HttpBackendConfig {
@@ -150,9 +57,13 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
     Ok(ServerState::new(entries)?)
 }
 
-async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Router)> {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(random_state(&upstream.base_url, routes)?);
+async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockLlmServer, Router)> {
+    let upstream = MockLlmServer::builder()
+        .default_response("ok")
+        .model_response("model/classifier", "0.9")
+        .start()
+        .await?;
+    let app = build_switchyard_router(random_state(&upstream.base_url(), routes)?);
     Ok((upstream, app))
 }
 
@@ -203,7 +114,11 @@ impl Response {
 
 #[tokio::test]
 async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
-    let upstream = MockUpstream::start().await?;
+    let upstream = MockLlmServer::builder()
+        .default_response("ok")
+        .model_response("model/classifier", "0.9")
+        .start()
+        .await?;
     let state = load_test_config(&format!(
         r#"
 schema_version = 1
@@ -237,7 +152,7 @@ strong_target = "strong"
 weak_target = "weak"
 threshold = 0.5
 "#,
-        base_url = upstream.base_url
+        base_url = upstream.base_url()
     ))?;
     let app = build_switchyard_router(state);
 
@@ -265,11 +180,11 @@ threshold = 0.5
         );
     }
 
-    let calls = upstream.calls.lock().await;
+    let calls = upstream.requests().await;
     assert_eq!(calls.len(), 3);
-    assert_eq!(calls[0]["model"], "model/weak");
-    assert_eq!(calls[1]["model"], "model/classifier");
-    assert_eq!(calls[2]["model"], "model/strong");
+    assert_eq!(calls[0].body["model"], "model/weak");
+    assert_eq!(calls[1].body["model"], "model/classifier");
+    assert_eq!(calls[2].body["model"], "model/strong");
     Ok(())
 }
 
@@ -320,9 +235,9 @@ async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
         );
     }
 
-    let calls = upstream.calls.lock().await;
-    assert_eq!(calls[0]["model"], "model/general");
-    assert_eq!(calls[1]["model"], "model/code");
+    let calls = upstream.requests().await;
+    assert_eq!(calls[0].body["model"], "model/general");
+    assert_eq!(calls[1].body["model"], "model/code");
     Ok(())
 }
 
@@ -391,9 +306,9 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
         );
     }
 
-    let calls = upstream.calls.lock().await;
+    let calls = upstream.requests().await;
     assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|call| call["model"] == "model/a"));
+    assert!(calls.iter().all(|call| call.body["model"] == "model/a"));
     Ok(())
 }
 
@@ -414,14 +329,21 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     .await?;
 
     assert_eq!(response.status, StatusCode::OK);
-    assert!(response.text()?.contains("hello"));
+    assert!(response.text()?.contains("ok"));
     assert!(response.text()?.contains("data: [DONE]"));
     Ok(())
 }
 
 #[tokio::test]
 async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult {
-    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let upstream = MockLlmServer::builder()
+        .model_error("model/a", StatusCode::IM_A_TEAPOT)
+        .start()
+        .await?;
+    let app = build_switchyard_router(random_state(
+        &upstream.base_url(),
+        &[(ROUTE_MODEL, &["model/a"])],
+    )?);
 
     let unknown = send(
         &app,
@@ -455,7 +377,7 @@ async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult 
         "/v1/chat/completions",
         Some(json!({
             "model": ROUTE_MODEL,
-            "messages": [{"role": "user", "content": "fail"}]
+            "messages": [{"role": "user", "content": "hi"}]
         })),
     )
     .await?;

@@ -29,6 +29,7 @@ use `cargo test --workspace` before calling a broad Rust MR ready.
 | Mirror CI pytest with no live creds | `env -u OPENROUTER_API_KEY -u NVIDIA_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest tests/ -v -m "not integration"` |
 | Rust component crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-components` |
 | Rust server crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test -p switchyard-server` |
+| Rust HTTP end-to-end test | Use the private `switchyard-test-server` crate; do not add an ad hoc provider server |
 | Broad Rust crate change | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` |
 | Slim-install regression guard | see [Slim-install smoke gate](#slim-install-smoke-gate) |
 | Live e2e (only on explicit user request) | `NVIDIA_API_KEY=… uv run pytest tests/e2e/ -v -m integration -o addopts= --maxfail=10` |
