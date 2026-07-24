@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::ToolSignals;
+
 /// A value in a session's [`State`].
 #[derive(Debug, Clone)]
 pub enum StateValue {
@@ -19,6 +21,7 @@ pub enum StateValue {
 #[derive(Debug, Clone, Default)]
 pub struct State {
     pub turn_count: u32,
+    pub tool_signals: Option<ToolSignals>,
     pub extra: HashMap<String, StateValue>,
 }
 

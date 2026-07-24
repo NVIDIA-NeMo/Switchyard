@@ -11,8 +11,15 @@
 //!
 //! All logic is pure and deterministic — no I/O, no shared state.
 
+#![allow(dead_code)]
+
+use async_trait::async_trait;
 use serde_json::Value;
 use switchyard_protocol::{Request, WireFormat};
+
+use crate::Result;
+
+use crate::{Event, Processor, State};
 
 // ─── severity constants ───────────────────────────────────────────────────────
 
@@ -247,6 +254,30 @@ enum ToolCategory {
     Read,
     Plan,
     Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolSignalProcessor {
+    pub recent_window: usize,
+}
+
+impl Default for ToolSignalProcessor {
+    fn default() -> Self {
+        Self {
+            recent_window: DEFAULT_RECENT_WINDOW,
+        }
+    }
+}
+
+#[async_trait]
+impl Processor for ToolSignalProcessor {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+        if let Event::Request(req) = event {
+            let tool_signal = ToolSignals::from_request(req, Some(self.recent_window));
+            state.tool_signals = Some(tool_signal);
+        }
+        Ok(())
+    }
 }
 
 fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {

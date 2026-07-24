@@ -86,5 +86,12 @@ pub use error::{DriverError, LibsyError, Result};
 pub mod algorithms;
 
 mod observability;
-mod signal;
-pub use signal::{ToolSignals, DEFAULT_RECENT_WINDOW};
+pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
+
+// TODO cleanup once switchyard-components is removed
+pub mod stage_router {
+    pub use crate::algorithms::util::stage_router::{
+        dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
+        PickOutcome, PickerMode, ScoreResult, Tier,
+    };
+}
