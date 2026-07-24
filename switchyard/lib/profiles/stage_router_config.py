@@ -49,17 +49,13 @@ class HandoffNoteConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    #: Master switch. When ``False`` (default) no note is ever injected, even if
-    #: the note texts below are customised.
+    #: Master switch. When ``False`` (default) no note is ever injected.
     enabled: bool = False
-    #: Weak→strong note. Injected when a session escalates to the capable tier.
+    #: Note injected on every capable-tier turn driven by a real wrong signal.
     escalation_note: str = DEFAULT_ESCALATION_NOTE
-    #: Strong→weak note. ``None`` (default) disables the de-escalation direction;
-    #: set a string to also annotate hand-backs to the efficient tier.
-    deescalation_note: str | None = None
-    #: When ``True`` (default) only inject the escalation note when the escalation
-    #: was driven by a real signal (critical severity / compaction override, or the
-    #: scorer crossing the threshold), not by an ambiguous low-confidence default.
+    #: When ``True`` (default) only inject when the decision source was a real
+    #: signal (``dimensions`` or ``override``), not an ambiguous default
+    #: (``fall_open``). Keeps "stalling" from being asserted without evidence.
     only_on_wrong_signal_escalation: bool = True
 
 
@@ -89,6 +85,11 @@ class StageRouterConfig(BaseModel):
     classifier: ClassifierConfig | None = None
     #: Optional tier-transition handoff notes (off unless ``handoff_notes.enabled``).
     handoff_notes: HandoffNoteConfig | None = None
+    #: Optional system prompt prepended to every request routed to the capable
+    #: (strong) tier. Injected before the model sees the request — useful for
+    #: conciseness guidance that should apply on every Opus turn without
+    #: polluting the agent's conversation history.
+    strong_system_prompt: str | None = None
     enable_stats: bool = True
 
     @field_validator("capable", "efficient", mode="before")

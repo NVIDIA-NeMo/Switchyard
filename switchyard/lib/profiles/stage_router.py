@@ -56,6 +56,7 @@ class StageRouterProfileConfig:
                 classifier=classifier,
                 decision_log=decision_log,
                 handoff_injector=_build_handoff_injector(config.handoff_notes),
+                strong_system_prompt=config.strong_system_prompt,
             )
         )
 
@@ -92,7 +93,6 @@ def _build_handoff_injector(config: HandoffNoteConfig | None) -> HandoffNoteInje
         return None
     return HandoffNoteInjector(
         escalation_note=config.escalation_note,
-        deescalation_note=config.deescalation_note,
         only_on_wrong_signal_escalation=config.only_on_wrong_signal_escalation,
     )
 

@@ -241,6 +241,7 @@ _STAGE_ROUTER_ROUTE_KEYS = (
         "signal_recent_window",
         "classifier",
         "handoff_notes",
+        "strong_system_prompt",
         "enable_stats",
         "fallback_target_on_evict",
     })

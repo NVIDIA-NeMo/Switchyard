@@ -1,0 +1,32 @@
+# Stage-router ef · nemotron-3-ultra weak · Opus 4.8 @ high · window 5 · t0.50 · handoff notes ON.
+# Higher threshold vs tb2-1-stage-router-nemu-opus-ef-t30-w5-handoff — tighter escalation gate.
+routes:
+  switchyard:
+    type: stage_router
+    picker: efficient_first
+    confidence_threshold: 0.50
+    signal_recent_window: 5
+    fallback_target_on_evict: strong
+    enable_stats: true
+    handoff_notes:
+      enabled: true
+      only_on_wrong_signal_escalation: true
+    strong_system_prompt: "Be concise. Prefer short, targeted tool calls over lengthy explanations. Do not re-examine what is already working — focus only on the immediate blocker. Avoid restating context the conversation already contains."
+    strong:
+      model: azure/anthropic/claude-opus-4-8
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: anthropic
+      timeout_secs: 600
+      extra_body:
+        output_config:
+          effort: high
+    weak:
+      model: nvidia/nvidia/nemotron-3-ultra
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: openai
+      timeout_secs: 600
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
