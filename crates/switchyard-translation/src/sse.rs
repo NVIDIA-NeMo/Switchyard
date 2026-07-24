@@ -14,13 +14,14 @@ use crate::WireFormat;
 /// Boxed, thread-safe error carried by a streamed item.
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// The terminal SSE marker for `format`, if any. OpenAI Chat and Responses use
-/// `[DONE]`; Anthropic ends on its `message_stop` event with no marker.
+/// The terminal SSE marker accepted for each format. Anthropic itself ends on
+/// `message_stop`, but compatible providers may append `[DONE]`.
 #[inline]
 pub(crate) fn done_marker(format: WireFormat) -> Option<&'static str> {
     match format {
-        WireFormat::OpenAiChat | WireFormat::OpenAiResponses => Some("[DONE]"),
-        WireFormat::AnthropicMessages => None,
+        WireFormat::OpenAiChat | WireFormat::OpenAiResponses | WireFormat::AnthropicMessages => {
+            Some("[DONE]")
+        }
     }
 }
 
@@ -106,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_has_no_done_marker() {
-        assert_eq!(done_marker(WireFormat::AnthropicMessages), None);
+    fn anthropic_compatible_streams_may_terminate_on_done() {
+        assert_eq!(done_marker(WireFormat::AnthropicMessages), Some("[DONE]"));
     }
 }

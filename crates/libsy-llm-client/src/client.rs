@@ -166,6 +166,17 @@ impl TranslatingLlmClient {
 
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+        if backend.supports_automatic_prompt_caching(&model) {
+            let cache_control = llm_request
+                .extensions
+                .fields
+                .get("cache_control")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type": "ephemeral"}));
+            if let Value::Object(object) = &mut body {
+                object.entry("cache_control").or_insert(cache_control);
+            }
+        }
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
@@ -175,6 +186,12 @@ impl TranslatingLlmClient {
         let builder = self.client.post(backend.url()).json(&body);
         let builder = forward_metadata_headers(builder, metadata.as_ref());
         let builder = apply_extra_headers(builder, backend);
+        let builder = backend.apply_session_id(
+            builder,
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.session_id.as_deref()),
+        );
         let builder = backend.apply_auth(builder);
 
         let http_response = builder.send().await.map_err(convert_reqwest_error)?;
@@ -379,7 +396,7 @@ mod tests {
 
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request, LlmRequest};
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -398,6 +415,14 @@ mod tests {
         vec![ModelConfig::new(
             "gpt",
             Backend::OpenAiChat(config(base_url)),
+            None,
+        )]
+    }
+
+    fn openrouter_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "anthropic/claude-sonnet-4.6",
+            Backend::OpenRouterAnthropic(config(base_url)),
             None,
         )]
     }
@@ -569,6 +594,82 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn openrouter_claude_enables_prompt_caching_and_session_affinity(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .and(header("authorization", "Bearer secret"))
+            .and(header("x-session-id", "session-1"))
+            .and(body_partial_json(
+                json!({"cache_control": {"type": "ephemeral"}}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "anthropic/claude-sonnet-4.6",
+                "content": [{"type": "text", "text": "cached"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&openrouter_map(&format!("{}/api/v1", server.uri())))?;
+        let mut request = request_for(Some("anthropic/claude-sonnet-4.6"), false);
+        request.metadata = Some(Metadata {
+            session_id: Some("session-1".to_string()),
+            ..Metadata::default()
+        });
+        let response = client
+            .call_rewrite_model(Context::default(), request, None)
+            .await?;
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "cached"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_prompt_cache_ttl_overrides_default(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .and(body_partial_json(json!({
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "anthropic/claude-sonnet-4.6",
+                "content": [{"type": "text", "text": "cached"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&openrouter_map(&format!("{}/api/v1", server.uri())))?;
+        let mut request = request_for(Some("anthropic/claude-sonnet-4.6"), false);
+        request.llm_request.extensions.fields.insert(
+            "cache_control".to_string(),
+            json!({"type": "ephemeral", "ttl": "1h"}),
+        );
+        client
+            .call_rewrite_model(Context::default(), request, None)
+            .await?;
         Ok(())
     }
 

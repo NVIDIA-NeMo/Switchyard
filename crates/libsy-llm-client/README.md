@@ -20,10 +20,10 @@ provider SDK.
   default [`Backend`] and can have additional backends for other wire formats.
   [`TranslatingLlmClient::call_rewrite_model`] uses the request's metadata wire format
   when set, otherwise the model's default backend.
-- **Backends.** A [`Backend`] is one of `OpenAiChat`, `OpenAiResponses`, or
-  `Anthropic`, each wrapping an [`HttpBackendConfig`] (`base_url`, `api_key`,
-  static `extra_headers`). The variant fixes the URL path and auth scheme
-  (Bearer vs `x-api-key` + `anthropic-version`).
+- **Backends.** A [`Backend`] is one of `OpenAiChat`, `OpenAiResponses`,
+  `Anthropic`, or `OpenRouterAnthropic`, each wrapping an
+  [`HttpBackendConfig`] (`base_url`, `api_key`, static `extra_headers`). The
+  variant fixes the URL path and auth scheme.
 - **Model rewrite.** The resolved model name is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
 - **Streaming is chosen by the request.** If the encoded body has `stream: true`
@@ -164,11 +164,24 @@ fn build_multi_format_client(
 
 - The `Backend` variant sets auth: OpenAI formats send `Authorization: Bearer <key>`;
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
+- `OpenRouterAnthropic` sends bearer auth to `/api/v1/messages`. For Claude
+  models it enables automatic prompt caching with a five-minute
+  `cache_control` and forwards `Metadata::session_id` as `x-session-id` for
+  sticky routing.
 - `request.metadata.http_headers` are forwarded upstream, **except** reserved ones:
   `host`, `content-length`, `connection`, and the backend-owned
   `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
   caller's placeholder credential never overrides the backend's real key.
 - Per-backend static headers go in `HttpBackendConfig::extra_headers`.
+
+To request Anthropic's one-hour prompt cache, override the automatic default:
+
+```rust
+request.llm_request.extensions.fields.insert(
+    "cache_control".to_string(),
+    serde_json::json!({"type": "ephemeral", "ttl": "1h"}),
+);
+```
 
 ## Errors
 

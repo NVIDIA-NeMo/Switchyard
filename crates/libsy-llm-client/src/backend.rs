@@ -51,7 +51,7 @@ impl fmt::Debug for HttpBackendConfig {
     }
 }
 
-/// A configured upstream backend, one variant per built-in wire format.
+/// A configured upstream backend, including provider-specific protocol variants.
 ///
 /// The variant fixes the wire format, URL path, and auth scheme together so no
 /// invalid combination can be constructed.
@@ -63,6 +63,8 @@ pub enum Backend {
     OpenAiResponses(HttpBackendConfig),
     /// Anthropic Messages API.
     Anthropic(HttpBackendConfig),
+    /// OpenRouter's Anthropic Messages-compatible API.
+    OpenRouterAnthropic(HttpBackendConfig),
 }
 
 impl Backend {
@@ -71,7 +73,9 @@ impl Backend {
         match self {
             Backend::OpenAiChat(_) => WireFormat::OpenAiChat,
             Backend::OpenAiResponses(_) => WireFormat::OpenAiResponses,
-            Backend::Anthropic(_) => WireFormat::AnthropicMessages,
+            Backend::Anthropic(_) | Backend::OpenRouterAnthropic(_) => {
+                WireFormat::AnthropicMessages
+            }
         }
     }
 
@@ -80,7 +84,8 @@ impl Backend {
         match self {
             Backend::OpenAiChat(config)
             | Backend::OpenAiResponses(config)
-            | Backend::Anthropic(config) => config,
+            | Backend::Anthropic(config)
+            | Backend::OpenRouterAnthropic(config) => config,
         }
     }
 
@@ -93,18 +98,20 @@ impl Backend {
         match self {
             Backend::OpenAiChat(_) => openai_url(base_url, "/chat/completions"),
             Backend::OpenAiResponses(_) => openai_url(base_url, "/responses"),
-            Backend::Anthropic(_) => anthropic_url(base_url),
+            Backend::Anthropic(_) | Backend::OpenRouterAnthropic(_) => anthropic_url(base_url),
         }
     }
 
     /// Applies this backend's auth and version headers to a request builder.
     ///
-    /// OpenAI variants use `Authorization: Bearer <key>`; Anthropic uses
-    /// `x-api-key: <key>` plus the required `anthropic-version` header.
+    /// OpenAI and OpenRouter variants use `Authorization: Bearer <key>`;
+    /// Anthropic uses `x-api-key: <key>` plus the required version header.
     pub fn apply_auth(&self, mut builder: RequestBuilder) -> RequestBuilder {
         let api_key = self.config().api_key.as_deref();
         match self {
-            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+            Backend::OpenAiChat(_)
+            | Backend::OpenAiResponses(_)
+            | Backend::OpenRouterAnthropic(_) => {
                 if let Some(api_key) = api_key {
                     builder = builder.bearer_auth(api_key);
                 }
@@ -117,6 +124,29 @@ impl Backend {
             }
         }
         builder
+    }
+
+    /// Applies provider-specific session affinity used to improve cache hits.
+    pub(crate) fn apply_session_id(
+        &self,
+        mut builder: RequestBuilder,
+        session_id: Option<&str>,
+    ) -> RequestBuilder {
+        if let (Backend::OpenRouterAnthropic(_), Some(session_id)) = (self, session_id) {
+            builder = builder.header("x-session-id", session_id);
+        }
+        builder
+    }
+
+    /// Whether this backend supports top-level automatic prompt caching for `model`.
+    pub(crate) fn supports_automatic_prompt_caching(&self, model: &str) -> bool {
+        match self {
+            Backend::Anthropic(_) => true,
+            Backend::OpenRouterAnthropic(_) => model
+                .trim_start_matches('~')
+                .starts_with("anthropic/claude-"),
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => false,
+        }
     }
 
     /// Static per-backend headers to forward on every call.
@@ -139,7 +169,9 @@ impl Backend {
                 },
                 OPENAI_OVERFLOW_PHRASES,
             ),
-            Backend::Anthropic(_) => is_overflow_body(body, |_| false, ANTHROPIC_OVERFLOW_PHRASES),
+            Backend::Anthropic(_) | Backend::OpenRouterAnthropic(_) => {
+                is_overflow_body(body, |_| false, ANTHROPIC_OVERFLOW_PHRASES)
+            }
         }
     }
 }
@@ -219,6 +251,23 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_messages_uses_anthropic_path_and_format() {
+        let backend = Backend::OpenRouterAnthropic(config("https://openrouter.ai/api/v1"));
+        assert_eq!(backend.url(), "https://openrouter.ai/api/v1/messages");
+        assert_eq!(backend.wire_format(), WireFormat::AnthropicMessages);
+    }
+
+    #[test]
+    fn automatic_prompt_caching_is_model_aware() {
+        assert!(
+            Backend::Anthropic(config("x")).supports_automatic_prompt_caching("claude-sonnet-4-6")
+        );
+        let openrouter = Backend::OpenRouterAnthropic(config("x"));
+        assert!(openrouter.supports_automatic_prompt_caching("anthropic/claude-sonnet-4.6"));
+        assert!(!openrouter.supports_automatic_prompt_caching("openrouter/free"));
+    }
+
+    #[test]
     fn wire_format_matches_variant() {
         assert_eq!(
             Backend::OpenAiChat(config("x")).wire_format(),
@@ -230,6 +279,10 @@ mod tests {
         );
         assert_eq!(
             Backend::Anthropic(config("x")).wire_format(),
+            WireFormat::AnthropicMessages
+        );
+        assert_eq!(
+            Backend::OpenRouterAnthropic(config("x")).wire_format(),
             WireFormat::AnthropicMessages
         );
     }
