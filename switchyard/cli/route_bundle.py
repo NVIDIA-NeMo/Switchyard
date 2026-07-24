@@ -42,6 +42,7 @@ from switchyard.lib.profiles import (
     EscalationRouterProfileConfig,
     LatencyServiceProfileConfig,
     PlanExecuteProfileConfig,
+    PrefillProbeProfileConfig,
     ProfileSwitchyard,
     StageRouterProfileConfig,
 )
@@ -49,6 +50,7 @@ from switchyard.lib.profiles.deterministic_routing_config import DeterministicRo
 from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
+from switchyard.lib.profiles.prefill_probe_config import PrefillProbeConfig
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.profiles.stage_router_config import StageRouterConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
@@ -244,6 +246,23 @@ _STAGE_ROUTER_ROUTE_KEYS = (
         "fallback_target_on_evict",
     })
 )
+_PREFILL_PROBE_ROUTE_KEYS = (
+    _ROUTE_METADATA_KEYS
+    | _TARGET_DEFAULT_ROUTE_KEYS
+    | frozenset({
+        "probe",
+        "strong",
+        "weak",
+        "strong_checkpoint_head",
+        "weak_checkpoint_head",
+        "hidden_states_dir",
+        "checkpoint_dir",
+        "routing_policy",
+        "enable_stats",
+        "fallback_target_on_evict",
+        "tier_timeout_s",
+    })
+)
 _PLAN_EXECUTE_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
     | _TARGET_DEFAULT_ROUTE_KEYS
@@ -328,6 +347,7 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
     "escalation_router": _ESCALATION_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
+    "prefill_probe": _PREFILL_PROBE_ROUTE_KEYS,
     "plan_execute": _PLAN_EXECUTE_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
@@ -339,6 +359,7 @@ _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _TARGET_DEFAULT_KEYS,
     "escalation_router": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
+    "prefill_probe": _TARGET_DEFAULT_KEYS,
     "plan_execute": _TARGET_DEFAULT_KEYS,
 }
 
@@ -370,8 +391,8 @@ class _YamlModule(Protocol):
 
 
 #: Tier fields drilled into by :func:`routing_profile_model_ids`. The
-#: ``classifier`` tier is intentionally NOT surfaced — it is an internal-only
-#: LLM call, not a user-facing target.
+#: Internal-only ``classifier``, ``judge``, and ``probe`` tiers are
+#: intentionally not surfaced.
 _USER_FACING_TIER_FIELDS: tuple[str, ...] = (
     "strong", "weak", "planner", "executor", "target",
 )
@@ -407,7 +428,8 @@ def routing_profile_model_ids(
     """User-callable model ids from a parsed routing-profiles bundle.
 
     Returns each route's YAML key followed by its tier ``model`` fields
-    (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
+    (``strong`` / ``weak`` for stage_router/deterministic/random_routing/
+    prefill_probe,
     ``planner`` / ``executor`` for plan_execute, ``target`` for
     ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
@@ -578,11 +600,15 @@ def build_table_from_bundle(
             )
             continue
 
-        # `stage_router` and `deterministic` routes register the routing-policy chain
-        # at the route key AND hydrate each tier's catalog (`strong` + `weak`)
-        # into the table as direct passthroughs — same client-facing
-        # model-picker experience as random_routing's discovery path.
-        if route_type in ("stage_router", "deterministic", "escalation_router"):
+        # Multi-target routes register the routing-policy chain at the route
+        # key and hydrate each completion tier's catalog (`strong` + `weak`)
+        # into the table as direct passthroughs.
+        if route_type in (
+            "stage_router",
+            "deterministic",
+            "escalation_router",
+            "prefill_probe",
+        ):
             _merge_multi_target_discovery(
                 table,
                 model_id,
@@ -743,20 +769,20 @@ def _merge_multi_target_discovery(
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> None:
-    """Expand a ``stage_router``/``deterministic`` route with catalog discovery.
+    """Expand a strong/weak routing profile with catalog discovery.
 
     Registers two layers, route key first so ``registered_models()[0]`` is the
     user-declared YAML key:
 
     1. The route's primary routing-policy chain at the route key (the regular
-       stage_router/deterministic switchyard).
+       profile-backed switchyard).
     2. Each tier (``strong`` + ``weak``) registered as a direct passthrough with
        its catalog hydrated via :func:`_default_discovery_fn` — same shape the
        launcher's per-tier registration produces, so client model pickers see
        strong/weak as standalone choices alongside the routing policy.
 
-    The ``classifier`` tier (when present on the route) is intentionally not
-    discovered — it is an internal-only LLM call, not a user-facing target.
+    Internal ``classifier``, ``judge``, and ``probe`` tiers are intentionally
+    not discovered because they are not user-facing completion targets.
     """
     was_empty = not table.registered_models()
     switchyard = _build_switchyard_for_route(
@@ -875,6 +901,15 @@ def _build_switchyard_for_route(
             extra_response_processors=extra_response_processors,
         )
 
+    if route_type == "prefill_probe":
+        return _prefill_probe_switchyard(
+            route,
+            target_defaults=target_defaults,
+            stats=stats,
+            pre_routing_request_processors=pre_routing_request_processors,
+            extra_response_processors=extra_response_processors,
+        )
+
     if route_type == "plan_execute":
         return _plan_execute_switchyard(
             model_id,
@@ -886,6 +921,30 @@ def _build_switchyard_for_route(
         )
 
     raise RouteBundleConfigError(f"unsupported route type {route_type!r}")
+
+
+def _prefill_probe_switchyard(
+    route: Mapping[str, object],
+    *,
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime:
+    """Build a learned prefill-probe routing profile from route-bundle data."""
+    config = PrefillProbeConfig.model_validate(
+        _route_config(route, target_defaults, ("probe", "strong", "weak"))
+    )
+    return ProfileSwitchyard(
+        PrefillProbeProfileConfig.from_config(config)
+        .build()
+        .with_runtime_components(
+            stats_accumulator=stats,
+            enable_stats=config.enable_stats,
+            pre_request_processors=pre_routing_request_processors,
+            response_processors=extra_response_processors,
+        )
+    )
 
 
 def _deterministic_switchyard(
@@ -1528,6 +1587,7 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "escalation_router": "escalation_router",
         "stage_router": "stage_router",
         "stage_router_routing": "stage_router",
+        "prefill_probe": "prefill_probe",
         "plan": "plan_execute",
         "plan_execute": "plan_execute",
     }

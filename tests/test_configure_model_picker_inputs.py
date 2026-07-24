@@ -104,6 +104,25 @@ def test_plan_execute_planner_executor_extracted() -> None:
     ]
 
 
+def test_prefill_probe_exposes_completion_tiers_but_not_probe() -> None:
+    bundle = {
+        "routes": {
+            "complexity-router": {
+                "type": "prefill_probe",
+                "probe": {"model": "Qwen/Qwen3.6-35B-A3B"},
+                "strong": {"model": "anthropic/claude-opus-4.7"},
+                "weak": {"model": "nvidia/nemotron-3-super"},
+            },
+        },
+    }
+
+    assert _routing_profile_model_ids(bundle) == [
+        "complexity-router",
+        "anthropic/claude-opus-4.7",
+        "nvidia/nemotron-3-super",
+    ]
+
+
 def test_merge_candidate_ids_dedupes_preserves_first_seen_order() -> None:
     """Routing-profile entries first, then upstream catalog. Duplicates from
     later sources drop."""
