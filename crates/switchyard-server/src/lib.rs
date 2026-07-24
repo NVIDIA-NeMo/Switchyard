@@ -21,9 +21,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, LibsyError, Metadata, Request};
+use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
 use serde_json::{json, Value};
-use switchyard_llm_client::LlmClientError;
 use tokio::net::{TcpListener, TcpSocket};
 
 use switchyard_translation::{decode_request, WireFormat};
@@ -368,27 +367,19 @@ fn algorithm_error(error: LibsyError) -> Response {
     let LibsyError::ClientCall { source, .. } = &error else {
         return server_error(error.to_string());
     };
-    let Some(error) = source.downcast_ref::<LlmClientError>() else {
-        return server_error(error.to_string());
-    };
-    match error {
-        LlmClientError::UnknownModel(model) => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("No upstream backend configured for model {model}"),
-            "upstream_error",
-            "upstream_model_not_found",
-        ),
-        LlmClientError::UnknownModelFormat { model, format } => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("No upstream backend configured for model {model} and format {format}"),
-            "upstream_error",
-            "upstream_format_not_found",
-        ),
-        LlmClientError::MissingModel => error_response(
+    match source {
+        LlmClientError::InvalidRequest { message }
+        | LlmClientError::RequestTranslation(message) => error_response(
             StatusCode::BAD_REQUEST,
-            error.to_string(),
+            message,
             "invalid_request_error",
             "invalid_request_error",
+        ),
+        LlmClientError::Configuration { message } => error_response(
+            StatusCode::BAD_GATEWAY,
+            message,
+            "upstream_error",
+            "upstream_configuration_error",
         ),
         LlmClientError::ContextWindowExceeded { message, .. } => error_response(
             StatusCode::BAD_REQUEST,
@@ -402,14 +393,28 @@ fn algorithm_error(error: LibsyError) -> Response {
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Translation(message)
-        | LlmClientError::Transport(message)
-        | LlmClientError::Stream(message) => error_response(
+        LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
+            error_response(
+                StatusCode::BAD_GATEWAY,
+                source.to_string(),
+                "upstream_error",
+                "upstream_error",
+            )
+        }
+        LlmClientError::ResponseTranslation(message) => error_response(
             StatusCode::BAD_GATEWAY,
             message,
             "upstream_error",
             "upstream_error",
         ),
+        LlmClientError::Timeout { source } => error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            source.to_string(),
+            "upstream_error",
+            "upstream_timeout",
+        ),
+        LlmClientError::RequestEncoding(message) => server_error(message),
+        _ => server_error(error.to_string()),
     }
 }
 

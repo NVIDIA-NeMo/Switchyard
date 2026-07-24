@@ -35,7 +35,7 @@ impl RoutedLlmClient for StubClient {
         _ctx: Context,
         _request: Request,
         decision: Arc<dyn Decision>,
-    ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
         // The model to call is the routed decision's selection, not the inbound name.
         let model = decision.selected_model().to_string();
         println!("  -> model call: {model}");

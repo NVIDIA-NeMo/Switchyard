@@ -491,11 +491,11 @@ mod tests {
             _ctx: Context,
             request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
             let name = decision.selected_model().to_string();
             self.calls
                 .lock()
-                .map_err(|_| "lock poisoned")?
+                .map_err(|_| switchyard_protocol::LlmClientError::Other("lock poisoned".into()))?
                 .push(name.clone());
             let completion = if name == self.judge_model {
                 judge_pick(&prompt_text(&request.llm_request), &self.prefer)
@@ -741,9 +741,10 @@ mod tests {
                 _ctx: Context,
                 _request: Request,
                 _decision: Arc<dyn Decision>,
-            ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>>
-            {
-                Err("upstream down".into())
+            ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+                Err(switchyard_protocol::LlmClientError::Other(
+                    "upstream down".into(),
+                ))
             }
         }
         let client = Arc::new(FailingClient) as Arc<dyn RoutedLlmClient>;
@@ -809,8 +810,7 @@ mod tests {
                 _ctx: Context,
                 request: Request,
                 decision: Arc<dyn Decision>,
-            ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>>
-            {
+            ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
                 let name = decision.selected_model().to_string();
                 let completion = if name == self.judge_model {
                     // Judge runs after the barrier releases; it must not wait.

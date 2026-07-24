@@ -3,7 +3,6 @@
 
 //! Minimal Python API for running Rust-owned libsy algorithms.
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,14 +11,12 @@ use pyo3::prelude::*;
 use serde_json::{json, Value};
 use switchyard_libsy::algorithms::{Noop, Random, SubagentOverride};
 use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Metadata,
-    Request, Response, RoutedLlmClient,
+    AggLlmResponse, Algorithm, Context, Decision, LlmClientError, LlmResponse, LlmTarget,
+    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
 };
 
 use crate::errors::py_libsy_error;
 use crate::py_serde::{from_python, to_python};
-
-type BoxError = Box<dyn Error + Send + Sync>;
 
 /// Adapts a Python object with `async call(request)` to libsy.
 struct PythonLlmClient {
@@ -33,18 +30,18 @@ impl RoutedLlmClient for PythonLlmClient {
         _ctx: Context,
         request: Request,
         _decision: Arc<dyn Decision>,
-    ) -> Result<Response, BoxError> {
+    ) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
             let request = to_python(py, &request.llm_request)?;
             let awaitable = self.inner.bind(py).call_method1("call", (request,))?;
             pyo3_async_runtimes::tokio::into_future(awaitable)
         })
-        .map_err(boxed_python_error)?;
+        .map_err(other_python_error)?;
 
-        let response = future.await.map_err(boxed_python_error)?;
+        let response = future.await.map_err(other_python_error)?;
         let aggregate = Python::attach(|py| from_python::<AggLlmResponse>(response.bind(py)))
-            .map_err(boxed_python_error)?;
+            .map_err(invalid_python_response)?;
         Ok(Response {
             llm_response: LlmResponse::Agg(aggregate),
             metadata,
@@ -196,8 +193,14 @@ fn subagent_override_algorithm(
     ))))
 }
 
-fn boxed_python_error(error: PyErr) -> BoxError {
-    std::io::Error::other(error.to_string()).into()
+fn other_python_error(error: PyErr) -> LlmClientError {
+    LlmClientError::Other(Box::new(std::io::Error::other(error.to_string())))
+}
+
+fn invalid_python_response(error: PyErr) -> LlmClientError {
+    LlmClientError::InvalidResponse {
+        source: Box::new(std::io::Error::other(error.to_string())),
+    }
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
