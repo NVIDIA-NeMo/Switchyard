@@ -5,7 +5,7 @@
 
 use std::{error::Error as StdError, time::Duration};
 
-use switchyard_protocol::RoutedLlmClientError;
+use switchyard_protocol::LlmClientError;
 use thiserror::Error;
 
 /// Result type returned by libsy APIs.
@@ -62,7 +62,7 @@ pub enum LibsyError {
         target: String,
         /// Typed error supplied by the protocol-owned client trait.
         #[source]
-        source: RoutedLlmClientError,
+        source: LlmClientError,
     },
 
     /// A user extension or other foreign operation failed.
@@ -78,7 +78,7 @@ pub enum LibsyError {
 
 impl LibsyError {
     /// Wrap an error returned by the protocol-owned client trait.
-    pub fn client_call(target: impl Into<String>, source: RoutedLlmClientError) -> Self {
+    pub fn client_call(target: impl Into<String>, source: LlmClientError) -> Self {
         Self::ClientCall {
             target: target.into(),
             source,
@@ -151,7 +151,7 @@ mod tests {
     fn client_call_preserves_target_and_source() {
         let error = LibsyError::client_call(
             "strong",
-            RoutedLlmClientError::Other(Box::new(std::io::Error::other("upstream down"))),
+            LlmClientError::Other(Box::new(std::io::Error::other("upstream down"))),
         );
         match &error {
             LibsyError::ClientCall { target, source } => {

@@ -16,9 +16,8 @@ use tracing::Instrument;
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    AggLlmResponse, Context, Decision, LlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, RoutedLlmClientError, Signals,
-    Usage,
+    AggLlmResponse, Context, Decision, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk,
+    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals, Usage,
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
@@ -502,7 +501,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, RoutedLlmClientError> {
+        ) -> std::result::Result<Response, LlmClientError> {
             // Echo back the model the algorithm routed to (the decision's selection).
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
@@ -611,7 +610,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             _decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, RoutedLlmClientError> {
+        ) -> std::result::Result<Response, LlmClientError> {
             let stream = futures::stream::iter(self.chunks.clone().into_iter().map(Ok)).boxed();
             Ok(Response {
                 llm_response: LlmResponse::Stream(stream),
@@ -837,7 +836,7 @@ mod tests {
                 _ctx: Context,
                 _request: Request,
                 decision: Arc<dyn Decision>,
-            ) -> std::result::Result<Response, RoutedLlmClientError> {
+            ) -> std::result::Result<Response, LlmClientError> {
                 self.barrier.wait().await;
                 Ok(Response {
                     llm_response: LlmResponse::Agg(text_response(
@@ -1138,7 +1137,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, RoutedLlmClientError> {
+        ) -> std::result::Result<Response, LlmClientError> {
             self.started.notify_one();
             match self.delay {
                 Some(delay) => tokio::time::sleep(delay).await,
@@ -1167,7 +1166,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, RoutedLlmClientError> {
+        ) -> std::result::Result<Response, LlmClientError> {
             self.gate.notified().await;
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
@@ -1293,7 +1292,7 @@ mod tests {
                 _ctx: Context,
                 _request: Request,
                 _decision: Arc<dyn Decision>,
-            ) -> std::result::Result<Response, RoutedLlmClientError> {
+            ) -> std::result::Result<Response, LlmClientError> {
                 if self.started.fetch_add(1, Ordering::SeqCst) + 1 == self.n {
                     self.all_started.notify_one();
                 }

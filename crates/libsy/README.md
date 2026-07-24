@@ -85,7 +85,7 @@ struct MyClient { /* http client, base url, key */ }
 #[async_trait::async_trait]
 impl RoutedLlmClient for MyClient {
     async fn call(&self, ctx: Context, request: Request, decision: Arc<dyn Decision>)
-        -> Result<Response, RoutedLlmClientError> {
+        -> Result<Response, LlmClientError> {
         let model = decision.selected_model();   // the routed target — map it to a provider id
         // request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
@@ -262,10 +262,11 @@ algorithm task failures, incomplete runs, and client-call failures without inspe
 strings.
 
 `RoutedLlmClient` is owned by `switchyard-protocol` and returns
-`RoutedLlmClientError`. Callers can distinguish invalid requests, configuration
-failures, transport failures, timeouts, context-window overflows, upstream HTTP responses,
-invalid responses, and uncategorized client-specific failures. When [`Algorithm::run`]
-serves a target, libsy preserves that error as the source of `LibsyError::ClientCall`.
+`LlmClientError`. Callers can distinguish invalid requests, configuration
+failures, request/response translation failures, request encoding failures, transport
+failures, timeouts, context-window overflows, upstream HTTP responses, invalid responses,
+and uncategorized client-specific failures. When [`Algorithm::run`] serves a target,
+libsy preserves that error as the source of `LibsyError::ClientCall`.
 Custom algorithms, classifiers, and processors that need to surface their own errors can use
 `LibsyError::external("operation", error)`.
 

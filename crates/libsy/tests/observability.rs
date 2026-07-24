@@ -278,7 +278,7 @@ impl RoutedLlmClient for UsageClient {
         _ctx: Context,
         _request: Request,
         decision: Arc<dyn Decision>,
-    ) -> Result<Response, switchyard_protocol::RoutedLlmClientError> {
+    ) -> Result<Response, switchyard_protocol::LlmClientError> {
         Ok(Response {
             llm_response: LlmResponse::Agg(AggLlmResponse {
                 model: Some(decision.selected_model().to_string()),

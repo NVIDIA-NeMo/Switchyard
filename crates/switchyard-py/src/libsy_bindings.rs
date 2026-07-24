@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use serde_json::{json, Value};
 use switchyard_libsy::algorithms::{Noop, Random, SubagentOverride};
 use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Metadata,
-    Request, Response, RoutedLlmClient, RoutedLlmClientError,
+    AggLlmResponse, Algorithm, Context, Decision, LlmClientError, LlmResponse, LlmTarget,
+    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
 };
 
 use crate::errors::py_libsy_error;
@@ -30,7 +30,7 @@ impl RoutedLlmClient for PythonLlmClient {
         _ctx: Context,
         request: Request,
         _decision: Arc<dyn Decision>,
-    ) -> Result<Response, RoutedLlmClientError> {
+    ) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
             let request = to_python(py, &request.llm_request)?;
@@ -193,12 +193,12 @@ fn subagent_override_algorithm(
     ))))
 }
 
-fn other_python_error(error: PyErr) -> RoutedLlmClientError {
-    RoutedLlmClientError::Other(Box::new(std::io::Error::other(error.to_string())))
+fn other_python_error(error: PyErr) -> LlmClientError {
+    LlmClientError::Other(Box::new(std::io::Error::other(error.to_string())))
 }
 
-fn invalid_python_response(error: PyErr) -> RoutedLlmClientError {
-    RoutedLlmClientError::InvalidResponse {
+fn invalid_python_response(error: PyErr) -> LlmClientError {
+    LlmClientError::InvalidResponse {
         source: Box::new(std::io::Error::other(error.to_string())),
     }
 }

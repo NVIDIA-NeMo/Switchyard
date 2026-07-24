@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Error type for the LLM client, plus shared context-window-overflow detection.
+//! Canonical client error re-export and shared context-window-overflow detection.
 //!
 //! The overflow detection is ported from
 //! `switchyard-components/src/backends/context_overflow.rs`; that helper is
@@ -9,107 +9,11 @@
 //! so the small, self-contained logic is vendored here.
 
 use serde_json::Value;
-use switchyard_protocol::RoutedLlmClientError;
-use switchyard_translation::WireFormat;
-use thiserror::Error;
+
+pub use switchyard_protocol::LlmClientError;
 
 /// Result alias for LLM client operations.
 pub type Result<T> = std::result::Result<T, LlmClientError>;
-
-/// Failures surfaced while resolving, translating, sending, or decoding a call.
-#[derive(Debug, Error)]
-pub enum LlmClientError {
-    /// The resolved model name has no entry in the client's backend map.
-    #[error("no backend configured for model {0:?}")]
-    UnknownModel(String),
-
-    /// The model exists but has no backend configured for the requested format.
-    #[error("model {model:?} has no backend for format {format}")]
-    UnknownModelFormat { model: String, format: WireFormat },
-
-    /// Neither an explicit `model_name` nor a model on the request was given.
-    #[error("no model given")]
-    MissingModel,
-
-    /// Decoding the inbound request failed in the translation engine.
-    #[error("request translation failed: {0}")]
-    RequestTranslation(String),
-
-    /// Encoding an already-decoded request to the wire format failed — an
-    /// internal translation fault, not caller input.
-    #[error("outbound request encoding failed: {0}")]
-    RequestEncoding(String),
-
-    /// Response decoding failed in the translation engine.
-    #[error("response translation failed: {0}")]
-    ResponseTranslation(String),
-
-    /// The HTTP request exceeded its timeout.
-    #[error("upstream request timed out: {0}")]
-    Timeout(#[source] reqwest::Error),
-
-    /// The HTTP request could not be sent due to a non-timeout transport failure.
-    #[error("upstream transport error: {0}")]
-    Transport(#[source] reqwest::Error),
-
-    /// An upstream 400 whose body is detected as a context-window overflow.
-    ///
-    /// Kept distinct from [`LlmClientError::UpstreamHttp`] and checked first so a
-    /// caller can implement evict-and-retry by matching this variant instead of
-    /// sniffing error strings.
-    #[error("context window exceeded for model {model}: {message}")]
-    ContextWindowExceeded {
-        /// Model that overflowed, as sent upstream.
-        model: String,
-        /// Raw upstream error body.
-        message: String,
-    },
-
-    /// A non-2xx upstream response that is not a context-window overflow.
-    #[error("upstream returned HTTP {status}: {body}")]
-    UpstreamHttp {
-        /// Upstream HTTP status code.
-        status: u16,
-        /// Raw upstream error body.
-        body: String,
-    },
-
-    /// A streamed response failed mid-flight (read error or malformed frame).
-    #[error("stream error: {0}")]
-    Stream(String),
-}
-
-impl From<LlmClientError> for RoutedLlmClientError {
-    fn from(error: LlmClientError) -> Self {
-        match error {
-            LlmClientError::MissingModel | LlmClientError::RequestTranslation(_) => {
-                Self::InvalidRequest {
-                    message: error.to_string(),
-                }
-            }
-            LlmClientError::UnknownModel(_) | LlmClientError::UnknownModelFormat { .. } => {
-                Self::Configuration {
-                    message: error.to_string(),
-                }
-            }
-            LlmClientError::Transport(_) => Self::Transport {
-                source: Box::new(error),
-            },
-            LlmClientError::Timeout(_) => Self::Timeout {
-                source: Box::new(error),
-            },
-            LlmClientError::ContextWindowExceeded { model, message } => {
-                Self::ContextWindowExceeded { model, message }
-            }
-            LlmClientError::UpstreamHttp { status, body } => Self::UpstreamHttp { status, body },
-            LlmClientError::ResponseTranslation(_)
-            | LlmClientError::RequestEncoding(_)
-            | LlmClientError::Stream(_) => Self::InvalidResponse {
-                source: Box::new(error),
-            },
-        }
-    }
-}
 
 /// Detects a context-overflow body using a provider-supplied structured check
 /// and a substring phrase list.
@@ -194,29 +98,5 @@ mod tests {
     fn non_match_returns_false() {
         let body = r#"{"error":{"message":"rate limit exceeded"}}"#;
         assert!(!is_overflow_body(body, never, PHRASES));
-    }
-
-    #[test]
-    fn request_translation_maps_to_invalid_request() {
-        let error =
-            RoutedLlmClientError::from(LlmClientError::RequestTranslation("bad input".into()));
-        assert!(matches!(
-            error,
-            RoutedLlmClientError::InvalidRequest { message }
-                if message.contains("bad input")
-        ));
-    }
-
-    #[test]
-    fn context_window_mapping_preserves_typed_fields() {
-        let error = RoutedLlmClientError::from(LlmClientError::ContextWindowExceeded {
-            model: "model-a".into(),
-            message: "too long".into(),
-        });
-        assert!(matches!(
-            error,
-            RoutedLlmClientError::ContextWindowExceeded { model, message }
-                if model == "model-a" && message == "too long"
-        ));
     }
 }

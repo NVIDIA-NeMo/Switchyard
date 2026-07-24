@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, LibsyError, Metadata, Request, RoutedLlmClientError};
+use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
 
@@ -368,43 +368,52 @@ fn algorithm_error(error: LibsyError) -> Response {
         return server_error(error.to_string());
     };
     match source {
-        RoutedLlmClientError::InvalidRequest { message } => error_response(
+        LlmClientError::InvalidRequest { message }
+        | LlmClientError::RequestTranslation(message) => error_response(
             StatusCode::BAD_REQUEST,
             message,
             "invalid_request_error",
             "invalid_request_error",
         ),
-        RoutedLlmClientError::Configuration { message } => error_response(
+        LlmClientError::Configuration { message } => error_response(
             StatusCode::BAD_GATEWAY,
             message,
             "upstream_error",
             "upstream_configuration_error",
         ),
-        RoutedLlmClientError::ContextWindowExceeded { message, .. } => error_response(
+        LlmClientError::ContextWindowExceeded { message, .. } => error_response(
             StatusCode::BAD_REQUEST,
             message,
             "invalid_request_error",
             "context_length_exceeded",
         ),
-        RoutedLlmClientError::UpstreamHttp { status, body } => error_response(
+        LlmClientError::UpstreamHttp { status, body } => error_response(
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
             body,
             "upstream_error",
             "upstream_error",
         ),
-        RoutedLlmClientError::Transport { source }
-        | RoutedLlmClientError::InvalidResponse { source } => error_response(
+        LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
+            error_response(
+                StatusCode::BAD_GATEWAY,
+                source.to_string(),
+                "upstream_error",
+                "upstream_error",
+            )
+        }
+        LlmClientError::ResponseTranslation(message) => error_response(
             StatusCode::BAD_GATEWAY,
-            source.to_string(),
+            message,
             "upstream_error",
             "upstream_error",
         ),
-        RoutedLlmClientError::Timeout { source } => error_response(
+        LlmClientError::Timeout { source } => error_response(
             StatusCode::GATEWAY_TIMEOUT,
             source.to_string(),
             "upstream_error",
             "upstream_timeout",
         ),
+        LlmClientError::RequestEncoding(message) => server_error(message),
         _ => server_error(error.to_string()),
     }
 }

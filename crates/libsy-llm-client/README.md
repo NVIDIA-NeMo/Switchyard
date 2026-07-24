@@ -88,9 +88,9 @@ async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<Str
 
     match response.llm_response {
         LlmResponse::Agg(agg) => Ok(completion_text(&agg)),
-        LlmResponse::Stream(_) => Err(LlmClientError::Stream(
-            "expected a buffered response".to_string(),
-        )),
+        LlmResponse::Stream(_) => Err(LlmClientError::InvalidResponse {
+            source: "expected a buffered response".into(),
+        }),
     }
 }
 ```
@@ -101,10 +101,12 @@ Set `stream` on the IR request and drive the returned chunk stream:
 
 ```rust
 use futures_util::StreamExt;
-use switchyard_llm_client::{LlmClientError, TranslatingLlmClient};
+use switchyard_llm_client::TranslatingLlmClient;
 use switchyard_protocol::{text_request, Context, LlmResponse, LlmResponseChunk, Request};
 
-async fn stream(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<()> {
+async fn stream(
+    client: &TranslatingLlmClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut llm_request = text_request(None, "Count to five.");
     llm_request.stream = true;
     let request = Request { llm_request, raw_request: None, metadata: None };
@@ -118,7 +120,7 @@ async fn stream(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<
             match item {
                 Ok(LlmResponseChunk::TextDelta { text, .. }) => print!("{text}"),
                 Ok(_) => {}                       // usage, tool-call deltas, message start/stop
-                Err(error) => return Err(LlmClientError::Stream(error.to_string())),
+                Err(error) => return Err(error),
             }
         }
     }
@@ -174,17 +176,17 @@ fn build_multi_format_client(
 
 | Variant | When |
 |---------|------|
-| `MissingModel` | no `model_name` arg and no `request.llm_request.model` |
-| `UnknownModel(model)` | model has no backends configured |
-| `UnknownModelFormat { model, format }` | model has no backend for that format |
+| `InvalidRequest { message }` | the request does not identify a model |
+| `Configuration { message }` | the model or requested wire format has no configured backend |
 | `RequestTranslation(msg)` | decoding the inbound request failed in the translation engine |
 | `RequestEncoding(msg)` | re-encoding an already-decoded request to the wire format failed (internal fault) |
 | `ResponseTranslation(msg)` | response decoding or encoding failed in the translation engine |
-| `Timeout(error)` | request or response body read exceeded its timeout |
-| `Transport(error)` | non-timeout connection or transport failure |
+| `Timeout { source }` | request or response body read exceeded its timeout |
+| `Transport { source }` | non-timeout connection or transport failure |
 | `ContextWindowExceeded { model, message }` | upstream 400 detected as a context overflow (checked before `UpstreamHttp`, so callers can evict-and-retry) |
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
-| `Stream(msg)` | mid-stream read / malformed frame |
+| `InvalidResponse { source }` | the upstream response could not be decoded |
+| `Other(source)` | a client-specific failure outside the shared categories |
 
 [`switchyard_protocol::Request`]: ../libsy-protocol
 [`switchyard_protocol::Response`]: ../libsy-protocol
@@ -193,4 +195,4 @@ fn build_multi_format_client(
 [`HttpBackendConfig`]: src/backend.rs
 [`ModelConfig`]: src/client.rs
 [`TranslatingLlmClient::call_rewrite_model`]: src/client.rs
-[`LlmClientError`]: src/error.rs
+[`LlmClientError`]: ../protocol/src/client.rs

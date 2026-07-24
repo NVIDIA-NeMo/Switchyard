@@ -27,10 +27,22 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// escape hatch for failures that do not fit a shared category.
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum RoutedLlmClientError {
+pub enum LlmClientError {
     /// The request cannot be served as supplied.
     #[error("invalid request: {message}")]
     InvalidRequest { message: String },
+
+    /// Decoding the inbound request failed in the translation engine.
+    #[error("request translation failed: {0}")]
+    RequestTranslation(String),
+
+    /// Encoding the request for the upstream failed in the translation engine.
+    #[error("outbound request encoding failed: {0}")]
+    RequestEncoding(String),
+
+    /// Decoding or encoding the response failed in the translation engine.
+    #[error("response translation failed: {0}")]
+    ResponseTranslation(String),
 
     /// The client is not configured to serve the selected target.
     #[error("client configuration error: {message}")]
@@ -115,5 +127,5 @@ pub trait RoutedLlmClient: Send + Sync {
         ctx: Context,
         request: Request,
         decision: Arc<dyn Decision>,
-    ) -> Result<Response, RoutedLlmClientError>;
+    ) -> Result<Response, LlmClientError>;
 }

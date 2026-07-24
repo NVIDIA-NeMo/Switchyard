@@ -238,7 +238,7 @@ mod tests {
             _ctx: Context,
             request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, switchyard_protocol::RoutedLlmClientError> {
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
             let name = decision.selected_model().to_string();
             let completion = if name == self.classifier_model {
                 self.score.clone()
@@ -247,9 +247,7 @@ mod tests {
             };
             self.seen
                 .lock()
-                .map_err(|_| {
-                    switchyard_protocol::RoutedLlmClientError::Other("lock poisoned".into())
-                })?
+                .map_err(|_| switchyard_protocol::LlmClientError::Other("lock poisoned".into()))?
                 .push(request);
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, completion)),
