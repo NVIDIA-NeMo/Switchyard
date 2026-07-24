@@ -7,7 +7,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
-    decode_stream_event, StreamTranslationState, TranslationEngine, WireFormat,
+    decode_stream_event, LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -543,5 +543,22 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
         Some(StopReason::MaxTokens),
         "the reasonless message_stop must not overwrite the max_tokens stop reason"
     );
+    Ok(())
+}
+
+// An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
+// instead of a bare message start that silently drops the upstream message.
+#[test]
+fn openai_chat_error_frame_decodes_to_stream_error() -> TestResult {
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let event = json!({"error": {"message": "upstream exploded", "type": "server_error"}});
+
+    let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
+
+    assert_eq!(chunks.len(), 1);
+    match &chunks[0] {
+        LlmResponseChunk::StreamError { message } => assert_eq!(message, "upstream exploded"),
+        other => return Err(format!("expected StreamError, got {other:?}").into()),
+    }
     Ok(())
 }

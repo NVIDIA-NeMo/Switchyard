@@ -53,6 +53,18 @@ fn decode_openai_chat_stream(
         }];
     };
 
+    // Upstream error frames carry no choices, so without this they would decode to a bare
+    // `MessageStart` and the error text would be dropped.
+    if let Some(error) = object.get("error") {
+        return vec![LlmResponseChunk::StreamError {
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown OpenAI stream error")
+                .to_string(),
+        }];
+    }
+
     let mut out = Vec::new();
     if !state.saw_message_start {
         state.saw_message_start = true;
