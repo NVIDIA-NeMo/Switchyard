@@ -63,7 +63,7 @@ type BoxAny = Box<dyn Any + Send>;
 type StepResult = Result<DriverStep>;
 
 // TODO make request timeout configurable
-const FULFILL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const FULFILL_REQUEST_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One item on the stream returned by [`TypeErasedDriver::stream`].
 pub enum DriverStep {
