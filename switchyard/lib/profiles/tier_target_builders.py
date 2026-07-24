@@ -20,6 +20,7 @@ from switchyard.lib.backends.multi_llm_backend import (
     build_native_backend,
     resolve_llm_target,
 )
+from switchyard.lib.processors.reasoning_hint import model_accepts_reasoning_hint
 from switchyard.lib.profiles.deterministic_routing_config import (
     DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,
 )
@@ -27,10 +28,18 @@ from switchyard.lib.roles import LLMBackend
 
 
 def apply_deepseek_overrides(target: LlmTarget) -> LlmTarget:
-    """Apply benchmark-specific DeepSeek extras without clobbering callers."""
+    """Apply benchmark-specific DeepSeek extras without clobbering callers.
+
+    The thinking-off default is a vLLM-side hint (``chat_template_kwargs``);
+    serving stacks on the :func:`model_accepts_reasoning_hint` deny list
+    reject the field outright (HTTP 400 ``Extra inputs are not permitted``),
+    so the default is gated on the same model-id check the LLM classifier
+    already uses for its own calls. The batch-priority header default is
+    provider-neutral and stays unconditional.
+    """
     default_body = (
         {"chat_template_kwargs": {"enable_thinking": False}}
-        if "deepseek-v4" in target.model
+        if "deepseek-v4" in target.model and model_accepts_reasoning_hint(target.model)
         else None
     )
     default_headers = (

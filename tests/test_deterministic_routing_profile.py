@@ -391,6 +391,21 @@ class TestDeepSeekOverrides:
         out = apply_deepseek_overrides(target)
         assert out.extra_body == {}
 
+    def test_hint_incompatible_model_id_skips_thinking_off(self) -> None:
+        """Deny-listed serving stacks reject the vLLM hint with HTTP 400,
+        so the thinking-off default must not be injected for their ids.
+        The provider-neutral batch-priority header still applies."""
+        target = LlmTarget(
+            id="weak",
+            model="bedrock/deepseek-ai/deepseek-v4-flash",
+            format=BackendFormat.OPENAI,
+            api_key="k",
+            base_url="https://e/v1",
+        )
+        out = apply_deepseek_overrides(target)
+        assert not out.extra_body
+        assert out.extra_headers == {"X-Inference-Priority": "batch"}
+
 
 class TestTierTimeoutDefaults:
     """Deterministic tiers get a bounded timeout unless callers set one."""
