@@ -12,6 +12,7 @@ routes:
       enabled: true
       only_on_wrong_signal_escalation: true
     strong_system_prompt: "Be concise. Prefer short, targeted tool calls over lengthy explanations. Do not re-examine what is already working — focus only on the immediate blocker. Avoid restating context the conversation already contains."
+    weak_system_prompt: "Be concise and efficient. One focused tool call per turn. If the same approach has failed twice, stop and clearly report what failed rather than retrying. Do not explain what you are about to do — just do it."
     strong:
       model: azure/anthropic/claude-opus-4-8
       api_key: ${OPENAI_API_KEY}

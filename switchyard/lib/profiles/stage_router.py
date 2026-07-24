@@ -57,6 +57,7 @@ class StageRouterProfileConfig:
                 decision_log=decision_log,
                 handoff_injector=_build_handoff_injector(config.handoff_notes),
                 strong_system_prompt=config.strong_system_prompt,
+                weak_system_prompt=config.weak_system_prompt,
             )
         )
 

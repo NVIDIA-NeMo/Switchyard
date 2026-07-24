@@ -51,6 +51,7 @@ class StageRouterRequestProcessor:
         decision_log: StageRouterDecisionLog | None = None,
         handoff_injector: HandoffNoteInjector | None = None,
         strong_system_prompt: str | None = None,
+        weak_system_prompt: str | None = None,
     ) -> None:
         if len(targets) != 2:
             raise ValueError(f"stage_router requires exactly 2 targets, got {len(targets)}")
@@ -62,6 +63,7 @@ class StageRouterRequestProcessor:
         self._decision_log = decision_log if decision_log is not None else StageRouterDecisionLog()
         self._handoff_injector = handoff_injector
         self._strong_system_prompt = strong_system_prompt
+        self._weak_system_prompt = weak_system_prompt
         self._stats_accumulator: StatsAccumulator | None = None
 
     def attach_stats_accumulator(self, stats_accumulator: StatsAccumulator) -> None:
@@ -97,6 +99,8 @@ class StageRouterRequestProcessor:
             )
         if self._strong_system_prompt is not None and idx == CAPABLE:
             _prepend_system_prompt(request, self._strong_system_prompt)
+        if self._weak_system_prompt is not None and idx == EFFICIENT:
+            _prepend_system_prompt(request, self._weak_system_prompt)
         log.debug(
             "stage_router pick: idx=%d target=%s model=%s",
             idx, ctx.selected_target, ctx.selected_model,

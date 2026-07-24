@@ -90,6 +90,9 @@ class StageRouterConfig(BaseModel):
     #: conciseness guidance that should apply on every Opus turn without
     #: polluting the agent's conversation history.
     strong_system_prompt: str | None = None
+    #: Optional system prompt prepended to every request routed to the efficient
+    #: (weak) tier. Useful for conciseness/bail-early guidance on Nemotron turns.
+    weak_system_prompt: str | None = None
     enable_stats: bool = True
 
     @field_validator("capable", "efficient", mode="before")
