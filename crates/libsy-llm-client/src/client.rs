@@ -215,13 +215,10 @@ impl TranslatingLlmClient {
                 .map_err(|error| LlmClientError::Stream(error.to_string()))?;
             LlmResponse::Stream(chunks)
         } else {
-            let body = http_response.json::<Value>().await.map_err(|error| {
-                if error.is_timeout() {
-                    LlmClientError::Timeout(error)
-                } else {
-                    LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
-                }
-            })?;
+            let body = http_response
+                .json::<Value>()
+                .await
+                .map_err(classify_json_response_error)?;
             let agg = decode_aggregated_response(&body, wire_format)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             LlmResponse::Agg(agg)
@@ -315,6 +312,22 @@ fn classify_transport_error(error: reqwest::Error) -> LlmClientError {
     }
 }
 
+fn classify_json_response_error(error: reqwest::Error) -> LlmClientError {
+    // `Response::json` labels body collection and JSON parsing failures as
+    // decode errors; only the latter is a translation failure.
+    if error.is_timeout() {
+        LlmClientError::Timeout(error)
+    } else if error.is_body() {
+        LlmClientError::Transport(error)
+    } else if error.is_decode()
+        && std::error::Error::source(&error).is_some_and(|source| source.is::<serde_json::Error>())
+    {
+        LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
+    } else {
+        LlmClientError::Transport(error)
+    }
+}
+
 // Forwards caller-supplied metadata headers, skipping the reserved set.
 fn forward_metadata_headers(
     mut builder: RequestBuilder,
@@ -358,6 +371,8 @@ fn is_reserved_header(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
+    use std::io::{Read, Write};
+    use std::thread::JoinHandle;
 
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request, LlmRequest};
@@ -382,6 +397,26 @@ mod tests {
             Backend::OpenAiChat(config(base_url)),
             None,
         )]
+    }
+
+    fn truncated_response_server() -> std::io::Result<(String, JoinHandle<std::io::Result<()>>)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1024];
+            if stream.read(&mut request)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "client closed before sending a request",
+                ));
+            }
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                  Content-Length: 100\r\nConnection: close\r\n\r\n{}",
+            )
+        });
+        Ok((format!("http://{address}/v1"), handle))
     }
 
     fn request_for(model: Option<&str>, stream: bool) -> Request {
@@ -519,6 +554,55 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_json_is_a_response_translation_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("not json", "application/json"))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected invalid JSON to fail");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::ResponseTranslation(message)
+                if message.contains("invalid upstream JSON")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn response_body_io_failure_is_a_transport_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let (base_url, server) = truncated_response_server()?;
+        let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
+        let result = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await;
+        server
+            .join()
+            .map_err(|_| std::io::Error::other("response server thread panicked"))??;
+
+        let Err(error) = result else {
+            panic!("expected the truncated response body to fail");
+        };
+        let LlmClientError::Transport(source) = error else {
+            panic!("expected a transport error");
+        };
+        assert!(source.is_decode());
+        assert!(!std::error::Error::source(&source)
+            .is_some_and(|source| source.is::<serde_json::Error>()));
         Ok(())
     }
 
