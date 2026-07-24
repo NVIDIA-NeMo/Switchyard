@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Learned prefill-complexity route with a local Qwen3.6 hidden-state probe.
+# Start the probe as documented in docs/vllm-serve-hidden-state.md, then export:
+#   NVIDIA_API_KEY
+#   VLLM_BASE_URL=http://127.0.0.1:8000
+#   HIDDEN_STATES_DIR=/tmp/vllm-hidden-states
+#   PREFILL_ROUTER_CHECKPOINT_DIR=/absolute/path/to/inference_artifact
+#
+# Serve from the repository root:
+#   switchyard --routing-profiles \
+#     benchmark/routing-profiles/prefill-probe-local.yaml -- serve --port 4000
+# Clients select the learned route by sending model: prefill-complexity-router.
+
+defaults:
+  timeout_secs: 600.0
+
+routes:
+  prefill-complexity-router:
+    type: prefill_probe
+    enable_stats: true
+    fallback_target_on_evict: strong
+    tier_timeout_s: 600.0
+
+    probe:
+      id: probe
+      model: Qwen/Qwen3.6-35B-A3B
+      base_url: ${VLLM_BASE_URL}/v1
+      format: openai
+
+    strong:
+      id: strong
+      model: aws/anthropic/bedrock-claude-opus-4-7
+      api_key: ${NVIDIA_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: anthropic
+
+    weak:
+      id: weak
+      model: nvidia/nvidia/nemotron-3-super-120b-long-ctx
+      api_key: ${NVIDIA_API_KEY}
+      base_url: https://inference-api.nvidia.com/v1
+      format: openai
+
+    strong_checkpoint_head: opus-4.7
+    weak_checkpoint_head: nemotron-3-super
+    hidden_states_dir: ${HIDDEN_STATES_DIR}
+    checkpoint_dir: ${PREFILL_ROUTER_CHECKPOINT_DIR}
+
+    routing_policy:
+      type: cost_aware
+      lambda: 0.5
+      weak_cost: 0.0
+      strong_cost: 1.0
