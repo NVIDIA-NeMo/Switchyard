@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Score a benchmark run directory via the stage-router Rust scorer.
 
 Reads trajectory.json from each completed task, feeds each tool-use turn through:

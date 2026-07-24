@@ -10,7 +10,7 @@ Rust core deliberately leaves to the caller: the ``no_signal`` case, the async L
 classifier, and decision-source recording."""
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from switchyard.lib.processors.stage_router.decision_log import (
     CONTEXT_KEY,
@@ -71,7 +71,9 @@ async def _pick(
     # The Rust core runs the escalate/de-escalate shortcuts and the scorer.
     outcome = stage_pick_tier(signal, picker_mode, confidence_threshold)
     if outcome.resolved:
-        return _record(ctx, decision_log, outcome.source, _TIER[outcome.tier])
+        # resolved ⇒ tier and source are set (guaranteed by the Rust core).
+        source = cast("DecisionSource", outcome.source)
+        return _record(ctx, decision_log, source, _TIER[cast(str, outcome.tier)])
 
     # Scorer wasn't confident. Consult the classifier; fall open to the default
     # tier when there is none or it can't decide.
