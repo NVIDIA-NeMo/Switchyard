@@ -27,6 +27,13 @@ from switchyard.lib.profiles.passthrough import PassthroughProfileConfig
 from switchyard.lib.profiles.plan_execute import PlanExecuteProfileConfig
 from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
+from switchyard.lib.profiles.prefill_probe_config import (
+    PrefillProbeConfig,
+    PrefillProbeRoutingPolicyConfig,
+)
+from switchyard.lib.profiles.prefill_probe_profile_config import (
+    PrefillProbeProfileConfig,
+)
 from switchyard.lib.profiles.protocols import (
     ContextAwareProfile,
     Profile,
@@ -71,6 +78,9 @@ __all__ = [
     "PlanExecuteConfig",
     "PlanExecuteProfileConfig",
     "PlanExecutePresets",
+    "PrefillProbeConfig",
+    "PrefillProbeProfileConfig",
+    "PrefillProbeRoutingPolicyConfig",
     "ContextAwareProfile",
     "Profile",
     "ProfileConfig",
