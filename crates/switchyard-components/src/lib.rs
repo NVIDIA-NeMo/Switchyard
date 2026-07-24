@@ -10,6 +10,7 @@
 pub mod backends;
 pub mod dimension_collector;
 pub mod intake;
+mod prefill_probe;
 pub mod request_processors;
 pub mod response_processors;
 pub mod stats;
@@ -29,7 +30,8 @@ pub use intake::{
     RequestMetadata, SubModelCall, SubModelCalls,
 };
 pub use request_processors::{
-    DimensionCollector, IntakeRequestProcessor, RandomRoutingDecision, RandomRoutingEngine,
+    DimensionCollector, IntakeRequestProcessor, PrefillProbeProcessorConfig,
+    PrefillProbeRequestProcessor, RandomRoutingDecision, RandomRoutingEngine,
     RandomRoutingProcessorConfig, RandomRoutingTier, StatsRequestProcessor,
 };
 pub use response_processors::{

@@ -27,6 +27,7 @@ _COMPONENT_EXPORTS = frozenset(
         "MultiLlmBackend",
         "OpenAiNativeBackend",
         "OpenAiPassthroughBackend",
+        "PrefillProbeRequestProcessor",
         "RandomRoutingProcessorConfig",
         "RequestMetadata",
         "ResponseFlag",
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     MultiLlmBackend: type[Any]
     OpenAiNativeBackend: type[Any]
     OpenAiPassthroughBackend: type[Any]
+    PrefillProbeRequestProcessor: type[Any]
     RandomRoutingProcessorConfig: type[Any]
     RequestMetadata: type[Any]
     ResponseFlag: type[Any]
