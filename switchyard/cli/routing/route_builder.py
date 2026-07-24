@@ -90,9 +90,7 @@ def build_deterministic_routing_config(
     classifier_model: str | None,
     profile_name: str | None,
     classifier_min_confidence: float | None,
-    backend_format: BackendFormat,
     timeout: float | None,
-    strong_backend_format: BackendFormat | None = None,
 ) -> DeterministicRoutingConfig:
     """Layer LLM-as-classifier CLI overrides on top of the shipping preset.
 
@@ -116,10 +114,6 @@ def build_deterministic_routing_config(
             / ``coding_agent`` / ``openclaw``).
         classifier_min_confidence: User override for the tier selector's
             confidence floor.
-        backend_format: Wire format for the weak + classifier tiers (and the
-            strong tier when ``strong_backend_format`` is ``None``).
-        strong_backend_format: Strong-tier wire format override; ``AUTO``
-            probes the backend for Anthropic Messages support at runtime.
         timeout: Per-request HTTP timeout for the tier backends
             (seconds).
     """
@@ -158,7 +152,7 @@ def build_deterministic_routing_config(
     strong_target = LlmTarget(
         id="strong",
         model=strong_model,
-        format=strong_backend_format or backend_format,
+        format=preset.strong.format,
         api_key=primary.api_key,
         base_url=primary.base_url,
         timeout_secs=timeout,
@@ -166,7 +160,7 @@ def build_deterministic_routing_config(
     weak_target = LlmTarget(
         id="weak",
         model=weak_model,
-        format=backend_format,
+        format=preset.weak.format,
         api_key=weak.api_key,
         base_url=weak.base_url,
         timeout_secs=timeout,
@@ -174,7 +168,7 @@ def build_deterministic_routing_config(
     classifier_target = LlmTarget(
         id="classifier",
         model=classifier_model_resolved,
-        format=backend_format,
+        format=preset.classifier.format,
         api_key=primary.api_key,
         base_url=primary.base_url,
         timeout_secs=preset.classifier_timeout_s,
