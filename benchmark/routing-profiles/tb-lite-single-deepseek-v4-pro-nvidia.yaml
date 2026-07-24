@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Serve-backed single-model DeepSeek V4 Pro profile on the NVIDIA Inference
+# Hub — weak-only baseline for the escalation-router comparison.
+# Requires a LiteLLM virtual key (sk-...):
+#   export SWITCHYARD_WEAK_API_KEY=sk-...
+# Run with:
+#   benchmark/run-baseline.sh \
+#     --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
+#     --routing-profiles benchmark/routing-profiles/tb-lite-single-deepseek-v4-pro-nvidia.yaml \
+#     --model tb-lite-single-deepseek-v4-pro-nvidia
+
+defaults:
+  api_key: ${SWITCHYARD_WEAK_API_KEY}
+  base_url: https://inference-api.nvidia.com/v1
+  timeout_secs: 600.0
+
+routes:
+  tb-lite-single-deepseek-v4-pro-nvidia:
+    type: model
+    target:
+      # The evals- batch-gateway variant avoids the regular gateway's 6-min
+      # timeout under high concurrency but is currently failing TLS
+      # verification upstream; switch back once it probes clean.
+      model: nvidia/deepseek-ai/deepseek-v4-pro
+      format: openai
+      extra_headers:
+        X-Inference-Priority: batch
+      # Thinking on, matching the escalation profile's weak tier so the
+      # weak-only baseline stays apples-to-apples.
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: true
