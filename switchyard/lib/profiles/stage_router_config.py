@@ -10,6 +10,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
+from switchyard.lib.processors.stage_router.handoff_notes import (
+    DEFAULT_ESCALATION_NOTE,
+)
 
 #: Picker mode accepted in YAML. The profile resolves it to a :class:`TierPicker`.
 #: The name describes the *default tier* — what the picker returns when the
@@ -32,6 +35,31 @@ class ClassifierConfig(BaseModel):
     #: Rust extractor's ``RECENT_WINDOW`` so the classifier sees the same
     #: span the ``recent_*`` signal fields cover.
     recent_turn_window: int = Field(default=3, ge=0)
+
+
+class HandoffNoteConfig(BaseModel):
+    """Optional tier-transition guidance notes injected into the request.
+
+    Off by default. When ``enabled``, a short ephemeral note is appended to the
+    outgoing request on a *tier transition* only (weak↔strong), telling the model
+    taking over why it was handed the task. Notes are never persisted into the
+    agent's history, so they do not accumulate across turns. See
+    ``switchyard.lib.processors.stage_router.handoff_notes``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Master switch. When ``False`` (default) no note is ever injected.
+    enabled: bool = False
+    #: Note injected on every capable-tier turn driven by a real wrong signal.
+    escalation_note: str = DEFAULT_ESCALATION_NOTE
+    #: Optional strong→weak note. When set, injected on every efficient-tier turn
+    #: (hand-back to the weak model); ``None`` (default) leaves de-escalation off.
+    deescalation_note: str | None = None
+    #: When ``True`` (default) only inject when the decision source was a real
+    #: signal (``dimensions`` or ``override``), not an ambiguous default
+    #: (``fall_open``). Keeps "stalling" from being asserted without evidence.
+    only_on_wrong_signal_escalation: bool = True
 
 
 class StageRouterConfig(BaseModel):
@@ -58,6 +86,16 @@ class StageRouterConfig(BaseModel):
     #: ``DEFAULT_RECENT_WINDOW`` in ``tool_signals.rs``.
     signal_recent_window: int = Field(default=3, ge=1)
     classifier: ClassifierConfig | None = None
+    #: Optional tier-transition handoff notes (off unless ``handoff_notes.enabled``).
+    handoff_notes: HandoffNoteConfig | None = None
+    #: Optional system prompt prepended to every request routed to the capable
+    #: (strong) tier. Injected before the model sees the request — useful for
+    #: conciseness guidance that should apply on every Opus turn without
+    #: polluting the agent's conversation history.
+    strong_system_prompt: str | None = None
+    #: Optional system prompt prepended to every request routed to the efficient
+    #: (weak) tier. Useful for conciseness/bail-early guidance on Nemotron turns.
+    weak_system_prompt: str | None = None
     enable_stats: bool = True
 
     @field_validator("capable", "efficient", mode="before")

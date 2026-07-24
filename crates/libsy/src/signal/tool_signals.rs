@@ -65,7 +65,14 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
     (
         "no_such_file",
         HARD,
-        &["filenotfounderror:", "no such file or directory"],
+        &[
+            "filenotfounderror:",
+            "no such file or directory",
+            // Claude Code Read-tool miss. Anchored as "file does not exist" (not a
+            // bare "does not exist", which fires on `ls` output and prose) — trace-
+            // mined across 1006 local trajectories at 22 true / 2 false positives.
+            "file does not exist",
+        ],
     ),
     // SOFT: plain non-zero exit without a recognisable exception traceback.
     (
@@ -132,8 +139,7 @@ static BASH_READ_PATTERNS: &[&str] = &[
 
 static READ_TOOL_NAMES: &[&str] = &["read", "view"];
 
-// Planning / scratchpad tool calls. Used by Opus as a struggle indicator
-// in the capable-first picker direction.
+// Planning / scratchpad tool calls — investigative (non-producing) activity.
 // `update_plan` is codex's equivalent of `todowrite`.
 static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_plan"];
 
@@ -168,13 +174,13 @@ static TEST_FAILURE_LITERAL: &[&str] = &["✗ ", "fatal:", "assertionerror", "er
 // "0 errors" summaries on a clean run are not misread as failures.
 static NUMERIC_FAILURE_KEYWORDS: &[&str] = &["failed", "failure", "failures", "errors", "error"];
 
-/// Default sliding-window size for `recent_*` counts.
+/// Default sliding-window size for `recent_*` counts and windowed severity.
 ///
-/// Calibrated against agent trajectories where a 3-call horizon is enough
-/// to capture the "what is the agent doing right now" signal without
-/// over-smoothing short tasks. Override per-extractor by calling
-/// [`extract_tool_signals_with_window`] directly.
-pub const DEFAULT_RECENT_WINDOW: usize = 3;
+/// A 5-call horizon captures "what is the agent doing right now" while keeping
+/// signals sticky — an error or stall persists a few recovery turns instead of
+/// flickering off the moment one clean result lands. Override per-extractor by
+/// calling [`extract_tool_signals_with_window`] directly.
+pub const DEFAULT_RECENT_WINDOW: usize = 5;
 
 // ─── output type ─────────────────────────────────────────────────────────────
 
@@ -182,18 +188,19 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 /// via [`crate::get_tool_result_signal`].
 #[derive(Clone, Debug, Default)]
 pub struct ToolSignals {
+    /// Max severity across the recent window (last `recent_window` tool results):
     /// `0.0` clean · `0.3` soft (exit_nonzero) · `0.7` hard · `1.0` critical.
+    /// Windowed so an error persists through the recovery turns instead of clearing
+    /// the instant the next result is clean.
     pub severity: f32,
-    /// Error pattern names that fired in the most recent tool result.
-    pub patterns: Vec<String>,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
     pub edit_count: u32,
     pub write_count: u32,
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
-    /// TodoWrite tool calls. Strong fail predictor for Opus; used by the
-    /// `capable_first` drop-to-weak gate.
+    /// TodoWrite / planning tool calls. Investigative (non-producing) activity —
+    /// recent todowrites distinguish `exploring` from `spinning` in the scorer.
     pub todowrite_count: u32,
     /// Edit-type calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_edit_count: u32,
@@ -203,15 +210,21 @@ pub struct ToolSignals {
     pub recent_read_count: u32,
     /// TodoWrite calls within the last [`RECENT_WINDOW`] tool calls.
     pub recent_todowrite_count: u32,
-    /// Consecutive trailing tool calls that hit no Write/Edit/Read/Plan
-    /// patterns — proxy for the "stuck in non-Read Bash" build-pit loop.
+    /// Consecutive trailing tool calls in the `Other` category (no Write/Edit/Read/
+    /// Plan match). Surfaced in the classifier state summary; not scored directly.
     pub pure_bash_streak: u32,
     /// At least one of the last three tool results matched a test-pass pattern.
     pub tests_passed: bool,
-    /// Message-count proxy for turn depth.
+    /// Message-count proxy for turn depth. Wire-format dependent (Anthropic batches
+    /// tool results into fewer messages than OpenAI-chat), so gates keyed on it are
+    /// approximate across request origins.
     pub turn_depth: u32,
-    /// Char count of the last user message.
-    pub prompt_char_count: u32,
+    /// The request carries a context-compaction summary (the agent's context was
+    /// summarised after overflowing). Compaction resets the router's accumulated
+    /// signals, so a task that was on the strong tier de-escalates back to weak — the
+    /// picker uses this to force + hold the strong tier. Self-latching: the summary
+    /// stays in the context prefix on every subsequent turn.
+    pub compacted: bool,
 }
 
 impl ToolSignals {
@@ -269,7 +282,7 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 
 // ─── extraction entry point ───────────────────────────────────────────────────
 
-/// Extract all tool-execution signals from a [`ChatRequest`].
+/// Extract all tool-execution signals from a [`Request`].
 ///
 /// Dispatches on the request's wire format:
 ///
@@ -280,7 +293,7 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 /// * **OpenAI responses** — `input[]` with `type: "function_call_output"`;
 ///   `type: "function_call"` for call names.
 ///
-/// Returns [`ToolSignals::default()`] when the body is absent or
+/// Returns [`ToolSignals::default()`] when the wire format or body is absent or
 /// the messages list is empty — callers can always read `signal.severity`.
 fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
     let Some(Some(wire_format)) = request.metadata.as_ref().map(|m| m.wire_format) else {
@@ -293,14 +306,17 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
         return ToolSignals::default();
     };
 
-    match wire_format {
+    let (mut signal, entries) = match wire_format {
         WireFormat::OpenAiChat => {
             let messages = obj
                 .get("messages")
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            extract_from_messages_openai_chat(messages, recent_window)
+            (
+                extract_from_messages_openai_chat(messages, recent_window),
+                messages,
+            )
         }
         WireFormat::AnthropicMessages => {
             let messages = obj
@@ -308,7 +324,10 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            extract_from_messages_anthropic(messages, recent_window)
+            (
+                extract_from_messages_anthropic(messages, recent_window),
+                messages,
+            )
         }
         WireFormat::OpenAiResponses => {
             let items = obj
@@ -316,17 +335,43 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            extract_from_input_responses(items, recent_window)
+            (extract_from_input_responses(items, recent_window), items)
         }
-    }
+    };
+
+    // Compaction is detected anywhere in the message/item contents (the summary stays
+    // in the prefix on every subsequent turn, so this self-latches once it fires).
+    signal.compacted = entries.iter().any(|m| {
+        m.as_object()
+            .is_some_and(|o| content_has_compaction_marker(o.get("content")))
+    });
+    signal
 }
 
 // ─── format-specific extractors ──────────────────────────────────────────────
 
+/// Distinctive preamble Claude Code injects as a user message when it compacts an
+/// overflowed context. Matched case-insensitively; normal task text never contains it.
+const COMPACTION_MARKER: &str = "session is being continued";
+
+/// True when a user-message content (string or text blocks) carries the compaction
+/// summary preamble.
+fn content_has_compaction_marker(content: Option<&Value>) -> bool {
+    match content {
+        Some(Value::String(s)) => s.to_lowercase().contains(COMPACTION_MARKER),
+        Some(Value::Array(blocks)) => blocks.iter().any(|b| {
+            b.as_object()
+                .and_then(|o| o.get("text"))
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.to_lowercase().contains(COMPACTION_MARKER))
+        }),
+        _ => false,
+    }
+}
+
 fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolSignals {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut prompt_char_count: u32 = 0;
 
     for msg in messages {
         let Some(obj) = msg.as_object() else { continue };
@@ -367,26 +412,16 @@ fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -
                     }
                 }
             }
-            "user" => {
-                prompt_char_count = user_message_char_count(obj.get("content"));
-            }
             _ => {}
         }
     }
 
-    build_signal(
-        tool_texts,
-        tool_calls,
-        messages.len() as u32,
-        prompt_char_count,
-        recent_window,
-    )
+    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
 }
 
 fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> ToolSignals {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut prompt_char_count: u32 = 0;
 
     for msg in messages {
         let Some(obj) = msg.as_object() else { continue };
@@ -396,31 +431,14 @@ fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> 
         match role {
             "user" => {
                 if let Some(Value::Array(blocks)) = content {
-                    let mut saw_text = false;
                     for block in blocks {
                         let Some(b) = block.as_object() else { continue };
-                        match b.get("type").and_then(Value::as_str) {
-                            Some("tool_result") => {
-                                if let Some(text) = content_to_text(b.get("content")) {
-                                    tool_texts.push(text);
-                                }
+                        if b.get("type").and_then(Value::as_str) == Some("tool_result") {
+                            if let Some(text) = content_to_text(b.get("content")) {
+                                tool_texts.push(text);
                             }
-                            Some("text") => {
-                                if let Some(t) = b.get("text").and_then(Value::as_str) {
-                                    prompt_char_count = t.len() as u32;
-                                    saw_text = true;
-                                }
-                            }
-                            _ => {}
                         }
                     }
-                    if !saw_text {
-                        if let Some(text_val) = content {
-                            prompt_char_count = user_message_char_count(Some(text_val));
-                        }
-                    }
-                } else {
-                    prompt_char_count = user_message_char_count(content);
                 }
             }
             "assistant" => {
@@ -450,26 +468,18 @@ fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> 
         }
     }
 
-    build_signal(
-        tool_texts,
-        tool_calls,
-        messages.len() as u32,
-        prompt_char_count,
-        recent_window,
-    )
+    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
 }
 
 fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolSignals {
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut prompt_char_count: u32 = 0;
 
     for item in items {
         let Some(obj) = item.as_object() else {
             continue;
         };
         let item_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
-        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
 
         match item_type {
             "function_call_output" => {
@@ -495,21 +505,11 @@ fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolSi
                     command,
                 });
             }
-            _ => {
-                if role == "user" {
-                    prompt_char_count = user_message_char_count(obj.get("content"));
-                }
-            }
+            _ => {}
         }
     }
 
-    build_signal(
-        tool_texts,
-        tool_calls,
-        items.len() as u32,
-        prompt_char_count,
-        recent_window,
-    )
+    build_signal(tool_texts, tool_calls, items.len() as u32, recent_window)
 }
 
 // ─── aggregation ─────────────────────────────────────────────────────────────
@@ -518,14 +518,21 @@ fn build_signal(
     tool_texts: Vec<String>,
     tool_calls: Vec<ObservedToolCall>,
     turn_depth: u32,
-    prompt_char_count: u32,
     recent_window: usize,
 ) -> ToolSignals {
-    let (severity, patterns) = if let Some(last) = tool_texts.last() {
-        classify_text(last)
-    } else {
-        (0.0, Vec::new())
-    };
+    // Windowed severity: take the MAX severity across the last `recent_window` tool
+    // results rather than only the last one. An error's severity then persists for
+    // the recent window and decays out of it — parallel to the windowed `recent_*`
+    // counts — so a fix written a couple of turns after an error still routes on the
+    // error signal instead of the router flapping straight back to the weak tier.
+    let sev_start = tool_texts.len().saturating_sub(recent_window.max(1));
+    let mut severity = 0.0f32;
+    for text in &tool_texts[sev_start..] {
+        let (sev, _patterns) = classify_text(text);
+        if sev > severity {
+            severity = sev;
+        }
+    }
 
     let no_error_streak = compute_no_error_streak(&tool_texts);
 
@@ -581,11 +588,10 @@ fn build_signal(
         }
     }
 
-    let tests_passed = detect_tests_passed(&tool_texts);
+    let tests_passed = detect_tests_passed(&tool_texts, recent_window);
 
     ToolSignals {
         severity,
-        patterns,
         no_error_streak,
         edit_count,
         write_count,
@@ -598,7 +604,9 @@ fn build_signal(
         pure_bash_streak,
         tests_passed,
         turn_depth,
-        prompt_char_count,
+        // Set by extract_tool_signals_with_window after the format-specific extract,
+        // which scans all message contents for the compaction marker.
+        compacted: false,
     }
 }
 
@@ -625,24 +633,6 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
             }
         }
         _ => None,
-    }
-}
-
-/// Character count of a user-message content value.
-fn user_message_char_count(content: Option<&Value>) -> u32 {
-    match content {
-        Some(Value::String(s)) => s.len() as u32,
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter_map(|b| {
-                b.as_object()
-                    .filter(|o| o.get("type").and_then(Value::as_str) == Some("text"))
-                    .and_then(|o| o.get("text"))
-                    .and_then(Value::as_str)
-            })
-            .map(|s| s.len() as u32)
-            .sum(),
-        _ => 0,
     }
 }
 
@@ -674,13 +664,9 @@ fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
     streak
 }
 
-fn detect_tests_passed(tool_texts: &[String]) -> bool {
-    let recent = if tool_texts.len() > 3 {
-        &tool_texts[tool_texts.len() - 3..]
-    } else {
-        tool_texts
-    };
-    recent.iter().any(|text| {
+fn detect_tests_passed(tool_texts: &[String], recent_window: usize) -> bool {
+    let start = tool_texts.len().saturating_sub(recent_window.max(1));
+    tool_texts[start..].iter().any(|text| {
         let lower = text.to_lowercase();
         TEST_PASS_PHRASES.iter().any(|p| lower.contains(p))
             && !TEST_FAILURE_LITERAL.iter().any(|p| lower.contains(p))
@@ -783,6 +769,23 @@ mod tests {
     }
 
     #[test]
+    fn file_does_not_exist_is_hard() {
+        // Claude Code Read-tool miss. Trace-mined addition (22 true / 2 false positives).
+        let (sev, patterns) =
+            classify_text("Error: File does not exist. Note: current working directory is /app.");
+        assert_eq!(sev, HARD);
+        assert!(patterns.contains(&"no_such_file".to_string()));
+    }
+
+    #[test]
+    fn bare_does_not_exist_stays_clean() {
+        // Precision guard: only the anchored "file does not exist" fires, so a bare
+        // "does not exist" in prose or directory output must not trip a false error.
+        let (sev, _) = classify_text("The directory does not exist yet, creating it now.");
+        assert_eq!(sev, 0.0);
+    }
+
+    #[test]
     fn no_error_streak_all_clean() {
         let texts = vec!["ok".to_string(), "all good".to_string()];
         assert_eq!(compute_no_error_streak(&texts), 2);
@@ -800,38 +803,48 @@ mod tests {
 
     #[test]
     fn tests_passed_detects_pytest_output() {
-        assert!(detect_tests_passed(&[
-            "====== 5 passed in 0.12s ======".to_string()
-        ]));
+        assert!(detect_tests_passed(
+            &["====== 5 passed in 0.12s ======".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_ignores_partial_failures() {
-        assert!(!detect_tests_passed(&[
-            "2 failed, 5 passed in 0.56s".to_string()
-        ]));
+        assert!(!detect_tests_passed(
+            &["2 failed, 5 passed in 0.56s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
+    }
+
+    #[test]
+    fn severity_is_windowed_over_recent_results() {
+        // An error two results back, then two clean results.
+        let request = openai_chat_request(json!({
+            "messages": [
+                {"role": "tool", "tool_call_id": "1",
+                 "content": "Traceback (most recent call last):\n  ValueError"},
+                {"role": "tool", "tool_call_id": "2", "content": "ok"},
+                {"role": "tool", "tool_call_id": "3", "content": "ok"},
+            ]
+        }));
+        // window covers the error → severity persists (max over the window)
+        assert_eq!(extract_tool_signals_with_window(&request, 3).severity, HARD);
+        // window of 1 sees only the last (clean) result → severity has decayed out
+        assert_eq!(extract_tool_signals_with_window(&request, 1).severity, 0.0);
     }
 
     #[test]
     fn extract_openai_chat_tool_results() {
-        let raw_request = Some(json!({
+        let request = openai_chat_request(json!({
             "messages": [
                 {"role": "user", "content": "do something"},
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Edit"}}]},
                 {"role": "tool", "tool_call_id": "1", "content": "Traceback (most recent call last):\n  ValueError"},
             ]
         }));
-        let request = Request {
-            raw_request,
-            metadata: Some(Metadata {
-                wire_format: Some(WireFormat::OpenAiChat),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, HARD);
-        assert!(sig.patterns.contains(&"traceback".to_string()));
         assert_eq!(sig.edit_count, 1);
         assert_eq!(sig.turn_depth, 3);
     }
@@ -865,9 +878,9 @@ mod tests {
     }
 
     #[test]
-    fn recent_window_counts_only_last_three_tool_calls() {
-        // 5 writes + 1 edit at the end → recent window of 3 should see
-        // 1 edit + 2 writes (not all 5 writes).
+    fn recent_window_counts_only_last_default_window_tool_calls() {
+        // 5 writes + 1 edit at the end → the default window (5) should see
+        // the last 5 calls: 1 edit + 4 writes (not all 6 calls).
         let request = openai_chat_request(json!({
             "messages": [
                 {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
@@ -887,7 +900,7 @@ mod tests {
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 5);
         assert_eq!(sig.edit_count, 1);
-        assert_eq!(sig.recent_write_count, 2);
+        assert_eq!(sig.recent_write_count, 4);
         assert_eq!(sig.recent_edit_count, 1);
     }
 
@@ -919,6 +932,29 @@ mod tests {
         let wide = extract_tool_signals_with_window(&request, 6);
         assert_eq!(wide.recent_write_count, 5);
         assert_eq!(wide.recent_edit_count, 1);
+    }
+
+    #[test]
+    fn compaction_marker_sets_compacted() {
+        // The compaction summary is a user message carrying Claude Code's preamble.
+        let request = openai_chat_request(json!({
+            "messages": [
+                {"role": "user", "content": "This session is being continued from a previous conversation that ran out of context."},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}}]},
+            ]
+        }));
+        assert!(ToolSignals::from_request(&request, None).compacted);
+    }
+
+    #[test]
+    fn no_compaction_marker_stays_uncompacted() {
+        let request = openai_chat_request(json!({
+            "messages": [
+                {"role": "user", "content": "Write a script that parses the log file."},
+                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}}]},
+            ]
+        }));
+        assert!(!ToolSignals::from_request(&request, None).compacted);
     }
 
     #[test]
@@ -983,47 +1019,55 @@ mod tests {
     #[test]
     fn tests_passed_detects_pytest_with_failure_block() {
         // Mixed pytest run: 2 failed + 5 passed → NOT considered tests_passed.
-        assert!(!detect_tests_passed(&[
-            "2 failed, 5 passed in 0.56s".to_string()
-        ]));
+        assert!(!detect_tests_passed(
+            &["2 failed, 5 passed in 0.56s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_accepts_cargo_clean_summary() {
         // Cargo's clean-run summary contains "0 failed" — must not trip the
         // failure list (regression: previously substring-matched "failed").
-        assert!(detect_tests_passed(&[
-            "running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string()
-        ]));
+        assert!(detect_tests_passed(
+            &["running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_rejects_cargo_real_failure() {
         // Cargo's actual-failure summary: nonzero count before "failed".
-        assert!(!detect_tests_passed(&[
-            "running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string()
-        ]));
+        assert!(!detect_tests_passed(
+            &["running 3 tests\ntest result: FAILED. 2 passed; 1 failed; 0 ignored".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_accepts_go_clean_summary() {
         // Go test's clean-run "0 errors" must not trip (regression).
-        assert!(detect_tests_passed(&[
-            "ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string()
-        ]));
+        assert!(detect_tests_passed(
+            &["ok  github.com/foo/bar\t0.012s (5 passed, 0 errors)".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_accepts_pytest_zero_errors() {
         // Pytest long-form: "0 errors in 0.3s" on a clean run.
-        assert!(detect_tests_passed(&[
-            "5 passed, 0 errors in 0.30s".to_string()
-        ]));
+        assert!(detect_tests_passed(
+            &["5 passed, 0 errors in 0.30s".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]
     fn tests_passed_detects_diy_checkmark() {
-        assert!(detect_tests_passed(&["✓ all checks passed".to_string()]));
+        assert!(detect_tests_passed(
+            &["✓ all checks passed".to_string()],
+            DEFAULT_RECENT_WINDOW
+        ));
     }
 
     #[test]

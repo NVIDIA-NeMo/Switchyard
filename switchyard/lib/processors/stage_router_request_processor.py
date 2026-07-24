@@ -22,6 +22,7 @@ from switchyard.lib.processors.stage_router.classifier import RECENT_MESSAGES_KE
 
 if TYPE_CHECKING:
     from switchyard.lib.backends.llm_target import LlmTarget
+    from switchyard.lib.processors.stage_router.handoff_notes import HandoffNoteInjector
     from switchyard.lib.proxy_context import ProxyContext
     from switchyard.lib.stats_accumulator import StatsAccumulator
     from switchyard_rust.core import ChatRequest
@@ -48,6 +49,9 @@ class StageRouterRequestProcessor:
         picker: TierPicker,
         classifier: TierClassifier | None = None,
         decision_log: StageRouterDecisionLog | None = None,
+        handoff_injector: HandoffNoteInjector | None = None,
+        strong_system_prompt: str | None = None,
+        weak_system_prompt: str | None = None,
     ) -> None:
         if len(targets) != 2:
             raise ValueError(f"stage_router requires exactly 2 targets, got {len(targets)}")
@@ -57,6 +61,9 @@ class StageRouterRequestProcessor:
         self._classifier = classifier
         self._max_index = len(targets) - 1
         self._decision_log = decision_log if decision_log is not None else StageRouterDecisionLog()
+        self._handoff_injector = handoff_injector
+        self._strong_system_prompt = strong_system_prompt
+        self._weak_system_prompt = weak_system_prompt
         self._stats_accumulator: StatsAccumulator | None = None
 
     def attach_stats_accumulator(self, stats_accumulator: StatsAccumulator) -> None:
@@ -83,6 +90,17 @@ class StageRouterRequestProcessor:
         ctx.selected_target = self._target_ids[idx]
         ctx.selected_model = self._target_models[idx]
         await self._record_decision_source(ctx)
+        if self._handoff_injector is not None:
+            source = ctx.metadata.get(CONTEXT_KEY)
+            self._handoff_injector.maybe_inject(
+                request,
+                tier=idx,
+                source=source if isinstance(source, str) else None,
+            )
+        if self._strong_system_prompt is not None and idx == CAPABLE:
+            _prepend_system_prompt(request, self._strong_system_prompt)
+        if self._weak_system_prompt is not None and idx == EFFICIENT:
+            _prepend_system_prompt(request, self._weak_system_prompt)
         log.debug(
             "stage_router pick: idx=%d target=%s model=%s",
             idx, ctx.selected_target, ctx.selected_model,
@@ -111,6 +129,37 @@ class StageRouterRequestProcessor:
             )
         except Exception:
             log.debug("failed to record stage_router decision source", exc_info=True)
+
+
+def _prepend_system_prompt(request: ChatRequest, prompt: str) -> None:
+    """Prepend ``prompt`` to the request's system content. Never raises."""
+    try:
+        body = getattr(request, "body", None)
+        if not isinstance(body, dict):
+            return
+        fmt = getattr(getattr(request, "request_type", None), "value", None)
+        if fmt == "anthropic":
+            # Anthropic: top-level "system" field (string or content-block list)
+            existing = body.get("system", "")
+            if isinstance(existing, str):
+                body["system"] = prompt + ("\n\n" + existing if existing else "")
+            elif isinstance(existing, list):
+                body["system"] = [{"type": "text", "text": prompt}] + existing
+            else:
+                body["system"] = prompt
+        else:
+            # OpenAI: prepend a system message before existing messages
+            messages = body.get("messages")
+            if not isinstance(messages, list):
+                return
+            if messages and messages[0].get("role") == "system":
+                existing = messages[0].get("content", "")
+                messages[0] = {"role": "system", "content": prompt + "\n\n" + existing}
+            else:
+                messages.insert(0, {"role": "system", "content": prompt})
+        request.replace_body(body)
+    except Exception:
+        log.debug("strong_system_prompt injection failed; continuing without", exc_info=True)
 
 
 __all__ = [
