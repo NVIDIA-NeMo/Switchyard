@@ -1,0 +1,88 @@
+name: Publish switchyard-server container
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  PACKAGE_NAME: switchyard-server
+
+jobs:
+  publish:
+    name: Publish container
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image coordinates
+        id: image
+        shell: bash
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish commit image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/switchyard-server/Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.short_sha }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.image.outputs.short_sha }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=switchyard-server
+          cache-to: type=gha,mode=max,scope=switchyard-server
+      - name: Publish main image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/switchyard-server/Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.name }}:main
+          build-args: |
+            IMAGE_VERSION=main
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=switchyard-server
+
+  cleanup:
+    name: Delete expired commit images
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete commit images older than 23 hours
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_path="/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME}/versions"
+          versions_file="${RUNNER_TEMP}/switchyard-server-versions.tsv"
+          cutoff="$(date -u -d '23 hours ago' +%s)"
+
+          gh api --paginate "${package_path}?per_page=100" \
+            --jq '.[] | [.id, .created_at, (.metadata.container.tags | join(","))] | @tsv' \
+            > "${versions_file}"
+
+          while IFS=$'\t' read -r version_id created_at tags; do
+            if [[ "${tags}" =~ ^[0-9a-f]{7}$ ]] \
+              && (( $(date -u -d "${created_at}" +%s) < cutoff )); then
+              echo "Deleting expired container tag ${tags}"
+              gh api --method DELETE "${package_path}/${version_id}"
+            fi
+          done < "${versions_file}"
