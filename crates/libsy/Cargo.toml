@@ -20,6 +20,7 @@ futures = "0.3"
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
 rand = "0.8"
 switchyard-protocol = { path = "../protocol" }
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }

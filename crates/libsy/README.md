@@ -85,7 +85,7 @@ struct MyClient { /* http client, base url, key */ }
 #[async_trait::async_trait]
 impl RoutedLlmClient for MyClient {
     async fn call(&self, ctx: Context, request: Request, decision: Arc<dyn Decision>)
-        -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        -> Result<Response, LlmClientError> {
         let model = decision.selected_model();   // the routed target — map it to a provider id
         // request.llm_request.model is the agent's original name (not a call target)
         // ... POST to your endpoint, read the completion ...
@@ -204,9 +204,9 @@ pub trait Algorithm: Send + Sync + 'static {
     // `self: Arc<Self>` (not `&mut`): one algorithm serves requests concurrently — use
     // interior mutability for state. Offload calls/decisions on `driver`.
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
-        -> Result<Response, Box<dyn Error + Send + Sync>>;
+        -> switchyard_libsy::Result<Response>;
     async fn process_signals(self: Arc<Self>, signals: Signals)
-        -> Result<(), Box<dyn Error + Send + Sync>>;
+        -> switchyard_libsy::Result<()>;
     // provided: run(ctx, request) -> (trace, response), run_stream(ctx, request) -> Stream<Step>
 }
 
@@ -227,7 +227,7 @@ impl Algorithm for LlmClassifier {
     fn name(&self) -> &str { "llm_classifier" }
 
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
-        -> Result<Response, Box<dyn Error + Send + Sync>> {
+        -> switchyard_libsy::Result<Response> {
         // Thread `ctx` into every offloaded call and decision — it carries the request's
         // cross-cutting state (correlation ids, budgets) for observers downstream.
 
@@ -249,9 +249,26 @@ impl Algorithm for LlmClassifier {
         driver.call_llm_target(ctx, &routed, routed_req, route_decision).await
     }
 
-    async fn process_signals(self: Arc<Self>, _s: Signals) -> Result<(), Box<dyn Error + Send + Sync>> { Ok(()) }
+    async fn process_signals(self: Arc<Self>, _s: Signals) -> switchyard_libsy::Result<()> { Ok(()) }
 }
 ```
+
+## Errors
+
+All libsy-owned APIs return [`switchyard_libsy::Result<T>`], whose error is
+`LibsyError`. Callers can match routing failures (`TargetNotFound`, `NoTargets`,
+`MissingClient`), algorithm-specific failures (`AlgorithmError`), driver failures,
+algorithm task failures, incomplete runs, and client-call failures without inspecting error
+strings.
+
+`RoutedLlmClient` is owned by `switchyard-protocol` and returns
+`LlmClientError`. Callers can distinguish invalid requests, configuration
+failures, request/response translation failures, request encoding failures, transport
+failures, timeouts, context-window overflows, upstream HTTP responses, invalid responses,
+and uncategorized client-specific failures. When [`Algorithm::run`] serves a target,
+libsy preserves that error as the source of `LibsyError::ClientCall`.
+Custom algorithms, classifiers, and processors that need to surface their own errors can use
+`LibsyError::external("operation", error)`.
 
 ## Observability
 
@@ -309,4 +326,4 @@ agents live in [`examples`](examples/) folder.
 
 - **`Signals` events** — `process_signals` / `Signals` exist but carry nothing yet.
 - **`Context` fields** — carries the algorithm telemetry label today; correlation ids, budgets, and deadlines still to come.
-- **Config-driven construction**, **typed errors** (vs `Box<dyn Error>`), **weighted random**.
+- **Config-driven construction**, **weighted random**.

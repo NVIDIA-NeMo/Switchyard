@@ -21,9 +21,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, Metadata, Request};
+use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
 use serde_json::{json, Value};
-use switchyard_llm_client::LlmClientError;
 use tokio::net::{TcpListener, TcpSocket};
 
 use switchyard_translation::{decode_request, WireFormat};
@@ -36,8 +35,6 @@ pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
 const HEADER_RATIONALE: &str = "x-model-router-rationale";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
-
-type BoxError = Box<dyn Error + Send + Sync>;
 
 /// Error returned while configuring or running the server.
 #[derive(Debug)]
@@ -366,28 +363,23 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.chars().take(MAX_ROUTING_HEADER_VALUE_LEN).collect())
 }
 
-fn algorithm_error(error: BoxError) -> Response {
-    let Some(error) = error.downcast_ref::<LlmClientError>() else {
+fn algorithm_error(error: LibsyError) -> Response {
+    let LibsyError::ClientCall { source, .. } = &error else {
         return server_error(error.to_string());
     };
-    match error {
-        LlmClientError::UnknownModel(model) => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("No upstream backend configured for model {model}"),
-            "upstream_error",
-            "upstream_model_not_found",
-        ),
-        LlmClientError::UnknownModelFormat { model, format } => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("No upstream backend configured for model {model} and format {format}"),
-            "upstream_error",
-            "upstream_format_not_found",
-        ),
-        LlmClientError::MissingModel => error_response(
+    match source {
+        LlmClientError::InvalidRequest { message }
+        | LlmClientError::RequestTranslation(message) => error_response(
             StatusCode::BAD_REQUEST,
-            error.to_string(),
+            message,
             "invalid_request_error",
             "invalid_request_error",
+        ),
+        LlmClientError::Configuration { message } => error_response(
+            StatusCode::BAD_GATEWAY,
+            message,
+            "upstream_error",
+            "upstream_configuration_error",
         ),
         LlmClientError::ContextWindowExceeded { message, .. } => error_response(
             StatusCode::BAD_REQUEST,
@@ -401,14 +393,28 @@ fn algorithm_error(error: BoxError) -> Response {
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Translation(message)
-        | LlmClientError::Transport(message)
-        | LlmClientError::Stream(message) => error_response(
+        LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
+            error_response(
+                StatusCode::BAD_GATEWAY,
+                source.to_string(),
+                "upstream_error",
+                "upstream_error",
+            )
+        }
+        LlmClientError::ResponseTranslation(message) => error_response(
             StatusCode::BAD_GATEWAY,
             message,
             "upstream_error",
             "upstream_error",
         ),
+        LlmClientError::Timeout { source } => error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            source.to_string(),
+            "upstream_error",
+            "upstream_timeout",
+        ),
+        LlmClientError::RequestEncoding(message) => server_error(message),
+        _ => server_error(error.to_string()),
     }
 }
 

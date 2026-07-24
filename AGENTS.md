@@ -155,7 +155,6 @@ switchyard/
 │   ├── route_table_builders.py     # Shared profile-backed table builders
 │   ├── llm_client.py               # OpenAILLMClient
 │   ├── cost_estimator.py           # Token-cost bookkeeping
-│   ├── live_stats_collector.py     # Live request stats
 │   ├── stats_accumulator.py        # Stats accumulation helpers
 │   ├── request_metadata.py         # RequestMetadata
 │   ├── chat_response/              # Rust-backed response re-exports + stream adapters
@@ -178,7 +177,6 @@ switchyard/
 │   │   ├── random_routing_request_processor.py
 │   │   ├── stats_request_processor.py
 │   │   ├── stats_response_processor_accumulator.py
-│   │   ├── stats_response_processor_live_collector.py
 │   │   ├── intake_request_processor.py
 │   │   ├── intake_response_processor.py
 │   │   ├── intake_payload_builder.py

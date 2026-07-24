@@ -1040,6 +1040,42 @@ async fn anthropic_streaming_returns_stream_events() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn anthropic_streaming_stops_at_done_marker() -> Result<()> {
+    let server = OneShotServer::sse(
+        "event: message_start\n\
+         data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-stream\"}}\n\n\
+         data: [DONE]\n\n\
+         event: message_stop\n\
+         data: {\"type\":\"message_stop\"}\n\n",
+    )?;
+    let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
+    let mut ctx = ProxyContext::new();
+
+    let response = backend
+        .call(
+            &mut ctx,
+            &ChatRequest::anthropic(json!({
+                "model": "client-claude",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "stream"}],
+                "stream": true
+            })),
+        )
+        .await?;
+    let events = collect_json_events(response).await?;
+    server.captured()?;
+
+    assert_eq!(
+        events,
+        vec![json!({
+            "type": "message_start",
+            "message": {"id": "msg-stream"}
+        })]
+    );
+    Ok(())
+}
+
 // Anthropic native must reject targets configured for OpenAI format.
 #[test]
 fn anthropic_backend_rejects_openai_targets() -> Result<()> {

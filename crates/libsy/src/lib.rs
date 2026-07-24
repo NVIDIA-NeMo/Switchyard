@@ -80,6 +80,11 @@
 mod core;
 pub use core::*;
 
+mod error;
+pub use error::{DriverError, LibsyError, Result};
+
 pub mod algorithms;
 
 mod observability;
+mod signal;
+pub use signal::{ToolSignals, DEFAULT_RECENT_WINDOW};

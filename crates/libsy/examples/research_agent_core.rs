@@ -9,12 +9,12 @@
 //! The classifier's two steps show up as two `model call:` lines. Run with:
 //!   cargo run -p libsy --example research_agent_core
 
-use std::error::Error;
 use std::sync::Arc;
 
 use switchyard_libsy::algorithms::LlmClassifier;
 use switchyard_libsy::{
-    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
+    Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
+    Response, Result, Step,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
@@ -58,7 +58,7 @@ impl ResearchAgent {
         vec![format!("look up: {question}")]
     }
 
-    async fn run(&mut self, question: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    async fn run(&mut self, question: &str) -> Result<String> {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
@@ -78,7 +78,11 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(completion_text(&response.llm_response.into_agg().await?));
+                        let aggregate =
+                            response.llm_response.into_agg().await.map_err(|error| {
+                                LibsyError::external_boxed("aggregating response", error)
+                            })?;
+                        notes.push(completion_text(&aggregate));
                     }
                 }
             }
@@ -97,7 +101,7 @@ fn print_decision(decision: &dyn Decision) {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> Result<()> {
     let algo: Arc<dyn Algorithm> =
         Arc::new(LlmClassifier::new(CLASSIFIER, STRONG, WEAK, 0.5, targets()));
 

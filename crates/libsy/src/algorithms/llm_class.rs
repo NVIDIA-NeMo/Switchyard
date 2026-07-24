@@ -10,12 +10,11 @@
 //! routed strong/weak target. The multi-step nature is invisible to the caller —
 //! it is the algorithm's own control flow.
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response};
+use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response, Result};
 use switchyard_protocol::{completion_text, LlmRequest, Message, Role};
 
 /// The system prompt tells the classifier what to do
@@ -148,7 +147,7 @@ impl Algorithm for LlmClassifier {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         // The agent's inbound name rides through unchanged on every sub-call; the
         // model each sub-call actually hits is carried by its decision instead.
         let inbound = request.llm_request.model.clone();
@@ -239,14 +238,17 @@ mod tests {
             _ctx: Context,
             request: Request,
             decision: Arc<dyn Decision>,
-        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
             let name = decision.selected_model().to_string();
             let completion = if name == self.classifier_model {
                 self.score.clone()
             } else {
                 format!("answer from {name}")
             };
-            self.seen.lock().map_err(|_| "lock poisoned")?.push(request);
+            self.seen
+                .lock()
+                .map_err(|_| switchyard_protocol::LlmClientError::Other("lock poisoned".into()))?
+                .push(request);
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,
@@ -295,17 +297,19 @@ mod tests {
     }
 
     /// Downcast a trace entry to the concrete classifier decision.
-    fn as_classifier(
-        d: &Arc<dyn Decision>,
-    ) -> Result<&ClassifierDecision, Box<dyn Error + Send + Sync>> {
+    fn as_classifier(d: &Arc<dyn Decision>) -> Result<&ClassifierDecision> {
         d.as_any()
             .downcast_ref::<ClassifierDecision>()
-            .ok_or_else(|| "expected a ClassifierDecision".into())
+            .ok_or_else(|| {
+                crate::DriverError::TypeMismatch {
+                    expected: "ClassifierDecision",
+                }
+                .into()
+            })
     }
 
     #[tokio::test]
-    async fn score_at_or_above_threshold_routes_strong() -> Result<(), Box<dyn Error + Send + Sync>>
-    {
+    async fn score_at_or_above_threshold_routes_strong() -> Result<()> {
         let (algo, _) = algo(0.5, "0.9");
         let (trace, response) = orch(algo)
             .run(Context::default(), request("solve this proof"))
@@ -328,7 +332,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn score_below_threshold_routes_weak() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn score_below_threshold_routes_weak() -> Result<()> {
         let (algo, _) = algo(0.5, "0.2");
         let (trace, response) = orch(algo)
             .run(Context::default(), request("say hello"))
@@ -348,8 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn score_exactly_at_threshold_routes_strong() -> Result<(), Box<dyn Error + Send + Sync>>
-    {
+    async fn score_exactly_at_threshold_routes_strong() -> Result<()> {
         let (algo, _) = algo(0.5, "0.5");
         let (_, response) = orch(algo)
             .run(Context::default(), request("borderline"))
@@ -366,7 +369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unparseable_score_defaults_to_strong() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn unparseable_score_defaults_to_strong() -> Result<()> {
         let (algo, _) = algo(0.5, "not-a-number");
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(

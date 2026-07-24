@@ -84,9 +84,12 @@ impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
-        let client = reqwest::Client::builder().build().map_err(|error| {
-            LlmClientError::Transport(format!("failed to build HTTP client: {error}"))
-        })?;
+        let client =
+            reqwest::Client::builder()
+                .build()
+                .map_err(|error| LlmClientError::Transport {
+                    source: Box::new(error),
+                })?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -120,10 +123,8 @@ impl TranslatingLlmClient {
     ///
     /// Resolution: `model_name` wins over `request.llm_request.model`; the
     /// resolved name is both the outer map key and the model id written into the
-    /// request before translation. Errors with [`LlmClientError::MissingModel`]
-    /// when neither is set, [`LlmClientError::UnknownModel`] when the model has
-    /// no backends, and [`LlmClientError::UnknownModelFormat`] when the model has
-    /// no backend for `format`.
+    /// request before translation. Missing models are invalid requests; unknown
+    /// models or wire formats are configuration errors.
     pub async fn call_rewrite_model(
         &self,
         _ctx: Context,
@@ -141,27 +142,30 @@ impl TranslatingLlmClient {
         let model = model_name
             .map(str::to_string)
             .or_else(|| llm_request.model.clone())
-            .ok_or(LlmClientError::MissingModel)?;
+            .ok_or_else(|| LlmClientError::InvalidRequest {
+                message: "no model given".to_string(),
+            })?;
 
         let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
         let wire_format = orig_format.unwrap_or(
             self.model_to_config
                 .get(&model)
                 .map(|config| config.default_backend.wire_format())
-                .ok_or(LlmClientError::UnknownModel(model.clone()))?,
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("no backend configured for model {model:?}"),
+                })?,
         );
         let backend =
             self.backend_for(&model, wire_format)
-                .ok_or(LlmClientError::UnknownModelFormat {
-                    model: model.clone(),
-                    format: wire_format,
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model:?} has no backend for format {wire_format}"),
                 })?;
 
         // The resolved name is the upstream model id (per the crate contract).
         llm_request.model = Some(model.clone());
 
         let mut body = encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
@@ -173,16 +177,18 @@ impl TranslatingLlmClient {
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let http_response = builder
-            .send()
-            .await
-            .map_err(|error| LlmClientError::Transport(error.to_string()))?;
+        let http_response = builder.send().await.map_err(convert_reqwest_error)?;
         let status = http_response.status();
         if !status.is_success() {
-            let body = http_response
-                .text()
-                .await
-                .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
+            let body = match http_response.text().await {
+                Ok(body) => body,
+                Err(error) if error.is_timeout() => {
+                    return Err(LlmClientError::Timeout {
+                        source: Box::new(error),
+                    })
+                }
+                Err(error) => format!("<failed to read error body: {error}>"),
+            };
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
                 return Err(LlmClientError::ContextWindowExceeded {
                     model,
@@ -200,20 +206,28 @@ impl TranslatingLlmClient {
             // transport-agnostic and lives in `switchyard-translation`.
             let bytes = http_response.bytes_stream().map(|chunk| {
                 chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                    Box::new(LlmClientError::Stream(format!(
-                        "stream read failed: {error}"
-                    ))) as Box<dyn std::error::Error + Send + Sync>
+                    let error = if error.is_timeout() {
+                        LlmClientError::Timeout {
+                            source: Box::new(error),
+                        }
+                    } else {
+                        LlmClientError::Transport {
+                            source: Box::new(error),
+                        }
+                    };
+                    Box::new(error) as Box<dyn std::error::Error + Send + Sync>
                 })
             });
             let chunks = decode_stream(bytes, wire_format)
-                .map_err(|error| LlmClientError::Stream(error.to_string()))?;
+                .map_err(|source| LlmClientError::InvalidResponse { source })?;
             LlmResponse::Stream(chunks)
         } else {
-            let body = http_response.json::<Value>().await.map_err(|error| {
-                LlmClientError::Transport(format!("invalid upstream JSON: {error}"))
-            })?;
+            let body = http_response
+                .json::<Value>()
+                .await
+                .map_err(convert_reqwest_error)?;
             let agg = decode_aggregated_response(&body, wire_format)
-                .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             LlmResponse::Agg(agg)
         };
 
@@ -245,7 +259,7 @@ impl TranslatingLlmClient {
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
         let llm_request = decode_request(wire_format, &raw_http_request)
-            .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+            .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         // The model the client asked for; restamped onto the response so it never
         // leaks the upstream id.
         let requested_model = llm_request.model.clone();
@@ -270,12 +284,12 @@ impl TranslatingLlmClient {
             LlmResponse::Agg(agg) => {
                 let body =
                     encode_aggregated_response(&agg, wire_format, requested_model.as_deref())
-                        .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+                        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
                 let events = encode_stream(chunks, wire_format, requested_model)
-                    .map_err(|error| LlmClientError::Stream(error.to_string()))?;
+                    .map_err(|source| LlmClientError::InvalidResponse { source })?;
                 Ok(RawResponse::Stream(events))
             }
         }
@@ -289,11 +303,31 @@ impl RoutedLlmClient for TranslatingLlmClient {
         ctx: Context,
         request: Request,
         decision: std::sync::Arc<dyn Decision>,
-    ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Response> {
         let model_name = Some(decision.selected_model());
-        self.call_rewrite_model(ctx, request, model_name)
-            .await
-            .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+        self.call_rewrite_model(ctx, request, model_name).await
+    }
+}
+
+fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
+    // `Response::json` labels body collection and JSON parsing failures as
+    // decode errors; only the latter is a translation failure.
+    if error.is_timeout() {
+        LlmClientError::Timeout {
+            source: Box::new(error),
+        }
+    } else if error.is_body() {
+        LlmClientError::Transport {
+            source: Box::new(error),
+        }
+    } else if error.is_decode()
+        && std::error::Error::source(&error).is_some_and(|source| source.is::<serde_json::Error>())
+    {
+        LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
+    } else {
+        LlmClientError::Transport {
+            source: Box::new(error),
+        }
     }
 }
 
@@ -340,6 +374,8 @@ fn is_reserved_header(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
+    use std::io::{Read, Write};
+    use std::thread::JoinHandle;
 
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request, LlmRequest};
@@ -364,6 +400,26 @@ mod tests {
             Backend::OpenAiChat(config(base_url)),
             None,
         )]
+    }
+
+    fn truncated_response_server() -> std::io::Result<(String, JoinHandle<std::io::Result<()>>)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1024];
+            if stream.read(&mut request)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "client closed before sending a request",
+                ));
+            }
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                  Content-Length: 100\r\nConnection: close\r\n\r\n{}",
+            )
+        });
+        Ok((format!("http://{address}/v1"), handle))
     }
 
     fn request_for(model: Option<&str>, stream: bool) -> Request {
@@ -403,7 +459,10 @@ mod tests {
         else {
             panic!("expected an error");
         };
-        assert!(matches!(error, LlmClientError::MissingModel));
+        assert!(matches!(
+            error,
+            LlmClientError::InvalidRequest { message } if message == "no model given"
+        ));
         Ok(())
     }
 
@@ -417,7 +476,11 @@ mod tests {
         else {
             panic!("expected an error");
         };
-        assert!(matches!(error, LlmClientError::UnknownModel(model) if model == "gpt"));
+        assert!(matches!(
+            error,
+            LlmClientError::Configuration { message }
+                if message.contains("gpt")
+        ));
         Ok(())
     }
 
@@ -438,8 +501,9 @@ mod tests {
         };
         assert!(matches!(
             error,
-            LlmClientError::UnknownModelFormat { model, format }
-                if model == "gpt" && format == WireFormat::AnthropicMessages
+            LlmClientError::Configuration { message }
+                if message.contains("gpt")
+                    && message.contains(&WireFormat::AnthropicMessages.to_string())
         ));
         Ok(())
     }
@@ -470,7 +534,11 @@ mod tests {
         else {
             panic!("expected an error");
         };
-        assert!(matches!(error, LlmClientError::UnknownModel(model) if model == "b"));
+        assert!(matches!(
+            error,
+            LlmClientError::Configuration { message }
+                if message.contains("\"b\"")
+        ));
         Ok(())
     }
 
@@ -501,6 +569,58 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_json_is_a_response_translation_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("not json", "application/json"))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected invalid JSON to fail");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::ResponseTranslation(message)
+                if message.contains("invalid upstream JSON")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn response_body_io_failure_is_a_transport_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let (base_url, server) = truncated_response_server()?;
+        let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
+        let result = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await;
+        server
+            .join()
+            .map_err(|_| std::io::Error::other("response server thread panicked"))??;
+
+        let Err(error) = result else {
+            panic!("expected the truncated response body to fail");
+        };
+        let LlmClientError::Transport { source } = error else {
+            panic!("expected a transport error");
+        };
+        let Some(source) = source.downcast_ref::<reqwest::Error>() else {
+            panic!("expected the reqwest transport source");
+        };
+        assert!(source.is_decode());
+        assert!(!std::error::Error::source(&source)
+            .is_some_and(|source| source.is::<serde_json::Error>()));
         Ok(())
     }
 
@@ -578,6 +698,39 @@ mod tests {
             error,
             LlmClientError::UpstreamHttp { status: 500, .. }
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn routed_llm_client_exposes_timeout_variant(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(100)),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        client.client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(10))
+            .build()?;
+        let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
+
+        let Err(error) = client
+            .call(Context::default(), request_for(None, false), decision)
+            .await
+        else {
+            panic!("expected a timeout");
+        };
+        let LlmClientError::Timeout { source } = error else {
+            panic!("expected the protocol timeout variant");
+        };
+        let Some(source) = source.downcast_ref::<reqwest::Error>() else {
+            panic!("expected the reqwest timeout source");
+        };
+        assert!(source.is_timeout());
         Ok(())
     }
 
@@ -698,6 +851,30 @@ mod tests {
             .await?;
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "routed hi");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_raw_request_is_a_request_translation_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let client = TranslatingLlmClient::new(&[])?;
+        let Err(error) = client
+            .call_rewrite_model_raw(
+                Context::default(),
+                json!("invalid"),
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await
+        else {
+            panic!("expected request translation to fail");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::RequestTranslation(message) if !message.is_empty()
+        ));
         Ok(())
     }
 

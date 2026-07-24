@@ -21,10 +21,19 @@ Those stages call for different amounts of model capability, which is what the
 router keys on.
 
 For each LLM call, stage-router estimates which stage the agent is in from the
-**tool-result history** on the conversation: whether writes and edits are
-landing, whether tests pass, whether commands error out, how much read-only
-exploration is happening, and how far into the run it is. It turns those signals
-into a confidence score for "this turn needs the capable tier", then routes:
+**tool-result history** on the conversation, scoring two axes:
+
+- **WRONG → capable**: `severity` (windowed error severity), `spinning` (deep
+  churn with no reads or writes), and `exploring` (reading or planning without
+  producing) push toward the capable tier.
+- **PROGRESS → efficient**: `recent_production_intensity` (writes and edits
+  landing over the recent window) pushes toward the efficient tier.
+
+The axes are **corroborative**: the signed score is `tanh`-squashed to a
+confidence in `[0, 1]`, so one full signal alone scores ~`0.46` and a second
+corroborating signal is what pushes it decisively past a `0.5` threshold. A
+critical-error severity is a hard override that escalates on its own. The router
+then routes:
 
 - the **capable** tier for uncertain, exploratory, or error-recovery turns, and
 - the **efficient** tier for settled, mechanical turns.
@@ -89,14 +98,17 @@ clears the threshold to escalate to capable.
 (If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)
 
-**Start with `0.5`.** It is the default and the recommended starting point.
+**Set `0.5` explicitly.** It's the recommended starting point and what the
+example below uses. When you omit the field the config default is `0.5` (for
+both the profile config and the deprecated route bundle) — but setting it
+explicitly keeps the intent clear.
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
 | `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
-| `0.5` | no | Recommended starting point. A single strong signal clears the threshold on its own; derived from SWE-Bench Pro calibration. |
+| `0.5` | no | Recommended starting point (config default). The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
 | `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. |
-| `1.0` | yes (required) | Classifier-driven. Equivalent to classifier-only `coding_agent` routing. |
+| `1.0` | yes (required) | Classifier-driven. Equivalent to the legacy `coding_agent` profile. |
 
 The signal-vs-classifier split is dataset-dependent. Measure it in
 production via `routing_decisions.stage_router` on `/v1/stats` rather than relying on
@@ -143,33 +155,29 @@ From the overlap tasks (those with both capable and efficient results):
 
 **Running the sweep**
 
-Three scripts in `benchmark/calibration/stage_router/` form the pipeline:
-
-| Script | Input | Output | What it does |
-|---|---|---|---|
-| `signal_extractor.py` | Harbor task dir (JSONL trajectory) | one signal per turn | Replays a claude-code session, emitting the same signal the stage-router picker would have seen at each turn (write/edit/read counts, severity, tests passed, etc.) |
-| `calibrate.py` | Harbor run dirs (one per arm) | `per_task.jsonl`, `per_turn.jsonl` | Reads `result.json` + trajectory JSONL for each task in each arm. Calls `signal_extractor` to build per-turn signals, then writes one record per task (outcome + features) and one record per turn (signal snapshot). Also prints RESCUE/LOSS/SAFE/HARD quadrant counts. |
-| `sweep.py` | `per_task.jsonl`, `per_turn.jsonl` | Console table | Replays the per-turn signals through a set of escalation policies and scores each: pass%, escalation rate. The best-scoring policy that keeps escalation rate reasonable is your calibrated threshold. |
+Replay your runs through the real Rust scorer and picker with
+`benchmark/score_staged_run.py` (the `switchyard-stage-router-scorer` skill). It emits
+per-turn scores and per-task routing splits at a given threshold and window —
+the actual `pick_capable_first` / `pick_efficient_first` decisions, not a
+counterfactual:
 
 ```bash
-cd benchmark/calibration/stage_router
-python calibrate.py \
-  --capable-run-dir /tmp/runs/your_capable_run \
-  --efficient-run-dir /tmp/runs/your_efficient_probe
-python sweep.py
+# Score a probe run at a candidate threshold
+uv run python benchmark/score_staged_run.py --run benchmark/tb_runs/<your_run> \
+    --threshold 0.5 --window 3
+# → /tmp/<run>-scores.jsonl   (per turn: score, confidence, pick_cf, pick_ef)
+# → /tmp/<run>-per-task.csv   (per task: routing split, mean score/confidence)
 ```
 
-`calibrate.py` writes `per_task.jsonl` and `per_turn.jsonl`. `sweep.py`
-prints the policy score table; pick the best row from that output.
+Sweep a few candidate thresholds and read the routing split and pass rate off
+the per-task CSV; the lowest threshold that rescues the RESCUE quadrant without
+over-escalating the LOSS quadrant is your calibrated value. Because the scorer
+is corroborative, a `0.5` threshold takes ~1.5 signals of agreement — a policy
+that escalates ~20% of tasks maps roughly to `confidence_threshold: 0.5` with
+`capable_first`.
 
-Pick the policy whose pass% beats `always_stay` with an acceptable
-escalation rate. Translate it to a `confidence_threshold` value. A policy
-that escalates ~20% of tasks maps roughly to `confidence_threshold: 0.5`
-with `capable_first`.
-
-Even 15–20 probe tasks produce a stable result because signal features are
-extracted from the capable-arm trajectories, which are available for all
-tasks from the pure-capable run.
+Signals come from the actual picker replay, so even 15–20 probe tasks give a
+stable result.
 
 **Caveat on efficient outcomes in stage-router vs. pure-efficient**
 
@@ -209,6 +217,8 @@ switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
+If you omit `confidence_threshold`, the config default of `0.5` applies; the
+example sets it explicitly.
 
 `fallback_target_on_evict` is required and must reference one of the
 declared target ids. See [Context-Window Handling](../operations/context_window.md) for
@@ -255,8 +265,9 @@ The route counts why each turn was routed the way it was under
 
 | Source | When |
 |---|---|
-| `override` | A hard override fired (for example a critical error severity, or a clean test pass). |
-| `dimensions` | The signals crossed `confidence_threshold` and picked the tier. |
+| `override` | A critical-error severity (or a context-compaction marker) forced the capable tier. |
+| `tests_passed` | A settled run — a recent test pass with a recent write and no windowed error — dropped the turn to the efficient tier. |
+| `dimensions` | The corroborative scorer crossed `confidence_threshold` and picked the tier by the sign of the score. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a verdict. |
 | `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured, so the default tier was used. |
 | `no_signal` | The request arrived before any tool-result history existed. |

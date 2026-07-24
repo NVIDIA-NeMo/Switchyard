@@ -42,7 +42,6 @@ async def test_traceback_stamps_hard_severity():
     signal = get_tool_result_signal(ctx)
     assert signal is not None
     assert signal.severity == pytest.approx(0.7)
-    assert "traceback" in list(signal.patterns)
 
 
 async def test_oom_stamps_critical_severity():
@@ -65,7 +64,6 @@ async def test_clean_result_has_zero_severity():
     signal = get_tool_result_signal(ctx)
     assert signal is not None
     assert signal.severity == pytest.approx(0.0)
-    assert list(signal.patterns) == []
 
 
 async def test_no_tool_results_has_zero_severity():
@@ -175,7 +173,6 @@ async def test_anthropic_tool_result_extracted():
     signal = get_tool_result_signal(ctx)
     assert signal is not None
     assert signal.severity == pytest.approx(0.7)
-    assert "import_error" in list(signal.patterns)
 
 
 # ─── OpenAI Responses format ──────────────────────────────────────────────────

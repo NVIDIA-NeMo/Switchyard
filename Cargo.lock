@@ -1785,6 +1785,8 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-core",
+ "switchyard-libsy",
+ "switchyard-protocol",
  "switchyard-translation",
  "tokio",
  "tracing",
@@ -1817,6 +1819,7 @@ dependencies = [
  "serde_json",
  "switchyard-llm-client",
  "switchyard-protocol",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -1834,7 +1837,6 @@ dependencies = [
  "serde_json",
  "switchyard-protocol",
  "switchyard-translation",
- "thiserror",
  "tokio",
  "wiremock",
 ]
@@ -1847,6 +1849,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

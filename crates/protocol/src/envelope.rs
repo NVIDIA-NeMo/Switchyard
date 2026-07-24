@@ -37,7 +37,7 @@ pub struct Signals {}
 
 /// A request an algorithm routes: the normalized [`LlmRequest`] plus the original
 /// provider payload and correlation [`Metadata`].
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Request {
     /// The normalized request an algorithm routes.
     pub llm_request: LlmRequest,

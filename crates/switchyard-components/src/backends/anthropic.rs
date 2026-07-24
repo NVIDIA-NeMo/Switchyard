@@ -524,9 +524,10 @@ fn anthropic_sse_stream(response: reqwest::Response) -> BoxResponseStream {
             // Anthropic SSE has named events, but the payload we care about is
             // still the JSON `data:` line.
             while let Some(frame) = drain_next_sse_frame(&mut buffer, "Anthropic")? {
-                match parse_json_sse_frame(&frame, "Anthropic", None)? {
+                match parse_json_sse_frame(&frame, "Anthropic", Some("[DONE]"))? {
                     ParsedSseFrame::Json(value) => yield StreamEvent::Json(value),
-                    ParsedSseFrame::Done | ParsedSseFrame::Empty => {}
+                    ParsedSseFrame::Done => return,
+                    ParsedSseFrame::Empty => {}
                 }
             }
         }
@@ -535,7 +536,7 @@ fn anthropic_sse_stream(response: reqwest::Response) -> BoxResponseStream {
         // separator.
         if has_non_whitespace_bytes(&buffer) {
             let frame = decode_sse_frame(&buffer, "Anthropic")?;
-            match parse_json_sse_frame(&frame, "Anthropic", None)? {
+            match parse_json_sse_frame(&frame, "Anthropic", Some("[DONE]"))? {
                 ParsedSseFrame::Json(value) => yield StreamEvent::Json(value),
                 ParsedSseFrame::Done | ParsedSseFrame::Empty => {}
             }
