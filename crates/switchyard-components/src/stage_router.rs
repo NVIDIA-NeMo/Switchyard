@@ -3,21 +3,15 @@
 
 //! Stage-router scoring and tier selection — the shared routing core.
 //!
-//! Given a [`ToolResultSignal`] (extracted by the dimension collector), this
-//! module decides whether a coding-agent turn should go to the **capable**
-//! (strong) or **efficient** (weak) tier. It is the single source of truth for
-//! the decision, shared by the Rust profile and the Python processor via
-//! bindings — only the outer shell differs in how it fetches the decision.
+//! Decides whether a coding-agent turn goes to the **capable** (strong) or
+//! **efficient** (weak) tier from its [`ToolResultSignal`]. Single source of
+//! truth, shared by the Rust profile and the Python processor via bindings —
+//! only the outer shell differs in how it fetches the decision.
 //!
-//! Two axes:
-//!
-//! * **error** — did the recent tool results error? (`severity`)
-//! * **production** — is the agent producing code? (`spinning` / `exploring`
-//!   push toward capable; `production_intensity` pushes toward efficient)
-//!
-//! Signals are scored with fixed weights, summed, and `tanh`-squashed into
-//! `(-1, +1)`; `confidence` is the magnitude. The `confidence_threshold` dials
-//! how much corroboration a decisive escalation needs (see [`score_signal`]).
+//! Two axes: **error** (`severity`) and **production** (`spinning`/`exploring`
+//! push toward capable, `production_intensity` toward efficient). Scored,
+//! `tanh`-squashed to `(-1, +1)`, dialed by `confidence_threshold`. See
+//! [`pick_tier`] for the decision ladder.
 
 use crate::dimension_collector::ToolResultSignal;
 
@@ -36,17 +30,6 @@ const HARD_SEVERITY: f64 = 0.7;
 const SIGNAL_UNIT: f64 = 0.10;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
-
-/// Signed, fixed weights over the two axes. Error signals (`severity`,
-/// `spinning`, `exploring`) push toward capable (+); `production_intensity`
-/// pushes toward efficient (−). `severity` is normalised by its hard cap so it
-/// too contributes one `SIGNAL_UNIT` when maxed.
-const DEFAULT_WEIGHTS: &[(&str, f64)] = &[
-    ("severity", SIGNAL_UNIT / HARD_SEVERITY),
-    ("spinning", SIGNAL_UNIT),
-    ("exploring", SIGNAL_UNIT),
-    ("production_intensity", -SIGNAL_UNIT),
-];
 
 /// The two tiers a turn can route to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,18 +105,6 @@ pub struct CodingAgentDimensions {
     pub production_intensity: f64,
 }
 
-impl CodingAgentDimensions {
-    fn value(&self, name: &str) -> f64 {
-        match name {
-            "severity" => self.severity,
-            "spinning" => self.spinning,
-            "exploring" => self.exploring,
-            "production_intensity" => self.production_intensity,
-            _ => 0.0,
-        }
-    }
-}
-
 /// Outcome of [`pick_tier`]: either a resolved decision, or a signal that the
 /// caller should consult its (impl-specific, async) classifier.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,18 +157,17 @@ pub fn dimensions_from_signal(signal: &ToolResultSignal) -> CodingAgentDimension
     }
 }
 
-/// Score a signal: weighted sum of the dimensions, `tanh`-squashed.
+/// Score a signal on the two axes, `tanh`-squashed to `(-1, +1)`.
 ///
-/// The raw sum is small — one maxed signal is `±0.10`, two corroborating
-/// signals `±0.20`. `tanh(gain·raw)` spreads that into a usable range, so the
-/// `confidence_threshold` reads roughly: `~0.3` escalates on one signal, `~0.5`
-/// needs about one-and-a-half, `~0.7` needs two to corroborate.
+/// One maxed signal reads ~`0.46` confidence, two ~`0.76` — so the threshold
+/// dials corroboration: `~0.3` clears on one signal, `~0.5` on ~1.5, `~0.7` on two.
 pub fn score_signal(signal: &ToolResultSignal) -> ScoreResult {
-    let dimensions = dimensions_from_signal(signal);
-    let raw: f64 = DEFAULT_WEIGHTS
-        .iter()
-        .map(|(name, weight)| dimensions.value(name) * weight)
-        .sum();
+    let d = dimensions_from_signal(signal);
+    // Error axis (severity, spinning, exploring → +capable) minus the production
+    // axis (→ −efficient). Each maxed signal is one SIGNAL_UNIT; severity is
+    // normalised by its hard cap so it lands there too.
+    let raw = SIGNAL_UNIT
+        * (d.severity / HARD_SEVERITY + d.spinning + d.exploring - d.production_intensity);
     let score = (SCORE_GAIN * raw).tanh();
     ScoreResult {
         score,
