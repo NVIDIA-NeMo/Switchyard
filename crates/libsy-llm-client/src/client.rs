@@ -177,7 +177,7 @@ impl TranslatingLlmClient {
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let http_response = builder.send().await.map_err(classify_transport_error)?;
+        let http_response = builder.send().await.map_err(convert_reqwest_error)?;
         let status = http_response.status();
         if !status.is_success() {
             let body = match http_response.text().await {
@@ -225,7 +225,7 @@ impl TranslatingLlmClient {
             let body = http_response
                 .json::<Value>()
                 .await
-                .map_err(classify_json_response_error)?;
+                .map_err(convert_reqwest_error)?;
             let agg = decode_aggregated_response(&body, wire_format)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             LlmResponse::Agg(agg)
@@ -309,19 +309,7 @@ impl RoutedLlmClient for TranslatingLlmClient {
     }
 }
 
-fn classify_transport_error(error: reqwest::Error) -> LlmClientError {
-    if error.is_timeout() {
-        LlmClientError::Timeout {
-            source: Box::new(error),
-        }
-    } else {
-        LlmClientError::Transport {
-            source: Box::new(error),
-        }
-    }
-}
-
-fn classify_json_response_error(error: reqwest::Error) -> LlmClientError {
+fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // `Response::json` labels body collection and JSON parsing failures as
     // decode errors; only the latter is a translation failure.
     if error.is_timeout() {
