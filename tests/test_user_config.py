@@ -333,6 +333,116 @@ def test_configure_invalid_skill_namespace_reports_user_error(
     assert "letters, numbers, dot, underscore, and hyphen" in message
 
 
+def test_configure_list_models_honors_saved_default_provider(
+    monkeypatch,
+    tmp_path,
+):
+    """`configure --list-models` uses the saved default_provider, not the
+    argparse --provider default (which now defaults to None so it can't shadow
+    the saved value)."""
+    from switchyard.cli.configure_command import _list_models
+    from switchyard.cli.switchyard_cli import _build_parser
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    save_user_config(
+        UserConfig(
+            default_provider="nvidia",
+            providers={"nvidia": ProviderConfig(base_url="https://nvidia.test/v1")},
+        ),
+        config_dir=tmp_path,
+    )
+    save_user_credentials(
+        UserCredentials(api_keys={"nvidia": "nvidia-key"}),
+        config_dir=tmp_path,
+    )
+    monkeypatch.setattr("switchyard.server.server_util.load_secrets", lambda: {})
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.fetch_model_ids",
+        lambda base_url, api_key: captured.update(base_url=base_url, api_key=api_key) or [],
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.render_models",
+        lambda model_ids, request: "",
+    )
+
+    parser = _build_parser()
+    assert parser.parse_args(["configure"]).provider is None
+    args = parser.parse_args(["configure", "--list-models"])
+
+    _list_models(args)
+
+    assert captured["base_url"] == "https://nvidia.test/v1"
+    assert captured["api_key"] == "nvidia-key"
+
+
+def test_configure_non_interactive_uses_env_api_key(
+    monkeypatch,
+    tmp_path,
+):
+    """Non-interactive `configure` falls back to an env/secrets API key instead
+    of erroring out when none is passed on the CLI."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "env-or-key")
+    monkeypatch.setattr(
+        "switchyard.cli.command_utils.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr("switchyard.cli.configure_command.load_secrets", lambda: {})
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--no-model-discovery",
+        "--target", "provider",
+    ])
+
+    _cmd_configure(args)
+
+    assert load_user_credentials(tmp_path).api_key("openrouter") == "env-or-key"
+
+
+def test_configure_non_interactive_scopes_env_key_to_selected_provider(
+    monkeypatch,
+    tmp_path,
+):
+    """`configure --provider nvidia` must not save an OPENROUTER_API_KEY under
+    `nvidia`. With no NVIDIA_API_KEY set it requires an explicit --api-key."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setattr(
+        "switchyard.cli.command_utils.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr("switchyard.cli.configure_command.load_secrets", lambda: {})
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--provider", "nvidia",
+        "--no-model-discovery",
+        "--target", "provider",
+    ])
+
+    with pytest.raises(SystemExit, match="requires an API key"):
+        _cmd_configure(args)
+
+    assert load_user_credentials(tmp_path).api_key("nvidia") is None
+
+
 def test_redacted_snapshot_surfaces_only_route_ids(tmp_path):
     """The snapshot exposes route ids but never the full bundle (env-var
     references inside the bundle may resolve to secrets at run time)."""
