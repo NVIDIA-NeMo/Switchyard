@@ -1423,10 +1423,19 @@ recovers from errors, and later it settles into more mechanical implementation.
 Those stages call for different amounts of model capability, which is what the
 router keys on.</p>
 <p>For each LLM call, stage-router estimates which stage the agent is in from the
-<strong>tool-result history</strong> on the conversation: whether writes and edits are
-landing, whether tests pass, whether commands error out, how much read-only
-exploration is happening, and how far into the run it is. It turns those signals
-into a confidence score for "this turn needs the capable tier", then routes:</p>
+<strong>tool-result history</strong> on the conversation, scoring two axes:</p>
+<ul>
+<li><strong>WRONG → capable</strong>: <code>severity</code> (windowed error severity), <code>spinning</code> (deep
+  churn with no reads or writes), and <code>exploring</code> (reading or planning without
+  producing) push toward the capable tier.</li>
+<li><strong>PROGRESS → efficient</strong>: <code>recent_production_intensity</code> (writes and edits
+  landing over the recent window) pushes toward the efficient tier.</li>
+</ul>
+<p>The axes are <strong>corroborative</strong>: the signed score is <code>tanh</code>-squashed to a
+confidence in <code>[0, 1]</code>, so one full signal alone scores ~<code>0.46</code> and a second
+corroborating signal is what pushes it decisively past a <code>0.5</code> threshold. A
+critical-error severity is a hard override that escalates on its own. The router
+then routes:</p>
 <ul>
 <li>the <strong>capable</strong> tier for uncertain, exploratory, or error-recovery turns, and</li>
 <li>the <strong>efficient</strong> tier for settled, mechanical turns.</li>
@@ -1479,7 +1488,10 @@ cheaper tier:</p>
 clears the threshold to escalate to capable.</p>
 <p>(If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)</p>
-<p><strong>Start with <code>0.5</code>.</strong> It is the default and the recommended starting point.</p>
+<p><strong>Set <code>0.5</code> explicitly.</strong> It's the recommended starting point and what the
+example below uses. When you omit the field the config default is <code>0.5</code> (for
+both the profile config and the deprecated route bundle) — but setting it
+explicitly keeps the intent clear.</p>
 <table>
 <thead>
 <tr>
@@ -1497,7 +1509,7 @@ staying on the default tier.)</p>
 <tr>
 <td><code>0.5</code></td>
 <td>no</td>
-<td>Recommended starting point. A single strong signal clears the threshold on its own; derived from SWE-Bench Pro calibration.</td>
+<td>Recommended starting point (config default). The scorer is corroborative — one full wrong signal scores ~<code>0.46</code>, just under <code>0.5</code> — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration.</td>
 </tr>
 <tr>
 <td><code>0.7</code> - <code>0.9</code></td>
@@ -1507,7 +1519,7 @@ staying on the default tier.)</p>
 <tr>
 <td><code>1.0</code></td>
 <td>yes (required)</td>
-<td>Classifier-driven. Equivalent to classifier-only <code>coding_agent</code> routing.</td>
+<td>Classifier-driven. Equivalent to the legacy <code>coding_agent</code> profile.</td>
 </tr>
 </tbody>
 </table>
@@ -1591,52 +1603,25 @@ quadrant candidates identified from those capable results.</p>
 <li><code>HARD</code>   = both fail</li>
 </ul>
 <p><strong>Running the sweep</strong></p>
-<p>Three scripts in <code>benchmark/calibration/stage_router/</code> form the pipeline:</p>
-<table>
-<thead>
-<tr>
-<th>Script</th>
-<th>Input</th>
-<th>Output</th>
-<th>What it does</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>signal_extractor.py</code></td>
-<td>Harbor task dir (JSONL trajectory)</td>
-<td>one signal per turn</td>
-<td>Replays a claude-code session, emitting the same signal the stage-router picker would have seen at each turn (write/edit/read counts, severity, tests passed, etc.)</td>
-</tr>
-<tr>
-<td><code>calibrate.py</code></td>
-<td>Harbor run dirs (one per arm)</td>
-<td><code>per_task.jsonl</code>, <code>per_turn.jsonl</code></td>
-<td>Reads <code>result.json</code> + trajectory JSONL for each task in each arm. Calls <code>signal_extractor</code> to build per-turn signals, then writes one record per task (outcome + features) and one record per turn (signal snapshot). Also prints RESCUE/LOSS/SAFE/HARD quadrant counts.</td>
-</tr>
-<tr>
-<td><code>sweep.py</code></td>
-<td><code>per_task.jsonl</code>, <code>per_turn.jsonl</code></td>
-<td>Console table</td>
-<td>Replays the per-turn signals through a set of escalation policies and scores each: pass%, escalation rate. The best-scoring policy that keeps escalation rate reasonable is your calibrated threshold.</td>
-</tr>
-</tbody>
-</table>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>benchmark/calibration/stage_router
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>python<span class="w"> </span>calibrate.py<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--capable-run-dir<span class="w"> </span>/tmp/runs/your_capable_run<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--efficient-run-dir<span class="w"> </span>/tmp/runs/your_efficient_probe
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>python<span class="w"> </span>sweep.py
+<p>Replay your runs through the real Rust scorer and picker with
+<code>benchmark/score_staged_run.py</code> (the <code>switchyard-stage-router-scorer</code> skill). It emits
+per-turn scores and per-task routing splits at a given threshold and window —
+the actual <code>pick_capable_first</code> / <code>pick_efficient_first</code> decisions, not a
+counterfactual:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Score a probe run at a candidate threshold</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>benchmark/score_staged_run.py<span class="w"> </span>--run<span class="w"> </span>benchmark/tb_runs/&lt;your_run&gt;<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>--threshold<span class="w"> </span><span class="m">0</span>.5<span class="w"> </span>--window<span class="w"> </span><span class="m">3</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># → /tmp/&lt;run&gt;-scores.jsonl   (per turn: score, confidence, pick_cf, pick_ef)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># → /tmp/&lt;run&gt;-per-task.csv   (per task: routing split, mean score/confidence)</span>
 </span></code></pre></div>
-<p><code>calibrate.py</code> writes <code>per_task.jsonl</code> and <code>per_turn.jsonl</code>. <code>sweep.py</code>
-prints the policy score table; pick the best row from that output.</p>
-<p>Pick the policy whose pass% beats <code>always_stay</code> with an acceptable
-escalation rate. Translate it to a <code>confidence_threshold</code> value. A policy
-that escalates ~20% of tasks maps roughly to <code>confidence_threshold: 0.5</code>
-with <code>capable_first</code>.</p>
-<p>Even 15–20 probe tasks produce a stable result because signal features are
-extracted from the capable-arm trajectories, which are available for all
-tasks from the pure-capable run.</p>
+<p>Sweep a few candidate thresholds and read the routing split and pass rate off
+the per-task CSV; the lowest threshold that rescues the RESCUE quadrant without
+over-escalating the LOSS quadrant is your calibrated value. Because the scorer
+is corroborative, a <code>0.5</code> threshold takes ~1.5 signals of agreement — a policy
+that escalates ~20% of tasks maps roughly to <code>confidence_threshold: 0.5</code> with
+<code>capable_first</code>.</p>
+<p>Signals come from the actual picker replay, so even 15–20 probe tasks give a
+stable result.</p>
 <p><strong>Caveat on efficient outcomes in stage-router vs. pure-efficient</strong></p>
 <p>In stage-router, the efficient model may inherit partial context from the capable arm
 (conversation history up to the escalation point). Pure-efficient runs start
@@ -1666,7 +1651,9 @@ well in stage-router as it does alone.</p>
 <p>Save the file as <code>routes.yaml</code> and start it with:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
-<p>This is the recommended default: routing on tool signals alone, no classifier.</p>
+<p>This is the recommended default: routing on tool signals alone, no classifier.
+If you omit <code>confidence_threshold</code>, the config default of <code>0.5</code> applies; the
+example sets it explicitly.</p>
 <p><code>fallback_target_on_evict</code> is required and must reference one of the
 declared target ids. See <a href="../../operations/context_window/">Context-Window Handling</a> for
 exception types and error envelopes.</p>
@@ -1706,11 +1693,15 @@ harnesses usually capture this same snapshot to a file (see below).</p>
 <tbody>
 <tr>
 <td><code>override</code></td>
-<td>A hard override fired (for example a critical error severity, or a clean test pass).</td>
+<td>A critical-error severity (or a context-compaction marker) forced the capable tier.</td>
+</tr>
+<tr>
+<td><code>tests_passed</code></td>
+<td>A settled run — a recent test pass with a recent write and no windowed error — dropped the turn to the efficient tier.</td>
 </tr>
 <tr>
 <td><code>dimensions</code></td>
-<td>The signals crossed <code>confidence_threshold</code> and picked the tier.</td>
+<td>The corroborative scorer crossed <code>confidence_threshold</code> and picked the tier by the sign of the score.</td>
 </tr>
 <tr>
 <td><code>llm-classifier</code></td>
