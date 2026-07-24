@@ -310,6 +310,41 @@ fn openai_chat_stream_cache_usage_translates_to_responses_usage_details() -> Tes
     Ok(())
 }
 
+// Verifies OpenRouter's cache-write field and the legacy alias normalize identically.
+#[test]
+fn openai_chat_stream_cache_write_usage_is_normalized() -> TestResult {
+    for cache_write_field in ["cache_write_tokens", "cache_creation_tokens"] {
+        let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+        let mut event = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-cached",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "prompt_tokens_details": {"cached_tokens": 70}
+            }
+        });
+        event["usage"]["prompt_tokens_details"][cache_write_field] = json!(10);
+
+        let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
+        let Some(usage) = chunks.iter().find_map(|chunk| match chunk {
+            LlmResponseChunk::Usage(usage) => Some(usage),
+            _ => None,
+        }) else {
+            return Err(format!("expected usage chunk for {cache_write_field}").into());
+        };
+
+        assert_eq!(usage.input_tokens, Some(20));
+        assert_eq!(usage.cached_input_tokens(), Some(70));
+        assert_eq!(usage.cache_creation_input_tokens(), Some(10));
+        assert_eq!(usage.output_tokens, Some(5));
+    }
+    Ok(())
+}
+
 // Verifies the streamed total-token fallback keeps cached tokens when upstream omits total_tokens.
 #[test]
 fn responses_stream_usage_without_total_keeps_cached_tokens_in_total() -> TestResult {

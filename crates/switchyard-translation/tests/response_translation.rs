@@ -159,38 +159,42 @@ fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult
     Ok(())
 }
 
-// Verifies OpenAI cache usage is expressed in Anthropic's standard sibling fields.
+// Verifies OpenRouter's cache-write field and the legacy alias normalize identically.
 #[test]
-fn openai_chat_cache_usage_translates_to_anthropic_usage_fields() -> TestResult {
+fn openai_chat_cache_write_aliases_translate_to_anthropic_usage_fields() -> TestResult {
     let engine = TranslationEngine::default();
-    let body = json!({
-        "id": "chatcmpl-test",
-        "model": "gpt-cached",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": "Cached answer"},
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 100,
-            "completion_tokens": 5,
-            "total_tokens": 105,
-            "prompt_tokens_details": {"cached_tokens": 80}
-        }
-    });
+    for cache_write_field in ["cache_write_tokens", "cache_creation_tokens"] {
+        let mut body = json!({
+            "id": "chatcmpl-test",
+            "model": "gpt-cached",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Cached answer"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "prompt_tokens_details": {"cached_tokens": 70}
+            }
+        });
+        body["usage"]["prompt_tokens_details"][cache_write_field] = json!(10);
 
-    let output = engine
-        .translate_response(
-            WireFormat::OpenAiChat,
-            WireFormat::AnthropicMessages,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
 
-    assert_eq!(output["usage"]["input_tokens"], 20);
-    assert_eq!(output["usage"]["cache_read_input_tokens"], 80);
-    assert_eq!(output["usage"]["output_tokens"], 5);
+        assert_eq!(output["usage"]["input_tokens"], 20);
+        assert_eq!(output["usage"]["cache_read_input_tokens"], 70);
+        assert_eq!(output["usage"]["cache_creation_input_tokens"], 10);
+        assert_eq!(output["usage"]["output_tokens"], 5);
+    }
     Ok(())
 }
 

@@ -244,7 +244,11 @@ fn openai_usage(usage: &Map<String, Value>) -> Usage {
         .and_then(Value::as_u64);
     let cache_creation_input_tokens = usage
         .get("prompt_tokens_details")
-        .and_then(|details| details.get("cache_creation_tokens"))
+        .and_then(|details| {
+            details
+                .get("cache_write_tokens")
+                .or_else(|| details.get("cache_creation_tokens"))
+        })
         .and_then(Value::as_u64);
     Usage {
         input_tokens: usage
