@@ -6,23 +6,23 @@
 
 | Script | Purpose | Input | Output |
 |--------|---------|-------|--------|
-| `benchmark/score_run.py` | Score a live run dir via real picker | run dir path | per-turn JSONL + per-task CSV |
+| `benchmark/score_staged_run.py` | Score a live run dir via real picker | run dir path | per-turn JSONL + per-task CSV |
 
 ## Quick Reference
 
 ```bash
 # Score a run
-uv run python benchmark/score_run.py --run benchmark/tb_runs/<run-name>
+uv run python benchmark/score_staged_run.py --run benchmark/tb_runs/<run-name>
 # → /tmp/<run-name>-scores.jsonl   (per turn)
 # → /tmp/<run-name>-per-task.csv   (per task)
 
 # Custom threshold or window
-uv run python benchmark/score_run.py \
+uv run python benchmark/score_staged_run.py \
     --run benchmark/tb_runs/<run-name> \
     --threshold 0.15 --window 3
 ```
 
-## Scoring pipeline (what score_run.py does per turn)
+## Scoring pipeline (what score_staged_run.py does per turn)
 
 ```
 trajectory step (tool_use + tool_result)
@@ -30,7 +30,7 @@ trajectory step (tool_use + tool_result)
   → ChatRequest.anthropic({"model": ..., "messages": messages})   # Rust binding
   → dc.process(ctx, request)          # DimensionCollector — one per task, accumulates state
   → get_tool_result_signal(ctx)       # read signal from ctx
-  → from_signal(signal) + scorer_score(dims)   # raw score + confidence (for analysis)
+  → stage_score_signal(signal)        # raw (score, confidence) from the Rust scorer (for analysis)
   → pick_capable_first(ctx, threshold)         # actual cf decision (same ctx, no re-process)
   → pick_efficient_first(ctx, threshold)       # actual ef decision (same ctx, no re-process)
 ```
@@ -39,7 +39,8 @@ trajectory step (tool_use + tool_result)
 already stored in that ctx — no duplicate processing.
 
 **What the picker does beyond raw score:**
-- `_apply_overrides`: `severity >= 1.0` → force CAPABLE; `tests_passed AND depth >= 10 AND writes <= 1` → force EFFICIENT
+- **escalate** (`should_escalate`): `compacted` OR `severity >= 1.0` → force CAPABLE
+- **de-escalate** (`should_deescalate`): `tests_passed AND recent_write+edit >= 1 AND severity <= 0` → force EFFICIENT
 - `confidence < threshold` → fall_open to default tier (CAPABLE for cf, EFFICIENT for ef)
 - Only when `confidence >= threshold`: route by score direction
 

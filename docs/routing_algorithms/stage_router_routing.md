@@ -156,14 +156,14 @@ From the overlap tasks (those with both capable and efficient results):
 **Running the sweep**
 
 Replay your runs through the real Rust scorer and picker with
-`benchmark/score_run.py` (the `switchyard-stage-router-scorer` skill). It emits
+`benchmark/score_staged_run.py` (the `switchyard-stage-router-scorer` skill). It emits
 per-turn scores and per-task routing splits at a given threshold and window —
 the actual `pick_capable_first` / `pick_efficient_first` decisions, not a
 counterfactual:
 
 ```bash
 # Score a probe run at a candidate threshold
-uv run python benchmark/score_run.py --run benchmark/tb_runs/<your_run> \
+uv run python benchmark/score_staged_run.py --run benchmark/tb_runs/<your_run> \
     --threshold 0.5 --window 3
 # → /tmp/<run>-scores.jsonl   (per turn: score, confidence, pick_cf, pick_ef)
 # → /tmp/<run>-per-task.csv   (per task: routing split, mean score/confidence)
