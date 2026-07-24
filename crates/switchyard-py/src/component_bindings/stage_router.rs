@@ -12,9 +12,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use switchyard_components::stage_router::{
-    pick_tier, score_signal, PickOutcome, PickerMode, Tier,
-};
+use switchyard_components::stage_router::{pick_tier, score_signal, PickOutcome, PickerMode, Tier};
 
 use super::dimension_collector::PyToolResultSignal;
 

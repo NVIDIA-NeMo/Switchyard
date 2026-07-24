@@ -265,7 +265,12 @@ pub fn pick_tier(
         } else {
             Tier::Efficient
         };
-        return resolved(tier, DecisionSource::Dimensions, scored.score, Some(scored.confidence));
+        return resolved(
+            tier,
+            DecisionSource::Dimensions,
+            scored.score,
+            Some(scored.confidence),
+        );
     }
 
     // 4. Fall open — the signals didn't corroborate enough to be sure. Hand off
@@ -278,7 +283,12 @@ pub fn pick_tier(
 }
 
 /// Build a resolved outcome (a decision made without the classifier).
-fn resolved(tier: Tier, source: DecisionSource, score: f64, confidence: Option<f64>) -> PickOutcome {
+fn resolved(
+    tier: Tier,
+    source: DecisionSource,
+    score: f64,
+    confidence: Option<f64>,
+) -> PickOutcome {
     PickOutcome::Resolved {
         tier,
         source,
@@ -299,8 +309,8 @@ fn ratio(numerator: u32, denominator: u32) -> f64 {
 mod tests {
     use super::*;
     use crate::dimension_collector::extract_tool_signals;
-    use switchyard_core::ChatRequest;
     use serde_json::json;
+    use switchyard_core::ChatRequest;
 
     fn signal_from(messages: serde_json::Value) -> ToolResultSignal {
         let request = ChatRequest::openai_chat(json!({"model": "m", "messages": messages}));
@@ -326,7 +336,11 @@ mod tests {
         signal.compacted = true;
         assert!(matches!(
             pick_tier(&signal, PickerMode::EfficientFirst, 0.5),
-            PickOutcome::Resolved { tier: Tier::Capable, source: DecisionSource::Override, .. }
+            PickOutcome::Resolved {
+                tier: Tier::Capable,
+                source: DecisionSource::Override,
+                ..
+            }
         ));
     }
 
@@ -337,7 +351,10 @@ mod tests {
         signal.severity = HARD_SEVERITY as f32;
         let scored = score_signal(&signal);
         assert!(scored.score > 0.0);
-        assert!(scored.confidence < 0.5, "one signal should not clear 0.5: {scored:?}");
+        assert!(
+            scored.confidence < 0.5,
+            "one signal should not clear 0.5: {scored:?}"
+        );
     }
 
     #[test]
