@@ -162,7 +162,7 @@ impl TranslatingLlmClient {
         llm_request.model = Some(model.clone());
 
         let mut body = encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
+            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.

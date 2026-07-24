@@ -177,7 +177,8 @@ fn build_multi_format_client(
 | `MissingModel` | no `model_name` arg and no `request.llm_request.model` |
 | `UnknownModel(model)` | model has no backends configured |
 | `UnknownModelFormat { model, format }` | model has no backend for that format |
-| `RequestTranslation(msg)` | request decoding or encoding failed in the translation engine |
+| `RequestTranslation(msg)` | decoding the inbound request failed in the translation engine |
+| `RequestEncoding(msg)` | re-encoding an already-decoded request to the wire format failed (internal fault) |
 | `ResponseTranslation(msg)` | response decoding or encoding failed in the translation engine |
 | `Timeout(error)` | request or response body read exceeded its timeout |
 | `Transport(error)` | non-timeout connection or transport failure |

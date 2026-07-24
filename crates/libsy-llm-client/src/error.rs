@@ -31,9 +31,14 @@ pub enum LlmClientError {
     #[error("no model given")]
     MissingModel,
 
-    /// Request encoding failed in the translation engine.
+    /// Decoding the inbound request failed in the translation engine.
     #[error("request translation failed: {0}")]
     RequestTranslation(String),
+
+    /// Encoding an already-decoded request to the wire format failed — an
+    /// internal translation fault, not caller input.
+    #[error("outbound request encoding failed: {0}")]
+    RequestEncoding(String),
 
     /// Response decoding failed in the translation engine.
     #[error("response translation failed: {0}")]
@@ -97,11 +102,11 @@ impl From<LlmClientError> for RoutedLlmClientError {
                 Self::ContextWindowExceeded { model, message }
             }
             LlmClientError::UpstreamHttp { status, body } => Self::UpstreamHttp { status, body },
-            LlmClientError::ResponseTranslation(_) | LlmClientError::Stream(_) => {
-                Self::InvalidResponse {
-                    source: Box::new(error),
-                }
-            }
+            LlmClientError::ResponseTranslation(_)
+            | LlmClientError::RequestEncoding(_)
+            | LlmClientError::Stream(_) => Self::InvalidResponse {
+                source: Box::new(error),
+            },
         }
     }
 }
