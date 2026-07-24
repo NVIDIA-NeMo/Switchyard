@@ -40,6 +40,8 @@ export API_KEY="..."
 cargo run -p switchyard-server -- --config routes.toml
 ```
 
+Prometheus metrics from libsy algorithms are available at `GET /metrics`.
+
 Target and route table names are local references. A target's `id` is the exact model ID sent
 upstream, and a route's `id` is the model clients send to select that algorithm.
 
