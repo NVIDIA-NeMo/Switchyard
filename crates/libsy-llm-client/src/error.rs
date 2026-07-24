@@ -9,6 +9,7 @@
 //! so the small, self-contained logic is vendored here.
 
 use serde_json::Value;
+use switchyard_protocol::RoutedLlmClientError;
 use switchyard_translation::WireFormat;
 use thiserror::Error;
 
@@ -24,24 +25,27 @@ pub enum LlmClientError {
 
     /// The model exists but has no backend configured for the requested format.
     #[error("model {model:?} has no backend for format {format}")]
-    UnknownModelFormat {
-        /// Model that was resolved.
-        model: String,
-        /// Wire format requested for the call.
-        format: WireFormat,
-    },
+    UnknownModelFormat { model: String, format: WireFormat },
 
     /// Neither an explicit `model_name` nor a model on the request was given.
-    #[error("no model given: pass model_name or set request.llm_request.model")]
+    #[error("no model given")]
     MissingModel,
 
-    /// Request encoding or response decoding failed in the translation engine.
-    #[error("translation failed: {0}")]
-    Translation(String),
+    /// Request encoding failed in the translation engine.
+    #[error("request translation failed: {0}")]
+    RequestTranslation(String),
 
-    /// The HTTP request could not be sent (connect/timeout/transport failure).
+    /// Response decoding failed in the translation engine.
+    #[error("response translation failed: {0}")]
+    ResponseTranslation(String),
+
+    /// The HTTP request exceeded its timeout.
+    #[error("upstream request timed out: {0}")]
+    Timeout(#[source] reqwest::Error),
+
+    /// The HTTP request could not be sent due to a non-timeout transport failure.
     #[error("upstream transport error: {0}")]
-    Transport(String),
+    Transport(#[source] reqwest::Error),
 
     /// An upstream 400 whose body is detected as a context-window overflow.
     ///
@@ -68,6 +72,38 @@ pub enum LlmClientError {
     /// A streamed response failed mid-flight (read error or malformed frame).
     #[error("stream error: {0}")]
     Stream(String),
+}
+
+impl From<LlmClientError> for RoutedLlmClientError {
+    fn from(error: LlmClientError) -> Self {
+        match error {
+            LlmClientError::MissingModel | LlmClientError::RequestTranslation(_) => {
+                Self::InvalidRequest {
+                    message: error.to_string(),
+                }
+            }
+            LlmClientError::UnknownModel(_) | LlmClientError::UnknownModelFormat { .. } => {
+                Self::Configuration {
+                    message: error.to_string(),
+                }
+            }
+            LlmClientError::Transport(_) => Self::Transport {
+                source: Box::new(error),
+            },
+            LlmClientError::Timeout(_) => Self::Timeout {
+                source: Box::new(error),
+            },
+            LlmClientError::ContextWindowExceeded { model, message } => {
+                Self::ContextWindowExceeded { model, message }
+            }
+            LlmClientError::UpstreamHttp { status, body } => Self::UpstreamHttp { status, body },
+            LlmClientError::ResponseTranslation(_) | LlmClientError::Stream(_) => {
+                Self::InvalidResponse {
+                    source: Box::new(error),
+                }
+            }
+        }
+    }
 }
 
 /// Detects a context-overflow body using a provider-supplied structured check
@@ -153,5 +189,29 @@ mod tests {
     fn non_match_returns_false() {
         let body = r#"{"error":{"message":"rate limit exceeded"}}"#;
         assert!(!is_overflow_body(body, never, PHRASES));
+    }
+
+    #[test]
+    fn request_translation_maps_to_invalid_request() {
+        let error =
+            RoutedLlmClientError::from(LlmClientError::RequestTranslation("bad input".into()));
+        assert!(matches!(
+            error,
+            RoutedLlmClientError::InvalidRequest { message }
+                if message.contains("bad input")
+        ));
+    }
+
+    #[test]
+    fn context_window_mapping_preserves_typed_fields() {
+        let error = RoutedLlmClientError::from(LlmClientError::ContextWindowExceeded {
+            model: "model-a".into(),
+            message: "too long".into(),
+        });
+        assert!(matches!(
+            error,
+            RoutedLlmClientError::ContextWindowExceeded { model, message }
+                if model == "model-a" && message == "too long"
+        ));
     }
 }

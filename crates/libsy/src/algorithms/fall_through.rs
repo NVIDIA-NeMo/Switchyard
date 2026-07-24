@@ -174,7 +174,7 @@ mod tests {
             _ctx: Context,
             _request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> std::result::Result<Response, switchyard_protocol::RoutedLlmClientError> {
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(
                     None,

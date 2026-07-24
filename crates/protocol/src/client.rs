@@ -10,12 +10,78 @@
 //! in libsy's orchestration crate — so a client crate that depends only on the
 //! protocol can serve routed calls without pulling in the orchestrator.
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use thiserror::Error;
 
 use crate::{Context, Request, Response};
+
+/// A boxed client-specific error preserved as the source of a routed call failure.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Failures a routed LLM client can surface to its caller.
+///
+/// The variants classify failures that routing hosts commonly need to handle,
+/// while boxed sources preserve implementation-specific detail. `Other` is the
+/// escape hatch for failures that do not fit a shared category.
+#[non_exhaustive]
+#[derive(Debug, Error)]
+pub enum RoutedLlmClientError {
+    /// The request cannot be served as supplied.
+    #[error("invalid request: {message}")]
+    InvalidRequest { message: String },
+
+    /// The client is not configured to serve the selected target.
+    #[error("client configuration error: {message}")]
+    Configuration { message: String },
+
+    /// The upstream could not be reached or the request could not be sent.
+    #[error("upstream transport error: {source}")]
+    Transport {
+        /// Client-specific transport failure.
+        #[source]
+        source: BoxError,
+    },
+
+    /// The upstream request exceeded its timeout.
+    #[error("upstream request timed out: {source}")]
+    Timeout {
+        /// Client-specific timeout failure.
+        #[source]
+        source: BoxError,
+    },
+
+    /// The upstream rejected the request because it exceeds the model's context window.
+    #[error("context window exceeded for model {model}: {message}")]
+    ContextWindowExceeded {
+        /// Model whose context window was exceeded.
+        model: String,
+        /// Upstream error message.
+        message: String,
+    },
+
+    /// The upstream returned a non-success HTTP response.
+    #[error("upstream returned HTTP {status}: {body}")]
+    UpstreamHttp {
+        /// Upstream HTTP status code.
+        status: u16,
+        /// Raw upstream error body.
+        body: String,
+    },
+
+    /// The upstream returned a response the client could not decode.
+    #[error("invalid upstream response: {source}")]
+    InvalidResponse {
+        /// Client-specific decoding or validation failure.
+        #[source]
+        source: BoxError,
+    },
+
+    /// A client-specific failure. Prefer adding variants than using this.
+    #[error(transparent)]
+    Other(#[from] BoxError),
+}
 
 /// A decision/trace object produced by an algorithm.
 ///
@@ -49,5 +115,5 @@ pub trait RoutedLlmClient: Send + Sync {
         ctx: Context,
         request: Request,
         decision: Arc<dyn Decision>,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>>;
+    ) -> Result<Response, RoutedLlmClientError>;
 }

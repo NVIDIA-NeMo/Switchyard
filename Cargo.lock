@@ -1821,6 +1821,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

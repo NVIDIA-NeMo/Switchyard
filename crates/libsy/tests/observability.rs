@@ -11,7 +11,6 @@
 //! latest (max) matching data point.
 
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -31,8 +30,6 @@ use switchyard_libsy::{
     LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
 };
 use switchyard_protocol::text_request;
-
-type BoxErr = Box<dyn Error + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -281,7 +278,7 @@ impl RoutedLlmClient for UsageClient {
         _ctx: Context,
         _request: Request,
         decision: Arc<dyn Decision>,
-    ) -> Result<Response, BoxErr> {
+    ) -> Result<Response, switchyard_protocol::RoutedLlmClientError> {
         Ok(Response {
             llm_response: LlmResponse::Agg(AggLlmResponse {
                 model: Some(decision.selected_model().to_string()),

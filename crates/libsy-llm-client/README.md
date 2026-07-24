@@ -177,8 +177,10 @@ fn build_multi_format_client(
 | `MissingModel` | no `model_name` arg and no `request.llm_request.model` |
 | `UnknownModel(model)` | model has no backends configured |
 | `UnknownModelFormat { model, format }` | model has no backend for that format |
-| `Translation(msg)` | encode/decode failed in the translation engine |
-| `Transport(msg)` | connect/timeout/transport failure |
+| `RequestTranslation(msg)` | request decoding or encoding failed in the translation engine |
+| `ResponseTranslation(msg)` | response decoding or encoding failed in the translation engine |
+| `Timeout(error)` | request or response body read exceeded its timeout |
+| `Transport(error)` | non-timeout connection or transport failure |
 | `ContextWindowExceeded { model, message }` | upstream 400 detected as a context overflow (checked before `UpstreamHttp`, so callers can evict-and-retry) |
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
 | `Stream(msg)` | mid-stream read / malformed frame |

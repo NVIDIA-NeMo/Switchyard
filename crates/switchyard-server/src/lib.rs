@@ -21,9 +21,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, LibsyError, Metadata, Request};
+use libsy::{Algorithm, Context, Decision, LibsyError, Metadata, Request, RoutedLlmClientError};
 use serde_json::{json, Value};
-use switchyard_llm_client::LlmClientError;
 use tokio::net::{TcpListener, TcpSocket};
 
 use switchyard_translation::{decode_request, WireFormat};
@@ -368,48 +367,45 @@ fn algorithm_error(error: LibsyError) -> Response {
     let LibsyError::ClientCall { source, .. } = &error else {
         return server_error(error.to_string());
     };
-    let Some(error) = source.downcast_ref::<LlmClientError>() else {
-        return server_error(error.to_string());
-    };
-    match error {
-        LlmClientError::UnknownModel(model) => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("No upstream backend configured for model {model}"),
-            "upstream_error",
-            "upstream_model_not_found",
-        ),
-        LlmClientError::UnknownModelFormat { model, format } => error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("No upstream backend configured for model {model} and format {format}"),
-            "upstream_error",
-            "upstream_format_not_found",
-        ),
-        LlmClientError::MissingModel => error_response(
+    match source {
+        RoutedLlmClientError::InvalidRequest { message } => error_response(
             StatusCode::BAD_REQUEST,
-            error.to_string(),
+            message,
             "invalid_request_error",
             "invalid_request_error",
         ),
-        LlmClientError::ContextWindowExceeded { message, .. } => error_response(
+        RoutedLlmClientError::Configuration { message } => error_response(
+            StatusCode::BAD_GATEWAY,
+            message,
+            "upstream_error",
+            "upstream_configuration_error",
+        ),
+        RoutedLlmClientError::ContextWindowExceeded { message, .. } => error_response(
             StatusCode::BAD_REQUEST,
             message,
             "invalid_request_error",
             "context_length_exceeded",
         ),
-        LlmClientError::UpstreamHttp { status, body } => error_response(
+        RoutedLlmClientError::UpstreamHttp { status, body } => error_response(
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
             body,
             "upstream_error",
             "upstream_error",
         ),
-        LlmClientError::Translation(message)
-        | LlmClientError::Transport(message)
-        | LlmClientError::Stream(message) => error_response(
+        RoutedLlmClientError::Transport { source }
+        | RoutedLlmClientError::InvalidResponse { source } => error_response(
             StatusCode::BAD_GATEWAY,
-            message,
+            source.to_string(),
             "upstream_error",
             "upstream_error",
         ),
+        RoutedLlmClientError::Timeout { source } => error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            source.to_string(),
+            "upstream_error",
+            "upstream_timeout",
+        ),
+        _ => server_error(error.to_string()),
     }
 }
 

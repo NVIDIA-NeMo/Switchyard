@@ -238,14 +238,19 @@ mod tests {
             _ctx: Context,
             request: Request,
             decision: Arc<dyn Decision>,
-        ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> std::result::Result<Response, switchyard_protocol::RoutedLlmClientError> {
             let name = decision.selected_model().to_string();
             let completion = if name == self.classifier_model {
                 self.score.clone()
             } else {
                 format!("answer from {name}")
             };
-            self.seen.lock().map_err(|_| "lock poisoned")?.push(request);
+            self.seen
+                .lock()
+                .map_err(|_| {
+                    switchyard_protocol::RoutedLlmClientError::Other("lock poisoned".into())
+                })?
+                .push(request);
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,

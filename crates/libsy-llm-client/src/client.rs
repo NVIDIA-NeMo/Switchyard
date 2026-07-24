@@ -12,6 +12,7 @@ use reqwest::RequestBuilder;
 use serde_json::Value;
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
+    RoutedLlmClientError,
 };
 use switchyard_translation::{
     decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
@@ -84,9 +85,9 @@ impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
-        let client = reqwest::Client::builder().build().map_err(|error| {
-            LlmClientError::Transport(format!("failed to build HTTP client: {error}"))
-        })?;
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(LlmClientError::Transport)?;
         let model_to_config = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
@@ -161,7 +162,7 @@ impl TranslatingLlmClient {
         llm_request.model = Some(model.clone());
 
         let mut body = encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+            .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
@@ -173,16 +174,14 @@ impl TranslatingLlmClient {
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let http_response = builder
-            .send()
-            .await
-            .map_err(|error| LlmClientError::Transport(error.to_string()))?;
+        let http_response = builder.send().await.map_err(classify_transport_error)?;
         let status = http_response.status();
         if !status.is_success() {
-            let body = http_response
-                .text()
-                .await
-                .unwrap_or_else(|error| format!("<failed to read error body: {error}>"));
+            let body = match http_response.text().await {
+                Ok(body) => body,
+                Err(error) if error.is_timeout() => return Err(LlmClientError::Timeout(error)),
+                Err(error) => format!("<failed to read error body: {error}>"),
+            };
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
                 return Err(LlmClientError::ContextWindowExceeded {
                     model,
@@ -200,9 +199,16 @@ impl TranslatingLlmClient {
             // transport-agnostic and lives in `switchyard-translation`.
             let bytes = http_response.bytes_stream().map(|chunk| {
                 chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                    Box::new(LlmClientError::Stream(format!(
-                        "stream read failed: {error}"
-                    ))) as Box<dyn std::error::Error + Send + Sync>
+                    let error = if error.is_timeout() {
+                        RoutedLlmClientError::Timeout {
+                            source: Box::new(error),
+                        }
+                    } else {
+                        RoutedLlmClientError::Transport {
+                            source: Box::new(error),
+                        }
+                    };
+                    Box::new(error) as Box<dyn std::error::Error + Send + Sync>
                 })
             });
             let chunks = decode_stream(bytes, wire_format)
@@ -210,10 +216,14 @@ impl TranslatingLlmClient {
             LlmResponse::Stream(chunks)
         } else {
             let body = http_response.json::<Value>().await.map_err(|error| {
-                LlmClientError::Transport(format!("invalid upstream JSON: {error}"))
+                if error.is_timeout() {
+                    LlmClientError::Timeout(error)
+                } else {
+                    LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
+                }
             })?;
             let agg = decode_aggregated_response(&body, wire_format)
-                .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             LlmResponse::Agg(agg)
         };
 
@@ -245,7 +255,7 @@ impl TranslatingLlmClient {
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
         let llm_request = decode_request(wire_format, &raw_http_request)
-            .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+            .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         // The model the client asked for; restamped onto the response so it never
         // leaks the upstream id.
         let requested_model = llm_request.model.clone();
@@ -270,7 +280,7 @@ impl TranslatingLlmClient {
             LlmResponse::Agg(agg) => {
                 let body =
                     encode_aggregated_response(&agg, wire_format, requested_model.as_deref())
-                        .map_err(|error| LlmClientError::Translation(error.to_string()))?;
+                        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
@@ -289,11 +299,19 @@ impl RoutedLlmClient for TranslatingLlmClient {
         ctx: Context,
         request: Request,
         decision: std::sync::Arc<dyn Decision>,
-    ) -> std::result::Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> std::result::Result<Response, RoutedLlmClientError> {
         let model_name = Some(decision.selected_model());
         self.call_rewrite_model(ctx, request, model_name)
             .await
-            .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+            .map_err(Into::into)
+    }
+}
+
+fn classify_transport_error(error: reqwest::Error) -> LlmClientError {
+    if error.is_timeout() {
+        LlmClientError::Timeout(error)
+    } else {
+        LlmClientError::Transport(error)
     }
 }
 
@@ -578,6 +596,39 @@ mod tests {
             error,
             LlmClientError::UpstreamHttp { status: 500, .. }
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn routed_llm_client_exposes_timeout_variant(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(100)),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        client.client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(10))
+            .build()?;
+        let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
+
+        let Err(error) = client
+            .call(Context::default(), request_for(None, false), decision)
+            .await
+        else {
+            panic!("expected a timeout");
+        };
+        let RoutedLlmClientError::Timeout { source } = error else {
+            panic!("expected the protocol timeout variant");
+        };
+        let Some(LlmClientError::Timeout(source)) = source.downcast_ref::<LlmClientError>() else {
+            panic!("expected the translating client timeout source");
+        };
+        assert!(source.is_timeout());
         Ok(())
     }
 
