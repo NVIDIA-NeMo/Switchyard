@@ -23,7 +23,7 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// Failures a routed LLM client can surface to its caller.
 ///
 /// The variants classify failures that routing hosts commonly need to handle,
-/// while boxed sources preserve implementation-specific detail. `Other` is the
+/// while boxed sources preserve implementation-specific detail. `General` is the
 /// escape hatch for failures that do not fit a shared category.
 #[non_exhaustive]
 #[derive(Debug, Error)]
@@ -90,9 +90,18 @@ pub enum LlmClientError {
         source: BoxError,
     },
 
-    /// A client-specific failure. Prefer adding variants than using this.
-    #[error(transparent)]
-    Other(#[from] BoxError),
+    /// A call across a foreign-function boundary (e.g. a Python-implemented client)
+    /// failed. The boxed source is the foreign error itself.
+    #[error("foreign function interface error: {source}")]
+    Ffi {
+        /// Foreign-language failure, preserved verbatim.
+        #[source]
+        source: BoxError,
+    },
+
+    /// A string message. Useful in testing, but prefer adding variants over using this.
+    #[error("{0}")]
+    General(String),
 }
 
 /// A decision/trace object produced by an algorithm.

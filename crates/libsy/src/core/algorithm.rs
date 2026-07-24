@@ -651,10 +651,11 @@ mod tests {
         ]);
         let (trace, response) = orch.run(Context::default(), request()).await?;
         // `run` handed back the live stream; the caller folds it to a buffered aggregate.
-        let agg =
-            response.llm_response.into_agg().await.map_err(|error| {
-                LibsyError::external_boxed("aggregating response stream", error)
-            })?;
+        let agg = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|error| LibsyError::external("aggregating response stream", error))?;
         assert_eq!(completion_text(&agg), "hello");
         assert_eq!(agg.model.as_deref(), Some("stream/model"));
         assert_eq!(trace.len(), 1);
@@ -670,13 +671,13 @@ mod tests {
                 index: 0,
                 text: "partial".to_string(),
             },
-            LlmResponseChunk::Error {
+            LlmResponseChunk::StreamError {
                 message: "upstream exploded".to_string(),
             },
         ]);
         let (_, response) = orch.run(Context::default(), request()).await?;
         match response.llm_response.into_agg().await {
-            Ok(_) => Err(test_error("expected a mid-stream error, got an aggregate")),
+            Ok(_) => panic!("expected a mid-stream error, got an aggregate"),
             Err(err) => {
                 assert!(err.to_string().contains("upstream exploded"));
                 Ok(())

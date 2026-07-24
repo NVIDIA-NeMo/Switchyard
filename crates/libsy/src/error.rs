@@ -95,14 +95,6 @@ impl LibsyError {
             source: Box::new(source),
         }
     }
-
-    /// Preserve an already boxed foreign error.
-    pub fn external_boxed(
-        operation: &'static str,
-        source: Box<dyn StdError + Send + Sync>,
-    ) -> Self {
-        Self::External { operation, source }
-    }
 }
 
 /// Failures in the type-erased promise-over-stream driver.
@@ -151,7 +143,7 @@ mod tests {
     fn client_call_preserves_target_and_source() {
         let error = LibsyError::client_call(
             "strong",
-            LlmClientError::Other(Box::new(std::io::Error::other("upstream down"))),
+            LlmClientError::General("upstream down".to_string()),
         );
         match &error {
             LibsyError::ClientCall { target, source } => {

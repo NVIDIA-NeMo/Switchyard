@@ -206,7 +206,9 @@ pub fn decode_stream_event(
         .codec(source)
         .map(|codec| codec.decode_event(state, event))
         .unwrap_or_else(|error| {
-            vec![LlmResponseChunk::Error {
+            // A missing codec is a translation-side failure, not something the
+            // upstream sent, so it decodes to `DecodeError` rather than `StreamError`.
+            vec![LlmResponseChunk::DecodeError {
                 message: error.to_string(),
             }]
         })

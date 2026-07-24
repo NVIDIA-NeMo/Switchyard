@@ -259,9 +259,7 @@ mod tests {
             .into_agg()
             .await
             .map(|agg| completion_text(&agg))
-            .map_err(|error| {
-                LibsyError::external_boxed("aggregating fall-through response", error)
-            })?;
+            .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
         Ok((text, trace))
     }
 

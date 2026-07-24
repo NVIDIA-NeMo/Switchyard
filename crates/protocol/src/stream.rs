@@ -6,21 +6,26 @@
 //! or the terminal [`AggLlmResponse`].
 
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::llm::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage};
+use crate::{
+    llm::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage},
+    LlmClientError,
+};
 
-/// Boxed, thread-safe error carried by a stream item.
-type BoxError = Box<dyn Error + Send + Sync>;
+/// Status reported for an upstream error delivered inside a streaming body. The
+/// upstream already sent a success status line before failing, so there is no real
+/// code to propagate; 502 matches how a failed upstream call surfaces elsewhere.
+const MID_STREAM_UPSTREAM_STATUS: u16 = 502;
 
 /// A boxed, `Send` stream of [`LlmResponseChunk`]s — the token-by-token output of a
 /// streaming backend. Each item may fail independently mid-stream.
-pub type LlmResponseStream = Pin<Box<dyn Stream<Item = Result<LlmResponseChunk, BoxError>> + Send>>;
+pub type LlmResponseStream =
+    Pin<Box<dyn Stream<Item = Result<LlmResponseChunk, LlmClientError>> + Send>>;
 
 /// A model response: either a live [`Stream`](LlmResponse::Stream) of chunks or the
 /// terminal buffered [`Agg`](LlmResponse::Agg)regate.
@@ -44,16 +49,28 @@ impl LlmResponse {
 
     /// Reduce to the buffered aggregate: return an `Agg` unchanged, or drive a `Stream`
     /// to completion, folding its chunks into an [`AggLlmResponse`] via
-    /// [`ResponseAccumulator`]. A stream item error, or an in-band
-    /// [`LlmResponseChunk::Error`], aborts with `Err`.
-    pub async fn into_agg(self) -> Result<AggLlmResponse, BoxError> {
+    /// [`ResponseAccumulator`]. A stream item error aborts with `Err`, as does an
+    /// in-band [`LlmResponseChunk::DecodeError`] (as `ResponseTranslation`) or
+    /// [`LlmResponseChunk::StreamError`] (as `UpstreamHttp`).
+    pub async fn into_agg(self) -> Result<AggLlmResponse, LlmClientError> {
         match self {
             LlmResponse::Agg(agg) => Ok(agg),
             LlmResponse::Stream(mut stream) => {
                 let mut accumulator = ResponseAccumulator::new();
                 while let Some(item) = stream.next().await {
                     match item? {
-                        LlmResponseChunk::Error { message } => return Err(message.into()),
+                        LlmResponseChunk::DecodeError { message } => {
+                            return Err(LlmClientError::ResponseTranslation(message));
+                        }
+                        LlmResponseChunk::StreamError { message } => {
+                            // The upstream reported the failure inside the response body, so
+                            // there is no real status line to carry; 502 stands in for "the
+                            // upstream failed" the same way a failed non-streaming call would.
+                            return Err(LlmClientError::UpstreamHttp {
+                                status: MID_STREAM_UPSTREAM_STATUS,
+                                body: message,
+                            });
+                        }
                         chunk => accumulator.push(chunk),
                     }
                 }
@@ -98,7 +115,10 @@ pub enum LlmResponseChunk {
     MessageStop {
         reason: Option<String>,
     },
-    Error {
+    DecodeError {
+        message: String,
+    },
+    StreamError {
         message: String,
     },
 }
@@ -175,7 +195,7 @@ impl ResponseAccumulator {
             LlmResponseChunk::MessageStop { reason } => {
                 self.stop_reason = Some(stop_reason_from_str(reason.as_deref()));
             }
-            LlmResponseChunk::Error { .. } => {}
+            LlmResponseChunk::DecodeError { .. } | LlmResponseChunk::StreamError { .. } => {}
         }
     }
 
@@ -236,6 +256,9 @@ fn stop_reason_from_str(reason: Option<&str>) -> StopReason {
 
 #[cfg(test)]
 mod tests {
+    use futures::executor::block_on;
+    use futures::stream;
+
     use super::*;
     use serde_json::json;
 
@@ -337,5 +360,19 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn into_agg_preserves_stream_item_error() {
+        let response = LlmResponse::Stream(Box::pin(stream::once(async {
+            Err(LlmClientError::Timeout {
+                source: Box::new(std::io::Error::other("timed out")),
+            })
+        })));
+
+        let Err(error) = block_on(response.into_agg()) else {
+            panic!("expected stream aggregation to fail");
+        };
+        assert!(matches!(error, LlmClientError::Timeout { .. }));
     }
 }

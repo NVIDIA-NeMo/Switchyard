@@ -461,7 +461,7 @@ async fn main() -> Result<()> {
                 .llm_response
                 .into_agg()
                 .await
-                .map_err(|error| LibsyError::external_boxed("aggregating response", error))?,
+                .map_err(|error| LibsyError::external("aggregating response", error))?,
         )
     );
     Ok(())

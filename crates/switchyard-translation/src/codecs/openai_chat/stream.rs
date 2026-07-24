@@ -48,7 +48,7 @@ fn decode_openai_chat_stream(
     event: &Value,
 ) -> Vec<LlmResponseChunk> {
     let Some(object) = event.as_object() else {
-        return vec![LlmResponseChunk::Error {
+        return vec![LlmResponseChunk::DecodeError {
             message: "OpenAI stream event is not an object".to_string(),
         }];
     };
@@ -204,7 +204,9 @@ fn encode_openai_chat_stream(
                 Some(openai_usage_value(state)),
             )]
         }
-        LlmResponseChunk::Error { message } => vec![json!({"error": {"message": message}})],
+        LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
+            vec![json!({"error": {"message": message}})]
+        }
     }
 }
 

@@ -137,7 +137,7 @@ fn decode_responses_stream(
             out.push(LlmResponseChunk::MessageStop { reason: None });
             out
         }
-        Some("error") => vec![LlmResponseChunk::Error {
+        Some("error") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("message")
                 .and_then(Value::as_str)
@@ -177,7 +177,7 @@ fn encode_responses_stream(
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        LlmResponseChunk::Error { message } => {
+        LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             vec![json!({"type": "error", "message": message})]
         }
     }

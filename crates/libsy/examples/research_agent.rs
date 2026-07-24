@@ -85,7 +85,7 @@ impl ResearchAgent {
                 .llm_response
                 .into_agg()
                 .await
-                .map_err(|error| LibsyError::external_boxed("aggregating response", error))?;
+                .map_err(|error| LibsyError::external("aggregating response", error))?;
             notes.push(completion_text(&aggregate));
         }
         Ok(notes.join("\n"))

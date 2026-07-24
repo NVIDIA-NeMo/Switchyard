@@ -80,7 +80,7 @@ impl ResearchAgent {
                     Step::ReturnToAgent(response) => {
                         let aggregate =
                             response.llm_response.into_agg().await.map_err(|error| {
-                                LibsyError::external_boxed("aggregating response", error)
+                                LibsyError::external("aggregating response", error)
                             })?;
                         notes.push(completion_text(&aggregate));
                     }

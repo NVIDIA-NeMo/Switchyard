@@ -247,7 +247,9 @@ mod tests {
             };
             self.seen
                 .lock()
-                .map_err(|_| switchyard_protocol::LlmClientError::Other("lock poisoned".into()))?
+                .map_err(|_| {
+                    switchyard_protocol::LlmClientError::General("lock poisoned".to_string())
+                })?
                 .push(request);
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, completion)),

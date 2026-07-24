@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
                     print!("agent sees: ");
                     while let Some(chunk) = chunks.next().await {
                         let chunk = chunk.map_err(|error| {
-                            LibsyError::external_boxed("reading response stream", error)
+                            LibsyError::external("reading response stream", error)
                         })?;
                         if let LlmResponseChunk::TextDelta { text, .. } = chunk {
                             print!("{text}");

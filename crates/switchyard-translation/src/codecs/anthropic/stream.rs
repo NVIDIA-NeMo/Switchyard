@@ -48,7 +48,7 @@ fn decode_anthropic_stream(
     event: &Value,
 ) -> Vec<LlmResponseChunk> {
     let Some(object) = event.as_object() else {
-        return vec![LlmResponseChunk::Error {
+        return vec![LlmResponseChunk::DecodeError {
             message: "Anthropic stream event is not an object".to_string(),
         }];
     };
@@ -107,7 +107,7 @@ fn decode_anthropic_stream(
         Some("message_stop") => vec![LlmResponseChunk::MessageStop {
             reason: state.stop_reason.clone(),
         }],
-        Some("error") => vec![LlmResponseChunk::Error {
+        Some("error") => vec![LlmResponseChunk::StreamError {
             message: object
                 .get("error")
                 .and_then(Value::as_object)
@@ -181,7 +181,7 @@ fn encode_anthropic_stream(
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        LlmResponseChunk::Error { message } => {
+        LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
             vec![json!({"type": "error", "error": {"message": message}})]
         }
     }

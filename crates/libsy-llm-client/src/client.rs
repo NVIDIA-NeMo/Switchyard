@@ -206,7 +206,7 @@ impl TranslatingLlmClient {
             // transport-agnostic and lives in `switchyard-translation`.
             let bytes = http_response.bytes_stream().map(|chunk| {
                 chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                    let error = if error.is_timeout() {
+                    if error.is_timeout() {
                         LlmClientError::Timeout {
                             source: Box::new(error),
                         }
@@ -214,12 +214,10 @@ impl TranslatingLlmClient {
                         LlmClientError::Transport {
                             source: Box::new(error),
                         }
-                    };
-                    Box::new(error) as Box<dyn std::error::Error + Send + Sync>
+                    }
                 })
             });
-            let chunks = decode_stream(bytes, wire_format)
-                .map_err(|source| LlmClientError::InvalidResponse { source })?;
+            let chunks = decode_stream(bytes, wire_format)?;
             LlmResponse::Stream(chunks)
         } else {
             let body = http_response
@@ -288,8 +286,7 @@ impl TranslatingLlmClient {
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
-                let events = encode_stream(chunks, wire_format, requested_model)
-                    .map_err(|source| LlmClientError::InvalidResponse { source })?;
+                let events = encode_stream(chunks, wire_format, requested_model)?;
                 Ok(RawResponse::Stream(events))
             }
         }
@@ -402,9 +399,17 @@ mod tests {
         )]
     }
 
-    fn truncated_response_server() -> std::io::Result<(String, JoinHandle<std::io::Result<()>>)> {
+    fn truncated_response_server(
+        content_type: &str,
+        body: &str,
+    ) -> std::io::Result<(String, JoinHandle<std::io::Result<()>>)> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len() + 100
+        );
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept()?;
             let mut request = [0_u8; 1024];
@@ -414,10 +419,7 @@ mod tests {
                     "client closed before sending a request",
                 ));
             }
-            stream.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                  Content-Length: 100\r\nConnection: close\r\n\r\n{}",
-            )
+            stream.write_all(response.as_bytes())
         });
         Ok((format!("http://{address}/v1"), handle))
     }
@@ -600,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn response_body_io_failure_is_a_transport_error(
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        let (base_url, server) = truncated_response_server()?;
+        let (base_url, server) = truncated_response_server("application/json", "{}")?;
         let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
         let result = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
@@ -621,6 +623,28 @@ mod tests {
         assert!(source.is_decode());
         assert!(!std::error::Error::source(&source)
             .is_some_and(|source| source.is::<serde_json::Error>()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_body_io_failure_preserves_transport_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let (base_url, server) = truncated_response_server("text/event-stream", body)?;
+        let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
+        let response = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
+            .await?;
+        let result = response.llm_response.into_agg().await;
+        server
+            .join()
+            .map_err(|_| std::io::Error::other("response server thread panicked"))??;
+
+        let Err(error) = result else {
+            panic!("expected the truncated stream body to fail");
+        };
+
+        assert!(matches!(error, LlmClientError::Transport { .. }));
         Ok(())
     }
 

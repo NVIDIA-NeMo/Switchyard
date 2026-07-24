@@ -194,12 +194,14 @@ fn subagent_override_algorithm(
 }
 
 fn other_python_error(error: PyErr) -> LlmClientError {
-    LlmClientError::Other(Box::new(std::io::Error::other(error.to_string())))
+    LlmClientError::Ffi {
+        source: Box::new(error),
+    }
 }
 
 fn invalid_python_response(error: PyErr) -> LlmClientError {
     LlmClientError::InvalidResponse {
-        source: Box::new(std::io::Error::other(error.to_string())),
+        source: Box::new(error),
     }
 }
 
