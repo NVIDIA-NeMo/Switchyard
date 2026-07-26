@@ -1210,21 +1210,18 @@ fn encode_responses_usage(usage: &Usage) -> Value {
     let input_tokens = usage.input_tokens.unwrap_or(0)
         + usage.cached_input_tokens().unwrap_or(0)
         + usage.cache_creation_input_tokens().unwrap_or(0);
-    let mut value = json!({
+    // The detail objects are required by the Responses schema, so both are always present. An
+    // upstream that reports no cache or reasoning breakdown means zero, not "unknown"; omitting
+    // them instead yields a payload that fails to deserialize into the OpenAI SDK's
+    // ResponseUsage, which types both as non-optional.
+    json!({
         "input_tokens": input_tokens,
         "output_tokens": usage.output_tokens.unwrap_or(0),
         "total_tokens": usage
             .total_tokens
             .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
             .unwrap_or(0),
-    });
-    if let Some(cached_tokens) = usage.cached_input_tokens() {
-        value["input_tokens_details"] = json!({"cached_tokens": cached_tokens});
-    }
-    if let Some(reasoning_tokens) = usage.reasoning_tokens {
-        value["output_tokens_details"] = json!({
-            "reasoning_tokens": reasoning_tokens,
-        });
-    }
-    value
+        "input_tokens_details": {"cached_tokens": usage.cached_input_tokens().unwrap_or(0)},
+        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
+    })
 }

@@ -597,3 +597,47 @@ fn openai_chat_error_frame_decodes_to_stream_error() -> TestResult {
     }
     Ok(())
 }
+
+// Verifies the streaming encoder matches the buffered one: both Responses usage detail objects
+// are present even when the upstream reports no cache or reasoning breakdown.
+#[test]
+fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let usage = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "plain-model",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 41, "completion_tokens": 3, "total_tokens": 44}
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &usage,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(completed) = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+    else {
+        return Err("expected final Responses completion event".into());
+    };
+    assert_eq!(
+        completed["response"]["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 0})
+    );
+    assert_eq!(
+        completed["response"]["usage"]["output_tokens_details"],
+        json!({"reasoning_tokens": 0})
+    );
+    Ok(())
+}

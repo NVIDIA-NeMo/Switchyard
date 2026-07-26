@@ -555,22 +555,17 @@ fn responses_usage_value(usage: &Usage) -> Value {
     let input_tokens = usage.input_tokens.unwrap_or(0)
         + usage.cached_input_tokens().unwrap_or(0)
         + usage.cache_creation_input_tokens().unwrap_or(0);
-    let mut value = json!({
+    // Both detail objects are always present, for the same reason as the buffered encoder: the
+    // Responses schema types them as required, so a missing breakdown serializes as zero.
+    json!({
         "input_tokens": input_tokens,
         "output_tokens": usage.output_tokens.unwrap_or(0),
         "total_tokens": usage.total_tokens.unwrap_or_else(|| {
             input_tokens + usage.output_tokens.unwrap_or(0)
         }),
-    });
-    if let Some(cached_tokens) = usage.cached_input_tokens() {
-        value["input_tokens_details"] = json!({"cached_tokens": cached_tokens});
-    }
-    if let Some(reasoning_tokens) = usage.reasoning_tokens {
-        value["output_tokens_details"] = json!({
-            "reasoning_tokens": reasoning_tokens,
-        });
-    }
-    value
+        "input_tokens_details": {"cached_tokens": usage.cached_input_tokens().unwrap_or(0)},
+        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
+    })
 }
 
 // Converts any upstream message ID into a Responses-looking response ID.
