@@ -31,6 +31,8 @@ NIM · Nemotron · vLLM · OpenAI · Anthropic
 | [00-design-spec.md](docs/00-design-spec.md) | **Start here.** Verified integration surface, target architecture, data model, phasing, open questions |
 | [01-phase-a-metering.md](docs/01-phase-a-metering.md) | Zero-code metering overlay — runnable PoC |
 | [02-phase-b-enforcement.md](docs/02-phase-b-enforcement.md) | Policy decision API, enforcement design, 4 upstream PRs |
+| [03-metering-integrity.md](docs/03-metering-integrity.md) | **Supersedes spec §6.3** — why the meter moved to the response path |
+| [04-caching-decision.md](docs/04-caching-decision.md) | Prefix vs semantic caching: source, defer, and how to price a cache hit |
 
 ## Prototype
 
@@ -42,7 +44,18 @@ NIM · Nemotron · vLLM · OpenAI · Anthropic
 | [`prototype/tokenforge_m360/intake_receiver.py`](prototype/tokenforge_m360/intake_receiver.py) | Phase A intake sink, rating, reconciliation, spend tree |
 | [`prototype/tokenforge_m360/policy_processor.py`](prototype/tokenforge_m360/policy_processor.py) | Phase B enforcement processor |
 
-## Quick start (Phase A)
+## Runnable demo
+
+```bash
+python3 tokenforge/demo/run_demo.py
+```
+
+Stdlib only — no pip install, no venv, no Rust toolchain, Python 3.9+. Starts a
+Switchyard stand-in (:8080), TokenForge Core (:9900) and TokenForge Edge (:9000),
+drives five scenarios, prints a report and writes `tokenforge/demo/dashboard.html`.
+See [demo/README.md](demo/README.md).
+
+## Quick start against real Switchyard (Phase A)
 
 ```bash
 pip install fastapi uvicorn httpx pydantic
@@ -77,7 +90,8 @@ Stated plainly so no customer material overclaims:
 - **No caching.** No semantic cache, no response cache, no embeddings, no vector
   store. `cached_tokens` is pass-through of the *provider's* prompt cache. The
   "Cache & shaping" box in the M360 architecture diagram is **not** satisfied by
-  Switchyard.
+  Switchyard — resolved as source-prefix / defer-semantic in
+  [04-caching-decision.md](docs/04-caching-decision.md).
 - **No auth, anywhere.** Every route is open, including `POST /v1/stats/reset`
   and `/metrics`. Switchyard must never be exposed directly to external
   customers.

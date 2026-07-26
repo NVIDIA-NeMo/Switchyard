@@ -105,7 +105,12 @@ Opt-in per request via body `store=true` or header
 
 > **Constraint:** fire-and-forget. `on_queue_full` may drop records. Acceptable
 > for dashboards; **not** acceptable as the sole system of record for an
-> invoice. See §6.3 for the reconciliation design.
+> invoice.
+>
+> **REVISED —** intake is no longer the metering source of record. TokenForge
+> Edge meters synchronously from the response path, which is lossless by
+> construction; intake became enrichment and cross-check. See
+> [`03-metering-integrity.md`](03-metering-integrity.md), which supersedes §6.3.
 
 ### 3.2 Seam 2 — Request processor (the enforcement point)
 
@@ -355,6 +360,7 @@ Reuses the existing M360 AI meters so RevenueOS needs no new primitives:
 | `ai.gateway.transaction` | txn | 1 per gateway call |
 | `ai.agent.session` | second | derived from session-final turn spans |
 | `ai.router.escalation` | event | `routed_to == "strong"` |
+| `ai.cache.hit` | event | Phase C — priced at a discount, never at full token price |
 
 Note `ai.router.escalation`: a *billable governance event*. Escalation to the
 expensive tier is exactly what a FinOps buyer wants priced, tiered, and capped.
@@ -465,7 +471,9 @@ Mapping the Nutanix Token Optimization levers onto real Switchyard mechanics:
 | Right-size & batch | Clamp `max_tokens`; **no batching primitive exists** | Partial — batching is TokenForge-side |
 | Fill idle GPU | Route low-priority work to a NIM endpoint | Needs capacity signal; NCP-specific |
 
-> **Honest gap:** Switchyard has **no semantic or response caching whatsoever.**
+> **Honest gap (now resolved as a decision —** see
+> [`04-caching-decision.md`](04-caching-decision.md)**):** Switchyard has **no
+> semantic or response caching whatsoever.**
 > Zero embeddings, no vector store, no similarity matching. `cached_tokens`
 > metrics are pass-through of the *provider's* prompt cache, and
 > `session_cache.py` is an LRU pin store. The "Cache & shaping — prefix,
@@ -543,6 +551,9 @@ playbook calls for.
 | `tokenforge/docs/00-design-spec.md` | This document |
 | `tokenforge/docs/01-phase-a-metering.md` | Phase A implementation guide |
 | `tokenforge/docs/02-phase-b-enforcement.md` | Phase B policy design + decision API contract |
+| `tokenforge/docs/03-metering-integrity.md` | **Supersedes §6.3** — response-path meter, three-meter reconciliation |
+| `tokenforge/docs/04-caching-decision.md` | Prefix vs semantic caching: build/source/defer decision |
+| `tokenforge/demo/` | Runnable Phase A0/B0 demo (stdlib only) |
 | `tokenforge/config/route.tokenforge.yaml` | Switchyard route bundle for the PoC |
 | `tokenforge/prototype/tokenforge_m360/intake_receiver.py` | FastAPI intake sink + rating |
 | `tokenforge/prototype/tokenforge_m360/policy_processor.py` | Phase-B request processor |
