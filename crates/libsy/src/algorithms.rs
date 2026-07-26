@@ -15,6 +15,6 @@ pub use fall_through::{FallThrough, FallThroughDecision};
 pub use llm_class::{ClassifierDecision, ClassifierTier, LlmClassifier};
 pub use noop::{Noop, NoopDecision};
 pub use rand::{Random, RandomDecision};
-pub use util::SubagentOverride;
+pub use util::{AffinityRouter, SubagentOverride};
 
 pub mod util;

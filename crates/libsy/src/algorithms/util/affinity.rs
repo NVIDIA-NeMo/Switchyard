@@ -18,8 +18,6 @@
 //! session. [`AffinityRouter::for_subagents`] narrows affinity to explicitly identified
 //! child agents, leaving root traffic to later classifiers on every turn.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
