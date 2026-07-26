@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
-use switchyard_libsy::algorithms::{Noop, Random, SubagentOverride};
+use switchyard_libsy::algorithms::{Noop, Random};
 use switchyard_libsy::{
     AggLlmResponse, Algorithm, Context, Decision, LlmClientError, LlmResponse, LlmTarget,
     LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
@@ -111,8 +111,8 @@ impl PyAlgorithm {
     ///
     /// `headers`, when given, is normalized into the request's correlation
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
-    /// so metadata-driven algorithms such as `subagent_override` see the same
-    /// signals in Python as when served over HTTP.
+    /// so metadata-driven algorithms see the same signals in Python as when
+    /// served over HTTP.
     #[pyo3(signature = (request, headers=None))]
     fn run<'py>(
         &self,
@@ -175,24 +175,6 @@ fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<P
     )))))
 }
 
-/// Wrap `inner`, routing delegated sub-agent work to a fixed worker target.
-///
-/// Detection and the work-vs-maintenance policy are the protocol crate's
-/// `Metadata::from_headers` / `Metadata::is_subagent_work`, driven by the
-/// `headers` passed to `Algorithm.run`.
-#[pyfunction(name = "subagent_override")]
-fn subagent_override_algorithm(
-    py: Python<'_>,
-    inner: Py<PyAlgorithm>,
-    worker: Py<PyLlmTarget>,
-) -> PyResult<PyAlgorithm> {
-    let inner = Arc::clone(&inner.bind(py).get().inner);
-    let worker = worker.bind(py).try_borrow()?.clone_core(py);
-    Ok(PyAlgorithm::new(Arc::new(SubagentOverride::new(
-        inner, worker,
-    ))))
-}
-
 fn other_python_error(error: PyErr) -> LlmClientError {
     LlmClientError::Ffi {
         source: Box::new(error),
@@ -211,10 +193,6 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmTarget>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
-    libsy_module.add_function(wrap_pyfunction!(
-        subagent_override_algorithm,
-        &libsy_module
-    )?)?;
     libsy_module.add("LibsyError", module.getattr("LibsyError")?)?;
     module.add_submodule(&libsy_module)?;
     Ok(())

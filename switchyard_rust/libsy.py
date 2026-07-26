@@ -10,9 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from switchyard_rust.core import _load_native
 
-_EXPORTS = frozenset(
-    {"Algorithm", "LibsyError", "LlmTarget", "noop", "random", "subagent_override"}
-)
+_EXPORTS = frozenset({"Algorithm", "LibsyError", "LlmTarget", "noop", "random"})
 
 
 class LlmClient(Protocol):
@@ -52,8 +50,6 @@ if TYPE_CHECKING:
     def noop() -> Algorithm: ...
 
     def random(targets: Sequence[LlmTarget]) -> Algorithm: ...
-
-    def subagent_override(inner: Algorithm, worker: LlmTarget) -> Algorithm: ...
 
 
 def __getattr__(name: str) -> object:

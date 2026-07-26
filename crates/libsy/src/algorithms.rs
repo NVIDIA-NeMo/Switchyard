@@ -10,12 +10,11 @@ pub mod fall_through;
 pub mod llm_class;
 pub mod noop;
 pub mod rand;
-pub mod subagent_override;
 
 pub use fall_through::{FallThrough, FallThroughDecision};
 pub use llm_class::{ClassifierDecision, ClassifierTier, LlmClassifier};
 pub use noop::{Noop, NoopDecision};
 pub use rand::{Random, RandomDecision};
-pub use subagent_override::{SubagentDecision, SubagentOverride};
+pub use util::SubagentOverride;
 
-pub(crate) mod util;
+pub mod util;

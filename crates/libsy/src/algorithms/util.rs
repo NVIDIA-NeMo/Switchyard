@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod affinity;
+pub mod subagent;
 
 #[allow(unused_imports)]
 pub(crate) use affinity::AffinityRouter;
+pub use subagent::SubagentOverride;
