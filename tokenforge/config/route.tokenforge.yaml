@@ -1,0 +1,81 @@
+# TokenForge PoC route bundle for Switchyard (Python `switchyard serve`).
+#
+# Schema note: only `defaults` and `routes` are valid top-level keys. There is no
+# `backends:`, `routers:`, `fallbacks:`, or `profiles:` key -- any of those raises
+# RouteBundleConfigError. Processors are NOT declarable here; they are passed as
+# `pre_routing_request_processors` to the table builder (see prototype/launcher.py).
+#
+# Run:
+#   export SWITCHYARD_INTAKE_TARGET_URL=http://localhost:9900/v1/intake/switchyard
+#   switchyard serve --routing-profiles tokenforge/config/route.tokenforge.yaml
+
+defaults:
+  api_key: ${NIM_API_KEY}
+  base_url: ${NIM_BASE_URL}
+  format: openai
+  timeout_secs: 120
+
+routes:
+  # ---------------------------------------------------------------------------
+  # tf-tiered: the workhorse. Routes on `x-switchyard-tier`, which TokenForge
+  # Edge stamps from the budget decision -- a near-cap tenant is transparently
+  # downgraded strong -> weak with ZERO Switchyard code. This is Phase A's
+  # cost-aware routing lever.
+  #
+  # `random_routing` with strong_probability: 0.0 is deliberate: it makes `weak`
+  # the default and lets the tier header do the selecting. Swap to a registered
+  # `header_routing` profile once upstream PR #3 lands.
+  # ---------------------------------------------------------------------------
+  tf-tiered:
+    type: random_routing
+    display_name: TokenForge tiered (header-driven)
+    strong:
+      id: strong
+      model: nvidia/nvidia/Nemotron-3-Nano-30B-A3B
+    weak:
+      id: weak
+      model: nvidia/moonshotai/kimi-k2.6
+    strong_probability: 0.0
+    fallback_target_on_evict: strong
+    enable_stats: true
+    rng_seed: 42
+
+  # ---------------------------------------------------------------------------
+  # tf-escalating: classifier-driven escalation. Every `routed_to: strong`
+  # becomes a billable `ai.router.escalation` meter event -- escalation to the
+  # expensive tier is precisely what a FinOps buyer wants priced and capped.
+  #
+  # WARNING for Phase B: the classifier LLM is called BEFORE tier selection, so
+  # a budget denial inside a request processor has already burned classifier
+  # tokens. Deny at TokenForge Edge, not here. See design spec section 4.2.
+  # ---------------------------------------------------------------------------
+  tf-escalating:
+    type: deterministic
+    display_name: TokenForge escalating (classifier)
+    profile: coding_agent
+    fallback_target_on_evict: strong
+    session_affinity: true
+    affinity_warmup_turns: 2
+    tier_timeout_s: 300
+    enable_stats: true
+    classifier:
+      model: nvidia/moonshotai/kimi-k2.6
+      timeout_secs: 20.0
+      min_confidence: 0.6
+      fail_open: true
+      recent_turn_window: 4
+    strong:
+      id: strong
+      model: nvidia/nvidia/Nemotron-3-Nano-30B-A3B
+    weak:
+      id: weak
+      model: nvidia/moonshotai/kimi-k2.6
+
+  # ---------------------------------------------------------------------------
+  # tf-passthrough: direct single-model access for tenants entitled to a
+  # specific model. Rated per-token at the contract rate card, no routing.
+  # ---------------------------------------------------------------------------
+  tf-nemotron:
+    type: model
+    display_name: TokenForge direct Nemotron
+    target: nvidia/nvidia/Nemotron-3-Nano-30B-A3B
