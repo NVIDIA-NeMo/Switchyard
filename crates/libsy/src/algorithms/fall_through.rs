@@ -75,6 +75,19 @@ impl FallThrough {
         self.classifiers.push(classifier);
         self
     }
+
+    /// Registers one dual-role component in *both* the processor chain and the classifier
+    /// cascade.
+    ///
+    /// A component that writes state as a [`Processor`] and reads it back as a
+    /// [`Classifier`] — such as [`AffinityRouter`](crate::algorithms::AffinityRouter) —
+    /// shares that state through the instance, so both roles must be the same `Arc`.
+    /// Registering the two separately is easy to half-wire: omit the processor and the
+    /// classifier silently never sees an assignment. This registers both at once.
+    pub fn with_component<T: Processor + Classifier + 'static>(self, component: Arc<T>) -> Self {
+        self.with_processor(component.clone())
+            .with_classifier(component)
+    }
 }
 #[async_trait]
 impl Algorithm<SharedState> for FallThrough {

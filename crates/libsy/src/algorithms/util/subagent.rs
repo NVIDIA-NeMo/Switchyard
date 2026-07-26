@@ -137,7 +137,11 @@ mod tests {
         // rather than consulting later classifiers.
         let mut state = State::default();
         let classification = SubagentOverride::new("worker")
-            .score(&mut state, &request(&[("x-openai-subagent", "review")]), None)
+            .score(
+                &mut state,
+                &request(&[("x-openai-subagent", "review")]),
+                None,
+            )
             .await?;
         match classification {
             Classification::Scores(scores) => {
