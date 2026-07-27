@@ -5,10 +5,11 @@
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_util::{stream, Stream, StreamExt};
+use parking_lot::Mutex;
 use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -519,10 +520,7 @@ fn push_callback(
     callbacks: &Arc<Mutex<Vec<Py<PyAny>>>>,
     callback: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
-    callbacks
-        .lock()
-        .map_err(|_| PyRuntimeError::new_err("ChatResponseStream callback lock is poisoned"))?
-        .push(callback.clone().unbind());
+    callbacks.lock().push(callback.clone().unbind());
     Ok(())
 }
 
@@ -748,11 +746,10 @@ async fn run_taps(callbacks: Arc<Mutex<Vec<Py<PyAny>>>>, event: &Py<PyAny>) {
     if failed.is_empty() {
         return;
     }
-    if let Ok(mut callbacks) = callbacks.lock() {
-        for index in failed.into_iter().rev() {
-            if index < callbacks.len() {
-                callbacks.remove(index);
-            }
+    let mut callbacks = callbacks.lock();
+    for index in failed.into_iter().rev() {
+        if index < callbacks.len() {
+            callbacks.remove(index);
         }
     }
 }
@@ -789,9 +786,7 @@ async fn run_completion_once(callbacks: Arc<Mutex<Vec<Py<PyAny>>>>, completed: A
 
 fn clone_callbacks(callbacks: &Arc<Mutex<Vec<Py<PyAny>>>>) -> PyResult<Vec<(usize, Py<PyAny>)>> {
     Python::attach(|py| {
-        let callbacks = callbacks
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("ChatResponseStream callback lock is poisoned"))?;
+        let callbacks = callbacks.lock();
         Ok(callbacks
             .iter()
             .enumerate()

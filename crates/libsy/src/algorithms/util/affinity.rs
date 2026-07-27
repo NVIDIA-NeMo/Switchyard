@@ -21,9 +21,9 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use switchyard_protocol::Request;
 
 use crate::{Classification, Classifier, Event, Processor, Score, State};
@@ -129,12 +129,8 @@ impl AffinityRouter {
 #[async_trait]
 impl Processor for AffinityRouter {
     async fn process(&self, _state: &mut State, event: Event<'_>) -> crate::Result<()> {
-        // No `.await` is held across this guard, so a std Mutex is sufficient; recover from
-        // poisoning rather than panicking, since a stale assignment map is harmless.
-        let mut fact = self
-            .assignments
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // No `.await` is held across this guard.
+        let mut fact = self.assignments.lock();
         match event {
             // Capture the identity now; the model it maps to is only known at the decision.
             Event::Request(request) => {
@@ -169,13 +165,7 @@ impl Classifier for AffinityRouter {
         let Some(key) = self.affinity_key(request) else {
             return Ok(Classification::Scores(Vec::new()));
         };
-        let assigned = self
-            .assignments
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .assignments
-            .get(&key)
-            .cloned();
+        let assigned = self.assignments.lock().assignments.get(&key).cloned();
         Ok(Classification::Scores(match assigned {
             Some(target) => vec![Score {
                 confidence: 1.0,
@@ -533,12 +523,7 @@ mod tests {
             .await?;
         }
 
-        let len = router
-            .assignments
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .assignments
-            .len();
+        let len = router.assignments.lock().assignments.len();
         assert_eq!(len, MAX_ASSIGNMENTS);
         Ok(())
     }

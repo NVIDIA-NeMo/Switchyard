@@ -18,6 +18,7 @@ futures = "0.3"
 # Metrics-only OTel API: instruments record through the host-installed global
 # meter provider. Pinned to the 0.32 line used across the workspace.
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+parking_lot = "0.12"
 rand = "0.8"
 switchyard-protocol = { path = "../protocol" }
 thiserror = "2"

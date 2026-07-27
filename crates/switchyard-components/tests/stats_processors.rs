@@ -4,11 +4,12 @@
 //! Stats processor tests covering request stamps, backend wrappers, and stream usage.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use parking_lot::Mutex;
 use serde_json::json;
 use switchyard_components::{
     BackendSelection, BackendSelectionReason, RandomRoutingDecision, RandomRoutingTier,
@@ -80,11 +81,7 @@ impl FakeBackend {
 
     // Returns every request model observed by the fake backend.
     fn calls(&self) -> Result<Vec<Option<String>>> {
-        Ok(self
-            .calls
-            .lock()
-            .map_err(|_| SwitchyardError::Other("fake calls mutex poisoned".to_string()))?
-            .clone())
+        Ok(self.calls.lock().clone())
     }
 }
 
@@ -95,10 +92,7 @@ impl LlmBackend for FakeBackend {
     }
 
     async fn call(&self, ctx: &mut ProxyContext, request: &ChatRequest) -> Result<ChatResponse> {
-        self.calls
-            .lock()
-            .map_err(|_| SwitchyardError::Other("fake calls mutex poisoned".to_string()))?
-            .push(request.model().map(str::to_string));
+        self.calls.lock().push(request.model().map(str::to_string));
         if let Some(model) = &self.selected_model {
             record_backend_selection(ctx, model.clone());
         }
@@ -107,7 +101,6 @@ impl LlmBackend for FakeBackend {
         }
         self.response
             .lock()
-            .map_err(|_| SwitchyardError::Other("fake response mutex poisoned".to_string()))?
             .take()
             .ok_or_else(|| SwitchyardError::Other("fake response already consumed".to_string()))?
     }

@@ -219,7 +219,7 @@ impl Algorithm for LlmClassifier {
 mod tests {
     use super::*;
     use crate::{LlmResponse, LlmTarget, Response, RoutedLlmClient};
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
     use switchyard_protocol::text_response;
 
     /// Returns `score` for the classifier target, an answer tagged with the model
@@ -245,12 +245,7 @@ mod tests {
             } else {
                 format!("answer from {name}")
             };
-            self.seen
-                .lock()
-                .map_err(|_| {
-                    switchyard_protocol::LlmClientError::General("lock poisoned".to_string())
-                })?
-                .push(request);
+            self.seen.lock().push(request);
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, completion)),
                 metadata: None,

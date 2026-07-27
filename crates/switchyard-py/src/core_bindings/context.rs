@@ -5,8 +5,9 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
+use parking_lot::{Mutex, MutexGuard};
 use pyo3::class::basic::CompareOp;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -67,17 +68,15 @@ impl PyProxyMetadata {
         Ok(store)
     }
 
-    /// Locks the metadata store with a Python-facing poisoned-lock error.
-    fn lock(&self) -> PyResult<MutexGuard<'_, MetadataStore>> {
-        self.inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("ProxyMetadata lock is poisoned"))
+    /// Locks the metadata store.
+    fn lock(&self) -> MutexGuard<'_, MetadataStore> {
+        self.inner.lock()
     }
 
     /// Merges entries from a Python mapping into the metadata store.
     fn update_from_mapping(&self, py: Python<'_>, metadata: &Bound<'_, PyAny>) -> PyResult<()> {
         let entries = metadata_entries(py, metadata)?;
-        let mut store = self.lock()?;
+        let mut store = self.lock();
         store.values.extend(entries);
         Ok(())
     }
@@ -85,7 +84,7 @@ impl PyProxyMetadata {
     /// Materializes the metadata store as a Python dict.
     fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let entries = {
-            let store = self.lock()?;
+            let store = self.lock();
             store
                 .values
                 .iter()
@@ -131,11 +130,7 @@ impl PyProxyMetadata {
         key: &str,
         default: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        let value = self
-            .lock()?
-            .values
-            .get(key)
-            .map(|value| value.clone_ref(py));
+        let value = self.lock().values.get(key).map(|value| value.clone_ref(py));
         match value {
             Some(value) => Ok(value),
             None => Ok(default
@@ -155,7 +150,7 @@ impl PyProxyMetadata {
         let default = default
             .map(|value| value.clone().unbind())
             .unwrap_or_else(|| py.None());
-        let mut store = self.lock()?;
+        let mut store = self.lock();
         if let Some(value) = store.values.get(&key) {
             return Ok(value.clone_ref(py));
         }
@@ -199,7 +194,7 @@ impl PyProxyMetadata {
 
     /// Implements metadata indexing.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
-        self.lock()?
+        self.lock()
             .values
             .get(key)
             .map(|value| value.clone_ref(py))
@@ -208,13 +203,13 @@ impl PyProxyMetadata {
 
     /// Implements metadata assignment.
     fn __setitem__(&self, key: String, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.lock()?.values.insert(key, value.clone().unbind());
+        self.lock().values.insert(key, value.clone().unbind());
         Ok(())
     }
 
     /// Implements metadata deletion.
     fn __delitem__(&self, key: &str) -> PyResult<()> {
-        self.lock()?
+        self.lock()
             .values
             .remove(key)
             .map(|_| ())
@@ -223,12 +218,12 @@ impl PyProxyMetadata {
 
     /// Implements `key in metadata`.
     fn __contains__(&self, key: &str) -> PyResult<bool> {
-        Ok(self.lock()?.values.contains_key(key))
+        Ok(self.lock().values.contains_key(key))
     }
 
     /// Implements `len(metadata)`.
     fn __len__(&self) -> PyResult<usize> {
-        Ok(self.lock()?.values.len())
+        Ok(self.lock().values.len())
     }
 
     /// Iterates over metadata keys like a Python dict.
@@ -301,9 +296,7 @@ impl PyProxyContext {
                 "ProxyContext is already borrowed by an async Rust component",
             ));
         }
-        self.inner
-            .lock()
-            .map_err(|_| PyValueError::new_err("ProxyContext lock is poisoned"))
+        Ok(self.inner.lock())
     }
 
     /// Temporarily moves the Rust context out for async Rust component execution.
@@ -314,10 +307,7 @@ impl PyProxyContext {
             ));
         }
         let context = {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| PyValueError::new_err("ProxyContext lock is poisoned"))?;
+            let mut guard = self.inner.lock();
             std::mem::take(&mut *guard)
         };
         Ok(PyProxyContextLease {
@@ -369,10 +359,7 @@ impl PyProxyContextLease {
     /// Restores the leased context into the Python wrapper.
     pub(crate) fn restore(mut self) -> PyResult<()> {
         if let Some(context) = self.context.take() {
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| PyValueError::new_err("ProxyContext lock is poisoned"))?;
+            let mut guard = self.inner.lock();
             *guard = context;
         }
         self.in_use.store(false, Ordering::Release);
@@ -384,9 +371,7 @@ impl Drop for PyProxyContextLease {
     /// Restores the context during unwinding and always clears the borrow flag.
     fn drop(&mut self) {
         if let Some(context) = self.context.take() {
-            if let Ok(mut guard) = self.inner.lock() {
-                *guard = context;
-            }
+            *self.inner.lock() = context;
         }
         self.in_use.store(false, Ordering::Release);
     }

@@ -580,8 +580,7 @@ fn openai_sse_stream(response: reqwest::Response) -> BoxResponseStream {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
+    use parking_lot::Mutex;
     use serde_json::json;
     use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
 
@@ -604,21 +603,10 @@ mod tests {
     #[async_trait]
     impl OpenAiTransport for FakeOpenAiTransport {
         async fn send(&self, request: OpenAiHttpRequest) -> Result<OpenAiHttpResponse> {
-            self.requests
-                .lock()
-                .map_err(|_| {
-                    SwitchyardError::Other("fake transport request mutex poisoned".to_string())
-                })?
-                .push(request);
-            self.response
-                .lock()
-                .map_err(|_| {
-                    SwitchyardError::Other("fake transport response mutex poisoned".to_string())
-                })?
-                .take()
-                .ok_or_else(|| {
-                    SwitchyardError::Other("fake transport response already consumed".to_string())
-                })?
+            self.requests.lock().push(request);
+            self.response.lock().take().ok_or_else(|| {
+                SwitchyardError::Other("fake transport response already consumed".to_string())
+            })?
         }
     }
 

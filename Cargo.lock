@@ -1786,6 +1786,7 @@ dependencies = [
  "futures",
  "opentelemetry",
  "opentelemetry_sdk",
+ "parking_lot",
  "rand 0.8.7",
  "serde_json",
  "switchyard-llm-client",
@@ -1829,6 +1830,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-util",
+ "parking_lot",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",

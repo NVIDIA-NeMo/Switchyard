@@ -3,9 +3,10 @@
 
 //! Adversarial tests for the Rust multi-target LLM backend.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use switchyard_components::{
     BackendSelection, BackendSelectionReason, LlmTargetBackend, MultiLlmBackend,
@@ -43,27 +44,15 @@ impl<T> Default for Shared<T> {
 }
 
 impl<T: Clone> Shared<T> {
-    /// Appends one observation with a typed test error on poisoned mutexes.
+    /// Appends one observation.
     fn push(&self, value: T) -> Result<()> {
-        match self.0.lock() {
-            Ok(mut values) => {
-                values.push(value);
-                Ok(())
-            }
-            Err(_) => Err(SwitchyardError::Other(
-                "shared test log mutex poisoned".to_string(),
-            )),
-        }
+        self.0.lock().push(value);
+        Ok(())
     }
 
     /// Returns a cloned copy of all observations.
     fn values(&self) -> Result<Vec<T>> {
-        match self.0.lock() {
-            Ok(values) => Ok(values.clone()),
-            Err(_) => Err(SwitchyardError::Other(
-                "shared test log mutex poisoned".to_string(),
-            )),
-        }
+        Ok(self.0.lock().clone())
     }
 }
 

@@ -348,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn processor_observes_request_and_decision() -> Result<()> {
-        use std::sync::Mutex;
+        use parking_lot::Mutex;
 
         // Records which event kinds it saw, proving the request-then-decision replay.
         struct RecordingProcessor(Arc<Mutex<Vec<&'static str>>>);
@@ -361,10 +361,7 @@ mod tests {
                     Event::Decision(_) => "decision",
                     _ => "other",
                 };
-                self.0
-                    .lock()
-                    .map_err(|_| test_error("lock poisoned"))?
-                    .push(kind);
+                self.0.lock().push(kind);
                 Ok(())
             }
         }
@@ -375,10 +372,7 @@ mod tests {
             .with_classifier(fixed(vec![score("strong", 1.0)]));
         run(router).await?;
 
-        assert_eq!(
-            *seen.lock().map_err(|_| test_error("lock poisoned"))?,
-            vec!["request", "decision"]
-        );
+        assert_eq!(*seen.lock(), vec!["request", "decision"]);
         Ok(())
     }
 

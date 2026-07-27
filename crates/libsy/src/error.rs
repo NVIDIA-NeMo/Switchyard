@@ -129,10 +129,6 @@ pub enum DriverError {
         /// Human-readable expected payload type or role.
         expected: &'static str,
     },
-
-    /// The driver's receiver lock was poisoned by a panic.
-    #[error("driver receiver lock was poisoned")]
-    LockPoisoned,
 }
 
 #[cfg(test)]
