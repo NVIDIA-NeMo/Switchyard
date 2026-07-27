@@ -39,7 +39,9 @@ async def main() -> None:
         [
             LlmTarget("fast", EchoClient("fast")),
             LlmTarget("quality", EchoClient("quality")),
-        ]
+        ],
+        weights=[1, 3],
+        seed=42,
     )
     random_decisions, random_response = await random.run(request)
     print("Random:", random_decisions, random_response)

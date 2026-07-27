@@ -160,15 +160,21 @@ fn noop_algorithm() -> PyAlgorithm {
     PyAlgorithm::new(Arc::new(Noop {}))
 }
 
-/// Construct uniform random routing over targets with Python clients.
+/// Construct random routing over targets with optional relative weights and seed.
 #[pyfunction(name = "random")]
-fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<PyAlgorithm> {
+#[pyo3(signature = (targets, *, weights=None, seed=None))]
+fn random_algorithm(
+    py: Python<'_>,
+    targets: Vec<Py<PyLlmTarget>>,
+    weights: Option<Vec<f64>>,
+    seed: Option<u64>,
+) -> PyResult<PyAlgorithm> {
     let targets = targets
         .iter()
         .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
         .collect::<PyResult<Vec<_>>>()?;
     let algorithm =
-        Random::new(LlmTargetSet::new(targets), None, None).map_err(|error| match error {
+        Random::new(LlmTargetSet::new(targets), weights, seed).map_err(|error| match error {
             RustLibsyError::NoTargets => {
                 PyValueError::new_err("random requires at least one target")
             }
