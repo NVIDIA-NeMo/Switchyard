@@ -89,6 +89,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - One focused commit per step; every changed line traces to that step.
 - Single-line commit message in Conventional Commits form
   (`type(scope): summary`). No body, no `Co-Authored-By` trailer.
+- Pull request titles use the same Conventional Commits form.
 - Use `git commit -s` so every commit carries the required DCO sign-off.
 - Never commit unprompted. Show the diff, get approval, then commit.
 
