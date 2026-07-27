@@ -43,6 +43,34 @@ println!("answer: {}", completion_text(&response.llm_response.into_agg().await?)
 
 Runnable: [`research_agent`](examples/research_agent.rs)
 
+## Composing fall-through routing
+
+`FallThrough` runs a processor chain, consults classifiers until one chooses a target,
+then makes the target call. Its state is generic: use `()` for a stateless composition,
+or `Shared<MyState>` when processors and classifiers need state across turns.
+
+Random routing is a stateless composition with no processors:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::algorithms::{FallThrough, RandomClassifier};
+use switchyard_libsy::{Algorithm, Classifier};
+
+let classifier: Arc<dyn Classifier<()>> = Arc::new(RandomClassifier::new(
+    vec!["fast".into(), "capable".into()],
+    Some(vec![3.0, 1.0]),
+    Some(42),
+)?);
+let algorithm: Arc<dyn Algorithm> = Arc::new(
+    FallThrough::<()>::new(targets)
+        .with_name("weighted_random")
+        .with_classifier(classifier),
+);
+```
+
+The public `Random` constructor builds this same composition while preserving its
+existing API, decision, and telemetry contracts.
+
 ## Requests & responses
 
 ```rust

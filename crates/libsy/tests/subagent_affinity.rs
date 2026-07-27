@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use switchyard_libsy::algorithms::{AffinityRouter, FallThrough, SubagentOverride};
 use switchyard_libsy::{
     Algorithm, Classification, Classifier, Context, Decision, Driver, LlmResponse, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, Result, RoutedLlmClient, Score, SharedState, State,
+    LlmTargetSet, Metadata, Request, Response, Result, RoutedLlmClient, Score, Shared, State,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 
@@ -99,7 +99,7 @@ fn router() -> Arc<FallThrough> {
 /// shared router rather than the context.
 async fn turn(
     router: &Arc<FallThrough>,
-    ctx: Context<SharedState>,
+    ctx: Context<Shared<State>>,
     headers: &[(&str, &str)],
 ) -> Result<String> {
     let (_, response) = router.clone().run(ctx, request(headers)).await?;
@@ -120,7 +120,7 @@ fn child(agent: &str) -> Vec<(&str, &str)> {
 
 #[tokio::test]
 async fn root_traffic_falls_through_to_the_terminal_classifier() -> Result<()> {
-    let ctx = Context::<SharedState>::default();
+    let ctx = Context::<Shared<State>>::default();
     // No sub-agent lineage: affinity abstains (subagents only), the override abstains, and
     // the terminal classifier serves the turn.
     let served = turn(&router(), ctx, &[("x-claude-code-session-id", "session-1")]).await?;
@@ -130,7 +130,7 @@ async fn root_traffic_falls_through_to_the_terminal_classifier() -> Result<()> {
 
 #[tokio::test]
 async fn delegated_work_is_routed_to_the_worker() -> Result<()> {
-    let ctx = Context::<SharedState>::default();
+    let ctx = Context::<Shared<State>>::default();
     assert_eq!(turn(&router(), ctx, &child("child-1")).await?, "worker");
     Ok(())
 }
@@ -138,7 +138,7 @@ async fn delegated_work_is_routed_to_the_worker() -> Result<()> {
 #[tokio::test]
 async fn the_override_seeds_a_pin_that_affinity_replays() -> Result<()> {
     let router = router();
-    let ctx = Context::<SharedState>::default();
+    let ctx = Context::<Shared<State>>::default();
 
     // Turn 1: affinity has no assignment, so the override decides and the decision is
     // replayed into affinity.
@@ -160,7 +160,7 @@ async fn the_override_seeds_a_pin_that_affinity_replays() -> Result<()> {
 #[tokio::test]
 async fn harness_maintenance_turns_are_not_forced_to_the_worker() -> Result<()> {
     let router = router();
-    let ctx = Context::<SharedState>::default();
+    let ctx = Context::<Shared<State>>::default();
 
     // A Codex `compact` turn is sub-agent *lineage* but not delegated *work*: the two
     // predicates differ on purpose, so the override abstains and it routes normally.
@@ -263,7 +263,7 @@ async fn a_cascade_without_the_override_still_routes_root_traffic() -> Result<()
             .with_component(Arc::new(AffinityRouter::for_subagents()))
             .with_classifier(Arc::new(AlwaysOrchestrator)),
     );
-    let ctx = Context::<SharedState>::default();
+    let ctx = Context::<Shared<State>>::default();
     assert_eq!(turn(&router, ctx, &child("child-1")).await?, "orchestrator");
     Ok(())
 }

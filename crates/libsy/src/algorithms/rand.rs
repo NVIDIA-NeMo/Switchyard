@@ -1,55 +1,38 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Random router built on the [`Algorithm`] interfaces.
+//! Random routing as a stateless [`FallThrough`] composition.
 //!
-//! Selects one target from the set at random and calls it. Selection is uniform
-//! by default and can use relative weights and a reproducible seed.
+//! [`RandomClassifier`] selects one target; [`FallThrough`] owns the common
+//! processor/classifier/target-call orchestration.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+use crate::algorithms::{FallThrough, FallThroughDecision};
 use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
-    Result, RoutedLlmClient,
+    Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTargetSet, Request,
+    Response, Result, RoutedLlmClient, Score,
 };
 
-/// Decision produced by [`Random`]: which target was chosen and why.
-pub struct RandomDecision {
-    /// The randomly selected target/model.
-    pub selected_model: String,
-    /// Human-readable explanation of the choice.
-    pub reasoning: String,
-}
+/// Compatibility name for the decision produced by [`Random`].
+pub type RandomDecision = FallThroughDecision;
 
-impl Decision for RandomDecision {
-    fn selected_model(&self) -> &str {
-        &self.selected_model
-    }
-
-    fn reasoning(&self) -> Option<&str> {
-        Some(&self.reasoning)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// Random router over a target set.
-pub struct Random {
-    target_set: LlmTargetSet,
+/// Stateless weighted classifier used by random fall-through routing.
+pub struct RandomClassifier {
+    targets: Vec<String>,
     distribution: WeightedIndex<f64>,
     rng: Mutex<StdRng>,
 }
 
-impl Random {
-    /// Creates a router over `target_set`.
+impl RandomClassifier {
+    /// Creates a classifier over ordered target names.
     ///
     /// Missing weights default to one per target. Explicit weights are relative,
     /// follow target order, and need not sum to one. Zero disables a target.
@@ -60,20 +43,12 @@ impl Random {
     /// Returns an error when targets are empty or duplicated, or when explicit
     /// weights have the wrong length, are negative or non-finite, or contain no
     /// positive value.
-    pub fn new(
-        target_set: LlmTargetSet,
-        weights: Option<Vec<f64>>,
-        seed: Option<u64>,
-    ) -> Result<Self> {
-        let target_count = target_set.targets().len();
+    pub fn new(targets: Vec<String>, weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Self> {
+        let target_count = targets.len();
         if target_count == 0 {
             return Err(LibsyError::NoTargets);
         }
-        let unique_targets = target_set
-            .targets()
-            .iter()
-            .map(|target| target.semantic_name.as_str())
-            .collect::<BTreeSet<_>>();
+        let unique_targets = targets.iter().map(String::as_str).collect::<BTreeSet<_>>();
         if unique_targets.len() != target_count {
             return Err(LibsyError::AlgorithmError {
                 message: "random targets must be unique".to_string(),
@@ -107,19 +82,16 @@ impl Random {
             None => StdRng::from_entropy(),
         };
         Ok(Self {
-            target_set,
+            targets,
             distribution,
             rng: Mutex::new(rng),
         })
     }
 
-    fn select_target(&self) -> Result<LlmTarget> {
-        let targets = self.target_set.targets();
-        let mut rng = self.rng.lock().map_err(|_| LibsyError::AlgorithmError {
-            message: "random number generator lock was poisoned".to_string(),
-        })?;
+    fn select_target(&self) -> String {
+        let mut rng = self.rng.lock();
         let index = self.distribution.sample(&mut *rng);
-        Ok(targets[index].clone())
+        self.targets[index].clone()
     }
 }
 
@@ -130,37 +102,74 @@ fn invalid_weights(message: String) -> LibsyError {
 }
 
 #[async_trait]
-impl<S> Algorithm<S> for Random
+impl<S> Classifier<S> for RandomClassifier
 where
-    S: Clone + Send + Sync + 'static,
+    S: Send + 'static,
 {
+    async fn score(
+        &self,
+        _state: &mut S,
+        _request: &mut Request,
+        _driver: Option<&Driver>,
+    ) -> Result<Classification> {
+        Ok(Classification::Scores(vec![Score {
+            confidence: 1.0,
+            target: self.select_target(),
+        }]))
+    }
+}
+
+/// Random router implemented as a stateless fall-through composition.
+pub struct Random {
+    inner: FallThrough<()>,
+}
+
+impl Random {
+    /// Creates a router over `target_set`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when targets or weights are invalid for [`RandomClassifier`].
+    pub fn new(
+        target_set: LlmTargetSet,
+        weights: Option<Vec<f64>>,
+        seed: Option<u64>,
+    ) -> Result<Self> {
+        let target_names = target_set
+            .targets()
+            .iter()
+            .map(|target| target.semantic_name.clone())
+            .collect();
+        let classifier = Arc::new(RandomClassifier::new(target_names, weights, seed)?);
+        let inner = FallThrough::<()>::new(target_set)
+            .with_name("random")
+            .with_decision_reason(random_decision_reason)
+            .with_classifier(classifier);
+        Ok(Self { inner })
+    }
+}
+
+fn random_decision_reason(_name: &str, winner: &Score) -> String {
+    format!("random routing selected target '{}'", winner.target)
+}
+
+#[async_trait]
+impl Algorithm for Random {
     fn name(&self) -> &str {
         "random"
     }
 
     fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        self.target_set.count_tokens_client()
+        self.inner.count_tokens_client()
     }
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context<S>,
+        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        let target = self.select_target()?;
-
-        let selected = target.semantic_name.clone();
-        let decision: Arc<dyn Decision> = Arc::new(RandomDecision {
-            reasoning: format!("random routing selected target '{selected}'"),
-            selected_model: selected,
-        });
-
-        let ctx = ctx.without_state();
-        driver.info(ctx.clone(), Arc::clone(&decision)).await?;
-        driver
-            .call_llm_target(ctx, &target, request, decision)
-            .await
+        self.inner.execute(ctx, driver, request).await
     }
 }
 
@@ -171,7 +180,7 @@ mod tests {
 
     use switchyard_protocol::{completion_text, text_request, text_response};
 
-    use crate::{LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals};
+    use crate::{Decision, LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
     struct EchoClient;

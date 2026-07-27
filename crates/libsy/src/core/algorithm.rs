@@ -333,8 +333,7 @@ impl LlmTargetSet {
 ///
 /// The `S` type parameter is the per-session state carried in `Context<S>`. It defaults
 /// to `()`, so stateless algorithms just write `impl Algorithm for MyRouter` and callers
-/// keep using `Arc<dyn Algorithm>`. A stateful algorithm picks its own state type (e.g.
-/// `impl Algorithm<SharedState> for FallThrough`).
+/// keep using `Arc<dyn Algorithm>`. A stateful algorithm picks its own state type.
 #[async_trait]
 pub trait Algorithm<S = ()>: Send + Sync + 'static
 where

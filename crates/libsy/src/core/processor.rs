@@ -25,13 +25,13 @@ pub enum Event<'a> {
 
 /// Collects events as the algorithm runs and mutates [`State`]
 #[async_trait]
-pub trait Processor: Send + Sync {
+pub trait Processor<S = State>: Send + Sync {
     /// Process an event, accumulating facts into `state`.
     ///
     /// A request-bearing event ([`Event::Request`], [`Event::ModelRequest`]) may also be
     /// rewritten in place; the edit propagates to the rest of the chain and to the model
     /// call. Most processors only read it.
-    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()>;
+    async fn process(&self, state: &mut S, event: Event<'_>) -> Result<()>;
 }
 
 #[cfg(test)]
