@@ -1,6 +1,9 @@
-# Skill: switchyard-stage-router-scorer
+---
+name: switchyard-stage-router-scorer
+description: Score benchmark run trajectories through the stage-router Rust scorer and picker, then visualise score distributions. Use when you want to replay trajectories through the picker, analyse routing splits, or compare score distributions across configs.
+---
 
-**description**: Score benchmark run trajectories through the stage-router Rust scorer and picker, then visualise score distributions. Use when you want to replay trajectories through the picker, analyse routing splits, or compare score distributions across configs.
+# Skill: switchyard-stage-router-scorer
 
 ## Scripts
 
