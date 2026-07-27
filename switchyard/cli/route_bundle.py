@@ -51,6 +51,7 @@ from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.profiles.stage_router_config import StageRouterConfig
+from switchyard.lib.profiles.subagent_override import SubagentOverrideRuntime
 from switchyard.lib.route_table import ChainRuntime, RouteTable
 from switchyard.lib.route_table_builders import (
     build_passthrough_table,
@@ -144,13 +145,21 @@ _TARGET_DEFAULT_KEYS = frozenset({
     "extra_headers",
     "endpoint",
 })
+# Envelope keys valid on every route type, whatever its own schema. They configure the
+# wrapper around a route's chain rather than the chain itself, so they are accepted by
+# _validate_route_keys and excluded from the per-profile config in _route_config.
+_ROUTE_ENVELOPE_KEYS = frozenset({
+    # Delegated sub-agent work is served by this target instead of the route's own
+    # chain. Consumed in _build_switchyard_for_route.
+    "subagent_target",
+})
 _COMMON_ROUTE_KEYS = frozenset({
     "type",
     "kind",
     "defaults",
     "display_name",
     "description",
-})
+}) | _ROUTE_ENVELOPE_KEYS
 _ROUTE_METADATA_KEYS = frozenset({
     "type",
     "kind",
@@ -803,6 +812,66 @@ def _merge_multi_target_discovery(
 
 
 def _build_switchyard_for_route(
+    model_id: str,
+    route: Mapping[str, object],
+    route_type: str,
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime:
+    """Build the route's chain, wrapping it when the route sets ``subagent_target``."""
+    chain = _build_route_chain(
+        model_id,
+        route,
+        route_type=route_type,
+        target_defaults=target_defaults,
+        stats=stats,
+        pre_routing_request_processors=pre_routing_request_processors,
+        extra_response_processors=extra_response_processors,
+    )
+    worker = _subagent_worker_runtime(
+        model_id,
+        route,
+        target_defaults=target_defaults,
+        stats=stats,
+        pre_routing_request_processors=pre_routing_request_processors,
+        extra_response_processors=extra_response_processors,
+    )
+    return chain if worker is None else SubagentOverrideRuntime(chain, worker)
+
+
+def _subagent_worker_runtime(
+    model_id: str,
+    route: Mapping[str, object],
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime | None:
+    """Build the route's sub-agent worker chain, or ``None`` when unset.
+
+    The worker is a plain passthrough to one target: delegated work is served directly
+    rather than re-routed through the route's own policy.
+    """
+    subagent_raw = route.get("subagent_target")
+    if subagent_raw is None:
+        return None
+    return build_tier_passthrough_switchyard(
+        _target_value(
+            subagent_raw,
+            target_defaults,
+            default_id=f"{model_id}#subagent",
+            where=f"route {model_id!r} subagent_target",
+        ),
+        stats,
+        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
+        extra_request_processors=pre_routing_request_processors,
+        extra_response_processors=extra_response_processors,
+    )
+
+
+def _build_route_chain(
     model_id: str,
     route: Mapping[str, object],
     route_type: str,
@@ -1546,7 +1615,7 @@ def _validate_route_keys(
     route_type: str,
 ) -> None:
     where = f"route {model_id!r}"
-    _validate_allowed_keys(route, _ROUTE_KEYS_BY_TYPE[route_type], where)
+    _validate_allowed_keys(route, _ROUTE_KEYS_BY_TYPE[route_type] | _ROUTE_ENVELOPE_KEYS, where)
     if "defaults" in route:
         defaults = _require_mapping(route["defaults"], f"{where}.defaults")
         _validate_allowed_keys(

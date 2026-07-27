@@ -10,6 +10,7 @@ pub(crate) mod request;
 pub(crate) mod response;
 pub(crate) mod roles;
 pub(crate) mod session;
+pub(crate) mod subagent;
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     context::register(module)?;
@@ -17,5 +18,6 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     response::register(module)?;
     roles::register(module)?;
     session::register(module)?;
+    subagent::register(module)?;
     Ok(())
 }

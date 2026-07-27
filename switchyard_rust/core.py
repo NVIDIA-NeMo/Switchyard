@@ -582,8 +582,12 @@ if TYPE_CHECKING:
         body: Mapping[str, Any] | JsonValue, depth: int = 0
     ) -> str | None: ...
 
+    def is_subagent_request(headers: Mapping[str, str]) -> bool: ...
+
 
 def __getattr__(name: str) -> object:
+    if name == "is_subagent_request":
+        return _load_native().is_subagent_request
     if name == "SessionCache":
         return _load_native().SessionCache
     if name == "session_key_from_body":
@@ -801,6 +805,7 @@ __all__ = [
     "SwitchyardRuntimeError",
     "SwitchyardUnsupportedRequestTypeError",
     "SwitchyardUpstreamError",
+    "is_subagent_request",
     "request_type_enum",
     "request_type_matches",
     "request_type_value",
