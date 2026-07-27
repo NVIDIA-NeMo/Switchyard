@@ -16,18 +16,18 @@ name = "_switchyard_rust"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-async-trait = "0.1"
-futures-util = "0.3"
-parking_lot = "0.12"
-switchyard-libsy = { path = "../libsy" }
+async-trait.workspace = true
+futures-util.workspace = true
+parking_lot.workspace = true
+switchyard-libsy.workspace = true
 pyo3 = { version = "0.28.3", features = ["abi3-py312", "extension-module"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 pythonize = "0.28.0"
-serde = "1"
-serde_json = "1"
-switchyard-core = { path = "../switchyard-core" }
-switchyard-protocol = { path = "../protocol" }
+serde.workspace = true
+serde_json.workspace = true
+switchyard-core.workspace = true
+switchyard-protocol.workspace = true
 switchyard-components = { path = "../switchyard-components" }
-switchyard-translation = { path = "../switchyard-translation" }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+switchyard-translation.workspace = true
+tokio.workspace = true
+tracing.workspace = true
