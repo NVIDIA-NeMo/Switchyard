@@ -123,6 +123,19 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "openai/nvidia/moonshotai/kimi-k2.5": ModelPriceData(
         input=0.60, output=2.50, cached=0.15, cache_write=0.60,
     ),
+    # Z.ai GLM-5.2 — REFERENCE pricing only. Switchyard reaches this model as
+    # ``glm-5.2-fp8`` on a self-hosted vLLM deployment, which has no per-token
+    # billing at all: the real cost is GPU-hours. These rates are
+    # SiliconFlow's published GLM-5.2 serverless tier (verified 2026-07-27),
+    # carried so benchmark arms can be compared against commercial models on a
+    # common basis — "what this traffic would have cost at market rates", not
+    # what we are billed. Provider rates vary about 2x (OpenRouter lists
+    # $0.76/$2.42), so treat the absolute number as indicative, not exact.
+    # OpenAI wire format and no documented cache-write premium, so
+    # cache_write = input.
+    "glm-5.2-fp8": ModelPriceData(
+        input=1.40, output=4.40, cached=0.26, cache_write=1.40,
+    ),
     # DeepSeek V4 Flash — official api-docs.deepseek.com standard list
     # price (post-promo). 284B total / 13B active, 1M-token context
     # window. Aggressive cache discount (98% off on hits). OpenAI wire
