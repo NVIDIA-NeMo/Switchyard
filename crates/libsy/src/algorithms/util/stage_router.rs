@@ -324,6 +324,10 @@ impl Classifier for StageClassifier {
                 "default_target".to_string(),
                 StateValue::String(target.to_string()),
             );
+            state.extra.insert(
+                "decision_source".to_string(),
+                StateValue::String(DecisionSource::FallOpen.as_str().to_string()),
+            );
             return Ok(Classification::Ambiguous(vec![Score {
                 target: target.to_string(),
                 confidence: 0.0,
@@ -332,11 +336,20 @@ impl Classifier for StageClassifier {
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
         match outcome {
-            PickOutcome::Resolved { tier, score, .. } => {
+            PickOutcome::Resolved {
+                tier,
+                source,
+                score,
+                ..
+            } => {
                 let target = match tier {
                     Tier::Capable => "strong",
                     Tier::Efficient => "weak",
                 };
+                state.extra.insert(
+                    "decision_source".to_string(),
+                    StateValue::String(source.as_str().to_string()),
+                );
                 let conf = score;
                 // TODO add the non-target to this score set?
                 Ok(Classification::Scores(vec![Score {
@@ -356,6 +369,10 @@ impl Classifier for StageClassifier {
                 state.extra.insert(
                     "default_target".to_string(),
                     StateValue::String(target.to_string()),
+                );
+                state.extra.insert(
+                    "decision_source".to_string(),
+                    StateValue::String(DecisionSource::FallOpen.as_str().to_string()),
                 );
                 let conf = score;
                 // TODO add the non-target to this score set?
@@ -467,6 +484,10 @@ mod tests {
             state.extra.get("default_target"),
             Some(StateValue::String(target)) if target == "weak"
         ));
+        assert!(matches!(
+            state.extra.get("decision_source"),
+            Some(StateValue::String(source)) if source == "fall_open"
+        ));
         Ok(())
     }
 
@@ -488,6 +509,11 @@ mod tests {
             }
             _ => panic!("expected a definite classification"),
         }
+        // The decision source travels downstream (for handoff-note gating).
+        assert!(matches!(
+            state.extra.get("decision_source"),
+            Some(StateValue::String(source)) if source == "override"
+        ));
         Ok(())
     }
 
@@ -533,6 +559,10 @@ mod tests {
         assert!(matches!(
             state.extra.get("default_target"),
             Some(StateValue::String(target)) if target == "weak"
+        ));
+        assert!(matches!(
+            state.extra.get("decision_source"),
+            Some(StateValue::String(source)) if source == "fall_open"
         ));
         Ok(())
     }
