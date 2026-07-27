@@ -119,6 +119,7 @@ testing, and review do not require loading a skill.
 | `publish-python-release` | Python wheel artifacts, PyPI releases, and release workflow changes |
 | `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
 | `switchyard-docs` | Published MkDocs pages, strict builds, previews, and docs CI |
+| `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
 | `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
 
 Skills should contain stable operational constraints, not mutable architecture inventories. Read the
