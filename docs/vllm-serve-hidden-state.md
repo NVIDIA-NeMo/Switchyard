@@ -60,6 +60,101 @@ vllm serve Qwen/Qwen3.6-35B-A3B \
 
 Use the direct CLI only after confirming your installed vLLM accepts both `--speculative-config '{"method":"extract_hidden_states",...}'` and `--kv-transfer-config '{"kv_connector":"ExampleHiddenStatesConnector",...}'`. If those flags fail, use the known container image or install a vLLM build that contains the connector.
 
+## Learned prefill-probe routing
+
+The generic launch examples above capture only layer `39`. The learned
+prefill-complexity checkpoint requires all 40 Qwen3.6 layers in ascending
+order. For either launch method, replace
+`eagle_aux_hidden_state_layer_ids` with:
+
+```json
+[
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+  20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39
+]
+```
+
+The configured layer list must match `extraction_layer_ids` in the
+checkpoint's `router.json`. Switchyard rejects a checkpoint whose encoder,
+layer order, hidden width, PCA shape, trunk shape, or output names do not
+match the supported artifact contract.
+
+The example route bundle is
+[`benchmark/routing-profiles/prefill-probe-local.yaml`](../benchmark/routing-profiles/prefill-probe-local.yaml).
+Point `PREFILL_ROUTER_CHECKPOINT_DIR` at the exported `inference_artifact`
+directory containing `router.json` and `router.safetensors`; do not point it
+at the parent training experiment. The checkpoint is external deployment
+data and is not packaged with Switchyard.
+
+```bash
+export NVIDIA_API_KEY=nvapi-...
+export VLLM_BASE_URL=http://127.0.0.1:8000
+export HIDDEN_STATES_DIR=/tmp/vllm-hidden-states
+export PREFILL_ROUTER_CHECKPOINT_DIR=/absolute/path/to/inference_artifact
+
+switchyard --routing-profiles \
+  benchmark/routing-profiles/prefill-probe-local.yaml -- serve --port 4000
+```
+
+The `probe` target is internal: it supplies hidden states but is not exposed
+as a completion model. The `strong` and `weak` targets remain available as
+direct completion choices alongside the virtual `prefill-complexity-router`
+model.
+
+### Probe input and feature pipeline
+
+For each uncached task, Switchyard finds the first user message whose content
+is a string. For a stock Terminus 2 prompt, it extracts the text between
+`Task Description:\n` and `\n\nCurrent terminal state:\n`; otherwise it uses
+the complete first-user string. System messages and subsequent turns are not
+sent to the probe. The original conversation is preserved for the selected
+completion model.
+
+The probe returns a `hidden_states` tensor shaped
+`[prompt_tokens, 40, 2048]`. Switchyard then:
+
+1. Mean-pools over `prompt_tokens` independently for every layer.
+2. Concatenates the 40 pooled vectors in ascending layer order, producing
+   `40 * 2048 = 81,920` raw features.
+3. Applies the checkpoint's fitted standard scaler and PCA-200 transform,
+   producing one 200-dimensional feature block.
+4. Runs each member of the five-model `200 -> 256 -> 128 -> 4` ensemble.
+5. Applies independent sigmoid links and averages probabilities across the
+   ensemble.
+6. Reads only the configured `weak_checkpoint_head` and
+   `strong_checkpoint_head`.
+
+Switchyard does not train the router, fit PCA, update the checkpoint, or
+perform online learning.
+
+### Lambda-controlled routing
+
+The policy first min-max normalizes `weak_cost` and `strong_cost` across the
+two configured targets, then computes:
+
+```text
+weak_utility =
+    lambda * P(weak correct)
+    - (1 - lambda) * normalized_weak_cost
+
+strong_utility =
+    lambda * P(strong correct)
+    - (1 - lambda) * normalized_strong_cost
+```
+
+A non-negative `weak_utility - strong_utility` selects weak; a negative
+margin selects strong. `lambda` is the only continuous routing knob:
+`lambda = 0` uses cost alone, while `lambda = 1` uses predicted correctness
+alone. There is no configurable confidence threshold.
+
+Successful decisions are cached in-process by the exact resolved probe text.
+Probe, hidden-state, checkpoint, or scoring failures select strong and are not
+cached, so a later request can retry the probe. `fallback_target_on_evict` is
+separate: it selects the completion tier retried after a context-window
+eviction.
+
 ## Verify one hidden-state file
 
 Send one Chat Completions request with `max_tokens=1`. The probe should return a `kv_transfer_params.hidden_states_path` value that points at a `.safetensors` file.

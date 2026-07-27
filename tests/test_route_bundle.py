@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 import switchyard.cli.switchyard_cli as cli
+import switchyard_rust.components as rust_components
 from switchyard.cli.route_bundle import (
     RouteBundleConfigError,
     build_route_bundle_table,
@@ -70,6 +71,29 @@ class _NoopRequestProcessor:
 class _NoopResponseProcessor:
     async def process(self, _ctx: ProxyContext, response: ChatResponse) -> ChatResponse:
         return response
+
+
+class _FakePrefillProbeRequestProcessor:
+    instances: list["_FakePrefillProbeRequestProcessor"] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.instances.append(self)
+
+
+@pytest.fixture
+def fake_prefill_probe_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> type[_FakePrefillProbeRequestProcessor]:
+    """Replace checkpoint loading while retaining route construction."""
+    _FakePrefillProbeRequestProcessor.instances.clear()
+    monkeypatch.setattr(
+        rust_components,
+        "PrefillProbeRequestProcessor",
+        _FakePrefillProbeRequestProcessor,
+        raising=False,
+    )
+    return _FakePrefillProbeRequestProcessor
 
 
 def test_random_route_bundle_registers_model_keys_and_applies_defaults(
@@ -154,6 +178,10 @@ def test_route_bundle_rejects_missing_environment_variable() -> None:
         ),
         ({"type": "passthrough", "model": "gpt-4o"}, "model"),
         ({"type": "model", "target": {"modle": "gpt-4o"}}, "modle"),
+        (
+            {"type": "prefill_probe", "confidence_threshold": 0.5},
+            "confidence_threshold",
+        ),
     ],
 )
 def test_route_bundle_rejects_unknown_route_keys(
@@ -1514,6 +1542,98 @@ def test_deterministic_route_hydrates_tier_catalogs(
         "catalog/strong-extra",
         "catalog/weak-extra",
     ]
+
+
+def test_prefill_probe_route_builds_profile_and_hides_probe_from_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_prefill_probe_processor: type[_FakePrefillProbeRequestProcessor],
+) -> None:
+    """The probe stays internal while completion tiers remain selectable."""
+    discovery_calls: list[tuple[str, str]] = []
+
+    def _discover(base_url: str, api_key: str) -> list[str]:
+        discovery_calls.append((base_url, api_key))
+        return [f"catalog/{api_key}"]
+
+    monkeypatch.setattr(
+        "switchyard.cli.route_bundle.fetch_model_ids",
+        _discover,
+    )
+    pre_request = _NoopRequestProcessor()
+    response = _NoopResponseProcessor()
+    table = build_route_bundle_table(
+        {
+            "routes": {
+                "complexity-router": {
+                    "type": "prefill-probe",
+                    "probe": {
+                        "id": "probe",
+                        "model": "Qwen/Qwen3.6-35B-A3B",
+                        "api_key": "probe-key",
+                        "base_url": "http://probe.invalid:8000/v1",
+                    },
+                    "strong": {
+                        "id": "capable",
+                        "model": "strong/model",
+                        "api_key": "strong-key",
+                        "base_url": "https://strong.invalid/v1",
+                    },
+                    "weak": {
+                        "id": "efficient",
+                        "model": "weak/model",
+                        "api_key": "weak-key",
+                        "base_url": "https://weak.invalid/v1",
+                    },
+                    "strong_checkpoint_head": "strong-head",
+                    "weak_checkpoint_head": "weak-head",
+                    "hidden_states_dir": "/tmp/prefill-hidden-states",
+                    "checkpoint_dir": "/checkpoints/prefill-router",
+                    "routing_policy": {
+                        "type": "cost_aware",
+                        "lambda": 0.75,
+                        "weak_cost": 0.1,
+                        "strong_cost": 1.0,
+                    },
+                    "fallback_target_on_evict": "capable",
+                },
+            },
+        },
+        pre_routing_request_processors=(pre_request,),
+        extra_response_processors=(response,),
+    )
+
+    assert table.registered_models() == [
+        "complexity-router",
+        "strong/model",
+        "weak/model",
+        "catalog/strong-key",
+        "catalog/weak-key",
+    ]
+    assert discovery_calls == [
+        ("https://strong.invalid/v1", "strong-key"),
+        ("https://weak.invalid/v1", "weak-key"),
+    ]
+    route_entry = table.registered_model_entries()[0]
+    assert route_entry["switchyard"]["profile"] == "prefill_probe"
+
+    processor = fake_prefill_probe_processor.instances[0]
+    assert processor.kwargs == {
+        "probe_base_url": "http://probe.invalid:8000/v1",
+        "probe_model": "Qwen/Qwen3.6-35B-A3B",
+        "hidden_states_dir": "/tmp/prefill-hidden-states",
+        "checkpoint_dir": "/checkpoints/prefill-router",
+        "strong_checkpoint_head": "strong-head",
+        "weak_checkpoint_head": "weak-head",
+        "strong_target_id": "capable",
+        "weak_target_id": "efficient",
+        "routing_lambda": 0.75,
+        "weak_cost": 0.1,
+        "strong_cost": 1.0,
+    }
+    components = table.lookup_switchyard("complexity-router").iter_components()
+    assert pre_request in components
+    assert processor in components
+    assert response in components
 
 
 def test_route_bundle_keeps_first_multi_target_route_as_default() -> None:

@@ -267,6 +267,27 @@ class IntakeRequestProcessor:
     async def shutdown(self) -> None: ...
 
 
+class PrefillProbeRequestProcessor:
+    def __init__(
+        self,
+        *,
+        probe_base_url: str,
+        probe_model: str,
+        hidden_states_dir: str,
+        checkpoint_dir: str,
+        strong_checkpoint_head: str,
+        weak_checkpoint_head: str,
+        strong_target_id: str,
+        weak_target_id: str,
+        routing_lambda: float,
+        weak_cost: float,
+        strong_cost: float,
+    ) -> None: ...
+    async def process(self, ctx: ProxyContext, request: Any) -> Any: ...
+    async def startup(self) -> None: ...
+    async def shutdown(self) -> None: ...
+
+
 class StatsResponseProcessor:
     accumulator: StatsAccumulator
 

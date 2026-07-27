@@ -43,6 +43,7 @@ after.
 | Look up upstream model catalogs | `fetch_model_ids(...)` in `switchyard/cli/model_catalog/model_discovery.py` |
 | Add a plan-execute route | Add `type: plan_execute` in route YAML; `_plan_execute_switchyard` in `route_bundle.py` maps it to `PlanExecuteProfileConfig`. |
 | Add a deterministic route | Add `type: deterministic` in route YAML; `_deterministic_switchyard` maps it to `DeterministicRoutingProfileConfig`. |
+| Add a learned prefill-probe route | Add `type: prefill_probe` in route YAML; `_prefill_probe_switchyard` maps it to `PrefillProbeProfileConfig` while model discovery skips the internal probe. |
 | Add a preset | Put it beside the profile config under `switchyard/lib/profiles/`; presets return typed config objects, not runnable apps. |
 | Inspect saved defaults | `switchyard configure --show` reads `switchyard/cli/config/user_config.py` and renders via `switchyard/cli/status.py`. |
 
@@ -87,6 +88,8 @@ Route YAML and launchers share this model-dispatch path:
   direct strong/weak passthrough entries.
 - `type: deterministic`, `type: escalation_router`, and `type: stage_router`
   register the route key plus direct strong/weak passthrough entries.
+- `type: prefill_probe` registers the route key plus direct strong/weak
+  passthrough entries; its probe target remains internal.
 - `type: plan_execute` registers the route key plus the executor as a direct
   passthrough; the planner is internal routing logic.
 - `type: latency_service` and `type: noop` register the
