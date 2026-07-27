@@ -314,8 +314,20 @@ impl Classifier for StageClassifier {
     ) -> Result<Classification> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
-            // TODO return 1.0 score for strong / week depending on  mode
-            return Ok(Classification::Ambiguous(vec![]));
+            // No tool activity yet — nothing to score, so fall open to the
+            // picker's configured default tier (same as a below-threshold turn).
+            let target = match self.mode.default_tier() {
+                Tier::Capable => "strong",
+                Tier::Efficient => "weak",
+            };
+            state.extra.insert(
+                "default_target".to_string(),
+                StateValue::String(target.to_string()),
+            );
+            return Ok(Classification::Ambiguous(vec![Score {
+                target: target.to_string(),
+                confidence: 0.5,
+            }]));
         };
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
@@ -437,16 +449,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn classifier_abstains_without_tool_signals() -> Result<()> {
-        // No tool activity observed yet → the classifier abstains (empty ambiguous set).
+    async fn classifier_defaults_without_tool_signals() -> Result<()> {
+        // No tool activity yet → route to the picker's configured default tier
+        // (efficient_first → weak), recorded in `extra` for the caller.
         let mut state = State::default();
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &Request::default(), None)
             .await?;
         match classification {
-            Classification::Ambiguous(scores) => assert!(scores.is_empty()),
-            _ => panic!("expected an empty ambiguous classification"),
+            Classification::Ambiguous(scores) => {
+                assert_eq!(scores.len(), 1);
+                assert_eq!(scores[0].target, "weak");
+            }
+            _ => panic!("expected an ambiguous default classification"),
         }
+        assert!(matches!(
+            state.extra.get("default_target"),
+            Some(StateValue::String(target)) if target == "weak"
+        ));
         Ok(())
     }
 
