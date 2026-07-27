@@ -1333,7 +1333,8 @@ available to your account before deploying; catalog availability can change.</p>
 <li><code>type: model</code> registers one explicit model alias without model discovery.</li>
 </ul>
 <p>This creates a direct, single-target chain. Use a routing policy when requests
-must be split or classified across targets.</p>
+must be split or classified across targets. There is no catalog auto-discovery,
+so to expose several upstream models, add one <code>type: model</code> route per model id.</p>
 <h2 id="self-hosted-targets">Self-hosted targets<a class="headerlink" href="#self-hosted-targets" title="Permanent link">&para;</a></h2>
 <p>Any route target can point at an OpenAI-compatible model server you operate.
 For example, start a local vLLM server:</p>
@@ -1365,7 +1366,7 @@ the strong tier is pinned, and the judge runs until that latch fires.</p>
 <p>The <code>switchyard-server</code> binary has a separate TOML schema that explicitly
 constructs LLM clients, targets, and libsy algorithms. It does not load Python
 route bundles. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a22f2cf67b3c27be5d7407e2ab7943e7150f8831/crates/switchyard-server/README.md">Rust server README</a> for its supported
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d8bff541e95ffdbf7d1c8b2c30344562b016ec81/crates/switchyard-server/README.md">Rust server README</a> for its supported
 configuration.</p>
 
 
