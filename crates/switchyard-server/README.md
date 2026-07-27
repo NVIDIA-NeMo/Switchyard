@@ -33,6 +33,11 @@ classifier_target = "model_a"
 strong_target = "model_a"
 weak_target = "model_b"
 threshold = 0.5
+
+[routes.passthrough]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "model_a"
 ```
 
 ```bash
@@ -45,8 +50,8 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
-`anthropic_messages`. Supported algorithms are `noop`, `random`, and `llm_classifier`. An
-`api_key_env` value names an environment variable; the TOML never contains the secret itself. If
-omitted, the client sends no authentication.
+`anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`, and
+`llm_classifier`. An `api_key_env` value names an environment variable; the TOML
+never contains the secret itself. If omitted, the client sends no authentication.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.
