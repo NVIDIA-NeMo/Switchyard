@@ -280,7 +280,7 @@ curl -s http://localhost:4000/v1/stats > routing_stats_final.json
 
 ## When *not* to use stage-router
 
-- **Single-model deployments.** Use a `model` or `passthrough` route instead.
+- **Single-model deployments.** Use a `model` route instead.
 - **Probabilistic A/B splits.** Use
   [Random Routing](random_routing.md) (`type: random_routing`).
   The stage-router's signals are wasted on a fixed traffic ratio.

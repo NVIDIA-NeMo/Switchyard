@@ -68,7 +68,8 @@ class TestMutualExclusion:
             "  format: openai\n"
             "routes:\n"
             "  bench:\n"
-            "    type: noop\n"
+            "    type: model\n"
+            "    target: some/model\n"
         )
         parser = _build_parser()
         args = parser.parse_args([

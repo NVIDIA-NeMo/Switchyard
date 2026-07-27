@@ -570,7 +570,7 @@ def test_redacted_snapshot_surfaces_only_route_ids(tmp_path):
     save_user_config(
         UserConfig(routing_profiles={"routes": {
             "alpha/model": {"type": "model"},
-            "beta/model": {"type": "passthrough"},
+            "beta/model": {"type": "model", "target": "other/model"},
         }}),
         config_dir=tmp_path,
     )

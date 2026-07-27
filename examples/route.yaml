@@ -8,18 +8,12 @@ routes:
     type: model
     target: moonshotai/kimi-k2.6
 
-  openrouter-catalog:               # `type: passthrough` — auto-discovers available models via GET /v1/models
-    type: passthrough
-
   random-router:                    # `type: random_routing` — weighted coin
     type: random_routing
     strong: anthropic/claude-opus-4.7
     weak: moonshotai/kimi-k2.6
     strong_probability: 0.3
     fallback_target_on_evict: strong
-
-  bench:                            # `type: noop` — for benchmarking
-    type: noop
 
   llm-classifier:                   # `type: deterministic` — LLM-as-classifier
     type: deterministic

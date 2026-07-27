@@ -35,11 +35,11 @@ _STAGE_ROUTER_YAML = textwrap.dedent("""\
           model: clf-model/v1
 """)
 
-_PASSTHROUGH_YAML = textwrap.dedent("""\
+_MODEL_ROUTE_YAML = textwrap.dedent("""\
     routes:
       my_route:
-        type: passthrough
-        model: some/model
+        type: model
+        target: some/model
 """)
 
 
@@ -55,10 +55,10 @@ class TestStrategyHelpers:
         result = routing_profiles_strategy_summary(str(p), "my_route")
         assert result == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
 
-    def test_routing_profiles_passthrough_type(self, tmp_path):
-        """routing_profiles_strategy_summary describes a passthrough-type route."""
+    def test_routing_profiles_model_type(self, tmp_path):
+        """routing_profiles_strategy_summary renders a model-type route as passthrough."""
         p = tmp_path / "profiles.yaml"
-        p.write_text(_PASSTHROUGH_YAML)
+        p.write_text(_MODEL_ROUTE_YAML)
         result = routing_profiles_strategy_summary(str(p), "my_route")
         assert result == "passthrough → some/model"
 

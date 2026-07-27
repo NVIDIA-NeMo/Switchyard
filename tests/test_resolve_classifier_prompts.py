@@ -107,7 +107,7 @@ def test_non_deterministic_routes_are_skipped(tmp_path: Path) -> None:
     module = _load_resolver_module()
     bundle = {
         "routes": {
-            "r/pass": {"type": "passthrough"},
+            "r/pass": {"type": "model", "target": "some/model"},
             "r/rand": {"type": "random_routing"},
         },
     }

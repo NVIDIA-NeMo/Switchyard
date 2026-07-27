@@ -17,6 +17,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   KV-cache-aware routing with request failover) or an external load balancer
   such as [Traefik](https://doc.traefik.io/traefik/reference/routing-configuration/http/load-balancing/service/)
   or HAProxy.
+- **Public `type: noop` and `type: passthrough` route types** — removed from
+  route bundles. Use `type: model` to register a single explicit model target.
+  Catalog auto-discovery via a bare `type: passthrough` route is gone; there is
+  no `type: model` equivalent, so list the model ids you want as explicit
+  `type: model` routes.
 
 ## [0.1.0] — Initial release
 

@@ -46,7 +46,7 @@ is more capable and more expensive, and a weak target that is cheaper and
 faster. A tier is a role assigned inside a route, not a fixed property of a
 model.
 
-A route's `type` sets the strategy. `model` and `passthrough` call one target.
+A route's `type` sets the strategy. `model` calls one target.
 `random_routing` splits traffic on a fixed probability. `deterministic` asks a
 classifier model to pick a tier. `stage_router` uses agent-progress signals,
 with an optional classifier fallback. `escalation_router` starts on the weak

@@ -52,8 +52,6 @@ from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     EscalationRouterConfig,
     EscalationRouterProfileConfig,
-    NoopProfile,
-    NoopProfileConfig,
     PassthroughProfileConfig,
     Profile,
     ProfileConfig,
@@ -138,8 +136,6 @@ __all__ = [
     # Chain infrastructure
     "Switchyard",
     "LLMBackend",
-    "NoopProfile",
-    "NoopProfileConfig",
     "StageRouterConfig",
     "StageRouterProfileConfig",
     "ClassifierConfig",

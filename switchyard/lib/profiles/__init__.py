@@ -21,7 +21,6 @@ from switchyard.lib.profiles.header_routing import (
     HeaderRoutingDecision,
     HeaderRoutingProfile,
 )
-from switchyard.lib.profiles.noop import NoopProfile, NoopProfileConfig
 from switchyard.lib.profiles.passthrough import PassthroughProfileConfig
 from switchyard.lib.profiles.protocols import (
     ContextAwareProfile,
@@ -60,8 +59,6 @@ __all__ = [
     "HeaderRoutingConfig",
     "HeaderRoutingDecision",
     "HeaderRoutingProfile",
-    "NoopProfile",
-    "NoopProfileConfig",
     "PassthroughProfileConfig",
     "ContextAwareProfile",
     "Profile",

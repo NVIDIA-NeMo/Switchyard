@@ -6,7 +6,7 @@
 Companion to ``tests/getting_started/``. Three guards:
 
 * the "Use as a Python library" snippet executes (via ``--markdown-docs`` +
-  the passthrough→noop fixture in ``conftest.py``);
+  the local mock-upstream fixture in ``conftest.py``);
 * README and routing-guide examples validate against the route-bundle schema;
 * every CLI subcommand / flag the README names still exists.
 """
@@ -50,8 +50,8 @@ def _code_blocks(text: str, lang: str) -> list[str]:
 
 
 def test_python_snippet_tripwire(readme_text: str) -> None:
-    # Guards the shape the conftest's passthrough-profile→noop fixture depends on, plus
-    # the dict-access fix (call() returns a dict, not an object with `.body`).
+    # Guards the shape the conftest's passthrough-profile→local-mock fixture depends on,
+    # plus the dict-access fix (call() returns a dict, not an object with `.body`).
     assert (
         "from switchyard import ChatRequest, PassthroughProfileConfig, ProfileSwitchyard"
         in readme_text
@@ -106,8 +106,9 @@ def test_route_block_validation_rejects_invalid_bundle_defaults() -> None:
 defaults:
   unsupported: true
 routes:
-  noop:
-    type: noop
+  gpt-4o:
+    type: model
+    model: gpt-4o
 ```
 """
     with pytest.raises(AssertionError, match="unknown key.*defaults: unsupported"):

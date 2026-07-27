@@ -158,28 +158,31 @@ def test_all_yaml_blocks_in_guide_validate_as_route_bundles(
 
 
 @pytest.fixture
-def noop_routes_yaml(tmp_path: Path) -> Path:
+def model_routes_yaml(tmp_path: Path, local_mock_openai_server: object) -> Path:
     # Same shape as the guide's Step 3 YAML (defaults + a single named route),
-    # but `type: noop` so the lifecycle test runs without an upstream.
+    # but a `type: model` route pointed at a local in-process mock OpenAI
+    # server so the lifecycle test serves a real chain fully offline.
+    base_url = local_mock_openai_server.base_url  # type: ignore[attr-defined]
     path = tmp_path / "routes.yaml"
     path.write_text(
-        textwrap.dedent("""\
+        textwrap.dedent(f"""\
         defaults:
           api_key: dummy
-          base_url: https://upstream.invalid/v1
+          base_url: {base_url}
           format: openai
 
         routes:
           gpt-4o:
-            type: noop
+            type: model
+            model: gpt-4o
         """)
     )
     return path
 
 
-def test_step3_and_step4_serve_lifecycle_with_noop(noop_routes_yaml: Path) -> None:
+def test_step3_and_step4_serve_lifecycle_with_local_mock(model_routes_yaml: Path) -> None:
     port = find_free_port()
-    with _serve_in_background(noop_routes_yaml, port):
+    with _serve_in_background(model_routes_yaml, port):
         health_status, health_body = _http_get(f"http://127.0.0.1:{port}/health")
         assert health_status == 200, f"GET /health → {health_status}: {health_body!r}"
 

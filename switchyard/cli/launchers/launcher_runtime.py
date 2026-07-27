@@ -274,7 +274,7 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
     if route_type == "random_routing":
         p = r.get("strong_probability", "")
         return f"random-routing: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}, p_strong={p}"
-    if route_type in ("model", "passthrough"):
+    if route_type == "model":
         target = r.get("model") or r.get("target") or route_key
         return f"passthrough → {target}"
     return f"{route_type}: {route_key}"

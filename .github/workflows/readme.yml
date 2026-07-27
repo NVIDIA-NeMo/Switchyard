@@ -51,8 +51,8 @@ jobs:
       - name: Exercise the README
         # Single invocation: pytest picks up tests/readme/ (YAML schema + CLI
         # checks) AND --markdown-docs execs the Python snippet from the README.
-        # The passthrough→noop fixture lives in tests/readme/conftest.py so it
-        # only loads when collecting from that subtree.
+        # The local mock-upstream fixture lives in tests/readme/conftest.py so
+        # it only loads when collecting from that subtree.
         run: uv run pytest tests/readme --markdown-docs README.md -v
         env:
           # The YAML examples reference ${NVIDIA_API_KEY} etc.; stub so the
