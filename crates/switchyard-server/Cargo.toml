@@ -26,6 +26,7 @@ serde_json.workspace = true
 switchyard-translation.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 async-trait.workspace = true

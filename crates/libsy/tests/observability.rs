@@ -53,6 +53,7 @@ struct SpanRecord {
 #[derive(Clone, Debug, Default)]
 struct EventRecord {
     target: String,
+    level: String,
     fields: BTreeMap<String, String>,
 }
 
@@ -134,6 +135,7 @@ where
         event.record(&mut FieldVisitor(&mut fields));
         self.store.events.lock().push(EventRecord {
             target: event.metadata().target().to_string(),
+            level: event.metadata().level().to_string(),
             fields,
         });
     }
@@ -492,11 +494,12 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         Some("2")
     );
 
-    // Structured log: the published decision with its reasoning.
+    // Structured debug event: the published decision with its reasoning.
     let events = store.events();
     assert!(
         events.iter().any(|event| {
             event.target == "libsy"
+                && event.level == "DEBUG"
                 && event.fields.get("selected_model").map(String::as_str) == Some(MODEL)
                 && event
                     .fields
@@ -513,7 +516,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
 }
 
 #[tokio::test]
-async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
+async fn failed_call_records_error_outcome_and_debug_events() -> switchyard_libsy::Result<()> {
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
@@ -586,11 +589,12 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         Some("error")
     );
 
-    // Structured logs: a warn per failed call and per failed run.
+    // Debug events retain the propagated failures without polluting normal logs.
     let events = store.events();
     assert!(
         events.iter().any(|event| {
             event.target == "libsy"
+                && event.level == "DEBUG"
                 && event.fields.get("selected_model").map(String::as_str) == Some(MODEL)
                 && event
                     .fields
@@ -602,6 +606,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     assert!(
         events.iter().any(|event| {
             event.target == "libsy"
+                && event.level == "DEBUG"
                 && event.fields.get("algorithm").map(String::as_str) == Some(ALGO)
                 && event
                     .fields

@@ -107,7 +107,7 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
 }
 
 /// Runs one algorithm task to completion, recording the run counter, duration
-/// histogram, span outcome, and failure log when it resolves. Executes inside
+/// histogram, span outcome, and debug event when it resolves. Executes inside
 /// the `libsy.run` span its caller instruments the task with.
 pub(crate) async fn observe_run<S>(
     ctx: Context<S>,
@@ -136,14 +136,14 @@ pub(crate) fn record_client_call(result: &Result<Response>) {
 }
 
 /// Records the end of one algorithm run: the run counter and duration
-/// histogram, the `outcome`/`error` fields on `span`, and a warn log when the
+/// histogram, the `outcome`/`error` fields on `span`, and debug detail when the
 /// run failed.
 fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
     if let Err(error) = result {
         span.record("error", tracing::field::display(error));
-        tracing::warn!(target: SCOPE, algorithm, error = %error, "algorithm run failed");
+        tracing::debug!(target: SCOPE, algorithm, error = %error, "algorithm run failed");
     }
 
     let attributes = [
@@ -161,7 +161,7 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
 /// Records the resolution of one offloaded model call: the call counter and
 /// latency histogram, token counters from the response usage (absent fields are
 /// skipped, not recorded as zero), the `outcome`/`error`/token fields on
-/// `span`, and a warn log when the call failed.
+/// `span`, and debug detail when the call failed.
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
@@ -219,7 +219,7 @@ pub(crate) fn record_llm_call(
         }
         Err(error) => {
             span.record("error", tracing::field::display(error));
-            tracing::warn!(
+            tracing::debug!(
                 target: SCOPE,
                 algorithm,
                 selected_model,
@@ -231,11 +231,11 @@ pub(crate) fn record_llm_call(
 }
 
 /// Records one published routing decision: the decision counter plus a
-/// structured info log carrying the decision's reasoning.
+/// structured debug event carrying the decision's reasoning.
 pub(crate) fn record_decision(ctx: &Context, decision: &dyn Decision) {
     let algorithm = algorithm_label(ctx);
     let selected_model = decision.selected_model();
-    tracing::info!(
+    tracing::debug!(
         target: SCOPE,
         algorithm,
         selected_model,

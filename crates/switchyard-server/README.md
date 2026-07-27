@@ -47,6 +47,9 @@ export API_KEY="..."
 cargo run -p switchyard-server -- --config routes.toml
 ```
 
+The server logs one structured line per LLM request at `INFO`. Set `RUST_LOG=debug` to include
+individual routing decisions and model-call failures.
+
 Target and route table names are local references. A target's `id` is the exact model ID sent
 upstream, and a route's `id` is the model clients send to select that algorithm.
 

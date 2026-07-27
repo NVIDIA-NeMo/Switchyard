@@ -13,7 +13,7 @@ use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{rejection::JsonRejection, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -252,11 +252,37 @@ async fn handle_endpoint(
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
-    let body = match llm_json_body(body) {
-        Ok(body) => body,
-        Err(message) => return invalid_body_error(message),
+    let started = Instant::now();
+    let metadata = metadata_from_headers(&headers);
+    let session_id = metadata.session_id.clone();
+    let correlation_id = metadata.correlation_id.clone();
+    let requested_model = body
+        .as_ref()
+        .ok()
+        .and_then(|body| body.0.get("model"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let streaming = body
+        .as_ref()
+        .ok()
+        .and_then(|body| body.0.get("stream"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let response = match llm_json_body(body) {
+        Ok(body) => handle_llm_request(state, metadata, body, wire_format).await,
+        Err(message) => invalid_body_error(message),
     };
-    handle_llm_request(state, headers, body, wire_format).await
+    log_llm_request(
+        &response,
+        wire_format,
+        requested_model.as_deref(),
+        session_id.as_deref(),
+        correlation_id.as_deref(),
+        streaming,
+        started.elapsed(),
+    );
+    response
 }
 
 fn llm_json_body(
@@ -271,7 +297,7 @@ fn llm_json_body(
 
 async fn handle_llm_request(
     state: ServerState,
-    headers: HeaderMap,
+    metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
@@ -303,7 +329,7 @@ async fn handle_llm_request(
     let request = Request {
         llm_request,
         raw_request: Some(body),
-        metadata: Some(metadata_from_headers(&headers)),
+        metadata: Some(metadata),
     };
     let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
@@ -318,6 +344,34 @@ async fn handle_llm_request(
         attach_routing_headers(&mut response, decision.as_ref());
     }
     response
+}
+
+fn log_llm_request(
+    response: &Response,
+    wire_format: WireFormat,
+    requested_model: Option<&str>,
+    session_id: Option<&str>,
+    correlation_id: Option<&str>,
+    streaming: bool,
+    duration: Duration,
+) {
+    let selected_model = response
+        .headers()
+        .get(HEADER_SELECTED_MODEL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    tracing::info!(
+        target: "switchyard_server::request",
+        wire_format = %wire_format,
+        status = response.status().as_u16(),
+        requested_model = requested_model.unwrap_or(""),
+        selected_model,
+        streaming,
+        session_id = session_id.unwrap_or(""),
+        correlation_id = correlation_id.unwrap_or(""),
+        handling_duration_ms = duration.as_secs_f64() * 1_000.0,
+        "LLM request handled"
+    );
 }
 
 fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
