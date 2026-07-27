@@ -130,6 +130,7 @@ testing, and review do not require loading a skill.
 | `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
 | `switchyard-docs` | Published MkDocs pages, strict builds, previews, and docs CI |
 | `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
+| `switchyard-stage-router-scorer` | Replaying benchmark trajectories through the stage-router scorer and picker |
 | `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
 
 Skills should contain stable operational constraints, not mutable architecture inventories. Read the
