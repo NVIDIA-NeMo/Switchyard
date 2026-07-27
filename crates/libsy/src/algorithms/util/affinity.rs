@@ -7,9 +7,8 @@
 //! forces that model on later requests sharing the identity. It is one object that plays
 //! both SDK roles, so registering it as a processor and a classifier cannot drift apart:
 //!
-//! - As a [`Processor`] it *writes* the assignment: it captures the request's identity on
-//!   [`Event::Request`] and binds it to the chosen model on [`Event::Decision`], the first
-//!   assignment for an identity winning.
+//! - As a [`Processor`] it *writes* the assignment: [`Event::Decision`] carries the request
+//!   whose chosen model is retained, with the first assignment for an identity winning.
 //! - As a [`Classifier`] it *reads* the assignment: it scores the retained model with
 //!   confidence `1.0`, or returns no scores to abstain.
 //!
@@ -24,7 +23,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use switchyard_protocol::Request;
 
-use crate::{Classification, Classifier, Event, Processor, Score, State};
+use crate::{Classification, Classifier, Event, Processor, Score};
 
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
@@ -42,23 +41,12 @@ enum AffinityKey {
     Subagent { session: String, agent: String },
 }
 
-/// The affinity memory: the retained model per identity, plus the key captured from the
-/// current turn's request while its decision is pending.
-#[derive(Default)]
-struct AffinityAssignments {
-    /// Identity → retained model, first assignment winning.
-    assignments: HashMap<AffinityKey, String>,
-    /// Key captured on this turn's [`Event::Request`], consumed by its [`Event::Decision`].
-    pending: Option<AffinityKey>,
-}
-
 /// Retains a model per request identity and forces it on later matching requests.
 ///
 /// Register the same instance as both a processor and a classifier; the two roles share
-/// the retained assignments through this instance's interior storage. Because a decision
-/// event carries only the chosen model, the request's identity is captured first (on
-/// [`Event::Request`]) and consumed when the decision arrives — this assumes a turn's
-/// request is observed before its decision, as the driving algorithm folds a turn in order.
+/// the retained assignments through this instance's interior storage. Decision events carry
+/// their originating request, so concurrent turns cannot bind one request's identity to
+/// another request's selected model.
 ///
 /// [`with_latch_only`](Self::with_latch_only) narrows *which* models are retained — a
 /// decision for any other model routes normally but is not latched (the escalation latch:
@@ -74,7 +62,7 @@ pub struct AffinityRouter {
     /// Held on the instance rather than in [`State`] so the two roles share one
     /// process-local map through a single registered [`Arc`](std::sync::Arc); bounded by
     /// [`MAX_ASSIGNMENTS`].
-    assignments: Mutex<AffinityAssignments>,
+    assignments: Mutex<HashMap<AffinityKey, String>>,
 }
 
 impl AffinityRouter {
@@ -125,45 +113,40 @@ impl AffinityRouter {
 }
 
 #[async_trait]
-impl Processor for AffinityRouter {
-    async fn process(&self, _state: &mut State, event: Event<'_>) -> crate::Result<()> {
-        // No `.await` is held across this guard.
-        let mut fact = self.assignments.lock();
-        match event {
-            // Capture the identity now; the model it maps to is only known at the decision.
-            Event::Request(request) => {
-                fact.pending = self.affinity_key(request);
-            }
-            // Bind the captured identity to the chosen model, keeping any earlier winner.
-            Event::Decision(decision) => {
+impl<S> Processor<S> for AffinityRouter
+where
+    S: Send + 'static,
+{
+    async fn process(&self, _state: &mut S, event: Event<'_>) -> crate::Result<()> {
+        if let Event::Decision { request, decision } = event {
+            if let Some(key) = self.affinity_key(request) {
                 let model = decision.selected_model();
-                let Some(key) = fact.pending.take() else {
-                    return Ok(());
-                };
-                // Latch only permitted models; others consume `pending` but are not retained.
-                if self.should_latch(model) && !fact.assignments.contains_key(&key) {
-                    evict_if_full(&mut fact.assignments);
-                    fact.assignments.insert(key, model.to_string());
+                let mut assignments = self.assignments.lock();
+                if self.should_latch(model) && !assignments.contains_key(&key) {
+                    evict_if_full(&mut assignments);
+                    assignments.insert(key, model.to_string());
                 }
             }
-            _ => {}
         }
         Ok(())
     }
 }
 
 #[async_trait]
-impl Classifier for AffinityRouter {
+impl<S> Classifier<S> for AffinityRouter
+where
+    S: Send + 'static,
+{
     async fn score(
         &self,
-        _state: &mut State,
+        _state: &mut S,
         request: &mut Request,
         _driver: Option<&crate::Driver>,
     ) -> crate::Result<Classification> {
         let Some(key) = self.affinity_key(request) else {
             return Ok(Classification::Scores(Vec::new()));
         };
-        let assigned = self.assignments.lock().assignments.get(&key).cloned();
+        let assigned = self.assignments.lock().get(&key).cloned();
         Ok(Classification::Scores(match assigned {
             Some(target) => vec![Score {
                 confidence: 1.0,
@@ -189,10 +172,11 @@ mod tests {
 
     use std::sync::Arc;
 
-    use switchyard_protocol::{text_request, Decision, Metadata, Signals};
+    use switchyard_protocol::{text_request, Decision, Metadata};
 
-    /// Boxed, thread-safe error type keeping the test helpers ergonomic; libsy errors
-    /// convert into it through `?`.
+    use crate::State;
+
+    /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
     /// A decision that reports a fixed selected model.
@@ -245,9 +229,14 @@ mod tests {
         request: &mut Request,
         model: &'static str,
     ) -> Result<(), BoxErr> {
-        router.process(state, Event::Request(request)).await?;
         router
-            .process(state, Event::Decision(&FixedDecision(model)))
+            .process(
+                state,
+                Event::Decision {
+                    request,
+                    decision: &FixedDecision(model),
+                },
+            )
             .await?;
         Ok(())
     }
@@ -399,10 +388,13 @@ mod tests {
 
         let mut first = request(session("session-1", "agent-a"));
         processor
-            .process(&mut state, Event::Request(&mut first))
-            .await?;
-        processor
-            .process(&mut state, Event::Decision(&FixedDecision("model-a")))
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &first,
+                    decision: &FixedDecision("model-a"),
+                },
+            )
             .await?;
 
         let mut second = request(session("session-1", "agent-b"));
@@ -415,13 +407,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_without_a_request_is_ignored() -> Result<(), BoxErr> {
+    async fn decision_without_an_affinity_identity_is_ignored() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
         let mut state = State::default();
+        let unkeyed = request(Metadata::default());
 
-        // A decision with no captured identity (no prior request) stores nothing.
         router
-            .process(&mut state, Event::Decision(&FixedDecision("model-a")))
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &unkeyed,
+                    decision: &FixedDecision("model-a"),
+                },
+            )
             .await?;
 
         let mut req = request(session("session-1", "agent-a"));
@@ -430,25 +428,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unrelated_events_preserve_the_pending_identity() -> Result<(), BoxErr> {
+    async fn decisions_retain_their_originating_request_identity() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
         let mut state = State::default();
+        let mut first = request(session("session-1", "agent-a"));
+        let mut second = request(session("session-2", "agent-b"));
 
-        let mut req = request(session("session-1", "agent-a"));
-        router.process(&mut state, Event::Request(&mut req)).await?;
-        // A stray signal between the request and its decision must not drop the captured
-        // identity, nor create an assignment of its own.
+        // Replay decisions in the opposite order. Each decision carries its request,
+        // so the assignments cannot cross.
         router
-            .process(&mut state, Event::Signal(&Signals {}))
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &second,
+                    decision: &FixedDecision("model-b"),
+                },
+            )
             .await?;
         router
-            .process(&mut state, Event::Decision(&FixedDecision("model-a")))
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &first,
+                    decision: &FixedDecision("model-a"),
+                },
+            )
             .await?;
 
-        let scores = scores(&router, &mut state, &mut req).await?;
+        let first_scores = scores(&router, &mut state, &mut first).await?;
+        let second_scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
+            first_scores.first().map(|score| score.target.as_str()),
             Some("model-a")
+        );
+        assert_eq!(
+            second_scores.first().map(|score| score.target.as_str()),
+            Some("model-b")
         );
         Ok(())
     }
@@ -531,7 +546,7 @@ mod tests {
             .await?;
         }
 
-        let len = router.assignments.lock().assignments.len();
+        let len = router.assignments.lock().len();
         assert_eq!(len, MAX_ASSIGNMENTS);
         Ok(())
     }

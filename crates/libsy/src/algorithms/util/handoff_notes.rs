@@ -67,9 +67,9 @@ impl HandoffNoteProcessor {
 }
 
 #[async_trait]
-impl Processor for HandoffNoteProcessor {
+impl Processor<State> for HandoffNoteProcessor {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-        let Event::Decision(decision) = event else {
+        let Event::Decision { decision, .. } = event else {
             return Ok(());
         };
         let tier = decision.selected_model().to_string();
@@ -90,7 +90,7 @@ impl Processor for HandoffNoteProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Decision;
+    use crate::{Decision, Request};
 
     struct FakeDecision(&'static str);
     impl Decision for FakeDecision {
@@ -115,8 +115,16 @@ mod tests {
     }
 
     async fn run(processor: &HandoffNoteProcessor, state: &mut State, tier: &'static str) {
+        let request = Request::default();
+        let decision = FakeDecision(tier);
         processor
-            .process(state, Event::Decision(&FakeDecision(tier)))
+            .process(
+                state,
+                Event::Decision {
+                    request: &request,
+                    decision: &decision,
+                },
+            )
             .await
             .unwrap();
     }

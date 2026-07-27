@@ -71,6 +71,32 @@ let algorithm: Arc<dyn Algorithm> = Arc::new(
 The public `Random` constructor builds this same composition while preserving its
 existing API, decision, and telemetry contracts.
 
+Put affinity first to retain the initial random choice for later requests with the
+same session identity:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::algorithms::{AffinityRouter, FallThrough, RandomClassifier};
+use switchyard_libsy::Algorithm;
+
+let affinity = Arc::new(AffinityRouter::new());
+let random = Arc::new(RandomClassifier::new(
+    vec!["fast".into(), "capable".into()],
+    Some(vec![3.0, 1.0]),
+    Some(42),
+)?);
+let algorithm: Arc<dyn Algorithm> = Arc::new(
+    FallThrough::<()>::new(targets)
+        .with_name("affinity_random")
+        .with_processor(affinity.clone())
+        .with_classifier(affinity)
+        .with_classifier(random),
+);
+```
+
+Affinity abstains for an unseen identity, random selects the target, and decision replay
+records that choice. Later requests with the same identity stop at the affinity classifier.
+
 ## Requests & responses
 
 ```rust

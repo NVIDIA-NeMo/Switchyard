@@ -178,8 +178,9 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use switchyard_protocol::{completion_text, text_request, text_response};
+    use switchyard_protocol::{completion_text, text_request, text_response, Metadata};
 
+    use crate::algorithms::AffinityRouter;
     use crate::{Decision, LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
@@ -208,8 +209,17 @@ mod tests {
         }
     }
 
-    /// Builds a random router whose targets all share an echo client.
-    fn algorithm(names: &[&str], weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Random> {
+    fn request_for_session(session_id: &str) -> Request {
+        Request {
+            metadata: Some(Metadata {
+                session_id: Some(session_id.to_string()),
+                ..Metadata::default()
+            }),
+            ..request()
+        }
+    }
+
+    fn target_set(names: &[&str]) -> LlmTargetSet {
         let targets = names
             .iter()
             .map(|name| LlmTarget {
@@ -217,7 +227,12 @@ mod tests {
                 llm_client: Some(Arc::new(EchoClient)),
             })
             .collect();
-        Random::new(LlmTargetSet::new(targets), weights, seed)
+        LlmTargetSet::new(targets)
+    }
+
+    /// Builds a random router whose targets all share an echo client.
+    fn algorithm(names: &[&str], weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Random> {
+        Random::new(target_set(names), weights, seed)
     }
 
     fn shared_algorithm(names: &[&str]) -> Result<Arc<dyn Algorithm>> {
@@ -327,6 +342,57 @@ mod tests {
         assert!(
             (700..=800).contains(&second_count),
             "expected a roughly 25/75 split, selected b/model {second_count} times"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn affinity_reuses_the_initial_random_selection() -> Result<()> {
+        let names = ["a/model", "b/model"];
+        let affinity = Arc::new(AffinityRouter::new());
+        let random = Arc::new(RandomClassifier::new(
+            names.iter().map(|name| (*name).to_string()).collect(),
+            None,
+            Some(42),
+        )?);
+        let algorithm: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::<()>::new(target_set(&names))
+                .with_name("affinity_random")
+                .with_processor(affinity.clone())
+                .with_classifier(affinity.clone())
+                .with_classifier(random),
+        );
+
+        let (_, first) = algorithm
+            .clone()
+            .run(Context::default(), request_for_session("session-1"))
+            .await?;
+        let selected = first
+            .llm_response
+            .as_agg()
+            .map(completion_text)
+            .unwrap_or_default();
+
+        let mut state = ();
+        let retained = affinity
+            .score(&mut state, &request_for_session("session-1"), None)
+            .await?
+            .argmax(false)?;
+        assert_eq!(
+            retained.map(|score| score.target),
+            Some(selected.to_string())
+        );
+
+        let (_, second) = algorithm
+            .run(Context::default(), request_for_session("session-1"))
+            .await?;
+        assert_eq!(
+            second
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            selected
         );
         Ok(())
     }

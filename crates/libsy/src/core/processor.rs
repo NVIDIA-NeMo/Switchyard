@@ -15,8 +15,13 @@ pub enum Event<'a> {
     Request(&'a mut Request),
     /// An out-of-band agentic-stack signal (tool results, budget updates, …).
     Signal(&'a Signals),
-    /// A routing decision the algorithm just made.
-    Decision(&'a dyn Decision),
+    /// A routing decision paired with the request that produced it.
+    Decision {
+        /// The request classified by the algorithm.
+        request: &'a Request,
+        /// The routing decision produced for `request`.
+        decision: &'a dyn Decision,
+    },
     /// A request about to be sent to a model.
     ModelRequest(&'a mut Request),
     /// A buffered response received back from a model.
@@ -45,7 +50,7 @@ mod tests {
         match event {
             Event::Request(_) => "requests",
             Event::Signal(_) => "signals",
-            Event::Decision(_) => "decisions",
+            Event::Decision { .. } => "decisions",
             Event::ModelRequest(_) => "model_requests",
             Event::ModelResponse(_) => "model_responses",
         }
@@ -119,7 +124,13 @@ mod tests {
             .process(&mut state, Event::ModelResponse(&response))
             .await?;
         processor
-            .process(&mut state, Event::Decision(&decision))
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &req,
+                    decision: &decision,
+                },
+            )
             .await?;
         processor
             .process(&mut state, Event::Signal(&signals))

@@ -173,7 +173,13 @@ where
         //    it into the session State.
         for processor in &self.processors {
             processor
-                .process(state, Event::Decision(decision.as_ref()))
+                .process(
+                    state,
+                    Event::Decision {
+                        request: &request,
+                        decision: decision.as_ref(),
+                    },
+                )
                 .await?;
         }
 
@@ -455,7 +461,7 @@ mod tests {
             async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
                 let kind = match event {
                     Event::Request(_) => "request",
-                    Event::Decision(_) => "decision",
+                    Event::Decision { .. } => "decision",
                     _ => "other",
                 };
                 self.0.lock().push(kind);
