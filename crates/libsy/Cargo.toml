@@ -13,6 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
 # Metrics-only OTel API: instruments record through the host-installed global
