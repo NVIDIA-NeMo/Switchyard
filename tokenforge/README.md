@@ -6,6 +6,8 @@ with [NVIDIA Switchyard](https://github.com/NVIDIA-NeMo/Switchyard).
 
 > **Status:** Draft v0.1 design spec. Not a validated architecture.
 
+![Reference architecture](docs/architecture.svg)
+
 ## The thesis in one paragraph
 
 Switchyard is a **routing fabric**, not a gateway. Verified against the source at
@@ -33,6 +35,7 @@ NIM · Nemotron · vLLM · OpenAI · Anthropic
 | [02-phase-b-enforcement.md](docs/02-phase-b-enforcement.md) | Policy decision API, enforcement design, 4 upstream PRs |
 | [03-metering-integrity.md](docs/03-metering-integrity.md) | **Supersedes spec §6.3** — why the meter moved to the response path |
 | [04-caching-decision.md](docs/04-caching-decision.md) | Prefix vs semantic caching: source, defer, and how to price a cache hit |
+| [05-architecture-diagram.md](docs/05-architecture-diagram.md) | Reference architecture v0.2 — the redraw, and what the old diagram got wrong |
 
 ## Prototype
 

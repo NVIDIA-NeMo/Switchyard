@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 872" width="1060" height="872"
+     font-family="ui-sans-serif, -apple-system, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-labelledby="title desc">
+  <title id="title">TokenForge and RevenueOS over NVIDIA Switchyard — reference architecture</title>
+  <desc id="desc">Four logical layers with a downward request path and an upward money path. Prefix
+  and KV caching is located in the inference layer, not the control plane. Metering is shown as
+  three separate meters: a synchronous settled meter on the response path, an asynchronous
+  enrichment stream, and an aggregate cross-check.</desc>
+
+  <style>
+    :root { color-scheme: light; }
+    svg {
+      --bg: #ffffff; --surface: #fcfcfb; --surface-2: #f4f4f1;
+      --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #78776f; --rule: #dededa;
+      --commerce: #4a3aa7; --commerce-fill: #f0eefb;
+      --forge: #12805a; --forge-fill: #e6f5ef;
+      --fabric: #2a78d6; --fabric-fill: #eaf2fc;
+      --infra: #52514e; --infra-fill: #f1f1ee;
+      --flag: #a76a00; --flag-fill: #fdf4e0;
+    }
+    @media (prefers-color-scheme: dark) {
+      svg:where(:not([data-theme="light"])) {
+        --bg: #131312; --surface: #1a1a19; --surface-2: #232322;
+        --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #96958b; --rule: #3a3a35;
+        --commerce: #9085e9; --commerce-fill: #22203a;
+        --forge: #2fb98a; --forge-fill: #14261f;
+        --fabric: #3987e5; --fabric-fill: #16202e;
+        --infra: #c3c2b7; --infra-fill: #232322;
+        --flag: #fab219; --flag-fill: #2b2312;
+      }
+    }
+    svg[data-theme="dark"] {
+      --bg: #131312; --surface: #1a1a19; --surface-2: #232322;
+      --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #96958b; --rule: #3a3a35;
+      --commerce: #9085e9; --commerce-fill: #22203a;
+      --forge: #2fb98a; --forge-fill: #14261f;
+      --fabric: #3987e5; --fabric-fill: #16202e;
+      --infra: #c3c2b7; --infra-fill: #232322;
+      --flag: #fab219; --flag-fill: #2b2312;
+    }
+    .band { stroke-width: 1.5; }
+    .card { fill: var(--surface); stroke: var(--rule); stroke-width: 1; }
+    .bt { font-size: 16px; font-weight: 650; }
+    .bs { font-size: 12.5px; }
+    .ct { font-size: 13px; font-weight: 600; fill: var(--ink); }
+    .cs { font-size: 11.5px; fill: var(--ink-3); }
+    .lbl { font-size: 11.5px; fill: var(--ink-2); }
+    .lblb { font-size: 11.5px; font-weight: 650; }
+    .h { font-size: 11px; font-weight: 650; fill: var(--ink-3); letter-spacing: .09em; }
+    .flow { fill: none; stroke: var(--ink-3); stroke-width: 1.6; }
+    .flowd { fill: none; stroke: var(--commerce); stroke-width: 1.6; stroke-dasharray: 5 4; }
+    .meter { fill: none; stroke: var(--forge); stroke-width: 1.6; }
+    .meterd { fill: none; stroke: var(--forge); stroke-width: 1.4; stroke-dasharray: 4 4; }
+  </style>
+
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0.5 L7 4 L0 7.5 z" fill="var(--ink-3)"/>
+    </marker>
+    <marker id="am" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0.5 L7 4 L0 7.5 z" fill="var(--forge)"/>
+    </marker>
+    <marker id="ac" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0.5 L7 4 L0 7.5 z" fill="var(--commerce)"/>
+    </marker>
+  </defs>
+
+  <rect width="1060" height="872" fill="var(--bg)"/>
+
+  <text x="28" y="34" class="bt" fill="var(--ink)" font-size="19">TokenForge &amp; RevenueOS over NVIDIA Switchyard</text>
+  <text x="28" y="54" class="bs" fill="var(--ink-2)">Reference architecture v0.2 &#8212; request path flows down, money path flows up</text>
+
+  <!-- ============================ CONSUMERS ============================ -->
+  <text x="28" y="86" class="h">CONSUMERS</text>
+  <g>
+    <rect x="28" y="94" width="176" height="40" rx="8" class="card"/>
+    <text x="116" y="119" class="ct" text-anchor="middle">Apps &amp; agents</text>
+    <rect x="214" y="94" width="176" height="40" rx="8" class="card"/>
+    <text x="302" y="119" class="ct" text-anchor="middle">RAG services</text>
+    <rect x="400" y="94" width="176" height="40" rx="8" class="card"/>
+    <text x="488" y="119" class="ct" text-anchor="middle">AI team</text>
+    <rect x="586" y="94" width="176" height="40" rx="8" class="card"/>
+    <text x="674" y="119" class="ct" text-anchor="middle">External customers</text>
+  </g>
+
+  <!-- ===================== TOKENFORGE EDGE (entry) ===================== -->
+  <path d="M395 134 L395 160" class="flow" marker-end="url(#a)"/>
+  <text x="405" y="152" class="lbl">every request</text>
+
+  <rect x="28" y="164" width="734" height="62" rx="10" fill="var(--forge-fill)" stroke="var(--forge)" class="band"/>
+  <text x="44" y="188" class="ct" fill="var(--forge)">TokenForge Edge</text>
+  <text x="44" y="206" class="cs">The only component clients reach.</text>
+  <g class="lbl">
+    <text x="470" y="185" class="lblb" fill="var(--forge)">authN/Z</text>
+    <text x="470" y="201">key &#8594; tenant</text>
+    <text x="566" y="185" class="lblb" fill="var(--forge)">budget preflight</text>
+    <text x="566" y="201">allow / throttle / deny</text>
+    <text x="690" y="185" class="lblb" fill="var(--forge)">shaping</text>
+    <text x="690" y="201">tier, max_tokens</text>
+  </g>
+
+  <!-- ======================== SWITCHYARD FABRIC ======================== -->
+  <path d="M395 226 L395 254" class="flow" marker-end="url(#a)"/>
+  <text x="405" y="245" class="lbl">+ x-tokenforge-* &#183; x-switchyard-tier</text>
+
+  <rect x="28" y="258" width="734" height="128" rx="10" fill="var(--fabric-fill)" stroke="var(--fabric)" class="band"/>
+  <text x="44" y="282" class="ct" fill="var(--fabric)">Switchyard &#8212; routing fabric <tspan class="cs" fill="var(--ink-3)">(NVIDIA open source, unmodified)</tspan></text>
+  <text x="44" y="300" class="cs">No auth &#183; no tenancy &#183; no quota &#183; no cost-aware routing &#183; no cache</text>
+  <g>
+    <rect x="44" y="312" width="168" height="58" rx="8" class="card"/>
+    <text x="128" y="336" class="ct" text-anchor="middle">Protocol translation</text>
+    <text x="128" y="353" class="cs" text-anchor="middle">OpenAI &#183; Anthropic &#183; Responses</text>
+
+    <rect x="222" y="312" width="168" height="58" rx="8" class="card"/>
+    <text x="306" y="336" class="ct" text-anchor="middle">Tier routing</text>
+    <text x="306" y="353" class="cs" text-anchor="middle">strong / weak, classifier</text>
+
+    <rect x="400" y="312" width="168" height="58" rx="8" class="card"/>
+    <text x="484" y="336" class="ct" text-anchor="middle">Policy processor</text>
+    <text x="484" y="353" class="cs" text-anchor="middle">TokenForge, defense in depth</text>
+
+    <rect x="578" y="312" width="168" height="58" rx="8" class="card"/>
+    <text x="662" y="336" class="ct" text-anchor="middle">Telemetry</text>
+    <text x="662" y="353" class="cs" text-anchor="middle">intake &#183; /v1/stats &#183; /metrics</text>
+  </g>
+
+  <!-- ======================== INFERENCE LAYER ========================== -->
+  <path d="M395 386 L395 414" class="flow" marker-end="url(#a)"/>
+
+  <rect x="28" y="418" width="734" height="112" rx="10" fill="var(--infra-fill)" stroke="var(--rule)" class="band"/>
+  <text x="44" y="442" class="ct" fill="var(--ink)">Inference layer</text>
+  <text x="44" y="460" class="cs">NIM &#183; Nemotron &#183; vLLM &#183; TensorRT-LLM &#183; Dynamo &#183; OpenAI &#183; Anthropic</text>
+
+  <rect x="44" y="472" width="342" height="44" rx="8" fill="var(--flag-fill)" stroke="var(--flag)" stroke-width="1.5"/>
+  <text x="58" y="491" class="ct" fill="var(--flag)">Prefix / KV cache lives HERE</text>
+  <text x="58" y="507" class="cs">vLLM APC &#183; TRT-LLM &#183; SGLang &#183; Dynamo KV routing</text>
+
+  <rect x="396" y="472" width="350" height="44" rx="8" class="card"/>
+  <text x="410" y="491" class="ct">A gateway cannot do this</text>
+  <text x="410" y="507" class="cs">No GPU memory, no attention state. Source it; price it.</text>
+
+  <!-- ===================== METERING RAIL (right) ======================= -->
+  <text x="790" y="86" class="h">METERING</text>
+  <rect x="786" y="94" width="246" height="436" rx="10" fill="var(--surface-2)" stroke="var(--rule)"/>
+
+  <rect x="798" y="108" width="222" height="86" rx="8" fill="var(--forge-fill)" stroke="var(--forge)" stroke-width="1.5"/>
+  <text x="810" y="128" class="ct" fill="var(--forge)">1 &#183; Settled meter</text>
+  <text x="810" y="145" class="cs">Edge reads usage from the response</text>
+  <text x="810" y="160" class="cs">body. Synchronous, in-path,</text>
+  <text x="810" y="175" class="cs">lossless by construction.</text>
+  <text x="810" y="189" class="lblb" fill="var(--forge)">&#8594; INVOICE BASIS</text>
+
+  <rect x="798" y="206" width="222" height="86" rx="8" class="card"/>
+  <text x="810" y="226" class="ct">2 &#183; Enrichment</text>
+  <text x="810" y="243" class="cs">Intake sink. Async, bounded queue,</text>
+  <text x="810" y="258" class="cs">may drop. Carries cost_usd,</text>
+  <text x="810" y="273" class="cs">routing decision, cache detail.</text>
+  <text x="810" y="287" class="lbl">&#8594; not a system of record</text>
+
+  <rect x="798" y="304" width="222" height="72" rx="8" class="card"/>
+  <text x="810" y="324" class="ct">3 &#183; Cross-check</text>
+  <text x="810" y="341" class="cs">/v1/stats &#183; /metrics. Aggregate</text>
+  <text x="810" y="356" class="cs">only &#8212; no tenant label, no cost</text>
+  <text x="810" y="370" class="cs">metric, unauthenticated.</text>
+
+  <rect x="798" y="388" width="222" height="130" rx="8" fill="var(--flag-fill)" stroke="var(--flag)" stroke-width="1.5"/>
+  <text x="810" y="408" class="ct" fill="var(--flag)">Why three</text>
+  <text x="810" y="426" class="cs">One meter cannot distinguish</text>
+  <text x="810" y="441" class="cs">&#8220;records lost&#8221; from &#8220;these numbers</text>
+  <text x="810" y="456" class="cs">legitimately differ.&#8221; Divergence is</text>
+  <text x="810" y="471" class="cs">explained, not merely alarmed on:</text>
+  <text x="810" y="489" class="cs">&#183; classifier spend Edge cannot see</text>
+  <text x="810" y="504" class="cs">&#183; unauthenticated bypass attempts</text>
+
+  <path d="M762 195 L786 195 L786 151" class="meter" marker-end="url(#am)"/>
+  <path d="M746 341 L786 341" class="meterd" marker-end="url(#am)"/>
+  <path d="M746 320 L770 320 L770 249 L786 249" class="meterd" marker-end="url(#am)"/>
+
+  <!-- ===================== CONTROL PLANE + COMMERCE ==================== -->
+  <text x="28" y="566" class="h">CONTROL PLANE &amp; COMMERCE &#8212; the money path</text>
+
+  <rect x="28" y="574" width="1004" height="122" rx="10" fill="var(--forge-fill)" stroke="var(--forge)" class="band"/>
+  <text x="44" y="598" class="ct" fill="var(--forge)">TokenForge &#8212; AI token control plane</text>
+  <text x="44" y="616" class="cs">Decides whether, for whom, and at what cost. Owns customer price; Switchyard reports supplier cost.</text>
+  <g>
+    <rect x="44" y="628" width="238" height="56" rx="8" class="card"/>
+    <text x="58" y="649" class="ct">Identity &amp; entitlement</text>
+    <text x="58" y="666" class="cs">tenant &#183; contract &#183; route tag &#183; RBAC</text>
+
+    <rect x="292" y="628" width="238" height="56" rx="8" class="card"/>
+    <text x="306" y="649" class="ct">Budget &amp; quota ledger</text>
+    <text x="306" y="666" class="cs">reserve &#8594; settle &#183; wallet drawdown</text>
+
+    <rect x="540" y="628" width="238" height="56" rx="8" class="card"/>
+    <text x="554" y="649" class="ct">Cost-aware routing</text>
+    <text x="554" y="666" class="cs">tier decision &#183; margin guardrails</text>
+
+    <rect x="788" y="628" width="230" height="56" rx="8" fill="var(--flag-fill)" stroke="var(--flag)" stroke-width="1.5"/>
+    <text x="802" y="649" class="ct" fill="var(--flag)">Cache economics</text>
+    <text x="802" y="666" class="cs">observe &amp; price &#8212; not implement</text>
+  </g>
+
+  <path d="M530 574 L530 550" class="flowd" marker-end="url(#ac)"/>
+  <text x="540" y="562" class="lbl">rated usage events</text>
+
+  <rect x="28" y="712" width="1004" height="118" rx="10" fill="var(--commerce-fill)" stroke="var(--commerce)" class="band"/>
+  <text x="44" y="736" class="ct" fill="var(--commerce)">RevenueOS &#8212; commerce layer</text>
+  <text x="44" y="754" class="cs">Turns metered consumption into a charge, an invoice, and a settlement.</text>
+  <g>
+    <rect x="44" y="766" width="238" height="50" rx="8" class="card"/>
+    <text x="58" y="786" class="ct">Catalog &amp; rate cards</text>
+    <text x="58" y="803" class="cs">versioned &#183; SKUs &#183; dimensions</text>
+
+    <rect x="292" y="766" width="238" height="50" rx="8" class="card"/>
+    <text x="306" y="786" class="ct">Rating &amp; billing</text>
+    <text x="306" y="803" class="cs">usage &#8594; charges &#183; commit + overage</text>
+
+    <rect x="540" y="766" width="238" height="50" rx="8" class="card"/>
+    <text x="554" y="786" class="ct">Invoicing &amp; settlement</text>
+    <text x="554" y="803" class="cs">partner rev-share &#183; chargeback</text>
+
+    <rect x="788" y="766" width="230" height="50" rx="8" class="card"/>
+    <text x="802" y="786" class="ct">Revenue recognition</text>
+    <text x="802" y="803" class="cs">ASC 606 / IFRS 15 &#183; audit chain</text>
+  </g>
+
+  <text x="28" y="848" class="cs" fill="var(--ink-3)">Mbrix (composable build layer) and M360 Agents compose across both bands. Prefix/KV caching is sourced from the inference layer, never</text>
+  <text x="28" y="864" class="cs" fill="var(--ink-3)">reimplemented at the gateway; semantic caching is deferred to Phase C &#8212; opt-in per route, tenant-scoped, off by default.</text>
+</svg>

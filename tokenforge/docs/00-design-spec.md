@@ -203,6 +203,11 @@ a reason to switch.
 
 ### 4.1 Component view
 
+See [`05-architecture-diagram.md`](05-architecture-diagram.md) for the rendered
+reference architecture (v0.2) and an account of the two corrections it encodes:
+caching moved to the inference layer, and metering split into three ranked meters.
+The ASCII view below is kept as a text-searchable summary.
+
 ```
                       ┌────────────────────────────────────────┐
    Apps · Agents      │  TokenForge Edge (new)                 │
@@ -553,6 +558,8 @@ playbook calls for.
 | `tokenforge/docs/02-phase-b-enforcement.md` | Phase B policy design + decision API contract |
 | `tokenforge/docs/03-metering-integrity.md` | **Supersedes §6.3** — response-path meter, three-meter reconciliation |
 | `tokenforge/docs/04-caching-decision.md` | Prefix vs semantic caching: build/source/defer decision |
+| `tokenforge/docs/05-architecture-diagram.md` | Reference architecture v0.2 + rationale for the redraw |
+| `tokenforge/docs/architecture.svg` | The diagram (light/dark aware) |
 | `tokenforge/demo/` | Runnable Phase A0/B0 demo (stdlib only) |
 | `tokenforge/config/route.tokenforge.yaml` | Switchyard route bundle for the PoC |
 | `tokenforge/prototype/tokenforge_m360/intake_receiver.py` | FastAPI intake sink + rating |
