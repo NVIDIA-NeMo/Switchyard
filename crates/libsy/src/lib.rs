@@ -72,7 +72,7 @@
 //!
 //! Concrete algorithms live in [`algorithms`]:
 //!
-//! [`algorithms::Random`] provides uniform random routing.
+//! [`algorithms::Random`] provides uniform or weighted random routing.
 //!
 //! [`algorithms::LlmClassifier`] classifies with one model, then routes to a strong/weak
 //! model depending on the classifier's choice.

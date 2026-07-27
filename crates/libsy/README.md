@@ -300,12 +300,12 @@ instrumentation is a no-op.
 
 ## Explore
 
-The core crate includes uniform random routing and naive LLM classifier. Runnable
+The core crate includes weighted random routing and naive LLM classifier. Runnable
 agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
-- [`Random`](src/algorithms/rand.rs) — uniform random over the set
+- [`Random`](src/algorithms/rand.rs) — uniform or weighted random over the set
   (one call).
 - [`LlmClassifier`](src/algorithms/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
@@ -326,4 +326,4 @@ agents live in [`examples`](examples/) folder.
 
 - **`Signals` events** — `process_signals` / `Signals` exist but carry nothing yet.
 - **`Context` fields** — carries the algorithm telemetry label today; correlation ids, budgets, and deadlines still to come.
-- **Config-driven construction**, **weighted random**.
+- **Config-driven construction**.

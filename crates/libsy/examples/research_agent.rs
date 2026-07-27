@@ -96,8 +96,13 @@ impl ResearchAgent {
 async fn main() -> Result<()> {
     // Configure routing once: an LLM classifier over three named targets. Swapping
     // in `Random` needs no change to the agent.
-    let algo: Arc<dyn Algorithm> =
-        Arc::new(LlmClassifier::new(CLASSIFIER, STRONG, WEAK, 0.5, targets()));
+    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifier::new(
+        CLASSIFIER,
+        STRONG,
+        WEAK,
+        0.5,
+        targets(),
+    )?);
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

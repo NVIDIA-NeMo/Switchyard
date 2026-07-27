@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{Algorithm, Context, Decision, Driver, LlmTargetSet, Request, Response, Result};
+use crate::{
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
+};
 use switchyard_protocol::{completion_text, LlmRequest, Message, Role};
 
 /// The system prompt tells the classifier what to do
@@ -82,14 +84,25 @@ impl LlmClassifier {
         weak_model: impl Into<String>,
         threshold: f64,
         target_set: LlmTargetSet,
-    ) -> Self {
-        Self {
-            classifier_model: classifier_model.into(),
-            strong_model: strong_model.into(),
-            weak_model: weak_model.into(),
+    ) -> Result<Self> {
+        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: "llm_classifier threshold must be between 0 and 1".to_string(),
+            });
+        }
+        let classifier_model = classifier_model.into();
+        let strong_model = strong_model.into();
+        let weak_model = weak_model.into();
+        target_set.get_target(&classifier_model)?;
+        target_set.get_target(&strong_model)?;
+        target_set.get_target(&weak_model)?;
+        Ok(Self {
+            classifier_model,
+            strong_model,
+            weak_model,
             threshold,
             target_set,
-        }
+        })
     }
 }
 
@@ -254,7 +267,7 @@ mod tests {
     }
 
     /// Build a classifier algo whose three targets share a scoring client.
-    fn algo(threshold: f64, score: &str) -> (LlmClassifier, Arc<Mutex<Vec<Request>>>) {
+    fn algo(threshold: f64, score: &str) -> Result<(LlmClassifier, Arc<Mutex<Vec<Request>>>)> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let client = Arc::new(ScoringClient {
             classifier_model: "router/classifier".to_string(),
@@ -270,14 +283,14 @@ mod tests {
             target("frontier/model"),
             target("cheap/model"),
         ]);
-        let algo = LlmClassifier {
-            classifier_model: "router/classifier".to_string(),
-            strong_model: "frontier/model".to_string(),
-            weak_model: "cheap/model".to_string(),
+        let algo = LlmClassifier::new(
+            "router/classifier",
+            "frontier/model",
+            "cheap/model",
             threshold,
             target_set,
-        };
-        (algo, seen)
+        )?;
+        Ok((algo, seen))
     }
 
     fn request(prompt: &str) -> Request {
@@ -307,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn score_at_or_above_threshold_routes_strong() -> Result<()> {
-        let (algo, _) = algo(0.5, "0.9");
+        let (algo, _) = algo(0.5, "0.9")?;
         let (trace, response) = orch(algo)
             .run(Context::default(), request("solve this proof"))
             .await?;
@@ -330,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn score_below_threshold_routes_weak() -> Result<()> {
-        let (algo, _) = algo(0.5, "0.2");
+        let (algo, _) = algo(0.5, "0.2")?;
         let (trace, response) = orch(algo)
             .run(Context::default(), request("say hello"))
             .await?;
@@ -350,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn score_exactly_at_threshold_routes_strong() -> Result<()> {
-        let (algo, _) = algo(0.5, "0.5");
+        let (algo, _) = algo(0.5, "0.5")?;
         let (_, response) = orch(algo)
             .run(Context::default(), request("borderline"))
             .await?;
@@ -367,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn unparseable_score_defaults_to_strong() -> Result<()> {
-        let (algo, _) = algo(0.5, "not-a-number");
+        let (algo, _) = algo(0.5, "not-a-number")?;
         let (trace, response) = orch(algo).run(Context::default(), request("hi")).await?;
         assert_eq!(
             response
@@ -381,5 +394,14 @@ mod tests {
         assert_eq!(routed.tier, Some(ClassifierTier::Strong));
         assert_eq!(routed.score, None);
         Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_threshold() {
+        let error = algo(1.5, "0.5")
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(error.contains("threshold must be between 0 and 1"));
     }
 }

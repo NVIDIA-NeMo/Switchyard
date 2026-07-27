@@ -3,7 +3,7 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -168,6 +168,8 @@ enum RouteConfig {
     Random {
         id: String,
         targets: Vec<String>,
+        weights: Option<Vec<f64>>,
+        seed: Option<u64>,
     },
     LlmClassifier {
         id: String,
@@ -234,23 +236,17 @@ fn build_algorithm(
 ) -> ServerResult<Arc<dyn Algorithm>> {
     match config {
         RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
-        RouteConfig::Random { targets: names, .. } => {
-            if names.is_empty() {
-                return Err(ServerError::new(format!(
-                    "random route {route_name} requires at least one target"
-                )));
-            }
-            let unique = names.iter().collect::<BTreeSet<_>>();
-            if unique.len() != names.len() {
-                return Err(ServerError::new(format!(
-                    "random route {route_name} contains duplicate targets"
-                )));
-            }
-            Ok(Arc::new(Random::new(resolve_targets(
-                route_name,
-                names.iter().map(String::as_str),
-                targets,
-            )?)))
+        RouteConfig::Random {
+            targets: names,
+            weights,
+            seed,
+            ..
+        } => {
+            let target_set =
+                resolve_targets(route_name, names.iter().map(String::as_str), targets)?;
+            let algorithm = Random::new(target_set, weights.clone(), *seed)
+                .map_err(|error| ServerError::new(format!("random route {route_name}: {error}")))?;
+            Ok(Arc::new(algorithm))
         }
         RouteConfig::LlmClassifier {
             classifier_target,
@@ -259,23 +255,22 @@ fn build_algorithm(
             threshold,
             ..
         } => {
-            if !threshold.is_finite() || !(0.0..=1.0).contains(threshold) {
-                return Err(ServerError::new(format!(
-                    "llm_classifier route {route_name} threshold must be between 0 and 1"
-                )));
-            }
             let classifier = resolve_target(route_name, classifier_target, targets)?;
             let strong = resolve_target(route_name, strong_target, targets)?;
             let weak = resolve_target(route_name, weak_target, targets)?;
             let target_set =
                 LlmTargetSet::new(vec![classifier.clone(), strong.clone(), weak.clone()]);
-            Ok(Arc::new(LlmClassifier::new(
+            let algorithm = LlmClassifier::new(
                 classifier.semantic_name,
                 strong.semantic_name,
                 weak.semantic_name,
                 *threshold,
                 target_set,
-            )))
+            )
+            .map_err(|error| {
+                ServerError::new(format!("llm_classifier route {route_name}: {error}"))
+            })?;
+            Ok(Arc::new(algorithm))
         }
     }
 }
@@ -412,7 +407,21 @@ threshold = 0.5
                     "targets = [\"strong\", \"weak\"]",
                     "targets = [\"strong\", \"strong\"]",
                 ),
-                "duplicate targets",
+                "random targets must be unique",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"weak\"]\nweights = [1]",
+                ),
+                "expected 2 weights, got 1",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"weak\"]\nweights = [0, 0]",
+                ),
+                "at least one weight must be positive",
             ),
             (
                 VALID_CONFIG.replace("threshold = 0.5", "threshold = 1.5"),
@@ -434,6 +443,16 @@ threshold = 0.5
                 "expected error containing {expected}"
             );
         }
+    }
+
+    #[test]
+    fn accepts_relative_weights_and_seed() -> ServerResult<()> {
+        let weighted = VALID_CONFIG.replace(
+            "targets = [\"strong\", \"weak\"]",
+            "targets = [\"strong\", \"weak\"]\nweights = [1, 3]\nseed = 42",
+        );
+        server_state_from_toml(&weighted)?;
+        Ok(())
     }
 
     #[test]

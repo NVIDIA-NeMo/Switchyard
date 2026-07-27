@@ -3,18 +3,20 @@
 
 //! Random router built on the [`Algorithm`] interfaces.
 //!
-//! Selects one target from the set uniformly at random and calls it. This is the
-//! simplest possible routing algorithm and the reference for the single-call
-//! shape: one `driver.call_llm_target` inside `create_run_task`. Weighted selection
-//! can be layered on later; the set defines the candidates.
+//! Selects one target from the set at random and calls it. Selection is uniform
+//! by default and can use relative weights and a reproducible seed.
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
+use rand::distributions::{Distribution, WeightedIndex};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
+    Result,
 };
 
 /// Decision produced by [`Random`]: which target was chosen and why.
@@ -39,18 +41,85 @@ impl Decision for RandomDecision {
     }
 }
 
-/// Uniform random router over a target set.
+/// Random router over a target set.
 pub struct Random {
     target_set: LlmTargetSet,
+    distribution: WeightedIndex<f64>,
+    rng: Mutex<StdRng>,
 }
 
 impl Random {
     /// Creates a router over `target_set`.
     ///
-    /// Wrap it in an [`Arc`] and drive it with [`Algorithm::run`] or
-    /// [`Algorithm::run_stream`].
-    pub fn new(target_set: LlmTargetSet) -> Self {
-        Self { target_set }
+    /// Missing weights default to one per target. Explicit weights are relative,
+    /// follow target order, and need not sum to one. Zero disables a target.
+    /// Missing `seed` uses entropy-backed randomness.
+    pub fn new(
+        target_set: LlmTargetSet,
+        weights: Option<Vec<f64>>,
+        seed: Option<u64>,
+    ) -> Result<Self> {
+        let target_count = target_set.targets().len();
+        if target_count == 0 {
+            return Err(LibsyError::NoTargets);
+        }
+        let unique_targets = target_set
+            .targets()
+            .iter()
+            .map(|target| target.semantic_name.as_str())
+            .collect::<BTreeSet<_>>();
+        if unique_targets.len() != target_count {
+            return Err(LibsyError::AlgorithmError {
+                message: "random targets must be unique".to_string(),
+            });
+        }
+
+        let weights = weights.unwrap_or_else(|| vec![1.0; target_count]);
+        if weights.len() != target_count {
+            return Err(invalid_weights(format!(
+                "expected {target_count} weights, got {}",
+                weights.len()
+            )));
+        }
+        if weights
+            .iter()
+            .any(|weight| !weight.is_finite() || *weight < 0.0)
+        {
+            return Err(invalid_weights(
+                "weights must be finite and nonnegative".to_string(),
+            ));
+        }
+        if !weights.iter().any(|weight| *weight > 0.0) {
+            return Err(invalid_weights(
+                "at least one weight must be positive".to_string(),
+            ));
+        }
+        let distribution =
+            WeightedIndex::new(weights).map_err(|error| invalid_weights(error.to_string()))?;
+        let rng = match seed {
+            Some(seed) => StdRng::seed_from_u64(seed),
+            None => StdRng::from_entropy(),
+        };
+        Ok(Self {
+            target_set,
+            distribution,
+            rng: Mutex::new(rng),
+        })
+    }
+
+    fn select_target(&self) -> Result<LlmTarget> {
+        let targets = self.target_set.targets();
+        let mut rng = self.rng.lock().map_err(|_| LibsyError::AlgorithmError {
+            message: "random number generator lock was poisoned".to_string(),
+        })?;
+        let index = self.distribution.sample(&mut *rng);
+        Ok(targets[index].clone())
+    }
+}
+
+fn invalid_weights(message: String) -> LibsyError {
+    LibsyError::AlgorithmError {
+        message: format!("invalid random weights: {message}"),
     }
 }
 
@@ -66,15 +135,7 @@ impl Algorithm for Random {
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        // Scope the non-Send ThreadRng before the await so the future remains Send.
-        let target = {
-            let mut rng = rand::thread_rng();
-            self.target_set
-                .targets()
-                .choose(&mut rng)
-                .ok_or(LibsyError::NoTargets)?
-                .clone()
-        };
+        let target = self.select_target()?;
 
         let selected = target.semantic_name.clone();
         let decision: Arc<dyn Decision> = Arc::new(RandomDecision {
@@ -125,7 +186,7 @@ mod tests {
     }
 
     /// Builds a random router whose targets all share an echo client.
-    fn algorithm(names: &[&str]) -> Random {
+    fn algorithm(names: &[&str], weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Random> {
         let targets = names
             .iter()
             .map(|name| LlmTarget {
@@ -133,16 +194,31 @@ mod tests {
                 llm_client: Some(Arc::new(EchoClient)),
             })
             .collect();
-        Random::new(LlmTargetSet::new(targets))
+        Random::new(LlmTargetSet::new(targets), weights, seed)
     }
 
-    fn shared_algorithm(names: &[&str]) -> Arc<dyn Algorithm> {
-        Arc::new(algorithm(names))
+    fn shared_algorithm(names: &[&str]) -> Result<Arc<dyn Algorithm>> {
+        Ok(Arc::new(algorithm(names, None, None)?))
+    }
+
+    async fn selected_models(algorithm: Arc<dyn Algorithm>, count: usize) -> Result<Vec<String>> {
+        let mut selected = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (_, response) = algorithm.clone().run(Context::default(), request()).await?;
+            selected.push(
+                response
+                    .llm_response
+                    .as_agg()
+                    .map(completion_text)
+                    .unwrap_or_default(),
+            );
+        }
+        Ok(selected)
     }
 
     #[tokio::test]
     async fn single_target_is_always_selected_and_called() -> Result<()> {
-        let algorithm = shared_algorithm(&["only/model"]);
+        let algorithm = shared_algorithm(&["only/model"])?;
         let (trace, response) = algorithm.run(Context::default(), request()).await?;
 
         assert_eq!(
@@ -161,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn selected_target_is_in_the_set_and_matches_the_trace() -> Result<()> {
         let names = ["a/model", "b/model", "c/model"];
-        let algorithm = shared_algorithm(&names);
+        let algorithm = shared_algorithm(&names)?;
 
         for _ in 0..50 {
             let (trace, response) = algorithm.clone().run(Context::default(), request()).await?;
@@ -181,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn selection_covers_all_targets_over_many_runs() -> Result<()> {
-        let algorithm = shared_algorithm(&["a/model", "b/model"]);
+        let algorithm = shared_algorithm(&["a/model", "b/model"])?;
         let mut seen = HashSet::new();
 
         for _ in 0..100 {
@@ -205,15 +281,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_target_set_errors() {
-        let algorithm = shared_algorithm(&[]);
-        let error = algorithm.run(Context::default(), request()).await.err();
+    async fn weighted_seeded_selection_is_reproducible() -> Result<()> {
+        let first: Arc<dyn Algorithm> = Arc::new(algorithm(
+            &["a/model", "b/model"],
+            Some(vec![1.0, 3.0]),
+            Some(42),
+        )?);
+        let second: Arc<dyn Algorithm> = Arc::new(algorithm(
+            &["a/model", "b/model"],
+            Some(vec![1.0, 3.0]),
+            Some(42),
+        )?);
+
+        let first_selections = selected_models(first, 1_000).await?;
+        let second_selections = selected_models(second, 1_000).await?;
+        assert_eq!(first_selections, second_selections);
+
+        let second_count = first_selections
+            .iter()
+            .filter(|model| model.as_str() == "b/model")
+            .count();
+        assert!(
+            (700..=800).contains(&second_count),
+            "expected a roughly 25/75 split, selected b/model {second_count} times"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_weights() {
+        let cases = [
+            (vec![1.0], "expected 2 weights"),
+            (vec![1.0, -1.0], "finite and nonnegative"),
+            (vec![0.0, 0.0], "at least one weight must be positive"),
+            (vec![1.0, f64::INFINITY], "finite and nonnegative"),
+        ];
+
+        for (weights, expected) in cases {
+            let error = algorithm(&["a/model", "b/model"], Some(weights), None)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_targets() {
+        let error = algorithm(&[], None, None).err();
         assert!(matches!(error, Some(LibsyError::NoTargets)));
+
+        let error = algorithm(&["same/model", "same/model"], None, None)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(error.contains("random targets must be unique"));
     }
 
     #[tokio::test]
     async fn process_signals_is_a_noop() -> Result<()> {
-        Arc::new(algorithm(&["only/model"]))
+        Arc::new(algorithm(&["only/model"], None, None)?)
             .process_signals(Signals {})
             .await?;
         Ok(())
@@ -221,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn decision_is_inspectable_and_downcasts() -> Result<()> {
-        let algorithm = shared_algorithm(&["only/model"]);
+        let algorithm = shared_algorithm(&["only/model"])?;
         let (trace, _) = algorithm.run(Context::default(), request()).await?;
         let decision = &trace[0];
 

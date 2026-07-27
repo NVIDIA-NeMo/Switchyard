@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         semantic_name: "stream/model".to_string(),
         llm_client: None,
     }]);
-    let algo: Arc<dyn Algorithm> = Arc::new(Random::new(targets));
+    let algo: Arc<dyn Algorithm> = Arc::new(Random::new(targets, None, None)?);
 
     let request = Request {
         llm_request: text_request(Some("auto".to_string()), "tell me about switchyard"),

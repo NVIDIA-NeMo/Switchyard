@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use serde_json::{json, Value};
 use switchyard_libsy::algorithms::{Noop, Random};
 use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LlmClientError, LlmResponse, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
+    AggLlmResponse, Algorithm, Context, Decision, LibsyError as RustLibsyError, LlmClientError,
+    LlmResponse, LlmTarget, LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
 };
 
 use crate::errors::py_libsy_error;
@@ -163,16 +163,18 @@ fn noop_algorithm() -> PyAlgorithm {
 /// Construct uniform random routing over targets with Python clients.
 #[pyfunction(name = "random")]
 fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<PyAlgorithm> {
-    if targets.is_empty() {
-        return Err(PyValueError::new_err("random requires at least one target"));
-    }
     let targets = targets
         .iter()
         .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyAlgorithm::new(Arc::new(Random::new(LlmTargetSet::new(
-        targets,
-    )))))
+    let algorithm =
+        Random::new(LlmTargetSet::new(targets), None, None).map_err(|error| match error {
+            RustLibsyError::NoTargets => {
+                PyValueError::new_err("random requires at least one target")
+            }
+            other => PyValueError::new_err(other.to_string()),
+        })?;
+    Ok(PyAlgorithm::new(Arc::new(algorithm)))
 }
 
 fn other_python_error(error: PyErr) -> LlmClientError {

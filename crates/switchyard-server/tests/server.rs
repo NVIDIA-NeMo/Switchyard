@@ -134,19 +134,22 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
         .map(|model| ModelConfig::new(model, backend.clone(), None))
         .collect::<Vec<_>>();
     let client: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&model_configs)?);
-    let entries = routes.iter().map(|(route_model, targets)| {
-        let target_set = LlmTargetSet::new(
-            targets
-                .iter()
-                .map(|model| LlmTarget {
-                    semantic_name: (*model).to_string(),
-                    llm_client: Some(Arc::clone(&client)),
-                })
-                .collect(),
-        );
-        let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set));
-        ((*route_model).to_string(), algorithm)
-    });
+    let entries = routes
+        .iter()
+        .map(|(route_model, targets)| {
+            let target_set = LlmTargetSet::new(
+                targets
+                    .iter()
+                    .map(|model| LlmTarget {
+                        semantic_name: (*model).to_string(),
+                        llm_client: Some(Arc::clone(&client)),
+                    })
+                    .collect(),
+            );
+            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
+            Ok(((*route_model).to_string(), algorithm))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
     Ok(ServerState::new(entries)?)
 }
 

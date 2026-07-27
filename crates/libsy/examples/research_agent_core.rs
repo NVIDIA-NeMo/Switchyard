@@ -102,8 +102,13 @@ fn print_decision(decision: &dyn Decision) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let algo: Arc<dyn Algorithm> =
-        Arc::new(LlmClassifier::new(CLASSIFIER, STRONG, WEAK, 0.5, targets()));
+    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifier::new(
+        CLASSIFIER,
+        STRONG,
+        WEAK,
+        0.5,
+        targets(),
+    )?);
 
     let mut agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

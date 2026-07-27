@@ -25,6 +25,8 @@ llm_client = "example"
 id = "switchyard/general"
 type = "random"
 targets = ["model_a", "model_b"]
+weights = [1, 3]
+seed = 42
 
 [routes.classified]
 id = "switchyard/classified"
@@ -48,5 +50,8 @@ Each target references an entry under `llm_clients`. All configured clients use
 `anthropic_messages`. Supported algorithms are `noop`, `random`, and `llm_classifier`. An
 `api_key_env` value names an environment variable; the TOML never contains the secret itself. If
 omitted, the client sends no authentication.
+
+Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
+for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.
