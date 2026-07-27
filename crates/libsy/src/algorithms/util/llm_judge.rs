@@ -118,7 +118,7 @@ where
 }
 
 #[async_trait]
-impl<J, P> Classifier for JudgeClassifier<J, P>
+impl<J, P> Classifier<State> for JudgeClassifier<J, P>
 where
     J: Judge,
     P: JudgePolicy<Verdict = J::Verdict>,
@@ -381,8 +381,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_driver_is_an_error_not_a_fallback() -> Result<()> {
+        let mut request = request();
         let error = classifier()
-            .score(&mut State::default(), &mut request(), None)
+            .score(&mut State::default(), &mut request, None)
             .await
             .err()
             .ok_or_else(|| LibsyError::AlgorithmError {

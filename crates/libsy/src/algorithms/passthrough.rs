@@ -40,10 +40,7 @@ impl Decision for PassthroughDecision {
 }
 
 #[async_trait::async_trait]
-impl<S> Algorithm<S> for Passthrough
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl Algorithm for Passthrough {
     fn name(&self) -> &str {
         "passthrough"
     }
@@ -58,14 +55,13 @@ where
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context<S>,
+        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
         let decision: Arc<dyn Decision> = Arc::new(PassthroughDecision {
             model_id: self.target.semantic_name.clone(),
         });
-        let ctx = ctx.without_state();
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
             .call_llm_target(ctx, &self.target, request, decision)

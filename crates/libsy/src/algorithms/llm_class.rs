@@ -230,7 +230,7 @@ impl LlmTaskClassifier {
 }
 
 #[async_trait]
-impl Classifier for LlmTaskClassifier {
+impl Classifier<State> for LlmTaskClassifier {
     fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
         if self.efficient_target == self.capable_target {
             None
@@ -262,9 +262,7 @@ mod tests {
     use super::*;
     use switchyard_protocol::{completion_text, text_response, LlmClientError};
 
-    use crate::{
-        Algorithm, Context, LlmResponse, LlmTargetSet, Response, RoutedLlmClient, SharedState,
-    };
+    use crate::{Algorithm, Context, LlmResponse, LlmTargetSet, Response, RoutedLlmClient};
 
     const TEST_THRESHOLD: f64 = 0.5;
 
@@ -354,7 +352,7 @@ mod tests {
         }
     }
 
-    fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<super::super::FallThrough>> {
+    fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<super::super::FallThrough<State>>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
@@ -363,9 +361,14 @@ mod tests {
         let efficient = targets.get_target("efficient")?;
         let capable = targets.get_target("capable")?;
         Ok(Arc::new(
-            super::super::FallThrough::new(targets).with_classifier(Arc::new(
-                LlmTaskClassifier::new(target("judge"), efficient, capable, TEST_THRESHOLD)?,
-            )),
+            super::super::FallThrough::new_with_state(targets, State::default()).with_classifier(
+                Arc::new(LlmTaskClassifier::new(
+                    target("judge"),
+                    efficient,
+                    capable,
+                    TEST_THRESHOLD,
+                )?),
+            ),
         ))
     }
 
@@ -384,9 +387,7 @@ mod tests {
     async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
         let router = router(Arc::new(UnreachableJudgeClient))?;
 
-        let (trace, response) = router
-            .run(Context::<SharedState>::default(), classify_request())
-            .await?;
+        let (trace, response) = router.run(Context::default(), classify_request()).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(
@@ -402,14 +403,8 @@ mod tests {
         let router = router(client.clone())?;
         let request = classify_request;
 
-        router
-            .clone()
-            .run(Context::<SharedState>::default(), request())
-            .await?;
-        router
-            .clone()
-            .run(Context::<SharedState>::default(), request())
-            .await?;
+        router.clone().run(Context::default(), request()).await?;
+        router.clone().run(Context::default(), request()).await?;
 
         assert_eq!(
             client.calls(),

@@ -305,7 +305,7 @@ impl StageClassifier {
 }
 
 #[async_trait]
-impl Classifier for StageClassifier {
+impl Classifier<State> for StageClassifier {
     async fn score(
         &self,
         state: &mut State,

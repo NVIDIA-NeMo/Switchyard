@@ -2,10 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
 
 use crate::ToolSignals;
 
@@ -28,96 +24,3 @@ pub struct State {
     pub tool_signals: Option<ToolSignals>,
     pub extra: HashMap<String, StateValue>,
 }
-
-/// Mutable access to a state value acquired from a [`StateHandle`].
-pub trait StateGuard<S>: Send {
-    /// Returns the state value guarded for this fall-through run.
-    fn get_mut(&mut self) -> &mut S;
-}
-
-impl StateGuard<()> for () {
-    fn get_mut(&mut self) -> &mut () {
-        self
-    }
-}
-
-impl<S: Send> StateGuard<S> for tokio::sync::MutexGuard<'_, S> {
-    fn get_mut(&mut self) -> &mut S {
-        self
-    }
-}
-
-/// Supplies one mutable state value to an algorithm run.
-///
-/// `()` is the zero-cost stateless handle. [`Shared<S>`] provides state that
-/// persists across runs of the algorithm that owns it.
-pub trait StateHandle: Send + Sync + 'static {
-    /// State value exposed to processors and classifiers.
-    type State: Send + 'static;
-    /// Guard retaining exclusive access for the processor/classifier fold.
-    type Guard<'a>: StateGuard<Self::State> + Send
-    where
-        Self: 'a;
-
-    /// Acquires the state value for one algorithm run.
-    fn acquire(&self) -> impl Future<Output = Self::Guard<'_>> + Send;
-}
-
-impl StateHandle for () {
-    type State = ();
-    type Guard<'a> = ();
-
-    fn acquire(&self) -> impl Future<Output = Self::Guard<'_>> + Send {
-        std::future::ready(())
-    }
-}
-
-/// Shared, asynchronously locked state owned by an algorithm.
-#[derive(Debug)]
-pub struct Shared<S> {
-    inner: Arc<Mutex<S>>,
-}
-
-impl<S> Shared<S> {
-    /// Creates shared state from an initial value.
-    pub fn new(state: S) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(state)),
-        }
-    }
-
-    /// Locks the state for direct inspection or mutation.
-    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, S> {
-        self.inner.lock().await
-    }
-}
-
-impl<S> Clone for Shared<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl<S: Default> Default for Shared<S> {
-    fn default() -> Self {
-        Self::new(S::default())
-    }
-}
-
-impl<S: Send + 'static> StateHandle for Shared<S> {
-    type State = S;
-    type Guard<'a>
-        = tokio::sync::MutexGuard<'a, S>
-    where
-        Self: 'a;
-
-    fn acquire(&self) -> impl Future<Output = Self::Guard<'_>> + Send {
-        self.lock()
-    }
-}
-
-/// Compatibility name for the original built-in shared state.
-#[deprecated(note = "use Shared<State>")]
-pub type SharedState = Shared<State>;

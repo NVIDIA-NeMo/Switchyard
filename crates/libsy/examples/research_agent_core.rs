@@ -14,7 +14,7 @@ use std::sync::Arc;
 use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Result, SharedState, Step,
+    Response, Result, State, Step,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
@@ -51,7 +51,7 @@ fn targets() -> LlmTargetSet {
 }
 
 struct ResearchAgent {
-    algo: Arc<dyn Algorithm<SharedState>>,
+    algo: Arc<dyn Algorithm>,
 }
 
 impl ResearchAgent {
@@ -110,10 +110,10 @@ async fn main() -> Result<()> {
     let classifier = target_set.get_target(CLASSIFIER)?;
     let weak = target_set.get_target(WEAK)?;
     let strong = target_set.get_target(STRONG)?;
-    let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
-        FallThrough::new(target_set).with_classifier(Arc::new(LlmTaskClassifier::new(
-            classifier, weak, strong, THRESHOLD,
-        )?)),
+    let algo: Arc<dyn Algorithm> = Arc::new(
+        FallThrough::new_with_state(target_set, State::default()).with_classifier(Arc::new(
+            LlmTaskClassifier::new(classifier, weak, strong, THRESHOLD)?,
+        )),
     );
 
     let mut agent = ResearchAgent { algo };

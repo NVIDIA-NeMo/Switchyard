@@ -42,10 +42,12 @@ pub trait Processor<S = ()>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{State, StateValue};
+    use std::collections::HashMap;
     use switchyard_protocol::{text_request, text_response};
 
-    /// The `State::extra` key each event variant tallies under.
+    type TestState = HashMap<&'static str, u32>;
+
+    /// The key each event variant tallies under.
     fn event_key(event: &Event<'_>) -> &'static str {
         match event {
             Event::Request(_) => "requests",
@@ -56,27 +58,18 @@ mod tests {
         }
     }
 
-    /// Reads a `StateValue::Count` from `extra`, treating a missing key as zero.
-    fn count(state: &State, key: &str) -> u32 {
-        match state.extra.get(key) {
-            Some(StateValue::Count(n)) => *n,
-            _ => 0,
-        }
+    /// Reads a count, treating a missing key as zero.
+    fn count(state: &TestState, key: &'static str) -> u32 {
+        state.get(key).copied().unwrap_or_default()
     }
 
-    /// Tallies each event variant under its own key in [`State::extra`].
+    /// Tallies each event variant under its own key.
     struct CountingProcessor;
 
     #[async_trait]
-    impl Processor<State> for CountingProcessor {
-        async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-            let entry = state
-                .extra
-                .entry(event_key(&event).to_string())
-                .or_insert(StateValue::Count(0));
-            if let StateValue::Count(n) = entry {
-                *n += 1;
-            }
+    impl Processor<TestState> for CountingProcessor {
+        async fn process(&self, state: &mut TestState, event: Event<'_>) -> Result<()> {
+            *state.entry(event_key(&event)).or_default() += 1;
             Ok(())
         }
     }
@@ -107,7 +100,7 @@ mod tests {
     #[tokio::test]
     async fn processor_tallies_each_event_variant_into_state() -> Result<()> {
         let processor = CountingProcessor;
-        let mut state = State::default();
+        let mut state = TestState::default();
         let mut req = request();
         let response = text_response(None, "ok");
         let decision = TestDecision;
@@ -147,7 +140,7 @@ mod tests {
     #[tokio::test]
     async fn process_accumulates_state_across_repeated_events() -> Result<()> {
         let processor = CountingProcessor;
-        let mut state = State::default();
+        let mut state = TestState::default();
         let mut req = request();
 
         for _ in 0..3 {
@@ -165,7 +158,7 @@ mod tests {
 
     #[async_trait]
     impl Processor for RewritingProcessor {
-        async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
+        async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
             if let Event::Request(request) | Event::ModelRequest(request) = event {
                 request.llm_request.model = Some("rewritten".to_string());
             }
@@ -175,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn processor_rewrites_the_request_in_place() -> Result<()> {
-        let mut state = State::default();
+        let mut state = ();
         let mut req = request();
         assert_eq!(req.requested_model(), Some("auto"));
 

@@ -94,7 +94,6 @@ pub trait Classifier<S = ()>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{State, StateValue};
     use switchyard_protocol::text_request;
 
     /// Terse `Score` builder for the assertions below.
@@ -178,15 +177,14 @@ mod tests {
     struct RecordingClassifier;
 
     #[async_trait]
-    impl Classifier<State> for RecordingClassifier {
+    impl Classifier<bool> for RecordingClassifier {
         async fn score(
             &self,
-            state: &mut State,
+            state: &mut bool,
             request: &mut Request,
             _driver: Option<&Driver>,
         ) -> Result<Classification> {
-            // Stash a marker in `extra` to prove state is threaded mutably.
-            state.extra.insert("ran".to_string(), StateValue::Count(1));
+            *state = true;
             let target = request.requested_model().unwrap_or("auto").to_string();
             Ok(Classification::Scores(vec![Score {
                 target,
@@ -197,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_reads_request_and_mutates_state() -> Result<()> {
-        let mut state = State::default();
+        let mut state = false;
         let mut request = Request {
             llm_request: text_request(Some("strong".to_string()), "hi"),
             raw_request: None,
@@ -211,7 +209,7 @@ mod tests {
             classification.argmax(false)?.map(|s| s.target),
             Some("strong".to_string())
         );
-        assert!(matches!(state.extra.get("ran"), Some(StateValue::Count(1))));
+        assert!(state);
         Ok(())
     }
 
@@ -222,7 +220,7 @@ mod tests {
     impl Classifier for RewritingClassifier {
         async fn score(
             &self,
-            _state: &mut State,
+            _state: &mut (),
             request: &mut Request,
             _driver: Option<&Driver>,
         ) -> Result<Classification> {
@@ -236,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_rewrites_the_request_in_place() -> Result<()> {
-        let mut state = State::default();
+        let mut state = ();
         let mut request = Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,

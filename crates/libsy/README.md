@@ -46,9 +46,9 @@ Runnable: [`research_agent`](examples/research_agent.rs)
 ## Composing fall-through routing
 
 `FallThrough` runs a processor chain, consults classifiers until one chooses a target,
-then makes the target call. It owns its generic state handle and defaults to `()` for a
-stateless composition; use `Shared<MyState>` when processors and classifiers need state
-across runs.
+then makes the target call. It is generic over the state shared by its processors and
+classifiers. `FallThrough::new` is stateless; use `FallThrough::new_with_state` when that
+state must persist across runs.
 
 Random routing is a stateless composition with no processors:
 
@@ -63,7 +63,7 @@ let classifier: Arc<dyn Classifier<()>> = Arc::new(RandomClassifier::new(
     Some(42),
 )?);
 let algorithm: Arc<dyn Algorithm> = Arc::new(
-    FallThrough::<()>::new(targets)
+    FallThrough::new(targets)
         .with_name("weighted_random")
         .with_classifier(classifier),
 );
@@ -87,7 +87,7 @@ let random = Arc::new(RandomClassifier::new(
     Some(42),
 )?);
 let algorithm: Arc<dyn Algorithm> = Arc::new(
-    FallThrough::<()>::new(targets)
+    FallThrough::new(targets)
         .with_name("affinity_random")
         .with_processor(affinity.clone())
         .with_classifier(affinity)

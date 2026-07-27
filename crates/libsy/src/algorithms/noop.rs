@@ -34,17 +34,14 @@ impl Decision for NoopDecision {
 }
 
 #[async_trait::async_trait]
-impl<S> Algorithm<S> for Noop
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl Algorithm for Noop {
     fn name(&self) -> &str {
         "noop"
     }
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context<S>,
+        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
@@ -55,7 +52,7 @@ where
         let decision: Arc<dyn Decision> = Arc::new(NoopDecision {
             model: model.clone(),
         });
-        driver.info(ctx.without_state(), decision.clone()).await?;
+        driver.info(ctx, decision.clone()).await?;
 
         let llm_response = LlmResponse::Agg(AggLlmResponse {
             id: Some("switchyard-noop".to_string()),

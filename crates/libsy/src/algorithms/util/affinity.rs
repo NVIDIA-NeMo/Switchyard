@@ -59,9 +59,8 @@ pub struct AffinityRouter {
     subagents_only: bool,
     /// Retained assignments, shared across this router's processor and classifier roles.
     ///
-    /// Held on the instance rather than in [`State`] so the two roles share one
-    /// process-local map through a single registered [`Arc`](std::sync::Arc); bounded by
-    /// [`MAX_ASSIGNMENTS`].
+    /// Held on the instance so the two roles share one process-local map through a
+    /// single registered [`Arc`](std::sync::Arc); bounded by [`MAX_ASSIGNMENTS`].
     assignments: Mutex<HashMap<AffinityKey, String>>,
 }
 
@@ -174,8 +173,6 @@ mod tests {
 
     use switchyard_protocol::{text_request, Decision, Metadata};
 
-    use crate::State;
-
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
@@ -225,7 +222,7 @@ mod tests {
     /// Folds a request and its decision through the router, retaining `model`.
     async fn retain(
         router: &AffinityRouter,
-        state: &mut State,
+        state: &mut (),
         request: &mut Request,
         model: &'static str,
     ) -> Result<(), BoxErr> {
@@ -243,8 +240,8 @@ mod tests {
 
     /// Scores through the definitive classification variant used by affinity.
     async fn scores(
-        classifier: &dyn Classifier<State>,
-        state: &mut State,
+        classifier: &dyn Classifier,
+        state: &mut (),
         request: &mut Request,
     ) -> Result<Vec<Score>, BoxErr> {
         match classifier.score(state, request, None).await? {
@@ -256,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn session_retains_first_model_across_requests() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         let mut first = request(session("session-1", "agent-a"));
         retain(&router, &mut state, &mut first, "model-a").await?;
@@ -273,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn subagent_only_retains_children_without_latching_root_traffic() -> Result<(), BoxErr> {
         let router = AffinityRouter::for_subagents();
-        let mut state = State::default();
+        let mut state = ();
 
         let mut root = request(session("session-1", "root-agent"));
         retain(&router, &mut state, &mut root, "model-a").await?;
@@ -293,7 +290,7 @@ mod tests {
     #[tokio::test]
     async fn first_decision_wins() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         let mut req = request(session("session-1", "agent-a"));
         retain(&router, &mut state, &mut req, "model-a").await?;
@@ -311,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn subagent_is_keyed_by_agent_not_task() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         let mut first = request(subagent("child-1", "task-1"));
         retain(&router, &mut state, &mut first, "model-a").await?;
@@ -329,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_subagents_are_assigned_independently() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         // One child in the session is pinned...
         retain(
@@ -349,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn subagent_does_not_inherit_session_assignment() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         // The session root is pinned, but a sub-agent is keyed separately...
         retain(
@@ -369,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn classifier_abstains_without_a_session() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         // No session id at all: nothing to key on.
         let mut req = request(Metadata::default());
@@ -382,11 +379,11 @@ mod tests {
         // The same instance is registered under both SDK roles; a decision folded in via
         // the processor handle is read back via the classifier handle.
         let router = Arc::new(AffinityRouter::new());
-        let processor: Arc<dyn Processor<State>> = router.clone();
-        let classifier: Arc<dyn Classifier<State>> = router;
-        let mut state = State::default();
+        let processor: Arc<dyn Processor> = router.clone();
+        let classifier: Arc<dyn Classifier> = router;
+        let mut state = ();
 
-        let mut first = request(session("session-1", "agent-a"));
+        let first = request(session("session-1", "agent-a"));
         processor
             .process(
                 &mut state,
@@ -409,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn decision_without_an_affinity_identity_is_ignored() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
         let unkeyed = request(Metadata::default());
 
         router
@@ -430,7 +427,7 @@ mod tests {
     #[tokio::test]
     async fn decisions_retain_their_originating_request_identity() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
         let mut first = request(session("session-1", "agent-a"));
         let mut second = request(session("session-2", "agent-b"));
 
@@ -471,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_sessions_are_assigned_independently() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         retain(
             &router,
@@ -514,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn subagent_without_an_agent_id_is_not_keyed() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         // The sub-agent flag is set but no agent id is present, so no key can be formed;
         // the request is neither retained nor scored.
@@ -532,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn assignments_are_bounded_by_the_cap() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
-        let mut state = State::default();
+        let mut state = ();
 
         // One distinct session past the cap forces exactly one eviction.
         for index in 0..=MAX_ASSIGNMENTS {
@@ -554,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn latch_only_retains_matching_models() -> Result<(), BoxErr> {
         let router = AffinityRouter::new().with_latch_only(["strong"]);
-        let mut state = State::default();
+        let mut state = ();
         let mut req = request(session("session-1", "agent-a"));
 
         // A "weak" decision is not retained — a later turn is not latched.
