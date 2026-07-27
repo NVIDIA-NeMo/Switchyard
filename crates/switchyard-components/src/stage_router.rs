@@ -11,5 +11,5 @@
 
 pub use switchyard_libsy::stage_router::{
     dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
-    PickOutcome, PickerMode, ScoreResult, Tier,
+    PickOutcome, PickerMode, ScoreResult, StageClassifier, Tier,
 };

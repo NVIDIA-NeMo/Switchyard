@@ -350,7 +350,7 @@ impl Classifier for StageClassifier {
                     "decision_source".to_string(),
                     StateValue::String(source.as_str().to_string()),
                 );
-                let conf = score;
+                let conf = score.abs();
                 // TODO add the non-target to this score set?
                 Ok(Classification::Scores(vec![Score {
                     target: target.to_string(),
@@ -374,7 +374,7 @@ impl Classifier for StageClassifier {
                     "decision_source".to_string(),
                     StateValue::String(DecisionSource::FallOpen.as_str().to_string()),
                 );
-                let conf = score;
+                let conf = score.abs();
                 // TODO add the non-target to this score set?
                 Ok(Classification::Ambiguous(vec![Score {
                     target: target.to_string(),

@@ -256,8 +256,12 @@ enum ToolCategory {
     Other,
 }
 
+/// Request-side processor that extracts tool-result signals from each request
+/// and stores them on the request `State` for downstream routing.
 #[derive(Debug, Clone)]
 pub struct ToolSignalProcessor {
+    /// Number of trailing tool results the `recent_*` counts and windowed
+    /// severity are computed over.
     pub recent_window: usize,
 }
 
