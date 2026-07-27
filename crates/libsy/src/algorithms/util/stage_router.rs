@@ -326,7 +326,7 @@ impl Classifier for StageClassifier {
             );
             return Ok(Classification::Ambiguous(vec![Score {
                 target: target.to_string(),
-                confidence: 0.5,
+                confidence: 0.0,
             }]));
         };
 
@@ -337,7 +337,7 @@ impl Classifier for StageClassifier {
                     Tier::Capable => "strong",
                     Tier::Efficient => "weak",
                 };
-                let conf = (score + 1.0) / 2.0;
+                let conf = score;
                 // TODO add the non-target to this score set?
                 Ok(Classification::Scores(vec![Score {
                     target: target.to_string(),
@@ -357,7 +357,7 @@ impl Classifier for StageClassifier {
                     "default_target".to_string(),
                     StateValue::String(target.to_string()),
                 );
-                let conf = (score + 1.0) / 2.0;
+                let conf = score;
                 // TODO add the non-target to this score set?
                 Ok(Classification::Ambiguous(vec![Score {
                     target: target.to_string(),
