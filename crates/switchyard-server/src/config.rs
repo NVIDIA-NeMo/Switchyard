@@ -175,6 +175,8 @@ enum RouteConfig {
         strong_target: String,
         weak_target: String,
         threshold: f64,
+        #[serde(default)]
+        recent_turn_window: Option<usize>,
     },
 }
 
@@ -257,6 +259,7 @@ fn build_algorithm(
             strong_target,
             weak_target,
             threshold,
+            recent_turn_window,
             ..
         } => {
             if !threshold.is_finite() || !(0.0..=1.0).contains(threshold) {
@@ -269,13 +272,17 @@ fn build_algorithm(
             let weak = resolve_target(route_name, weak_target, targets)?;
             let target_set =
                 LlmTargetSet::new(vec![classifier.clone(), strong.clone(), weak.clone()]);
-            Ok(Arc::new(LlmClassifier::new(
+            let mut classifier_algo = LlmClassifier::new(
                 classifier.semantic_name,
                 strong.semantic_name,
                 weak.semantic_name,
                 *threshold,
                 target_set,
-            )))
+            );
+            if let Some(window) = recent_turn_window {
+                classifier_algo = classifier_algo.with_recent_turn_window(*window);
+            }
+            Ok(Arc::new(classifier_algo))
         }
     }
 }

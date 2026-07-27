@@ -62,6 +62,9 @@ impl Decision for ClassifierDecision {
     }
 }
 
+/// Default trailing conversation turns included in the classifier prompt.
+pub const DEFAULT_RECENT_TURN_WINDOW: usize = 5;
+
 /// LLM-classifier router: classify with one target, then route to strong/weak.
 pub struct LlmClassifier {
     classifier_model: String,
@@ -69,6 +72,7 @@ pub struct LlmClassifier {
     weak_model: String,
     threshold: f64,
     target_set: LlmTargetSet,
+    recent_turn_window: usize,
 }
 
 impl LlmClassifier {
@@ -89,7 +93,17 @@ impl LlmClassifier {
             weak_model: weak_model.into(),
             threshold,
             target_set,
+            recent_turn_window: DEFAULT_RECENT_TURN_WINDOW,
         }
+    }
+
+    /// Set the number of trailing conversation turns included in the classifier
+    /// prompt (default [`DEFAULT_RECENT_TURN_WINDOW`]). `0` sends only the first
+    /// user message.
+    #[must_use]
+    pub fn with_recent_turn_window(mut self, recent_turn_window: usize) -> Self {
+        self.recent_turn_window = recent_turn_window;
+        self
     }
 }
 
@@ -152,7 +166,8 @@ impl Algorithm for LlmClassifier {
         // model each sub-call actually hits is carried by its decision instead.
         let inbound = request.llm_request.model.clone();
 
-        let mut just_the_key_messages = trim_messages(&request.llm_request.messages, 5);
+        let mut just_the_key_messages =
+            trim_messages(&request.llm_request.messages, self.recent_turn_window);
         just_the_key_messages.insert(0, Message::text(Role::System, CLASSIFIER_SYSTEM_PROMPT));
 
         // 1. Classify: call the classifier target with the score-eliciting prompt.
@@ -276,8 +291,17 @@ mod tests {
             weak_model: "cheap/model".to_string(),
             threshold,
             target_set,
+            recent_turn_window: DEFAULT_RECENT_TURN_WINDOW,
         };
         (algo, seen)
+    }
+
+    #[test]
+    fn recent_turn_window_defaults_and_is_configurable() {
+        let classifier = LlmClassifier::new("c", "s", "w", 0.5, LlmTargetSet::new(vec![]));
+        assert_eq!(classifier.recent_turn_window, DEFAULT_RECENT_TURN_WINDOW);
+        let classifier = classifier.with_recent_turn_window(2);
+        assert_eq!(classifier.recent_turn_window, 2);
     }
 
     fn request(prompt: &str) -> Request {
