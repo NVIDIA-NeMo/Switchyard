@@ -443,6 +443,87 @@ def test_configure_non_interactive_scopes_env_key_to_selected_provider(
     assert load_user_credentials(tmp_path).api_key("nvidia") is None
 
 
+def _write_bundle(path, api_key: str) -> None:
+    path.write_text(
+        "defaults:\n"
+        f"  api_key: {api_key}\n"
+        "  base_url: https://example.invalid/v1\n"
+        "routes:\n"
+        "  alpha/model:\n"
+        "    type: model\n"
+    )
+
+
+def _non_interactive_configure(monkeypatch, tmp_path):
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "switchyard.cli.command_utils.is_interactive_terminal", lambda: False
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal", lambda: False
+    )
+    monkeypatch.setattr("switchyard.cli.configure_command.load_secrets", lambda: {})
+
+
+def test_configure_non_interactive_uses_route_bundle_api_key(monkeypatch, tmp_path):
+    """Non-interactive `configure` with a --routing-profiles bundle that carries
+    a literal defaults.api_key uses that key instead of erroring for --api-key.
+    Regression for NVBug 6371154 / SWITCH-785."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    _non_interactive_configure(monkeypatch, tmp_path)
+    bundle = tmp_path / "routes.yaml"
+    _write_bundle(bundle, "bundle-secret-key")
+
+    args = _build_parser().parse_args([
+        "--routing-profiles", str(bundle),
+        "configure", "--no-model-discovery", "--target", "provider",
+    ])
+    _cmd_configure(args)
+
+    assert load_user_credentials(tmp_path).api_key("openrouter") == "bundle-secret-key"
+
+
+def test_configure_non_interactive_expands_route_bundle_env_ref(monkeypatch, tmp_path):
+    """A bundle defaults.api_key of ${NVIDIA_API_KEY} is expanded from the env at
+    configure time even when the provider defaults to openrouter — the exact
+    reopened NVBug 6371154 repro (env var set, no --provider, no --api-key)."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    _non_interactive_configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-env-key")
+    bundle = tmp_path / "routes.yaml"
+    _write_bundle(bundle, "${NVIDIA_API_KEY}")
+
+    args = _build_parser().parse_args([
+        "--routing-profiles", str(bundle),
+        "configure", "--no-model-discovery", "--target", "provider",
+    ])
+    _cmd_configure(args)
+
+    assert load_user_credentials(tmp_path).api_key("openrouter") == "nv-env-key"
+
+
+def test_configure_non_interactive_unresolved_bundle_env_ref_requires_key(
+    monkeypatch, tmp_path
+):
+    """An unset ${VAR} in the bundle stays literal after expansion, so configure
+    fails closed and asks for --api-key rather than saving a literal ${VAR}."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    _non_interactive_configure(monkeypatch, tmp_path)
+    monkeypatch.delenv("DEFINITELY_UNSET_KEY_XYZ", raising=False)
+    bundle = tmp_path / "routes.yaml"
+    _write_bundle(bundle, "${DEFINITELY_UNSET_KEY_XYZ}")
+
+    args = _build_parser().parse_args([
+        "--routing-profiles", str(bundle),
+        "configure", "--no-model-discovery", "--target", "provider",
+    ])
+    with pytest.raises(SystemExit, match="requires an API key"):
+        _cmd_configure(args)
+
+
 def test_redacted_snapshot_surfaces_only_route_ids(tmp_path):
     """The snapshot exposes route ids but never the full bundle (env-var
     references inside the bundle may resolve to secrets at run time)."""
