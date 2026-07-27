@@ -173,6 +173,10 @@ _MODEL_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozense
     # Opts this route into token-continuity injection (requires
     # token_capture_engine). Parser names mirror the vLLM server flags.
     "token_injection",
+    # How injected history reaches the engine: "completions" (default; raw
+    # token IDs via /v1/completions) or "prefix_chat" (chat completions with
+    # required_prefix_token_ids, for NeMo-RL-style training servers).
+    "injection_transport",
     "tool_parser",
     "reasoning_parser",
 })
@@ -207,6 +211,7 @@ _PASSTHROUGH_ROUTE_KEYS = (
         "enable_stats",
         "token_capture_engine",
         "token_injection",
+        "injection_transport",
         "tool_parser",
         "reasoning_parser",
     })
@@ -540,7 +545,7 @@ def _strip_token_capture_engine(raw: object) -> object:
                     continue
                 # Injection rides on capture; without capture it must not
                 # activate (its records would go unstored).
-                if key == "token_injection":
+                if key in ("token_injection", "injection_transport"):
                     continue
                 out[key] = _walk(value)
             return out
@@ -1266,6 +1271,14 @@ def _token_injection_wrapper(
     reasoning_parser = (
         _optional_str(route["reasoning_parser"]) if "reasoning_parser" in route else None
     )
+    transport = (
+        _optional_str(route["injection_transport"]) if "injection_transport" in route else None
+    ) or "completions"
+    if transport not in ("completions", "prefix_chat"):
+        raise RouteBundleConfigError(
+            f"route {model_id!r}: injection_transport must be 'completions' or "
+            f"'prefix_chat', got {transport!r}"
+        )
     api_key = endpoint.api_key if endpoint is not None else None
     timeout_secs = (endpoint.timeout_secs if endpoint is not None else None) or 600.0
     model = target.model
@@ -1281,6 +1294,7 @@ def _token_injection_wrapper(
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             timeout_secs=timeout_secs,
+            transport=transport,
         )
 
     return _wrap
@@ -1572,23 +1586,48 @@ def _capture_route_metadata_extras(
 
 
 def _fetch_upstream_max_model_len(base_url: str, api_key: str | None) -> int | None:
-    """The engine's ``max_model_len`` from its ``/v1/models`` card, or ``None``."""
+    """The engine's ``max_model_len`` from its ``/v1/models`` card, or ``None``.
+
+    Falls back to a ``POST /tokenize`` probe when ``/v1/models`` is absent or
+    carries no ``max_model_len`` — the NeMo-RL training server only exposes
+    ``/tokenize`` and ``/v1/chat/completions``, but ``TokenizeResponse`` always
+    includes ``max_model_len`` regardless of the payload.
+    """
     import httpx
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    base = base_url.rstrip("/")
+
     try:
-        response = httpx.get(
-            f"{base_url.rstrip('/')}/models", headers=headers, timeout=5.0
-        )
+        response = httpx.get(f"{base}/models", headers=headers, timeout=5.0)
         response.raise_for_status()
         data = response.json().get("data")
+        for entry in data if isinstance(data, list) else []:
+            value = entry.get("max_model_len") if isinstance(entry, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
     except Exception:  # noqa: BLE001 - metadata is best-effort at startup
-        logger.debug("could not fetch max_model_len from %s", base_url, exc_info=True)
-        return None
-    for entry in data if isinstance(data, list) else []:
-        value = entry.get("max_model_len") if isinstance(entry, dict) else None
+        logger.debug("could not fetch max_model_len from %s /v1/models", base, exc_info=True)
+
+    # /tokenize fallback: works against NeMo-RL's vllm_worker_async server which
+    # skips /v1/models but always returns max_model_len in TokenizeResponse.
+    # Completion form (prompt string) avoids the chat template entirely.
+    # model=None is explicitly accepted by vLLM's _is_model_supported().
+    # /tokenize lives at the server root (not under /v1) — same as the injection backend.
+    try:
+        response = httpx.post(
+            f"{base.removesuffix('/v1')}/tokenize",
+            json={"prompt": ""},
+            headers=headers,
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        value = response.json().get("max_model_len")
         if isinstance(value, int) and not isinstance(value, bool):
             return value
+    except Exception:  # noqa: BLE001
+        logger.debug("could not fetch max_model_len from %s /tokenize", base, exc_info=True)
+
     return None
 
 

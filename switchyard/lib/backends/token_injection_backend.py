@@ -94,7 +94,20 @@ class TokenInjectionBackend(LLMBackend):
     wrapped backend — behavior then equals capture-only mode and Gym's
     validation masks the affected sample. Chain state is in-process only: one
     proxy instance must own all calls of a session.
+
+    Two transports deliver the injected history, chosen per route because the
+    two engine families have disjoint capabilities:
+
+    - ``completions`` (default): raw token IDs through ``/v1/completions``;
+      the generation is parsed client-side with vLLM's parsers. Works against
+      any stock vLLM server.
+    - ``prefix_chat``: a normal ``/v1/chat/completions`` call carrying the
+      history as ``required_prefix_token_ids``; NeMo-RL-style training servers
+      graft it over the template re-render and parse the output themselves
+      (no ``/v1/completions`` there, and no client-side parsers here).
     """
+
+    _TRANSPORTS = ("completions", "prefix_chat")
 
     def __init__(
         self,
@@ -106,7 +119,13 @@ class TokenInjectionBackend(LLMBackend):
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         timeout_secs: float = 600.0,
+        transport: str = "completions",
     ) -> None:
+        if transport not in self._TRANSPORTS:
+            raise ValueError(
+                f"unknown token injection transport {transport!r}; "
+                f"expected one of {', '.join(self._TRANSPORTS)}"
+            )
         self._inner = inner
         # /tokenize lives at the server root, not under /v1.
         self._v1_url = base_url.rstrip("/")
@@ -116,6 +135,7 @@ class TokenInjectionBackend(LLMBackend):
         self._tool_parser = tool_parser
         self._reasoning_parser = reasoning_parser
         self._timeout = timeout_secs
+        self._transport = transport
         self._sessions: dict[str, list[_Chain]] = {}
         # Model context length, learned from /tokenize responses; used to clamp
         # the completion budget the way older vLLM chat endpoints did implicitly
@@ -139,6 +159,8 @@ class TokenInjectionBackend(LLMBackend):
                 rendered = await self._tokenize(body, add_generation_prompt=True)
                 chain = _longest_matching_chain(chains, rendered)
             if rendered is not None and chain is not None and chain.eot_token_id is not None:
+                if self._transport == "prefix_chat":
+                    return await self._prefix_chat_call(ctx, request, chain, body, rendered)
                 return await self._injected_call(chain, body, rendered)
 
             # No chain extends this call (first call, side-call, rewritten
@@ -239,6 +261,60 @@ class TokenInjectionBackend(LLMBackend):
         if choice.get("finish_reason") in _NATURAL_STOP_REASONS:
             chain.eot_token_id = generation_ids[-1]
         return ChatResponse.openai_completion(chat_body)
+
+    async def _prefix_chat_call(
+        self,
+        ctx: ProxyContext,
+        request: ChatRequest,
+        chain: _Chain,
+        body: JsonObject,
+        rendered: list[int],
+    ) -> ChatResponse:
+        """Generate via the chat endpoint with the chain's history attached.
+
+        NeMo-RL-style servers accept ``required_prefix_token_ids`` on chat
+        completions and graft the client's true history over the template
+        re-render server-side (keeping the raw tokens up to the last
+        end-of-turn, resuming from the template after it), so the engine
+        consumes a prompt that extends the chain. The server parses tool
+        calls and reasoning itself; no client-side parsers apply.
+
+        A server that ignores the field produces a response whose prompt does
+        not extend the chain — the response is still returned (capture-only
+        quality, Gym's validation masks the sample) and the chain is left
+        untouched so a later call may reseed it.
+        """
+        injected = dict(body)
+        injected["required_prefix_token_ids"] = list(chain.accumulated)
+        request.replace_body(injected)
+        # Budget estimate for the grafted prompt: the raw history plus the
+        # re-rendered environment suffix (the graft swaps rendered's prefix
+        # for the longer raw history, so len(rendered) alone undercounts).
+        prompt_len = len(chain.accumulated) + max(len(rendered) - len(chain.prefix), 0)
+        response = await self._serve_inner(ctx, request, injected, prompt_len=prompt_len)
+
+        try:
+            response_body = dict(response.body)
+        except (TypeError, ValueError):
+            return response
+        harvested = _harvest_token_fields(response_body)
+        if harvested is None or harvested[0][: len(chain.accumulated)] != chain.accumulated:
+            logger.warning(
+                "token injection: prefix_chat response does not extend the chain "
+                "(the endpoint may not support required_prefix_token_ids); "
+                "chain not advanced"
+            )
+            return response
+        prompt_ids, generation_ids, finish_reason = harvested
+
+        # State advances only after a verified graft, so an ignored or
+        # partially honored prefix cannot corrupt the history.
+        chain.accumulated = prompt_ids + generation_ids
+        chain.prefix = await self._tokenize(body, add_generation_prompt=False)
+        chain.last_generation = generation_ids
+        if finish_reason in _NATURAL_STOP_REASONS:
+            chain.eot_token_id = generation_ids[-1]
+        return response
 
     def _synthesize_chat_body(
         self, request_body: JsonObject, completion: JsonObject, injected_prompt: list[int]

@@ -604,10 +604,27 @@ def test_bundle_capture_route_exposes_max_model_len(respx_mock: respx.MockRouter
 def test_bundle_max_model_len_absent_on_fetch_failure(respx_mock: respx.MockRouter) -> None:
     from switchyard.cli.route_bundle import build_route_bundle_table
 
+    _root = _BASE_URL.removesuffix("/v1")
     respx_mock.get(f"{_BASE_URL}/models").mock(return_value=httpx.Response(503))
+    respx_mock.post(f"{_root}/tokenize").mock(return_value=httpx.Response(503))
     table = build_route_bundle_table(_bundle(_injection_route()), token_capture_enabled=True)
     entry = next(e for e in table.registered_model_entries() if e["id"] == "policy-model")
     assert "max_model_len" not in entry
+
+
+@respx.mock
+def test_bundle_max_model_len_from_tokenize_fallback(respx_mock: respx.MockRouter) -> None:
+    """/tokenize is used when /v1/models is absent (e.g. NeMo-RL training server)."""
+    from switchyard.cli.route_bundle import build_route_bundle_table
+
+    _root = _BASE_URL.removesuffix("/v1")
+    respx_mock.get(f"{_BASE_URL}/models").mock(return_value=httpx.Response(404))
+    respx_mock.post(f"{_root}/tokenize").mock(
+        return_value=httpx.Response(200, json={"tokens": [], "count": 0, "max_model_len": 65536})
+    )
+    table = build_route_bundle_table(_bundle(_injection_route()), token_capture_enabled=True)
+    entry = next(e for e in table.registered_model_entries() if e["id"] == "policy-model")
+    assert entry["max_model_len"] == 65536
 
 
 def test_bundle_without_injection_key_is_unwrapped() -> None:
@@ -633,3 +650,145 @@ def test_tool_choice_schema_shapes() -> None:
         _TOOLS, {"type": "function", "function": {"name": "get_weather"}}
     )
     assert named == _TOOLS[0]["function"]["parameters"]
+
+
+# ---------------------------------------------------------------------------
+# prefix_chat transport
+# ---------------------------------------------------------------------------
+
+
+def _grafted_chat_body(
+    prompt: list[int], generation: list[int], finish_reason: str = "stop"
+) -> dict[str, Any]:
+    """vLLM chat body for a continuation served by a prefix-grafting server."""
+    return {
+        "id": "chatcmpl-graft",
+        "object": "chat.completion",
+        "created": 1700000100,
+        "model": _MODEL,
+        "prompt_token_ids": prompt,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "next step"},
+                "finish_reason": finish_reason,
+                "token_ids": generation,
+                "logprobs": {"content": [{"logprob": -0.4}] * len(generation)},
+            }
+        ],
+        "usage": {
+            "prompt_tokens": len(prompt),
+            "completion_tokens": len(generation),
+            "total_tokens": len(prompt) + len(generation),
+        },
+    }
+
+
+@respx.mock
+async def test_prefix_chat_attaches_history_and_extends_chain(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Continuations ride the chat path carrying required_prefix_token_ids."""
+    history = [1, 2, 3, 4, 5, _EOT]  # p1 + g1 from the seed call
+    grafted_2 = history + [20, 21, 30]
+    generation_2 = [40, 41, _EOT]
+    grafted_3 = grafted_2 + generation_2 + [50]
+    inner = _FakeInner(
+        [
+            _first_turn_body(),
+            _grafted_chat_body(grafted_2, generation_2),
+            _grafted_chat_body(grafted_3, [60]),
+        ]
+    )
+    backend = _backend(inner, transport="prefix_chat")
+    ctx = _ctx()
+    _mock_tokenize(
+        respx_mock,
+        [
+            [1, 2],  # seed prefix
+            [1, 2, _EOT, 20, 21, 30],  # turn-2 rendered (gen prompt on)
+            [1, 2, _EOT, 20, 21],  # turn-2 prefix (post-call bookkeeping)
+            [1, 2, _EOT, 20, 21, 70],  # turn-3 rendered — extends turn-2 prefix
+            [1, 2, _EOT, 20, 21, 70],  # turn-3 prefix
+        ],
+    )
+
+    await backend.call(ctx, _chat_request())
+    response = await backend.call(ctx, _chat_request(turns=2))
+    await backend.call(ctx, _chat_request(turns=3))
+
+    assert inner.calls == 3  # all calls stay on the chat path
+    assert "required_prefix_token_ids" not in inner.seen_bodies[0]
+    assert inner.seen_bodies[1]["required_prefix_token_ids"] == history
+    # State advanced from the grafted response: call 3 carries call 2's tokens.
+    assert inner.seen_bodies[2]["required_prefix_token_ids"] == grafted_2 + generation_2
+
+    # The response passes through unchanged, token fields intact for capture.
+    body = dict(response.body)
+    assert body["prompt_token_ids"] == grafted_2
+    assert body["prompt_token_ids"][: len(history)] == history
+    assert body["choices"][0]["token_ids"] == generation_2
+
+
+@respx.mock
+async def test_prefix_chat_ignored_prefix_leaves_chain_untouched(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """A server ignoring the field yields capture-only quality, no chain corruption."""
+    history = [1, 2, 3, 4, 5, _EOT]
+    bare_render = [1, 2, _EOT, 20, 21, 30]  # does NOT extend the history
+    inner = _FakeInner(
+        [
+            _first_turn_body(),
+            _grafted_chat_body(bare_render, [40]),
+            _grafted_chat_body(bare_render, [40]),
+        ]
+    )
+    backend = _backend(inner, transport="prefix_chat")
+    ctx = _ctx()
+    _mock_tokenize(
+        respx_mock,
+        [
+            [1, 2],  # seed prefix
+            [1, 2, _EOT, 20, 21, 30],  # turn-2 rendered
+            [1, 2, _EOT, 20, 21, 30],  # turn-3 rendered (chain prefix still [1, 2])
+        ],
+    )
+
+    await backend.call(ctx, _chat_request())
+    response = await backend.call(ctx, _chat_request(turns=2))
+    await backend.call(ctx, _chat_request(turns=3))
+
+    # The un-grafted response is returned as-is; the chain kept its history,
+    # so the next call retries with the same (unadvanced) prefix.
+    assert dict(response.body)["prompt_token_ids"] == bare_render
+    assert inner.seen_bodies[1]["required_prefix_token_ids"] == history
+    assert inner.seen_bodies[2]["required_prefix_token_ids"] == history
+
+
+def test_unknown_transport_rejected() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="grpc"):
+        _backend(transport="grpc")
+
+
+def test_bundle_injection_transport_configures_backend() -> None:
+    from switchyard.cli.route_bundle import build_route_bundle_table
+
+    route = _injection_route(injection_transport="prefix_chat")
+    table = build_route_bundle_table(_bundle(route), token_capture_enabled=True)
+    backend = next(
+        c for c in _route_backends(table) if isinstance(c, TokenInjectionBackend)
+    )
+    assert backend._transport == "prefix_chat"
+
+
+def test_bundle_invalid_injection_transport_rejected() -> None:
+    import pytest
+
+    from switchyard.cli.route_bundle import RouteBundleConfigError, build_route_bundle_table
+
+    route = _injection_route(injection_transport="smoke-signals")
+    with pytest.raises(RouteBundleConfigError, match="injection_transport"):
+        build_route_bundle_table(_bundle(route), token_capture_enabled=True)
