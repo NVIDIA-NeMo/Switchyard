@@ -43,17 +43,6 @@ const SIGNAL_UNIT: f64 = 0.10;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
 
-/// Signed, fixed weights over the two axes. Error signals (`severity`,
-/// `spinning`, `exploring`) push toward capable (+); `production_intensity`
-/// pushes toward efficient (−). `severity` is normalised by its hard cap so it
-/// too contributes one `SIGNAL_UNIT` when maxed.
-const DEFAULT_WEIGHTS: &[(&str, f64)] = &[
-    ("severity", SIGNAL_UNIT / HARD_SEVERITY),
-    ("spinning", SIGNAL_UNIT),
-    ("exploring", SIGNAL_UNIT),
-    ("production_intensity", -SIGNAL_UNIT),
-];
-
 /// The two tiers a turn can route to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tier {
@@ -128,18 +117,6 @@ pub struct CodingAgentDimensions {
     pub production_intensity: f64,
 }
 
-impl CodingAgentDimensions {
-    fn value(&self, name: &str) -> f64 {
-        match name {
-            "severity" => self.severity,
-            "spinning" => self.spinning,
-            "exploring" => self.exploring,
-            "production_intensity" => self.production_intensity,
-            _ => 0.0,
-        }
-    }
-}
-
 /// Outcome of [`pick_tier`]: either a resolved decision, or a signal that the
 /// caller should consult its (impl-specific, async) classifier.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -199,11 +176,12 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
 /// `confidence_threshold` reads roughly: `~0.3` escalates on one signal, `~0.5`
 /// needs about one-and-a-half, `~0.7` needs two to corroborate.
 pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
-    let dimensions = dimensions_from_signal(signal);
-    let raw: f64 = DEFAULT_WEIGHTS
-        .iter()
-        .map(|(name, weight)| dimensions.value(name) * weight)
-        .sum();
+    let d = dimensions_from_signal(signal);
+    // Error axis (severity, spinning, exploring → +capable) minus the production
+    // axis (→ −efficient). Each maxed signal is one SIGNAL_UNIT; severity is
+    // normalised by its hard cap so it lands there too.
+    let raw = SIGNAL_UNIT
+        * (d.severity / HARD_SEVERITY + d.spinning + d.exploring - d.production_intensity);
     let score = (SCORE_GAIN * raw).tanh();
     ScoreResult {
         score,
@@ -307,7 +285,24 @@ fn ratio(numerator: u32, denominator: u32) -> f64 {
     }
 }
 
-struct StageClassifier {}
+/// Signal-only stage-router classifier: scores each turn onto the strong/weak
+/// tiers from tool-result signals, via the configured picker mode and the
+/// confidence the scorer must reach before it acts on the signal alone.
+pub struct StageClassifier {
+    mode: PickerMode,
+    confidence_threshold: f64,
+}
+
+impl StageClassifier {
+    /// Build a classifier with the given default tier (`mode`) and
+    /// `confidence_threshold`.
+    pub fn new(mode: PickerMode, confidence_threshold: f64) -> Self {
+        Self {
+            mode,
+            confidence_threshold,
+        }
+    }
+}
 
 #[async_trait]
 impl Classifier for StageClassifier {
@@ -323,8 +318,7 @@ impl Classifier for StageClassifier {
             return Ok(Classification::Ambiguous(vec![]));
         };
 
-        // TOOD make mode and thresh configurable
-        let outcome = pick_tier(signal, PickerMode::EfficientFirst, 0.5);
+        let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
         match outcome {
             PickOutcome::Resolved { tier, score, .. } => {
                 let target = match tier {
@@ -361,8 +355,6 @@ impl Classifier for StageClassifier {
         }
     }
 }
-
-impl StageClassifier {}
 
 #[cfg(test)]
 mod tests {
@@ -448,7 +440,7 @@ mod tests {
     async fn classifier_abstains_without_tool_signals() -> Result<()> {
         // No tool activity observed yet → the classifier abstains (empty ambiguous set).
         let mut state = State::default();
-        let classification = StageClassifier {}
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &Request::default(), None)
             .await?;
         match classification {
@@ -466,7 +458,7 @@ mod tests {
             ..Default::default()
         };
         let mut state = state_with(signal);
-        let classification = StageClassifier {}
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &Request::default(), None)
             .await?;
         match classification {
@@ -490,7 +482,7 @@ mod tests {
             ..Default::default()
         };
         let mut state = state_with(signal);
-        let classification = StageClassifier {}
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &Request::default(), None)
             .await?;
         match classification {
@@ -508,7 +500,7 @@ mod tests {
         // A quiet signal corroborates neither axis → ambiguous, defaulting to the
         // efficient (weak) tier, which is also stashed in `extra` for the caller.
         let mut state = state_with(ToolSignals::default());
-        let classification = StageClassifier {}
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &Request::default(), None)
             .await?;
         match classification {
@@ -521,6 +513,28 @@ mod tests {
         assert!(matches!(
             state.extra.get("default_target"),
             Some(StateValue::String(target)) if target == "weak"
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classifier_honors_configured_mode_on_fall_open() -> Result<()> {
+        // Same quiet signal, but capable_first defaults the fall-open to strong —
+        // proving the configured picker mode is used, not a hardcoded default.
+        let mut state = state_with(ToolSignals::default());
+        let classification = StageClassifier::new(PickerMode::CapableFirst, 0.5)
+            .score(&mut state, &Request::default(), None)
+            .await?;
+        match classification {
+            Classification::Ambiguous(scores) => {
+                assert_eq!(scores.len(), 1);
+                assert_eq!(scores[0].target, "strong");
+            }
+            _ => panic!("expected an ambiguous classification"),
+        }
+        assert!(matches!(
+            state.extra.get("default_target"),
+            Some(StateValue::String(target)) if target == "strong"
         ));
         Ok(())
     }

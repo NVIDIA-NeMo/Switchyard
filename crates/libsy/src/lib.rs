@@ -92,6 +92,6 @@ pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
 pub mod stage_router {
     pub use crate::algorithms::util::stage_router::{
         dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
-        PickOutcome, PickerMode, ScoreResult, Tier,
+        PickOutcome, PickerMode, ScoreResult, StageClassifier, Tier,
     };
 }
