@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Result, State};
+use crate::Result;
 use async_trait::async_trait;
 use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
 
-/// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate [`State`]
+/// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate state.
 ///
 /// The two request-bearing variants borrow the request mutably, so a processor may rewrite
 /// it in place and pass the rewritten request down the chain (see [`Processor::process`]).
@@ -28,9 +28,9 @@ pub enum Event<'a> {
     ModelResponse(&'a AggLlmResponse),
 }
 
-/// Collects events as the algorithm runs and mutates [`State`]
+/// Collects events as the algorithm runs and mutates the composition's state.
 #[async_trait]
-pub trait Processor<S = State>: Send + Sync {
+pub trait Processor<S = ()>: Send + Sync {
     /// Process an event, accumulating facts into `state`.
     ///
     /// A request-bearing event ([`Event::Request`], [`Event::ModelRequest`]) may also be
@@ -42,7 +42,7 @@ pub trait Processor<S = State>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StateValue;
+    use crate::{State, StateValue};
     use switchyard_protocol::{text_request, text_response};
 
     /// The `State::extra` key each event variant tallies under.
@@ -68,7 +68,7 @@ mod tests {
     struct CountingProcessor;
 
     #[async_trait]
-    impl Processor for CountingProcessor {
+    impl Processor<State> for CountingProcessor {
         async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
             let entry = state
                 .extra

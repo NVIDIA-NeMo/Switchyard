@@ -46,8 +46,9 @@ Runnable: [`research_agent`](examples/research_agent.rs)
 ## Composing fall-through routing
 
 `FallThrough` runs a processor chain, consults classifiers until one chooses a target,
-then makes the target call. Its state is generic: use `()` for a stateless composition,
-or `Shared<MyState>` when processors and classifiers need state across turns.
+then makes the target call. It owns its generic state handle and defaults to `()` for a
+stateless composition; use `Shared<MyState>` when processors and classifiers need state
+across runs.
 
 Random routing is a stateless composition with no processors:
 

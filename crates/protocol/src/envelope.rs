@@ -7,24 +7,11 @@
 use crate::{LlmRequest, LlmResponse, Metadata};
 use std::collections::HashMap;
 
-/// [`Context`] for an algorithm or llm client.
-/// This struct is fed through the entire process and provides unified information to each step
+/// Cross-cutting request context passed through algorithms and LLM clients.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Context<S = ()> {
-    /// caller specific values
+pub struct Context {
+    /// Caller-specific values propagated through the request.
     pub values: HashMap<String, String>,
-    /// Caller-defined per-session state; `()` when a consumer carries no session state.
-    pub state: S,
-}
-
-impl<S> Context<S> {
-    /// Create a new [`Context`] with the given state and an empty values map.
-    pub fn without_state(&self) -> Context<()> {
-        Context {
-            values: self.values.clone(),
-            state: (),
-        }
-    }
 }
 
 /// Agentic-stack events fed to an algorithm out of band (e.g. tool results, budget

@@ -243,7 +243,7 @@ mod tests {
 
     /// Scores through the definitive classification variant used by affinity.
     async fn scores(
-        classifier: &dyn Classifier,
+        classifier: &dyn Classifier<State>,
         state: &mut State,
         request: &mut Request,
     ) -> Result<Vec<Score>, BoxErr> {
@@ -382,8 +382,8 @@ mod tests {
         // The same instance is registered under both SDK roles; a decision folded in via
         // the processor handle is read back via the classifier handle.
         let router = Arc::new(AffinityRouter::new());
-        let processor: Arc<dyn Processor> = router.clone();
-        let classifier: Arc<dyn Classifier> = router;
+        let processor: Arc<dyn Processor<State>> = router.clone();
+        let classifier: Arc<dyn Classifier<State>> = router;
         let mut state = State::default();
 
         let mut first = request(session("session-1", "agent-a"));

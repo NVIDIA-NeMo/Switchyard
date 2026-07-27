@@ -50,8 +50,8 @@ impl<S: Send> StateGuard<S> for tokio::sync::MutexGuard<'_, S> {
 /// Supplies one mutable state value to an algorithm run.
 ///
 /// `()` is the zero-cost stateless handle. [`Shared<S>`] provides state that
-/// persists when the same context is reused across turns.
-pub trait StateHandle: Clone + Send + Sync + 'static {
+/// persists across runs of the algorithm that owns it.
+pub trait StateHandle: Send + Sync + 'static {
     /// State value exposed to processors and classifiers.
     type State: Send + 'static;
     /// Guard retaining exclusive access for the processor/classifier fold.
@@ -72,7 +72,7 @@ impl StateHandle for () {
     }
 }
 
-/// Shared, asynchronously locked state stored in an algorithm [`Context`](crate::Context).
+/// Shared, asynchronously locked state owned by an algorithm.
 #[derive(Debug)]
 pub struct Shared<S> {
     inner: Arc<Mutex<S>>,

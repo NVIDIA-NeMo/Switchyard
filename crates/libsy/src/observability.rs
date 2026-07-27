@@ -53,7 +53,7 @@ static TOTAL_GAUGES: OnceLock<(ObservableGauge<u64>, ObservableGauge<u64>)> = On
 pub(crate) const ALGORITHM_KEY: &str = "algorithm";
 
 /// The algorithm label carried by a request context; empty until stamped.
-pub(crate) fn algorithm_label<S>(ctx: &Context<S>) -> &str {
+pub(crate) fn algorithm_label(ctx: &Context) -> &str {
     ctx.values
         .get(ALGORITHM_KEY)
         .map(String::as_str)
@@ -135,8 +135,8 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
 /// Runs one algorithm task to completion, recording the run counter, duration
 /// histogram, span outcome, and failure log when it resolves. Executes inside
 /// the `libsy.run` span its caller instruments the task with.
-pub(crate) async fn observe_run<S>(
-    ctx: Context<S>,
+pub(crate) async fn observe_run(
+    ctx: Context,
     run: impl Future<Output = Result<Response>>,
 ) -> Result<Response> {
     let started = Instant::now();

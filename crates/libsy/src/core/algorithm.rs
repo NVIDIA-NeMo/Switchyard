@@ -327,18 +327,9 @@ impl LlmTargetSet {
 /// or [`run_stream`](Self::run_stream) (drive the [`Step`] stream yourself).
 ///
 /// Methods take `self: Arc<Self>`: one algorithm (`Arc<dyn Algorithm>`) is shared across
-/// requests and run concurrently, so it owns its thread-safety. Stateless algorithms
-/// (the reference routers) get this for free; a stateful one keeps its per-session state
-/// in the threaded [`Context<S>`], not in the shared algorithm.
-///
-/// The `S` type parameter is the per-session state carried in `Context<S>`. It defaults
-/// to `()`, so stateless algorithms just write `impl Algorithm for MyRouter` and callers
-/// keep using `Arc<dyn Algorithm>`. A stateful algorithm picks its own state type.
+/// requests and run concurrently, so it owns its thread-safety and any shared state.
 #[async_trait]
-pub trait Algorithm<S = ()>: Send + Sync + 'static
-where
-    S: Clone + Send + Sync + 'static,
-{
+pub trait Algorithm: Send + Sync + 'static {
     /// Stable, low-cardinality name identifying this algorithm — the
     /// `algorithm` attribute on every span, metric, and log line the crate
     /// emits for its runs (see the crate docs' Observability section).
@@ -348,10 +339,10 @@ where
     /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
     /// drive it. `ctx` carries the request's cross-cutting values (today: the
-    /// algorithm's telemetry label in [`Context::values`]) and per-session `state`.
+    /// algorithm's telemetry label in [`Context::values`]).
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context<S>,
+        ctx: Context,
         driver: Driver,
         request: Request,
     ) -> Result<Response>;
@@ -400,7 +391,7 @@ where
     /// Process a request to completion, returning a stream of [`Step`]s.
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
-    fn run_stream(self: Arc<Self>, ctx: Context<S>, request: Request) -> StepStream {
+    fn run_stream(self: Arc<Self>, ctx: Context, request: Request) -> StepStream {
         // Stamp the algorithm's telemetry label into the request context; the
         // context rides on every driver call, so its telemetry is attributed.
         let mut ctx = ctx;
@@ -430,8 +421,7 @@ where
         let abort_guard = AbortOnDrop(handle.abort_handle());
 
         let finish_driver = driver.clone();
-        // The terminal step carries no session state; hand `finish` the base context.
-        let finish_ctx = ctx.without_state();
+        let finish_ctx = ctx;
         let tail: StepStream = Box::pin(
             futures::stream::once(async move {
                 let result = match handle.await {
@@ -455,7 +445,7 @@ where
     /// [`Decision`]s the algorithm made along the way.
     async fn run(
         self: Arc<Self>,
-        ctx: Context<S>,
+        ctx: Context,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
         // Serve one offloaded call with its target's default client. A failed *model*

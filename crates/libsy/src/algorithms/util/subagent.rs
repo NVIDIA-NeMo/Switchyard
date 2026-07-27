@@ -17,7 +17,7 @@
 
 use async_trait::async_trait;
 
-use crate::{Classification, Classifier, Driver, Metadata, Request, Result, Score, State};
+use crate::{Classification, Classifier, Driver, Metadata, Request, Result, Score};
 
 /// Scores a fixed worker target for delegated sub-agent work; abstains otherwise.
 pub struct SubagentOverride {
@@ -38,10 +38,13 @@ impl SubagentOverride {
 }
 
 #[async_trait]
-impl Classifier for SubagentOverride {
+impl<S> Classifier<S> for SubagentOverride
+where
+    S: Send + 'static,
+{
     async fn score(
         &self,
-        _state: &mut State,
+        _state: &mut S,
         request: &mut Request,
         _driver: Option<&Driver>,
     ) -> Result<Classification> {
@@ -87,7 +90,7 @@ mod tests {
 
     /// Scores `headers` through the override, returning the winning target if it scored.
     async fn selected(headers: &[(&str, &str)]) -> Result<Option<String>> {
-        let mut state = State::default();
+        let mut state = ();
         let classification = SubagentOverride::new("worker")
             .score(&mut state, &mut request(headers), None)
             .await?;
@@ -135,7 +138,7 @@ mod tests {
     async fn delegated_work_is_scored_definitively() -> Result<()> {
         // Confidence 1.0 under `Scores` (never `Ambiguous`), so the cascade stops here
         // rather than consulting later classifiers.
-        let mut state = State::default();
+        let mut state = ();
         let classification = SubagentOverride::new("worker")
             .score(
                 &mut state,
