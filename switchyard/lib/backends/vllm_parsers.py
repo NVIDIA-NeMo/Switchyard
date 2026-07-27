@@ -196,23 +196,19 @@ def _resolve_runtime(
 def _import_vllm_parsers(
     tool_parser: str | None, reasoning_parser: str | None
 ) -> tuple[Any | None, Any | None, Any]:
-    """Import parser classes from the installed vLLM, gated on its version.
+    """Import parser classes from the installed vLLM (0.15+ module layout).
 
-    Verified layout boundaries: ``vllm.tool_parsers`` exists from 0.13.0
-    (``vllm.entrypoints.openai.tool_parsers`` before), ``vllm.reasoning``
-    never moved, and the monolithic ``vllm.entrypoints.openai.protocol``
-    split into per-endpoint packages at 0.15.0.
+    vLLM 0.15.0 is the supported floor: ``vllm.tool_parsers`` (top-level since
+    0.13.0), ``vllm.reasoning`` (never moved), and the per-endpoint
+    ``vllm.entrypoints.openai.chat_completion.protocol`` (split from the
+    monolithic protocol module at 0.15.0). The layout is not version-gated —
+    patched builds (e.g. RL training forks) may report unparseable dev version
+    strings while shipping a current layout.
     """
     vllm_version = _installed_vllm_version()
 
-    if vllm_version >= (0, 13, 0):
-        tool_parsers_module = "vllm.tool_parsers"
-    else:
-        tool_parsers_module = "vllm.entrypoints.openai.tool_parsers"
-    if vllm_version >= (0, 15, 0):
-        protocol_module = "vllm.entrypoints.openai.chat_completion.protocol"
-    else:
-        protocol_module = "vllm.entrypoints.openai.protocol"
+    tool_parsers_module = "vllm.tool_parsers"
+    protocol_module = "vllm.entrypoints.openai.chat_completion.protocol"
 
     tool_parser_cls: Any | None = None
     if tool_parser is not None:
