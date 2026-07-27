@@ -13,8 +13,6 @@ from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.profiles import (
     DeterministicRoutingConfig,
     DeterministicRoutingPresets,
-    PlanExecuteConfig,
-    PlanExecutePresets,
 )
 from switchyard.lib.profiles.deterministic_routing_config import ProfileName
 from switchyard.lib.profiles.random_routing import (
@@ -204,86 +202,9 @@ def build_deterministic_routing_config(
     )
 
 
-def build_plan_execute_config(
-    route: LaunchRouteConfig,
-    *,
-    primary: LaunchTierConnectivity,
-    backend_format: BackendFormat,
-    timeout: float | None,
-) -> PlanExecuteConfig:
-    """Layer ``--plan-execute`` CLI overrides on top of the shipping preset.
-
-    The shipping preset (:meth:`PlanExecutePresets.coding_agent_default`)
-    is the strong-planner + weak-executor pairing carried forward from
-    commit ``ca5fcd8a``. We start from it and override only the executor
-    model when the user supplied ``--model``. Planner overrides aren't
-    exposed on the CLI in v1 — users with a benchmark reason to vary the
-    planner write a YAML route bundle and pass ``--routing-profiles``.
-
-    Args:
-        route: Resolved :class:`LaunchRouteConfig`. ``route.model``
-            carries the user's explicit executor override (``None`` when
-            not supplied — the preset's Kimi executor wins).
-        primary: Connectivity for both planner and executor — the
-            shipping trio runs both against the same NVIDIA Inference
-            Hub tenancy. The launcher's ``--base-url`` / ``--api-key``
-            therefore apply uniformly.
-        backend_format: Wire format pinned by the calling launcher
-            (codex / openclaw: :class:`BackendFormat.OPENAI`; claude
-            defaults the same for the shipping pairing).
-        timeout: Per-request HTTP timeout for the executor backend
-            (seconds). The planner uses its own timeout from the
-            preset.
-    """
-    preset = PlanExecutePresets.coding_agent_default(
-        api_key=primary.api_key or "",
-        base_url=primary.base_url,
-        timeout_secs=timeout,
-    )
-
-    # Executor override: --model wins when supplied; otherwise the
-    # preset's validated weak tier stays.
-    executor_model = route.model or preset.executor.model
-    executor_target = LlmTarget(
-        id="executor",
-        model=executor_model,
-        format=backend_format,
-        api_key=primary.api_key,
-        base_url=primary.base_url,
-        timeout_secs=timeout,
-    )
-
-    # Planner stays on the preset's Opus tier — credentials come
-    # from the same connectivity bundle so a single --api-key / --base-url
-    # covers both.
-    planner_target = LlmTarget(
-        id="planner",
-        model=preset.planner.model,
-        format=preset.planner.format,
-        api_key=primary.api_key,
-        base_url=primary.base_url,
-        timeout_secs=preset.planner.endpoint.timeout_secs,
-    )
-
-    return PlanExecuteConfig(
-        planner=planner_target,
-        executor=executor_target,
-        cadence_n=preset.cadence_n,
-        disable_reasoning=preset.disable_reasoning,
-        fail_open=preset.fail_open,
-        enable_stats=preset.enable_stats,
-        fallback_target_on_evict=preset.fallback_target_on_evict,
-        # Preserve the preset label only when the user did not override
-        # the executor — once they pin a custom executor the bundle is
-        # no longer the shipping default.
-        preset=preset.preset if route.model is None else None,
-    )
-
-
 __all__ = [
     "LaunchTierConnectivity",
     "build_deterministic_routing_config",
-    "build_plan_execute_config",
     "build_random_routing_config",
     "require_route_model",
 ]

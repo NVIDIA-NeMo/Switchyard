@@ -14,18 +14,15 @@ use super::accumulator::ModelStatsSnapshot;
 /// `total_cost` is the grand total spend including overhead calls;
 /// `backend_cost` is the portion attributed to routed-backend traffic;
 /// `classifier_cost` is the LLM-classifier-overhead portion (zero unless
-/// `record_classifier_usage` has been called);
-/// `planner_cost` is the planner-overhead portion (zero unless
-/// `record_planner_usage` has been called). The split exists because the
-/// default TB-lite configs can use the same model id for multiple
-/// buckets and a single-row aggregation cannot distinguish them.
+/// `record_classifier_usage` has been called). The split exists because the
+/// default TB-lite configs can use the same model id for the classifier and
+/// backend buckets, and a single-row aggregation cannot distinguish them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CostEstimate {
     pub models: BTreeMap<String, CostBreakdown>,
     pub total_cost: f64,
     pub backend_cost: f64,
     pub classifier_cost: f64,
-    pub planner_cost: f64,
 }
 
 /// Per-model cost breakdown.
@@ -70,7 +67,6 @@ pub fn estimate_cost(models: &BTreeMap<String, ModelStatsSnapshot>) -> CostEstim
         total_cost: total,
         backend_cost: total,
         classifier_cost: 0.0,
-        planner_cost: 0.0,
     }
 }
 

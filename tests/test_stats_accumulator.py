@@ -81,12 +81,12 @@ async def test_same_model_can_contribute_to_distinct_tier_rollups():
         completion_tokens=3,
         tier="weak",
     )
-    await stats.record_success(model="shared/model", tier="executor")
+    await stats.record_success(model="shared/model", tier="primary")
     await stats.record_usage(
         model="shared/model",
         prompt_tokens=5,
         completion_tokens=7,
-        tier="executor",
+        tier="primary",
     )
 
     snapshot = await stats.snapshot()
@@ -97,9 +97,9 @@ async def test_same_model_can_contribute_to_distinct_tier_rollups():
     assert snapshot["tiers"]["weak"]["calls"] == 1
     assert snapshot["tiers"]["weak"]["prompt_tokens"] == 2
     assert snapshot["tiers"]["weak"]["completion_tokens"] == 3
-    assert snapshot["tiers"]["executor"]["calls"] == 1
-    assert snapshot["tiers"]["executor"]["prompt_tokens"] == 5
-    assert snapshot["tiers"]["executor"]["completion_tokens"] == 7
+    assert snapshot["tiers"]["primary"]["calls"] == 1
+    assert snapshot["tiers"]["primary"]["prompt_tokens"] == 5
+    assert snapshot["tiers"]["primary"]["completion_tokens"] == 7
 
 
 async def test_usage_can_attach_explicit_untiered_success_to_tier():

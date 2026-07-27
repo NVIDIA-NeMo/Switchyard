@@ -4,8 +4,8 @@
 //! Runtime support for random routing.
 
 use std::fmt;
-use std::sync::Mutex;
 
+use parking_lot::Mutex;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -130,7 +130,7 @@ impl RandomRoutingEngine {
 
     /// Selects a target without mutating a request.
     pub fn select(&self, original_model: Option<String>) -> Result<RandomRoutingDecision> {
-        let draw = self.next_draw()?;
+        let draw = self.next_draw();
         let tier = if draw < self.config.strong_probability {
             RandomRoutingTier::Strong
         } else {
@@ -155,13 +155,9 @@ impl RandomRoutingEngine {
         }
     }
 
-    // Draws the next probability sample while surfacing poisoned-lock failures.
-    fn next_draw(&self) -> Result<f64> {
-        let mut rng = self
-            .rng
-            .lock()
-            .map_err(|_| SwitchyardError::Other("random routing rng mutex poisoned".to_string()))?;
-        Ok(rng.gen())
+    // Draws the next probability sample.
+    fn next_draw(&self) -> f64 {
+        self.rng.lock().gen()
     }
 }
 

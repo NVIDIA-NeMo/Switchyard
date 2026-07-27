@@ -91,7 +91,7 @@ pub struct SubModelCall {
     pub cached_tokens: i64,
     /// Router family that made the call (e.g. `deterministic`, `stage_router`).
     pub router_type: String,
-    /// Route label the router produced (e.g. `classifier`, `planner`).
+    /// Route label the router produced (e.g. `classifier`, `judge`).
     pub routed_to: String,
 }
 

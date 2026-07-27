@@ -47,12 +47,10 @@
 //! producer runs on a task the driver does not own, hard cancellation (e.g. mid-compute
 //! that never touches the driver) is the caller's concern — abort the producer task.
 
-use std::{
-    any::Any,
-    sync::{Arc, Mutex},
-};
+use std::{any::Any, sync::Arc};
 
 use crate::{Context, DriverError, LibsyError, Result};
+use parking_lot::Mutex;
 
 use futures::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -145,11 +143,7 @@ impl TypeErasedDriver {
     }
 
     fn ensure_started(&self) -> Result<()> {
-        let guard = self
-            .inner
-            .step_rx
-            .lock()
-            .map_err(|_| DriverError::LockPoisoned)?;
+        let guard = self.inner.step_rx.lock();
         if guard.is_none() {
             Ok(())
         } else {
@@ -244,12 +238,12 @@ impl TypeErasedDriver {
     /// Take the single consumer stream of [`DriverStep`]s. Callable once: a second
     /// call yields a one-item stream carrying an `Err`, since the receiver is gone.
     pub fn stream(&self) -> impl Stream<Item = Result<DriverStep>> {
-        let receiver = match self.inner.step_rx.lock() {
-            Ok(mut guard) => guard
-                .take()
-                .ok_or_else(|| LibsyError::from(DriverError::StreamAlreadyTaken)),
-            Err(_) => Err(DriverError::LockPoisoned.into()),
-        };
+        let receiver = self
+            .inner
+            .step_rx
+            .lock()
+            .take()
+            .ok_or_else(|| LibsyError::from(DriverError::StreamAlreadyTaken));
         match receiver {
             Ok(rx) => ReceiverStream::new(rx).left_stream(),
             Err(error) => futures::stream::once(async move { Err(error) }).right_stream(),

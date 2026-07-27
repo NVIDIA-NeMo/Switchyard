@@ -397,7 +397,7 @@ fn tier_rollup_keeps_distinct_tiers_for_shared_model() -> Result<()> {
         None,
         Some("weak"),
     )?;
-    accumulator.record_success("shared/model", None, Some("executor"))?;
+    accumulator.record_success("shared/model", None, Some("primary"))?;
     accumulator.record_usage(
         "shared/model",
         TokenUsage {
@@ -407,7 +407,7 @@ fn tier_rollup_keeps_distinct_tiers_for_shared_model() -> Result<()> {
         },
         None,
         None,
-        Some("executor"),
+        Some("primary"),
     )?;
 
     let snapshot = accumulator.snapshot()?;
@@ -425,14 +425,14 @@ fn tier_rollup_keeps_distinct_tiers_for_shared_model() -> Result<()> {
     assert_eq!(weak.prompt_tokens, 2);
     assert_eq!(weak.completion_tokens, 3);
 
-    let executor = snapshot
+    let primary = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should exist".to_string()))?;
-    assert_eq!(executor.model, "shared/model");
-    assert_eq!(executor.calls, 1);
-    assert_eq!(executor.prompt_tokens, 5);
-    assert_eq!(executor.completion_tokens, 7);
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should exist".to_string()))?;
+    assert_eq!(primary.model, "shared/model");
+    assert_eq!(primary.calls, 1);
+    assert_eq!(primary.prompt_tokens, 5);
+    assert_eq!(primary.completion_tokens, 7);
     Ok(())
 }
 
@@ -461,7 +461,7 @@ fn tier_usage_can_attach_explicit_untiered_success() -> Result<()> {
         },
         None,
         None,
-        Some("executor"),
+        Some("primary"),
     )?;
 
     let snapshot = accumulator.snapshot()?;
@@ -478,13 +478,13 @@ fn tier_usage_can_attach_explicit_untiered_success() -> Result<()> {
     assert_eq!(weak.prompt_tokens, 2);
     assert_eq!(weak.completion_tokens, 3);
 
-    let executor = snapshot
+    let primary = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should exist".to_string()))?;
-    assert_eq!(executor.calls, 1);
-    assert_eq!(executor.prompt_tokens, 5);
-    assert_eq!(executor.completion_tokens, 7);
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should exist".to_string()))?;
+    assert_eq!(primary.calls, 1);
+    assert_eq!(primary.prompt_tokens, 5);
+    assert_eq!(primary.completion_tokens, 7);
     Ok(())
 }
 
@@ -545,7 +545,7 @@ fn already_attributed_usage_does_not_consume_legacy_pending_success() -> Result<
         },
         None,
         None,
-        Some("executor"),
+        Some("primary"),
     )?;
 
     let snapshot = accumulator.snapshot()?;
@@ -562,13 +562,13 @@ fn already_attributed_usage_does_not_consume_legacy_pending_success() -> Result<
     assert_eq!(weak.prompt_tokens, 2);
     assert_eq!(weak.completion_tokens, 3);
 
-    let executor = snapshot
+    let primary = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should exist".to_string()))?;
-    assert_eq!(executor.calls, 1);
-    assert_eq!(executor.prompt_tokens, 5);
-    assert_eq!(executor.completion_tokens, 7);
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should exist".to_string()))?;
+    assert_eq!(primary.calls, 1);
+    assert_eq!(primary.prompt_tokens, 5);
+    assert_eq!(primary.completion_tokens, 7);
     Ok(())
 }
 
@@ -699,32 +699,6 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
     assert_eq!(snapshot.cost_estimate.backend_cost, 3.0);
     assert_eq!(snapshot.cost_estimate.classifier_cost, 1.5);
     assert_eq!(snapshot.cost_estimate.total_cost, 4.5);
-    Ok(())
-}
-
-#[test]
-fn planner_bucket_tracks_max_observed_context_tokens() -> Result<()> {
-    let accumulator = StatsAccumulator::new();
-    for (prompt_tokens, completion_tokens) in [(120, 0), (300, 5), (200, 200)] {
-        accumulator.record_planner_usage(
-            "planner/model",
-            TokenUsage {
-                prompt_tokens,
-                completion_tokens,
-                ..TokenUsage::default()
-            },
-            None,
-        )?;
-    }
-
-    let snapshot = accumulator.snapshot()?;
-    let planner = snapshot
-        .planner
-        .models
-        .get("planner/model")
-        .ok_or_else(|| SwitchyardError::Other("planner row missing".to_string()))?;
-    assert_eq!(planner.prompt_tokens, 620);
-    assert_eq!(planner.max_observed_context_tokens, 400);
     Ok(())
 }
 

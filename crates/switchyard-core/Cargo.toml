@@ -12,14 +12,14 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-async-trait = "0.1"
+async-trait.workspace = true
 futures-core = "0.3"
 lru = "0.12"
-rand = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
+tokio.workspace = true

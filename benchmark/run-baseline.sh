@@ -313,7 +313,7 @@ while [[ $# -gt 0 ]]; do
         --task-list-file) TASK_LIST_FILE="$2"; shift 2 ;;
         --harbor-extra) HARBOR_EXTRA+=("$2"); shift 2 ;;
         --server-extra) SERVER_EXTRA+=("$2"); shift 2 ;;
-        --strong-model|--weak-model|--classifier-model|--executor-model|--planner-model|--profile|--strong-probability|--planner-cadence-n)
+        --strong-model|--weak-model|--classifier-model|--profile|--strong-probability)
             die "$1 belongs to the removed legacy benchmark launchers; encode server routing in --routing-profiles instead"
             ;;
         --dry-run) DRY_RUN=1; shift ;;

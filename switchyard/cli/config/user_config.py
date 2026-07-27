@@ -29,7 +29,7 @@ CONFIG_FILENAME = "config.json"
 CREDENTIALS_FILENAME = "credentials.json"
 
 LaunchTarget = Literal["claude", "codex", "openclaw"]
-LaunchRouteType = Literal["single", "random", "deterministic", "plan_execute"]
+LaunchRouteType = Literal["single", "random", "deterministic"]
 PRIMARY_TIER = "primary"
 WEAK_TIER = "weak"
 
@@ -267,8 +267,6 @@ def _route_type_value(data: Mapping[str, object], key: str) -> LaunchRouteType |
         return "random"
     if value == "deterministic":
         return "deterministic"
-    if value == "plan_execute":
-        return "plan_execute"
     return None
 
 

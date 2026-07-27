@@ -89,36 +89,51 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - One focused commit per step; every changed line traces to that step.
 - Single-line commit message in Conventional Commits form
   (`type(scope): summary`). No body, no `Co-Authored-By` trailer.
+- Pull request titles use the same Conventional Commits form.
+- Use `git commit -s` so every commit carries the required DCO sign-off.
 - Never commit unprompted. Show the diff, get approval, then commit.
+
+Before repairing DCO, inspect every affected commit:
+
+```bash
+git log origin/main..HEAD --format='%h %an <%ae> %s'
+```
+
+If every affected commit is yours, add the trailers and update the remote safely:
+
+```bash
+git rebase origin/main --signoff
+git push --force-with-lease origin HEAD
+```
+
+For a mixed-author branch, use an interactive rebase and mark only your unsigned commits for
+editing. At each stop, run `git commit --amend --no-edit --signoff`, then
+`git rebase --continue`. Never add your sign-off to another contributor's commit.
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-## Start here: discover skills before doing anything
+### 7. Review Discipline
 
-This repo ships project-specific agent skills under `.agents/skills/`. **Before reading code, planning a change, debugging a failure, or running validation, list and consult these skills.** They encode the workflows the maintainers expect you to follow.
+- Verify every finding against the current code path before reporting it.
+- Draft findings before posting review comments unless the user explicitly asks you to post them.
+- Resolve only your own review threads, and only after verifying the fix in code.
 
-```bash
-ls .agents/skills/
-```
+## Task-Specific Skills
 
-Two general-purpose entry points cover most tasks:
+The repository keeps a small set of optional runbooks under `.agents/skills/`. Read a skill only
+when its description directly matches the task. Ordinary code exploration, implementation,
+testing, and review do not require loading a skill.
 
-- `.agents/skills/switchyard-codebase-exploration/SKILL.md` — read-before-edit workflow; builds an impact map of the files, symbols, and tests touched by a change.
-- `.agents/skills/switchyard-testing-ci/SKILL.md` — picks the smallest trustworthy local validation set and maps failures to fixes.
-- `.agents/skills/switchyard-pr-reviewer/SKILL.md` — multi-mode PR-review workflow (correctness, tests, design-vs-ticket, simplify, docs, Rust-craft); adversarially verifies every finding and drafts comments before posting. Dispatches Rust to `rust-code-reviewer`. Use for any "review this PR / is this blocking? / post comments" request.
+| Skill | Use it for |
+|---|---|
+| `publish-python-release` | Python wheel artifacts, PyPI releases, and release workflow changes |
+| `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
+| `switchyard-docs` | Published MkDocs pages, strict builds, previews, and docs CI |
+| `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
+| `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
 
-Task-specific skills (publish-package, run-pre-merge-checks, etc.) live alongside them — scan the directory and read the SKILL.md of any whose `description` matches the task. If no skill applies, say so explicitly and proceed; do not silently skip discovery.
-
-### Keep skills in sync with the code they cover
-
-A skill that points at stale `file:line` references, removed flags, or a renamed symbol is worse than no skill — it actively misleads the next agent. **If your change modifies code that a skill describes, update the skill in the same change.** Specifically:
-
-- After editing any file referenced by a SKILL.md, re-grep the skill for the file path and verify each `file:line` and symbol still resolves.
-- If you rename a symbol, move a file, change a CLI flag, add or remove a factory/recipe/processor/backend/translator, or change a public export, update every skill that mentions it.
-- If you discover a workflow the skill does not cover but should, add a row to the skill's Quick Reference or Anti-Patterns table — do not let the gap survive the PR.
-- Anti-patterns called out in `switchyard-lib-core` and `switchyard-coding-agent-launchers` are the contract: if you change the golden patterns those skills describe (random-routing factory + recipe shape, CLI-launcher recipe consumption), update the skill first and have the skill change reviewed alongside the code.
-
-The skill files are part of the codebase. Treat them like tests or docs — drift is a real defect, caught only by the next person who consults the skill.
+Skills should contain stable operational constraints, not mutable architecture inventories. Read the
+current source and CI workflows for implementation details.
 
 ## Architecture: staged chain
 

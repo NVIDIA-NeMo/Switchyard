@@ -13,15 +13,16 @@
 //!   NVIDIA_API_KEY=... cargo run -p switchyard-libsy --example ensemble
 //!
 //! Unlike the reference routers, this algorithm is **stateful**: the win tally,
-//! turn counter, and committed choice live behind a [`std::sync::Mutex`] so one
+//! turn counter, and committed choice live behind a [`parking_lot::Mutex`] so one
 //! shared `&self` can serve a session's requests concurrently (see the
 //! `Algorithm` docs). In a proxy setup one `EnsembleOrchAlgo` is created per session,
 //! so this state is per-session.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 
 use switchyard_libsy::{
     Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
@@ -144,10 +145,7 @@ impl EnsembleOrchAlgo {
     /// concurrency two requests may both commit; they pick the same model from
     /// the same tally (with a stable tie-break), so the result is identical.
     fn resolve_committed(&self) -> Result<Option<String>> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ensemble_error("state lock poisoned"))?;
+        let mut state = self.state.lock();
         if let Some(model) = &state.committed {
             return Ok(Some(model.clone()));
         }
@@ -307,10 +305,7 @@ impl EnsembleOrchAlgo {
         // Record the win and advance the turn counter under the lock (not held
         // across any await).
         {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| ensemble_error("state lock poisoned"))?;
+            let mut state = self.state.lock();
             *state.wins.entry(winner_model.clone()).or_insert(0) += 1;
             state.turns += 1;
         }
@@ -470,7 +465,6 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
     use switchyard_libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient, Signals};
     use switchyard_protocol::text_response;
 
@@ -481,7 +475,7 @@ mod tests {
     struct JudgingClient {
         judge_model: String,
         prefer: String,
-        calls: Arc<StdMutex<Vec<String>>>,
+        calls: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -493,10 +487,7 @@ mod tests {
             decision: Arc<dyn Decision>,
         ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
             let name = decision.selected_model().to_string();
-            self.calls
-                .lock()
-                .map_err(|_| switchyard_protocol::LlmClientError::Other("lock poisoned".into()))?
-                .push(name.clone());
+            self.calls.lock().push(name.clone());
             let completion = if name == self.judge_model {
                 judge_pick(&prompt_text(&request.llm_request), &self.prefer)
             } else {
@@ -534,8 +525,8 @@ mod tests {
         judge: &str,
         prefer: &str,
         exploration_turns: u64,
-    ) -> (EnsembleOrchAlgo, Arc<StdMutex<Vec<String>>>) {
-        let calls = Arc::new(StdMutex::new(Vec::new()));
+    ) -> (EnsembleOrchAlgo, Arc<Mutex<Vec<String>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let client = Arc::new(JudgingClient {
             judge_model: judge.to_string(),
             prefer: prefer.to_string(),
@@ -620,9 +611,7 @@ mod tests {
         );
 
         // Both candidates and the judge were called.
-        let calls = calls
-            .lock()
-            .map_err(|_| ensemble_error("test call-log lock poisoned"))?;
+        let calls = calls.lock();
         assert!(calls.contains(&"a/model".to_string()));
         assert!(calls.contains(&"b/model".to_string()));
         assert!(calls.contains(&"judge/haiku".to_string()));
@@ -647,12 +636,8 @@ mod tests {
         // Two exploration turns.
         orch.clone().run(Context::default(), request("t1")).await?;
         orch.clone().run(Context::default(), request("t2")).await?;
-        let judge_calls_after_exploration = calls
-            .lock()
-            .map_err(|_| ensemble_error("test call-log lock poisoned"))?
-            .iter()
-            .filter(|c| *c == "judge/haiku")
-            .count();
+        let judge_calls_after_exploration =
+            calls.lock().iter().filter(|c| *c == "judge/haiku").count();
         assert_eq!(judge_calls_after_exploration, 2);
 
         // Third request: committed fast path — routes straight to b/model with no
@@ -671,9 +656,7 @@ mod tests {
         assert_eq!(decision.phase, EnsemblePhase::Committed);
         assert_eq!(decision.selected_model, "b/model");
 
-        let calls = calls
-            .lock()
-            .map_err(|_| ensemble_error("test call-log lock poisoned"))?;
+        let calls = calls.lock();
         // Judge was not called again on the committed turn.
         assert_eq!(calls.iter().filter(|c| *c == "judge/haiku").count(), 2);
         // a/model was called only on the two exploration turns, not the third.
@@ -694,10 +677,7 @@ mod tests {
             "answer from only/model"
         );
         // No judge call for a lone candidate.
-        assert!(!calls
-            .lock()
-            .map_err(|_| ensemble_error("test call-log lock poisoned"))?
-            .contains(&"judge/haiku".to_string()));
+        assert!(!calls.lock().contains(&"judge/haiku".to_string()));
         // Trace: [candidate, winner] — no judge entry.
         assert_eq!(trace.len(), 2);
         assert_eq!(as_ensemble(&trace[1])?.phase, EnsemblePhase::Winner);
@@ -719,12 +699,7 @@ mod tests {
         }
         // Judge ran on every turn.
         assert_eq!(
-            calls
-                .lock()
-                .map_err(|_| ensemble_error("test call-log lock poisoned"))?
-                .iter()
-                .filter(|c| *c == "judge/haiku")
-                .count(),
+            calls.lock().iter().filter(|c| *c == "judge/haiku").count(),
             3
         );
         Ok(())

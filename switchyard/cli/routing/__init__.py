@@ -6,7 +6,6 @@
 from switchyard.cli.routing.route_builder import (
     LaunchTierConnectivity,
     build_deterministic_routing_config,
-    build_plan_execute_config,
     build_random_routing_config,
     require_route_model,
 )
@@ -14,7 +13,6 @@ from switchyard.cli.routing.route_builder import (
 __all__ = [
     "LaunchTierConnectivity",
     "build_deterministic_routing_config",
-    "build_plan_execute_config",
     "build_random_routing_config",
     "require_route_model",
 ]

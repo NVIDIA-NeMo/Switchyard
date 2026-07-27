@@ -12,12 +12,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+use parking_lot::Mutex;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Subscriber};
@@ -37,14 +38,6 @@ struct TestError(&'static str);
 
 fn test_error(message: &'static str) -> LibsyError {
     LibsyError::external("test", TestError(message))
-}
-
-/// Locks a mutex, recovering the inner value if a panicking test poisoned it.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
 }
 
 /// One captured span: its name, contextual parent span name, and fields
@@ -72,11 +65,11 @@ struct CaptureStore {
 
 impl CaptureStore {
     fn spans(&self) -> Vec<SpanRecord> {
-        lock(&self.spans).values().cloned().collect()
+        self.spans.lock().values().cloned().collect()
     }
 
     fn events(&self) -> Vec<EventRecord> {
-        lock(&self.events).clone()
+        self.events.lock().clone()
     }
 }
 
@@ -120,7 +113,7 @@ where
         } else {
             None
         };
-        lock(&self.store.spans).insert(
+        self.store.spans.lock().insert(
             id.into_u64(),
             SpanRecord {
                 name: attrs.metadata().name().to_string(),
@@ -131,7 +124,7 @@ where
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, _ctx: LayerContext<'_, S>) {
-        if let Some(record) = lock(&self.store.spans).get_mut(&id.into_u64()) {
+        if let Some(record) = self.store.spans.lock().get_mut(&id.into_u64()) {
             values.record(&mut FieldVisitor(&mut record.fields));
         }
     }
@@ -139,7 +132,7 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
         let mut fields = BTreeMap::new();
         event.record(&mut FieldVisitor(&mut fields));
-        lock(&self.store.events).push(EventRecord {
+        self.store.events.lock().push(EventRecord {
             target: event.metadata().target().to_string(),
             fields,
         });

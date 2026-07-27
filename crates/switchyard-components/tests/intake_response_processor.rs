@@ -96,12 +96,12 @@ async fn response_processor_emits_a_record_per_submodel_call() -> Result<()> {
             routed_to: "classifier".to_string(),
         },
         SubModelCall {
-            model: "planner".to_string(),
+            model: "judge".to_string(),
             prompt_tokens: 50,
             completion_tokens: 5,
             cached_tokens: 0,
-            router_type: "plan_execute".to_string(),
-            routed_to: "planner".to_string(),
+            router_type: "escalation_router".to_string(),
+            routed_to: "judge".to_string(),
         },
     ]));
 
@@ -117,7 +117,7 @@ async fn response_processor_emits_a_record_per_submodel_call() -> Result<()> {
         .filter_map(|payload| payload["request"]["switchyard"]["routing"]["routed_to"].as_str())
         .collect();
     assert!(routed.contains(&"classifier"));
-    assert!(routed.contains(&"planner"));
+    assert!(routed.contains(&"judge"));
     Ok(())
 }
 

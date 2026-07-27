@@ -5,10 +5,9 @@
 
 //! Shared intake fixtures used by payload and processor tests.
 
-use std::sync::Mutex;
-
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use switchyard_components::{
     BackendSelection, BackendSelectionReason, IntakeRequestMetadata, IntakeRequestState,
@@ -42,44 +41,27 @@ impl RecordingSink {
 
     /// Returns the payloads captured so far.
     pub fn payloads(&self) -> Result<Vec<Value>> {
-        self.payloads
-            .lock()
-            .map_err(|_| SwitchyardError::Other("payload mutex poisoned".to_string()))
-            .map(|payloads| payloads.clone())
+        Ok(self.payloads.lock().clone())
     }
 
     /// Returns the shutdown count captured so far.
     pub fn shutdowns(&self) -> Result<u64> {
-        self.shutdowns
-            .lock()
-            .map_err(|_| SwitchyardError::Other("shutdown mutex poisoned".to_string()))
-            .map(|shutdowns| *shutdowns)
+        Ok(*self.shutdowns.lock())
     }
 }
 
 #[async_trait]
 impl IntakeSink for RecordingSink {
     async fn enqueue(&self, payload: Value) -> Result<()> {
-        if let Some(error) = self
-            .error
-            .lock()
-            .map_err(|_| SwitchyardError::Other("error mutex poisoned".to_string()))?
-            .take()
-        {
+        if let Some(error) = self.error.lock().take() {
             return Err(error);
         }
-        self.payloads
-            .lock()
-            .map_err(|_| SwitchyardError::Other("payload mutex poisoned".to_string()))?
-            .push(payload);
+        self.payloads.lock().push(payload);
         Ok(())
     }
 
     async fn shutdown(&self) -> Result<()> {
-        let mut shutdowns = self
-            .shutdowns
-            .lock()
-            .map_err(|_| SwitchyardError::Other("shutdown mutex poisoned".to_string()))?;
+        let mut shutdowns = self.shutdowns.lock();
         *shutdowns = shutdowns.saturating_add(1);
         Ok(())
     }

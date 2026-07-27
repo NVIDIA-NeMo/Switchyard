@@ -45,15 +45,9 @@ traffic that sits between client applications and LLM backends.
   `[cli]`, `[tracing]`, `[intake]`, `[affinity-redis]`, `[all]`. See
   [Installation](INSTALLATION.md).
 
-### Deprecated
-
-- **`--plan-execute` launcher flag** — slated for removal; plan-execute will be
-  configured through a `--routing-profiles` YAML bundle instead.
-
 ### Notes
 
 - The `--deterministic` launcher flag was removed during pre-release
   development — LLM-as-classifier routing is now the implicit default for the
   `claude` / `codex` / `openclaw` launchers.
 - Inference Hub integration docs are out of scope for this release.
-
