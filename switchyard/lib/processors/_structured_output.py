@@ -3,11 +3,8 @@
 
 """Strict-mode JSON-schema helpers for OpenAI Structured Outputs.
 
-Shared between :mod:`switchyard.lib.processors.llm_classifier` and
-:mod:`switchyard.lib.processors.plan_execute` so the two routers stay in
-lock-step on how they ask the upstream model to constrain its JSON
-output. Both routers build their ``response_format`` payload via
-:func:`build_response_format`; both rely on
+Routing processors build their ``response_format`` payload via
+:func:`build_response_format` and rely on
 :func:`to_strict_openai_schema` to translate a pydantic
 ``model_json_schema()`` into the subset OpenAI accepts under
 ``strict: true``.
@@ -44,9 +41,8 @@ _STRICT_DROP_KEYS: frozenset[str] = frozenset(
 # normal schema-annotation dict. Their child keys are user-defined names
 # (property names, definition names) and must never be filtered against
 # ``_STRICT_DROP_KEYS`` — a Pydantic model with a field literally named
-# ``title`` (e.g. :class:`switchyard.lib.processors.plan_execute.plan.PlanStep`)
-# was previously losing that property because ``title`` is also a JSON
-# Schema annotation we strip.  Recurse into the values; leave the keys
+# ``title`` would otherwise lose that property because ``title`` is also a
+# JSON Schema annotation we strip. Recurse into the values; leave the keys
 # untouched.
 _NAME_MAP_KEYS: frozenset[str] = frozenset(
     {

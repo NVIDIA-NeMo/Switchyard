@@ -20,8 +20,6 @@ calls go through local loopback HTTP servers because Rust reqwest
 bypasses ``respx``.  The test stays offline while still exercising the
 real classifier client, tier mapping, and per-tier backend dispatch.
 
-This file is **classifier-only**.  The classifier composed with the
-planner lives in :mod:`tests.test_classifier_planner_chain`.
 """
 
 from __future__ import annotations

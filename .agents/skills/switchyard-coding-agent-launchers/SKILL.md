@@ -41,7 +41,6 @@ after.
 | Build one launcher chain | `build_tier_passthrough_switchyard(...)` in `switchyard/lib/route_table_builders.py` |
 | Build/merge YAML routes | `load_route_bundle_table(...)` / `build_route_bundle_table(...)` in `switchyard/cli/route_bundle.py` |
 | Look up upstream model catalogs | `fetch_model_ids(...)` in `switchyard/cli/model_catalog/model_discovery.py` |
-| Add a plan-execute route | Add `type: plan_execute` in route YAML; `_plan_execute_switchyard` in `route_bundle.py` maps it to `PlanExecuteProfileConfig`. |
 | Add a deterministic route | Add `type: deterministic` in route YAML; `_deterministic_switchyard` maps it to `DeterministicRoutingProfileConfig`. |
 | Add a preset | Put it beside the profile config under `switchyard/lib/profiles/`; presets return typed config objects, not runnable apps. |
 | Inspect saved defaults | `switchyard configure --show` reads `switchyard/cli/config/user_config.py` and renders via `switchyard/cli/status.py`. |
@@ -87,8 +86,6 @@ Route YAML and launchers share this model-dispatch path:
   direct strong/weak passthrough entries.
 - `type: deterministic`, `type: escalation_router`, and `type: stage_router`
   register the route key plus direct strong/weak passthrough entries.
-- `type: plan_execute` registers the route key plus the executor as a direct
-  passthrough; the planner is internal routing logic.
 - `type: latency_service` and `type: noop` register the
   route key.
 

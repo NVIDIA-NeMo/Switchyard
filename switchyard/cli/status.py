@@ -188,9 +188,7 @@ def render_status(request: StatusRequest) -> str:
     # bundle on `switchyard launch {claude,codex,openclaw}`.
     if not isinstance(saved_bundle, dict):
         lines.append(
-            "built-in strategies: LLM-as-classifier routing (default, "
-            "strong/weak); plan-execute (strong-planner + weak-executor) via a "
-            "type: plan_execute route in a --routing-profiles bundle",
+            "built-in strategy: LLM-as-classifier routing (default, strong/weak)",
         )
     lines.append(_format_skill_distillation(user_config.skill_distillation))
     lines += [

@@ -87,23 +87,6 @@ def test_string_shorthand_tier_resolves_to_model_id() -> None:
     assert _routing_profile_model_ids(bundle) == ["rr", "gpt-4o", "gpt-4o-mini"]
 
 
-def test_plan_execute_planner_executor_extracted() -> None:
-    bundle = {
-        "routes": {
-            "plan-route": {
-                "type": "plan_execute",
-                "planner": {"model": "aws/anthropic/bedrock-claude-opus-4-7"},
-                "executor": {"model": "nvidia/nvidia/nemotron-3-super-120b-long-ctx"},
-            },
-        },
-    }
-    assert _routing_profile_model_ids(bundle) == [
-        "plan-route",
-        "aws/anthropic/bedrock-claude-opus-4-7",
-        "nvidia/nvidia/nemotron-3-super-120b-long-ctx",
-    ]
-
-
 def test_merge_candidate_ids_dedupes_preserves_first_seen_order() -> None:
     """Routing-profile entries first, then upstream catalog. Duplicates from
     later sources drop."""

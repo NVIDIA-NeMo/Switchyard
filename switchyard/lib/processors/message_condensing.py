@@ -3,12 +3,12 @@
 
 """Shared helpers for condensing chat requests into routing-side LLM prompts.
 
-The LLM classifier, the escalation judge, and the plan-execute planner all
-show an inner LLM a compact view of the live request: anchors (system + first
-user message) plus a recent window, with bulk trimmed. These helpers are the
-common plumbing — message trimming, content flattening, truncation, and
-output-fence stripping — shared so the routing processors condense requests
-consistently instead of each keeping a private copy.
+The LLM classifier and escalation judge show an inner LLM a compact view of
+the live request: anchors (system + first user message) plus a recent window,
+with bulk trimmed. These helpers are the common plumbing — message trimming,
+content flattening, truncation, and output-fence stripping — shared so the
+routing processors condense requests consistently instead of each keeping a
+private copy.
 """
 
 from __future__ import annotations

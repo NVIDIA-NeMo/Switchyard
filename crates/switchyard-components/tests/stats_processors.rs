@@ -720,8 +720,8 @@ async fn response_processor_uses_selected_target_as_tier_fallback() -> Result<()
     let accumulator = StatsAccumulator::new();
     let processor = StatsResponseProcessor::new(accumulator.clone());
     let mut ctx = ProxyContext::new();
-    record_backend_selection(&mut ctx, ModelId::new("executor-model")?);
-    ctx.set_selected_target(LlmTargetId::from_static("executor"));
+    record_backend_selection(&mut ctx, ModelId::new("primary-model")?);
+    ctx.set_selected_target(LlmTargetId::from_static("primary"));
 
     processor
         .process(
@@ -735,9 +735,9 @@ async fn response_processor_uses_selected_target_as_tier_fallback() -> Result<()
     let snapshot = accumulator.snapshot()?;
     let tier = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should be present".to_string()))?;
-    assert_eq!(tier.model, "executor-model");
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should be present".to_string()))?;
+    assert_eq!(tier.model, "primary-model");
     assert_eq!(tier.prompt_tokens, 3);
     assert_eq!(tier.completion_tokens, 5);
     Ok(())

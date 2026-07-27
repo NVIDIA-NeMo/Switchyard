@@ -302,61 +302,6 @@ impl StatsAccumulator {
         Ok(())
     }
 
-    /// Records one planner-overhead call's token usage.
-    ///
-    /// Parallel to :meth:`record_classifier_usage`: the planner runs
-    /// out-of-band from the routed-backend chain and lives in its own
-    /// bucket so the planner-model spend never aliases the executor
-    /// model when both happen to share a model id.  Snapshot exposes
-    /// the bucket under :attr:`StatsSnapshot.planner` and rolls
-    /// :attr:`CostEstimate.planner_cost` into the headline
-    /// :attr:`CostEstimate.total_cost`.
-    pub fn record_planner_usage(
-        &self,
-        model: impl Into<String>,
-        usage: TokenUsage,
-        latency_ms: Option<f64>,
-    ) -> Result<()> {
-        let mut inner = self.lock();
-        inner.planner_requests = inner.planner_requests.saturating_add(1);
-        let stats = inner.planner_stats_mut(model.into());
-        stats.calls = stats.calls.saturating_add(1);
-        stats.prompt_tokens = stats.prompt_tokens.saturating_add(usage.prompt_tokens);
-        stats.max_observed_context_tokens = stats
-            .max_observed_context_tokens
-            .max(usage.prompt_tokens.saturating_add(usage.completion_tokens));
-        stats.completion_tokens = stats
-            .completion_tokens
-            .saturating_add(usage.completion_tokens);
-        stats.cached_tokens = stats.cached_tokens.saturating_add(usage.cached_tokens);
-        stats.cache_creation_tokens = stats
-            .cache_creation_tokens
-            .saturating_add(usage.cache_creation_tokens);
-        stats.reasoning_tokens = stats
-            .reasoning_tokens
-            .saturating_add(usage.reasoning_tokens);
-        if let Some(latency) = latency_ms {
-            stats.model_call_latency.record(latency);
-            stats.total_latency.record(latency);
-        }
-        Ok(())
-    }
-
-    /// Records a planner-call failure.
-    ///
-    /// Mirror of :meth:`record_classifier_error`.  Used by
-    /// :class:`switchyard.lib.processors.plan_execute.PlanningRequestProcessor`
-    /// in its fail-open branch so silent planner failures still count
-    /// against the planner bucket on :attr:`StatsSnapshot.planner`.
-    pub fn record_planner_error(&self, model: impl Into<String>) -> Result<()> {
-        let mut inner = self.lock();
-        inner.planner_requests = inner.planner_requests.saturating_add(1);
-        inner.planner_errors = inner.planner_errors.saturating_add(1);
-        let stats = inner.planner_stats_mut(model.into());
-        stats.errors = stats.errors.saturating_add(1);
-        Ok(())
-    }
-
     /// Returns a computed snapshot suitable for JSON serialization.
     pub fn snapshot(&self) -> Result<StatsSnapshot> {
         let inner = self.lock().clone();
@@ -395,10 +340,6 @@ struct StatsAccumulatorInner {
     classifier_model_order: Vec<String>,
     classifier_requests: u64,
     classifier_errors: u64,
-    by_planner: BTreeMap<String, ModelStats>,
-    planner_model_order: Vec<String>,
-    planner_requests: u64,
-    planner_errors: u64,
     routing_decisions: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
@@ -418,16 +359,6 @@ impl StatsAccumulatorInner {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 self.classifier_model_order.push(entry.key().clone());
-                entry.insert(ModelStats::default())
-            }
-        }
-    }
-
-    fn planner_stats_mut(&mut self, model: String) -> &mut ModelStats {
-        match self.by_planner.entry(model) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                self.planner_model_order.push(entry.key().clone());
                 entry.insert(ModelStats::default())
             }
         }
@@ -482,13 +413,8 @@ impl StatsAccumulatorInner {
         );
         cost_estimate.classifier_cost = classifier.cost_estimate.total_cost;
 
-        let planner =
-            build_planner_snapshot(&self.by_planner, self.planner_requests, self.planner_errors);
-        cost_estimate.planner_cost = planner.cost_estimate.total_cost;
-
-        cost_estimate.total_cost = round6(
-            cost_estimate.backend_cost + cost_estimate.classifier_cost + cost_estimate.planner_cost,
-        );
+        cost_estimate.total_cost =
+            round6(cost_estimate.backend_cost + cost_estimate.classifier_cost);
 
         StatsSnapshot {
             total_requests: self.total_requests,
@@ -499,7 +425,6 @@ impl StatsAccumulatorInner {
             models,
             routing_overhead: self.routing_overhead.snapshot(),
             classifier,
-            planner,
             routing_decisions: self.routing_decisions.clone(),
         }
     }
@@ -591,22 +516,6 @@ fn build_classifier_snapshot(
     let (models, totals) = build_model_snapshots(by_classifier, total_requests);
     let cost_estimate = estimate_cost(&models);
     ClassifierStatsSnapshot {
-        total_requests,
-        total_errors,
-        total_tokens: totals,
-        models,
-        cost_estimate,
-    }
-}
-
-fn build_planner_snapshot(
-    by_planner: &BTreeMap<String, ModelStats>,
-    total_requests: u64,
-    total_errors: u64,
-) -> PlannerStatsSnapshot {
-    let (models, totals) = build_model_snapshots(by_planner, total_requests);
-    let cost_estimate = estimate_cost(&models);
-    PlannerStatsSnapshot {
         total_requests,
         total_errors,
         total_tokens: totals,
@@ -758,7 +667,6 @@ pub struct StatsSnapshot {
     pub routing_overhead: LatencyHistogramSnapshot,
     pub cost_estimate: CostEstimate,
     pub classifier: ClassifierStatsSnapshot,
-    pub planner: PlannerStatsSnapshot,
     pub routing_decisions: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
@@ -766,22 +674,6 @@ pub struct StatsSnapshot {
 /// traffic so the two never alias on a shared model id.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClassifierStatsSnapshot {
-    pub total_requests: u64,
-    pub total_errors: u64,
-    pub total_tokens: TokenTotals,
-    pub models: BTreeMap<String, ModelStatsSnapshot>,
-    pub cost_estimate: CostEstimate,
-}
-
-/// Planner-overhead stats, recorded out-of-band from routed-backend
-/// traffic.  Parallel to :class:`ClassifierStatsSnapshot`; the
-/// :class:`switchyard.lib.processors.plan_execute.PlanningRequestProcessor`
-/// emits one record per planner call (usage on success,
-/// error-only on fail-open) so the planner's spend and failure rate
-/// are first-class on the stats endpoint instead of being inferable
-/// only from the per-request audit log.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PlannerStatsSnapshot {
     pub total_requests: u64,
     pub total_errors: u64,
     pub total_tokens: TokenTotals,

@@ -270,10 +270,6 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
         profile = r.get("profile")
         profile_part = f", profile={profile}" if profile else ""
         return f"llm-classifier: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{clf}{profile_part}"
-    if route_type == "plan_execute":
-        cadence = r.get("cadence_n")
-        cadence_part = f", cadence_n={cadence}" if cadence is not None else ""
-        return f"plan-execute: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{cadence_part}"
     if route_type == "random_routing":
         p = r.get("strong_probability", "")
         return f"random-routing: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}, p_strong={p}"

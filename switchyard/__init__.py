@@ -62,9 +62,6 @@ from switchyard.lib.profiles import (
     NoopProfile,
     NoopProfileConfig,
     PassthroughProfileConfig,
-    PlanExecuteConfig,
-    PlanExecutePresets,
-    PlanExecuteProfileConfig,
     Profile,
     ProfileConfig,
     ProfileConfigError,
@@ -161,9 +158,6 @@ __all__ = [
     "EscalationRouterProfileConfig",
     "LatencyServiceProfileConfig",
     "PassthroughProfileConfig",
-    "PlanExecuteConfig",
-    "PlanExecuteProfileConfig",
-    "PlanExecutePresets",
     "Profile",
     "ProfileConfig",
     "ProfileConfigError",
@@ -206,7 +200,6 @@ __all__ = [
     "RandomRoutingProcessorConfig",
     "LlmTarget",
     # Deterministic (LLM-classifier) routing usage case
-    # Plan-execute (strong planner + weak executor) usage case
     # Translation engine
     "TranslationEngine",
     # ChatResponse types

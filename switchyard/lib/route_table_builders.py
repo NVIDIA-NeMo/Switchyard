@@ -39,7 +39,6 @@ from switchyard.lib.processors.llm_classifier.presets import (
 from switchyard.lib.profiles.deterministic_routing_config import (
     DeterministicRoutingConfig,
 )
-from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
 from switchyard.lib.stats_accumulator import StatsAccumulator
@@ -438,127 +437,17 @@ def build_deterministic_routing_table(
     return table
 
 
-def plan_execute_virtual_model_id(config: PlanExecuteConfig) -> str:
-    """Stable model id representing this plan-execute bundle.
-
-    Mirrors :func:`deterministic_routing_virtual_model_id` — fingerprints
-    the planner + executor models so a launcher with multiple plan-execute
-    bundles per process still produces a unique virtual id per bundle.
-    """
-    fingerprint = hashlib.sha1(
-        "\0".join((
-            config.planner.model,
-            config.executor.model,
-            str(config.cadence_n),
-        )).encode("utf-8"),
-    ).hexdigest()[:8]
-    return f"switchyard-plan-execute-{fingerprint}"
-
-
-def build_plan_execute_switchyard(
-    config: PlanExecuteConfig,
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    """Build the plan-execute chain used by the launcher."""
-    from switchyard.lib.profiles import PlanExecuteProfileConfig, ProfileSwitchyard
-
-    return ProfileSwitchyard(
-        PlanExecuteProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=pre_routing_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
-def register_plan_execute_policy(
-    table: RouteTable,
-    config: PlanExecuteConfig,
-    plan_execute_switchyard: ChainRuntime,
-    routing_model: str | None = None,
-) -> str:
-    """Layer a plan-execute policy on top of a passthrough table.
-
-    The executor model is registered separately by
-    :func:`build_passthrough_table`; the planner is not user-selectable
-    (it's the routing logic, not a destination).
-    """
-    virtual_model = routing_model or plan_execute_virtual_model_id(config)
-    table.register(
-        virtual_model,
-        plan_execute_switchyard,
-        metadata={
-            "display_name": "Switchyard plan-execute",
-            "description": (
-                f"Strong planner ({config.planner.model}) drafts a plan "
-                f"every {config.cadence_n} turn(s); cheap executor "
-                f"({config.executor.model}) continues from the plan."
-            ),
-            "capabilities": model_capabilities(config.executor.model),
-            "switchyard": {
-                "profile": "plan_execute",
-                "planner_model": config.planner.model,
-                "executor_model": config.executor.model,
-                "cadence_n": config.cadence_n,
-            },
-        },
-        default=True,
-    )
-    return virtual_model
-
-
-def build_plan_execute_table(
-    config: PlanExecuteConfig,
-    stats: StatsAccumulator,
-    plan_execute_switchyard: ChainRuntime,
-    routing_model: str | None = None,
-    discovery_fn: DiscoveryFn | None = None,
-    extra_response_processors: Sequence[Any] = (),
-    pre_routing_request_processors: Sequence[Any] = (),
-) -> RouteTable:
-    """Compose discovery + plan-execute-policy layers.
-
-    Only the executor tier is registered as a direct passthrough — the
-    planner is internal to the chain and never user-selectable from the
-    client's ``/model`` picker.
-    """
-    table = build_passthrough_table(
-        (config.executor,),
-        stats,
-        enable_stats=config.enable_stats,
-        discovery_fn=discovery_fn,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    register_plan_execute_policy(
-        table,
-        config,
-        plan_execute_switchyard=plan_execute_switchyard,
-        routing_model=routing_model,
-    )
-    return table
-
-
 __all__ = [
     "DiscoveryFn",
     "build_deterministic_routing_table",
     "build_deterministic_routing_switchyard",
     "build_passthrough_table",
-    "build_plan_execute_table",
-    "build_plan_execute_switchyard",
     "build_random_routing_table",
     "build_random_routing_switchyard",
     "build_single_model_table",
     "build_tier_passthrough_switchyard",
     "deterministic_routing_virtual_model_id",
-    "plan_execute_virtual_model_id",
     "random_routing_virtual_model_id",
     "register_deterministic_routing_policy",
-    "register_plan_execute_policy",
     "register_random_routing_policy",
 ]

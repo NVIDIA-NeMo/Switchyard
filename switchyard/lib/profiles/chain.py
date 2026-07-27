@@ -381,7 +381,7 @@ def _attach_stats_to_request_processors(
     processors: Sequence[Any],
     stats: StatsAccumulator,
 ) -> None:
-    """Wire existing classifier/planner stats hooks without config fields."""
+    """Wire existing request-processor stats hooks without config fields."""
     for processor in processors:
         attach_stats = getattr(processor, "attach_stats_accumulator", None)
         if callable(attach_stats):

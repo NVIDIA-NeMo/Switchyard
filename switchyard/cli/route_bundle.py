@@ -41,14 +41,11 @@ from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     EscalationRouterProfileConfig,
     LatencyServiceProfileConfig,
-    PlanExecuteProfileConfig,
     ProfileSwitchyard,
     StageRouterProfileConfig,
 )
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
-from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
-from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.profiles.stage_router_config import StageRouterConfig
 from switchyard.lib.route_table import ChainRuntime, RouteTable
@@ -247,19 +244,6 @@ _STAGE_ROUTER_ROUTE_KEYS = (
         "fallback_target_on_evict",
     })
 )
-_PLAN_EXECUTE_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | _TARGET_DEFAULT_ROUTE_KEYS
-    | frozenset({
-        "planner",
-        "executor",
-        "cadence_n",
-        "disable_reasoning",
-        "fail_open",
-        "enable_stats",
-        "fallback_target_on_evict",
-    })
-)
 _ESCALATION_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
     | _TARGET_DEFAULT_ROUTE_KEYS
@@ -331,7 +315,6 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
     "escalation_router": _ESCALATION_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
-    "plan_execute": _PLAN_EXECUTE_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
@@ -342,15 +325,7 @@ _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "deterministic": _TARGET_DEFAULT_KEYS,
     "escalation_router": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
-    "plan_execute": _TARGET_DEFAULT_KEYS,
 }
-
-# Shipping planner/executor model ids for `type: plan_execute` routes, so an
-# omitted tier reproduces the retired `--plan-execute` flag. ``api_key=""`` is a
-# placeholder — only the tier `.model` strings are read; credentials cascade
-# from the route defaults.
-_PLAN_EXECUTE_DEFAULTS = PlanExecutePresets.coding_agent_default(api_key="")
-
 
 def _deterministic_profile_factories() -> dict[
     str, Any,
@@ -376,7 +351,7 @@ class _YamlModule(Protocol):
 #: ``classifier`` tier is intentionally NOT surfaced — it is an internal-only
 #: LLM call, not a user-facing target.
 _USER_FACING_TIER_FIELDS: tuple[str, ...] = (
-    "strong", "weak", "planner", "executor", "target",
+    "strong", "weak", "target",
 )
 
 
@@ -411,8 +386,8 @@ def routing_profile_model_ids(
 
     Returns each route's YAML key followed by its tier ``model`` fields
     (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
-    ``planner`` / ``executor`` for plan_execute, ``target`` for
-    ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
+    ``target`` for ``model`` / ``passthrough``). Declaration order, later
+    duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
 
     Used by both the configure wizard (preview the picker) and the launchers
@@ -878,16 +853,6 @@ def _build_switchyard_for_route(
             extra_response_processors=extra_response_processors,
         )
 
-    if route_type == "plan_execute":
-        return _plan_execute_switchyard(
-            model_id,
-            route,
-            target_defaults=target_defaults,
-            stats=stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
     raise RouteBundleConfigError(f"unsupported route type {route_type!r}")
 
 
@@ -1247,47 +1212,6 @@ def _stage_router_switchyard(
     )
 
 
-def _plan_execute_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    *,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    """Build a strong-planner / weak-executor chain from a ``type: plan_execute`` route.
-
-    Mirrors :func:`_stage_router_switchyard`: tiers and scalar fields go through the
-    shared ``_route_config`` → :meth:`PlanExecuteConfig.model_validate` path. An
-    omitted ``planner`` / ``executor`` defaults to the shipping preset model so a
-    minimal route reproduces the retired ``--plan-execute`` flag; every other
-    field falls back to ``PlanExecuteConfig``'s own defaults.
-    """
-    # Seed omitted tiers with the preset model before the shared coercion path
-    # (`_route_config` would otherwise reject a missing tier).
-    route = dict(route)
-    if route.get("planner") is None:
-        route["planner"] = _PLAN_EXECUTE_DEFAULTS.planner.model
-    if route.get("executor") is None:
-        route["executor"] = _PLAN_EXECUTE_DEFAULTS.executor.model
-    config_data = _route_config(route, target_defaults, ("planner", "executor"))
-    config_data.setdefault(
-        "fallback_target_on_evict", cast(LlmTarget, config_data["planner"]).id,
-    )
-    config = PlanExecuteConfig.model_validate(config_data)
-    return ProfileSwitchyard(
-        PlanExecuteProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=pre_routing_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
 def _passthrough_target(
     model_id: str,
     route: Mapping[str, object],
@@ -1531,8 +1455,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "escalation_router": "escalation_router",
         "stage_router": "stage_router",
         "stage_router_routing": "stage_router",
-        "plan": "plan_execute",
-        "plan_execute": "plan_execute",
     }
     try:
         return aliases[normalized]

@@ -429,7 +429,7 @@ impl PyProxyContext {
     /// Records one routing-strategy sub-model call for intake capture.
     ///
     /// Routers that call a model to pick a route (the LLM classifier, the
-    /// stage-router tier classifier, the plan/execute planner) call this after a
+    /// stage-router tier classifier or escalation judge) call this after a
     /// successful routing call so the response-side intake processor can emit
     /// each as its own anonymous record — model and token counts only, never the
     /// messages. Appends to a Rust-typed slot the native intake sink reads, so
