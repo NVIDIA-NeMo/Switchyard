@@ -1,0 +1,21 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "CapabilityClassifierDecision",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recommended_route", "p_solve", "confidence", "abstain", "capability_boundary", "primary_rule", "crux"],
+      "properties": {
+        "recommended_route": {"type": "string", "enum": ["efficient", "capable"]},
+        "p_solve": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "abstain": {"type": "boolean"},
+        "capability_boundary": {"type": "string", "enum": ["supported", "uncertain", "unsupported", "unmatched"]},
+        "primary_rule": {"type": "string", "enum": ["SUP-1", "SUP-2", "SUP-3", "UNC-1", "UNC-2", "UNC-3", "UNC-4", "LIM-1", "none"]},
+        "crux": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
