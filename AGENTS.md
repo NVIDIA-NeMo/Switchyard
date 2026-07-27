@@ -93,12 +93,22 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Use `git commit -s` so every commit carries the required DCO sign-off.
 - Never commit unprompted. Show the diff, get approval, then commit.
 
-If branch commits you authored fail DCO, repair their trailers and update the remote safely:
+Before repairing DCO, inspect every affected commit:
+
+```bash
+git log origin/main..HEAD --format='%h %an <%ae> %s'
+```
+
+If every affected commit is yours, add the trailers and update the remote safely:
 
 ```bash
 git rebase origin/main --signoff
 git push --force-with-lease origin HEAD
 ```
+
+For a mixed-author branch, use an interactive rebase and mark only your unsigned commits for
+editing. At each stop, run `git commit --amend --no-edit --signoff`, then
+`git rebase --continue`. Never add your sign-off to another contributor's commit.
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 

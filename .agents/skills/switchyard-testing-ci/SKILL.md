@@ -45,10 +45,11 @@ Run focused tests first, then broaden only when the changed contract or shared o
 ## Live Tests
 
 Integration tests can spend money, require credentials, and contact real services. Never run them
-as an automatic pre-PR step. Run only the user-authorized path and state which provider was called:
+as an automatic pre-PR step. Provision `NVIDIA_API_KEY` through the environment or a secret manager
+before running the user-authorized path, and state which provider was called:
 
 ```bash
-NVIDIA_API_KEY=... uv run pytest tests/e2e/<focused_test>.py \
+uv run pytest tests/e2e/<focused_test>.py \
   -v -m integration -o addopts=
 ```
 
@@ -57,9 +58,18 @@ NVIDIA_API_KEY=... uv run pytest tests/e2e/<focused_test>.py \
 Each retained skill must have YAML frontmatter with `name` and `description`:
 
 ```bash
-uv run python -c "from pathlib import Path; import yaml; \
-[yaml.safe_load(p.read_text().split('---', 2)[1]) \
-for p in Path('.agents/skills').glob('*/SKILL.md')]"
+uv run python - <<'PY'
+from pathlib import Path
+
+import yaml
+
+for path in Path(".agents/skills").glob("*/SKILL.md"):
+    parts = path.read_text().split("---", 2)
+    data = yaml.safe_load(parts[1]) if len(parts) == 3 else None
+    if not isinstance(data, dict) or not data.get("name") or not data.get("description"):
+        raise SystemExit(f"{path}: missing name or description")
+print("skill frontmatter is valid")
+PY
 git diff --check
 ```
 
