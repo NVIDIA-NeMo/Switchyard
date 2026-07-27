@@ -179,7 +179,13 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     # --- Anthropic Claude on AWS Bedrock (via NVIDIA Inference Hub) ---
     # 5-minute cache write = 1.25x input; cache read = 0.1x input.
     # Opus 4.8 keeps the Opus-tier $5/$25 list price (docs.anthropic.com,
-    # verified 2026-07-11).
+    # verified 2026-07-11).  Opus 5 ships as a drop-in upgrade at the same
+    # Opus-tier rate (platform.claude.com/docs/en/about-claude/pricing,
+    # verified 2026-07-27); fast mode ($10/$50) is a separate SKU and is
+    # not priced here.
+    "aws/anthropic/bedrock-claude-opus-5": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "aws/anthropic/bedrock-claude-opus-4-8": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
@@ -208,6 +214,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "azure/anthropic/claude-opus-4-8": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
+    "azure/anthropic/claude-opus-5": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "azure/anthropic/claude-sonnet-4-5": ModelPriceData(
         input=3.00, output=15.00, cached=0.30, cache_write=3.75,
     ),
@@ -221,6 +230,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
         input=1.00, output=5.00, cached=0.10, cache_write=1.25,
     ),
     # --- Anthropic direct API aliases (no AWS prefix) ---
+    "claude-opus-5": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "claude-opus-4-8": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
