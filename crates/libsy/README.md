@@ -198,15 +198,20 @@ model and *why*.
 
 ```rust
 #[async_trait]
-pub trait Algorithm: Send + Sync + 'static {
+pub trait Algorithm<S = ()>: Send + Sync + 'static
+where S: Clone + Send + Sync + 'static {
     // Stable telemetry label: the `algorithm` attribute on libsy's spans/metrics/logs.
     fn name(&self) -> &str;
-    // `self: Arc<Self>` (not `&mut`): one algorithm serves requests concurrently — use
-    // interior mutability for state. Offload calls/decisions on `driver`.
-    async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
+    // `self: Arc<Self>` (not `&mut`): one shared algorithm serves requests concurrently.
+    // Stateless algorithms leave `S = ()` and write `impl Algorithm for MyRouter`; a
+    // stateful one picks its own per-session state, carried in `Context<S>` — see
+    // "Composed routing" below. Offload calls/decisions on `driver`.
+    async fn create_run_task(self: Arc<Self>, ctx: Context<S>, driver: Driver, request: Request)
         -> switchyard_libsy::Result<Response>;
+    // Provided default (no-op): feed the algorithm agentic-stack events (tool results,
+    // budgets, …). Stateful algorithms override it; the reference routers ignore signals.
     async fn process_signals(self: Arc<Self>, signals: Signals)
-        -> switchyard_libsy::Result<()>;
+        -> switchyard_libsy::Result<()> { Ok(()) }
     // provided: run(ctx, request) -> (trace, response), run_stream(ctx, request) -> Stream<Step>
 }
 
@@ -248,9 +253,51 @@ impl Algorithm for LlmClassifier {
         driver.info(ctx.clone(), route_decision.clone()).await?;
         driver.call_llm_target(ctx, &routed, routed_req, route_decision).await
     }
-
-    async fn process_signals(self: Arc<Self>, _s: Signals) -> switchyard_libsy::Result<()> { Ok(()) }
+    // `process_signals` is inherited from the trait's no-op default.
 }
+```
+
+## Composed routing (`FallThrough`)
+
+Not every strategy needs a bespoke `Algorithm`. [`FallThrough`](src/algorithms/fall_through.rs)
+is a ready-made **stateful** algorithm (`Algorithm<SharedState>`) assembled from two
+building-block traits, so common shapes — cascades, latches, session affinity — are
+composition rather than new code:
+
+```rust
+// A processor folds request-side facts into the per-session State.
+#[async_trait]
+pub trait Processor: Send + Sync {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()>;
+}
+// A classifier scores the current turn's targets; the first non-abstaining one wins.
+#[async_trait]
+pub trait Classifier: Send + Sync {
+    async fn score(&self, state: &mut State, request: &Request, driver: Option<&Driver>)
+        -> Result<Classification>;   // Scores(..) / Ambiguous(..) over Score { confidence, target }
+}
+```
+
+Each turn, `FallThrough` runs its processor chain on the turn's `Event::Request`, consults
+its classifier cascade in order — the first classifier to score decides the target (its
+`argmax`) — publishes the `Decision`, then replays it to the processors as an
+`Event::Decision` so stateful ones (a latch, session affinity) can bind it. The per-session
+`State` (`turn_count` plus an `extra` bag of `StateValue`s) rides in the threaded
+`Context<SharedState>`, held under a lock for the whole turn, so one shared instance serves
+every session and concurrent turns of a session serialize on their state.
+
+```rust
+use switchyard_libsy::algorithms::FallThrough;
+
+// `my_processor: Arc<dyn Processor>` and `my_classifier: Arc<dyn Classifier>` are yours to
+// implement (the traits above). Add as many of each as you like; classifiers cascade in
+// registration order, and a later one only runs when the earlier ones abstain.
+let router = Arc::new(
+    FallThrough::new(LlmTargetSet::new(vec![target("strong"), target("weak")]))
+        .with_processor(my_processor)
+        .with_classifier(my_classifier),
+);
+let (trace, response) = router.clone().run(Context::default(), req).await?;
 ```
 
 ## Errors
@@ -300,15 +347,20 @@ instrumentation is a no-op.
 
 ## Explore
 
-The core crate includes uniform random routing and naive LLM classifier. Runnable
-agents live in [`examples`](examples/) folder.
+The core crate includes uniform random routing, a naive LLM classifier, and a composable
+fall-through router. Runnable agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
 - [`Random`](src/algorithms/rand.rs) — uniform random over the set
-  (one call).
+  (one call); the reference for the single-call shape.
 - [`LlmClassifier`](src/algorithms/llm_class.rs) — classify, then route
   strong/weak; fail open to strong.
+- [`FallThrough`](src/algorithms/fall_through.rs) — stateful: a processor
+  chain feeds a classifier cascade; the first classifier to score routes the turn
+  (see [Composed routing](#composed-routing-fallthrough)).
+- [`SubagentOverride`](src/algorithms/subagent_override.rs) — wraps any
+  algorithm, diverting recognized sub-agent work to one fixed worker target.
 - [`EnsembleOrchAlgo`](examples/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.
 
@@ -325,5 +377,5 @@ agents live in [`examples`](examples/) folder.
 ## Not yet built
 
 - **`Signals` events** — `process_signals` / `Signals` exist but carry nothing yet.
-- **`Context` fields** — carries the algorithm telemetry label today; correlation ids, budgets, and deadlines still to come.
+- **`Context` fields** — carries the algorithm telemetry label and per-session `state` today; correlation ids, budgets, and deadlines still to come.
 - **Config-driven construction**, **weighted random**.
