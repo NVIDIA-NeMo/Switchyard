@@ -229,16 +229,28 @@ async fn without_a_shared_pin_the_second_policy_wins() -> Result<()> {
 
 #[tokio::test]
 async fn distinct_children_are_pinned_independently() -> Result<()> {
-    let router = router();
-    let ctx = Context::<SharedState>::default();
+    // Two cascades sharing one affinity instance but disagreeing on the worker. Routing
+    // both children through the *same* override would pass whether or not affinity keys
+    // per agent, so the sibling is sent through the cascade that scores "reviewer": it
+    // can only come back "reviewer" if it did not inherit child-1's pin.
+    let affinity = Arc::new(AffinityRouter::for_subagents());
+    let seed = router_overriding_to(affinity.clone(), "worker");
+    let sibling = router_overriding_to(affinity, "reviewer");
 
-    // Each child is keyed by `session + agent`, so a sibling gets its own assignment
-    // rather than inheriting one.
     assert_eq!(
-        turn(&router, ctx.clone(), &child("child-1")).await?,
+        turn(&seed, Context::default(), &child("child-1")).await?,
         "worker"
     );
-    assert_eq!(turn(&router, ctx, &child("child-2")).await?, "worker");
+    assert_eq!(
+        turn(&sibling, Context::default(), &child("child-2")).await?,
+        "reviewer"
+    );
+    // child-1's own pin is untouched by the sibling's assignment: affinity replays it
+    // even through the cascade whose override would otherwise score "reviewer".
+    assert_eq!(
+        turn(&sibling, Context::default(), &child("child-1")).await?,
+        "worker"
+    );
     Ok(())
 }
 
