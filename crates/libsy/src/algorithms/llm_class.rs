@@ -78,6 +78,11 @@ impl LlmClassifier {
     /// and weak models to route to, the score `threshold` at or above which the
     /// strong model is chosen, and the `target_set` to route among. That set must
     /// contain targets named `classifier_model`, `strong_model`, and `weak_model`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `threshold` is outside `0.0..=1.0` or when any
+    /// required target name is absent from `target_set`.
     pub fn new(
         classifier_model: impl Into<String>,
         strong_model: impl Into<String>,

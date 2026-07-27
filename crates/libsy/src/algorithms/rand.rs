@@ -54,6 +54,12 @@ impl Random {
     /// Missing weights default to one per target. Explicit weights are relative,
     /// follow target order, and need not sum to one. Zero disables a target.
     /// Missing `seed` uses entropy-backed randomness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when targets are empty or duplicated, or when explicit
+    /// weights have the wrong length, are negative or non-finite, or contain no
+    /// positive value.
     pub fn new(
         target_set: LlmTargetSet,
         weights: Option<Vec<f64>>,
