@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from openai.types.chat import ChatCompletionChunk
 from pydantic import ValidationError
 
 from switchyard.lib.backends.deterministic_routing_llm_backend import (
@@ -15,6 +16,7 @@ from switchyard.lib.backends.deterministic_routing_llm_backend import (
     DeterministicRoutingLLMBackend,
 )
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
+from switchyard.lib.chat_response.openai_chat import ResponseStream
 from switchyard.lib.processors.llm_classifier import (
     LLMClassifierRequestProcessor,
     SignalTierSelectorRequestProcessor,
@@ -617,3 +619,56 @@ async def test_overflow_reroutes_to_custom_strong_id_through_full_profile() -> N
     assert cheap.calls == 1
     assert frontier.calls == 1
     assert response.body["choices"][0]["message"]["content"] == "ok"
+
+
+class _StreamingTier(LLMBackend):
+    """Stub tier backend that answers with an OpenAI-format stream."""
+
+    @property
+    def supported_request_types(self) -> list[ChatRequestType]:
+        return [ChatRequestType.OPENAI_CHAT]
+
+    async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        async def chunks() -> Any:
+            yield ChatCompletionChunk.model_validate({
+                "id": "chatcmpl-test",
+                "object": "chat.completion.chunk",
+                "created": 1700000000,
+                "model": request.model,
+                "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}],
+            })
+
+        return ChatResponse.openai_stream(ResponseStream(chunks()))
+
+
+async def test_streamed_response_names_the_tier_model_not_the_route() -> None:
+    """A routed, translated stream reports the tier's model, not the route key.
+
+    Regression test for SWITCH-922: the terminal translator used to take the
+    response model from the request body. Every Rust request processor hands
+    the chain a *clone*, so the backend's ``set_model`` never reached the
+    translator and routed turns were labelled with the route id the client
+    addressed — literally ``switchyard`` for the benchmark bundles.
+    """
+    config = _config(enable_stats=True)
+    profile = DeterministicRoutingProfileConfig.from_config(config).build()
+    profile._request_processors = (_StampTier("weak"),)
+
+    # Stats must stay on: its Rust request processor is what hands the chain a
+    # clone, which is the condition this regression test exists for. Swap the
+    # tier backends only after the runtime wiring, which cannot wrap stubs.
+    runtime = profile.with_runtime_components(enable_stats=config.enable_stats)
+    backend = profile._backend
+    assert isinstance(backend, DeterministicRoutingLLMBackend)
+    backend._backends = {"strong": _StreamingTier(), "weak": _StreamingTier()}
+
+    switchyard = ProfileSwitchyard(runtime)
+    request = ChatRequest.anthropic({
+        "model": "switchyard",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+
+    events = [event async for event in await switchyard.call(request)]
+
+    assert events[0]["message"]["model"] == config.weak.model

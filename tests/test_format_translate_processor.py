@@ -311,6 +311,7 @@ async def test_streaming_openai_response_translates_back_to_anthropic() -> None:
             CTX_ORIGINAL_REQUEST: {"model": "claude-client"},
         }
     )
+    ctx.selected_model = "served/model"
     response = ChatResponse.openai_stream(
         ResponseStream(
             _aiter(
@@ -331,7 +332,7 @@ async def test_streaming_openai_response_translates_back_to_anthropic() -> None:
         for event in events
         if event["type"] == "content_block_delta" and event["delta"]["type"] == "text_delta"
     )
-    assert events[0]["message"]["model"] == "claude-client"
+    assert events[0]["message"]["model"] == "served/model"
     assert text == "hello"
     assert [event["type"] for event in events].count("content_block_start") == 1
 
@@ -364,6 +365,7 @@ async def test_streaming_openai_response_translates_back_to_responses() -> None:
             CTX_ORIGINAL_REQUEST: {"model": "responses-client", "input": "hi"},
         }
     )
+    ctx.selected_model = "served/model"
     response = ChatResponse.openai_stream(
         ResponseStream(
             _aiter(
@@ -380,7 +382,7 @@ async def test_streaming_openai_response_translates_back_to_responses() -> None:
     assert response_type_matches(result, ChatResponseType.OPENAI_RESPONSES_STREAM)
     frames = await _collect(result.stream)
     payloads = [_frame_data(frame) for frame in frames]
-    assert payloads[0]["response"]["model"] == "responses-client"
+    assert payloads[0]["response"]["model"] == "served/model"
     assert (
         "".join(
             payload["delta"]
@@ -549,6 +551,7 @@ async def test_streaming_responses_response_translates_back_to_anthropic() -> No
             CTX_ORIGINAL_REQUEST: {"model": "claude-client"},
         }
     )
+    ctx.selected_model = "served/model"
     response = ChatResponse.openai_responses_stream(
         ResponsesApiStream(_aiter(_responses_events())),
     )
@@ -562,7 +565,7 @@ async def test_streaming_responses_response_translates_back_to_anthropic() -> No
         for event in events
         if event["type"] == "content_block_delta" and event["delta"]["type"] == "text_delta"
     )
-    assert events[0]["message"]["model"] == "claude-client"
+    assert events[0]["message"]["model"] == "served/model"
     assert text == "hello"
 
 

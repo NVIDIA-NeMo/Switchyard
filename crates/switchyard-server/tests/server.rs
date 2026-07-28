@@ -844,6 +844,9 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
                 .and_then(|value| value.to_str().ok()),
             Some("model/a")
         );
+        // The body names the model that answered, not the route id the caller
+        // addressed, so it agrees with the routing header above.
+        assert_eq!(response.json()?["model"], "model/a");
     }
 
     let calls = upstream.calls.lock().await;
@@ -872,6 +875,64 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     assert!(response.text()?.contains("hello"));
     assert!(response.text()?.contains("data: [DONE]"));
     Ok(())
+}
+
+// SWITCH-922: every streaming codec must report the routed target, not the route
+// id the caller addressed — the route id is meaningless to anything reading the
+// trajectory (a Bench UI, a spend log, the client's own display).
+#[tokio::test]
+async fn streamed_response_model_names_the_served_model_not_the_route() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    // Each case names the JSON pointer to the model on that format's first event.
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            }),
+            vec!["model"],
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            }),
+            vec!["message", "model"],
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hi", "stream": true}),
+            vec!["response", "model"],
+        ),
+    ];
+
+    for (path, body, pointer) in cases {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+
+        let first = first_sse_event(response.text()?)
+            .ok_or_else(|| format!("{path} produced no SSE data frames"))?;
+        let model = pointer
+            .iter()
+            .try_fold(&first, |value, key| value.get(key))
+            .and_then(Value::as_str);
+        assert_eq!(model, Some("model/a"), "{path}");
+    }
+    Ok(())
+}
+
+// Returns the first `data:` frame of an SSE body as JSON, skipping `[DONE]`.
+fn first_sse_event(body: &str) -> Option<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .find_map(|data| serde_json::from_str(data).ok())
 }
 
 #[tokio::test]

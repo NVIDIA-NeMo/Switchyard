@@ -293,7 +293,7 @@ async fn anthropic_count_tokens(
         Ok(body) => body,
         Err(message) => return invalid_body_error(message),
     };
-    let (algorithm, request, _) = match resolve_route(
+    let (algorithm, request) = match resolve_route(
         &state,
         metadata_from_headers(&headers),
         body,
@@ -373,9 +373,8 @@ fn llm_json_body(
 
 /// Decode `body`, resolve the route named by its `model`, and build the
 /// [`Request`]. Shared by the completion and `count_tokens` handlers. Returns
-/// the resolved algorithm, the built request, and the requested route model —
-/// or an error [`Response`] (invalid body, empty `model` → 400, unknown route →
-/// 404).
+/// the resolved algorithm and the built request — or an error [`Response`]
+/// (invalid body, empty `model` → 400, unknown route → 404).
 // Both callers immediately return the `Err(Response)` as the HTTP response, so
 // the large error type is intentional, not propagated up a call stack.
 #[allow(clippy::type_complexity, clippy::result_large_err)]
@@ -384,7 +383,7 @@ fn resolve_route(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> std::result::Result<(Arc<dyn Algorithm>, Request, String), Response> {
+) -> std::result::Result<(Arc<dyn Algorithm>, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(error.to_string()))?;
     let requested_model = llm_request
@@ -412,7 +411,7 @@ fn resolve_route(
         raw_request: Some(body),
         metadata: Some(metadata),
     };
-    Ok((algorithm, request, requested_model))
+    Ok((algorithm, request))
 }
 
 async fn handle_llm_request(
@@ -422,16 +421,19 @@ async fn handle_llm_request(
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
-    let (algorithm, request, requested_model) =
-        match resolve_route(&state, metadata, body, wire_format) {
-            Ok(resolved) => resolved,
-            Err(response) => return response,
-        };
+    let (algorithm, request) = match resolve_route(&state, metadata, body, wire_format) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
     let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };
-    let response = if let Some(decision) = trace.last() {
+    // Metrics, response body, and routing header all read the same decision, so
+    // the model they name can never disagree. An empty trace leaves the body with
+    // the id the upstream reported.
+    let decision = trace.last();
+    let response = if let Some(decision) = decision {
         usage_metrics::observe(
             response,
             decision.selected_model(),
@@ -442,11 +444,12 @@ async fn handle_llm_request(
         response
     };
 
-    let mut response = match into_http_response(response, wire_format, Some(requested_model)) {
+    let served_model = decision.map(|decision| decision.selected_model().to_string());
+    let mut response = match into_http_response(response, wire_format, served_model) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
     };
-    if let Some(decision) = trace.last() {
+    if let Some(decision) = decision {
         attach_routing_headers(&mut response, decision.as_ref());
     }
     response

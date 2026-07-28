@@ -195,9 +195,9 @@ class FormatTranslateResponseProcessor:
     is already in the original format or when ``CTX_ORIGINAL_FORMAT``
     is absent.
 
-    Streaming responses use the original request body captured in
-    context to preserve target-format stream metadata such as model
-    names while translating lazily.
+    Streaming responses take the response model from the routing context so
+    the translated stream names the model that actually served the call,
+    while still translating lazily.
     """
 
     async def process(self, ctx: ProxyContext, response: ChatResponse) -> ChatResponse:
@@ -221,7 +221,7 @@ class FormatTranslateResponseProcessor:
             return TranslationEngine().response_to(
                 ChatRequestType.OPENAI_RESPONSES,
                 response,
-                original_body=_original_body(ctx),
+                served_model=_served_model(ctx),
             )
         raise NotImplementedError(
             f"Unsupported original format for response translation: {original!r}",
@@ -238,7 +238,7 @@ def _translate_streaming_response(
     return TranslationEngine().response_to(
         original,
         response,
-        original_body=_original_body(ctx),
+        served_model=_served_model(ctx),
     )
 
 
@@ -255,11 +255,10 @@ def _request_for_original_format(
     raise NotImplementedError(f"Unsupported original format: {original!r}")
 
 
-def _original_body(ctx: ProxyContext) -> dict[str, object]:
-    body = ctx.metadata.get(CTX_ORIGINAL_REQUEST)
-    if isinstance(body, Mapping):
-        return dict(body)
-    return {}
+def _served_model(ctx: ProxyContext) -> str | None:
+    """Return the model the backend actually called, or ``None`` when unknown."""
+    model = ctx.selected_model or ctx.metadata.get(CTX_PROXY_ACTUAL_MODEL)
+    return model if isinstance(model, str) and model else None
 
 
 def _matches_format(response: ChatResponse, target: ChatRequestType | str) -> bool:

@@ -411,7 +411,8 @@ impl TranslatingLlmClient {
     /// encodes the neutral response back into `wire_format`. The result is a buffered
     /// [`RawResponse::Buffered`] JSON body or a streamed [`RawResponse::Stream`] of
     /// wire events (the caller frames the stream as SSE). The response's `model` is
-    /// restamped with the model the request asked for, never the upstream id.
+    /// restamped with the model that actually served the call, so the body names the
+    /// model that answered rather than the route the caller addressed.
     ///
     /// `http_headers` are carried through as the request's
     /// [`Metadata::http_headers`] and forwarded to the upstream (minus the reserved
@@ -426,9 +427,12 @@ impl TranslatingLlmClient {
     ) -> Result<RawResponse> {
         let llm_request = decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
-        // The model the client asked for; restamped onto the response so it never
-        // leaks the upstream id.
-        let requested_model = llm_request.model.clone();
+        // The model that serves the call — the rewrite target when the caller pinned
+        // one, else the request's own model. Mirrors `call_rewrite_model`'s own
+        // resolution so the response names whoever answered.
+        let served_model = model
+            .map(str::to_string)
+            .or_else(|| llm_request.model.clone());
 
         let request = Request {
             llm_request,
@@ -449,12 +453,12 @@ impl TranslatingLlmClient {
         match response.llm_response {
             LlmResponse::Agg(agg) => {
                 let body =
-                    encode_aggregated_response(&agg, wire_format, requested_model.as_deref())
+                    encode_aggregated_response(&agg, wire_format, served_model.as_deref())
                         .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 Ok(RawResponse::Buffered(body))
             }
             LlmResponse::Stream(chunks) => {
-                let events = encode_stream(chunks, wire_format, requested_model)?;
+                let events = encode_stream(chunks, wire_format, served_model)?;
                 Ok(RawResponse::Stream(events))
             }
         }
@@ -1618,7 +1622,7 @@ mod tests {
     }
 
     // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
-    // Chat JSON, with the client-facing `model` restamped over the upstream id.
+    // Chat JSON, with the served `model` restamped over the id the caller addressed.
     #[tokio::test]
     async fn call_rewrite_model_raw_round_trips_buffered_json(
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -1657,8 +1661,8 @@ mod tests {
         };
 
         assert_eq!(body["choices"][0]["message"]["content"], "Hi there");
-        // The client sees the model it asked for, not the upstream "gpt".
-        assert_eq!(body["model"], "client-facing");
+        // The client sees the model that answered, not the "client-facing" route id.
+        assert_eq!(body["model"], "gpt");
         Ok(())
     }
 
@@ -1705,6 +1709,9 @@ mod tests {
             .filter_map(|event| event["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert_eq!(content, "Hello world");
+        // The mock frames carry no `model`, so every chunk's model comes from the
+        // served id rather than the "unknown" fallback or the caller's route id.
+        assert!(events.iter().all(|event| event["model"] == "gpt"));
         Ok(())
     }
 

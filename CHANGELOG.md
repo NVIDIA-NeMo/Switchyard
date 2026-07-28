@@ -23,6 +23,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no `type: model` equivalent, so list the model ids you want as explicit
   `type: model` routes.
 
+### Fixed
+
+- **Response `model` now names the model that actually served the request**, on
+  every serving path and wire format. Streamed Anthropic and Responses replies,
+  and every libsy-served reply, previously echoed the model id the client
+  requested — for a route bundle whose key is an alias, that meant the alias
+  rather than the routed target, so trajectories, dashboards, and client UIs
+  labelled routed turns with the route name. The routed model was already
+  reported by `x-model-router-selected-model`, `x-switchyard-selected-model`,
+  `/v1/routing/stats`, and Intake's `served_model`; the response body now agrees
+  with them. Streamed OpenAI Chat replies report the routed target instead of
+  the provider's own id, and no longer fall back to `"unknown"` when a provider
+  omits `model` on delta chunks.
+
 ## [0.1.0] — Initial release
 
 First public release of Switchyard — a typed, composable control plane for LLM

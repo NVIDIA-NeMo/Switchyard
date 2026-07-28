@@ -6,8 +6,8 @@
 use serde_json::{json, Map, Value};
 
 use crate::codecs::stream::{
-    record_source_identity, source_model_or_unknown, state_source_is, string_field, StreamCodec,
-    StreamTranslationState,
+    record_source_identity, state_source_is, string_field, target_model_or_source_model,
+    StreamCodec, StreamTranslationState,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
@@ -285,7 +285,7 @@ fn openai_stream_chunk(
         "id": openai_stream_id(state),
         "object": "chat.completion.chunk",
         "created": 0,
-        "model": source_model_or_unknown(state),
+        "model": target_model_or_source_model(state),
         "choices": [{
             "index": 0,
             "delta": delta,

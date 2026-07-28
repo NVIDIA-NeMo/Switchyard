@@ -91,13 +91,13 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
-// Verifies Chat target streams expose upstream model identity, not the client request alias.
+// Verifies Chat target streams expose the served model while retaining source identity.
 #[test]
-fn anthropic_to_openai_chat_uses_source_model_even_with_target_override() -> TestResult {
+fn anthropic_to_openai_chat_uses_served_model_without_losing_source_model() -> TestResult {
     let engine = TranslationEngine::default();
     let mut state =
         StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
-    state.target_model = Some("gpt-client".to_string());
+    state.target_model = Some("served-model".to_string());
     let start = json!({
         "type": "message_start",
         "message": {
@@ -127,18 +127,18 @@ fn anthropic_to_openai_chat_uses_source_model_even_with_target_override() -> Tes
     )?;
 
     assert_eq!(state.model.as_deref(), Some("claude-upstream"));
-    assert_eq!(state.target_model.as_deref(), Some("gpt-client"));
-    assert_eq!(events[0]["model"], "claude-upstream");
+    assert_eq!(state.target_model.as_deref(), Some("served-model"));
+    assert_eq!(events[0]["model"], "served-model");
     Ok(())
 }
 
-// Verifies Anthropic target streams can expose a client model without losing source identity.
+// Verifies Anthropic target streams expose the served model without losing source identity.
 #[test]
-fn responses_to_anthropic_uses_target_model_without_losing_source_model() -> TestResult {
+fn responses_to_anthropic_uses_served_model_without_losing_source_model() -> TestResult {
     let engine = TranslationEngine::default();
     let mut state =
         StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::AnthropicMessages);
-    state.target_model = Some("claude-client".to_string());
+    state.target_model = Some("served-model".to_string());
     let created = json!({
         "type": "response.created",
         "response": {"id": "resp_1", "model": "responses-upstream"}
@@ -152,18 +152,18 @@ fn responses_to_anthropic_uses_target_model_without_losing_source_model() -> Tes
     )?;
 
     assert_eq!(state.model.as_deref(), Some("responses-upstream"));
-    assert_eq!(state.target_model.as_deref(), Some("claude-client"));
-    assert_eq!(events[0]["message"]["model"], "claude-client");
+    assert_eq!(state.target_model.as_deref(), Some("served-model"));
+    assert_eq!(events[0]["message"]["model"], "served-model");
     Ok(())
 }
 
-// Verifies Responses target streams can expose a client model while retaining source identity.
+// Verifies Responses target streams expose the served model while retaining source identity.
 #[test]
-fn openai_chat_to_responses_uses_target_model_without_losing_source_model() -> TestResult {
+fn openai_chat_to_responses_uses_served_model_without_losing_source_model() -> TestResult {
     let engine = TranslationEngine::default();
     let mut state =
         StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
-    state.target_model = Some("responses-client".to_string());
+    state.target_model = Some("served-model".to_string());
     let chunk = json!({
         "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
@@ -183,8 +183,8 @@ fn openai_chat_to_responses_uses_target_model_without_losing_source_model() -> T
     )?;
 
     assert_eq!(state.model.as_deref(), Some("gpt-upstream"));
-    assert_eq!(state.target_model.as_deref(), Some("responses-client"));
-    assert_eq!(events[0]["response"]["model"], "responses-client");
+    assert_eq!(state.target_model.as_deref(), Some("served-model"));
+    assert_eq!(events[0]["response"]["model"], "served-model");
     Ok(())
 }
 

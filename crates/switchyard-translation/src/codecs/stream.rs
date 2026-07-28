@@ -27,7 +27,8 @@ pub struct StreamTranslationState {
     pub model: Option<String>,
     /// Message/response ID observed on the source provider stream.
     pub message_id: Option<String>,
-    /// Optional model name the target stream should expose to the client.
+    /// Model that served the call, exposed to the client in place of the id the
+    /// source stream reported. `None` falls back to [`Self::model`].
     pub target_model: Option<String>,
     /// Optional message/response ID the target stream should expose to the client.
     pub target_message_id: Option<String>,
@@ -240,12 +241,7 @@ pub(crate) fn record_source_identity(
     }
 }
 
-// Returns the source model observed from the upstream stream.
-pub(crate) fn source_model_or_unknown(state: &StreamTranslationState) -> String {
-    state.model.clone().unwrap_or_else(|| "unknown".to_string())
-}
-
-// Returns the target/client model when supplied, otherwise the upstream model.
+// Returns the served model when supplied, otherwise the upstream model.
 pub(crate) fn target_model_or_source_model(state: &StreamTranslationState) -> String {
     state
         .target_model
