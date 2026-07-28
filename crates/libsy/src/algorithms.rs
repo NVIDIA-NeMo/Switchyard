@@ -6,12 +6,14 @@
 //! Reach for them by name — `use switchyard_libsy::algorithms::Random` — rather than through the
 //! per-algorithm submodules.
 
+pub mod escalation;
 mod fall_through;
 pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
 pub mod rand;
 
+pub use escalation::EscalationRouter;
 pub use fall_through::{FallThrough, FallThroughDecision};
 pub use llm_class::LlmTaskClassifier;
 pub use noop::{Noop, NoopDecision};

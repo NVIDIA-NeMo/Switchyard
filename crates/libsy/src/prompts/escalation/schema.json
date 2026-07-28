@@ -1,0 +1,26 @@
+{
+  "type": "json_schema",
+  "json_schema": {
+    "name": "EscalationDecision",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "should_escalate": {
+          "type": "boolean",
+          "description": "True when the response should be escalated to a more capable model."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Confidence in this assessment, between 0.0 and 1.0."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One concise sentence naming the specific issue or confirming sufficiency."
+        }
+      },
+      "required": ["should_escalate", "confidence", "reason"],
+      "additionalProperties": false
+    }
+  }
+}
