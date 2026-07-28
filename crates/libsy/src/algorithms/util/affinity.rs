@@ -298,7 +298,7 @@ mod tests {
     async fn retain(
         router: &AffinityRouter,
         state: &mut (),
-        request: &Request,
+        request: &mut Request,
         model: &'static str,
     ) -> Result<(), BoxErr> {
         router

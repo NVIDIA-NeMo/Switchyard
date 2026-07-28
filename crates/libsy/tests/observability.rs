@@ -26,10 +26,10 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
-use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
+use switchyard_libsy::algorithms::LlmTaskClassifier;
 use switchyard_libsy::{
     AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, State, Step, Usage,
+    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
 };
 use switchyard_protocol::{text_request, text_response, LlmClientError};
 
@@ -725,11 +725,12 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let targets = LlmTargetSet::new(vec![target("weak"), target("strong")]);
     let weak = targets.get_target("weak")?;
     let strong = targets.get_target("strong")?;
-    let router = Arc::new(
-        FallThrough::<State>::new_with_state(targets).with_classifier(Arc::new(
-            LlmTaskClassifier::new(target("classifier"), weak, strong, 0.5)?,
-        )),
-    );
+    let router = Arc::new(LlmTaskClassifier::new(
+        target("classifier"),
+        weak,
+        strong,
+        0.5,
+    )?);
 
     let (trace, _response) = router
         .run(
