@@ -1179,7 +1179,7 @@ also overflows, the request fails with a 400 in the client's inbound wire
 format.</p>
 <p>Any multi-target route (stage-router, random_routing, or deterministic) supports
 this. Set <code>fallback_target_on_evict</code> on the route. Single-target routes
-(<code>type: passthrough</code>, <code>type: model</code>) have no alternative target, so the original
+(<code>type: model</code>) have no alternative target, so the original
 overflow propagates unchanged.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <p><code>fallback_target_on_evict</code> is required on every multi-target route and must

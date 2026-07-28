@@ -1331,13 +1331,14 @@ has a complete runnable bundle.</p>
 <h2 id="model-ids">Model IDs<a class="headerlink" href="#model-ids" title="Permanent link">&para;</a></h2>
 <p>Every route name is registered as a model ID and listed on <code>GET /v1/models</code>.
 Clients select a route by putting that name in the request's <code>model</code> field.
-Some route types also discover or register direct upstream model IDs.</p>
+Some route types also discover a tier's upstream catalog from its
+<code>GET /v1/models</code> and register those model IDs directly.</p>
 <h2 id="tiers-and-routing-strategies">Tiers and routing strategies<a class="headerlink" href="#tiers-and-routing-strategies" title="Permanent link">&para;</a></h2>
 <p>Most routing strategies divide traffic between two tiers: a strong target that
 is more capable and more expensive, and a weak target that is cheaper and
 faster. A tier is a role assigned inside a route, not a fixed property of a
 model.</p>
-<p>A route's <code>type</code> sets the strategy. <code>model</code> and <code>passthrough</code> call one target.
+<p>A route's <code>type</code> sets the strategy. <code>model</code> calls one target.
 <code>random_routing</code> splits traffic on a fixed probability. <code>deterministic</code> asks a
 classifier model to pick a tier. <code>stage_router</code> uses agent-progress signals,
 with an optional classifier fallback. <code>escalation_router</code> starts on the weak
@@ -1366,7 +1367,7 @@ and request metadata, while the profile protocols define <code>run</code>, <code
 <p>The <code>switchyard-server</code> binary is built directly on libsy. Its TOML file
 explicitly defines LLM clients, targets, and algorithm routes; it does not load
 Python route bundles. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6a850f2f19e7115d6dc28edfd68ba1ddcecfe54/crates/switchyard-server/README.md">Rust server README</a> for details.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9762a070e3d90aac7bdfd21de57269d92cce8bfc/crates/switchyard-server/README.md">Rust server README</a> for details.</p>
 <h2 id="where-to-go-next">Where to go next<a class="headerlink" href="#where-to-go-next" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a> to install and send a first request.</li>
