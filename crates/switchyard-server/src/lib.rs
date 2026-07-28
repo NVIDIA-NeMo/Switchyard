@@ -252,36 +252,31 @@ async fn handle_endpoint(
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
-    let started = Instant::now();
     let metadata = metadata_from_headers(&headers);
-    let session_id = metadata.session_id.clone();
-    let correlation_id = metadata.correlation_id.clone();
-    let requested_model = body
-        .as_ref()
-        .ok()
-        .and_then(|body| body.0.get("model"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let streaming = body
-        .as_ref()
-        .ok()
-        .and_then(|body| body.0.get("stream"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    let response = match llm_json_body(body) {
-        Ok(body) => handle_llm_request(state, metadata, body, wire_format).await,
-        Err(message) => invalid_body_error(message),
-    };
-    log_llm_request(
-        &response,
+    let request_log = RequestLogContext {
+        started: Instant::now(),
         wire_format,
-        requested_model.as_deref(),
-        session_id.as_deref(),
-        correlation_id.as_deref(),
-        streaming,
-        started.elapsed(),
-    );
+        requested_model: body
+            .as_ref()
+            .ok()
+            .and_then(|body| body.0.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        streaming: body
+            .as_ref()
+            .ok()
+            .and_then(|body| body.0.get("stream"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        session_id: metadata.session_id.clone(),
+        correlation_id: metadata.correlation_id.clone(),
+    };
+
+    let (response, error) = match llm_json_body(body) {
+        Ok(body) => handle_llm_request(state, metadata, body, wire_format).await,
+        Err(message) => (invalid_body_error(message), None),
+    };
+    request_log.emit(&response, error.as_deref());
     response
 }
 
@@ -300,29 +295,35 @@ async fn handle_llm_request(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> Response {
+) -> (Response, Option<String>) {
     let llm_request = match decode_request(wire_format, &body) {
         Ok(request) => request,
-        Err(error) => return invalid_body_error(error.to_string()),
+        Err(error) => return (invalid_body_error(error.to_string()), None),
     };
     let Some(requested_model) = llm_request
         .model
         .clone()
         .filter(|model| !model.trim().is_empty())
     else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "request body must include a non-empty string `model`",
-            "invalid_request_error",
-            "invalid_request_error",
+        return (
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "request body must include a non-empty string `model`",
+                "invalid_request_error",
+                "invalid_request_error",
+            ),
+            None,
         );
     };
     let Some(algorithm) = state.algorithm_for_model(&requested_model) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("No route registered for model {requested_model}"),
-            "model_not_found",
-            "model_not_found",
+        return (
+            error_response(
+                StatusCode::NOT_FOUND,
+                format!("No route registered for model {requested_model}"),
+                "model_not_found",
+                "model_not_found",
+            ),
+            None,
         );
     };
 
@@ -333,45 +334,71 @@ async fn handle_llm_request(
     };
     let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
-        Err(error) => return algorithm_error(error),
+        Err(error) => {
+            let message = error.to_string();
+            return (algorithm_error(error), Some(message));
+        }
     };
 
     let mut response = match into_http_response(response, wire_format, Some(requested_model)) {
         Ok(response) => response,
-        Err(error) => return server_error(error.to_string()),
+        Err(error) => {
+            let message = error.to_string();
+            return (server_error(&message), Some(message));
+        }
     };
     if let Some(decision) = trace.last() {
         attach_routing_headers(&mut response, decision.as_ref());
     }
-    response
+    (response, None)
 }
 
-fn log_llm_request(
-    response: &Response,
+// Request metadata held until the terminal response determines the event level.
+struct RequestLogContext {
+    started: Instant,
     wire_format: WireFormat,
-    requested_model: Option<&str>,
-    session_id: Option<&str>,
-    correlation_id: Option<&str>,
+    requested_model: Option<String>,
     streaming: bool,
-    duration: Duration,
-) {
-    let selected_model = response
-        .headers()
-        .get(HEADER_SELECTED_MODEL)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    tracing::info!(
-        target: "switchyard_server::request",
-        wire_format = %wire_format,
-        status = response.status().as_u16(),
-        requested_model = requested_model.unwrap_or(""),
-        selected_model,
-        streaming,
-        session_id = session_id.unwrap_or(""),
-        correlation_id = correlation_id.unwrap_or(""),
-        handling_duration_ms = duration.as_secs_f64() * 1_000.0,
-        "LLM request handled"
-    );
+    session_id: Option<String>,
+    correlation_id: Option<String>,
+}
+
+impl RequestLogContext {
+    fn emit(self, response: &Response, error: Option<&str>) {
+        let selected_model = response
+            .headers()
+            .get(HEADER_SELECTED_MODEL)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0;
+        match error {
+            Some(error) => tracing::warn!(
+                target: "switchyard_server::request",
+                wire_format = %self.wire_format,
+                status = response.status().as_u16(),
+                requested_model = self.requested_model.as_deref().unwrap_or(""),
+                selected_model,
+                streaming = self.streaming,
+                session_id = self.session_id.as_deref().unwrap_or(""),
+                correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                handling_duration_ms = duration_ms,
+                error,
+                "LLM request failed"
+            ),
+            None => tracing::info!(
+                target: "switchyard_server::request",
+                wire_format = %self.wire_format,
+                status = response.status().as_u16(),
+                requested_model = self.requested_model.as_deref().unwrap_or(""),
+                selected_model,
+                streaming = self.streaming,
+                session_id = self.session_id.as_deref().unwrap_or(""),
+                correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                handling_duration_ms = duration_ms,
+                "LLM request handled"
+            ),
+        }
+    }
 }
 
 fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
