@@ -51,27 +51,46 @@ impl TaskClassifierVerdict {
     }
 }
 
-fn task_context_messages(messages: &[Message]) -> Vec<Message> {
-    let initial_instruction = messages
+/// Keeps client instructions, the initial task, and bounded recent dialogue for the judge.
+fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
+    let mut system = Vec::new();
+    let mut first_user = None;
+    let mut first_user_idx = None;
+    for (idx, message) in messages.iter().enumerate() {
+        match message.role {
+            Role::System | Role::Developer => system.push(message.clone()),
+            Role::User if first_user.is_none() => {
+                first_user = Some(message.clone());
+                first_user_idx = Some(idx);
+            }
+            _ => {}
+        }
+    }
+    let Some(first_user) = first_user else {
+        return system;
+    };
+    let tail = messages
         .iter()
         .enumerate()
-        .find(|(_, message)| message.role == Role::User);
-    let recent_start = messages.len().saturating_sub(RECENT_MESSAGE_WINDOW);
-    let mut context = Vec::with_capacity(RECENT_MESSAGE_WINDOW + 1);
-    if let Some((_, instruction)) = initial_instruction {
-        context.push(instruction.clone());
+        .filter(|(idx, message)| {
+            *idx > first_user_idx.unwrap_or(0)
+                && !matches!(message.role, Role::System | Role::Developer)
+        })
+        .map(|(_, message)| message.clone())
+        .collect::<Vec<_>>();
+    if recent_turn_window == 0 {
+        let mut out = system;
+        out.push(first_user);
+        if let Some(last_user) = tail.iter().rev().find(|message| message.role == Role::User) {
+            out.push(last_user.clone());
+        }
+        return out;
     }
-    context.extend(
-        messages
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                *index >= recent_start
-                    && Some(*index) != initial_instruction.map(|(index, _)| index)
-            })
-            .map(|(_, message)| message.clone()),
-    );
-    context
+    let mut out = system;
+    out.push(first_user);
+    let start = tail.len().saturating_sub(recent_turn_window);
+    out.extend_from_slice(&tail[start..]);
+    out
 }
 
 struct CapabilityJudge {
@@ -88,13 +107,12 @@ impl Judge for CapabilityJudge {
     type Verdict = TaskClassifierVerdict;
 
     fn build_request(&self, _state: &State, request: &Request) -> Request {
-        // Keep the task's initial instruction plus a bounded recent context for each judgment.
-        let mut messages = Vec::with_capacity(RECENT_MESSAGE_WINDOW + 2);
-        messages.push(Message::text(
-            Role::System,
-            self.config.system_prompt.clone(),
-        ));
-        messages.extend(task_context_messages(&request.llm_request.messages));
+        // The judge owns the leading system prompt; client instructions and task context follow.
+        let mut messages = trim_messages(&request.llm_request.messages, RECENT_MESSAGE_WINDOW);
+        messages.insert(
+            0,
+            Message::text(Role::System, self.config.system_prompt.clone()),
+        );
         Request {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
@@ -377,6 +395,7 @@ mod tests {
                 model: Some("inbound".to_string()),
                 messages: vec![
                     Message::text(Role::System, "client instructions"),
+                    Message::text(Role::Developer, "client developer instructions"),
                     Message::text(Role::User, "initial task"),
                     Message::text(Role::Assistant, "old response"),
                     Message::text(Role::User, "old follow-up"),
@@ -396,7 +415,7 @@ mod tests {
         assert_eq!(judge_request.llm_request.model, request.llm_request.model);
         assert_eq!(
             judge_request.llm_request.messages.len(),
-            RECENT_MESSAGE_WINDOW + 2
+            RECENT_MESSAGE_WINDOW + 4
         );
         let contents = judge_request
             .llm_request
@@ -407,7 +426,8 @@ mod tests {
         assert!(contents.contains(&"initial task".to_string()));
         assert!(contents.contains(&"recent 1".to_string()));
         assert!(contents.contains(&"recent 5".to_string()));
-        assert!(!contents.contains(&"client instructions".to_string()));
+        assert!(contents.contains(&"client instructions".to_string()));
+        assert!(contents.contains(&"client developer instructions".to_string()));
         assert!(!contents.contains(&"old response".to_string()));
         assert!(!contents.contains(&"old follow-up".to_string()));
         assert_eq!(
