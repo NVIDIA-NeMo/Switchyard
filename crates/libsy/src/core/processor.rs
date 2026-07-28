@@ -6,15 +6,19 @@ use async_trait::async_trait;
 use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
 
 /// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate [`State`]
+///
+/// The two request-bearing variants borrow the request mutably, so a processor may rewrite
+/// it in place and pass the rewritten request down the chain (see [`Processor::process`]).
+/// The observation-only variants stay immutable.
 pub enum Event<'a> {
     /// The inbound request that begins a turn.
-    Request(&'a Request),
+    Request(&'a mut Request),
     /// An out-of-band agentic-stack signal (tool results, budget updates, …).
     Signal(&'a Signals),
     /// A routing decision the algorithm just made.
     Decision(&'a dyn Decision),
     /// A request about to be sent to a model.
-    ModelRequest(&'a Request),
+    ModelRequest(&'a mut Request),
     /// A buffered response received back from a model.
     ModelResponse(&'a AggLlmResponse),
 }
@@ -23,6 +27,10 @@ pub enum Event<'a> {
 #[async_trait]
 pub trait Processor: Send + Sync {
     /// Process an event, accumulating facts into `state`.
+    ///
+    /// A request-bearing event ([`Event::Request`], [`Event::ModelRequest`]) may also be
+    /// rewritten in place; the edit propagates to the rest of the chain and to the model
+    /// call. Most processors only read it.
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()>;
 }
 
@@ -95,15 +103,17 @@ mod tests {
     async fn processor_tallies_each_event_variant_into_state() -> Result<()> {
         let processor = CountingProcessor;
         let mut state = State::default();
-        let req = request();
+        let mut req = request();
         let response = text_response(None, "ok");
         let decision = TestDecision;
         let signals = Signals {};
 
         // Feed one of every event variant through the processor.
-        processor.process(&mut state, Event::Request(&req)).await?;
         processor
-            .process(&mut state, Event::ModelRequest(&req))
+            .process(&mut state, Event::Request(&mut req))
+            .await?;
+        processor
+            .process(&mut state, Event::ModelRequest(&mut req))
             .await?;
         processor
             .process(&mut state, Event::ModelResponse(&response))
@@ -127,13 +137,43 @@ mod tests {
     async fn process_accumulates_state_across_repeated_events() -> Result<()> {
         let processor = CountingProcessor;
         let mut state = State::default();
-        let req = request();
+        let mut req = request();
 
         for _ in 0..3 {
-            processor.process(&mut state, Event::Request(&req)).await?;
+            processor
+                .process(&mut state, Event::Request(&mut req))
+                .await?;
         }
 
         assert_eq!(count(&state, "requests"), 3);
+        Ok(())
+    }
+
+    /// Rewrites the requested model on every request-bearing event.
+    struct RewritingProcessor;
+
+    #[async_trait]
+    impl Processor for RewritingProcessor {
+        async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
+            if let Event::Request(request) | Event::ModelRequest(request) = event {
+                request.llm_request.model = Some("rewritten".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn processor_rewrites_the_request_in_place() -> Result<()> {
+        let mut state = State::default();
+        let mut req = request();
+        assert_eq!(req.requested_model(), Some("auto"));
+
+        RewritingProcessor
+            .process(&mut state, Event::Request(&mut req))
+            .await?;
+
+        // The edit outlives the call, so the next component sees the rewritten request.
+        assert_eq!(req.requested_model(), Some("rewritten"));
         Ok(())
     }
 }

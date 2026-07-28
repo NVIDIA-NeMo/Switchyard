@@ -42,7 +42,7 @@ impl Classifier for SubagentOverride {
     async fn score(
         &self,
         _state: &mut State,
-        request: &Request,
+        request: &mut Request,
         _driver: Option<&Driver>,
     ) -> Result<Classification> {
         // Delegated *work* only. A harness maintenance turn (e.g. Codex `compact`) carries
@@ -89,7 +89,7 @@ mod tests {
     async fn selected(headers: &[(&str, &str)]) -> Result<Option<String>> {
         let mut state = State::default();
         let classification = SubagentOverride::new("worker")
-            .score(&mut state, &request(headers), None)
+            .score(&mut state, &mut request(headers), None)
             .await?;
         Ok(classification.argmax(false)?.map(|score| score.target))
     }
@@ -139,7 +139,7 @@ mod tests {
         let classification = SubagentOverride::new("worker")
             .score(
                 &mut state,
-                &request(&[("x-openai-subagent", "review")]),
+                &mut request(&[("x-openai-subagent", "review")]),
                 None,
             )
             .await?;

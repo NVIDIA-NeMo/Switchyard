@@ -72,10 +72,16 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 pub trait Classifier: Send + Sync {
     /// Score the classifier's targets given the current state and request.
     /// driver is optional. It is used to offload model calls
+    ///
+    /// `request` is borrowed mutably so a classifier may rewrite it in place — inject a
+    /// system prompt, drop tools, compact history. The edit is not scoped to this call:
+    /// later classifiers in the cascade score the rewritten request, and it is the
+    /// rewritten request that is finally sent to the selected model. Most classifiers
+    /// only read it.
     async fn score(
         &self,
         state: &mut State,
-        request: &Request,
+        request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<Classification>;
 }
@@ -171,7 +177,7 @@ mod tests {
         async fn score(
             &self,
             state: &mut State,
-            request: &Request,
+            request: &mut Request,
             _driver: Option<&Driver>,
         ) -> Result<Classification> {
             // Stash a marker in `extra` to prove state is threaded mutably.
@@ -187,20 +193,58 @@ mod tests {
     #[tokio::test]
     async fn classifier_reads_request_and_mutates_state() -> Result<()> {
         let mut state = State::default();
-        let request = Request {
+        let mut request = Request {
             llm_request: text_request(Some("strong".to_string()), "hi"),
             raw_request: None,
             metadata: None,
         };
         // A `None` driver is valid: the classifier scored without offloading a model call.
         let classification = RecordingClassifier
-            .score(&mut state, &request, None)
+            .score(&mut state, &mut request, None)
             .await?;
         assert_eq!(
             classification.argmax(false)?.map(|s| s.target),
             Some("strong".to_string())
         );
         assert!(matches!(state.extra.get("ran"), Some(StateValue::Count(1))));
+        Ok(())
+    }
+
+    /// Rewrites the request's model, then scores the rewritten value.
+    struct RewritingClassifier;
+
+    #[async_trait]
+    impl Classifier for RewritingClassifier {
+        async fn score(
+            &self,
+            _state: &mut State,
+            request: &mut Request,
+            _driver: Option<&Driver>,
+        ) -> Result<Classification> {
+            request.llm_request.model = Some("rewritten".to_string());
+            Ok(Classification::Scores(vec![Score {
+                target: "rewritten".to_string(),
+                confidence: 1.0,
+            }]))
+        }
+    }
+
+    #[tokio::test]
+    async fn classifier_rewrites_the_request_in_place() -> Result<()> {
+        let mut state = State::default();
+        let mut request = Request {
+            llm_request: text_request(Some("auto".to_string()), "hi"),
+            raw_request: None,
+            metadata: None,
+        };
+
+        RewritingClassifier
+            .score(&mut state, &mut request, None)
+            .await?;
+
+        // The rewrite outlives the call: later classifiers in the cascade score this value,
+        // and it is what reaches the model.
+        assert_eq!(request.requested_model(), Some("rewritten"));
         Ok(())
     }
 }

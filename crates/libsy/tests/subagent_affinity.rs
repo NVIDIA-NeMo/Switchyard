@@ -46,7 +46,7 @@ impl Classifier for AlwaysOrchestrator {
     async fn score(
         &self,
         _state: &mut State,
-        _request: &Request,
+        _request: &mut Request,
         _driver: Option<&Driver>,
     ) -> Result<Classification> {
         Ok(Classification::Scores(vec![Score {

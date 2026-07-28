@@ -106,10 +106,14 @@ impl Algorithm<SharedState> for FallThrough {
         // turns of the same session serialize on it.
         let mut state = ctx.state.lock().await;
 
+        // The request is threaded mutably through the whole fold: any component may rewrite
+        // it, later components see the rewrite, and the final value is what reaches the model.
+        let mut request = request;
+
         // 1. Processor chain accumulates request-side facts into the session State.
         for processor in &self.processors {
             processor
-                .process(&mut state, Event::Request(&request))
+                .process(&mut state, Event::Request(&mut request))
                 .await?;
         }
 
@@ -118,7 +122,7 @@ impl Algorithm<SharedState> for FallThrough {
         let mut winner: Option<Score> = None;
         for classifier in &self.classifiers {
             let scores = classifier
-                .score(&mut state, &request, Some(&driver))
+                .score(&mut state, &mut request, Some(&driver))
                 .await?;
             if let Some(score) = scores.argmax(false)? {
                 winner = Some(score);
@@ -198,6 +202,29 @@ mod tests {
         }
     }
 
+    /// A client that captures the request it was handed, so a test can assert on what
+    /// actually reached the model.
+    struct CapturingClient(Arc<parking_lot::Mutex<Option<Request>>>);
+
+    #[async_trait]
+    impl RoutedLlmClient for CapturingClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+            *self.0.lock() = Some(request);
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
+        }
+    }
+
     /// A target set whose targets all serve via [`EchoClient`].
     fn target_set(names: &[&str]) -> LlmTargetSet {
         LlmTargetSet::new(
@@ -219,7 +246,7 @@ mod tests {
         async fn score(
             &self,
             _state: &mut State,
-            _request: &Request,
+            _request: &mut Request,
             _driver: Option<&Driver>,
         ) -> Result<Classification> {
             Ok(Classification::Scores(
@@ -342,7 +369,7 @@ mod tests {
             async fn score(
                 &self,
                 _state: &mut State,
-                _request: &Request,
+                _request: &mut Request,
                 driver: Option<&Driver>,
             ) -> Result<Classification> {
                 match driver {
@@ -390,6 +417,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_rewrite_propagates_down_the_chain_and_into_the_model_call() -> Result<()> {
+        use parking_lot::Mutex;
+
+        /// Appends a marker message to the request it observes.
+        struct Appender(&'static str);
+
+        #[async_trait]
+        impl Processor for Appender {
+            async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
+                if let Event::Request(request) = event {
+                    request
+                        .llm_request
+                        .messages
+                        .push(Message::text(Role::User, self.0));
+                }
+                Ok(())
+            }
+        }
+
+        /// Records the marker trail it was handed, then appends its own — proving the
+        /// classifier scored the processors' rewrite rather than the original request.
+        struct TrailClassifier(Arc<Mutex<Vec<String>>>);
+
+        #[async_trait]
+        impl Classifier for TrailClassifier {
+            async fn score(
+                &self,
+                _state: &mut State,
+                request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<Classification> {
+                *self.0.lock() = request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.text_content(""))
+                    .collect();
+                request
+                    .llm_request
+                    .messages
+                    .push(Message::text(Role::User, "classifier"));
+                Ok(Classification::Scores(vec![score("strong", 1.0)]))
+            }
+        }
+
+        let seen_by_classifier = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_model = Arc::new(Mutex::new(None));
+        let targets = LlmTargetSet::new(vec![LlmTarget {
+            semantic_name: "strong".to_string(),
+            llm_client: Some(Arc::new(CapturingClient(seen_by_model.clone()))),
+        }]);
+        let router = FallThrough::new(targets)
+            .with_processor(Arc::new(Appender("first")))
+            .with_processor(Arc::new(Appender("second")))
+            .with_classifier(Arc::new(TrailClassifier(seen_by_classifier.clone())));
+
+        run_turn(&Arc::new(router), Context::default()).await?;
+
+        // The classifier saw both processors' edits, in chain order, on top of the original.
+        assert_eq!(*seen_by_classifier.lock(), vec!["hi", "first", "second"]);
+
+        // ...and the request that reached the model carries the classifier's edit too.
+        let routed = seen_by_model
+            .lock()
+            .take()
+            .ok_or_else(|| test_error("the model was never called"))?;
+        let trail: Vec<String> = routed
+            .llm_request
+            .messages
+            .iter()
+            .filter_map(|message| message.text_content(""))
+            .collect();
+        assert_eq!(trail, vec!["hi", "first", "second", "classifier"]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn state_persists_across_turns() -> Result<()> {
         // Increments the session turn count on every request.
         struct CountingProcessor;
@@ -413,7 +517,7 @@ mod tests {
             async fn score(
                 &self,
                 state: &mut State,
-                _request: &Request,
+                _request: &mut Request,
                 _driver: Option<&Driver>,
             ) -> Result<Classification> {
                 let target = if state.turn_count >= 2 {

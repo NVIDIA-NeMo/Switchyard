@@ -157,7 +157,7 @@ impl Classifier for AffinityRouter {
     async fn score(
         &self,
         _state: &mut State,
-        request: &Request,
+        request: &mut Request,
         _driver: Option<&crate::Driver>,
     ) -> crate::Result<Classification> {
         let Some(key) = self.affinity_key(request) else {
@@ -242,7 +242,7 @@ mod tests {
     async fn retain(
         router: &AffinityRouter,
         state: &mut State,
-        request: &Request,
+        request: &mut Request,
         model: &'static str,
     ) -> Result<(), BoxErr> {
         router.process(state, Event::Request(request)).await?;
@@ -256,7 +256,7 @@ mod tests {
     async fn scores(
         classifier: &dyn Classifier,
         state: &mut State,
-        request: &Request,
+        request: &mut Request,
     ) -> Result<Vec<Score>, BoxErr> {
         match classifier.score(state, request, None).await? {
             Classification::Scores(scores) => Ok(scores),
@@ -269,12 +269,12 @@ mod tests {
         let router = AffinityRouter::new();
         let mut state = State::default();
 
-        let first = request(session("session-1", "agent-a"));
-        retain(&router, &mut state, &first, "model-a").await?;
+        let mut first = request(session("session-1", "agent-a"));
+        retain(&router, &mut state, &mut first, "model-a").await?;
 
         // A different agent in the same session is scored onto the retained model.
-        let second = request(session("session-1", "agent-b"));
-        let scores = scores(&router, &mut state, &second).await?;
+        let mut second = request(session("session-1", "agent-b"));
+        let scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].confidence, 1.0);
         assert_eq!(scores[0].target, "model-a");
@@ -286,14 +286,14 @@ mod tests {
         let router = AffinityRouter::for_subagents();
         let mut state = State::default();
 
-        let root = request(session("session-1", "root-agent"));
-        retain(&router, &mut state, &root, "model-a").await?;
-        assert!(scores(&router, &mut state, &root).await?.is_empty());
+        let mut root = request(session("session-1", "root-agent"));
+        retain(&router, &mut state, &mut root, "model-a").await?;
+        assert!(scores(&router, &mut state, &mut root).await?.is_empty());
 
-        let first_child_turn = request(subagent("child-1", "task-1"));
-        retain(&router, &mut state, &first_child_turn, "model-b").await?;
-        let later_child_turn = request(subagent("child-1", "task-2"));
-        let scores = scores(&router, &mut state, &later_child_turn).await?;
+        let mut first_child_turn = request(subagent("child-1", "task-1"));
+        retain(&router, &mut state, &mut first_child_turn, "model-b").await?;
+        let mut later_child_turn = request(subagent("child-1", "task-2"));
+        let scores = scores(&router, &mut state, &mut later_child_turn).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-b")
@@ -306,12 +306,12 @@ mod tests {
         let router = AffinityRouter::new();
         let mut state = State::default();
 
-        let req = request(session("session-1", "agent-a"));
-        retain(&router, &mut state, &req, "model-a").await?;
+        let mut req = request(session("session-1", "agent-a"));
+        retain(&router, &mut state, &mut req, "model-a").await?;
         // A later decision for the same identity must not overwrite the first.
-        retain(&router, &mut state, &req, "model-b").await?;
+        retain(&router, &mut state, &mut req, "model-b").await?;
 
-        let scores = scores(&router, &mut state, &req).await?;
+        let scores = scores(&router, &mut state, &mut req).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -324,12 +324,12 @@ mod tests {
         let router = AffinityRouter::new();
         let mut state = State::default();
 
-        let first = request(subagent("child-1", "task-1"));
-        retain(&router, &mut state, &first, "model-a").await?;
+        let mut first = request(subagent("child-1", "task-1"));
+        retain(&router, &mut state, &mut first, "model-a").await?;
 
         // Same child, different task: still scored onto the retained model.
-        let second = request(subagent("child-1", "task-2"));
-        let scores = scores(&router, &mut state, &second).await?;
+        let mut second = request(subagent("child-1", "task-2"));
+        let scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -346,14 +346,14 @@ mod tests {
         retain(
             &router,
             &mut state,
-            &request(subagent("child-1", "task-1")),
+            &mut request(subagent("child-1", "task-1")),
             "model-a",
         )
         .await?;
 
         // ...a sibling child in the same session has no assignment of its own yet.
-        let sibling = request(subagent("child-2", "task-1"));
-        assert!(scores(&router, &mut state, &sibling).await?.is_empty());
+        let mut sibling = request(subagent("child-2", "task-1"));
+        assert!(scores(&router, &mut state, &mut sibling).await?.is_empty());
         Ok(())
     }
 
@@ -366,14 +366,14 @@ mod tests {
         retain(
             &router,
             &mut state,
-            &request(session("session-1", "root-1")),
+            &mut request(session("session-1", "root-1")),
             "model-a",
         )
         .await?;
 
         // ...so the sub-agent abstains until it is assigned in its own right.
-        let child = request(subagent("child-1", "task-1"));
-        assert!(scores(&router, &mut state, &child).await?.is_empty());
+        let mut child = request(subagent("child-1", "task-1"));
+        assert!(scores(&router, &mut state, &mut child).await?.is_empty());
         Ok(())
     }
 
@@ -383,8 +383,8 @@ mod tests {
         let mut state = State::default();
 
         // No session id at all: nothing to key on.
-        let req = request(Metadata::default());
-        assert!(scores(&router, &mut state, &req).await?.is_empty());
+        let mut req = request(Metadata::default());
+        assert!(scores(&router, &mut state, &mut req).await?.is_empty());
         Ok(())
     }
 
@@ -397,16 +397,16 @@ mod tests {
         let classifier: Arc<dyn Classifier> = router;
         let mut state = State::default();
 
-        let first = request(session("session-1", "agent-a"));
+        let mut first = request(session("session-1", "agent-a"));
         processor
-            .process(&mut state, Event::Request(&first))
+            .process(&mut state, Event::Request(&mut first))
             .await?;
         processor
             .process(&mut state, Event::Decision(&FixedDecision("model-a")))
             .await?;
 
-        let second = request(session("session-1", "agent-b"));
-        let scores = scores(classifier.as_ref(), &mut state, &second).await?;
+        let mut second = request(session("session-1", "agent-b"));
+        let scores = scores(classifier.as_ref(), &mut state, &mut second).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -424,8 +424,8 @@ mod tests {
             .process(&mut state, Event::Decision(&FixedDecision("model-a")))
             .await?;
 
-        let req = request(session("session-1", "agent-a"));
-        assert!(scores(&router, &mut state, &req).await?.is_empty());
+        let mut req = request(session("session-1", "agent-a"));
+        assert!(scores(&router, &mut state, &mut req).await?.is_empty());
         Ok(())
     }
 
@@ -434,8 +434,8 @@ mod tests {
         let router = AffinityRouter::new();
         let mut state = State::default();
 
-        let req = request(session("session-1", "agent-a"));
-        router.process(&mut state, Event::Request(&req)).await?;
+        let mut req = request(session("session-1", "agent-a"));
+        router.process(&mut state, Event::Request(&mut req)).await?;
         // A stray signal between the request and its decision must not drop the captured
         // identity, nor create an assignment of its own.
         router
@@ -445,7 +445,7 @@ mod tests {
             .process(&mut state, Event::Decision(&FixedDecision("model-a")))
             .await?;
 
-        let scores = scores(&router, &mut state, &req).await?;
+        let scores = scores(&router, &mut state, &mut req).await?;
         assert_eq!(
             scores.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -461,20 +461,30 @@ mod tests {
         retain(
             &router,
             &mut state,
-            &request(session("session-1", "agent-a")),
+            &mut request(session("session-1", "agent-a")),
             "model-a",
         )
         .await?;
         retain(
             &router,
             &mut state,
-            &request(session("session-2", "agent-a")),
+            &mut request(session("session-2", "agent-a")),
             "model-b",
         )
         .await?;
 
-        let first = scores(&router, &mut state, &request(session("session-1", "other"))).await?;
-        let second = scores(&router, &mut state, &request(session("session-2", "other"))).await?;
+        let first = scores(
+            &router,
+            &mut state,
+            &mut request(session("session-1", "other")),
+        )
+        .await?;
+        let second = scores(
+            &router,
+            &mut state,
+            &mut request(session("session-2", "other")),
+        )
+        .await?;
         assert_eq!(
             first.first().map(|score| score.target.as_str()),
             Some("model-a")
@@ -498,9 +508,9 @@ mod tests {
             is_subagent: true,
             ..Metadata::default()
         };
-        let req = request(metadata);
-        retain(&router, &mut state, &req, "model-a").await?;
-        assert!(scores(&router, &mut state, &req).await?.is_empty());
+        let mut req = request(metadata);
+        retain(&router, &mut state, &mut req, "model-a").await?;
+        assert!(scores(&router, &mut state, &mut req).await?.is_empty());
         Ok(())
     }
 
@@ -515,7 +525,7 @@ mod tests {
             retain(
                 &router,
                 &mut state,
-                &request(session(&session_id, "agent-a")),
+                &mut request(session(&session_id, "agent-a")),
                 "model-a",
             )
             .await?;
@@ -530,16 +540,16 @@ mod tests {
     async fn latch_only_retains_matching_models() -> Result<(), BoxErr> {
         let router = AffinityRouter::new().with_latch_only(["strong"]);
         let mut state = State::default();
-        let req = request(session("session-1", "agent-a"));
+        let mut req = request(session("session-1", "agent-a"));
 
         // A "weak" decision is not retained — a later turn is not latched.
-        retain(&router, &mut state, &req, "weak").await?;
-        assert!(scores(&router, &mut state, &req).await?.is_empty());
+        retain(&router, &mut state, &mut req, "weak").await?;
+        assert!(scores(&router, &mut state, &mut req).await?.is_empty());
 
         // A "strong" decision is retained — later turns latch onto it.
-        retain(&router, &mut state, &req, "strong").await?;
+        retain(&router, &mut state, &mut req, "strong").await?;
         assert_eq!(
-            scores(&router, &mut state, &req)
+            scores(&router, &mut state, &mut req)
                 .await?
                 .first()
                 .map(|s| s.target.as_str()),
