@@ -309,7 +309,7 @@ impl Classifier for StageClassifier {
     async fn score(
         &self,
         state: &mut State,
-        _request: &Request,
+        _request: &mut Request,
         _driver: Option<&Driver>,
     ) -> Result<Classification> {
         let tool_signals = &state.tool_signals;
@@ -471,7 +471,7 @@ mod tests {
         // (efficient_first → weak), recorded in `extra` for the caller.
         let mut state = State::default();
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &Request::default(), None)
+            .score(&mut state, &mut Request::default(), None)
             .await?;
         match classification {
             Classification::Ambiguous(scores) => {
@@ -500,7 +500,7 @@ mod tests {
         };
         let mut state = state_with(signal);
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &Request::default(), None)
+            .score(&mut state, &mut Request::default(), None)
             .await?;
         match classification {
             Classification::Scores(scores) => {
@@ -529,7 +529,7 @@ mod tests {
         };
         let mut state = state_with(signal);
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &Request::default(), None)
+            .score(&mut state, &mut Request::default(), None)
             .await?;
         match classification {
             Classification::Scores(scores) => {
@@ -547,7 +547,7 @@ mod tests {
         // efficient (weak) tier, which is also stashed in `extra` for the caller.
         let mut state = state_with(ToolSignals::default());
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &Request::default(), None)
+            .score(&mut state, &mut Request::default(), None)
             .await?;
         match classification {
             Classification::Ambiguous(scores) => {
@@ -573,7 +573,7 @@ mod tests {
         // proving the configured picker mode is used, not a hardcoded default.
         let mut state = state_with(ToolSignals::default());
         let classification = StageClassifier::new(PickerMode::CapableFirst, 0.5)
-            .score(&mut state, &Request::default(), None)
+            .score(&mut state, &mut Request::default(), None)
             .await?;
         match classification {
             Classification::Ambiguous(scores) => {
