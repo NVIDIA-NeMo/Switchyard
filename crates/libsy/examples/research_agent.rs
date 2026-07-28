@@ -6,18 +6,18 @@
 //! Every target owns an `RoutedLlmClient`, so the agent runs each request to completion with
 //! [`Algorithm::run`]: it serves each offloaded call with the routed
 //! target's `default_client` and returns the final response — no stream to drive. The
-//! multi-step routing (classify -> route) happens inside the classifier algorithm; the
-//! agent never sees it. To drive the step stream yourself instead, use
+//! classifier cascade runs inside `FallThrough`; the agent never sees it. To drive the step
+//! stream yourself instead, use
 //! `Algorithm::run_stream`. Run with:
 //!   cargo run -p libsy --example research_agent
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use switchyard_libsy::algorithms::LlmClassifier;
+use switchyard_libsy::algorithms::{FallThrough, LlmClassifier};
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Result, RoutedLlmClient,
+    Response, Result, RoutedLlmClient, SharedState,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 
@@ -39,9 +39,9 @@ impl RoutedLlmClient for StubClient {
         // The model to call is the routed decision's selection, not the inbound name.
         let model = decision.selected_model().to_string();
         println!("  -> model call: {model}");
-        // The classifier returns a score; other models return an answer.
+        // The judge returns a structured verdict; other models return an answer.
         let completion = if model == CLASSIFIER {
-            "0.9".to_string()
+            r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
         } else {
             format!("answer from {model}")
         };
@@ -62,7 +62,7 @@ fn targets() -> LlmTargetSet {
 }
 
 struct ResearchAgent {
-    algo: Arc<dyn Algorithm>,
+    algo: Arc<dyn Algorithm<SharedState>>,
 }
 
 impl ResearchAgent {
@@ -94,15 +94,12 @@ impl ResearchAgent {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // Configure routing once: an LLM classifier over three named targets. Swapping
-    // in `Random` needs no change to the agent.
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifier::new(
-        CLASSIFIER,
-        STRONG,
-        WEAK,
-        0.5,
-        targets(),
-    )?);
+    let target_set = targets();
+    let classifier = target_set.get_target(CLASSIFIER)?;
+    let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
+        FallThrough::new(target_set)
+            .with_classifier(Arc::new(LlmClassifier::new(classifier, WEAK, STRONG)?)),
+    );
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

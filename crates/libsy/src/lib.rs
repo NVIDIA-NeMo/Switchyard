@@ -74,8 +74,8 @@
 //!
 //! [`algorithms::Random`] provides uniform or weighted random routing.
 //!
-//! [`algorithms::LlmClassifier`] classifies with one model, then routes to a strong/weak
-//! model depending on the classifier's choice.
+//! [`algorithms::LlmClassifier`] classifies with one model; compose it with
+//! [`algorithms::FallThrough`] to route to the selected target.
 
 mod core;
 pub use core::*;

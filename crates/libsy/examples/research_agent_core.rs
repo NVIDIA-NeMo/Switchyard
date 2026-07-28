@@ -6,15 +6,15 @@
 //! With no client, every `driver.call_llm_target` is offloaded as a promise the orchestrator
 //! surfaces as a `CallLlm` step. The agent makes the "real" model call itself and
 //! fulfills the promise — this is the offload/streaming path ("ask, don't call").
-//! The classifier's two steps show up as two `model call:` lines. Run with:
+//! The judge and selected target show up as two `model call:` lines. Run with:
 //!   cargo run -p libsy --example research_agent_core
 
 use std::sync::Arc;
 
-use switchyard_libsy::algorithms::LlmClassifier;
+use switchyard_libsy::algorithms::{FallThrough, LlmClassifier};
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Result, Step,
+    Response, Result, SharedState, Step,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
@@ -29,7 +29,7 @@ const WEAK: &str = "weak/model";
 async fn call_model(model: &str) -> Response {
     println!("  -> model call: {model}");
     let completion = if model == CLASSIFIER {
-        "0.9".to_string()
+        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
     } else {
         format!("answer from {model}")
     };
@@ -49,7 +49,7 @@ fn targets() -> LlmTargetSet {
 }
 
 struct ResearchAgent {
-    algo: Arc<dyn Algorithm>,
+    algo: Arc<dyn Algorithm<SharedState>>,
 }
 
 impl ResearchAgent {
@@ -102,13 +102,12 @@ fn print_decision(decision: &dyn Decision) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifier::new(
-        CLASSIFIER,
-        STRONG,
-        WEAK,
-        0.5,
-        targets(),
-    )?);
+    let target_set = targets();
+    let classifier = target_set.get_target(CLASSIFIER)?;
+    let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
+        FallThrough::new(target_set)
+            .with_classifier(Arc::new(LlmClassifier::new(classifier, WEAK, STRONG)?)),
+    );
 
     let mut agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

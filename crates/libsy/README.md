@@ -11,8 +11,8 @@ so it drops into a proxy, gateway, or agent runtime.
 Build a target set, pick an algorithm, run a request:
 
 ```rust
-use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request};
-use switchyard_libsy::algorithms::LlmClassifier;
+use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request, SharedState};
+use switchyard_libsy::algorithms::{FallThrough, LlmClassifier};
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -20,10 +20,13 @@ use std::sync::Arc;
 let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
 let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
 
-let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifier::new(
-    "classifier", "strong", "weak", 0.5,
-    LlmTargetSet::new(vec![target("classifier"), target("strong"), target("weak")]),
-));
+let targets = LlmTargetSet::new(vec![target("classifier"), target("strong"), target("weak")]);
+let judge_target = targets.get_target("classifier")?;
+let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
+    FallThrough::new(targets).with_classifier(Arc::new(LlmClassifier::new(
+        judge_target, "weak", "strong",
+    )?)),
+);
 
 let req = Request {
     // `text_request` is the single-turn shortcut; build an `LlmRequest` directly for
@@ -111,7 +114,8 @@ the id it calls — they can differ (`"strong"` → `"openai/gpt-4o"`) or coinci
 
 ## Running a request
 
-Hold the algorithm as `Arc<dyn Algorithm>` and choose one of two entry points:
+Hold the algorithm as `Arc<dyn Algorithm>` (or `Arc<dyn Algorithm<SharedState>>` for
+`FallThrough`) and choose one of two entry points:
 
 ```rust
 // run: libsy drives the request to completion, serving each call with the target's
@@ -217,40 +221,12 @@ pub trait Decision: Send + Sync {
 }
 ```
 
-Give it a `new(config.., target_set)` constructor and `Arc`-wrap it — there is no builder.
-Example — the LLM classifier (classify, then route; full version in
-[`src/algorithms/llm_class.rs`](src/algorithms/llm_class.rs)):
+Compose a classifier into `FallThrough`; the fall-through algorithm calls the judge,
+applies its policy, and then invokes the selected target:
 
 ```rust
-#[async_trait]
-impl Algorithm for LlmClassifier {
-    fn name(&self) -> &str { "llm_classifier" }
-
-    async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
-        -> switchyard_libsy::Result<Response> {
-        // Thread `ctx` into every offloaded call and decision — it carries the request's
-        // cross-cutting state (correlation ids, budgets) for observers downstream.
-
-        // 1. Classify: ask the classifier target for a score.
-        let classifier = self.target_set.get_target(&self.classifier_model)?;
-        driver.info(ctx.clone(), classify_decision.clone()).await?;
-        let classify_response =
-            driver.call_llm_target(ctx.clone(), &classifier, classify_req, classify_decision).await?;
-        // Abbreviated: fold the (buffered or streamed) response to its aggregate and read
-        // the completion text as a score. `.as_agg()` alone is `None` for an unfolded stream.
-        let score = classify_response.llm_response.into_agg().await
-            .ok()
-            .and_then(|agg| completion_text(&agg).trim().parse::<f64>().ok());
-
-        // 2. Route: strong if score >= threshold, else weak (fail open on None).
-        let model = if score.map_or(true, |s| s >= self.threshold) { &self.strong_model } else { &self.weak_model };
-        let routed = self.target_set.get_target(model)?;
-        driver.info(ctx.clone(), route_decision.clone()).await?;
-        driver.call_llm_target(ctx, &routed, routed_req, route_decision).await
-    }
-
-    async fn process_signals(self: Arc<Self>, _s: Signals) -> switchyard_libsy::Result<()> { Ok(()) }
-}
+let classifier = LlmClassifier::new(judge_target, "weak", "strong")?;
+let router = FallThrough::new(targets).with_classifier(Arc::new(classifier));
 ```
 
 ## Errors
@@ -300,15 +276,15 @@ instrumentation is a no-op.
 
 ## Explore
 
-The core crate includes weighted random routing and naive LLM classifier. Runnable
+The core crate includes weighted random routing and a judge-backed LLM classifier. Runnable
 agents live in [`examples`](examples/) folder.
 
 **Reference algorithms** — implementations to read and route with:
 
 - [`Random`](src/algorithms/rand.rs) — uniform or weighted random over the set
   (one call).
-- [`LlmClassifier`](src/algorithms/llm_class.rs) — classify, then route
-  strong/weak; fail open to strong.
+- [`LlmClassifier`](src/algorithms/llm_class.rs) — capability judge for a
+  [`FallThrough`](src/algorithms/fall_through.rs) classifier cascade.
 - [`EnsembleOrchAlgo`](examples/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.
 
