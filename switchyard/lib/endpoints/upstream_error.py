@@ -3,9 +3,9 @@
 
 """Endpoint-side helper: convert chain exceptions into upstream-status responses.
 
-Python LLM backends (e.g. :class:`LatencyServiceLLMBackend`) stash the
-upstream HTTP status / body into ``ctx.metadata`` before raising the
-upstream provider's exception. Rust backends attach typed
+Python LLM backends stash the upstream HTTP status / body into
+``ctx.metadata`` before raising the upstream provider's exception. Rust
+backends attach typed
 ``status_code`` and ``body`` attributes to ``SwitchyardUpstreamError`` so
 endpoints can preserve provider failures without parsing exception text.
 """
@@ -53,9 +53,8 @@ def record_upstream_attempt_success(ctx: ProxyContext) -> None:
     to one successful attempt observable here.
 
     No-op when a backend already counted its own attempts
-    (:data:`CTX_UPSTREAM_ATTEMPTS_RECORDED` set) — e.g.
-    :class:`LatencyServiceLLMBackend`, whose retry fan-out must not be
-    double-counted here.
+    (:data:`CTX_UPSTREAM_ATTEMPTS_RECORDED` set) — its retry fan-out must not
+    be double-counted here.
     """
     if ctx.metadata.get(CTX_UPSTREAM_ATTEMPTS_RECORDED):
         return

@@ -490,7 +490,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
       * ``--routing-profiles FILE`` (global flag) — YAML-driven multi-chain table.
         ``--model`` is optional; falls back to the first YAML route.
 
-    Random / latency-aware routing live in the YAML schema.
+    Random and other multi-chain routing live in the YAML schema.
     """
     if getattr(args, "startup_timing", False):
         startup_timing.enable()

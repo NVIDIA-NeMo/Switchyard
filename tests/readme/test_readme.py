@@ -71,10 +71,9 @@ def test_python_snippet_tripwire(readme_text: str) -> None:
 def _validate_route_blocks(text: str, source: Path) -> int:
     # Schema/key validation, not a full chain build: building documented routes
     # is NOT hermetic — `passthrough` with `discover: true` does a live catalog
-    # fetch and `latency_service` polls. The
-    # schema layer (route type + per-type key allowlist) is what we can check
-    # offline, and it catches the likeliest drift: a renamed `type:` or a key
-    # that no longer exists on that type.
+    # fetch. The schema layer (route type + per-type key allowlist) is what we
+    # can check offline, and it catches the likeliest drift: a renamed `type:`
+    # or a key that no longer exists on that type.
     blocks = _code_blocks(text, "yaml")
     validated_routes = 0
     for idx, block in enumerate(blocks):

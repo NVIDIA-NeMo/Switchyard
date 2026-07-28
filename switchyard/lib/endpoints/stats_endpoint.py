@@ -68,10 +68,9 @@ class StatsEndpoint(NemoSwitchyardEndpoint):
         async def get_metrics() -> Response:
             """Prometheus text-format exposition of the shared stats snapshot.
 
-            Components that own non-request-derived state (Latency Service
-            verdicts, poll-loop health) contribute extra lines via
-            :mod:`switchyard.lib.endpoints.prometheus_emitter` so a single
-            ``/metrics`` scrape carries both surfaces.
+            Components that own non-request-derived state contribute extra
+            lines via :mod:`switchyard.lib.endpoints.prometheus_emitter` so a
+            single ``/metrics`` scrape carries both surfaces.
             """
             snapshot = await stats.snapshot()
             outcome_block = "\n".join(outcome_metrics.render_lines()) + "\n"

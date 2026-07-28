@@ -182,12 +182,10 @@ switchyard/
 │   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
 │   │   ├── openai_native_backend.py        # OpenAiNativeBackend
 │   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
-│   │   ├── latency_service_llm_backend.py  # LatencyServiceLLMBackend
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
 │   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
 │   │   ├── stats_llm_backend.py            # StatsLlmBackend
-│   │   ├── backend_format_resolver.py      # BackendFormatResolver
-│   │   └── health_poller.py                # HealthPoller, EndpointHealthStatus
+│   │   └── backend_format_resolver.py      # BackendFormatResolver
 │   ├── processors/                 # Request-side / response-side component implementations
 │   │   ├── format_translate.py
 │   │   ├── random_routing_request_processor.py
@@ -205,8 +203,7 @@ switchyard/
 │   │   ├── sse_helpers.py
 │   │   └── base.py
 │   └── config/
-│       ├── intake_sink_config.py
-│       └── latency_service_backend_config.py
+│       └── intake_sink_config.py
 ├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
 │   ├── switchyard_cli.py           # `switchyard` entry point
 │   ├── launch_command.py           # `switchyard launch claude/codex`

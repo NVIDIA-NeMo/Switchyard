@@ -13,10 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 from switchyard.lib.backends import (
     AnthropicNativeBackend,
-    EndpointHealth,
-    EndpointHealthStatus,
-    HealthPoller,
-    LatencyServiceLLMBackend,
     OpenAiNativeBackend,
 )
 from switchyard.lib.backends.llm_target import (
@@ -42,8 +38,6 @@ from switchyard.lib.chat_response import (
 )
 from switchyard.lib.config import (
     IntakeSinkConfig,
-    LatencyServiceBackendConfig,
-    LatencyServiceEndpoint,
 )
 from switchyard.lib.processors.intake_payload_builder import IntakePayloadBuilder
 from switchyard.lib.processors.intake_request_processor import IntakeRequestProcessor
@@ -58,7 +52,6 @@ from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     EscalationRouterConfig,
     EscalationRouterProfileConfig,
-    LatencyServiceProfileConfig,
     NoopProfile,
     NoopProfileConfig,
     PassthroughProfileConfig,
@@ -156,7 +149,6 @@ __all__ = [
     "DeterministicRoutingPresets",
     "EscalationRouterConfig",
     "EscalationRouterProfileConfig",
-    "LatencyServiceProfileConfig",
     "PassthroughProfileConfig",
     "Profile",
     "ProfileConfig",
@@ -182,13 +174,6 @@ __all__ = [
     "build_switchyard_app",
     # Route dispatch table
     "RouteTable",
-    # Latency Service usage case
-    "EndpointHealth",
-    "EndpointHealthStatus",
-    "HealthPoller",
-    "LatencyServiceBackendConfig",
-    "LatencyServiceEndpoint",
-    "LatencyServiceLLMBackend",
     "IntakePayloadBuilder",
     "IntakeRequestProcessor",
     "IntakeResponseProcessor",

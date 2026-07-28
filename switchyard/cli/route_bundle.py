@@ -34,13 +34,11 @@ from pydantic import ValidationError
 
 from switchyard.cli.model_catalog.model_discovery import fetch_model_ids
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
-from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEndpoint
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
 from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     EscalationRouterProfileConfig,
-    LatencyServiceProfileConfig,
     ProfileSwitchyard,
     StageRouterProfileConfig,
 )
@@ -193,32 +191,6 @@ _PASSTHROUGH_ROUTE_KEYS = (
     | frozenset({"defaults", "enable_stats"})
     | _PASSTHROUGH_SETTING_KEYS
 )
-_LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-})
-_LATENCY_ENDPOINT_KEYS = _LATENCY_ENDPOINT_DEFAULT_KEYS | frozenset(
-    {"model", "upstream_model", "request_type"}
-)
-_LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
-    "defaults",
-    "endpoints",
-    "latency_service_url",
-    "latency_url",
-    "poll_interval_s",
-    "poll_timeout_s",
-    "max_retries",
-    "credential_policy",
-    "enable_stats",
-    "session_affinity",
-    "affinity_max_sessions",
-    "affinity_store",
-    "affinity_store_url",
-    "affinity_store_ttl_seconds",
-    "affinity_key_prefix",
-}) | _LATENCY_ENDPOINT_DEFAULT_KEYS
 _NOOP_ROUTE_KEYS = _ROUTE_METADATA_KEYS
 _DETERMINISTIC_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
@@ -318,7 +290,6 @@ _CLASSIFIER_DEFAULT_KEYS = frozenset({
 _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _MODEL_ROUTE_KEYS,
     "random_routing": _RANDOM_ROUTING_ROUTE_KEYS,
-    "latency_service": _LATENCY_SERVICE_ROUTE_KEYS,
     "noop": _NOOP_ROUTE_KEYS,
     "passthrough": _PASSTHROUGH_ROUTE_KEYS,
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
@@ -328,7 +299,6 @@ _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
     "random_routing": _TARGET_DEFAULT_KEYS,
-    "latency_service": _LATENCY_ENDPOINT_DEFAULT_KEYS,
     "passthrough": _PASSTHROUGH_SETTING_KEYS,
     "noop": frozenset(),
     "deterministic": _TARGET_DEFAULT_KEYS,
@@ -869,16 +839,6 @@ def _build_route_chain(
             extra_response_processors=extra_response_processors,
         )
 
-    if route_type == "latency_service":
-        return _latency_service_switchyard(
-            model_id,
-            route,
-            target_defaults,
-            stats=stats,
-            extra_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
     if route_type == "noop":
         from switchyard.lib.profiles.noop import NoopProfileConfig
 
@@ -1305,62 +1265,6 @@ def _passthrough_target(
     )
 
 
-def _latency_service_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    extra_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    endpoints_raw = _require_sequence(route.get("endpoints"), "latency_service.endpoints")
-    endpoints = [
-        _latency_endpoint(value, target_defaults, index=index)
-        for index, value in enumerate(endpoints_raw)
-    ]
-    enable_stats = _optional_bool(route.get("enable_stats"), default=True)
-    credential_policy = (
-        _optional_str(route["credential_policy"])
-        if "credential_policy" in route
-        else "configured_endpoint"
-    )
-    config = LatencyServiceBackendConfig.model_validate({
-        "latency_service_url": _required_str(
-            route.get("latency_service_url", route.get("latency_url")),
-            "latency_service.latency_service_url",
-        ),
-        "endpoints": endpoints,
-        # The YAML route key is what clients send as ``model``; hand it to the
-        # backend so the per-model metric can attribute route-key traffic.
-        "route_model": model_id,
-        "poll_interval_s": _optional_float(route.get("poll_interval_s"), default=10.0),
-        "poll_timeout_s": _optional_float(route.get("poll_timeout_s"), default=5.0),
-        "max_retries": _optional_int(route.get("max_retries"), default=2),
-        "credential_policy": credential_policy,
-        "enable_stats": enable_stats,
-        "session_affinity": _optional_bool(route.get("session_affinity"), default=False),
-        "affinity_max_sessions": _optional_int(
-            route.get("affinity_max_sessions"), default=10_000
-        ),
-        "affinity_store": _optional_str(route.get("affinity_store")) or "memory",
-        "affinity_store_url": _optional_str(route.get("affinity_store_url")),
-        "affinity_store_ttl_seconds": _optional_int(
-            route.get("affinity_store_ttl_seconds"), default=3_600
-        ),
-        "affinity_key_prefix": _optional_str(route.get("affinity_key_prefix")) or "swyd:pin:",
-    })
-    return ProfileSwitchyard(
-        LatencyServiceProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=extra_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
 def _route_config(
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
@@ -1438,33 +1342,6 @@ def _target_mapping(
     return target
 
 
-def _latency_endpoint(
-    raw: object,
-    defaults: Mapping[str, object],
-    index: int,
-) -> LatencyServiceEndpoint:
-    data = dict(defaults)
-    where = f"latency_service.endpoints[{index}]"
-    if isinstance(raw, str):
-        data["model"] = raw
-    elif isinstance(raw, Mapping):
-        endpoint_mapping = _require_mapping(raw, where)
-        _validate_allowed_keys(endpoint_mapping, _LATENCY_ENDPOINT_KEYS, where)
-        data.update(endpoint_mapping)
-    else:
-        raise RouteBundleConfigError(f"{where} must be a string or mapping")
-
-    if "timeout" not in data and "timeout_secs" in data:
-        data["timeout"] = data["timeout_secs"]
-
-    endpoint_data = {
-        key: data[key]
-        for key in ("model", "upstream_model", "api_key", "base_url", "timeout", "request_type")
-        if key in data
-    }
-    return LatencyServiceEndpoint.model_validate(endpoint_data)
-
-
 def _target_defaults(
     bundle_defaults: Mapping[str, object],
     route: Mapping[str, object],
@@ -1492,8 +1369,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
     if raw_type is None:
         if not route:
             return "noop"
-        if "latency_service_url" in route or "latency_url" in route:
-            return "latency_service"
         if "strong" in route and "weak" in route:
             return "random_routing"
         if "target" in route or "model" in route:
@@ -1512,8 +1387,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "target": "model",
         "random": "random_routing",
         "random_routing": "random_routing",
-        "latency": "latency_service",
-        "latency_service": "latency_service",
         "noop": "noop",
         "no_op": "noop",
         "passthrough": "passthrough",
@@ -1613,12 +1486,6 @@ def _optional_mapping(value: object, where: str) -> dict[str, object]:
     if value is None:
         return {}
     return _require_mapping(value, where)
-
-
-def _require_sequence(value: object, where: str) -> Sequence[object]:
-    if not isinstance(value, list):
-        raise RouteBundleConfigError(f"{where} must be a list")
-    return value
 
 
 def _required_str(value: object, where: str) -> str:

@@ -20,8 +20,8 @@ from typing import Protocol, runtime_checkable
 class AffinityPinStore(Protocol):
     """Shared, out-of-process store for conversation→decision pins.
 
-    The pinned value is opaque to the store (an endpoint id for the latency
-    backend, a tier label for the classifier router). Implementations are
+    The pinned value is opaque to the store (a tier label for the classifier
+    or escalation router). Implementations are
     called on the request path, so they should be fast, and
     :class:`SessionAffinity` treats them as **best-effort**: an error or timeout
     must never break request routing (the caller falls back to L1 / unpinned).

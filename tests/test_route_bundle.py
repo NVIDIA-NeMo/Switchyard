@@ -50,18 +50,6 @@ def _random_processor(chain: object) -> Any:
     )
 
 
-def _latency_backend(chain: object) -> Any:
-    from switchyard.lib.backends.latency_service_llm_backend import (
-        LatencyServiceLLMBackend,
-    )
-
-    return next(
-        component
-        for component in chain.iter_components()
-        if isinstance(component, LatencyServiceLLMBackend)
-    )
-
-
 class _NoopRequestProcessor:
     async def process(self, _ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
         return request
@@ -1486,113 +1474,13 @@ _AFFINITY_DET_ROUTE = {
     "strong": {"model": "s", "api_key": "k", "base_url": "https://ls.test/v1"},
     "weak": {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
 }
-_AFFINITY_LAT_ROUTE = {
-    "type": "latency_service",
-    "latency_service_url": "http://ls.test:8080",
-    "session_affinity": True,
-    "affinity_max_sessions": 50,
-    "endpoints": [
-        {"model": "s", "api_key": "k", "base_url": "https://ls.test/v1"},
-        {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
-    ],
-}
 
 
-@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE, _AFFINITY_LAT_ROUTE])
+@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE])
 def test_session_affinity_keys_accepted_by_route_bundle(route: dict[str, Any]) -> None:
-    """session_affinity / affinity_max_sessions are valid keys on both route types."""
+    """session_affinity / affinity_max_sessions are valid keys on the deterministic route."""
     table = build_route_bundle_table({"routes": {"r": route}})
     assert isinstance(table, RouteTable)
-
-
-def test_latency_service_credential_policy_defaults_to_endpoint_keys() -> None:
-    """Omitting credential_policy keeps the server-configured endpoint keys authoritative."""
-    table = build_route_bundle_table({"routes": {"r": _AFFINITY_LAT_ROUTE}})
-
-    backend = _latency_backend(table.lookup_switchyard("r"))
-
-    assert backend._config.credential_policy == "configured_endpoint"
-
-
-def test_latency_service_credential_policy_reaches_backend_config() -> None:
-    """YAML credential_policy opts into BYO-key caller overrides."""
-    table = build_route_bundle_table({
-        "routes": {
-            "r": {
-                **_AFFINITY_LAT_ROUTE,
-                "credential_policy": "caller_override",
-            },
-        },
-    })
-
-    backend = _latency_backend(table.lookup_switchyard("r"))
-
-    assert backend._config.credential_policy == "caller_override"
-
-
-def test_latency_service_invalid_credential_policy_rejected_via_bundle() -> None:
-    """Invalid latency-service credential policy values fail closed."""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        build_route_bundle_table({
-            "routes": {
-                "r": {
-                    **_AFFINITY_LAT_ROUTE,
-                    "credential_policy": "caller-overrides",
-                },
-            },
-        })
-
-
-def test_latency_endpoint_request_type_reaches_backend_config() -> None:
-    """Endpoint-level request_type in YAML selects the upstream API surface."""
-    table = build_route_bundle_table({
-        "routes": {
-            "r": {
-                "type": "latency_service",
-                "latency_service_url": "http://ls.test:8080",
-                "endpoints": [
-                    {
-                        "model": "codex-mini",
-                        "api_key": "k",
-                        "base_url": "https://ls.test/v1",
-                        "request_type": "openai_responses",
-                    },
-                    {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
-                ],
-            },
-        },
-    })
-
-    backend = _latency_backend(table.lookup_switchyard("r"))
-
-    by_model = {endpoint.model: endpoint for endpoint in backend._config.endpoints}
-    assert by_model["codex-mini"].request_type == "openai_responses"
-    assert by_model["w"].request_type == "openai_chat"
-
-
-def test_latency_route_key_reaches_backend_as_route_model() -> None:
-    """The YAML route key becomes the backend's metrics route_model id."""
-    table = build_route_bundle_table({
-        "routes": {
-            "nvidia/switchyard/gpt-5.4": {
-                "type": "latency_service",
-                "latency_service_url": "http://ls.test:8080",
-                "endpoints": [
-                    {
-                        "model": "azure/openai/gpt-5.4",
-                        "api_key": "k",
-                        "base_url": "https://ls.test/v1",
-                    },
-                ],
-            },
-        },
-    })
-
-    backend = _latency_backend(table.lookup_switchyard("nvidia/switchyard/gpt-5.4"))
-
-    assert backend._config.route_model == "nvidia/switchyard/gpt-5.4"
 
 
 def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
@@ -1603,44 +1491,13 @@ def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
     assert isinstance(table, RouteTable)
 
 
-@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE, _AFFINITY_LAT_ROUTE])
+@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE])
 def test_zero_capacity_affinity_rejected_via_bundle(route: dict[str, Any]) -> None:
     """A zero cap with affinity on is rejected — proving the keys reach the config."""
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         build_route_bundle_table({"routes": {"r": {**route, "affinity_max_sessions": 0}}})
-
-
-def test_latency_affinity_redis_reaches_backend_via_bundle() -> None:
-    """Redis L2 keys parse and construct a RedisPinStore on the latency backend."""
-    from switchyard.lib.redis_pin_store import RedisPinStore
-
-    table = build_route_bundle_table({
-        "routes": {
-            "r": {
-                **_AFFINITY_LAT_ROUTE,
-                "affinity_store": "redis",
-                "affinity_store_url": "redis://cache:6379/0",
-                "affinity_store_ttl_seconds": 120,
-                "affinity_key_prefix": "k:",
-            },
-        },
-    })
-    backend = _latency_backend(table.lookup_switchyard("r"))
-    assert backend._config.affinity_store == "redis"
-    assert backend._config.affinity_store_url == "redis://cache:6379/0"
-    assert isinstance(backend._affinity._l2, RedisPinStore)
-
-
-def test_latency_affinity_redis_requires_url_via_bundle() -> None:
-    """affinity_store=redis without a URL fails closed at config load."""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        build_route_bundle_table({
-            "routes": {"r": {**_AFFINITY_LAT_ROUTE, "affinity_store": "redis"}},
-        })
 
 
 def test_negative_affinity_warmup_turns_rejected_via_bundle() -> None:

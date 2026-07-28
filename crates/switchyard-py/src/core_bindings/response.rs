@@ -492,9 +492,9 @@ impl PyResponseStream {
     ///   ``Switchyard.call`` round trip (``source`` is ``None``): the source was
     ///   moved onto the core stream by ``take_core_stream`` as a
     ///   ``SourceClosingStream``; dropping the inner adapter here drops that
-    ///   wrapper, which closes the source on drop. This is the latency-router
-    ///   production path, where response processors re-wrap the core stream and
-    ///   ``source`` cannot be recovered on this object.
+    ///   wrapper, which closes the source on drop. This is the production path
+    ///   where response processors re-wrap the core stream and ``source``
+    ///   cannot be recovered on this object.
     fn aclose<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         self.consumed.store(true, Ordering::Release);
         let stream = Arc::clone(&self.stream);

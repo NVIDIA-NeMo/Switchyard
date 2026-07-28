@@ -195,7 +195,7 @@ async def test_our_close_releases_pool_connection() -> None:
 class _RealSdkStreamingBackend(LLMBackend):
     """Backend that issues a real streaming SDK call and wraps the AsyncStream.
 
-    Mirrors the latency-service production shape: ``call`` returns
+    Mirrors the production shape: ``call`` returns
     ``ChatResponse.openai_stream(ResponseStream(sdk_stream))`` where
     ``sdk_stream`` is a genuine OpenAI ``AsyncStream`` holding a pooled httpx
     connection. Running this through ``Switchyard`` exercises the real

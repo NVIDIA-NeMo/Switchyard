@@ -14,11 +14,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from switchyard.lib.backends.latency_service_llm_backend import _build_affinity_l2
-from switchyard.lib.config.latency_service_backend_config import (
-    LatencyServiceBackendConfig,
-    LatencyServiceEndpoint,
-)
+from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
+from switchyard.lib.profiles.escalation_router_profile_config import _build_affinity_l2
 from switchyard.lib.redis_pin_store import RedisPinStore
 
 
@@ -86,15 +83,17 @@ async def test_aclose_before_first_use_is_noop() -> None:
 # --- config validation + backend wiring -------------------------------------
 
 
-def _redis_config(**overrides: object) -> LatencyServiceBackendConfig:
+def _redis_config(**overrides: object) -> EscalationRouterConfig:
     base: dict[str, object] = {
-        "endpoints": [LatencyServiceEndpoint(model="m")],
-        "session_affinity": True,
+        "strong": {"model": "strong-model"},
+        "weak": {"model": "weak-model"},
+        "judge": {"model": "judge-model"},
+        "fallback_target_on_evict": "weak",
         "affinity_store": "redis",
         "affinity_store_url": "redis://cache:6379/0",
     }
     base.update(overrides)
-    return LatencyServiceBackendConfig(**base)  # type: ignore[arg-type]
+    return EscalationRouterConfig(**base)  # type: ignore[arg-type]
 
 
 def test_redis_store_requires_url() -> None:
@@ -102,13 +101,13 @@ def test_redis_store_requires_url() -> None:
         _redis_config(affinity_store_url=None)
 
 
-def test_redis_store_requires_session_affinity() -> None:
-    with pytest.raises(ValidationError):
-        _redis_config(session_affinity=False)
-
-
 def test_memory_is_the_default_store() -> None:
-    cfg = LatencyServiceBackendConfig(endpoints=[LatencyServiceEndpoint(model="m")])
+    cfg = EscalationRouterConfig(
+        strong={"model": "strong-model"},
+        weak={"model": "weak-model"},
+        judge={"model": "judge-model"},
+        fallback_target_on_evict="weak",
+    )
     assert cfg.affinity_store == "memory"
     assert _build_affinity_l2(cfg) is None
 

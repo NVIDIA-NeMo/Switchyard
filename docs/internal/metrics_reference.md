@@ -12,7 +12,7 @@ a drop-in scrape config and starter alert rules.
 | Content-Type | `text/plain; version=0.0.4; charset=utf-8` |
 | Format | Prometheus text format 0.0.4 |
 | Auth | None. Designed as a public scrape endpoint |
-| Default scrape interval | 15s (the Latency Service poll cycle is 10s by default, so finer scrape resolution captures no extra state) |
+| Default scrape interval | 15s |
 
 `GET /metrics` is served by the Python route-bundle server started with
 `switchyard --routing-profiles PATH -- serve`.
@@ -29,12 +29,11 @@ A JSON variant of the same underlying data lives at `GET /v1/stats`, with
 
 ## Per-endpoint counters
 
-The `model` label is the latency-service endpoint id (`openai/gpt-5.5`,
+The `model` label is the configured endpoint id (`openai/gpt-5.5`,
 `azure_openai/gpt-5.5`, etc.).
 
 The `tier` label is optional: present only when a routing factory
-supplied one. The `random_routing` factory emits `tier="strong"|"weak"`;
-the `latency_service` factory does not.
+supplied one. The `random_routing` factory emits `tier="strong"|"weak"`.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -64,44 +63,6 @@ Each summary emits `{quantile="0.5"}` and `{quantile="0.99"}` rows plus
 
 Healthy traffic typically sits at p50 ≈ 0.4 ms, p99 ≈ 0.6 ms.
 
-## Latency Service state (gauges: latency-service chains only)
-
-Published from the in-memory health cache the `LatencyServiceLLMBackend`
-maintains, refreshed on each successful poll of the Latency Service.
-
-| Metric | Type | Meaning |
-|---|---|---|
-| `switchyard_endpoint_status{model,status}` | gauge | Current Latency Service verdict per endpoint. `status` is one of `healthy`, `degraded`, `unknown`. Exactly one row per `model` is `1`; the rest are `0`, so `sum by (status)` gives a clean count of endpoints in each state. |
-| `switchyard_endpoint_last_latency_ms{model}` | gauge | Last latency sample the Latency Service reported for this endpoint. **Absent** when the upstream reported `null`, and absence is meaningful. |
-
-## Latency Service poll health (no labels: latency-service chains only)
-
-| Metric | Type | Meaning |
-|---|---|---|
-| `switchyard_latency_service_poll_ok` | gauge | `1` iff the most recent poll succeeded. `0` means the next routing decisions are based on the cache-reset-to-unknown fallback state. |
-| `switchyard_latency_service_poll_age_seconds` | gauge | Monotonic seconds since the last successful poll. **Absent** before the first success; combined with `poll_ok=0`, this distinguishes "never polled" from "polled but recently failed". |
-| `switchyard_latency_service_polls_total` | counter | Total successful polls since process start. |
-| `switchyard_latency_service_poll_failures_total` | counter | Total failed poll attempts. Each failure resets every endpoint in the cache to `unknown`. |
-
-## Session affinity (no labels: latency-service chains with `session_affinity` on)
-
-These counters are **absent unless `session_affinity: true`**, so the metric surface stays clean for the default per-turn-routing case.
-
-| Metric | Type | Meaning |
-|---|---|---|
-| `switchyard_affinity_hits_total` | counter | Conversation turns served by an existing session-affinity pin, meaning the upstream prompt/KV cache was reused. Counted once per request (first attempt only), so failover retries don't inflate it. |
-| `switchyard_affinity_misses_total` | counter | First turns of a conversation, or turns whose pin was broken by a health verdict, routed by the latency-aware picker. |
-| `switchyard_affinity_l2_hits_total` | counter | Pins resolved from the shared (L2) affinity store after an in-process (L1) miss — cross-worker/churn warm reuse. **Also requires a shared store** (`affinity_store: "redis"`). |
-| `switchyard_affinity_l2_errors_total` | counter | Shared-store get/put operations that failed open; routing fell back to in-process pins. A sustained rate means the store is degraded while requests keep succeeding — this is the alerting signal. While the breaker is open, only recovery probes fail, so the rate drops to ~1 per cooldown per pod. **Also requires a shared store.** |
-| `switchyard_affinity_l2_breaker_open` | gauge | `1` while the shared-store circuit breaker is open (operations skipped without a network attempt after 3 consecutive failures; one probe per 10 s cooldown), `0` when closed. The unambiguous store-outage signal. **Also requires a shared store.** |
-
-Warm-reuse rate (the fraction of turns that hit a warm endpoint):
-
-```promql
-rate(switchyard_affinity_hits_total[5m])
-  / (rate(switchyard_affinity_hits_total[5m]) + rate(switchyard_affinity_misses_total[5m]))
-```
-
 ## Outcome counters for error-rate ratios
 
 The `outcome` label takes exactly three values:
@@ -115,7 +76,6 @@ The `outcome` label takes exactly three values:
 | `switchyard_client_responses_total{outcome}` | counter | HTTP responses returned to clients on the LLM-serving routes (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`). The denominator for the **router-served** error rate. |
 | `switchyard_upstream_attempts_total{outcome,code}` | counter | Individual upstream call attempts. One client request can produce N attempts via retry. The denominator for the **direct-to-endpoint** baseline error rate. The `code` label carries the raw upstream HTTP status for plotting the error-code distribution (see below). |
 | `switchyard_router_retry_recovered_total` | counter | Requests whose first upstream attempt failed but a subsequent attempt succeeded. This is direct evidence the routing logic rescued the request. |
-| `switchyard_latency_upstream_attempts_total{requested_model,upstream_model,outcome,code}` | counter | Latency-service chains only: the per-model complement of `switchyard_upstream_attempts_total` (which stays model-free). `requested_model` is the client-supplied model bounded to a config-derived id — the route id (`route_model`, e.g. `nvidia/switchyard/gpt-5.4`) or a configured endpoint id — with `other` as the fallback sentinel. `upstream_model` is the selected endpoint's upstream name. Answers "for route X, which upstream failed or succeeded". |
 
 ### The `code` label on `switchyard_upstream_attempts_total`
 
@@ -154,7 +114,7 @@ error_rate_reduction = direct_error_rate − router_error_rate
 # Live Endpoint Routing rescue rate
 rate(switchyard_router_retry_recovered_total[5m])
 
-# Traffic share per endpoint (sanity-check inverse-latency weighting)
+# Traffic share per endpoint
 sum by (model) (rate(switchyard_requests_total[5m]))
   / ignoring(model) group_left sum(rate(switchyard_requests_total[5m]))
 
@@ -165,12 +125,6 @@ sum by (code) (rate(switchyard_upstream_attempts_total{code!="200"}[5m]))
 sum by (code) (rate(switchyard_upstream_attempts_total{code!="200"}[5m]))
   / ignoring(code) group_left
 sum      (rate(switchyard_upstream_attempts_total{code!="200"}[5m]))
-
-# Per-upstream outcome breakdown for one route — "for nvidia/switchyard/gpt-5.4,
-# which upstream provider failed or succeeded?" (latency-service chains)
-sum by (upstream_model, outcome, code) (
-  rate(switchyard_latency_upstream_attempts_total{requested_model="nvidia/switchyard/gpt-5.4"}[5m])
-)
 ```
 
 > **Note:** because `switchyard_upstream_attempts_total` now carries the
@@ -189,18 +143,10 @@ into label space.
 | Label | Values | Where |
 |---|---|---|
 | `model` | One per configured endpoint, typically 2–6 per deployment. | All per-endpoint metrics. |
-| `status` | Exactly 3: `healthy`, `degraded`, `unknown`. | `switchyard_endpoint_status` |
 | `outcome` | Exactly 3: `success`, `retryable_error`, `other_error`. | Outcome counters |
 | `code` | Bounded: the known-code allowlist (`200`, `400`, `401`, `403`, `404`, `408`, `409`, `422`, `429`, `500`, `502`, `503`, `504`), plus `none` and the per-class buckets `1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`other`. About 20 values max. | `switchyard_upstream_attempts_total` |
-| `requested_model` | Bounded to config-derived ids: the route id (`route_model`) plus configured endpoint ids, else the `other` sentinel. | `switchyard_latency_upstream_attempts_total` |
-| `upstream_model` | One per configured endpoint (the endpoint's upstream name). | `switchyard_latency_upstream_attempts_total` |
 | `quantile` | Exactly 2: `0.5`, `0.99`. | All summaries |
-| `tier` | Small enumerated set, optional. Not emitted by latency-service chains. | Per-endpoint counters/summaries on routing chains that supply it |
-
-For a latency-service deployment with `N` endpoints, expect roughly
-`11N + 17` series at startup (five `code` series are seeded), growing by at
-most a dozen more as additional upstream status codes appear. That is about 39
-series for two endpoints. Well within single-Prometheus capacity.
+| `tier` | Small enumerated set, optional. | Per-endpoint counters/summaries on routing chains that supply it |
 
 ## Triage cheatsheet
 
@@ -208,7 +154,5 @@ series for two endpoints. Well within single-Prometheus capacity.
 |---|---|
 | `model="<unknown>"` rows appear | The per-endpoint attribution wiring regressed. `ctx.selected_model` is not being set by the backend. |
 | All counters at 0 after warm-up | Server just started with no traffic, or the scraper is hitting the wrong port. |
-| `switchyard_latency_service_poll_ok` stuck at `0` | DNS / network unreachability to the Latency Service, **or** a schema mismatch on the LS response. Check server logs for `"Health poller: failed to reach Latency Service"`. |
-| `switchyard_endpoint_last_latency_ms{...}` absent for an endpoint | The Latency Service reported `last_latency_ms: null`, or the endpoint was not returned in the most recent poll response. |
 | `switchyard_routing_overhead_ms_count` stuck at `0` | The backend is not publishing `ctx.backend_call_latency_ms` (regression of the Python-backend routing-overhead wiring). |
-| `switchyard_client_responses_total{outcome="retryable_error"}` rising | Either the upstream is genuinely flaky (cross-check `switchyard_endpoint_status`), or retries are exhausting (compare with `switchyard_router_retry_recovered_total` rate). |
+| `switchyard_client_responses_total{outcome="retryable_error"}` rising | Either the upstream is genuinely flaky, or retries are exhausting (compare with `switchyard_router_retry_recovered_total` rate). |

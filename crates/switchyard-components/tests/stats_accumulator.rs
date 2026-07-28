@@ -751,7 +751,7 @@ fn routing_decision_counts_are_grouped_by_profile_type() -> Result<()> {
     accumulator.record_routing_decision("stage_router", "dimensions")?;
     accumulator.record_routing_decision("stage_router", "dimensions")?;
     accumulator.record_routing_decision("stage_router", "llm-classifier")?;
-    accumulator.record_routing_decision("latency-service", "health")?;
+    accumulator.record_routing_decision("escalation_router", "judge")?;
 
     let snapshot = accumulator.snapshot()?;
     assert_eq!(
@@ -771,8 +771,8 @@ fn routing_decision_counts_are_grouped_by_profile_type() -> Result<()> {
     assert_eq!(
         snapshot
             .routing_decisions
-            .get("latency-service")
-            .and_then(|sources| sources.get("health")),
+            .get("escalation_router")
+            .and_then(|sources| sources.get("judge")),
         Some(&1)
     );
 

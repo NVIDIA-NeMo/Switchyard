@@ -3,7 +3,7 @@
 
 """Close ownership survives the Python -> Rust-core -> Python round trip.
 
-The latency-router production path is: a Python backend returns
+The production path is: a Python backend returns
 ``ChatResponse.openai_stream(ResponseStream(sdk_stream))``; the backend adapter
 converts it to a Rust-core stream via ``take_core``; response processors run in
 core; the terminal translator rebuilds a Python ``ChatResponseStream`` via

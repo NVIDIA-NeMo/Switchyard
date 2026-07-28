@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
@@ -91,6 +93,23 @@ class _RaisingMockLLMBackend(LLMBackend):
 
     async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
         raise self._exc
+
+
+class _TranslatingMockLLMBackend(LLMBackend):
+    """Chat-only backend that translates the inbound request to Chat at the top of
+    ``call`` — mirroring any real chat-completions backend (native / passthrough).
+
+    An unsupported inbound field (e.g. a bad message role) is rejected by the
+    translation engine here, before any upstream call, exactly as it would be for
+    a production chat backend.
+    """
+
+    def supported_request_types(self) -> list[ChatRequestType]:
+        return [ChatRequestType.OPENAI_CHAT]
+
+    async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        request = TranslationEngine().request_to_any_of(request, [ChatRequestType.OPENAI_CHAT])
+        return ChatResponse.openai_completion(_make_completion())
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +274,17 @@ async def raising_client(raising_app: FastAPI) -> AsyncIterator[httpx.AsyncClien
         base_url="http://test",
     ) as c:
         yield c
+
+
+@pytest.fixture
+def translating_app() -> FastAPI:
+    """App whose chat-only backend translates the inbound request to Chat, so an
+    invalid inbound role is rejected during translation before any upstream call."""
+    switchyard = Switchyard(
+        backend=_TranslatingMockLLMBackend(),
+        translator=TranslationEngine(),
+    )
+    return build_switchyard_app(switchyard)
 
 
 # ---------------------------------------------------------------------------
@@ -502,3 +532,68 @@ class TestToolCallRoundTrip:
         block = tool_use_blocks[0]
         assert block["name"] == "get_weather"
         assert block["input"] == {"city": "Paris"}
+
+
+class TestEndpointErrorContract:
+    """Endpoint error-mapping contracts previously covered only through the
+    removed latency-service backend, re-vehicled onto in-process backends."""
+
+    def test_post_dispatch_exception_returns_json_500(self, app: FastAPI) -> None:
+        """An exception raised AFTER dispatch (e.g. during result serialization)
+        must surface as a JSON 500 envelope, not FastAPI's plain-text 500."""
+
+        class _Unserializable:
+            def model_dump(self) -> None:
+                raise RuntimeError("serialization exploded")
+
+        with patch(
+            "switchyard.lib.endpoints.openai_chat_endpoint.dispatch_chat_request",
+            new_callable=AsyncMock,
+            return_value=_Unserializable(),
+        ):
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={"model": "any-model", "messages": [{"role": "user", "content": "hi"}]},
+                )
+
+        assert response.status_code == 500
+        assert response.headers["content-type"].startswith("application/json")
+        body = response.json()
+        assert body["error"]["type"] == "internal_error"
+        assert body["error"]["code"] == "internal_chain_error"
+        assert "serialization exploded" in body["error"]["message"]
+
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            (
+                "/v1/responses",
+                {"model": "m", "input": [{"type": "message", "role": "api", "content": "ping"}]},
+            ),
+            (
+                "/v1/messages",
+                {"model": "m", "max_tokens": 16, "messages": [{"role": "api", "content": "ping"}]},
+            ),
+        ],
+    )
+    def test_invalid_inbound_role_surfaces_as_internal_error(
+        self, translating_app: FastAPI, path: str, payload: dict[str, object]
+    ) -> None:
+        """An unsupported inbound message role is rejected by the translation engine
+        when a chat-only backend translates the request, before any upstream call.
+
+        NOTE: this currently surfaces as a 500 ``internal_error``. The removed
+        latency-service backend special-cased translation ``invalid_value`` errors
+        into a provider-compatible 400; no surviving backend reproduces that, so
+        the standalone-server contract is now a 500. Update this test (and the
+        endpoint/translation layer) if a 400 is restored.
+        """
+        with TestClient(translating_app, raise_server_exceptions=False) as client:
+            response = client.post(path, json=payload)
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["error"]["type"] == "internal_error"
+        assert '"api"' in body["error"]["message"]
+        assert "role" in body["error"]["message"]

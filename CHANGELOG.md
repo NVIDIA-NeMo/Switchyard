@@ -4,6 +4,20 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **Latency-aware router** — the `latency_service` route type and its
+  `LatencyServiceLLMBackend`, `LatencyServiceBackendConfig`,
+  `LatencyServiceEndpoint`, and `LatencyServiceProfileConfig` public API are
+  removed. It depended on NVIDIA Inference Hub's latency endpoint and schema.
+  Deployments that need multi-endpoint, load- or latency-aware routing should
+  migrate to [Dynamo](https://github.com/ai-dynamo/dynamo) (backend-load /
+  KV-cache-aware routing with request failover) or an external load balancer
+  such as [Traefik](https://doc.traefik.io/traefik/reference/routing-configuration/http/load-balancing/service/)
+  or HAProxy.
+
 ## [0.1.0] — Initial release
 
 First public release of Switchyard — a typed, composable control plane for LLM

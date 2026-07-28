@@ -71,8 +71,8 @@ class SessionAffinity:
     stickiness: derive a stable conversation key (system prompt + first user
     message, memoized on the request context) and store/look up a pinned value
     in a bounded LRU. The pinned value is opaque — a tier label for the
-    classifier router, an endpoint id for the latency backend. Each caller keeps
-    its own *policy* (when to write a pin, whether to honor one) on top.
+    classifier or escalation router. Each caller keeps its own *policy*
+    (when to write a pin, whether to honor one) on top.
 
     The in-process ``SessionCache`` is the L1. An optional ``l2`` implementing
     :class:`~switchyard.lib.affinity_pin_store.AffinityPinStore` is a shared,
