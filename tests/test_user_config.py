@@ -443,6 +443,46 @@ def test_configure_non_interactive_scopes_env_key_to_selected_provider(
     assert load_user_credentials(tmp_path).api_key("nvidia") is None
 
 
+def test_configure_non_interactive_ignores_foreign_secrets_for_selected_provider(
+    monkeypatch,
+    tmp_path,
+):
+    """A secrets.json entry for another provider must not satisfy
+    `configure --provider nvidia`. Only the provider's own env key (or an
+    explicit --api-key) may be saved under it; otherwise OpenRouter's secret
+    would be persisted under `nvidia` and silently 401 at launch."""
+    from switchyard.cli.switchyard_cli import _build_parser, _cmd_configure
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    # secrets.json carries only OpenRouter's key; NVIDIA_API_KEY is unset
+    # (cleared by the autouse fixture). Pre-fix this key leaked under nvidia.
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.load_secrets",
+        lambda: {"openrouter": {"api_key": "sk-or-secrets"}},
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.command_utils.is_interactive_terminal",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.configure_command.is_interactive_terminal",
+        lambda: False,
+    )
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "configure",
+        "--provider", "nvidia",
+        "--no-model-discovery",
+        "--target", "provider",
+    ])
+
+    with pytest.raises(SystemExit, match="requires an API key"):
+        _cmd_configure(args)
+
+    assert load_user_credentials(tmp_path).api_key("nvidia") is None
+
+
 def _write_bundle(path, api_key: str) -> None:
     path.write_text(
         "defaults:\n"
