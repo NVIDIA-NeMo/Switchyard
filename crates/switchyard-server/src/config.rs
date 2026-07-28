@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libsy::algorithms::{FallThrough, LlmTaskClassifier, Noop, Passthrough, Random};
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, SharedState};
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, State};
 use serde::Deserialize;
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 
@@ -240,7 +240,7 @@ fn build_algorithm(
     route_name: &str,
     config: &RouteConfig,
     targets: &BTreeMap<String, LlmTarget>,
-) -> ServerResult<Arc<dyn Algorithm<SharedState>>> {
+) -> ServerResult<Arc<dyn Algorithm>> {
     match config {
         RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
         RouteConfig::Random {
@@ -276,7 +276,7 @@ fn build_algorithm(
                 LlmTaskClassifier::new(classifier, weak, strong, *threshold).map_err(|error| {
                     ServerError::new(format!("llm_classifier route {route_name}: {error}"))
                 })?;
-            let router = FallThrough::new(target_set).with_classifier(Arc::new(judge));
+            let router = FallThrough::<State>::new(target_set).with_classifier(Arc::new(judge));
             Ok(Arc::new(router))
         }
     }

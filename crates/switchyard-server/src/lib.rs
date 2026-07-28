@@ -23,9 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{
-    Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request, SharedState,
-};
+use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
 use tracing::Level;
@@ -70,16 +68,14 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 /// Shared server state used by all endpoint handlers.
 #[derive(Clone)]
 pub struct ServerState {
-    /// For now making all the routes to be of type Algorithm<SharedState>
-    /// Nachi's PR will help later
-    routes: Arc<BTreeMap<String, Arc<dyn Algorithm<SharedState>>>>,
+    routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
     metrics: prometheus::Registry,
 }
 
 impl ServerState {
     /// Creates server state from route model IDs and their libsy algorithms.
     pub fn new(
-        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm<SharedState>>)>,
+        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm>)>,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
         for (model, algorithm) in routes {
@@ -106,7 +102,7 @@ impl ServerState {
         self.routes.keys().map(String::as_str)
     }
 
-    fn algorithm_for_model(&self, model: &str) -> Option<Arc<dyn Algorithm<SharedState>>> {
+    fn algorithm_for_model(&self, model: &str) -> Option<Arc<dyn Algorithm>> {
         self.routes.get(model).map(Arc::clone)
     }
 }
@@ -361,7 +357,7 @@ fn resolve_route(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> std::result::Result<(Arc<dyn Algorithm<SharedState>>, Request, String), Response> {
+) -> std::result::Result<(Arc<dyn Algorithm>, Request, String), Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(error.to_string()))?;
     let requested_model = llm_request
@@ -403,10 +399,7 @@ async fn handle_llm_request(
             Ok(resolved) => resolved,
             Err(response) => return response,
         };
-    let (trace, response) = match algorithm
-        .run(Context::<SharedState>::default(), request)
-        .await
-    {
+    let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };

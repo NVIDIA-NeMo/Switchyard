@@ -19,7 +19,7 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::algorithms::{FallThrough, Random};
 use libsy::stage_router::{PickerMode, StageClassifier};
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, SharedState};
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, State};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_server::config::load_server_state;
@@ -157,8 +157,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                     })
                     .collect(),
             );
-            let algorithm: Arc<dyn Algorithm<SharedState>> =
-                Arc::new(Random::new(target_set, None, None)?);
+            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
             Ok(((*route_model).to_string(), algorithm))
         })
         .collect::<TestResult<Vec<_>>>()?;
@@ -462,8 +461,9 @@ fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<S
             llm_client: Some(weak),
         },
     ]);
-    let stage: Arc<dyn Algorithm<SharedState>> = Arc::new(
-        FallThrough::new(targets).with_classifier(Arc::new(StageClassifier::new(mode, 0.5))),
+    let stage: Arc<dyn Algorithm> = Arc::new(
+        FallThrough::<State>::new(targets)
+            .with_classifier(Arc::new(StageClassifier::new(mode, 0.5))),
     );
     Ok(ServerState::new([("switchyard/stage".to_string(), stage)])?)
 }
