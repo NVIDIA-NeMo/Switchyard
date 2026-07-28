@@ -58,8 +58,8 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`, and
-`llm_classifier`. An `api_key_env` value names an environment variable; the TOML
-never contains the secret itself. If omitted, the client sends no authentication.
+`llm_classifier`, and `prefill_probe`. An `api_key_env` value names an environment variable; the
+TOML never contains the secret itself. If omitted, the client sends no authentication.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.
@@ -102,3 +102,6 @@ The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classi
 is omitted for untiered algorithms. Classifier calls are excluded from these families.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.
+See the
+[vLLM hidden-state probe guide](../../docs/operations/vllm_hidden_state_probe.md)
+to deploy a learned `prefill_probe` route.

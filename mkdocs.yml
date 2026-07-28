@@ -35,6 +35,7 @@ nav:
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
+      - vLLM Hidden-State Probe: operations/vllm_hidden_state_probe.md
   - Reference:
       - CLI Reference: cli_reference.md
 

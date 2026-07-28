@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 async-trait.workspace = true
 http-body-util = "0.1"
+safetensors = "0.4"
 tempfile = "3"
 tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }

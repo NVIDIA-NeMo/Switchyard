@@ -1854,6 +1854,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prometheus",
  "rustls",
+ "safetensors",
  "serde",
  "serde_json",
  "switchyard-libsy",
