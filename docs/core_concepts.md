@@ -37,7 +37,8 @@ has a complete runnable bundle.
 
 Every route name is registered as a model ID and listed on `GET /v1/models`.
 Clients select a route by putting that name in the request's `model` field.
-Some route types also discover or register direct upstream model IDs.
+Some route types also discover a tier's upstream catalog from its
+`GET /v1/models` and register those model IDs directly.
 
 ## Tiers and routing strategies
 

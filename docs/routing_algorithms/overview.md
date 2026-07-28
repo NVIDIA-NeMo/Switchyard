@@ -132,7 +132,7 @@ Claude Code lineage signals in either direction: `false` keeps the request on
 normal routing even when delegated-work headers are present, and `true` marks a
 request as a sub-agent even when no harness headers appear.
 
-The key applies to `model`, `passthrough`, `deterministic`, `escalation_router`,
+The key applies to `model`, `deterministic`, `escalation_router`,
 and `stage_router` routes. `random_routing` expands into its table entries on a
 separate path and does not consume it.
 

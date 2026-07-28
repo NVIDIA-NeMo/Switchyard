@@ -57,7 +57,7 @@ jobs:
       # ------------------------------------------------------------------
       # Start a local zero-latency mock OpenAI upstream. This replaces the
       # removed noop route: the proxy serves a real `type: model` chain that
-      # forwards to this loopback stub, which returns a canned completion
+      # forwards to this loopback stub, which returns a fixed completion
       # instantly. The extra loopback hop adds a small constant overhead.
       # ------------------------------------------------------------------
       - name: Start local mock OpenAI upstream

@@ -164,6 +164,13 @@ def test_empty_route_mapping_is_rejected() -> None:
         build_route_bundle_table({"routes": {"r": {}}})
 
 
+def test_model_route_requires_target() -> None:
+    """``type: model`` is the only single-upstream route, so it fails closed
+    when no ``target``/``model`` is given rather than inventing a default."""
+    with pytest.raises(RouteBundleConfigError, match="requires target or model"):
+        build_route_bundle_table({"routes": {"m": {"type": "model"}}})
+
+
 def test_random_routing_hydrates_tier_and_catalog_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
