@@ -5,8 +5,8 @@
 
 When wired into a tier slot of
 :class:`switchyard.lib.backends.deterministic_routing_llm_backend.DeterministicRoutingLLMBackend` (or any
-multi-LLM-backend), this wrapper prepares each outbound call to its
-inner :class:`AnthropicNativeBackend` so that Anthropic / Bedrock
+multi-target router), this wrapper prepares each outbound call to its
+inner :class:`switchyard_rust.llm_client.LlmClient` so that Anthropic / Bedrock
 honors prompt caching:
 
 1. Translates the inbound :class:`ChatRequest` body to Anthropic
@@ -18,7 +18,7 @@ honors prompt caching:
    its own markers (an Anthropic-native client like Claude Code), so
    wrapping that path can never exceed the four-breakpoint cap.
 3. Builds a **local** Anthropic-typed :class:`ChatRequest` and
-   delegates to the inner backend, which sees an already-Anthropic
+   delegates to the inner client, which sees an already-Anthropic
    request and passes the body through verbatim (preserving the
    markers all the way to the wire).
 
@@ -64,8 +64,7 @@ def maybe_wrap_anthropic_cache(backend: LLMBackend, target: Any) -> LLMBackend:
 
     ``target`` must already be format-resolved (``BackendFormat.AUTO`` is gone
     by this point). Apply **outermost** — :class:`AnthropicCacheBreakpointBackend`
-    is a Python-only backend, while a wrapping ``StatsLlmBackend`` requires a
-    Rust-native inner.
+    is a Python-only backend around the Rust-native client.
     """
     from switchyard.lib.backends.llm_target import BackendFormat
 

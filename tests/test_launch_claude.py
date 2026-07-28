@@ -570,8 +570,8 @@ class TestLaunchClaude:
         assert intake.session_id == "sess-cli"
 
     def test_selects_native_backend_when_probe_true(self, monkeypatch):
-        """Probe returning True -> chain stats-wraps an Anthropic-native backend."""
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
+        """Probe returning True builds the shared client with Anthropic upstream format."""
+        from switchyard_rust.llm_client import LlmClient
 
         monkeypatch.setattr(
             "switchyard.lib.backends.backend_format_resolver."
@@ -590,7 +590,7 @@ class TestLaunchClaude:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if isinstance(component, LlmClient)
             )
             fake_server = _make_fake_server(started=True)
             return fake_server, MagicMock()
@@ -623,16 +623,16 @@ class TestLaunchClaude:
         assert table.default_model() == model
         assert table.lookup_switchyard(f"claude-{model}") is table.lookup_switchyard(model)
         backend = captured_switchyard["backend"]
-        assert isinstance(backend, StatsLlmBackend)
-        assert [item.value for item in backend.supported_request_types] == ["anthropic"]
+        assert isinstance(backend, LlmClient)
+        assert backend.target_ids() == ["default"]
         assert not any(
             isinstance(component, ModelRewriteRequestProcessor)
             for component in captured_switchyard["switchyard"].iter_components()
         )
 
     def test_selects_translated_backend_when_probe_false(self, monkeypatch):
-        """Probe returning False -> chain stats-wraps an OpenAI-native backend."""
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
+        """Probe returning False builds the shared client with OpenAI upstream format."""
+        from switchyard_rust.llm_client import LlmClient
         # Default autouse fixture already sets probe to False; no override needed.
 
         model = "nvidia/moonshotai/kimi-k2.5"
@@ -646,7 +646,7 @@ class TestLaunchClaude:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if isinstance(component, LlmClient)
             )
             fake_server = _make_fake_server(started=True)
             return fake_server, MagicMock()
@@ -679,8 +679,8 @@ class TestLaunchClaude:
         assert table.default_model() == model
         assert table.lookup_switchyard(f"claude-{model}") is table.lookup_switchyard(model)
         backend = captured_switchyard["backend"]
-        assert isinstance(backend, StatsLlmBackend)
-        assert [item.value for item in backend.supported_request_types] == ["openai_chat"]
+        assert isinstance(backend, LlmClient)
+        assert backend.target_ids() == ["default"]
         assert not any(
             isinstance(component, ModelRewriteRequestProcessor)
             for component in captured_switchyard["switchyard"].iter_components()

@@ -324,22 +324,13 @@ def _attach_stats_to_backend(
     backend: LLMBackend,
     stats: StatsAccumulator,
 ) -> LLMBackend:
-    """Wrap native backends or wire existing Python stats hooks in place."""
-    from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-    try:
-        return StatsLlmBackend(backend, stats)
-    except TypeError:
-        # Python-only backends cannot be wrapped by the Rust stats binding.
-        # Fail loudly if the backend does not expose one of the known
-        # compatibility hooks; silent metrics loss is worse than a build error.
-        if not _attach_stats_to_python_backend(backend, stats):
-            backend_type = type(backend).__qualname__
-            raise TypeError(
-                f"{backend_type} cannot be wrapped for stats and exposes no "
-                "Python stats compatibility hook"
-            ) from None
-        return backend
+    """Attach stats at the LLM client or existing Python host boundary."""
+    if not _attach_stats_to_python_backend(backend, stats):
+        backend_type = type(backend).__qualname__
+        raise TypeError(
+            f"{backend_type} exposes no stats attachment hook"
+        ) from None
+    return backend
 
 
 def _attach_stats_to_python_backend(
@@ -348,32 +339,25 @@ def _attach_stats_to_python_backend(
 ) -> bool:
     """Wire stats into Python-only backend shapes that already support it."""
     attached = False
+    attach_stats = getattr(backend, "attach_stats", None)
+    if callable(attach_stats):
+        attach_stats(stats)
+        attached = True
+
     if hasattr(backend, "_stats"):
         cast(Any, backend)._stats = stats
         attached = True
 
     inner = getattr(backend, "_inner", None)
     if inner is not None:
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-        try:
-            cast(Any, backend)._inner = StatsLlmBackend(inner, stats)
-            attached = True
-        except TypeError:
-            attached = _attach_stats_to_python_backend(inner, stats) or attached
+        attached = _attach_stats_to_python_backend(inner, stats) or attached
 
     nested = getattr(backend, "_backends", None)
     if not isinstance(nested, dict):
         return attached
 
-    from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-    for label, child in list(nested.items()):
-        try:
-            nested[label] = StatsLlmBackend(child, stats)
-            attached = True
-        except TypeError:
-            attached = _attach_stats_to_python_backend(child, stats) or attached
+    for child in nested.values():
+        attached = _attach_stats_to_python_backend(child, stats) or attached
     return attached
 
 

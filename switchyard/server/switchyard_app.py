@@ -83,14 +83,16 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
     Example::
 
         from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
-        from switchyard.lib.backends import OpenAiNativeBackend
+        from switchyard.lib.llm_client_builder import build_target_llm_client
         from switchyard_rust.translation import TranslationEngine
         from switchyard.lib.switchyard import Switchyard
         from switchyard import build_switchyard_app
         import uvicorn
 
         switchyard = Switchyard(
-            backend=OpenAiNativeBackend(LlmTarget(model="gpt-4o", format=BackendFormat.OPENAI)),
+            backend=build_target_llm_client(
+                LlmTarget(model="gpt-4o", format=BackendFormat.OPENAI)
+            ),
             translator=TranslationEngine(),
         )
         uvicorn.run(build_switchyard_app(switchyard), port=4000)

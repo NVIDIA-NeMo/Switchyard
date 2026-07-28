@@ -108,7 +108,7 @@ _PROVIDER_ID = "switchyard"
 # Opaque placeholder substituted into the openclaw.json template's
 # ``apiKey: "${SWITCHYARD_API_KEY}"`` field. The proxy ignores inbound
 # Authorization headers; the real upstream credential is injected by
-# ``OpenAiNativeBackend`` at call time.
+# the shared LLM client at call time.
 _API_KEY_ENV = "SWITCHYARD_API_KEY"
 _API_KEY_PLACEHOLDER = "switchyard"
 
@@ -334,7 +334,7 @@ def _openclaw_env(
     * ``SWITCHYARD_API_KEY`` — opaque placeholder substituted into
       ``apiKey: "${SWITCHYARD_API_KEY}"``.  The proxy ignores inbound
       Authorization; the real upstream credential is injected by the
-      ``OpenAiNativeBackend`` at call time.
+      the shared LLM client at call time.
     """
     env = os.environ.copy()
     env["OPENCLAW_STATE_DIR"] = workspace

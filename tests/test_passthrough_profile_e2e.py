@@ -5,12 +5,12 @@
 
 This file is the highest-leverage entry in the mocked-test suite added after
 the post-PR-#12 wiring regressions. Where ``test_inference_e2e.py`` swaps in
-a fake ``LLMBackend`` subclass — bypassing the entire ``OpenAiPassthroughBackend`` +
+a fake ``LLMBackend`` subclass — bypassing the entire shared LLM client +
 openai-SDK + httpx code path — these tests exercise that path end-to-end:
 
     inbound HTTP request
        → Switchyard chain (real RequestProcessors / ResponseProcessors)
-       → OpenAiPassthroughBackend (Rust HTTP call)
+       → LlmClient (Rust HTTP call)
        → local OpenAI-compatible upstream stub
        → response back through the chain
        → outbound HTTP response
@@ -175,7 +175,7 @@ async def passthrough_client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A FastAPI client wired through the real passthrough profile.
 
-    The profile builds a real ``OpenAiPassthroughBackend`` pointed at
+    The profile builds a real ``LlmClient`` pointed at
     a local OpenAI-compatible stub to control the upstream response.
     """
     switchyard = ProfileSwitchyard(
@@ -402,7 +402,7 @@ class TestPassthroughProfileUpstreamAttemptCounters:
     """`switchyard_upstream_attempts_total` must populate for non-latency chains.
 
     The endpoint-layer fallback records one upstream attempt per request for
-    backends (here the Rust ``OpenAiPassthroughBackend``) that issue exactly
+    clients (here the Rust ``LlmClient``) that issue exactly
     one upstream call and have no Python retry loop — they cannot, by
     themselves, reach the Python-only ``outcome_metrics`` counters.
     """

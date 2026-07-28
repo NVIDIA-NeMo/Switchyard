@@ -14,10 +14,10 @@ use switchyard_core::{
 };
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
-use crate::backends::BackendSelection;
 use crate::intake::config::{IntakeFormat, IntakeSinkConfig};
 use crate::intake::context::{IntakeRequestState, RequestMetadata, SubModelCall};
 use crate::request_processors::RandomRoutingDecision;
+use crate::selection::BackendSelection;
 use crate::stats::{estimate_model_cost, usage_from_body, StatsRouteLabel};
 use crate::telemetry::switchyard_version;
 

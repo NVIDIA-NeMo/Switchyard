@@ -7,6 +7,7 @@ mod component_bindings;
 mod core_bindings;
 mod errors;
 mod libsy_bindings;
+mod llm_client_bindings;
 mod py_serde;
 mod translation;
 
@@ -17,5 +18,6 @@ fn _switchyard_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
     core_bindings::register(module)?;
     component_bindings::register(module)?;
     libsy_bindings::register(module)?;
+    llm_client_bindings::register(module)?;
     Ok(())
 }

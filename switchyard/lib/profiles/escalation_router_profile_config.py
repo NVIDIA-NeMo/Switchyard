@@ -25,7 +25,7 @@ from switchyard.lib.profiles.escalation_router_config import EscalationRouterCon
 from switchyard.lib.profiles.table import profile_config
 from switchyard.lib.profiles.tier_target_builders import (
     apply_deepseek_overrides,
-    build_tier_backend,
+    build_tier_client,
 )
 from switchyard.lib.session_affinity import SessionAffinity
 
@@ -112,10 +112,10 @@ class EscalationRouterProfileConfig:
             ),
         ]
 
-        strong_target, strong_backend = build_tier_backend(
+        strong_target, strong_backend = build_tier_client(
             config.strong, config.tier_timeout_s,
         )
-        weak_target, weak_backend = build_tier_backend(
+        weak_target, weak_backend = build_tier_client(
             config.weak, config.tier_timeout_s,
         )
 

@@ -29,13 +29,13 @@ class RandomRoutingProfileConfig:
 
     def build(self) -> ComponentChainProfile:
         """Build the random-routing profile runtime."""
-        from switchyard.lib.backends.multi_llm_backend import build_multi_llm_backend
+        from switchyard.lib.llm_client_builder import build_llm_client
         from switchyard.lib.processors.random_routing_request_processor import (
             RandomRoutingRequestProcessor,
         )
 
         config = self.config
-        backend: LLMBackend = build_multi_llm_backend((config.strong, config.weak))
+        backend: LLMBackend = build_llm_client((config.strong, config.weak))
 
         return ComponentChainProfile(
             request_processors=[RandomRoutingRequestProcessor(config.processor_config)],

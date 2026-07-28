@@ -489,7 +489,7 @@ def test_responses_endpoint_passes_through_upstream_401(
 
 
 def test_rust_openai_route_upstream_401_returns_structured_openai_error() -> None:
-    """Rust OpenAI-native backend errors must not fall through to FastAPI's 500."""
+    """Rust LLM client errors must not fall through to FastAPI's 500."""
     with _OpenAICompatStub() as upstream:
         upstream.respond_json(
             {"error": {"message": "bad key", "type": "invalid_api_key"}},

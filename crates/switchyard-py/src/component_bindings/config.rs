@@ -104,10 +104,6 @@ pub(crate) struct PyEndpointConfig {
 }
 
 impl PyEndpointConfig {
-    pub(crate) fn from_core(inner: EndpointConfig) -> Self {
-        Self { inner }
-    }
-
     pub(crate) fn clone_core(&self) -> EndpointConfig {
         self.inner.clone()
     }

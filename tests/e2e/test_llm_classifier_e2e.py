@@ -10,7 +10,7 @@ Mirrors :mod:`tests.test_llm_classifier_e2e` (which mocks all HTTPS via
        -> LLMClassifierRequestProcessor    -> real classifier LLM call
        -> SignalTierSelectorRequestProcessor
        -> DeterministicRoutingLLMBackend
-           -> per-tier OpenAiPassthroughBackend     -> real tier LLM call
+           -> per-tier LlmClient                    -> real tier LLM call
        -> ChatResponse
 
 Sibling pattern to :mod:`tests.e2e.test_random_routing_llm_backend`:

@@ -23,8 +23,8 @@ from switchyard.lib.profiles import (
 )
 from switchyard.lib.proxy_context import ProxyContext
 from switchyard.lib.stats_accumulator import StatsAccumulator
-from switchyard_rust.components import MultiLlmBackend, StatsLlmBackend
 from switchyard_rust.core import ChatRequest, ChatResponse
+from switchyard_rust.llm_client import LlmClient
 from switchyard_rust.translation import TranslationEngine
 
 
@@ -196,11 +196,11 @@ class TestProfileStructure:
     def test_backend_is_random_routing(self):
         config = _openai_config(enable_stats=False)
         switchyard = _random_routing_switchyard(config)
-        backends = [
+        clients = [
             c for c in switchyard.iter_components()
-            if isinstance(c, MultiLlmBackend)
+            if isinstance(c, LlmClient)
         ]
-        assert len(backends) == 1
+        assert len(clients) == 1
 
     def test_default_response_translator(self):
         switchyard = _random_routing_switchyard(
@@ -220,7 +220,7 @@ class TestProfileStructure:
         switchyard = _random_routing_switchyard(config)
         backend = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, MultiLlmBackend)
+            if isinstance(c, LlmClient)
         )
         assert backend.target_ids() == ["strong", "weak"]
 
@@ -241,11 +241,11 @@ class TestProfileStructure:
         switchyard = _random_routing_switchyard(
             _openai_config(enable_stats=False).model_copy(update={"rng_seed": 123}),
         )
-        backends = [
+        clients = [
             c for c in switchyard.iter_components()
-            if isinstance(c, MultiLlmBackend)
+            if isinstance(c, LlmClient)
         ]
-        assert len(backends) == 1
+        assert len(clients) == 1
 
     def test_preset_remains_on_config(self):
         """Preset provenance stays on the profile config."""
@@ -253,7 +253,7 @@ class TestProfileStructure:
         switchyard = _random_routing_switchyard(config)
         backend = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, MultiLlmBackend)
+            if isinstance(c, LlmClient)
         )
         assert backend.target_ids() == ["strong", "weak"]
         assert config.preset == "opus_47_minimax"
@@ -264,7 +264,7 @@ class TestProfileStructure:
         switchyard = _random_routing_switchyard(_openai_config(enable_stats=False))
         backend = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, MultiLlmBackend)
+            if isinstance(c, LlmClient)
         )
         assert backend.target_ids() == ["strong", "weak"]
         assert config.preset is None
@@ -322,16 +322,17 @@ class TestProfileStructure:
             stats_accumulator=stats,
         )
 
-        backend = next(
+        client = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, StatsLlmBackend)
+            if isinstance(c, LlmClient)
         )
         response_processor = next(
             c for c in switchyard.iter_components()
             if isinstance(c, StatsResponseProcessor)
         )
 
-        await backend.accumulator.record_success("model-a")
+        assert client.target_ids() == ["strong", "weak"]
+        await stats.record_success("model-a")
         assert response_processor.accumulator.snapshot_sync()["total_requests"] == 1
 
     async def test_llm_target_profile_builds_single_target_chain(self):
@@ -350,17 +351,17 @@ class TestProfileStructure:
             stats_accumulator=stats,
         )
 
-        backend = next(
+        client = next(
             c for c in switchyard.iter_components()
-            if isinstance(c, StatsLlmBackend)
+            if isinstance(c, LlmClient)
         )
         response_processor = next(
             c for c in switchyard.iter_components()
             if isinstance(c, StatsResponseProcessor)
         )
 
-        assert [item.value for item in backend.supported_request_types] == ["openai_chat"]
-        await backend.accumulator.record_success("single-m")
+        assert client.target_ids() == ["default"]
+        await stats.record_success("single-m")
         assert response_processor.accumulator.snapshot_sync()["total_requests"] == 1
 
 

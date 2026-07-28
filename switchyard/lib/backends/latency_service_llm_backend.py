@@ -134,11 +134,8 @@ class LatencyServiceLLMBackend(LLMBackend):
         self._request_types: dict[str, ChatRequestType] = {}
         self._health_cache: dict[str, EndpointHealth] = {}
         self._cache_lock = threading.Lock()
-        # When provided, the backend records success/error/latency directly
-        # into the accumulator on each attempt. This mirrors what the Rust
-        # ``StatsLlmBackend`` does for native backends; the Python-only
-        # latency-service backend can't be wrapped by it, so we record
-        # in-place to keep ``/metrics`` populated.
+        # When provided, this Python-only backend records
+        # success/error/latency directly so ``/metrics`` stays populated.
         self._stats = stats_accumulator
 
         # Session affinity: pins a conversation to the endpoint that last served
@@ -580,8 +577,8 @@ class LatencyServiceLLMBackend(LLMBackend):
                 ctx.selected_model = model_id
                 # ``backend_call_latency_ms`` lets the Rust ``StatsResponseProcessor``
                 # compute ``routing_overhead_ms = total_latency - backend_latency``
-                # for this Python-only backend, which can't be wrapped by the
-                # Rust ``StatsLlmBackend`` that normally publishes this signal.
+                # for this Python-only backend. The shared Rust LLM client
+                # publishes the same signal for its provider calls.
                 ctx.backend_call_latency_ms = backend_latency_ms
 
                 # The selection that actually served the request, surfaced to

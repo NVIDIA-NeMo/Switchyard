@@ -3,14 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any, ClassVar
 
-from switchyard_rust.core import (
-    ChatRequestType,
-    LLMBackend,
-    ProxyContext,
-)
+from switchyard_rust.core import ProxyContext
 
 class BackendFormat:
     AUTO: ClassVar[BackendFormat]
@@ -192,54 +187,6 @@ class StatsAccumulator:
 
 
 def set_stats_route_label(ctx: Any, label: str) -> None: ...
-
-
-class LlmTargetBackend:
-    target: LlmTarget
-
-    def __init__(self, target: LlmTarget, backend: LLMBackend) -> None: ...
-
-
-class OpenAiNativeBackend(LLMBackend):
-    target: LlmTarget
-
-    def __init__(self, target: LlmTarget) -> None: ...
-
-
-class OpenAiPassthroughBackend(LLMBackend):
-    endpoint: EndpointConfig
-
-    def __init__(
-        self,
-        endpoint: EndpointConfig | dict[str, Any] | None = None,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        timeout_secs: float | None = None,
-        timeout: float | None = None,
-    ) -> None: ...
-
-
-class AnthropicNativeBackend(LLMBackend):
-    target: LlmTarget
-
-    def __init__(self, target: LlmTarget) -> None: ...
-
-
-class MultiLlmBackend(LLMBackend):
-    def __init__(
-        self,
-        targets: Iterable[LlmTargetBackend | tuple[LlmTarget, LLMBackend]],
-        supported_request_types: Iterable[ChatRequestType | str] | None = None,
-        default_target_id: str | None = None,
-    ) -> None: ...
-    def target_ids(self) -> list[str]: ...
-    def default_target_id(self) -> str | None: ...
-
-
-class StatsLlmBackend(LLMBackend):
-    accumulator: StatsAccumulator
-
-    def __init__(self, inner: LLMBackend, accumulator: StatsAccumulator) -> None: ...
 
 
 class StatsRequestProcessor:

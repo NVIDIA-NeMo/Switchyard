@@ -17,7 +17,7 @@ import pytest
 
 from switchyard.lib.backends import backend_format_resolver as resolver_mod
 from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
-from switchyard.lib.backends.multi_llm_backend import resolve_llm_target
+from switchyard.lib.llm_client_builder import resolve_llm_target
 
 
 class TestAutoFormatResolution:

@@ -478,7 +478,7 @@ wire-level proofs live in `tests/test_route_selection_headers.py`.
 When `enable_stats` is `true` (the default), `LatencyServiceProfileConfig` wires a
 `StatsRequestProcessor` + `StatsResponseProcessor` pair sharing one `StatsAccumulator`.
 Because `LatencyServiceLLMBackend` is a Python-only backend, profile assembly cannot wrap
-it with the Rust-native `StatsLlmBackend`; instead it records success / error /
+it through the shared Rust `LlmClient`; instead it records success / error /
 call-latency in-place into the same accumulator the response processor records token usage
 into. It also sets `ctx.selected_model` and `ctx.backend_call_latency_ms` so per-endpoint
 attribution and routing-overhead figures land correctly on `/metrics`.

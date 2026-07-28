@@ -227,6 +227,8 @@ fn build_backend(client_name: &str, config: &LlmClientConfig) -> ServerResult<Ba
     let http = HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key,
+        timeout: None,
+        extra_body: None,
         extra_headers: config.extra_headers.clone(),
     };
     Ok(match config.format {

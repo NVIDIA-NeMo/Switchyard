@@ -16,7 +16,7 @@ from switchyard.lib.profiles.deterministic_routing_config import (
     DeterministicRoutingConfig,
 )
 from switchyard.lib.profiles.table import profile_config
-from switchyard.lib.profiles.tier_target_builders import build_tier_backend
+from switchyard.lib.profiles.tier_target_builders import build_tier_client
 
 
 @profile_config("deterministic")
@@ -98,10 +98,10 @@ class DeterministicRoutingProfileConfig:
             )
         )
 
-        strong_target, strong_backend = build_tier_backend(
+        strong_target, strong_backend = build_tier_client(
             config.strong, config.tier_timeout_s,
         )
-        weak_target, weak_backend = build_tier_backend(
+        weak_target, weak_backend = build_tier_client(
             config.weak, config.tier_timeout_s,
         )
 

@@ -16,10 +16,7 @@ from switchyard.lib.backends.anthropic_cache_breakpoint_backend import (
     maybe_wrap_anthropic_cache,
 )
 from switchyard.lib.backends.llm_target import LlmTarget
-from switchyard.lib.backends.multi_llm_backend import (
-    build_native_backend,
-    resolve_llm_target,
-)
+from switchyard.lib.llm_client_builder import build_target_llm_client, resolve_llm_target
 from switchyard.lib.profiles.deterministic_routing_config import (
     DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,
 )
@@ -82,7 +79,7 @@ def apply_default_tier_timeout(
     )
 
 
-def build_tier_backend(
+def build_tier_client(
     target: LlmTarget,
     tier_timeout_s: float | None,
 ) -> tuple[LlmTarget, LLMBackend]:
@@ -96,11 +93,11 @@ def build_tier_backend(
     resolved = resolve_llm_target(
         apply_deepseek_overrides(apply_default_tier_timeout(target, tier_timeout_s)),
     )
-    return resolved, maybe_wrap_anthropic_cache(build_native_backend(resolved), resolved)
+    return resolved, maybe_wrap_anthropic_cache(build_target_llm_client(resolved), resolved)
 
 
 __all__ = [
     "apply_deepseek_overrides",
     "apply_default_tier_timeout",
-    "build_tier_backend",
+    "build_tier_client",
 ]

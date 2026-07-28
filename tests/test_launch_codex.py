@@ -567,13 +567,11 @@ class TestLaunchCodex:
         assert fake_server.should_exit is True
 
     def test_uses_openai_translation_chain(self, monkeypatch):
-        """Codex always speaks Responses API → backend always
-        an OpenAI-native backend behind the stats wrapper.
-        """
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
+        """Codex uses the shared client and translates from the Responses API."""
         from switchyard.lib.processors.stats_response_processor_accumulator import (
             StatsResponseProcessor,
         )
+        from switchyard_rust.llm_client import LlmClient
 
         model = "nvidia/moonshotai/kimi-k2.5"
         captured_switchyard: dict = {}
@@ -586,7 +584,7 @@ class TestLaunchCodex:
             captured_switchyard["backend"] = next(
                 component
                 for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
+                if isinstance(component, LlmClient)
             )
             return _make_fake_server(started=True), MagicMock()
 
@@ -616,11 +614,8 @@ class TestLaunchCodex:
         table = captured_switchyard["app"]
         assert table.registered_models() == [model]
         assert table.default_model() == model
-        assert isinstance(captured_switchyard["backend"], StatsLlmBackend)
-        assert [
-            item.value
-            for item in captured_switchyard["backend"].supported_request_types
-        ] == ["openai_responses"]
+        assert isinstance(captured_switchyard["backend"], LlmClient)
+        assert captured_switchyard["backend"].target_ids() == ["default"]
         assert not any(
             isinstance(component, _ModelRewriteRequestProcessor)
             for component in captured_switchyard["switchyard"].iter_components()

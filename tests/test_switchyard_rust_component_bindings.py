@@ -10,10 +10,8 @@ import math
 import pytest
 
 from switchyard_rust import (
-    AnthropicNativeBackend,
     BackendFormat,
     ChatRequest,
-    ChatRequestType,
     ChatResponse,
     EndpointConfig,
     IntakeQueueFullPolicy,
@@ -21,14 +19,11 @@ from switchyard_rust import (
     IntakeResponseProcessor,
     IntakeSinkConfig,
     LLMBackend,
+    LlmClient,
     LlmTarget,
-    LlmTargetBackend,
-    MultiLlmBackend,
-    OpenAiNativeBackend,
     ProxyContext,
     RandomRoutingProcessorConfig,
     StatsAccumulator,
-    StatsLlmBackend,
     StatsRequestProcessor,
     StatsResponseProcessor,
 )
@@ -48,15 +43,14 @@ def _target(
     )
 
 
-def test_component_exports_are_callable_processors_and_native_backends() -> None:
+def test_component_exports_are_callable_processors_and_llm_client() -> None:
     openai_target = _target("openai", "gpt-test", format=BackendFormat.OPENAI)
     anthropic_target = _target("anthropic", "claude-test", format=BackendFormat.ANTHROPIC)
 
     assert callable(StatsRequestProcessor().process)
     assert callable(IntakeRequestProcessor().process)
     assert callable(StatsResponseProcessor(StatsAccumulator()).process)
-    assert isinstance(OpenAiNativeBackend(openai_target), LLMBackend)
-    assert isinstance(AnthropicNativeBackend(anthropic_target), LLMBackend)
+    assert isinstance(LlmClient([openai_target, anthropic_target]), LLMBackend)
 
 
 def test_config_bindings_validate_and_own_values() -> None:
@@ -176,68 +170,36 @@ async def test_stream_callbacks_survive_handoff_to_rust_response_processor() -> 
     assert stats.snapshot_sync()["models"]["served-model"]["prompt_tokens"] == 1
 
 
-def test_backend_bindings_construct_without_provider_sdks_or_network() -> None:
+def test_llm_client_binding_constructs_without_provider_sdks_or_network() -> None:
     openai_target = _target("openai", "gpt-test", format=BackendFormat.OPENAI)
     responses_target = _target("responses", "gpt-responses", format=BackendFormat.RESPONSES)
     anthropic_target = _target("anthropic", "claude-test", format=BackendFormat.ANTHROPIC)
-    openai = OpenAiNativeBackend(openai_target)
-    responses = OpenAiNativeBackend(responses_target)
-    anthropic = AnthropicNativeBackend(anthropic_target)
-    stats = StatsAccumulator()
+    client = LlmClient(
+        [openai_target, responses_target, anthropic_target],
+        default_target_id="openai",
+    )
 
-    multi = MultiLlmBackend([
-        LlmTargetBackend(openai_target, openai),
-        (anthropic_target, anthropic),
-    ], default_target_id="openai")
-    stats_backend = StatsLlmBackend(openai, stats)
-
-    assert [request_type.value for request_type in openai.supported_request_types] == [
-        "openai_chat"
+    assert [request_type.value for request_type in client.supported_request_types] == [
+        "openai_chat",
+        "openai_responses",
+        "anthropic",
     ]
-    assert [request_type.value for request_type in responses.supported_request_types] == [
-        "openai_responses"
-    ]
-    assert [request_type.value for request_type in anthropic.supported_request_types] == [
-        "anthropic"
-    ]
-    assert set(multi.target_ids()) == {"openai", "anthropic"}
-    assert multi.default_target_id() == "openai"
-    assert stats_backend.supported_request_types == openai.supported_request_types
+    assert set(client.target_ids()) == {"openai", "responses", "anthropic"}
+    assert client.default_target_id == "openai"
 
 
-def test_backend_bindings_reject_invalid_native_composition() -> None:
+def test_llm_client_binding_rejects_invalid_configuration() -> None:
     openai_target = _target("openai", "gpt-test", format=BackendFormat.OPENAI)
-    openai = OpenAiNativeBackend(openai_target)
 
-    with pytest.raises(RuntimeError, match="requires a target with resolved OpenAI format"):
-        OpenAiNativeBackend(_target("bad", "claude-test", format=BackendFormat.ANTHROPIC))
-    with pytest.raises(RuntimeError, match="requires a target with resolved Anthropic format"):
-        AnthropicNativeBackend(_target("bad", "gpt-test", format=BackendFormat.OPENAI))
+    with pytest.raises(RuntimeError, match="resolved target format"):
+        LlmClient([_target("bad", "gpt-test", format=BackendFormat.AUTO)])
     with pytest.raises(RuntimeError, match="duplicate LLM target id"):
-        MultiLlmBackend([
-            LlmTargetBackend(openai_target, openai),
-            LlmTargetBackend(openai_target, openai),
-        ])
+        LlmClient([openai_target, openai_target])
     with pytest.raises(RuntimeError, match="default target missing is not configured"):
-        MultiLlmBackend(
-            [LlmTargetBackend(openai_target, openai)],
+        LlmClient(
+            [openai_target],
             default_target_id="missing",
         )
-    with pytest.raises(RuntimeError, match="at least one request type"):
-        MultiLlmBackend([LlmTargetBackend(openai_target, openai)], supported_request_types=[])
-
-
-def test_wrappers_require_rust_native_backend_instances() -> None:
-    class PythonOnlyBackend(LLMBackend):
-        @property
-        def supported_request_types(self) -> list[ChatRequestType]:
-            return [ChatRequestType.OPENAI_CHAT]
-
-        async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
-            return ChatResponse.openai_completion({"model": request.model})
-
-    with pytest.raises(TypeError):
-        StatsLlmBackend(PythonOnlyBackend(), StatsAccumulator())
 
 
 def test_intake_response_processor_validates_http_sink_config() -> None:

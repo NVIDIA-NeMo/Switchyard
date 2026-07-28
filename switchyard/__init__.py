@@ -12,12 +12,10 @@ format translation, and extensible middleware.
 from typing import TYPE_CHECKING, Any
 
 from switchyard.lib.backends import (
-    AnthropicNativeBackend,
     EndpointHealth,
     EndpointHealthStatus,
     HealthPoller,
     LatencyServiceLLMBackend,
-    OpenAiNativeBackend,
 )
 from switchyard.lib.backends.llm_target import (
     BackendFormat,
@@ -92,6 +90,7 @@ from switchyard_rust.core import (
     ChatResponse,
     ChatResponseType,
 )
+from switchyard_rust.llm_client import LlmClient
 from switchyard_rust.translation import TranslationEngine
 
 if TYPE_CHECKING:
@@ -173,8 +172,7 @@ __all__ = [
     "build_profile",
     "profile_config",
     "profile_config_type",
-    "AnthropicNativeBackend",
-    "OpenAiNativeBackend",
+    "LlmClient",
     "OpenAIChatEndpoint",
     "AnthropicMessagesEndpoint",
     "ResponsesEndpoint",

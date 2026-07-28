@@ -16,7 +16,7 @@ use super::{PrefixProbe, TokenUsage};
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
 
-/// Thread-safe stats store shared by stats processors and backend wrappers.
+/// Thread-safe stats store shared by stats processors and LLM clients.
 #[derive(Clone, Debug)]
 pub struct StatsAccumulator {
     inner: Arc<Mutex<StatsAccumulatorInner>>,
@@ -138,7 +138,7 @@ impl StatsAccumulator {
 
     /// Records usage after the corresponding success call was already attributed.
     ///
-    /// `StatsLlmBackend` and profile runtimes record success before the response
+    /// LLM clients and profile runtimes record success before the response
     /// processor records tokens. Those internal paths must not consume a legacy
     /// pending untiered success that belongs to some other direct accumulator caller.
     pub fn record_usage_after_success_attribution(

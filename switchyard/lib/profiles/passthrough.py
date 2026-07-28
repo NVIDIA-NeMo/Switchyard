@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from switchyard.lib.backends.llm_target import LlmTarget
+from switchyard.lib.backends.llm_target import BackendFormat, EndpointConfig, LlmTarget
 from switchyard.lib.profiles.chain import ComponentChainProfile
 from switchyard.lib.profiles.table import profile_config
 from switchyard.lib.roles import LLMBackend
-from switchyard_rust.components import OpenAiPassthroughBackend
+from switchyard_rust.llm_client import LlmClient
 
 
 @profile_config("passthrough")
@@ -23,17 +23,20 @@ class PassthroughProfileConfig:
 
     def build(self) -> ComponentChainProfile:
         """Build a profile runtime for one direct upstream."""
-        from switchyard.lib.backends.multi_llm_backend import build_native_backend
+        from switchyard.lib.llm_client_builder import build_target_llm_client
 
         backend: LLMBackend
         if self.target is None:
-            backend = OpenAiPassthroughBackend(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout,
+            backend = LlmClient(
+                endpoint=EndpointConfig(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout_secs=self.timeout,
+                ),
+                format=BackendFormat.OPENAI,
             )
         else:
-            backend = build_native_backend(self.target)
+            backend = build_target_llm_client(self.target)
 
         return ComponentChainProfile(
             backend=backend,

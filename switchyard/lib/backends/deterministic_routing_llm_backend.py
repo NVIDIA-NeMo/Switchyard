@@ -14,7 +14,7 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from switchyard.lib.backends.llm_target import LlmTarget
+from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.core import ChatRequestType
 
@@ -35,8 +35,8 @@ class DeterministicRoutingLLMBackend(LLMBackend):
     Args:
         tiers: Mapping of tier label to ``(LLMBackend, model_name)``.
             Pass pre-built backends here when you want full control. For the
-            common case, use :meth:`from_tiers` so the standard OpenAI /
-            Anthropic backends get built from :class:`LlmTarget` config.
+            common case, use :meth:`from_tiers` to build shared clients from
+            :class:`LlmTarget` config.
         default_tier: Tier label to dispatch to when the request processor
             did not run or stamped an unrecognised label. Must be a key of
             ``tiers``.
@@ -81,10 +81,10 @@ class DeterministicRoutingLLMBackend(LLMBackend):
                 f"default_tier {default_tier!r} not in tiers {sorted(tiers)}",
             )
 
-        built = {
-            label: (_build_backend(target), target.model)
-            for label, target in tiers.items()
-        }
+        built = {}
+        for label, target in tiers.items():
+            target = coerce_llm_target(target, default_id=label)
+            built[label] = (_build_backend(target), target.model)
         return cls(tiers=built, default_tier=default_tier)
 
     @property
@@ -111,7 +111,7 @@ class DeterministicRoutingLLMBackend(LLMBackend):
         request.set_model(model)
         ctx.selected_target = tier
         ctx.selected_model = model
-        # Stamp the tier label so the inner StatsLlmBackend's
+        # Stamp the tier label so the inner LlmClient's
         # ``selected_stats_tier`` returns ``"strong"`` / ``"weak"`` and
         # the accumulator's snapshot populates the ``tiers`` block —
         # without this, the launcher's LiveStatsFooter tier rows stay
@@ -154,13 +154,10 @@ __all__ = [
 def _build_backend(target: LlmTarget) -> LLMBackend:
     """Build a backend for the experimental deterministic router.
 
-    This experimental path now uses the same Rust-owned native backend builder
-    as production factories so routing behavior cannot drift.
+    This experimental path uses the same Rust-owned LLM client builder as
+    production factories so routing behavior cannot drift.
     """
-    from switchyard.lib.backends.multi_llm_backend import (
-        build_native_backend,
-        resolve_llm_target,
-    )
+    from switchyard.lib.llm_client_builder import build_target_llm_client, resolve_llm_target
 
     target = resolve_llm_target(target)
-    return build_native_backend(target)
+    return build_target_llm_client(target)

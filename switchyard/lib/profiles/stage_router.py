@@ -39,7 +39,7 @@ class StageRouterProfileConfig:
 
     def build(self) -> ComponentChainProfile:
         """Build the stage_router profile runtime."""
-        from switchyard.lib.backends.multi_llm_backend import build_multi_llm_backend
+        from switchyard.lib.llm_client_builder import build_llm_client
         from switchyard_rust.components import DimensionCollector
 
         config = self.config
@@ -61,7 +61,7 @@ class StageRouterProfileConfig:
             )
         )
 
-        backend: LLMBackend = build_multi_llm_backend((config.efficient, config.capable))
+        backend: LLMBackend = build_llm_client((config.efficient, config.capable))
 
         return ComponentChainProfile(
             request_processors=request_processors,

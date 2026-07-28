@@ -123,6 +123,8 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
     let backend = Backend::OpenAiChat(HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
+        timeout: None,
+        extra_body: None,
         extra_headers: BTreeMap::new(),
     });
     let target_models = routes

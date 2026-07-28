@@ -71,7 +71,7 @@ class DeterministicRoutingConfig(BaseModel):
             ``timeout_secs``. ``None`` disables the default and leaves
             the provider client unbounded.
         enable_stats: Wire stats request/response processors and per-
-            tier :class:`StatsLlmBackend` wrappers. Default ``True``.
+            tier LLM clients. Default ``True``.
         preset: Optional name of the
             :class:`DeterministicRoutingPresets` preset builder that produced
             this config — surfaced via ``GET /v1/routing/stats`` so

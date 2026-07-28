@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use switchyard_core::ProxyContext;
 
-use crate::backends::BackendSelection;
 use crate::request_processors::RandomRoutingDecision;
+use crate::selection::BackendSelection;
 
 /// Request start time captured by `StatsRequestProcessor`.
 #[derive(Clone, Copy, Debug)]
@@ -27,7 +27,7 @@ impl StatsRequestStart {
     }
 }
 
-/// Backend-call duration captured by `StatsLlmBackend`.
+/// LLM-call duration captured by the host client.
 #[derive(Clone, Copy, Debug)]
 pub struct StatsBackendLatency(pub Duration);
 

@@ -8,14 +8,13 @@ Implements two UXes on top of a single chain-agnostic runner:
 * ``switchyard launch claude --model <name>`` — single-model
   passthrough.  Spin up an in-process V2 passthrough proxy on a free
   local port, probe the backend for native ``POST /v1/messages``
-  support, build the matching chain
-  (:class:`AnthropicNativeBackend` or :class:`OpenAiNativeBackend`
-  with translation), then spawn ``claude`` against the proxy.
+  support, configure the shared LLM client with the matching upstream
+  format, then spawn ``claude`` against the proxy.
 * ``switchyard launch claude --preset <id>`` — weighted-coin
   random routing across the preset's strong / weak tiers.  Same
   supervisor loop, different chain: a
   :class:`RandomRoutingRequestProcessor` picks a tier per request and
-  the :class:`MultiLlmBackend` dispatches to that tier, while
+  the shared LLM client dispatches to that tier, while
   ``ANTHROPIC_MODEL`` is pinned to a Switchyard virtual model that
   represents the strong / weak pair.
 
@@ -26,9 +25,8 @@ When ``claude`` exits (or Ctrl-C), the proxy is torn down cleanly.
 
 Routing mode is auto-selected at startup by the generic
 :class:`LlmTarget` recipe: Anthropic-looking models probe for native
-``POST /v1/messages`` support, otherwise the chain falls back to
-:class:`OpenAiNativeBackend` with the existing Anthropic ↔ OpenAI Chat
-translation.
+``POST /v1/messages`` support, otherwise the shared client uses OpenAI
+Chat upstream translation.
 """
 
 import logging

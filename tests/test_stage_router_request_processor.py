@@ -6,7 +6,7 @@
 The processor is a thin async dispatcher: it runs an async picker against the
 :class:`ToolResultSignal` stamped upstream by :class:`DimensionCollector` and
 stamps ``ctx.selected_target`` + ``ctx.selected_model`` for the downstream
-``MultiLlmBackend`` to dispatch on.
+the shared LLM client to dispatch on.
 """
 
 from __future__ import annotations

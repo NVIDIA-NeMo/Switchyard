@@ -13,7 +13,6 @@ from switchyard_rust.translation import (
 )
 
 if TYPE_CHECKING:
-    from switchyard_rust.components import AnthropicNativeBackend as AnthropicNativeBackend
     from switchyard_rust.components import BackendFormat as BackendFormat
     from switchyard_rust.components import EndpointConfig as EndpointConfig
     from switchyard_rust.components import IntakeQueueFullPolicy as IntakeQueueFullPolicy
@@ -22,16 +21,11 @@ if TYPE_CHECKING:
     from switchyard_rust.components import IntakeResponseProcessor as IntakeResponseProcessor
     from switchyard_rust.components import IntakeSinkConfig as IntakeSinkConfig
     from switchyard_rust.components import LlmTarget as LlmTarget
-    from switchyard_rust.components import LlmTargetBackend as LlmTargetBackend
-    from switchyard_rust.components import MultiLlmBackend as MultiLlmBackend
-    from switchyard_rust.components import OpenAiNativeBackend as OpenAiNativeBackend
-    from switchyard_rust.components import OpenAiPassthroughBackend as OpenAiPassthroughBackend
     from switchyard_rust.components import (
         RandomRoutingProcessorConfig as RandomRoutingProcessorConfig,
     )
     from switchyard_rust.components import RequestMetadata as RequestMetadata
     from switchyard_rust.components import StatsAccumulator as StatsAccumulator
-    from switchyard_rust.components import StatsLlmBackend as StatsLlmBackend
     from switchyard_rust.components import StatsRequestProcessor as StatsRequestProcessor
     from switchyard_rust.components import StatsResponseProcessor as StatsResponseProcessor
     from switchyard_rust.core import ChatRequest as ChatRequest
@@ -55,11 +49,11 @@ if TYPE_CHECKING:
         SwitchyardUnsupportedRequestTypeError as SwitchyardUnsupportedRequestTypeError,
     )
     from switchyard_rust.core import SwitchyardUpstreamError as SwitchyardUpstreamError
+    from switchyard_rust.llm_client import LlmClient as LlmClient
 
 
 def __getattr__(name: str) -> object:
     if name in {
-        "AnthropicNativeBackend",
         "BackendFormat",
         "EndpointConfig",
         "IntakeQueueFullPolicy",
@@ -68,20 +62,19 @@ def __getattr__(name: str) -> object:
         "IntakeResponseProcessor",
         "IntakeSinkConfig",
         "LlmTarget",
-        "LlmTargetBackend",
-        "MultiLlmBackend",
-        "OpenAiNativeBackend",
-        "OpenAiPassthroughBackend",
         "RandomRoutingProcessorConfig",
         "RequestMetadata",
         "StatsAccumulator",
-        "StatsLlmBackend",
         "StatsRequestProcessor",
         "StatsResponseProcessor",
     }:
         from switchyard_rust import components
 
         return getattr(components, name)
+    if name == "LlmClient":
+        from switchyard_rust.llm_client import LlmClient
+
+        return LlmClient
     if name == "ChatRequest":
         from switchyard_rust.core import ChatRequest
 
@@ -132,7 +125,6 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
-    "AnthropicNativeBackend",
     "BackendFormat",
     "ChatRequest",
     "ChatRequestType",
@@ -146,17 +138,13 @@ __all__ = [
     "IntakeResponseProcessor",
     "IntakeSinkConfig",
     "LLMBackend",
+    "LlmClient",
     "LlmTarget",
-    "LlmTargetBackend",
-    "MultiLlmBackend",
-    "OpenAiNativeBackend",
-    "OpenAiPassthroughBackend",
     "ProxyMetadata",
     "ProxyContext",
     "RandomRoutingProcessorConfig",
     "RequestMetadata",
     "StatsAccumulator",
-    "StatsLlmBackend",
     "StatsRequestProcessor",
     "StatsResponseProcessor",
     "SwitchyardBackendError",

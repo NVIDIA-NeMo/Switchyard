@@ -170,6 +170,7 @@ switchyard/
 │   ├── route_table.py              # RouteTable — model-id dispatch to runnable chains
 │   ├── route_table_builders.py     # Shared profile-backed table builders
 │   ├── llm_client.py               # OpenAILLMClient
+│   ├── llm_client_builder.py       # Rust LlmClient target construction
 │   ├── cost_estimator.py           # Token-cost bookkeeping
 │   ├── stats_accumulator.py        # Stats accumulation helpers
 │   ├── request_metadata.py         # RequestMetadata
@@ -178,14 +179,9 @@ switchyard/
 │   │   ├── openai_chat.py          # ResponseStream
 │   │   ├── openai_responses.py     # ResponsesApiStream
 │   │   └── anthropic.py            # AnthropicResponseStream
-│   ├── backends/                   # LLMBackend implementations
-│   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
-│   │   ├── openai_native_backend.py        # OpenAiNativeBackend
-│   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
+│   ├── backends/                   # Specialized Python backends and target helpers
 │   │   ├── latency_service_llm_backend.py  # LatencyServiceLLMBackend
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
-│   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
-│   │   ├── stats_llm_backend.py            # StatsLlmBackend
 │   │   ├── backend_format_resolver.py      # BackendFormatResolver
 │   │   └── health_poller.py                # HealthPoller, EndpointHealthStatus
 │   ├── processors/                 # Request-side / response-side component implementations

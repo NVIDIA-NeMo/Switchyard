@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::RequestBuilder;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
@@ -77,6 +77,7 @@ impl ModelConfig {
 /// or streamed).
 pub struct TranslatingLlmClient {
     model_to_config: HashMap<String, ModelConfig>,
+    default_backend: Option<Backend>,
     client: reqwest::Client,
 }
 
@@ -84,6 +85,17 @@ impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
+        Self::with_default_backend(model_configs, None)
+    }
+
+    /// Builds a client with an optional fallback backend for dynamic model names.
+    ///
+    /// The fallback supports passthrough hosts that accept caller-selected
+    /// models without enumerating every model at construction.
+    pub fn with_default_backend(
+        model_configs: &[ModelConfig],
+        default_backend: Option<Backend>,
+    ) -> Result<Self> {
         let client =
             reqwest::Client::builder()
                 .build()
@@ -97,6 +109,7 @@ impl TranslatingLlmClient {
 
         Ok(Self {
             model_to_config,
+            default_backend,
             client,
         })
     }
@@ -105,16 +118,23 @@ impl TranslatingLlmClient {
     /// format matches, otherwise a matching entry in `other_backends`; `None` when
     /// the model is unknown or has no backend for `format`.
     pub fn backend_for(&self, model: &str, format: WireFormat) -> Option<&Backend> {
-        self.model_to_config.get(model).and_then(|config| {
-            if config.default_backend.wire_format() == format {
-                Some(&config.default_backend)
-            } else {
-                config
-                    .other_backends
+        self.model_to_config
+            .get(model)
+            .and_then(|config| {
+                if config.default_backend.wire_format() == format {
+                    Some(&config.default_backend)
+                } else {
+                    config
+                        .other_backends
+                        .as_ref()
+                        .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
+                }
+            })
+            .or_else(|| {
+                self.default_backend
                     .as_ref()
-                    .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
-            }
-        })
+                    .filter(|backend| backend.wire_format() == format)
+            })
     }
 
     /// Calls the backend for `model_name` (or the request's own model), over the
@@ -147,14 +167,13 @@ impl TranslatingLlmClient {
             })?;
 
         let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
-        let wire_format = orig_format.unwrap_or(
+        let wire_format = orig_format.unwrap_or_else(|| {
             self.model_to_config
                 .get(&model)
                 .map(|config| config.default_backend.wire_format())
-                .ok_or_else(|| LlmClientError::Configuration {
-                    message: format!("no backend configured for model {model:?}"),
-                })?,
-        );
+                .or_else(|| self.default_backend.as_ref().map(Backend::wire_format))
+                .unwrap_or(WireFormat::OpenAiChat)
+        });
         let backend =
             self.backend_for(&model, wire_format)
                 .ok_or_else(|| LlmClientError::Configuration {
@@ -170,9 +189,16 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, &model);
+        if backend.wire_format() == WireFormat::OpenAiChat {
+            ensure_stream_usage(&mut body);
+        }
+        merge_extra_body(&mut body, backend.extra_body());
         let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
-        let builder = self.client.post(backend.url()).json(&body);
+        let mut builder = self.client.post(backend.url()).json(&body);
+        if let Some(timeout) = backend.timeout() {
+            builder = builder.timeout(timeout);
+        }
         let builder = forward_metadata_headers(builder, metadata.as_ref());
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
@@ -360,6 +386,43 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+// Requests the final OpenAI usage chunk unless the caller set an explicit value.
+fn ensure_stream_usage(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if !object
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    match object.get_mut("stream_options") {
+        Some(Value::Object(options)) => {
+            options
+                .entry("include_usage".to_string())
+                .or_insert(Value::Bool(true));
+        }
+        _ => {
+            let mut options = Map::new();
+            options.insert("include_usage".to_string(), Value::Bool(true));
+            object.insert("stream_options".to_string(), Value::Object(options));
+        }
+    }
+}
+
+// Adds target defaults without overriding caller-provided request fields.
+fn merge_extra_body(body: &mut Value, extra_body: Option<&Value>) {
+    let (Value::Object(body), Some(Value::Object(extra))) = (body, extra_body) else {
+        return;
+    };
+    for (key, value) in extra {
+        body.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
 // Case-insensitive membership test against RESERVED_HEADERS.
 fn is_reserved_header(name: &str) -> bool {
     RESERVED_HEADERS
@@ -386,6 +449,8 @@ mod tests {
         HttpBackendConfig {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
+            timeout: None,
+            extra_body: None,
             extra_headers: BTreeMap::new(),
         }
     }
@@ -522,6 +587,59 @@ mod tests {
         assert!(client
             .backend_for("missing", WireFormat::OpenAiChat)
             .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn default_backend_accepts_dynamic_models() -> Result<()> {
+        let client = TranslatingLlmClient::with_default_backend(
+            &[],
+            Some(Backend::OpenAiChat(config("https://example.test/v1"))),
+        )?;
+        assert!(client
+            .backend_for("caller-selected-model", WireFormat::OpenAiChat)
+            .is_some());
+        assert!(client
+            .backend_for("caller-selected-model", WireFormat::AnthropicMessages)
+            .is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_backend_merges_target_body_without_overriding_caller() -> Result<()> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "dynamic-model",
+                "temperature": 0.2,
+                "provider": {"allow_fallbacks": false}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "dynamic-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut backend = config(&format!("{}/v1", server.uri()));
+        backend.extra_body = Some(json!({
+            "temperature": 0.8,
+            "provider": {"allow_fallbacks": false}
+        }));
+        let client =
+            TranslatingLlmClient::with_default_backend(&[], Some(Backend::OpenAiChat(backend)))?;
+        let mut request = request_for(Some("dynamic-model"), false);
+        request.llm_request.sampling.temperature = Some(0.2);
+        client
+            .call_rewrite_model(Context::default(), request, None)
+            .await?;
         Ok(())
     }
 

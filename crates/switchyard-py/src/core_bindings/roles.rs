@@ -25,10 +25,6 @@ impl PyLlmBackend {
     pub(crate) fn from_native(inner: Arc<dyn LlmBackend>) -> Self {
         Self { inner: Some(inner) }
     }
-
-    pub(crate) fn native(&self) -> Option<Arc<dyn LlmBackend>> {
-        self.inner.clone()
-    }
 }
 
 #[pymethods]

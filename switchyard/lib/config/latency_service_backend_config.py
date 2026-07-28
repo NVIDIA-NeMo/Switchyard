@@ -121,7 +121,7 @@ class LatencyServiceBackendConfig(BaseModel):
         enable_stats: When ``True`` (default), the factory wires a
             :class:`StatsRequestProcessor` + :class:`StatsResponseProcessor`
             pair sharing one :class:`StatsAccumulator` and wraps the
-            backend in :class:`StatsLlmBackend`, so the chain contributes
+            backend to the shared stats accumulator, so the chain contributes
             ``GET /metrics``, ``GET /v1/stats``, and the legacy
             ``GET /v1/routing/stats`` aliases via the standard
             ``get_endpoint()`` mechanism in :func:`build_switchyard_app`.

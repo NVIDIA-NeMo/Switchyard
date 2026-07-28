@@ -120,7 +120,7 @@ async def iter_anthropic_sse(
       the chain translates OpenAI → Anthropic on the fly).
     * Pydantic ``RawMessageStreamEvent`` models (from the Anthropic
       SDK's ``AsyncStream`` when the backend speaks Anthropic natively
-      — see :class:`AnthropicNativeBackend`). Serialized via
+      before returning from the shared LLM client). Serialized via
       ``model_dump(exclude_none=True)``.
 
     No ``[DONE]`` terminator: Anthropic signals end-of-stream with a

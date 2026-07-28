@@ -324,7 +324,7 @@ def _supervise_codex(
     that satisfies codex's "no env_key set, refusing to start"
     precondition.  The proxy ignores the inbound ``Authorization``
     header; the real upstream credential is injected by
-    :class:`OpenAiNativeBackend` at call time.
+    the shared LLM client at call time.
     """
     try:
         result = subprocess.run(

@@ -5,7 +5,7 @@
 
 When Switchyard owns the LLM call (standalone server), inbound→target
 format translation happens *inside* the LLM backend (e.g.
-:class:`OpenAiNativeBackend.call` runs
+the shared LLM client's provider call runs
 :meth:`TranslationEngine.request_to_any_of` at the top), and
 outbound translation happens in :class:`TranslationEngine`.
 The host's chain has dedicated slots for both.

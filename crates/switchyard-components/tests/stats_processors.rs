@@ -1,119 +1,29 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Stats processor tests covering request stamps, backend wrappers, and stream usage.
+//! Stats processor tests covering request stamps, accumulated usage, and streams.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures_util::StreamExt;
-use parking_lot::Mutex;
 use serde_json::json;
 use switchyard_components::{
     BackendSelection, BackendSelectionReason, RandomRoutingDecision, RandomRoutingTier,
-    StatsAccumulator, StatsBackendLatency, StatsLlmBackend, StatsRequestProcessor,
-    StatsRequestStart, StatsResponseProcessor, StatsRouteLabel,
+    StatsAccumulator, StatsBackendLatency, StatsRequestProcessor, StatsRequestStart,
+    StatsResponseProcessor, StatsRouteLabel,
 };
 use switchyard_core::{
-    ChatRequest, ChatRequestType, ChatResponse, LlmBackend, LlmTargetId, ModelId, ProxyContext,
-    Result, StreamEvent, SwitchyardError,
+    ChatRequest, ChatResponse, LlmTargetId, ModelId, ProxyContext, Result, StreamEvent,
+    SwitchyardError,
 };
 
-static SUPPORTED_OPENAI_CHAT: [ChatRequestType; 1] = [ChatRequestType::OpenAiChat];
-
-// Stamps a served model into context the same way native backends do.
+// Stamps a served model into context the same way the host LLM client does.
 fn record_backend_selection(ctx: &mut ProxyContext, model: ModelId) {
     let _ = ctx.insert(BackendSelection::for_model(
         model,
         None,
         BackendSelectionReason::PassthroughModel,
     ));
-}
-
-// Fake backend records lifecycle and request observations for stats tests.
-struct FakeBackend {
-    response: Mutex<Option<Result<ChatResponse>>>,
-    calls: Mutex<Vec<Option<String>>>,
-    selected_model: Option<ModelId>,
-    tier: Option<String>,
-    startup_count: AtomicUsize,
-    shutdown_count: AtomicUsize,
-}
-
-impl FakeBackend {
-    // Creates a fake backend that returns one successful response.
-    fn success(response: ChatResponse) -> Self {
-        Self {
-            response: Mutex::new(Some(Ok(response))),
-            calls: Mutex::new(Vec::new()),
-            selected_model: None,
-            tier: None,
-            startup_count: AtomicUsize::new(0),
-            shutdown_count: AtomicUsize::new(0),
-        }
-    }
-
-    // Creates a fake backend that returns one error.
-    fn error(error: SwitchyardError) -> Self {
-        Self {
-            response: Mutex::new(Some(Err(error))),
-            calls: Mutex::new(Vec::new()),
-            selected_model: None,
-            tier: None,
-            startup_count: AtomicUsize::new(0),
-            shutdown_count: AtomicUsize::new(0),
-        }
-    }
-
-    // Configures the model that the fake backend records in context.
-    fn with_selected_model(mut self, model: ModelId) -> Self {
-        self.selected_model = Some(model);
-        self
-    }
-
-    // Configures the route label that the fake backend records in context.
-    fn with_tier(mut self, tier: impl Into<String>) -> Self {
-        self.tier = Some(tier.into());
-        self
-    }
-
-    // Returns every request model observed by the fake backend.
-    fn calls(&self) -> Result<Vec<Option<String>>> {
-        Ok(self.calls.lock().clone())
-    }
-}
-
-#[async_trait]
-impl LlmBackend for FakeBackend {
-    fn supported_request_types(&self) -> &[ChatRequestType] {
-        &SUPPORTED_OPENAI_CHAT
-    }
-
-    async fn call(&self, ctx: &mut ProxyContext, request: &ChatRequest) -> Result<ChatResponse> {
-        self.calls.lock().push(request.model().map(str::to_string));
-        if let Some(model) = &self.selected_model {
-            record_backend_selection(ctx, model.clone());
-        }
-        if let Some(tier) = &self.tier {
-            ctx.insert(StatsRouteLabel::new(tier.clone()));
-        }
-        self.response
-            .lock()
-            .take()
-            .ok_or_else(|| SwitchyardError::Other("fake response already consumed".to_string()))?
-    }
-
-    async fn startup(&self) -> Result<()> {
-        self.startup_count.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn shutdown(&self) -> Result<()> {
-        self.shutdown_count.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
 }
 
 // Request stats should add timing state without changing the request.
@@ -134,31 +44,27 @@ async fn request_processor_stamps_start_without_mutating_request() -> Result<()>
     Ok(())
 }
 
-// End-to-end stats components should share one accumulator across the chain.
+// Request and response stats should share one accumulator across the chain.
 #[tokio::test]
-async fn full_stats_chain_shares_one_accumulator_across_all_components() -> Result<()> {
+async fn stats_processors_share_one_accumulator() -> Result<()> {
     let accumulator = StatsAccumulator::new();
     let request_processor = StatsRequestProcessor::default();
-    let backend = StatsLlmBackend::new(
-        Arc::new(
-            FakeBackend::success(ChatResponse::openai_completion(json!({
-                "usage": {"prompt_tokens": 12, "completion_tokens": 8}
-            })))
-            .with_selected_model(ModelId::new("served-chain-model")?)
-            .with_tier("strong"),
-        ),
-        accumulator.clone(),
-    );
     let response_processor = StatsResponseProcessor::new(accumulator.clone());
     let mut ctx = ProxyContext::new();
 
-    let request = request_processor
+    request_processor
         .process(
             &mut ctx,
             ChatRequest::openai_chat(json!({"model": "client-model", "messages": []})),
         )
         .await?;
-    let response = backend.call(&mut ctx, &request).await?;
+    record_backend_selection(&mut ctx, ModelId::new("served-chain-model")?);
+    ctx.insert(StatsRouteLabel::new("strong"));
+    ctx.insert(StatsBackendLatency(Duration::from_millis(20)));
+    accumulator.record_success("served-chain-model", Some(20.0), Some("strong"))?;
+    let response = ChatResponse::openai_completion(json!({
+        "usage": {"prompt_tokens": 12, "completion_tokens": 8}
+    }));
     response_processor.process(&mut ctx, response).await?;
 
     let snapshot = accumulator.snapshot()?;
@@ -180,23 +86,9 @@ async fn theoretical_cache_hit_rate_flows_through_the_chain() -> Result<()> {
     let accumulator = StatsAccumulator::new();
     let request_processor = StatsRequestProcessor::new(true);
     let response_processor = StatsResponseProcessor::new(accumulator.clone());
-    // FakeBackend serves one response, so build a fresh one per turn.
-    let make_backend = || -> Result<StatsLlmBackend> {
-        Ok(StatsLlmBackend::new(
-            Arc::new(
-                FakeBackend::success(ChatResponse::openai_completion(json!({
-                    "usage": {"prompt_tokens": 100, "completion_tokens": 4}
-                })))
-                .with_selected_model(ModelId::new("served-model")?)
-                .with_tier("strong"),
-            ),
-            accumulator.clone(),
-        ))
-    };
-
     // Turn 1: first sight of the conversation, nothing cached yet.
     let mut ctx = ProxyContext::new();
-    let request = request_processor
+    request_processor
         .process(
             &mut ctx,
             ChatRequest::openai_chat(json!({
@@ -205,12 +97,17 @@ async fn theoretical_cache_hit_rate_flows_through_the_chain() -> Result<()> {
             })),
         )
         .await?;
-    let response = make_backend()?.call(&mut ctx, &request).await?;
+    record_backend_selection(&mut ctx, ModelId::new("served-model")?);
+    ctx.insert(StatsRouteLabel::new("strong"));
+    accumulator.record_success("served-model", None, Some("strong"))?;
+    let response = ChatResponse::openai_completion(json!({
+        "usage": {"prompt_tokens": 100, "completion_tokens": 4}
+    }));
     response_processor.process(&mut ctx, response).await?;
 
     // Turn 2: same model, the prior turn is re-presented, so half is eligible.
     let mut ctx = ProxyContext::new();
-    let request = request_processor
+    request_processor
         .process(
             &mut ctx,
             ChatRequest::openai_chat(json!({
@@ -222,7 +119,12 @@ async fn theoretical_cache_hit_rate_flows_through_the_chain() -> Result<()> {
             })),
         )
         .await?;
-    let response = make_backend()?.call(&mut ctx, &request).await?;
+    record_backend_selection(&mut ctx, ModelId::new("served-model")?);
+    ctx.insert(StatsRouteLabel::new("strong"));
+    accumulator.record_success("served-model", None, Some("strong"))?;
+    let response = ChatResponse::openai_completion(json!({
+        "usage": {"prompt_tokens": 100, "completion_tokens": 4}
+    }));
     response_processor.process(&mut ctx, response).await?;
 
     let snapshot = accumulator.snapshot()?;
@@ -230,101 +132,6 @@ async fn theoretical_cache_hit_rate_flows_through_the_chain() -> Result<()> {
     assert_eq!(model.cache_hit_rate, 0.0);
     // Turn 1 cold (0/100) + turn 2 half (50/100) = 50 over 200 prompt tokens.
     assert_eq!(model.theoretical_cache_hit_rate, 0.25);
-    Ok(())
-}
-
-// Backend wrapper should record served model latency and delegate lifecycle.
-#[tokio::test]
-async fn backend_wrapper_records_success_using_served_model_and_delegates_lifecycle() -> Result<()>
-{
-    let accumulator = StatsAccumulator::new();
-    let inner = Arc::new(
-        FakeBackend::success(ChatResponse::openai_completion(json!({"id": "ok"})))
-            .with_selected_model(ModelId::new("served-model")?)
-            .with_tier("strong"),
-    );
-    let backend = StatsLlmBackend::new(inner.clone(), accumulator.clone());
-    let request = ChatRequest::openai_chat(json!({"model": "client-model", "messages": []}));
-    let mut ctx = ProxyContext::new();
-
-    assert_eq!(
-        backend.supported_request_types(),
-        &[ChatRequestType::OpenAiChat]
-    );
-    backend.startup().await?;
-    let response = backend.call(&mut ctx, &request).await?;
-    backend.shutdown().await?;
-
-    assert!(matches!(response, ChatResponse::OpenAiCompletion(_)));
-    assert_eq!(inner.startup_count.load(Ordering::SeqCst), 1);
-    assert_eq!(inner.shutdown_count.load(Ordering::SeqCst), 1);
-    assert_eq!(inner.calls()?, vec![Some("client-model".to_string())]);
-    if ctx.get::<StatsBackendLatency>().is_none() {
-        return Err(SwitchyardError::Other(
-            "backend latency should be stamped".to_string(),
-        ));
-    }
-
-    let snapshot = accumulator.snapshot()?;
-    assert_eq!(snapshot.total_requests, 1);
-    let model = model_stats(&snapshot, "served-model")?;
-    assert_eq!(model.calls, 1);
-    assert_eq!(model.errors, 0);
-    assert_eq!(model.tier.as_deref(), Some("strong"));
-    assert_eq!(model.model_call_latency.count, 1);
-    Ok(())
-}
-
-// If a backend does not stamp a served model, request model is the fallback.
-#[tokio::test]
-async fn backend_wrapper_falls_back_to_request_model_when_backend_does_not_stamp_model(
-) -> Result<()> {
-    let accumulator = StatsAccumulator::new();
-    let backend = StatsLlmBackend::new(
-        Arc::new(FakeBackend::success(ChatResponse::openai_completion(
-            json!({"id": "ok"}),
-        ))),
-        accumulator.clone(),
-    );
-    let request = ChatRequest::openai_chat(json!({"model": "client-fallback", "messages": []}));
-    let mut ctx = ProxyContext::new();
-
-    backend.call(&mut ctx, &request).await?;
-
-    let snapshot = accumulator.snapshot()?;
-    let model = model_stats(&snapshot, "client-fallback")?;
-    assert_eq!(model.calls, 1);
-    Ok(())
-}
-
-// Backend wrapper should preserve the original error while counting it.
-#[tokio::test]
-async fn backend_wrapper_records_errors_and_preserves_original_error() -> Result<()> {
-    let accumulator = StatsAccumulator::new();
-    let inner = Arc::new(
-        FakeBackend::error(SwitchyardError::Upstream("boom".to_string()))
-            .with_selected_model(ModelId::new("served-error-model")?)
-            .with_tier("weak"),
-    );
-    let backend = StatsLlmBackend::new(inner, accumulator.clone());
-    let request = ChatRequest::openai_chat(json!({"model": "client-model", "messages": []}));
-    let mut ctx = ProxyContext::new();
-
-    let Err(error) = backend.call(&mut ctx, &request).await else {
-        return Err(SwitchyardError::Other(
-            "backend wrapper should return inner error".to_string(),
-        ));
-    };
-
-    assert!(matches!(error, SwitchyardError::Upstream(_)));
-    assert!(error.to_string().contains("boom"));
-    let snapshot = accumulator.snapshot()?;
-    assert_eq!(snapshot.total_requests, 1);
-    assert_eq!(snapshot.total_errors, 1);
-    let model = model_stats(&snapshot, "served-error-model")?;
-    assert_eq!(model.calls, 0);
-    assert_eq!(model.errors, 1);
-    assert_eq!(model.tier.as_deref(), Some("weak"));
     Ok(())
 }
 

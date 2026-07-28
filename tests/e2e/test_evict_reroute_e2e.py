@@ -198,7 +198,7 @@ async def test_deterministic_evicts_weak_and_reroutes_to_strong(
     """``type: deterministic`` reroutes when the classifier-picked weak overflows.
 
     Validates the Python-LLMBackend exception surface: the
-    inner native Rust backend raises ``ContextWindowExceeded``, the
+    inner Rust LLM client raises ``ContextWindowExceeded``, the
     Python wrapper (``DeterministicRoutingLLMBackend``) propagates the
     typed exception, and the compatibility chain catches the preserved
     variant to trigger the retry.

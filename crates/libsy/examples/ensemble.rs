@@ -410,6 +410,8 @@ async fn main() -> Result<()> {
             std::env::var("NVIDIA_API_KEY")
                 .map_err(|error| LibsyError::external("reading NVIDIA_API_KEY", error))?,
         ),
+        timeout: None,
+        extra_body: None,
         extra_headers: BTreeMap::new(),
     };
     let models: Vec<_> = CANDIDATE_MODELS

@@ -22,8 +22,8 @@ class OpenAILLMClient:
     Works with any OpenAI-compatible API (OpenAI, NVIDIA NIM, Azure,
     vLLM, etc.) by accepting a custom ``base_url``.
 
-    Used by :class:`~switchyard.lib.backends.openai_llm_backend.OpenAiNativeBackend`
-    and other OpenAI-compatible backends.
+    Used by Python-only OpenAI-compatible integrations such as the
+    latency-service backend.
     """
 
     async_client: AsyncOpenAI

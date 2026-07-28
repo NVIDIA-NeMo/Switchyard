@@ -385,7 +385,7 @@ class TestResponsesPassthroughE2E:
     #
     # Wire path:
     #   OpenAI SDK responses.create(stream=True) → /v1/responses
-    #     → chain → OpenAiPassthroughBackend returns an OpenAI stream response
+    #     → chain → LlmClient returns an OpenAI stream response
     #     → translate_stream dispatches on the Responses request format
     #     → stream_chat_to_responses_sse yields pre-framed SSE strings
     #     → iter_preframed_sse forwards them → client SDK parses them

@@ -4,7 +4,7 @@
 [package]
 name = "switchyard-components"
 version = "0.1.0"
-description = "Concrete Switchyard backends and processors"
+description = "Switchyard request/response processors and observability helpers"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,14 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared test infrastructure for classifier chain tests.
+"""Shared test infrastructure for local LLM client and classifier-chain tests.
 
 Private (underscore-prefixed) module so pytest doesn't try to collect
 it as a test file.  Symbols inside also keep the underscore-private
 convention used by the test files that import them.
 
-The owner is :mod:`tests.test_llm_classifier_e2e`, which exercises the
-classifier-only routing chain.
+The local HTTP stub is shared by client and classifier routing tests.
 """
 
 from __future__ import annotations

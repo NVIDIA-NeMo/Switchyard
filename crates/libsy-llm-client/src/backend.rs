@@ -3,9 +3,10 @@
 
 //! Per-provider backend configuration: wire format, upstream URL, and auth.
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, time::Duration};
 
 use reqwest::RequestBuilder;
+use serde_json::Value;
 use switchyard_protocol::WireFormat;
 
 use crate::error::is_overflow_body;
@@ -37,6 +38,10 @@ pub struct HttpBackendConfig {
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no auth.
     pub api_key: Option<String>,
+    /// Optional timeout applied to the complete upstream request.
+    pub timeout: Option<Duration>,
+    /// Provider-specific request fields added only when the caller omitted them.
+    pub extra_body: Option<Value>,
     /// Static headers added to every outbound call to this backend.
     pub extra_headers: BTreeMap<String, String>,
 }
@@ -46,6 +51,8 @@ impl fmt::Debug for HttpBackendConfig {
         f.debug_struct("HttpBackendConfig")
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("timeout", &self.timeout)
+            .field("extra_body", &self.extra_body)
             .field("extra_headers", &self.extra_headers)
             .finish()
     }
@@ -124,6 +131,16 @@ impl Backend {
         &self.config().extra_headers
     }
 
+    /// Timeout applied to this backend's HTTP request.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.config().timeout
+    }
+
+    /// Provider-specific body fields added when absent from the request.
+    pub fn extra_body(&self) -> Option<&Value> {
+        self.config().extra_body.as_ref()
+    }
+
     /// Whether an upstream 400 `body` looks like a context-window overflow for
     /// this backend's provider.
     pub(crate) fn is_context_overflow(&self, body: &str) -> bool {
@@ -172,6 +189,8 @@ mod tests {
         HttpBackendConfig {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
+            timeout: None,
+            extra_body: None,
             extra_headers: BTreeMap::new(),
         }
     }

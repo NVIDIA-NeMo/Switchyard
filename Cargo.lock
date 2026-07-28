@@ -1772,6 +1772,7 @@ dependencies = [
  "switchyard-components",
  "switchyard-core",
  "switchyard-libsy",
+ "switchyard-llm-client",
  "switchyard-protocol",
  "switchyard-translation",
  "tokio",

@@ -11,7 +11,6 @@ from switchyard_rust.core import _load_native
 
 _COMPONENT_EXPORTS = frozenset(
     {
-        "AnthropicNativeBackend",
         "BackendFormat",
         "DimensionCollector",
         "EndpointConfig",
@@ -21,10 +20,6 @@ _COMPONENT_EXPORTS = frozenset(
         "IntakeResponseProcessor",
         "IntakeSinkConfig",
         "LlmTarget",
-        "LlmTargetBackend",
-        "MultiLlmBackend",
-        "OpenAiNativeBackend",
-        "OpenAiPassthroughBackend",
         "PickOutcome",
         "RandomRoutingProcessorConfig",
         "RequestMetadata",
@@ -32,7 +27,6 @@ _COMPONENT_EXPORTS = frozenset(
         "ResponseSignalCollector",
         "ResponseSignals",
         "StatsAccumulator",
-        "StatsLlmBackend",
         "StatsRequestProcessor",
         "StatsResponseProcessor",
         "ToolResultSignal",
@@ -46,7 +40,6 @@ _COMPONENT_EXPORTS = frozenset(
 )
 
 if TYPE_CHECKING:
-    AnthropicNativeBackend: type[Any]
     BackendFormat: type[Any]
     DimensionCollector: type[Any]
     EndpointConfig: type[Any]
@@ -56,10 +49,6 @@ if TYPE_CHECKING:
     IntakeResponseProcessor: type[Any]
     IntakeSinkConfig: type[Any]
     LlmTarget: type[Any]
-    LlmTargetBackend: type[Any]
-    MultiLlmBackend: type[Any]
-    OpenAiNativeBackend: type[Any]
-    OpenAiPassthroughBackend: type[Any]
     PickOutcome: type[Any]
     RandomRoutingProcessorConfig: type[Any]
     RequestMetadata: type[Any]
@@ -67,7 +56,6 @@ if TYPE_CHECKING:
     ResponseSignalCollector: type[Any]
     ResponseSignals: type[Any]
     StatsAccumulator: type[Any]
-    StatsLlmBackend: type[Any]
     StatsRequestProcessor: type[Any]
     StatsResponseProcessor: type[Any]
     ToolResultSignal: type[Any]
