@@ -16,9 +16,14 @@ pub mod client;
 pub mod error;
 pub mod metrics;
 pub mod raw;
+pub mod vllm_hidden_state_probe;
 
 pub use backend::{Backend, HttpBackendConfig};
 pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use raw::RawResponse;
 pub use switchyard_translation::RawEventStream;
+pub use vllm_hidden_state_probe::{
+    HiddenStateFeatures, VllmHiddenStateProbe, VllmHiddenStateProbeConfig,
+    VllmHiddenStateProbeError, VllmHiddenStateProbeResult,
+};

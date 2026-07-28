@@ -18,9 +18,14 @@ reqwest.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+safetensors = "0.4"
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+tempfile = "3"
 tokio.workspace = true
 wiremock = "0.6"

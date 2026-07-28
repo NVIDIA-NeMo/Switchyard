@@ -1796,9 +1796,13 @@ dependencies = [
  "futures-util",
  "opentelemetry",
  "reqwest",
+ "safetensors",
+ "serde",
  "serde_json",
  "switchyard-protocol",
  "switchyard-translation",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "wiremock",
 ]
