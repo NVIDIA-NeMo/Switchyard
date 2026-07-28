@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use prometheus::{Encoder, Registry, TextEncoder};
+use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label};
 
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
@@ -39,10 +40,47 @@ fn initialize() -> Result<Metrics, String> {
         .u64_gauge("switchyard.build_info")
         .build()
         .record(1, &[KeyValue::new("version", env!("CARGO_PKG_VERSION"))]);
+    seed_outcome_metrics();
     Ok(Metrics {
         registry,
         _provider: provider,
     })
+}
+
+/// Make the metrics exist before they get a hit. Nicer for dashboards but not really necessary.
+/// The HTTP status codes we seed are somewhat arbitrary.
+fn seed_outcome_metrics() {
+    let meter = global::meter("switchyard");
+    let upstream_attempts = meter.u64_counter("switchyard.upstream_attempts").build();
+    for status in [Some(200), Some(404), Some(429), Some(500), Some(504), None] {
+        upstream_attempts.add(
+            0,
+            &[
+                KeyValue::new("outcome", http_outcome_label(status)),
+                KeyValue::new("code", http_status_code_label(status)),
+            ],
+        );
+    }
+
+    let client_responses = meter.u64_counter("switchyard.client_responses").build();
+    for outcome in ["success", "retryable_error", "other_error"] {
+        client_responses.add(0, &[KeyValue::new("outcome", outcome)]);
+    }
+    meter
+        .u64_counter("switchyard.router_retry_recovered")
+        .build()
+        .add(0, &[]);
+}
+
+/// Records the final status returned by an LLM-serving route.
+pub(crate) fn record_client_response(status: u16) {
+    global::meter("switchyard")
+        .u64_counter("switchyard.client_responses")
+        .build()
+        .add(
+            1,
+            &[KeyValue::new("outcome", http_outcome_label(Some(status)))],
+        );
 }
 
 /// Encodes the current cumulative metric values in Prometheus text format.

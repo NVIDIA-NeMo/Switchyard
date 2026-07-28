@@ -77,6 +77,9 @@ Routed-call compatibility metrics are:
 | `switchyard_requests_total` | counter | `model`, optional `tier` | Successful final routed calls |
 | `switchyard_errors_total` | counter | `model`, optional `tier` | Failed final routed calls |
 | `switchyard_model_call_latency_ms` | histogram | `model`, optional `tier` | Successful final routed-call latency |
+| `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
+| `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
+| `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
 
 The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
 is omitted for untiered algorithms. Classifier calls are excluded from these families.

@@ -14,6 +14,7 @@
 pub mod backend;
 pub mod client;
 pub mod error;
+pub mod metrics;
 pub mod raw;
 
 pub use backend::{Backend, HttpBackendConfig};

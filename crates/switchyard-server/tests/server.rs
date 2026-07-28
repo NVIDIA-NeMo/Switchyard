@@ -183,6 +183,26 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("text/plain; version=0.0.4; charset=utf-8")
     );
+    let seeded = before.text()?;
+    for expected in [
+        "# TYPE switchyard_client_responses_total counter",
+        "switchyard_client_responses_total{outcome=\"success\",",
+        "switchyard_client_responses_total{outcome=\"retryable_error\",",
+        "switchyard_client_responses_total{outcome=\"other_error\",",
+        "# TYPE switchyard_upstream_attempts_total counter",
+        "switchyard_upstream_attempts_total{code=\"200\",outcome=\"success\",",
+        "switchyard_upstream_attempts_total{code=\"429\",outcome=\"retryable_error\",",
+        "switchyard_upstream_attempts_total{code=\"500\",outcome=\"retryable_error\",",
+        "switchyard_upstream_attempts_total{code=\"504\",outcome=\"retryable_error\",",
+        "switchyard_upstream_attempts_total{code=\"none\",outcome=\"retryable_error\",",
+        "# TYPE switchyard_router_retry_recovered_total counter",
+        "switchyard_router_retry_recovered_total{otel_scope_name=\"switchyard\"} 0",
+    ] {
+        assert!(
+            seeded.contains(expected),
+            "missing seeded {expected:?} in metrics:\n{seeded}"
+        );
+    }
 
     let response = send(
         &app,
@@ -205,6 +225,8 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         "# TYPE switchyard_total_errors gauge",
         "# TYPE switchyard_requests_total counter",
         "# TYPE switchyard_model_call_latency_ms histogram",
+        "switchyard_client_responses_total{outcome=\"success\",",
+        "switchyard_upstream_attempts_total{code=\"200\",outcome=\"success\",",
         "# TYPE switchyard_runs_total counter",
         "# TYPE switchyard_llm_calls_total counter",
         "# TYPE switchyard_run_duration_ms histogram",

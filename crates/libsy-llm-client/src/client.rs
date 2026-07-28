@@ -20,6 +20,7 @@ use switchyard_translation::{
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
+use crate::metrics::record_upstream_attempt;
 use crate::raw::RawResponse;
 
 // TODO: Why is this here? What does it do?
@@ -168,7 +169,16 @@ impl TranslatingLlmClient {
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let http_response = builder.send().await.map_err(convert_reqwest_error)?;
+        let http_response = match builder.send().await {
+            Ok(response) => {
+                record_upstream_attempt(Some(response.status().as_u16()));
+                response
+            }
+            Err(error) => {
+                record_upstream_attempt(None);
+                return Err(convert_reqwest_error(error));
+            }
+        };
         let status = http_response.status();
         if !status.is_success() {
             let body = match http_response.text().await {

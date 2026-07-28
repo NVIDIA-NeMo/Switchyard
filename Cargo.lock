@@ -1796,6 +1796,7 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-util",
+ "opentelemetry",
  "reqwest",
  "serde_json",
  "switchyard-protocol",
