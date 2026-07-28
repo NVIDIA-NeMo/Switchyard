@@ -12,6 +12,7 @@ import textwrap
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -24,6 +25,9 @@ from switchyard.cli.launchers.launcher_runtime import (
 )
 from switchyard.cli.route_bundle import RouteBundleConfigError, build_route_bundle_table
 from switchyard.cli.switchyard_cli import _build_parser
+
+if TYPE_CHECKING:
+    from tests._mock_openai_server import _MockOpenAIServer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUIDE_PATH = REPO_ROOT / "docs" / "getting_started.md"
@@ -158,11 +162,11 @@ def test_all_yaml_blocks_in_guide_validate_as_route_bundles(
 
 
 @pytest.fixture
-def model_routes_yaml(tmp_path: Path, local_mock_openai_server: object) -> Path:
+def model_routes_yaml(tmp_path: Path, local_mock_openai_server: _MockOpenAIServer) -> Path:
     # Same shape as the guide's Step 3 YAML (defaults + a single named route),
     # but a `type: model` route pointed at a local in-process mock OpenAI
     # server so the lifecycle test serves a real chain fully offline.
-    base_url = local_mock_openai_server.base_url  # type: ignore[attr-defined]
+    base_url = local_mock_openai_server.base_url
     path = tmp_path / "routes.yaml"
     path.write_text(
         textwrap.dedent(f"""\
