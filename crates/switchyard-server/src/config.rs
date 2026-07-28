@@ -276,7 +276,8 @@ fn build_algorithm(
                 LlmTaskClassifier::new(classifier, weak, strong, *threshold).map_err(|error| {
                     ServerError::new(format!("llm_classifier route {route_name}: {error}"))
                 })?;
-            let router = FallThrough::<State>::new(target_set).with_classifier(Arc::new(judge));
+            let router =
+                FallThrough::<State>::new_with_state(target_set).with_classifier(Arc::new(judge));
             Ok(Arc::new(router))
         }
     }

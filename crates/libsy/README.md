@@ -25,7 +25,7 @@ let strong = target("strong");
 let weak = target("weak");
 let targets = LlmTargetSet::new(vec![strong.clone(), weak.clone()]);
 let algo: Arc<dyn Algorithm> = Arc::new(
-    FallThrough::<State>::new(targets).with_classifier(Arc::new(LlmTaskClassifier::new(
+    FallThrough::<State>::new_with_state(targets).with_classifier(Arc::new(LlmTaskClassifier::new(
         classifier, weak, strong, 0.5,
     )?)),
 );
@@ -227,7 +227,8 @@ applies its policy, and then invokes the selected target:
 
 ```rust
 let classifier = LlmTaskClassifier::new(judge_target, weak_target, strong_target, 0.5)?;
-let router = FallThrough::<State>::new(targets).with_classifier(Arc::new(classifier));
+let router =
+    FallThrough::<State>::new_with_state(targets).with_classifier(Arc::new(classifier));
 ```
 
 ## Errors

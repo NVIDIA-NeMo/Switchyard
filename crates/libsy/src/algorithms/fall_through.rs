@@ -63,14 +63,11 @@ pub struct FallThrough<S = ()> {
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
-    session_states: SessionStates<S>,
+    session_states: Option<SessionStates<S>>,
 }
 
-impl<S> FallThrough<S>
-where
-    S: Default + Send + 'static,
-{
-    /// Creates a router that retains one private `S` per session.
+impl FallThrough<()> {
+    /// Creates an empty stateless router.
     pub fn new(targets: LlmTargetSet) -> Self {
         Self {
             name: "fall_through".to_string(),
@@ -78,7 +75,24 @@ where
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
-            session_states: Mutex::new(HashMap::new()),
+            session_states: None,
+        }
+    }
+}
+
+impl<S> FallThrough<S>
+where
+    S: Default + Send + 'static,
+{
+    /// Creates a router that retains one private `S` per session.
+    pub fn new_with_state(targets: LlmTargetSet) -> Self {
+        Self {
+            name: "fall_through".to_string(),
+            decision_reason: default_decision_reason,
+            processors: Vec::new(),
+            classifiers: Vec::new(),
+            targets,
+            session_states: Some(Mutex::new(HashMap::new())),
         }
     }
 
@@ -150,16 +164,14 @@ where
 
     /// Returns this request's retained state without holding the registry lock.
     fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<S>>> {
-        if std::mem::size_of::<S>() == 0 {
-            return None;
-        }
+        let states = self.session_states.as_ref()?;
         let session_id = request
             .metadata
             .as_ref()?
             .session_id
             .as_deref()
             .filter(|session_id| !session_id.is_empty())?;
-        let mut states = self.session_states.lock();
+        let mut states = states.lock();
         Some(
             states
                 .entry(session_id.to_string())
@@ -634,7 +646,7 @@ mod tests {
         }
 
         let router = Arc::new(
-            FallThrough::<TurnState>::new(target_set(&["strong", "weak"]))
+            FallThrough::<TurnState>::new_with_state(target_set(&["strong", "weak"]))
                 .with_processor(Arc::new(CountingProcessor))
                 .with_classifier(Arc::new(ThresholdClassifier)),
         );

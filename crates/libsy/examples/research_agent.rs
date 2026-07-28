@@ -102,9 +102,11 @@ async fn main() -> Result<()> {
     let classifier = target_set.get_target(CLASSIFIER)?;
     let weak = target_set.get_target(WEAK)?;
     let strong = target_set.get_target(STRONG)?;
-    let algo: Arc<dyn Algorithm> = Arc::new(FallThrough::<State>::new(target_set).with_classifier(
-        Arc::new(LlmTaskClassifier::new(classifier, weak, strong, THRESHOLD)?),
-    ));
+    let algo: Arc<dyn Algorithm> = Arc::new(
+        FallThrough::<State>::new_with_state(target_set).with_classifier(Arc::new(
+            LlmTaskClassifier::new(classifier, weak, strong, THRESHOLD)?,
+        )),
+    );
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);
