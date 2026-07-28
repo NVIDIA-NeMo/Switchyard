@@ -26,11 +26,12 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
+use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
 use switchyard_libsy::{
     AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
+    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, SharedState, Step, Usage,
 };
-use switchyard_protocol::text_request;
+use switchyard_protocol::{text_request, text_response, LlmClientError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -152,6 +153,7 @@ fn telemetry() -> &'static (CaptureStore, InMemoryMetricExporter, SdkMeterProvid
         let reader = PeriodicReader::builder(exporter.clone()).build();
         let provider = SdkMeterProvider::builder().with_reader(reader).build();
         opentelemetry::global::set_meter_provider(provider.clone());
+        switchyard_libsy::initialize_metrics();
 
         let store = CaptureStore::default();
         let subscriber = tracing_subscriber::registry().with(CaptureLayer {
@@ -162,6 +164,11 @@ fn telemetry() -> &'static (CaptureStore, InMemoryMetricExporter, SdkMeterProvid
         }
         (store, exporter, provider)
     })
+}
+
+fn test_lock() -> &'static tokio::sync::Mutex<()> {
+    static TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// Flushes the metric pipeline and returns every exported snapshot.
@@ -192,7 +199,7 @@ fn attributes_match<'a>(
         .all(|(key, value)| present.iter().any(|(k, v)| k == key && v == value))
 }
 
-/// Latest (max) value for a `libsy`-scoped metric across snapshots, with
+/// Latest (max) value for a `switchyard`-scoped metric across snapshots, with
 /// `extract` pulling the matching data points' values out of one metric's
 /// aggregated data. Counters and histogram counts are cumulative, so the max
 /// across snapshots is the most recent value.
@@ -204,7 +211,7 @@ fn latest_metric_value(
     snapshots
         .iter()
         .flat_map(|snapshot| snapshot.scope_metrics())
-        .filter(|scope| scope.scope().name() == "libsy")
+        .filter(|scope| scope.scope().name() == "switchyard")
         .flat_map(|scope| scope.metrics())
         .filter(|metric| metric.name() == name)
         .flat_map(|metric| extract(metric.data()))
@@ -243,6 +250,16 @@ fn f64_histogram_count(
     })
 }
 
+/// Latest value of a `u64` observable gauge.
+fn u64_gauge_value(snapshots: &[ResourceMetrics], name: &str) -> Option<u64> {
+    latest_metric_value(snapshots, name, |data| match data {
+        AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
+            gauge.data_points().map(|point| point.value()).collect()
+        }
+        _ => Vec::new(),
+    })
+}
+
 /// Decision with a fixed model and reasoning string.
 struct StaticDecision {
     model: String,
@@ -264,6 +281,30 @@ impl Decision for StaticDecision {
 /// Client that answers every call with a fixed token [`Usage`].
 struct UsageClient {
     usage: Usage,
+}
+
+/// Client that returns a weak classifier verdict.
+struct ClassifierClient;
+
+#[async_trait]
+impl RoutedLlmClient for ClassifierClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        _request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, LlmClientError> {
+        let model = decision.selected_model().to_string();
+        let completion = if decision.is_routed_call() {
+            "routed response"
+        } else {
+            r#"{"recommended_route":"weak","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
+        };
+        Ok(Response {
+            llm_response: LlmResponse::Agg(text_response(Some(model), completion)),
+            metadata: None,
+        })
+    }
 }
 
 #[async_trait]
@@ -359,9 +400,15 @@ fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> Span
 
 #[tokio::test]
 async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_libsy::Result<()> {
+    let _guard = test_lock().lock().await;
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-success-algo";
     const MODEL: &str = "obs-success-model";
+    let before = flushed_metrics(exporter, provider);
+    let total_requests_before =
+        u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
+    let total_errors_before =
+        u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
 
     let client = Arc::new(UsageClient {
         usage: Usage {
@@ -391,40 +438,61 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     ];
     let token_attrs = [("algorithm", ALGO), ("selected_model", MODEL)];
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.runs", &run_attrs),
+        u64_counter_value(&snapshots, "switchyard.runs", &run_attrs),
         Some(1)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.llm_calls", &call_attrs),
+        u64_counter_value(&snapshots, "switchyard.llm_calls", &call_attrs),
         Some(1)
     );
     assert_eq!(
-        f64_histogram_count(&snapshots, "libsy.run_duration_ms", &run_attrs),
+        f64_histogram_count(&snapshots, "switchyard.run_duration_ms", &run_attrs),
         Some(1)
     );
     assert_eq!(
-        f64_histogram_count(&snapshots, "libsy.llm_call_duration_ms", &call_attrs),
+        f64_histogram_count(&snapshots, "switchyard.llm_call_duration_ms", &call_attrs),
         Some(1)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.input_tokens", &token_attrs),
+        u64_counter_value(&snapshots, "switchyard.input_tokens", &token_attrs),
         Some(11)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.output_tokens", &token_attrs),
+        u64_counter_value(&snapshots, "switchyard.output_tokens", &token_attrs),
         Some(7)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.total_tokens", &token_attrs),
+        u64_counter_value(&snapshots, "switchyard.total_tokens", &token_attrs),
         Some(18)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.reasoning_tokens", &token_attrs),
+        u64_counter_value(&snapshots, "switchyard.reasoning_tokens", &token_attrs),
         Some(2)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.decisions", &token_attrs),
+        u64_counter_value(&snapshots, "switchyard.decisions", &token_attrs),
         Some(1)
+    );
+    let routed_attrs = [("model", MODEL)];
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.requests", &routed_attrs),
+        Some(1)
+    );
+    assert_eq!(
+        f64_histogram_count(
+            &snapshots,
+            "switchyard.model_call_latency_ms",
+            &routed_attrs
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_requests"),
+        Some(total_requests_before + 1)
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_errors"),
+        Some(total_errors_before)
     );
 
     // Spans: one run span carrying the correlation ids and outcome, one child
@@ -517,9 +585,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
 
 #[tokio::test]
 async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
+    let _guard = test_lock().lock().await;
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
+    let before = flushed_metrics(exporter, provider);
+    let total_requests_before =
+        u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
+    let total_errors_before =
+        u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
 
     // Client-less target: the call is offloaded and we fail it by hand.
     let stream = algo(ALGO, MODEL, None).run_stream(
@@ -556,20 +630,32 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         ("outcome", "error"),
     ];
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.runs", &run_attrs),
+        u64_counter_value(&snapshots, "switchyard.runs", &run_attrs),
         Some(1)
     );
     assert_eq!(
-        u64_counter_value(&snapshots, "libsy.llm_calls", &call_attrs),
+        u64_counter_value(&snapshots, "switchyard.llm_calls", &call_attrs),
         Some(1)
     );
     assert_eq!(
         u64_counter_value(
             &snapshots,
-            "libsy.input_tokens",
+            "switchyard.input_tokens",
             &[("algorithm", ALGO), ("selected_model", MODEL)],
         ),
         None
+    );
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.errors", &[("model", MODEL)]),
+        Some(1)
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_requests"),
+        Some(total_requests_before + 1)
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_errors"),
+        Some(total_errors_before + 1)
     );
 
     // Spans: both spans carry outcome=error and the propagated error text.
@@ -614,6 +700,86 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
                     .is_some_and(|message| message.contains("algorithm run failed"))
         }),
         "no run-failure log for {ALGO} in {events:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_libsy::Result<()> {
+    let _guard = test_lock().lock().await;
+    let (_store, exporter, provider) = telemetry();
+    let before = flushed_metrics(exporter, provider);
+    let total_requests_before =
+        u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
+
+    let client = Arc::new(ClassifierClient);
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.to_string(),
+        llm_client: Some(client.clone()),
+    };
+    let targets = LlmTargetSet::new(vec![target("weak"), target("strong")]);
+    let weak = targets.get_target("weak")?;
+    let strong = targets.get_target("strong")?;
+    let router = Arc::new(FallThrough::new(targets).with_classifier(Arc::new(
+        LlmTaskClassifier::new(target("classifier"), weak, strong, 0.5)?,
+    )));
+
+    let (trace, _response) = router
+        .run(
+            Context::<SharedState>::default(),
+            Request {
+                llm_request: text_request(Some("auto".to_string()), "classify this"),
+                raw_request: None,
+                metadata: None,
+            },
+        )
+        .await?;
+
+    assert_eq!(
+        trace.last().and_then(|decision| decision.routing_tier()),
+        Some("weak")
+    );
+
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.llm_calls",
+            &[
+                ("algorithm", ""),
+                ("selected_model", "classifier"),
+                ("outcome", "ok"),
+            ],
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.requests",
+            &[("model", "weak"), ("tier", "weak")],
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.requests",
+            &[("model", "classifier")],
+        ),
+        None
+    );
+    assert_eq!(
+        f64_histogram_count(
+            &snapshots,
+            "switchyard.model_call_latency_ms",
+            &[("model", "classifier")],
+        ),
+        None
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_requests"),
+        Some(total_requests_before + 1)
     );
     Ok(())
 }

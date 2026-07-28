@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Process-wide Prometheus export for libsy's OpenTelemetry metrics.
+//! Process-wide Prometheus export for Switchyard's OpenTelemetry metrics.
 
 use std::sync::OnceLock;
 
-use opentelemetry::global;
+use opentelemetry::{global, KeyValue};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use prometheus::{Encoder, Registry, TextEncoder};
 
@@ -34,6 +34,11 @@ fn initialize() -> Result<Metrics, String> {
         .map_err(|error| format!("failed to initialize Prometheus metrics: {error}"))?;
     let provider = SdkMeterProvider::builder().with_reader(exporter).build();
     global::set_meter_provider(provider.clone());
+    libsy::initialize_metrics();
+    global::meter("switchyard")
+        .u64_gauge("switchyard.build_info")
+        .build()
+        .record(1, &[KeyValue::new("version", env!("CARGO_PKG_VERSION"))]);
     Ok(Metrics {
         registry,
         _provider: provider,

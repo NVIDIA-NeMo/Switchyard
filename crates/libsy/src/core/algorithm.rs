@@ -148,6 +148,8 @@ impl Driver {
     pub async fn call_llm(&self, routed: RoutedRequest) -> Result<Response> {
         let algorithm = observability::algorithm_label(&routed.ctx).to_string();
         let selected_model = routed.decision.selected_model().to_string();
+        let tier = routed.decision.routing_tier().map(str::to_string);
+        let is_routed = routed.decision.is_routed_call();
         let started = Instant::now();
         let result = self
             .driver
@@ -156,6 +158,8 @@ impl Driver {
         observability::record_llm_call(
             &algorithm,
             &selected_model,
+            tier.as_deref(),
+            is_routed,
             started.elapsed(),
             &result,
             &tracing::Span::current(),

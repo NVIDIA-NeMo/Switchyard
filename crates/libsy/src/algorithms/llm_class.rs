@@ -165,6 +165,8 @@ impl JudgePolicy for TaskClassifierPolicy {
 /// A full-request capability classifier configured with the packaged prompt and schema.
 pub struct LlmTaskClassifier {
     classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
+    efficient_target: String,
+    capable_target: String,
 }
 
 impl LlmTaskClassifier {
@@ -184,16 +186,20 @@ impl LlmTaskClassifier {
         let judge = CapabilityJudge {
             config: Self::load_judge_config()?,
         };
+        let efficient_target = efficient_target.semantic_name;
+        let capable_target = capable_target.semantic_name;
         Ok(Self {
             classifier: JudgeClassifier::new(
                 judge,
                 judge_target,
                 TaskClassifierPolicy::new(
-                    efficient_target.semantic_name,
-                    capable_target.semantic_name,
+                    efficient_target.clone(),
+                    capable_target.clone(),
                     threshold,
                 ),
             ),
+            efficient_target,
+            capable_target,
         })
     }
 
@@ -225,6 +231,18 @@ impl LlmTaskClassifier {
 
 #[async_trait]
 impl Classifier for LlmTaskClassifier {
+    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
+        if self.efficient_target == self.capable_target {
+            None
+        } else if selected_model == self.efficient_target {
+            Some("weak")
+        } else if selected_model == self.capable_target {
+            Some("strong")
+        } else {
+            None
+        }
+    }
+
     async fn score(
         &self,
         state: &mut State,

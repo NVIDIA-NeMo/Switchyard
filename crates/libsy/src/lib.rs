@@ -88,6 +88,13 @@ pub mod algorithms;
 mod observability;
 pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
 
+/// Registers process-wide compatibility gauges with the global meter provider.
+///
+/// Hosts should call this after installing their OpenTelemetry meter provider.
+pub fn initialize_metrics() {
+    observability::initialize_metrics();
+}
+
 /// Stage-router scoring and tier selection — the shared signal-driven routing
 /// core (scorer, picker, and the `StageClassifier`).
 // TODO cleanup once switchyard-components is removed

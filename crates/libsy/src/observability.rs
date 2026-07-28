@@ -7,7 +7,7 @@
 //! The crate's provided run methods call these helpers around the [`Decision`]
 //! hook and the offload boundary, so every algorithm is instrumented from the
 //! outside and carries no telemetry code of its own. Metrics record through the
-//! OpenTelemetry **global** meter provider under the `libsy` scope — the host
+//! OpenTelemetry **global** meter provider under the `switchyard` scope — the host
 //! installs an SDK provider and exporters; with none installed, recording is a
 //! no-op. Spans and logs use the `tracing` facade (the async-native surface the
 //! OpenTelemetry ecosystem bridges with `tracing-opentelemetry` /
@@ -19,8 +19,8 @@
 //! tasks create there (see the `tracing` docs on spans in asynchronous code).
 //!
 //! Instrument names use the OTel dotted form with the unit baked into the name
-//! (`libsy.run_duration_ms`), matching the switchyard metric surface; a
-//! Prometheus exporter sanitizes them to `libsy_run_duration_ms`. Attribute
+//! (`switchyard.run_duration_ms`), matching the switchyard metric surface; a
+//! Prometheus exporter sanitizes them to `switchyard_run_duration_ms`. Attribute
 //! cardinality is bounded: `algorithm` and `selected_model` are small
 //! configured sets and `outcome` is `ok`/`error`. Nothing per-request becomes a
 //! metric attribute — correlation ids ride on the `libsy.run` span instead.
@@ -31,16 +31,22 @@
 //! negligible next to a model call.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use opentelemetry::metrics::Meter;
+use opentelemetry::metrics::{Meter, ObservableGauge};
 use opentelemetry::{global, KeyValue};
 use tracing::Span;
 
 use crate::{Context, Decision, Metadata, Response, Result};
 
-/// Instrumentation scope for every libsy meter, span, and log line.
-const SCOPE: &str = "libsy";
+const METRICS_SCOPE: &str = "switchyard";
+const TRACING_TARGET: &str = "libsy";
+
+static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_ERRORS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_GAUGES: OnceLock<(ObservableGauge<u64>, ObservableGauge<u64>)> = OnceLock::new();
 
 /// [`Context::values`] key under which `run_stream` stamps the algorithm's
 /// telemetry label ([`Algorithm::name`](crate::Algorithm::name)).
@@ -56,7 +62,27 @@ pub(crate) fn algorithm_label<S>(ctx: &Context<S>) -> &str {
 
 /// The `libsy`-scoped meter from the globally installed provider.
 fn meter() -> Meter {
-    global::meter(SCOPE)
+    global::meter(METRICS_SCOPE)
+}
+
+/// Registers process-wide compatibility gauges with the installed global meter provider.
+pub(crate) fn initialize_metrics() {
+    TOTAL_GAUGES.get_or_init(|| {
+        let meter = meter();
+        let requests = meter
+            .u64_observable_gauge("switchyard.total_requests")
+            .with_callback(|observer| {
+                observer.observe(TOTAL_REQUESTS.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+        let errors = meter
+            .u64_observable_gauge("switchyard.total_errors")
+            .with_callback(|observer| {
+                observer.observe(TOTAL_ERRORS.load(Ordering::Relaxed), &[]);
+            })
+            .build();
+        (requests, errors)
+    });
 }
 
 /// `outcome` attribute value for a result: `ok` or `error`.
@@ -77,7 +103,7 @@ fn outcome_value<T>(result: &Result<T>) -> &'static str {
 /// by [`record_run`] when the run ends.
 pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
     let span = tracing::info_span!(
-        target: SCOPE,
+        target: TRACING_TARGET,
         "libsy.run",
         algorithm,
         session_id = tracing::field::Empty,
@@ -143,7 +169,12 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
     span.record("outcome", outcome);
     if let Err(error) = result {
         span.record("error", tracing::field::display(error));
-        tracing::warn!(target: SCOPE, algorithm, error = %error, "algorithm run failed");
+        tracing::warn!(
+            target: TRACING_TARGET,
+            algorithm,
+            error = %error,
+            "algorithm run failed"
+        );
     }
 
     let attributes = [
@@ -151,9 +182,12 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
         KeyValue::new("outcome", outcome),
     ];
     let meter = meter();
-    meter.u64_counter("libsy.runs").build().add(1, &attributes);
     meter
-        .f64_histogram("libsy.run_duration_ms")
+        .u64_counter("switchyard.runs")
+        .build()
+        .add(1, &attributes);
+    meter
+        .f64_histogram("switchyard.run_duration_ms")
         .build()
         .record(duration.as_secs_f64() * 1000.0, &attributes);
 }
@@ -165,6 +199,8 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
+    tier: Option<&str>,
+    is_routed: bool,
     duration: Duration,
     result: &Result<Response>,
     span: &Span,
@@ -179,13 +215,37 @@ pub(crate) fn record_llm_call(
         KeyValue::new("outcome", outcome),
     ];
     meter
-        .u64_counter("libsy.llm_calls")
+        .u64_counter("switchyard.llm_calls")
         .build()
         .add(1, &call_attributes);
     meter
-        .f64_histogram("libsy.llm_call_duration_ms")
+        .f64_histogram("switchyard.llm_call_duration_ms")
         .build()
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
+
+    if is_routed {
+        TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
+        let mut routed_attributes = vec![KeyValue::new("model", selected_model.to_string())];
+        if let Some(tier) = tier {
+            routed_attributes.push(KeyValue::new("tier", tier.to_string()));
+        }
+        if result.is_ok() {
+            meter
+                .u64_counter("switchyard.requests")
+                .build()
+                .add(1, &routed_attributes);
+            meter
+                .f64_histogram("switchyard.model_call_latency_ms")
+                .build()
+                .record(duration.as_secs_f64() * 1000.0, &routed_attributes);
+        } else {
+            TOTAL_ERRORS.fetch_add(1, Ordering::Relaxed);
+            meter
+                .u64_counter("switchyard.errors")
+                .build()
+                .add(1, &routed_attributes);
+        }
+    }
 
     match result {
         Ok(response) => {
@@ -199,11 +259,23 @@ pub(crate) fn record_llm_call(
                 KeyValue::new("selected_model", selected_model.to_string()),
             ];
             for (counter, field, value) in [
-                ("libsy.input_tokens", "input_tokens", usage.input_tokens),
-                ("libsy.output_tokens", "output_tokens", usage.output_tokens),
-                ("libsy.total_tokens", "total_tokens", usage.total_tokens),
                 (
-                    "libsy.reasoning_tokens",
+                    "switchyard.input_tokens",
+                    "input_tokens",
+                    usage.input_tokens,
+                ),
+                (
+                    "switchyard.output_tokens",
+                    "output_tokens",
+                    usage.output_tokens,
+                ),
+                (
+                    "switchyard.total_tokens",
+                    "total_tokens",
+                    usage.total_tokens,
+                ),
+                (
+                    "switchyard.reasoning_tokens",
                     "reasoning_tokens",
                     usage.reasoning_tokens,
                 ),
@@ -220,7 +292,7 @@ pub(crate) fn record_llm_call(
         Err(error) => {
             span.record("error", tracing::field::display(error));
             tracing::warn!(
-                target: SCOPE,
+                target: TRACING_TARGET,
                 algorithm,
                 selected_model,
                 error = %error,
@@ -236,13 +308,13 @@ pub(crate) fn record_decision(ctx: &Context, decision: &dyn Decision) {
     let algorithm = algorithm_label(ctx);
     let selected_model = decision.selected_model();
     tracing::debug!(
-        target: SCOPE,
+        target: TRACING_TARGET,
         algorithm,
         selected_model,
         reasoning = decision.reasoning().unwrap_or(""),
         "routing decision"
     );
-    meter().u64_counter("libsy.decisions").build().add(
+    meter().u64_counter("switchyard.decisions").build().add(
         1,
         &[
             KeyValue::new("algorithm", algorithm.to_string()),

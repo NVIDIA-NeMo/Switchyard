@@ -165,6 +165,10 @@ impl Decision for JudgeDecision {
         &self.model
     }
 
+    fn is_routed_call(&self) -> bool {
+        false
+    }
+
     fn reasoning(&self) -> Option<&str> {
         Some("llm judge consultation")
     }

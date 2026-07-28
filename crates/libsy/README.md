@@ -262,11 +262,12 @@ boundary — so algorithms carry no telemetry code beyond `Algorithm::name()`, t
   their own transport should span their `RoutedLlmClient` equivalently.
 - **Structured logs** (`tracing`, target `libsy`): an info event per published
   `Decision` (selected model + reasoning), warn events for failed calls and runs.
-- **Metrics** (OpenTelemetry, scope `libsy`, via the global meter provider): counters
-  `libsy.runs`, `libsy.llm_calls`, `libsy.decisions`, `libsy.input_tokens`,
-  `libsy.output_tokens`, `libsy.total_tokens`, `libsy.reasoning_tokens`; histograms
-  `libsy.run_duration_ms`, `libsy.llm_call_duration_ms`. Attributes are `algorithm`,
-  `selected_model`, and `outcome` (`ok`/`error`) — failure rates are the
+- **Metrics** (OpenTelemetry, scope `switchyard`, via the global meter provider): counters
+  `switchyard.runs`, `switchyard.llm_calls`, `switchyard.decisions`,
+  `switchyard.input_tokens`, `switchyard.output_tokens`, `switchyard.total_tokens`,
+  `switchyard.reasoning_tokens`; histograms `switchyard.run_duration_ms` and
+  `switchyard.llm_call_duration_ms`. Attributes are `algorithm`, `selected_model`, and
+  `outcome` (`ok`/`error`) — failure rates are the
   `outcome="error"` share of runs/calls.
 
 libsy owns no exporter. The host installs an OpenTelemetry SDK meter provider

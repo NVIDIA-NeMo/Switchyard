@@ -10,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 mod cli;
 
 const DEFAULT_LOG_FILTER: &str = "switchyard_server=info";
+const OPENTELEMETRY_LOG_FILTER: &str = "opentelemetry=warn";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
@@ -27,8 +28,9 @@ async fn main() -> ExitCode {
 }
 
 fn init_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER))
+        .add_directive(OPENTELEMETRY_LOG_FILTER.parse()?);
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)

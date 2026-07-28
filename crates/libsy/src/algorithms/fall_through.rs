@@ -28,11 +28,16 @@ use crate::{
 pub struct FallThroughDecision {
     model: String,
     reason: String,
+    tier: Option<&'static str>,
 }
 
 impl Decision for FallThroughDecision {
     fn selected_model(&self) -> &str {
         &self.model
+    }
+
+    fn routing_tier(&self) -> Option<&str> {
+        self.tier
     }
 
     fn reasoning(&self) -> Option<&str> {
@@ -119,17 +124,18 @@ impl Algorithm<SharedState> for FallThrough {
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
-        let mut winner: Option<Score> = None;
+        let mut winner: Option<(Score, Option<&'static str>)> = None;
         for classifier in &self.classifiers {
             let scores = classifier
                 .score(&mut state, &mut request, Some(&driver))
                 .await?;
             if let Some(score) = scores.argmax(false)? {
-                winner = Some(score);
+                let tier = classifier.routing_tier(&score.target);
+                winner = Some((score, tier));
                 break;
             }
         }
-        let Some(winner) = winner else {
+        let Some((winner, tier)) = winner else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -143,6 +149,7 @@ impl Algorithm<SharedState> for FallThrough {
                 "fall-through selected {} (confidence {:.3})",
                 winner.target, winner.confidence
             ),
+            tier,
         });
         driver.info(ctx.without_state(), decision.clone()).await?;
 

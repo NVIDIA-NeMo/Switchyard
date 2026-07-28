@@ -64,4 +64,21 @@ never contains the secret itself. If omitted, the client sends no authentication
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.
 
+## Metrics
+
+`GET /metrics` exposes Prometheus text from the server's process-wide OpenTelemetry provider.
+Routed-call compatibility metrics are:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `switchyard_build_info` | gauge | `version` | Constant `1` for this server version |
+| `switchyard_total_requests` | gauge | none | Successful and failed final routed calls |
+| `switchyard_total_errors` | gauge | none | Failed final routed calls |
+| `switchyard_requests_total` | counter | `model`, optional `tier` | Successful final routed calls |
+| `switchyard_errors_total` | counter | `model`, optional `tier` | Failed final routed calls |
+| `switchyard_model_call_latency_ms` | histogram | `model`, optional `tier` | Successful final routed-call latency |
+
+The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
+is omitted for untiered algorithms. Classifier calls are excluded from these families.
+
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.

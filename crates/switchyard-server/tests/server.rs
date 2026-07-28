@@ -161,7 +161,7 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
 }
 
 #[tokio::test]
-async fn metrics_exposes_libsy_otel_instruments() -> TestResult {
+async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
     let before = send(&app, "GET", "/metrics", None).await?;
@@ -189,10 +189,16 @@ async fn metrics_exposes_libsy_otel_instruments() -> TestResult {
     let after = send(&app, "GET", "/metrics", None).await?;
     let metrics = after.text()?;
     for expected in [
-        "# TYPE libsy_runs_total counter",
-        "# TYPE libsy_llm_calls_total counter",
-        "# TYPE libsy_run_duration_ms histogram",
-        "# TYPE libsy_llm_call_duration_ms histogram",
+        "# TYPE switchyard_build_info gauge",
+        "switchyard_build_info{version=\"0.1.0\"",
+        "# TYPE switchyard_total_requests gauge",
+        "# TYPE switchyard_total_errors gauge",
+        "# TYPE switchyard_requests_total counter",
+        "# TYPE switchyard_model_call_latency_ms histogram",
+        "# TYPE switchyard_runs_total counter",
+        "# TYPE switchyard_llm_calls_total counter",
+        "# TYPE switchyard_run_duration_ms histogram",
+        "# TYPE switchyard_llm_call_duration_ms histogram",
         "algorithm=\"random\"",
         "selected_model=\"model/a\"",
     ] {

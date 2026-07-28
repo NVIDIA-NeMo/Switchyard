@@ -70,6 +70,11 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 /// Scores each of the classifier's targets given State the current Request
 #[async_trait]
 pub trait Classifier: Send + Sync {
+    /// Stable tier represented by `selected_model`, when this classifier defines one.
+    fn routing_tier(&self, _selected_model: &str) -> Option<&'static str> {
+        None
+    }
+
     /// Score the classifier's targets given the current state and request.
     /// driver is optional. It is used to offload model calls
     ///

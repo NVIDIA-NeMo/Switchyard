@@ -113,6 +113,14 @@ pub enum LlmClientError {
 pub trait Decision: Send + Sync {
     /// The model this decision selected (e.g. the routed target's name).
     fn selected_model(&self) -> &str;
+    /// Stable routing tier for the selected model, when the algorithm provides one.
+    fn routing_tier(&self) -> Option<&str> {
+        None
+    }
+    /// Whether this is the final call selected to serve the request.
+    fn is_routed_call(&self) -> bool {
+        true
+    }
     /// A human-readable explanation of the decision, for logs and traces.
     fn reasoning(&self) -> Option<&str>;
     /// Downcast handle: a consumer that knows the algorithm can recover the
