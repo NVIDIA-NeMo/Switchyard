@@ -361,14 +361,9 @@ mod tests {
         let efficient = targets.get_target("efficient")?;
         let capable = targets.get_target("capable")?;
         Ok(Arc::new(
-            super::super::FallThrough::new_with_state(targets, State::default()).with_classifier(
-                Arc::new(LlmTaskClassifier::new(
-                    target("judge"),
-                    efficient,
-                    capable,
-                    TEST_THRESHOLD,
-                )?),
-            ),
+            super::super::FallThrough::<State>::new(targets).with_classifier(Arc::new(
+                LlmTaskClassifier::new(target("judge"), efficient, capable, TEST_THRESHOLD)?,
+            )),
         ))
     }
 

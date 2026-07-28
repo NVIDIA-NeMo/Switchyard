@@ -9,14 +9,13 @@
 //! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
 //! stateful ones (latch, affinity) can bind it.
 //!
-//! [`FallThrough`] owns its state. The default `FallThrough<()>` creates a local unit value
-//! without locking; [`FallThrough::new_with_state`] persists custom state across turns.
-//! Request-scoped values continue to travel through an ordinary [`Context`].
+//! [`FallThrough`] creates one state value per run. The default `FallThrough<()>` has no
+//! meaningful state; compositions that need shared processor/classifier facts use a concrete
+//! state type such as [`State`](crate::State).
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 
 use crate::core::{Classifier, Event, Processor, Score};
 use crate::{
@@ -57,39 +56,24 @@ impl Decision for FallThroughDecision {
 pub struct FallThrough<S = ()> {
     name: String,
     decision_reason: fn(&str, &Score) -> String,
-    state: FallThroughState<S>,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
 }
 
-/// Storage is private because callers choose only between stateless and persistent construction.
-enum FallThroughState<S> {
-    PerRun(fn() -> S),
-    Persistent(Mutex<S>),
-}
-
-impl FallThrough<()> {
-    /// Creates an empty stateless router.
-    pub fn new(targets: LlmTargetSet) -> Self {
-        Self::from_state(targets, FallThroughState::PerRun(|| ()))
-    }
-}
-
 impl<S> FallThrough<S>
 where
-    S: Send + 'static,
+    S: Default + Send + 'static,
 {
-    /// Creates an empty router with state persisted across runs.
-    pub fn new_with_state(targets: LlmTargetSet, state: S) -> Self {
-        Self::from_state(targets, FallThroughState::Persistent(Mutex::new(state)))
+    /// Creates an empty router with a fresh `S` for each run.
+    pub fn new(targets: LlmTargetSet) -> Self {
+        Self::from_targets(targets)
     }
 
-    fn from_state(targets: LlmTargetSet, state: FallThroughState<S>) -> Self {
+    fn from_targets(targets: LlmTargetSet) -> Self {
         Self {
             name: "fall_through".to_string(),
             decision_reason: default_decision_reason,
-            state,
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -145,18 +129,8 @@ where
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
-        let (target, decision) = match &self.state {
-            FallThroughState::PerRun(create) => {
-                let mut state = create();
-                self.route(&mut state, &ctx, &driver, &mut request).await?
-            }
-            FallThroughState::Persistent(state) => {
-                // Keep the lock across processing, classification, and replay so one
-                // state transition is atomic, but release it before the target call.
-                let mut state = state.lock().await;
-                self.route(&mut state, &ctx, &driver, &mut request).await?
-            }
-        };
+        let mut state = S::default();
+        let (target, decision) = self.route(&mut state, &ctx, &driver, &mut request).await?;
 
         driver
             .call_llm_target(ctx, &target, request, decision)
@@ -229,7 +203,7 @@ fn default_decision_reason(_name: &str, winner: &Score) -> String {
 #[async_trait]
 impl<S> Algorithm for FallThrough<S>
 where
-    S: Send + 'static,
+    S: Default + Send + 'static,
 {
     fn name(&self) -> &str {
         &self.name
@@ -379,7 +353,7 @@ mod tests {
     /// Drives a shared router through one turn, returning the completion text + trace.
     async fn run_turn<S>(router: &Arc<FallThrough<S>>) -> Result<(String, Vec<Arc<dyn Decision>>)>
     where
-        S: Send + 'static,
+        S: Default + Send + 'static,
     {
         let (trace, response) = router.clone().run(Context::default(), request()).await?;
         let text = response
@@ -400,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
-        let router = FallThrough::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("weak", 0.2), score("strong", 0.9)]));
         let (model, trace) = run(router).await?;
         assert_eq!(model, "strong");
@@ -412,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn falls_through_the_first_abstaining_classifier() -> Result<()> {
         // First classifier abstains (empty); the second decides.
-        let router = FallThrough::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![]))
             .with_classifier(fixed(vec![score("weak", 1.0)]));
         let (model, _) = run(router).await?;
@@ -423,7 +397,7 @@ mod tests {
     #[tokio::test]
     async fn first_deciding_classifier_wins_the_cascade() -> Result<()> {
         // The first classifier decides; the second is never consulted.
-        let router = FallThrough::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(fixed(vec![score("strong", 0.6)]))
             .with_classifier(fixed(vec![score("weak", 1.0)]));
         let (model, _) = run(router).await?;
@@ -434,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn all_abstaining_is_an_error() -> Result<()> {
         let router =
-            FallThrough::new(target_set(&["strong", "weak"])).with_classifier(fixed(vec![]));
+            FallThrough::<()>::new(target_set(&["strong", "weak"])).with_classifier(fixed(vec![]));
         let error = run(router)
             .await
             .err()
@@ -467,7 +441,7 @@ mod tests {
             }
         }
 
-        let router = FallThrough::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_classifier(Arc::new(NeedsDriver));
         let (model, _) = run(router).await?;
         assert_eq!(model, "strong");
@@ -495,7 +469,7 @@ mod tests {
         }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let router = FallThrough::new(target_set(&["strong", "weak"]))
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_processor(Arc::new(RecordingProcessor(seen.clone())))
             .with_classifier(fixed(vec![score("strong", 1.0)]));
         run(router).await?;
@@ -582,7 +556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_persists_across_turns() -> Result<()> {
+    async fn state_is_shared_within_a_run_and_reset_between_runs() -> Result<()> {
         #[derive(Default)]
         struct TurnState {
             count: u32,
@@ -601,8 +575,7 @@ mod tests {
             }
         }
 
-        // Routes to "weak" until the session has accumulated >= 2 turns, then "strong" —
-        // its decision depends only on state carried over from earlier turns.
+        // The processor runs before this classifier, so a fresh run always observes one turn.
         struct ThresholdClassifier;
 
         #[async_trait]
@@ -613,27 +586,25 @@ mod tests {
                 _request: &mut Request,
                 _driver: Option<&Driver>,
             ) -> Result<Classification> {
-                let target = if state.count >= 2 { "strong" } else { "weak" };
+                let target = if state.count == 1 { "strong" } else { "weak" };
                 Ok(Classification::Scores(vec![score(target, 1.0)]))
             }
         }
 
-        // The router owns the custom state shared by its processors and classifiers.
+        // Each run gets a fresh state, shared by that run's processor and classifier.
         let router = Arc::new(
-            FallThrough::new_with_state(target_set(&["strong", "weak"]), TurnState::default())
+            FallThrough::<TurnState>::new(target_set(&["strong", "weak"]))
                 .with_processor(Arc::new(CountingProcessor))
                 .with_classifier(Arc::new(ThresholdClassifier)),
         );
 
-        // The turn counter accumulates in the router's state, so the classifier crosses
-        // its threshold on turn 2.
         let (turn1, _) = run_turn(&router).await?;
         let (turn2, _) = run_turn(&router).await?;
         let (turn3, _) = run_turn(&router).await?;
 
-        assert_eq!(turn1, "weak"); // count 1 — below threshold
-        assert_eq!(turn2, "strong"); // count 2 — state carried over from turn 1
-        assert_eq!(turn3, "strong"); // count 3 — still above threshold
+        assert_eq!(turn1, "strong");
+        assert_eq!(turn2, "strong");
+        assert_eq!(turn3, "strong");
         Ok(())
     }
 }

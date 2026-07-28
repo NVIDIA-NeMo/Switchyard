@@ -1,20 +1,20 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Integration tests for composing the sub-agent override with affinity routing.
+//! Tests for composing the sub-agent override with affinity routing.
 //!
 //! The two are independent classifiers in one [`FallThrough`] cascade: the override decides
 //! *which* target delegated work belongs on, affinity decides *how long* that decision
-//! lives. These tests drive them through the crate's public API, so they also pin that the
-//! pieces needed to compose a cascade are actually exported.
+//! lives.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use switchyard_libsy::algorithms::{AffinityRouter, FallThrough, SubagentOverride};
-use switchyard_libsy::{
+use super::fall_through::FallThrough;
+use super::{AffinityRouter, SubagentOverride};
+use crate::{
     Algorithm, Classification, Classifier, Context, Decision, Driver, LlmResponse, LlmTarget,
     LlmTargetSet, Metadata, Request, Response, Result, RoutedLlmClient, Score,
 };
@@ -85,7 +85,7 @@ fn request(headers: &[(&str, &str)]) -> Request {
 /// terminal classifier serves everything else.
 fn router() -> Arc<FallThrough> {
     Arc::new(
-        FallThrough::new(targets())
+        FallThrough::<()>::new(targets())
             .with_component(Arc::new(AffinityRouter::for_subagents()))
             .with_classifier(Arc::new(SubagentOverride::new("worker")))
             .with_classifier(Arc::new(AlwaysOrchestrator)),
@@ -164,7 +164,7 @@ async fn harness_maintenance_turns_are_not_forced_to_the_worker() -> Result<()> 
 /// Builds a cascade whose override scores `worker`, sharing `affinity` across instances.
 fn router_overriding_to(affinity: Arc<AffinityRouter>, worker: &str) -> Arc<FallThrough> {
     Arc::new(
-        FallThrough::new(targets())
+        FallThrough::<()>::new(targets())
             .with_component(affinity)
             .with_classifier(Arc::new(SubagentOverride::new(worker)))
             .with_classifier(Arc::new(AlwaysOrchestrator)),
@@ -222,7 +222,7 @@ async fn a_cascade_without_the_override_still_routes_root_traffic() -> Result<()
     // Affinity and the override are independent: dropping the override leaves a valid
     // cascade, which is the point of composing them rather than nesting one in the other.
     let router = Arc::new(
-        FallThrough::new(targets())
+        FallThrough::<()>::new(targets())
             .with_component(Arc::new(AffinityRouter::for_subagents()))
             .with_classifier(Arc::new(AlwaysOrchestrator)),
     );

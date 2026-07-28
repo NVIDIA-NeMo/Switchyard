@@ -43,61 +43,6 @@ println!("answer: {}", completion_text(&response.llm_response.into_agg().await?)
 
 Runnable: [`research_agent`](examples/research_agent.rs)
 
-## Composing fall-through routing
-
-`FallThrough` runs a processor chain, consults classifiers until one chooses a target,
-then makes the target call. It is generic over the state shared by its processors and
-classifiers. `FallThrough::new` is stateless; use `FallThrough::new_with_state` when that
-state must persist across runs.
-
-Random routing is a stateless composition with no processors:
-
-```rust
-use std::sync::Arc;
-use switchyard_libsy::algorithms::{FallThrough, RandomClassifier};
-use switchyard_libsy::{Algorithm, Classifier};
-
-let classifier: Arc<dyn Classifier<()>> = Arc::new(RandomClassifier::new(
-    vec!["fast".into(), "capable".into()],
-    Some(vec![3.0, 1.0]),
-    Some(42),
-)?);
-let algorithm: Arc<dyn Algorithm> = Arc::new(
-    FallThrough::new(targets)
-        .with_name("weighted_random")
-        .with_classifier(classifier),
-);
-```
-
-The public `Random` constructor builds this same composition while preserving its
-existing API, decision, and telemetry contracts.
-
-Put affinity first to retain the initial random choice for later requests with the
-same session identity:
-
-```rust
-use std::sync::Arc;
-use switchyard_libsy::algorithms::{AffinityRouter, FallThrough, RandomClassifier};
-use switchyard_libsy::Algorithm;
-
-let affinity = Arc::new(AffinityRouter::new());
-let random = Arc::new(RandomClassifier::new(
-    vec!["fast".into(), "capable".into()],
-    Some(vec![3.0, 1.0]),
-    Some(42),
-)?);
-let algorithm: Arc<dyn Algorithm> = Arc::new(
-    FallThrough::new(targets)
-        .with_name("affinity_random")
-        .with_processor(affinity.clone())
-        .with_classifier(affinity)
-        .with_classifier(random),
-);
-```
-
-Affinity abstains for an unseen identity, random selects the target, and decision replay
-records that choice. Later requests with the same identity stop at the affinity classifier.
-
 ## Requests & responses
 
 ```rust

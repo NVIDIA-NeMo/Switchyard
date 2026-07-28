@@ -15,7 +15,7 @@ use rand::distributions::{Distribution, WeightedIndex};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use crate::algorithms::{FallThrough, FallThroughDecision};
+use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
 use crate::{
     Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTargetSet, Request,
     Response, Result, RoutedLlmClient, Score,
@@ -141,7 +141,7 @@ impl Random {
             .map(|target| target.semantic_name.clone())
             .collect();
         let classifier = Arc::new(RandomClassifier::new(target_names, weights, seed)?);
-        let inner = FallThrough::new(target_set)
+        let inner = FallThrough::<()>::new(target_set)
             .with_name("random")
             .with_decision_reason(random_decision_reason)
             .with_classifier(classifier);
@@ -356,7 +356,7 @@ mod tests {
             Some(42),
         )?);
         let algorithm: Arc<dyn Algorithm> = Arc::new(
-            FallThrough::new(target_set(&names))
+            FallThrough::<()>::new(target_set(&names))
                 .with_name("affinity_random")
                 .with_processor(affinity.clone())
                 .with_classifier(affinity.clone())

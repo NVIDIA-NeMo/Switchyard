@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+//! Built-in state shared by processors and classifiers during one algorithm run.
+
 use std::collections::HashMap;
 
 use crate::ToolSignals;
@@ -14,7 +16,7 @@ pub enum StateValue {
     Scalar(f32),
 }
 
-/// State maintained by algorithms that use the built-in state model.
+/// Routing facts accumulated during one algorithm run.
 #[derive(Debug, Clone, Default)]
 pub struct State {
     pub turn_count: u32,

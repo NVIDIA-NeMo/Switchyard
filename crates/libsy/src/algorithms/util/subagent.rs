@@ -7,8 +7,8 @@
 //! sub-agent work ([`Metadata::is_subagent_work`]) and abstains for everything else, so a
 //! cascade falls through to its later classifiers on ordinary traffic.
 //!
-//! It is stateless and holds only the worker's *name*: the
-//! [`FallThrough`](crate::algorithms::FallThrough) cascade resolves that name against its
+//! It is stateless and holds only the worker's *name*: the fall-through cascade resolves it
+//! against its
 //! target set. Keeping the policy independent of any memory of past decisions is what lets
 //! it compose with a stateful classifier such as
 //! [`AffinityRouter`](crate::algorithms::AffinityRouter) — the override decides *which*
