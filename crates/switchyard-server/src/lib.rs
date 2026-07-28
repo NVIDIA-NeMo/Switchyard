@@ -24,6 +24,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
+use tracing::Level;
 
 use switchyard_translation::{decode_request, WireFormat};
 
@@ -272,11 +273,11 @@ async fn handle_endpoint(
         correlation_id: metadata.correlation_id.clone(),
     };
 
-    let (response, error) = match llm_json_body(body) {
+    let response = match llm_json_body(body) {
         Ok(body) => handle_llm_request(state, metadata, body, wire_format).await,
-        Err(message) => (invalid_body_error(message), None),
+        Err(message) => invalid_body_error(message),
     };
-    request_log.emit(&response, error.as_deref());
+    request_log.emit(&response);
     response
 }
 
@@ -295,35 +296,29 @@ async fn handle_llm_request(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> (Response, Option<String>) {
+) -> Response {
     let llm_request = match decode_request(wire_format, &body) {
         Ok(request) => request,
-        Err(error) => return (invalid_body_error(error.to_string()), None),
+        Err(error) => return invalid_body_error(error.to_string()),
     };
     let Some(requested_model) = llm_request
         .model
         .clone()
         .filter(|model| !model.trim().is_empty())
     else {
-        return (
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "request body must include a non-empty string `model`",
-                "invalid_request_error",
-                "invalid_request_error",
-            ),
-            None,
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "request body must include a non-empty string `model`",
+            "invalid_request_error",
+            "invalid_request_error",
         );
     };
     let Some(algorithm) = state.algorithm_for_model(&requested_model) else {
-        return (
-            error_response(
-                StatusCode::NOT_FOUND,
-                format!("No route registered for model {requested_model}"),
-                "model_not_found",
-                "model_not_found",
-            ),
-            None,
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("No route registered for model {requested_model}"),
+            "model_not_found",
+            "model_not_found",
         );
     };
 
@@ -334,23 +329,17 @@ async fn handle_llm_request(
     };
     let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
-        Err(error) => {
-            let message = error.to_string();
-            return (algorithm_error(error), Some(message));
-        }
+        Err(error) => return algorithm_error(error),
     };
 
     let mut response = match into_http_response(response, wire_format, Some(requested_model)) {
         Ok(response) => response,
-        Err(error) => {
-            let message = error.to_string();
-            return (server_error(&message), Some(message));
-        }
+        Err(error) => return server_error(error.to_string()),
     };
     if let Some(decision) = trace.last() {
         attach_routing_headers(&mut response, decision.as_ref());
     }
-    (response, None)
+    response
 }
 
 // Request metadata held until the terminal response determines the event level.
@@ -363,41 +352,58 @@ struct RequestLogContext {
     correlation_id: Option<String>,
 }
 
+// Error text carried separately so terminal logging never consumes an HTTP body.
+#[derive(Clone)]
+struct RequestLogError(String);
+
 impl RequestLogContext {
-    fn emit(self, response: &Response, error: Option<&str>) {
+    fn emit(self, response: &Response) {
         let selected_model = response
             .headers()
             .get(HEADER_SELECTED_MODEL)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
         let duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0;
-        match error {
-            Some(error) => tracing::warn!(
-                target: "switchyard_server::request",
-                wire_format = %self.wire_format,
-                status = response.status().as_u16(),
-                requested_model = self.requested_model.as_deref().unwrap_or(""),
-                selected_model,
-                streaming = self.streaming,
-                session_id = self.session_id.as_deref().unwrap_or(""),
-                correlation_id = self.correlation_id.as_deref().unwrap_or(""),
-                handling_duration_ms = duration_ms,
-                error,
-                "LLM request failed"
-            ),
-            None => tracing::info!(
-                target: "switchyard_server::request",
-                wire_format = %self.wire_format,
-                status = response.status().as_u16(),
-                requested_model = self.requested_model.as_deref().unwrap_or(""),
-                selected_model,
-                streaming = self.streaming,
-                session_id = self.session_id.as_deref().unwrap_or(""),
-                correlation_id = self.correlation_id.as_deref().unwrap_or(""),
-                handling_duration_ms = duration_ms,
-                "LLM request handled"
-            ),
+        let error = response
+            .extensions()
+            .get::<RequestLogError>()
+            .map(|error| error.0.as_str())
+            .unwrap_or("");
+
+        macro_rules! emit {
+            ($level:expr, $message:literal) => {
+                tracing::event!(
+                    target: "switchyard_server::request",
+                    $level,
+                    wire_format = %self.wire_format,
+                    status = response.status().as_u16(),
+                    requested_model = self.requested_model.as_deref().unwrap_or(""),
+                    selected_model,
+                    streaming = self.streaming,
+                    session_id = self.session_id.as_deref().unwrap_or(""),
+                    correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                    handling_duration_ms = duration_ms,
+                    error,
+                    $message
+                )
+            };
         }
+
+        match request_log_level(response.status()) {
+            Level::ERROR => emit!(Level::ERROR, "LLM request failed"),
+            Level::WARN => emit!(Level::WARN, "LLM request failed"),
+            _ => emit!(Level::INFO, "LLM request handled"),
+        }
+    }
+}
+
+fn request_log_level(status: StatusCode) -> Level {
+    if status.is_server_error() {
+        Level::ERROR
+    } else if status.is_success() {
+        Level::INFO
+    } else {
+        Level::WARN
     }
 }
 
@@ -523,17 +529,20 @@ fn error_response(
     error_type: &'static str,
     code: &'static str,
 ) -> Response {
-    (
+    let message = message.into();
+    let mut response = (
         status,
         Json(json!({
             "error": {
-                "message": message.into(),
+                "message": message.clone(),
                 "type": error_type,
                 "code": code,
             }
         })),
     )
-        .into_response()
+        .into_response();
+    response.extensions_mut().insert(RequestLogError(message));
+    response
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
@@ -613,5 +622,40 @@ fn host_for_url(ip: std::net::IpAddr) -> String {
     match ip {
         std::net::IpAddr::V4(ip) => ip.to_string(),
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Terminal request severity follows HTTP status instead of error-path bookkeeping.
+    #[test]
+    fn request_log_level_follows_http_status() {
+        assert_eq!(request_log_level(StatusCode::OK), Level::INFO);
+        assert_eq!(request_log_level(StatusCode::BAD_REQUEST), Level::WARN);
+        assert_eq!(
+            request_log_level(StatusCode::INTERNAL_SERVER_ERROR),
+            Level::ERROR
+        );
+    }
+
+    // Canonical error text remains available without consuming the response body.
+    #[test]
+    fn error_response_carries_request_log_error() {
+        let response = error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid request",
+            "invalid_request_error",
+            "invalid_request_error",
+        );
+
+        assert_eq!(
+            response
+                .extensions()
+                .get::<RequestLogError>()
+                .map(|error| error.0.as_str()),
+            Some("invalid request")
+        );
     }
 }
