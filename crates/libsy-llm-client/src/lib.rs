@@ -24,6 +24,7 @@ mod observability;
 mod observation;
 pub mod raw;
 pub mod run;
+pub mod vllm_hidden_state_probe;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{ModelConfig, TranslatingLlmClient};
@@ -32,6 +33,10 @@ pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, run};
 pub use switchyard_translation::RawEventStream;
+pub use vllm_hidden_state_probe::{
+    HiddenStateFeatures, VllmHiddenStateProbe, VllmHiddenStateProbeConfig,
+    VllmHiddenStateProbeError, VllmHiddenStateProbeResult,
+};
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 pub fn initialize_metrics() {

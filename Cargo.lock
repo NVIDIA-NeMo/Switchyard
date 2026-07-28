@@ -2034,6 +2034,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "safetensors"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44560c11236a6130a46ce36c836a62936dc81ebf8c36a37947423571be0e55b6"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2301,10 +2311,13 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "reqwest",
+ "safetensors",
+ "serde",
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
  "switchyard-translation",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

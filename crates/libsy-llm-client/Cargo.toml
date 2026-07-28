@@ -28,7 +28,10 @@ opentelemetry = { version = "0.32", default-features = false, features = ["metri
 parking_lot.workspace = true
 http.workspace = true
 httpdate.workspace = true
+safetensors = "0.4"
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
@@ -36,6 +39,6 @@ tracing-opentelemetry.workspace = true
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
-thiserror.workspace = true
+tempfile = "3"
 tracing-subscriber.workspace = true
 wiremock = "0.6"
