@@ -166,9 +166,14 @@ fn telemetry() -> &'static (CaptureStore, InMemoryMetricExporter, SdkMeterProvid
     })
 }
 
-fn test_lock() -> &'static tokio::sync::Mutex<()> {
-    static TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+/// The three tests in this file must not overlap because metrics are global.
+/// There is no Rust/cargo-native way of saying this (people use `serial_test` crate) so use a
+/// lock.
+/// Each file in `tests/` (integration tests) runs as a separate test process, so we are not
+/// concerned with interactions with tests in other files.
+fn serialize_test() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// Flushes the metric pipeline and returns every exported snapshot.
@@ -400,7 +405,7 @@ fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> Span
 
 #[tokio::test]
 async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_libsy::Result<()> {
-    let _guard = test_lock().lock().await;
+    let _guard = serialize_test().lock().await;
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-success-algo";
     const MODEL: &str = "obs-success-model";
@@ -585,7 +590,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
 
 #[tokio::test]
 async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
-    let _guard = test_lock().lock().await;
+    let _guard = serialize_test().lock().await;
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
@@ -706,7 +711,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
 
 #[tokio::test]
 async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_libsy::Result<()> {
-    let _guard = test_lock().lock().await;
+    let _guard = serialize_test().lock().await;
     let (_store, exporter, provider) = telemetry();
     let before = flushed_metrics(exporter, provider);
     let total_requests_before =

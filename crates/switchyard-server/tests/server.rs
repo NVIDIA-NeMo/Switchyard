@@ -32,6 +32,7 @@ type TestError = Box<dyn Error + Send + Sync>;
 type TestResult<T = ()> = Result<T, TestError>;
 
 const ROUTE_MODEL: &str = "switchyard/random";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct MockUpstream {
     base_url: String,
@@ -190,7 +191,7 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     let metrics = after.text()?;
     for expected in [
         "# TYPE switchyard_build_info gauge",
-        "switchyard_build_info{version=\"0.1.0\"",
+        &format!("switchyard_build_info{{version=\"{VERSION}\""),
         "# TYPE switchyard_total_requests gauge",
         "# TYPE switchyard_total_errors gauge",
         "# TYPE switchyard_requests_total counter",
