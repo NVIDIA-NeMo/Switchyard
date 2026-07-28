@@ -412,6 +412,7 @@ async fn main() -> Result<()> {
         ),
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        max_retries: 2,
     };
     let models: Vec<_> = CANDIDATE_MODELS
         .iter()

@@ -5,9 +5,11 @@
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::RequestBuilder;
 use serde_json::{Map, Value};
 use switchyard_protocol::{
@@ -17,6 +19,7 @@ use switchyard_translation::{
     decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
     encode_request, encode_stream, WireFormat,
 };
+use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
@@ -42,6 +45,10 @@ const RESERVED_HEADERS: &[&str] = &[
     "anthropic-version",
     "content-type",
 ];
+
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
+const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// How one model is served: the `default_backend` used when the request does not
 /// pin a wire format, plus any `other_backends` reachable over additional formats.
@@ -168,44 +175,118 @@ impl TranslatingLlmClient {
         }
         let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
-        let builder = self.client.post(url).json(&body);
+        let max_retries = backend.max_retries();
+        let max_attempts = max_retries.saturating_add(1);
+        let mut attempt = 0;
+        loop {
+            let span = tracing::info_span!(
+                target: "libsy",
+                "libsy.upstream_attempt",
+                model,
+                wire_format = %wire_format,
+                attempt = attempt + 1,
+                max_attempts,
+                retry = attempt > 0,
+                outcome = tracing::field::Empty,
+                status_code = tracing::field::Empty,
+                will_retry = tracing::field::Empty,
+                retry_delay_ms = tracing::field::Empty,
+            );
+            let result = self
+                .send_once(&url, backend, &body, metadata, model)
+                .instrument(span.clone())
+                .await;
+            match result {
+                Ok(response) => {
+                    span.record("outcome", "success");
+                    span.record("status_code", response.status().as_u16());
+                    span.record("will_retry", false);
+                    return Ok((response, streaming));
+                }
+                Err(failure) => {
+                    let will_retry = attempt < max_retries && failure.is_retryable();
+                    span.record("outcome", "error");
+                    if let Some(status) = failure.status {
+                        span.record("status_code", status);
+                    }
+                    span.record("will_retry", will_retry);
+                    if !will_retry {
+                        return Err(failure.error);
+                    }
+
+                    let delay = retry_delay(attempt, failure.retry_after);
+                    span.record("retry_delay_ms", duration_millis(delay));
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    // Performs one HTTP attempt and retains the retry metadata alongside any error.
+    async fn send_once(
+        &self,
+        url: &str,
+        backend: &Backend,
+        body: &Value,
+        metadata: Option<&Metadata>,
+        model: &str,
+    ) -> std::result::Result<reqwest::Response, AttemptFailure> {
+        let builder = self.client.post(url).json(body);
         let builder = forward_metadata_headers(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let http_response = match builder.send().await {
+        let response = match builder.send().await {
             Ok(response) => {
                 record_upstream_attempt(Some(response.status().as_u16()));
                 response
             }
             Err(error) => {
                 record_upstream_attempt(None);
-                return Err(convert_reqwest_error(error));
-            }
-        };
-        let status = http_response.status();
-        if !status.is_success() {
-            let body = match http_response.text().await {
-                Ok(body) => body,
-                Err(error) if error.is_timeout() => {
-                    return Err(LlmClientError::Timeout {
-                        source: Box::new(error),
-                    })
-                }
-                Err(error) => format!("<failed to read error body: {error}>"),
-            };
-            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
-                return Err(LlmClientError::ContextWindowExceeded {
-                    model: model.to_string(),
-                    message: body,
+                return Err(AttemptFailure {
+                    error: convert_reqwest_error(error),
+                    status: None,
+                    retry_after: None,
                 });
             }
-            return Err(LlmClientError::UpstreamHttp {
-                status: status.as_u16(),
-                body,
-            });
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
         }
-        Ok((http_response, streaming))
+
+        let retry_after = retry_after_delay(response.headers());
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) if error.is_timeout() => {
+                return Err(AttemptFailure {
+                    error: LlmClientError::Timeout {
+                        source: Box::new(error),
+                    },
+                    status: Some(status.as_u16()),
+                    retry_after,
+                })
+            }
+            Err(error) => format!("<failed to read error body: {error}>"),
+        };
+        let error =
+            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
+                LlmClientError::ContextWindowExceeded {
+                    model: model.to_string(),
+                    message: body,
+                }
+            } else {
+                LlmClientError::UpstreamHttp {
+                    status: status.as_u16(),
+                    body,
+                }
+            };
+        Err(AttemptFailure {
+            error,
+            status: Some(status.as_u16()),
+            retry_after,
+        })
     }
 
     /// Calls the backend for `model_name` (or the request's own model), over the
@@ -404,12 +485,61 @@ impl RoutedLlmClient for TranslatingLlmClient {
     }
 }
 
+struct AttemptFailure {
+    error: LlmClientError,
+    status: Option<u16>,
+    retry_after: Option<Duration>,
+}
+
+impl AttemptFailure {
+    fn is_retryable(&self) -> bool {
+        match &self.error {
+            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
+            LlmClientError::UpstreamHttp { status, .. } => {
+                *status == 408 || *status == 429 || *status >= 500
+            }
+            _ => false,
+        }
+    }
+}
+
+// Uses Retry-After when supplied, capped so an upstream cannot stall a request indefinitely.
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
+    let delay = if let Ok(seconds) = value.parse::<u64>() {
+        Duration::from_secs(seconds)
+    } else {
+        let retry_at = httpdate::parse_http_date(value).ok()?;
+        retry_at
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO)
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
+}
+
+fn retry_delay(retry_number: u32, retry_after: Option<Duration>) -> Duration {
+    retry_after.unwrap_or_else(|| {
+        let multiplier = 1_u32 << retry_number.min(3);
+        INITIAL_RETRY_DELAY
+            .saturating_mul(multiplier)
+            .min(MAX_RETRY_BACKOFF)
+    })
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // `Response::json` labels body collection and JSON parsing failures as
     // decode errors; only the latter is a translation failure.
     if error.is_timeout() {
         LlmClientError::Timeout {
             source: Box::new(error),
+        }
+    } else if error.is_builder() {
+        LlmClientError::Configuration {
+            message: format!("failed to build upstream request: {error}"),
         }
     } else if error.is_body() {
         LlmClientError::Transport {
@@ -503,6 +633,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
     use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::thread::JoinHandle;
 
     use serde_json::json;
@@ -519,6 +651,14 @@ mod tests {
             api_key: Some("secret".to_string()),
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            max_retries: 0,
+        }
+    }
+
+    fn config_with_retries(base_url: &str, max_retries: u32) -> HttpBackendConfig {
+        HttpBackendConfig {
+            max_retries,
+            ..config(base_url)
         }
     }
 
@@ -538,6 +678,27 @@ mod tests {
         let mut backend = config(base_url);
         backend.extra_body = extra_body;
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(config_with_retries(base_url, max_retries)),
+            None,
+        )]
+    }
+
+    fn chat_success_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-1",
+            "model": "gpt",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "recovered"},
+                "finish_reason": "stop"
+            }],
+            "usage": {}
+        }))
     }
 
     fn truncated_response_server(
@@ -772,7 +933,7 @@ mod tests {
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
         let (base_url, server) = truncated_response_server("text/event-stream", body)?;
-        let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
+        let client = TranslatingLlmClient::new(&chat_map_with_retries(&base_url, 2))?;
         let response = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
             .await?;
@@ -959,6 +1120,213 @@ mod tests {
             LlmClientError::UpstreamHttp { status: 500, .. }
         ));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn retryable_http_failure_recovers_within_budget(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                if observed_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                        .insert_header("retry-after", "0")
+                        .set_body_string("temporarily unavailable")
+                } else {
+                    chat_success_response()
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
+        let response = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await?;
+        let agg = response.llm_response.into_agg().await?;
+
+        assert_eq!(completion_text(&agg), "recovered");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deterministic_http_failure_is_not_retried(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(401).set_body_string("invalid key")
+            })
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected an upstream error");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp {
+                status: 401,
+                body
+            } if body == "invalid key"
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_returns_the_final_upstream_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = observed_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                ResponseTemplate::new(500)
+                    .insert_header("retry-after", "0")
+                    .set_body_string(format!("attempt {attempt}"))
+            })
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected retry exhaustion");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp {
+                status: 500,
+                body
+            } if body == "attempt 3"
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timeout_is_retried_before_a_response_is_returned(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                if observed_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(200).set_delay(Duration::from_millis(100))
+                } else {
+                    chat_success_response()
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let mut client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
+        client.client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(10))
+            .build()?;
+        let response = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await?;
+
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "recovered"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_error_classes_are_explicit() {
+        let transport = AttemptFailure {
+            error: LlmClientError::Transport {
+                source: std::io::Error::other("disconnected").into(),
+            },
+            status: None,
+            retry_after: None,
+        };
+        assert!(transport.is_retryable());
+
+        for status in [408, 429, 500, 503] {
+            let failure = AttemptFailure {
+                error: LlmClientError::UpstreamHttp {
+                    status,
+                    body: String::new(),
+                },
+                status: Some(status),
+                retry_after: None,
+            };
+            assert!(failure.is_retryable(), "HTTP {status} should retry");
+        }
+        for status in [400, 401, 409] {
+            let failure = AttemptFailure {
+                error: LlmClientError::UpstreamHttp {
+                    status,
+                    body: String::new(),
+                },
+                status: Some(status),
+                retry_after: None,
+            };
+            assert!(!failure.is_retryable(), "HTTP {status} should fail fast");
+        }
+
+        let configuration = AttemptFailure {
+            error: LlmClientError::Configuration {
+                message: "invalid header".to_string(),
+            },
+            status: None,
+            retry_after: None,
+        };
+        assert!(!configuration.is_retryable());
+
+        let context_window = AttemptFailure {
+            error: LlmClientError::ContextWindowExceeded {
+                model: "gpt".to_string(),
+                message: "too long".to_string(),
+            },
+            status: Some(400),
+            retry_after: None,
+        };
+        assert!(!context_window.is_retryable());
+    }
+
+    #[test]
+    fn retry_after_supports_seconds_and_http_dates() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, reqwest::header::HeaderValue::from_static("3"));
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(3)));
+
+        let retry_at = SystemTime::now() + Duration::from_secs(2);
+        let value = httpdate::fmt_http_date(retry_at);
+        let Ok(value) = reqwest::header::HeaderValue::from_str(&value) else {
+            panic!("formatted HTTP date should be a valid header");
+        };
+        headers.insert(RETRY_AFTER, value);
+        let Some(delay) = retry_after_delay(&headers) else {
+            panic!("HTTP date should produce a retry delay");
+        };
+        assert!(delay <= Duration::from_secs(2));
     }
 
     #[tokio::test]

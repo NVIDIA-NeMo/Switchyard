@@ -17,7 +17,7 @@ pub mod error;
 pub mod metrics;
 pub mod raw;
 
-pub use backend::{Backend, HttpBackendConfig};
+pub use backend::{Backend, HttpBackendConfig, DEFAULT_MAX_RETRIES};
 pub use client::{ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use raw::RawResponse;

@@ -12,7 +12,9 @@ use libsy::algorithms::{LlmTaskClassifier, Noop, Passthrough, Random, TaskClassi
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_llm_client::{
+    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient, DEFAULT_MAX_RETRIES,
+};
 
 use crate::{ServerError, ServerResult, ServerState};
 
@@ -141,6 +143,8 @@ struct LlmClientConfig {
     api_key_env: Option<String>,
     #[serde(default)]
     extra_headers: BTreeMap<String, String>,
+    #[serde(default = "default_max_retries")]
+    max_retries: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,12 +241,17 @@ fn build_backend(
         api_key,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        max_retries: config.max_retries,
     };
     Ok(match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
         ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
     })
+}
+
+const fn default_max_retries() -> u32 {
+    DEFAULT_MAX_RETRIES
 }
 
 fn build_algorithm(
@@ -525,6 +534,41 @@ target = "weak"
             Some(&json!(false))
         );
         Ok(())
+    }
+
+    #[test]
+    fn retry_budget_defaults_and_accepts_an_override() -> ServerResult<()> {
+        let default: ServerConfig = toml::from_str(VALID_CONFIG).map_err(|error| {
+            ServerError::new(format!("failed to parse default config: {error}"))
+        })?;
+        let Some(primary) = default.llm_clients.get("primary") else {
+            return Err(ServerError::new("primary llm client is missing"));
+        };
+        assert_eq!(primary.max_retries, DEFAULT_MAX_RETRIES);
+
+        let explicit = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nmax_retries = 0",
+            1,
+        );
+        let config: ServerConfig = toml::from_str(&explicit).map_err(|error| {
+            ServerError::new(format!("failed to parse explicit retry config: {error}"))
+        })?;
+        let Some(primary) = config.llm_clients.get("primary") else {
+            return Err(ServerError::new("primary llm client is missing"));
+        };
+        assert_eq!(primary.max_retries, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_budget_rejects_negative_values() {
+        let invalid = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nmax_retries = -1",
+            1,
+        );
+        assert!(error_message(&invalid).contains("max_retries"));
     }
 
     #[test]
