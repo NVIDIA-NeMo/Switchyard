@@ -16,7 +16,7 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder --chmod=0755 \
+COPY --from=builder \
     /opt/switchyard/target/release/switchyard-server \
     /usr/local/bin/switchyard-server
 
