@@ -10,7 +10,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
@@ -47,6 +47,7 @@ impl MockUpstream {
         let app = Router::new()
             .route("/v1/chat/completions", post(upstream_chat))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
+            .layer(DefaultBodyLimit::disable())
             .with_state(Arc::clone(&calls));
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -218,6 +219,26 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
             "missing {expected:?} in metrics:\n{metrics}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepts_requests_larger_than_the_axum_default_body_limit() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let content = "x".repeat(2 * 1024 * 1024);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": content}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
     Ok(())
 }
 

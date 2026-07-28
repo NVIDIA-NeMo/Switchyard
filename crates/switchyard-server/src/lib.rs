@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{rejection::JsonRejection, State};
+use axum::extract::{rejection::JsonRejection, DefaultBodyLimit, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -36,6 +36,9 @@ use crate::response::into_http_response;
 
 /// Default TCP listen backlog used by the Rust server.
 pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
+
+/// Maximum buffered JSON request size accepted by the LLM endpoints.
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
 const HEADER_RATIONALE: &str = "x-model-router-rationale";
@@ -204,6 +207,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .fallback(not_found)
+        .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 
