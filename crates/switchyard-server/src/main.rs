@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 mod cli;
 
-const DEFAULT_LOG_FILTER: &str = "switchyard_server=info";
+const DEFAULT_LOG_FILTER: &str = "switchyard_server=info,libsy=warn";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {

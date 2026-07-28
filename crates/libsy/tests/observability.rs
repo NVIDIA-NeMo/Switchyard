@@ -516,7 +516,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
 }
 
 #[tokio::test]
-async fn failed_call_records_error_outcome_and_debug_events() -> switchyard_libsy::Result<()> {
+async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
     let (store, exporter, provider) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
@@ -589,12 +589,12 @@ async fn failed_call_records_error_outcome_and_debug_events() -> switchyard_libs
         Some("error")
     );
 
-    // Debug events retain the propagated failures without polluting normal logs.
+    // Structured logs warn once for the failed call and failed run.
     let events = store.events();
     assert!(
         events.iter().any(|event| {
             event.target == "libsy"
-                && event.level == "DEBUG"
+                && event.level == "WARN"
                 && event.fields.get("selected_model").map(String::as_str) == Some(MODEL)
                 && event
                     .fields
@@ -606,7 +606,7 @@ async fn failed_call_records_error_outcome_and_debug_events() -> switchyard_libs
     assert!(
         events.iter().any(|event| {
             event.target == "libsy"
-                && event.level == "DEBUG"
+                && event.level == "WARN"
                 && event.fields.get("algorithm").map(String::as_str) == Some(ALGO)
                 && event
                     .fields

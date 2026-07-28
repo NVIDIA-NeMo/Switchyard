@@ -32,7 +32,7 @@ pub(crate) fn frame_stream(
                     }
                 },
                 Err(error) => {
-                    tracing::debug!(error = %error, "stream iteration failed");
+                    tracing::warn!(error = %error, "stream iteration failed");
                     failed = true;
                     error_event(target_format, error.to_string())
                 }
