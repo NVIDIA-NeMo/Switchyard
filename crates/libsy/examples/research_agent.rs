@@ -6,7 +6,7 @@
 //! Every target owns an `RoutedLlmClient`, so the agent runs each request to completion with
 //! [`Algorithm::run`]: it serves each offloaded call with the routed
 //! target's `default_client` and returns the final response — no stream to drive. The
-//! classifier cascade runs inside `FallThrough`; the agent never sees it. To drive the step
+//! classifier cascade runs inside `LlmTaskClassifier`; the agent never sees it. To drive the step
 //! stream yourself instead, use
 //! `Algorithm::run_stream`. Run with:
 //!   cargo run -p libsy --example research_agent
@@ -14,10 +14,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
+use switchyard_libsy::algorithms::LlmTaskClassifier;
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Result, RoutedLlmClient, State,
+    Response, Result, RoutedLlmClient,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 
@@ -102,11 +102,8 @@ async fn main() -> Result<()> {
     let classifier = target_set.get_target(CLASSIFIER)?;
     let weak = target_set.get_target(WEAK)?;
     let strong = target_set.get_target(STRONG)?;
-    let algo: Arc<dyn Algorithm> = Arc::new(
-        FallThrough::<State>::new_with_state(target_set).with_classifier(Arc::new(
-            LlmTaskClassifier::new(classifier, weak, strong, THRESHOLD)?,
-        )),
-    );
+    let algo: Arc<dyn Algorithm> =
+        Arc::new(LlmTaskClassifier::new(classifier, weak, strong, THRESHOLD)?);
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

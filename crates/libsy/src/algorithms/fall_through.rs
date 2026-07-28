@@ -263,7 +263,6 @@ where
         self.execute(ctx, driver, request).await
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

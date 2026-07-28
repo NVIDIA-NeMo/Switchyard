@@ -1,20 +1,24 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Capability routing with a judge-backed classifier.
+//! Task-level capability routing with a judge-backed classifier.
 //!
-//! The classifier judges the full inbound request and emits one decisive target for a
-//! [`FallThrough`](super::FallThrough) cascade. Invalid, abstained, or unavailable judge output
-//! always selects the capable target.
+//! The algorithm owns a [`FallThrough`](super::FallThrough) cascade. Its classifier judges the
+//! full inbound request and selects one decisive target. Invalid, abstained, or unavailable judge
+//! output always selects the capable target.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 use switchyard_protocol::{LlmRequest, Message, OutputParams, Role};
 
-use super::util::{Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use super::util::{AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use super::FallThrough;
 use crate::{
-    Classification, Classifier, Driver, LibsyError, LlmTarget, Request, Result, Score, State,
+    Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTarget, LlmTargetSet,
+    Request, Response, Result, RoutedLlmClient, Score, State,
 };
 
 // TODO: As a first implementation, keeping the prompt and schema paths hardcoded. Add a way to dynamically load and parse user passed prompt and schema.
@@ -162,16 +166,22 @@ impl JudgePolicy for TaskClassifierPolicy {
     }
 }
 
-/// A full-request capability classifier configured with the packaged prompt and schema.
-pub struct LlmTaskClassifier {
+struct TaskClassifier {
     classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
     efficient_target: String,
     capable_target: String,
 }
 
+/// A task-level capability routing algorithm with an internal fall-through cascade.
+pub struct LlmTaskClassifier {
+    route: FallThrough<State>,
+    targets: LlmTargetSet,
+    classifier: Arc<TaskClassifier>,
+}
+
 impl LlmTaskClassifier {
-    /// Selects `efficient_target` when the judge's `p_solve` reaches `threshold`, and
-    /// `capable_target` otherwise. Errors if `threshold` is outside `[0.0, 1.0]`.
+    /// Routes to `efficient_target` when the judge's `p_solve` reaches `threshold`; otherwise
+    /// routes to `capable_target`. Errors if `threshold` is outside `[0.0, 1.0]`.
     pub fn new(
         judge_target: LlmTarget,
         efficient_target: LlmTarget,
@@ -186,9 +196,10 @@ impl LlmTaskClassifier {
         let judge = CapabilityJudge {
             config: Self::load_judge_config()?,
         };
+        let targets = LlmTargetSet::new(vec![efficient_target.clone(), capable_target.clone()]);
         let efficient_target = efficient_target.semantic_name;
         let capable_target = capable_target.semantic_name;
-        Ok(Self {
+        let classifier = Arc::new(TaskClassifier {
             classifier: JudgeClassifier::new(
                 judge,
                 judge_target,
@@ -200,7 +211,35 @@ impl LlmTaskClassifier {
             ),
             efficient_target,
             capable_target,
+        });
+        // Added Fallthrough to the classifier so that it remains the internal implementation detail only
+        // Users just have to export the algorithm as a whole.
+        Ok(Self {
+            route: FallThrough::<State>::new_with_state(targets.clone())
+                .with_name("llm_task_classifier")
+                .with_classifier(classifier.clone()),
+            targets,
+            classifier,
         })
+    }
+
+    /// Adds session affinity before the judge-backed classifier.
+    ///
+    /// When `message_hash_fallback` is enabled, requests without a session header are keyed by
+    /// their stable system/developer and first-user-message prefix.
+    pub fn with_affinity(self, message_hash_fallback: bool) -> Self {
+        let affinity = if message_hash_fallback {
+            AffinityRouter::new().with_message_hash_fallback()
+        } else {
+            AffinityRouter::new()
+        };
+        let affinity = Arc::new(affinity);
+        let route = FallThrough::<State>::new_with_state(self.targets.clone())
+            .with_name("llm_task_classifier")
+            .with_processor(affinity.clone())
+            .with_classifier(affinity)
+            .with_classifier(self.classifier.clone());
+        Self { route, ..self }
     }
 
     /// Loads the judge configuration from the packaged prompt and schema.
@@ -230,7 +269,7 @@ impl LlmTaskClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for LlmTaskClassifier {
+impl Classifier<State> for TaskClassifier {
     fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
         if self.efficient_target == self.capable_target {
             None
@@ -253,6 +292,42 @@ impl Classifier<State> for LlmTaskClassifier {
     }
 }
 
+#[async_trait]
+impl Classifier<State> for LlmTaskClassifier {
+    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
+        self.classifier.routing_tier(selected_model)
+    }
+
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+    ) -> Result<Classification> {
+        self.classifier.score(state, request, driver).await
+    }
+}
+
+#[async_trait]
+impl Algorithm for LlmTaskClassifier {
+    fn name(&self) -> &str {
+        "llm_task_classifier"
+    }
+
+    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
+        self.route.count_tokens_client()
+    }
+
+    async fn create_run_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Response> {
+        self.route.execute(ctx, driver, request).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -260,9 +335,9 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
-    use switchyard_protocol::{completion_text, text_response, LlmClientError};
+    use switchyard_protocol::{completion_text, text_response, LlmClientError, Metadata};
 
-    use crate::{Algorithm, Context, LlmResponse, LlmTargetSet, Response, RoutedLlmClient};
+    use crate::{Algorithm, Context, LlmResponse, Response, RoutedLlmClient};
 
     const TEST_THRESHOLD: f64 = 0.5;
 
@@ -352,19 +427,17 @@ mod tests {
         }
     }
 
-    fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<super::super::FallThrough<State>>> {
+    fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<LlmTaskClassifier>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let targets = LlmTargetSet::new(vec![target("efficient"), target("capable")]);
-        let efficient = targets.get_target("efficient")?;
-        let capable = targets.get_target("capable")?;
-        Ok(Arc::new(
-            super::super::FallThrough::<State>::new_with_state(targets).with_classifier(Arc::new(
-                LlmTaskClassifier::new(target("judge"), efficient, capable, TEST_THRESHOLD)?,
-            )),
-        ))
+        Ok(Arc::new(LlmTaskClassifier::new(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            TEST_THRESHOLD,
+        )?))
     }
 
     fn classify_request() -> Request {
@@ -375,6 +448,16 @@ mod tests {
             ),
             raw_request: None,
             metadata: None,
+        }
+    }
+
+    fn classify_session_request() -> Request {
+        Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                ..Metadata::default()
+            }),
+            ..classify_request()
         }
     }
 
@@ -405,6 +488,67 @@ mod tests {
             client.calls(),
             vec!["judge", "efficient", "judge", "efficient"]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn affinity_reuses_the_first_session_decision_without_a_second_judge_call() -> Result<()>
+    {
+        let client = Arc::new(PerRequestClient::default());
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(client.clone()),
+        };
+        let router = Arc::new(
+            LlmTaskClassifier::new(
+                target("judge"),
+                target("efficient"),
+                target("capable"),
+                TEST_THRESHOLD,
+            )?
+            .with_affinity(false),
+        );
+
+        router
+            .clone()
+            .run(Context::default(), classify_session_request())
+            .await?;
+        router
+            .clone()
+            .run(Context::default(), classify_session_request())
+            .await?;
+
+        assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn message_hash_fallback_reuses_a_task_without_session_metadata() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(client.clone()),
+        };
+        let router = Arc::new(
+            LlmTaskClassifier::new(
+                target("judge"),
+                target("efficient"),
+                target("capable"),
+                TEST_THRESHOLD,
+            )?
+            .with_affinity(true),
+        );
+
+        router
+            .clone()
+            .run(Context::default(), classify_request())
+            .await?;
+        router
+            .clone()
+            .run(Context::default(), classify_request())
+            .await?;
+
+        assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
         Ok(())
     }
 

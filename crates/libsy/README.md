@@ -8,11 +8,11 @@ so it drops into a proxy, gateway, or agent runtime.
 
 ## Example
 
-Build a target set, pick an algorithm, run a request:
+Build the targets, pick an algorithm, run a request:
 
 ```rust
-use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request, State};
-use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
+use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, Request};
+use switchyard_libsy::algorithms::LlmTaskClassifier;
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -20,15 +20,9 @@ use std::sync::Arc;
 let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
 let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
 
-let classifier = target("classifier");
-let strong = target("strong");
-let weak = target("weak");
-let targets = LlmTargetSet::new(vec![strong.clone(), weak.clone()]);
-let algo: Arc<dyn Algorithm> = Arc::new(
-    FallThrough::<State>::new_with_state(targets).with_classifier(Arc::new(LlmTaskClassifier::new(
-        classifier, weak, strong, 0.5,
-    )?)),
-);
+let algo: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
+    target("classifier"), target("weak"), target("strong"), 0.5,
+)?);
 
 let req = Request {
     // `text_request` is the single-turn shortcut; build an `LlmRequest` directly for
@@ -222,13 +216,11 @@ pub trait Decision: Send + Sync {
 }
 ```
 
-Compose a classifier into `FallThrough`; the fall-through algorithm calls the judge,
-applies its policy, and then invokes the selected target:
+`LlmTaskClassifier` owns its fall-through cascade: it calls the judge, applies its policy, and
+then invokes the selected target:
 
 ```rust
-let classifier = LlmTaskClassifier::new(judge_target, weak_target, strong_target, 0.5)?;
-let router =
-    FallThrough::<State>::new_with_state(targets).with_classifier(Arc::new(classifier));
+let router = LlmTaskClassifier::new(judge_target, weak_target, strong_target, 0.5)?;
 ```
 
 ## Errors
@@ -301,8 +293,8 @@ agents live in [`examples`](examples/) folder.
 
 - [`Random`](src/algorithms/rand.rs) — uniform or weighted random over the set
   (one call).
-- [`LlmTaskClassifier`](src/algorithms/llm_class.rs) — capability judge for a
-  [`FallThrough`](src/algorithms/fall_through.rs) classifier cascade.
+- [`LlmTaskClassifier`](src/algorithms/llm_class.rs) — task-level capability routing with an
+  internal [`FallThrough`](src/algorithms/fall_through.rs) cascade.
 - [`EnsembleOrchAlgo`](examples/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.
 
