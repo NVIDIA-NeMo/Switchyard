@@ -83,7 +83,7 @@ impl AffinityRouter {
         }
     }
 
-    /// Uses a stable system/developer and first-user-message hash when metadata has no session.
+    /// Uses the latest user-message text as a fallback key when metadata has no session.
     pub fn with_message_hash_fallback(mut self) -> Self {
         self.message_hash_fallback = true;
         self
@@ -127,7 +127,7 @@ impl AffinityRouter {
             .is_some_and(|metadata| metadata.is_subagent);
         (!self.subagents_only && !is_subagent && self.message_hash_fallback)
             .then(|| {
-                message_hash(request).map(|hash| {
+                last_user_message_hash(request).map(|hash| {
                     tracing::debug!(affinity_key = %hash, "affinity using message hash fallback");
                     AffinityKey::Session(hash)
                 })
@@ -156,30 +156,19 @@ where
     }
 }
 
-/// Hashes the stable prefix shared by every turn of one task.
-fn message_hash(request: &Request) -> Option<String> {
-    let mut hasher = DefaultHasher::new();
-    for instruction in request
+/// Hashes the newest user message for task-based fallback affinity.
+/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we need to hash the latest user message.
+/// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
+fn last_user_message_hash(request: &Request) -> Option<String> {
+    let message = request
         .llm_request
-        .instructions
+        .messages
         .iter()
-        .filter(|instruction| matches!(instruction.role, Role::System | Role::Developer))
-    {
-        serde_json::to_string(instruction).ok()?.hash(&mut hasher);
-    }
-    for message in &request.llm_request.messages {
-        match message.role {
-            Role::System | Role::Developer => {
-                serde_json::to_string(message).ok()?.hash(&mut hasher);
-            }
-            Role::User => {
-                serde_json::to_string(message).ok()?.hash(&mut hasher);
-                return Some(format!("{:016x}", hasher.finish()));
-            }
-            _ => {}
-        }
-    }
-    None
+        .rev()
+        .find(|message| message.role == Role::User)?;
+    let mut hasher = DefaultHasher::new();
+    message.text_content("")?.hash(&mut hasher);
+    Some(format!("{:016x}", hasher.finish()))
 }
 
 #[async_trait]
@@ -222,7 +211,9 @@ mod tests {
 
     use std::sync::Arc;
 
-    use switchyard_protocol::{text_request, Decision, LlmRequest, Message, Metadata};
+    use switchyard_protocol::{
+        text_request, ContentBlock, Decision, LlmRequest, Message, Metadata,
+    };
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
@@ -450,26 +441,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_hash_fallback_retains_a_task_across_turns() -> Result<(), BoxErr> {
+    async fn message_hash_fallback_uses_the_latest_user_message() -> Result<(), BoxErr> {
         let router = AffinityRouter::new().with_message_hash_fallback();
         let mut state = ();
 
-        let mut first = task_request(None, "Add a unit test for this function.", None);
+        let mut first = task_request(
+            None,
+            "Add a unit test for this function.",
+            Some("Now run the test suite."),
+        );
         retain(&router, &mut state, &mut first, "weak").await?;
 
-        let mut follow_up = task_request(
+        let mut same_turn = task_request(
             None,
             "Add a unit test for this function.",
             Some("Now run the test suite."),
         );
         assert_eq!(
-            scores(&router, &mut state, &mut follow_up)
+            scores(&router, &mut state, &mut same_turn)
                 .await?
                 .first()
                 .map(|score| score.target.as_str()),
             Some("weak")
         );
+
+        let mut next_turn = task_request(
+            None,
+            "Add a unit test for this function.",
+            Some("Now file a pull request."),
+        );
+        assert!(scores(&router, &mut state, &mut next_turn)
+            .await?
+            .is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn user_message_hash_ignores_non_text_provider_payloads() {
+        let request = |user_message| Request {
+            llm_request: LlmRequest {
+                messages: vec![user_message],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+        let text_only = request(Message::text(Role::User, "Implement the parser."));
+        let text_with_reasoning = request(Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "Implement the parser.".to_string(),
+                },
+                ContentBlock::Reasoning {
+                    text: "Internal provider reasoning.".to_string(),
+                    signature: Some("provider-signature".to_string()),
+                },
+            ],
+        });
+
+        assert_eq!(
+            last_user_message_hash(&text_only),
+            last_user_message_hash(&text_with_reasoning)
+        );
     }
 
     #[tokio::test]

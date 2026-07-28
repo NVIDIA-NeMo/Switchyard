@@ -25,7 +25,6 @@ use crate::{
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/schema.json");
 // TODO: There can be more knobs to tune the classifier after its verdict is parsed. Add more later.
-const RECENT_MESSAGE_WINDOW: usize = 5;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,48 +51,6 @@ impl TaskClassifierVerdict {
     }
 }
 
-/// Keeps client instructions, the initial task, and bounded recent dialogue for the judge.
-fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
-    let mut system = Vec::new();
-    let mut first_user = None;
-    let mut first_user_idx = None;
-    for (idx, message) in messages.iter().enumerate() {
-        match message.role {
-            Role::System | Role::Developer => system.push(message.clone()),
-            Role::User if first_user.is_none() => {
-                first_user = Some(message.clone());
-                first_user_idx = Some(idx);
-            }
-            _ => {}
-        }
-    }
-    let Some(first_user) = first_user else {
-        return system;
-    };
-    let tail = messages
-        .iter()
-        .enumerate()
-        .filter(|(idx, message)| {
-            *idx > first_user_idx.unwrap_or(0)
-                && !matches!(message.role, Role::System | Role::Developer)
-        })
-        .map(|(_, message)| message.clone())
-        .collect::<Vec<_>>();
-    if recent_turn_window == 0 {
-        let mut out = system;
-        out.push(first_user);
-        if let Some(last_user) = tail.iter().rev().find(|message| message.role == Role::User) {
-            out.push(last_user.clone());
-        }
-        return out;
-    }
-    let mut out = system;
-    out.push(first_user);
-    let start = tail.len().saturating_sub(recent_turn_window);
-    out.extend_from_slice(&tail[start..]);
-    out
-}
-
 struct CapabilityJudge {
     config: JudgeConfig,
 }
@@ -102,8 +59,16 @@ impl Judge for CapabilityJudge {
     type Verdict = TaskClassifierVerdict;
 
     fn build_request(&self, _state: &State, request: &Request) -> Request {
-        // The judge owns the leading system prompt; client instructions and task context follow.
-        let mut messages = trim_messages(&request.llm_request.messages, RECENT_MESSAGE_WINDOW);
+        // For task-based routing, classify only the newest user message with the judge prompt.
+        let mut messages = request
+            .llm_request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .cloned()
+            .into_iter()
+            .collect::<Vec<_>>();
         messages.insert(
             0,
             Message::text(Role::System, self.config.system_prompt.clone()),
@@ -226,7 +191,7 @@ impl LlmTaskClassifier {
     /// Adds session affinity before the judge-backed classifier.
     ///
     /// When `message_hash_fallback` is enabled, requests without a session header are keyed by
-    /// their stable system/developer and first-user-message prefix.
+    /// their latest user message.
     pub fn with_affinity(self, message_hash_fallback: bool) -> Self {
         let affinity = if message_hash_fallback {
             AffinityRouter::new().with_message_hash_fallback()
@@ -628,23 +593,17 @@ mod tests {
         let judge_request = judge.build_request(&State::default(), &request);
 
         assert_eq!(judge_request.llm_request.model, request.llm_request.model);
-        assert_eq!(
-            judge_request.llm_request.messages.len(),
-            RECENT_MESSAGE_WINDOW + 4
-        );
+        assert_eq!(judge_request.llm_request.messages.len(), 2);
         let contents = judge_request
             .llm_request
             .messages
             .iter()
             .filter_map(|message| message.text_content("\n"))
             .collect::<Vec<_>>();
-        assert!(contents.contains(&"initial task".to_string()));
-        assert!(contents.contains(&"recent 1".to_string()));
-        assert!(contents.contains(&"recent 5".to_string()));
-        assert!(contents.contains(&"client instructions".to_string()));
-        assert!(contents.contains(&"client developer instructions".to_string()));
-        assert!(!contents.contains(&"old response".to_string()));
-        assert!(!contents.contains(&"old follow-up".to_string()));
+        assert!(contents.contains(&"recent 4".to_string()));
+        assert!(!contents.contains(&"initial task".to_string()));
+        assert!(!contents.contains(&"recent 5".to_string()));
+        assert!(!contents.contains(&"client instructions".to_string()));
         assert_eq!(
             judge_request.llm_request.output.response_format,
             judge.config.response_schema
