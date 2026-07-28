@@ -119,6 +119,8 @@ impl AffinityRouter {
                 };
             }
         }
+
+        // If headers are not present and we are not a subagent, use the message hash based fallback key to do task based routing
         let is_subagent = request
             .metadata
             .as_ref()
@@ -452,8 +454,8 @@ mod tests {
         let router = AffinityRouter::new().with_message_hash_fallback();
         let mut state = ();
 
-        let first = task_request(None, "Add a unit test for this function.", None);
-        retain(&router, &mut state, &first, "weak").await?;
+        let mut first = task_request(None, "Add a unit test for this function.", None);
+        retain(&router, &mut state, &mut first, "weak").await?;
 
         let mut follow_up = task_request(
             None,
@@ -475,12 +477,12 @@ mod tests {
         let router = AffinityRouter::new().with_message_hash_fallback();
         let mut state = ();
 
-        let first = task_request(
+        let mut first = task_request(
             Some(session("session-1", "agent-a")),
             "Implement the parser.",
             None,
         );
-        retain(&router, &mut state, &first, "strong").await?;
+        retain(&router, &mut state, &mut first, "strong").await?;
 
         let mut other_session = task_request(
             Some(session("session-2", "agent-a")),
