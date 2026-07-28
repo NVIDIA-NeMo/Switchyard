@@ -12,7 +12,7 @@ Build a target set, pick an algorithm, run a request:
 
 ```rust
 use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, LlmTargetSet, Request, SharedState};
-use switchyard_libsy::algorithms::{FallThrough, LlmClassifier};
+use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: So
 let targets = LlmTargetSet::new(vec![target("classifier"), target("strong"), target("weak")]);
 let judge_target = targets.get_target("classifier")?;
 let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
-    FallThrough::new(targets).with_classifier(Arc::new(LlmClassifier::new(
+    FallThrough::new(targets).with_classifier(Arc::new(LlmTaskClassifier::new(
         judge_target, "weak", "strong",
     )?)),
 );
@@ -225,7 +225,7 @@ Compose a classifier into `FallThrough`; the fall-through algorithm calls the ju
 applies its policy, and then invokes the selected target:
 
 ```rust
-let classifier = LlmClassifier::new(judge_target, "weak", "strong")?;
+let classifier = LlmTaskClassifier::new(judge_target, "weak", "strong")?;
 let router = FallThrough::new(targets).with_classifier(Arc::new(classifier));
 ```
 
@@ -283,7 +283,7 @@ agents live in [`examples`](examples/) folder.
 
 - [`Random`](src/algorithms/rand.rs) — uniform or weighted random over the set
   (one call).
-- [`LlmClassifier`](src/algorithms/llm_class.rs) — capability judge for a
+- [`LlmTaskClassifier`](src/algorithms/llm_class.rs) — capability judge for a
   [`FallThrough`](src/algorithms/fall_through.rs) classifier cascade.
 - [`EnsembleOrchAlgo`](examples/ensemble.rs) — stateful: fan out to
   candidates, judge the best, commit to the winner after N exploration turns.

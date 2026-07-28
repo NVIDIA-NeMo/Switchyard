@@ -13,6 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-stream.workspace = true
+async-trait.workspace = true
 axum = "0.8"
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }

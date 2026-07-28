@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use switchyard_libsy::algorithms::{FallThrough, LlmClassifier};
+use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
     Response, Result, RoutedLlmClient, SharedState,
@@ -24,6 +24,8 @@ use switchyard_protocol::{completion_text, text_request, text_response};
 const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
 const WEAK: &str = "weak/model";
+/// Lowest judge-estimated solve probability that still routes to the weak model.
+const THRESHOLD: f64 = 0.5;
 
 /// Stub transport. Real integrators implement `RoutedLlmClient` over their own HTTP.
 struct StubClient;
@@ -95,10 +97,15 @@ impl ResearchAgent {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let target_set = targets();
+    // Resolving every target up front means an unknown name fails here rather than on the
+    // first request, after the judge call has already been made.
     let classifier = target_set.get_target(CLASSIFIER)?;
+    let weak = target_set.get_target(WEAK)?;
+    let strong = target_set.get_target(STRONG)?;
     let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
-        FallThrough::new(target_set)
-            .with_classifier(Arc::new(LlmClassifier::new(classifier, WEAK, STRONG)?)),
+        FallThrough::new(target_set).with_classifier(Arc::new(LlmTaskClassifier::new(
+            classifier, weak, strong, THRESHOLD,
+        )?)),
     );
 
     let agent = ResearchAgent { algo };

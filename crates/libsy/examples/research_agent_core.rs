@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use switchyard_libsy::algorithms::{FallThrough, LlmClassifier};
+use switchyard_libsy::algorithms::{FallThrough, LlmTaskClassifier};
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
     Response, Result, SharedState, Step,
@@ -22,6 +22,8 @@ use tokio_stream::StreamExt;
 const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
 const WEAK: &str = "weak/model";
+/// Lowest judge-estimated solve probability that still routes to the weak model.
+const THRESHOLD: f64 = 0.5;
 
 /// The "real" model call the agent makes to fulfill a promise. The core never
 /// makes the call itself — it hands back a request and waits for the response.
@@ -103,10 +105,15 @@ fn print_decision(decision: &dyn Decision) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let target_set = targets();
+    // Resolving every target up front means an unknown name fails here rather than on the
+    // first request, after the judge call has already been made.
     let classifier = target_set.get_target(CLASSIFIER)?;
+    let weak = target_set.get_target(WEAK)?;
+    let strong = target_set.get_target(STRONG)?;
     let algo: Arc<dyn Algorithm<SharedState>> = Arc::new(
-        FallThrough::new(target_set)
-            .with_classifier(Arc::new(LlmClassifier::new(classifier, WEAK, STRONG)?)),
+        FallThrough::new(target_set).with_classifier(Arc::new(LlmTaskClassifier::new(
+            classifier, weak, strong, THRESHOLD,
+        )?)),
     );
 
     let mut agent = ResearchAgent { algo };

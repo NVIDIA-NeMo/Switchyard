@@ -21,7 +21,6 @@ use crate::{
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/schema.json");
 // TODO: There can be more knobs to tune the classifier after its verdict is parsed. Add more later.
-const THRESHOLD: f64 = 0.5;
 const RECENT_MESSAGE_WINDOW: usize = 5;
 
 #[derive(Deserialize)]
@@ -124,13 +123,20 @@ impl Judge for CapabilityJudge {
 struct TaskClassifierPolicy {
     efficient_target: String,
     capable_target: String,
+    /// Lowest `p_solve` that still routes to the efficient target.
+    threshold: f64,
 }
 
 impl TaskClassifierPolicy {
-    fn new(efficient_target: impl Into<String>, capable_target: impl Into<String>) -> Self {
+    fn new(
+        efficient_target: impl Into<String>,
+        capable_target: impl Into<String>,
+        threshold: f64,
+    ) -> Self {
         Self {
             efficient_target: efficient_target.into(),
             capable_target: capable_target.into(),
+            threshold,
         }
     }
 }
@@ -138,12 +144,12 @@ impl TaskClassifierPolicy {
 impl JudgePolicy for TaskClassifierPolicy {
     type Verdict = TaskClassifierVerdict;
 
-    fn classify(&self, verdict: Option<&Self::Verdict>) -> Classification {
+    fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
         // Judge output is untrusted. Anything incomplete, invalid, abstained, or below the
         // threshold routes to the capable target rather than risking an underpowered route.
         let target = match verdict {
             Some(verdict)
-                if verdict.is_valid() && !verdict.abstain && verdict.p_solve >= THRESHOLD =>
+                if verdict.is_valid() && !verdict.abstain && verdict.p_solve >= self.threshold =>
             {
                 &self.efficient_target
             }
@@ -157,17 +163,24 @@ impl JudgePolicy for TaskClassifierPolicy {
 }
 
 /// A full-request capability classifier configured with the packaged prompt and schema.
-pub struct LlmClassifier {
+pub struct LlmTaskClassifier {
     classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
 }
 
-impl LlmClassifier {
-    /// Creates a classifier that selects `efficient_target` only above the fixed solve threshold.
+impl LlmTaskClassifier {
+    /// Selects `efficient_target` when the judge's `p_solve` reaches `threshold`, and
+    /// `capable_target` otherwise. Errors if `threshold` is outside `[0.0, 1.0]`.
     pub fn new(
         judge_target: LlmTarget,
-        efficient_target: impl Into<String>,
-        capable_target: impl Into<String>,
+        efficient_target: LlmTarget,
+        capable_target: LlmTarget,
+        threshold: f64,
     ) -> Result<Self> {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!("threshold must be between 0 and 1, got {threshold}"),
+            });
+        }
         let judge = CapabilityJudge {
             config: Self::load_judge_config()?,
         };
@@ -175,7 +188,11 @@ impl LlmClassifier {
             classifier: JudgeClassifier::new(
                 judge,
                 judge_target,
-                TaskClassifierPolicy::new(efficient_target, capable_target),
+                TaskClassifierPolicy::new(
+                    efficient_target.semantic_name,
+                    capable_target.semantic_name,
+                    threshold,
+                ),
             ),
         })
     }
@@ -207,7 +224,7 @@ impl LlmClassifier {
 }
 
 #[async_trait]
-impl Classifier for LlmClassifier {
+impl Classifier for LlmTaskClassifier {
     async fn score(
         &self,
         state: &mut State,
@@ -225,14 +242,16 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
-    use switchyard_protocol::{text_response, LlmClientError};
+    use switchyard_protocol::{completion_text, text_response, LlmClientError};
 
     use crate::{
         Algorithm, Context, LlmResponse, LlmTargetSet, Response, RoutedLlmClient, SharedState,
     };
 
+    const TEST_THRESHOLD: f64 = 0.5;
+
     fn policy() -> TaskClassifierPolicy {
-        TaskClassifierPolicy::new("efficient", "capable")
+        TaskClassifierPolicy::new("efficient", "capable", TEST_THRESHOLD)
     }
 
     /// A verdict whose non-routing fields are fixed — only the three the policy reads vary.
@@ -253,7 +272,7 @@ mod tests {
         verdict: Option<&TaskClassifierVerdict>,
     ) -> Result<String> {
         policy
-            .classify(verdict)
+            .to_classification(verdict)
             .argmax(false)?
             .map(|score| score.target)
             .ok_or_else(|| LibsyError::AlgorithmError {
@@ -294,34 +313,76 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn classifier_judges_each_request_without_affinity() -> Result<()> {
-        let client = Arc::new(PerRequestClient::default());
-        let routed_client: Arc<dyn RoutedLlmClient> = client.clone();
+    struct UnreachableJudgeClient;
+
+    #[async_trait]
+    impl RoutedLlmClient for UnreachableJudgeClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn crate::Decision>,
+        ) -> std::result::Result<Response, LlmClientError> {
+            let model = decision.selected_model().to_string();
+            if model == "judge" {
+                return Err(LlmClientError::Timeout {
+                    source: Box::new(std::io::Error::other("judge unreachable")),
+                });
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, format!("answer from {model}"))),
+                metadata: request.metadata,
+            })
+        }
+    }
+
+    fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<super::super::FallThrough>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
-            llm_client: Some(routed_client.clone()),
+            llm_client: Some(client.clone()),
         };
-        let judge = target("judge");
-        let router = Arc::new(
-            super::super::FallThrough::new(LlmTargetSet::new(vec![
-                target("efficient"),
-                target("capable"),
-            ]))
-            .with_classifier(Arc::new(LlmClassifier::new(
-                judge,
-                "efficient",
-                "capable",
-            )?)),
-        );
-        let request = || Request {
+        let targets = LlmTargetSet::new(vec![target("efficient"), target("capable")]);
+        let efficient = targets.get_target("efficient")?;
+        let capable = targets.get_target("capable")?;
+        Ok(Arc::new(
+            super::super::FallThrough::new(targets).with_classifier(Arc::new(
+                LlmTaskClassifier::new(target("judge"), efficient, capable, TEST_THRESHOLD)?,
+            )),
+        ))
+    }
+
+    fn classify_request() -> Request {
+        Request {
             llm_request: switchyard_protocol::text_request(
                 Some("auto".to_string()),
                 "classify this task",
             ),
             raw_request: None,
             metadata: None,
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
+        let router = router(Arc::new(UnreachableJudgeClient))?;
+
+        let (trace, response) = router
+            .run(Context::<SharedState>::default(), classify_request())
+            .await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("answer from capable".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classifier_judges_each_request_without_affinity() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let router = router(client.clone())?;
+        let request = classify_request;
 
         router
             .clone()
@@ -340,12 +401,39 @@ mod tests {
     }
 
     #[test]
-    fn threshold_policy_uses_the_fixed_threshold() -> Result<()> {
+    fn the_threshold_boundary_is_inclusive() -> Result<()> {
         let policy = policy();
         let at_threshold = verdict(0.5, 0.0, false);
         let below_threshold = verdict(0.49, 1.0, false);
         assert_eq!(selected(&policy, Some(&at_threshold))?, "efficient");
         assert_eq!(selected(&policy, Some(&below_threshold))?, "capable");
+        Ok(())
+    }
+
+    #[test]
+    fn the_threshold_moves_the_routing_boundary() -> Result<()> {
+        let borderline = verdict(0.5, 1.0, false);
+        let strict = TaskClassifierPolicy::new("efficient", "capable", 0.9);
+        let lenient = TaskClassifierPolicy::new("efficient", "capable", 0.1);
+        assert_eq!(selected(&strict, Some(&borderline))?, "capable");
+        assert_eq!(selected(&lenient, Some(&borderline))?, "efficient");
+        Ok(())
+    }
+
+    #[test]
+    fn an_out_of_range_threshold_is_rejected() -> Result<()> {
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: None,
+        };
+        for bad in [1.5, -0.1, f64::NAN, f64::INFINITY] {
+            assert!(
+                LlmTaskClassifier::new(target("judge"), target("e"), target("c"), bad).is_err(),
+                "threshold {bad} should be rejected"
+            );
+        }
+        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), 0.0)?;
+        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), 1.0)?;
         Ok(())
     }
 
@@ -363,7 +451,7 @@ mod tests {
     #[test]
     fn capability_judge_builds_a_structured_request() -> Result<()> {
         let judge = CapabilityJudge {
-            config: LlmClassifier::load_judge_config()?,
+            config: LlmTaskClassifier::load_judge_config()?,
         };
         let request = Request {
             llm_request: LlmRequest {
@@ -412,9 +500,63 @@ mod tests {
         Ok(())
     }
 
+    fn sample_value(spec: &Value) -> Value {
+        if let Some(first) = spec
+            .get("enum")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+        {
+            return first.clone();
+        }
+        match spec.get("type").and_then(Value::as_str) {
+            Some("number") => serde_json::json!(0.5),
+            Some("boolean") => serde_json::json!(false),
+            _ => serde_json::json!("sample"),
+        }
+    }
+
+    fn schema_shaped_verdict(schema: &Value) -> Result<String> {
+        let properties = schema
+            .pointer("/json_schema/schema/properties")
+            .and_then(Value::as_object)
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "packaged schema declares no properties".to_string(),
+            })?;
+        Ok(Value::Object(
+            properties
+                .iter()
+                .map(|(name, spec)| (name.clone(), sample_value(spec)))
+                .collect(),
+        )
+        .to_string())
+    }
+
+    /// Built from the schema so a property added there fails here rather than silently
+    /// rejecting every production verdict.
+    #[test]
+    fn every_schema_property_round_trips_through_the_judge_parser() -> Result<()> {
+        let config = LlmTaskClassifier::load_judge_config()?;
+        let schema = config
+            .response_schema
+            .as_ref()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "packaged judge config has no response schema".to_string(),
+            })?;
+        let reply = schema_shaped_verdict(schema)?;
+        let judge = CapabilityJudge {
+            config: config.clone(),
+        };
+
+        let verdict = judge.parse(&text_response(None, reply))?;
+
+        assert!(verdict.is_valid());
+        assert!(!verdict.abstain);
+        Ok(())
+    }
+
     #[test]
     fn prompt_includes_concrete_rules_and_schema() -> Result<()> {
-        let config = LlmClassifier::load_judge_config()?;
+        let config = LlmTaskClassifier::load_judge_config()?;
         let prompt = config.system_prompt;
         assert!(prompt.contains("SUP-1 [supported]"));
         assert!(!prompt.contains("{{CAPABILITY_RULES}}"));
