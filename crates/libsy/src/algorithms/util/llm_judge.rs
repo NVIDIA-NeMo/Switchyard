@@ -100,7 +100,7 @@ where
             .llm_response
             .into_agg()
             .await
-            .map_err(|error| LibsyError::external("judge model call", error))?;
+            .map_err(|error| LibsyError::client_call(&self.target.semantic_name, error))?;
         // Bad judge JSON is not a transport failure; let the policy route its unavailable branch.
         Ok(self
             .policy

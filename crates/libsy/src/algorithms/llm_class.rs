@@ -42,12 +42,10 @@ struct TaskClassifierVerdict {
 }
 
 impl TaskClassifierVerdict {
-    /// Reject non-finite or out-of-range probabilities before the policy can route efficiently.
+    /// Reject out-of-range probabilities before the policy can route efficiently. Range
+    /// containment also rejects NaN and the infinities, which compare false against both bounds.
     fn is_valid(&self) -> bool {
-        self.p_solve.is_finite()
-            && (0.0..=1.0).contains(&self.p_solve)
-            && self.confidence.is_finite()
-            && (0.0..=1.0).contains(&self.confidence)
+        (0.0..=1.0).contains(&self.p_solve) && (0.0..=1.0).contains(&self.confidence)
     }
 }
 
@@ -95,12 +93,6 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
 
 struct CapabilityJudge {
     config: JudgeConfig,
-}
-
-impl CapabilityJudge {
-    fn new(config: JudgeConfig) -> Self {
-        Self { config }
-    }
 }
 
 impl Judge for CapabilityJudge {
@@ -176,7 +168,9 @@ impl LlmClassifier {
         efficient_target: impl Into<String>,
         capable_target: impl Into<String>,
     ) -> Result<Self> {
-        let judge = CapabilityJudge::new(Self::load_judge_config()?);
+        let judge = CapabilityJudge {
+            config: Self::load_judge_config()?,
+        };
         Ok(Self {
             classifier: JudgeClassifier::new(
                 judge,
@@ -184,18 +178,6 @@ impl LlmClassifier {
                 TaskClassifierPolicy::new(efficient_target, capable_target),
             ),
         })
-    }
-
-    pub fn load_system_prompt() -> Result<String> {
-        Ok(Self::load_judge_config()?.system_prompt)
-    }
-
-    pub fn load_response_schema() -> Result<Value> {
-        Self::load_judge_config()?
-            .response_schema
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "capability classifier has no response schema".to_string(),
-            })
     }
 
     /// Loads the judge configuration from the packaged prompt and schema.
@@ -238,7 +220,9 @@ impl Classifier for LlmClassifier {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
 
     use super::*;
     use switchyard_protocol::{text_response, LlmClientError};
@@ -251,20 +235,15 @@ mod tests {
         TaskClassifierPolicy::new("efficient", "capable")
     }
 
-    fn verdict(
-        p_solve: f64,
-        confidence: f64,
-        abstain: bool,
-        capability_boundary: &str,
-        primary_rule: &str,
-    ) -> TaskClassifierVerdict {
+    /// A verdict whose non-routing fields are fixed — only the three the policy reads vary.
+    fn verdict(p_solve: f64, confidence: f64, abstain: bool) -> TaskClassifierVerdict {
         TaskClassifierVerdict {
             _recommended_route: "efficient".to_string(),
             p_solve,
             confidence,
             abstain,
-            _capability_boundary: capability_boundary.to_string(),
-            _primary_rule: primary_rule.to_string(),
+            _capability_boundary: "supported".to_string(),
+            _primary_rule: "SUP-1".to_string(),
             _crux: "test crux".to_string(),
         }
     }
@@ -289,10 +268,7 @@ mod tests {
 
     impl PerRequestClient {
         fn calls(&self) -> Vec<String> {
-            self.calls
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
+            self.calls.lock().clone()
         }
     }
 
@@ -305,10 +281,7 @@ mod tests {
             decision: Arc<dyn crate::Decision>,
         ) -> std::result::Result<Response, LlmClientError> {
             let model = decision.selected_model().to_string();
-            self.calls
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(model.clone());
+            self.calls.lock().push(model.clone());
             let completion = if model == "judge" {
                 r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
             } else {
@@ -369,8 +342,8 @@ mod tests {
     #[test]
     fn threshold_policy_uses_the_fixed_threshold() -> Result<()> {
         let policy = policy();
-        let at_threshold = verdict(0.5, 0.0, false, "supported", "SUP-1");
-        let below_threshold = verdict(0.49, 1.0, false, "supported", "SUP-1");
+        let at_threshold = verdict(0.5, 0.0, false);
+        let below_threshold = verdict(0.49, 1.0, false);
         assert_eq!(selected(&policy, Some(&at_threshold))?, "efficient");
         assert_eq!(selected(&policy, Some(&below_threshold))?, "capable");
         Ok(())
@@ -379,8 +352,8 @@ mod tests {
     #[test]
     fn invalid_or_abstained_verdict_routes_capable() -> Result<()> {
         let policy = policy();
-        let invalid_probability = verdict(1.1, 1.0, false, "supported", "SUP-1");
-        let abstained = verdict(1.0, 1.0, true, "supported", "SUP-1");
+        let invalid_probability = verdict(1.1, 1.0, false);
+        let abstained = verdict(1.0, 1.0, true);
         assert_eq!(selected(&policy, Some(&invalid_probability))?, "capable");
         assert_eq!(selected(&policy, Some(&abstained))?, "capable");
         assert_eq!(selected(&policy, None)?, "capable");
@@ -389,7 +362,9 @@ mod tests {
 
     #[test]
     fn capability_judge_builds_a_structured_request() -> Result<()> {
-        let judge = CapabilityJudge::new(LlmClassifier::load_judge_config()?);
+        let judge = CapabilityJudge {
+            config: LlmClassifier::load_judge_config()?,
+        };
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("inbound".to_string()),
@@ -439,7 +414,8 @@ mod tests {
 
     #[test]
     fn prompt_includes_concrete_rules_and_schema() -> Result<()> {
-        let prompt = LlmClassifier::load_system_prompt()?;
+        let config = LlmClassifier::load_judge_config()?;
+        let prompt = config.system_prompt;
         assert!(prompt.contains("SUP-1 [supported]"));
         assert!(!prompt.contains("{{CAPABILITY_RULES}}"));
         assert!(!prompt.contains("{{PRIMARY_RULE_VALUES}}"));
@@ -447,9 +423,10 @@ mod tests {
         assert!(prompt.contains("\"type\": \"object\""));
         assert!(!prompt.contains("\"json_schema\""));
         assert!(!prompt.contains("\"CapabilityClassifierDecision\""));
-        let schema = LlmClassifier::load_response_schema()?;
-        let rule_values = schema
-            .pointer("/json_schema/schema/properties/primary_rule/enum")
+        let rule_values = config
+            .response_schema
+            .as_ref()
+            .and_then(|schema| schema.pointer("/json_schema/schema/properties/primary_rule/enum"))
             .and_then(Value::as_array)
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "rendered response schema has no primary rule enum".to_string(),
