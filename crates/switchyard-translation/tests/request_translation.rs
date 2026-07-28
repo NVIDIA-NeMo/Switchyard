@@ -9,6 +9,80 @@ use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+// Same-format preservation keeps provider extensions while enforcing Anthropic's wire contract.
+#[test]
+fn anthropic_same_format_requests_are_normalized_before_replay() -> TestResult {
+    let body = json!({
+        "model": "claude",
+        "system": "Top-level rules.",
+        "reasoning_effort": "high",
+        "context_management": {"edits": []},
+        "vendor_option": {"preserve": true},
+        "messages": [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "System rules."},
+                    {"type": "image", "source": {"type": "url", "url": "https://example.test/a.png"}}
+                ]
+            },
+            {"role": "developer", "content": "Developer rules."},
+            {"role": "user", "content": "Use the tool."},
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_01*bad:id",
+                    "name": "lookup",
+                    "input": {}
+                }]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01*bad:id",
+                    "content": "done"
+                }]
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "synthetic", "signature": ""},
+                    {"type": "thinking", "thinking": "real", "signature": "signed"},
+                    {"type": "text", "text": "visible"}
+                ]
+            }
+        ]
+    });
+
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["system"],
+        "Top-level rules.\n\nSystem rules.\n\nDeveloper rules."
+    );
+    assert!(output.get("reasoning_effort").is_none());
+    assert!(output.get("context_management").is_none());
+    assert_eq!(output["vendor_option"], json!({"preserve": true}));
+    assert_eq!(output["messages"].as_array().map(Vec::len), Some(4));
+    assert_eq!(output["messages"][1]["content"][0]["id"], "toolu_01_bad_id");
+    assert_eq!(
+        output["messages"][2]["content"][0]["tool_use_id"],
+        "toolu_01_bad_id"
+    );
+    assert_eq!(output["messages"][3]["content"][0]["thinking"], "real");
+    assert_eq!(output["messages"][3]["content"][1]["text"], "visible");
+    Ok(())
+}
+
 // Verifies Anthropic-only request fields are dropped or mapped for OpenAI Chat.
 #[test]
 fn anthropic_request_translates_to_openai_chat_without_anthropic_only_fields() -> TestResult {

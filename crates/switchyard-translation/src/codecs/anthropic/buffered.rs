@@ -19,7 +19,6 @@ use crate::llm::{
     SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
-use crate::util::sanitize_anthropic_tool_use_id;
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response,
@@ -27,6 +26,7 @@ use crate::util::{
 use crate::util::{
     json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
 };
+use crate::util::{normalize_anthropic_tool_use_ids, sanitize_anthropic_tool_use_id};
 
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
@@ -154,7 +154,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             exact_preserved_request(&request.preservation, WireFormat::AnthropicMessages, policy)
         {
             return Ok(EncodedRequest {
-                body,
+                body: normalize_outbound_request(body),
                 diagnostics: Vec::new(),
             });
         }
@@ -223,7 +223,11 @@ impl FormatCodec for AnthropicMessagesCodec {
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
 
-        let body = embed_preservation(Value::Object(body), &request.preservation, policy);
+        let body = normalize_outbound_request(embed_preservation(
+            Value::Object(body),
+            &request.preservation,
+            policy,
+        ));
         Ok(EncodedRequest { body, diagnostics })
     }
 
@@ -332,6 +336,169 @@ impl FormatCodec for AnthropicMessagesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+// Makes both translated and exactly preserved requests valid for conservative
+// Anthropic Messages endpoints without dropping unknown provider extensions.
+fn normalize_outbound_request(mut body: Value) -> Value {
+    let Value::Object(object) = &mut body else {
+        return body;
+    };
+    object.remove("reasoning_effort");
+    object.remove("context_management");
+
+    if let Some(messages) = object.remove("messages") {
+        let (messages, system_text) = lift_message_level_system(messages);
+        append_lifted_system_text(object, system_text);
+        let messages = normalize_anthropic_tool_use_ids(messages);
+        object.insert(
+            "messages".to_string(),
+            strip_unsigned_thinking_blocks(messages),
+        );
+    }
+    body
+}
+
+// Moves message-level system and developer turns into Anthropic's top-level
+// system field for compatibility with endpoints that only accept user/assistant.
+fn lift_message_level_system(messages: Value) -> (Value, Vec<String>) {
+    let Value::Array(messages) = messages else {
+        return (messages, Vec::new());
+    };
+
+    let mut kept_messages = Vec::with_capacity(messages.len());
+    let mut system_text = Vec::new();
+    for message in messages {
+        if matches!(
+            message.get("role").and_then(Value::as_str),
+            Some("system") | Some("developer")
+        ) {
+            if let Some(text) = message.get("content").and_then(system_text_from_content) {
+                system_text.push(text);
+            }
+        } else {
+            kept_messages.push(message);
+        }
+    }
+    (Value::Array(kept_messages), system_text)
+}
+
+// Converts text-like message content into top-level system text.
+fn system_text_from_content(content: &Value) -> Option<String> {
+    match content {
+        Value::String(text) if !text.is_empty() => Some(text.clone()),
+        Value::String(_) | Value::Null => None,
+        Value::Array(blocks) => {
+            let parts = blocks
+                .iter()
+                .filter_map(system_text_from_content_block)
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join("\n\n"))
+        }
+        other => Some(other.to_string()),
+    }
+}
+
+fn system_text_from_content_block(block: &Value) -> Option<String> {
+    match block {
+        Value::String(text) if !text.is_empty() => Some(text.clone()),
+        Value::Object(object)
+            if matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("text") | Some("input_text")
+            ) =>
+        {
+            object
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(ToOwned::to_owned)
+        }
+        _ => None,
+    }
+}
+
+// Appends lifted text without changing an existing structured system prompt.
+fn append_lifted_system_text(object: &mut Map<String, Value>, system_text: Vec<String>) {
+    if system_text.is_empty() {
+        return;
+    }
+
+    let joined = system_text.join("\n\n");
+    match object.remove("system") {
+        None | Some(Value::Null) => {
+            object.insert("system".to_string(), Value::String(joined));
+        }
+        Some(Value::String(existing)) if existing.is_empty() => {
+            object.insert("system".to_string(), Value::String(joined));
+        }
+        Some(Value::String(existing)) => {
+            object.insert(
+                "system".to_string(),
+                Value::String(format!("{existing}\n\n{joined}")),
+            );
+        }
+        Some(Value::Array(mut blocks)) => {
+            blocks.extend(
+                system_text
+                    .into_iter()
+                    .map(|text| json!({"type": "text", "text": text})),
+            );
+            object.insert("system".to_string(), Value::Array(blocks));
+        }
+        Some(other) => {
+            object.insert(
+                "system".to_string(),
+                Value::String(format!("{other}\n\n{joined}")),
+            );
+        }
+    }
+}
+
+// Anthropic requires signatures when assistant thinking blocks are replayed.
+fn strip_unsigned_thinking_blocks(messages: Value) -> Value {
+    match messages {
+        Value::Array(messages) => Value::Array(
+            messages
+                .into_iter()
+                .map(strip_unsigned_thinking_from_message)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn strip_unsigned_thinking_from_message(message: Value) -> Value {
+    let Value::Object(mut message) = message else {
+        return message;
+    };
+    let Some(content) = message.remove("content") else {
+        return Value::Object(message);
+    };
+    let Value::Array(blocks) = content else {
+        message.insert("content".to_string(), content);
+        return Value::Object(message);
+    };
+
+    let kept = blocks
+        .into_iter()
+        .filter(|block| !is_unsigned_thinking_block(block))
+        .collect::<Vec<_>>();
+    let content = if kept.is_empty() {
+        Value::String(String::new())
+    } else {
+        Value::Array(kept)
+    };
+    message.insert("content".to_string(), content);
+    Value::Object(message)
+}
+
+fn is_unsigned_thinking_block(block: &Value) -> bool {
+    block.get("type").and_then(Value::as_str) == Some("thinking")
+        && !matches!(
+            block.get("signature").and_then(Value::as_str),
+            Some(signature) if !signature.is_empty()
+        )
 }
 
 // Decodes Anthropic's `system` field into instruction blocks.

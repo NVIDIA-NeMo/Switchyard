@@ -8,17 +8,16 @@ use std::env;
 use std::fmt;
 use std::sync::Arc;
 
+use async_stream::try_stream;
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use serde_json::Value;
+use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+
 use crate::{
     merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
     ChatResponse, LlmBackend, LlmTarget, LlmTargetId, ProxyContext, Result, StreamEvent,
     SwitchyardError,
-};
-use async_stream::try_stream;
-use async_trait::async_trait;
-use futures_util::StreamExt;
-use serde_json::{json, Map, Value};
-use switchyard_translation::{
-    normalize_anthropic_tool_use_ids, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 use super::common::{
@@ -40,7 +39,7 @@ pub struct AnthropicNativeBackend {
     target: LlmTarget,
     /// HTTP transport, injectable for deterministic tests.
     transport: Arc<dyn AnthropicTransport>,
-    /// Shared request translator for non-Anthropic inbound payloads.
+    /// Shared request translator and Anthropic outbound normalizer.
     translation: Arc<TranslationEngine>,
     /// Translation policy kept explicit so backend behavior is inspectable.
     translation_policy: TranslationPolicy,
@@ -80,27 +79,22 @@ impl AnthropicNativeBackend {
     }
 
     fn outbound_body(&self, request: &ChatRequest) -> Result<Value> {
-        let mut body = match request.request_type() {
-            ChatRequestType::Anthropic => request.body().clone(),
-            source => {
-                self.translation
-                    .translate_request(
-                        request_wire_format(source),
-                        WireFormat::AnthropicMessages,
-                        request.body(),
-                        &self.translation_policy,
-                    )
-                    .map_err(|error| {
-                        SwitchyardError::Backend(format!(
-                            "failed to translate {source:?} request to Anthropic Messages: {error}"
-                        ))
-                    })?
-                    .body
-            }
-        };
+        let source = request.request_type();
+        let mut body = self
+            .translation
+            .translate_request(
+                request_wire_format(source),
+                WireFormat::AnthropicMessages,
+                request.body(),
+                &self.translation_policy,
+            )
+            .map_err(|error| {
+                SwitchyardError::Backend(format!(
+                    "failed to translate {source:?} request to Anthropic Messages: {error}"
+                ))
+            })?
+            .body;
         set_json_model(&mut body, self.target.model.as_str());
-        strip_anthropic_incompatible_fields(&mut body);
-        normalize_anthropic_body(&mut body);
         // Per-target ``extra_body`` merged last; caller wins on key
         // conflicts (see :func:`merge_target_extra_body`).
         merge_target_extra_body(&mut body, self.target.extra_body.as_ref());
@@ -280,199 +274,6 @@ fn validate_target_format(target: &LlmTarget) -> Result<()> {
             )))
         }
     }
-}
-
-// Drop fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
-fn strip_anthropic_incompatible_fields(body: &mut Value) {
-    if let Value::Object(object) = body {
-        object.remove("reasoning_effort");
-        object.remove("context_management");
-    }
-}
-
-// Normalize translated Anthropic payloads before applying target overrides.
-fn normalize_anthropic_body(body: &mut Value) {
-    let Value::Object(object) = body else {
-        return;
-    };
-    if let Some(messages) = object.remove("messages") {
-        // AWS documents message-level `role: "system"` as an Opus 4.8-only
-        // Anthropic dialect:
-        // https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-mid-conversation-system.html
-        //
-        // Keep the default conservative for older Bedrock/LiteLLM targets by
-        // lifting those turns into top-level `system`.
-        // TODO: add target-level Anthropic dialect support so
-        // Opus 4.8 can opt into mid-conversation system messages explicitly.
-        let (messages, system_text) = lift_message_level_system(messages);
-        append_lifted_system_text(object, system_text);
-        let messages = normalize_anthropic_tool_use_ids(messages);
-        object.insert(
-            "messages".to_string(),
-            strip_unsigned_thinking_blocks(messages),
-        );
-    }
-}
-
-// Moves Anthropic Opus-4.8-style message-level system turns out of the
-// conversation so legacy Anthropic-compatible backends do not reject them.
-fn lift_message_level_system(messages: Value) -> (Value, Vec<String>) {
-    let Value::Array(messages) = messages else {
-        return (messages, Vec::new());
-    };
-
-    let mut kept_messages = Vec::with_capacity(messages.len());
-    let mut system_text = Vec::new();
-    for message in messages {
-        if is_message_level_system(&message) {
-            if let Some(text) = system_text_from_message(&message) {
-                system_text.push(text);
-            }
-        } else {
-            kept_messages.push(message);
-        }
-    }
-
-    (Value::Array(kept_messages), system_text)
-}
-
-// Treats `system` and OpenAI/Codex `developer` roles as instruction-like
-// turns. `developer` is not an Anthropic Opus 4.8 role; lifting it matches the
-// existing OpenAI-to-Anthropic translator behavior and prevents malformed
-// Anthropic-bound traffic from leaking an invalid role upstream.
-fn is_message_level_system(message: &Value) -> bool {
-    matches!(
-        message.get("role").and_then(Value::as_str),
-        Some("system") | Some("developer")
-    )
-}
-
-// Extracts text from an invalid message-level system/developer turn.
-fn system_text_from_message(message: &Value) -> Option<String> {
-    message.get("content").and_then(system_text_from_content)
-}
-
-// Converts Anthropic text-ish content into top-level system text.
-fn system_text_from_content(content: &Value) -> Option<String> {
-    match content {
-        Value::String(text) if !text.is_empty() => Some(text.clone()),
-        Value::String(_) | Value::Null => None,
-        Value::Array(blocks) => {
-            let parts = blocks
-                .iter()
-                .filter_map(system_text_from_content_block)
-                .collect::<Vec<_>>();
-            (!parts.is_empty()).then(|| parts.join("\n\n"))
-        }
-        other => Some(other.to_string()),
-    }
-}
-
-// Extracts the supported text shape from one structured content block.
-fn system_text_from_content_block(block: &Value) -> Option<String> {
-    match block {
-        Value::String(text) if !text.is_empty() => Some(text.clone()),
-        Value::Object(object) => match object.get("type").and_then(Value::as_str) {
-            Some("text") | Some("input_text") => object
-                .get("text")
-                .and_then(Value::as_str)
-                .filter(|text| !text.is_empty())
-                .map(ToOwned::to_owned),
-            // Message-level system/developer turns are downgraded for legacy Anthropic
-            // compatibility. Only text-like instruction content is replayed; images and
-            // other non-text blocks are intentionally not promoted into top-level system.
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-// Appends lifted message-level system text onto any existing Anthropic system field.
-fn append_lifted_system_text(object: &mut Map<String, Value>, system_text: Vec<String>) {
-    if system_text.is_empty() {
-        return;
-    }
-
-    let joined = system_text.join("\n\n");
-    match object.remove("system") {
-        None | Some(Value::Null) => {
-            object.insert("system".to_string(), Value::String(joined));
-        }
-        Some(Value::String(existing)) if existing.is_empty() => {
-            object.insert("system".to_string(), Value::String(joined));
-        }
-        Some(Value::String(existing)) => {
-            object.insert(
-                "system".to_string(),
-                Value::String(format!("{existing}\n\n{joined}")),
-            );
-        }
-        Some(Value::Array(mut blocks)) => {
-            blocks.extend(
-                system_text
-                    .into_iter()
-                    .map(|text| json!({"type": "text", "text": text})),
-            );
-            object.insert("system".to_string(), Value::Array(blocks));
-        }
-        Some(other) => {
-            object.insert(
-                "system".to_string(),
-                Value::String(format!("{other}\n\n{joined}")),
-            );
-        }
-    }
-}
-
-// Anthropic requires signed thinking blocks on replay; remove unsigned blocks
-// so passthrough and translated requests remain accepted by the API.
-fn strip_unsigned_thinking_blocks(messages: Value) -> Value {
-    match messages {
-        Value::Array(messages) => Value::Array(
-            messages
-                .into_iter()
-                .map(strip_unsigned_thinking_from_message)
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
-fn strip_unsigned_thinking_from_message(message: Value) -> Value {
-    match message {
-        Value::Object(mut message) => {
-            let Some(content) = message.remove("content") else {
-                return Value::Object(message);
-            };
-            let Value::Array(blocks) = content else {
-                message.insert("content".to_string(), content);
-                return Value::Object(message);
-            };
-
-            let kept = blocks
-                .into_iter()
-                .filter(|block| !is_unsigned_thinking_block(block))
-                .collect::<Vec<_>>();
-            let content = if kept.is_empty() {
-                Value::String(String::new())
-            } else {
-                Value::Array(kept)
-            };
-            message.insert("content".to_string(), content);
-            Value::Object(message)
-        }
-        other => other,
-    }
-}
-
-fn is_unsigned_thinking_block(block: &Value) -> bool {
-    if block.get("type").and_then(Value::as_str) != Some("thinking") {
-        return false;
-    }
-    !matches!(
-        block.get("signature").and_then(Value::as_str),
-        Some(signature) if !signature.is_empty()
-    )
 }
 
 fn messages_url(base_url: Option<&str>) -> String {
