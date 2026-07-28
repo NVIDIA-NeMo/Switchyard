@@ -325,5 +325,5 @@ agents live in [`examples`](examples/) folder.
 ## Not yet built
 
 - **`Signals` events** — `process_signals` / `Signals` exist but carry nothing yet.
-- **`Context` fields** — carries the algorithm telemetry label today; correlation ids, budgets, and deadlines still to come.
+- **`Context` fields** — `values: HashMap<String, String>` carries the algorithm telemetry label and `state: S` the caller's per-session state; correlation ids, budgets, and deadlines still to come.
 - **Config-driven construction**.

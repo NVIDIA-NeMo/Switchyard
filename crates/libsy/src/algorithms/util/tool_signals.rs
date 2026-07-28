@@ -185,14 +185,14 @@ static NUMERIC_FAILURE_KEYWORDS: &[&str] = &["failed", "failure", "failures", "e
 ///
 /// A short horizon captures "what is the agent doing right now" while keeping
 /// signals sticky — an error or stall persists a few recovery turns instead of
-/// flickering off the moment one clean result lands. Override per-extractor by
-/// calling [`extract_tool_signals_with_window`] directly.
+/// flickering off the moment one clean result lands. Override per request by
+/// passing a window to [`ToolSignals::from_request`].
 pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
 // ─── output type ─────────────────────────────────────────────────────────────
 
 /// Tool-execution signals stamped on `ProxyContext`. Read by stage_router pickers
-/// via [`crate::get_tool_result_signal`].
+/// via the `get_tool_result_signal` binding.
 #[derive(Clone, Debug, Default)]
 pub struct ToolSignals {
     /// Max severity across the recent window (last `recent_window` tool results):
@@ -209,13 +209,13 @@ pub struct ToolSignals {
     /// TodoWrite / planning tool calls. Investigative (non-producing) activity —
     /// recent todowrites distinguish `exploring` from `spinning` in the scorer.
     pub todowrite_count: u32,
-    /// Edit-type calls within the last [`RECENT_WINDOW`] tool calls.
+    /// Edit-type calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
     pub recent_edit_count: u32,
-    /// Write-type calls within the last [`RECENT_WINDOW`] tool calls.
+    /// Write-type calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
     pub recent_write_count: u32,
-    /// Read-type calls within the last [`RECENT_WINDOW`] tool calls.
+    /// Read-type calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
     pub recent_read_count: u32,
-    /// TodoWrite calls within the last [`RECENT_WINDOW`] tool calls.
+    /// TodoWrite calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
     pub recent_todowrite_count: u32,
     /// Consecutive trailing tool calls in the `Other` category (no Write/Edit/Read/
     /// Plan match). Surfaced in the classifier state summary; not scored directly.

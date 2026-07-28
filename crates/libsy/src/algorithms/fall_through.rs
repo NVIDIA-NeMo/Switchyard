@@ -4,13 +4,13 @@
 //! Fall-through classifier routing: a stateful [`Algorithm`] that routes each turn
 //! through a processor chain and a classifier cascade.
 //!
-//! Each turn: request-side [`Processor`]s fold facts into the session [`State`]; the
+//! Each turn: request-side [`Processor`]s fold facts into the session [`State`](crate::State); the
 //! [`Classifier`] cascade is consulted in order and the first to score decides the target
 //! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
 //! stateful ones (latch, affinity) can bind it.
 //!
 //! [`FallThrough`] itself is stateless — one shared instance serves every session. The
-//! per-session [`State`] rides in the threaded [`Context<SharedState>`] the caller passes into
+//! per-session [`State`](crate::State) rides in the threaded [`Context<SharedState>`] the caller passes into
 //! each turn, so routing can depend on accumulated history rather than the current request
 //! alone. The state is held under a lock, so concurrent turns of the same session serialize
 //! on it.
@@ -46,7 +46,7 @@ impl Decision for FallThroughDecision {
 
 /// Processor chain → classifier cascade → routed model call. See the [module docs](self).
 ///
-/// Stateless: the per-session [`State`] lives in the threaded [`Context<SharedState>`], so one
+/// Stateless: the per-session [`State`](crate::State) lives in the threaded [`Context<SharedState>`], so one
 /// shared instance serves every session (see the module docs).
 pub struct FallThrough {
     processors: Vec<Arc<dyn Processor>>,

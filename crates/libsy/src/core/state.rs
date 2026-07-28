@@ -17,7 +17,7 @@ pub enum StateValue {
     Scalar(f32),
 }
 
-/// State maitaineed by [`Algorithm`]s
+/// State maintained by [`Algorithm`](crate::Algorithm)s
 #[derive(Debug, Clone, Default)]
 pub struct State {
     pub turn_count: u32,
