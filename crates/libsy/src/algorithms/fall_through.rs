@@ -172,12 +172,10 @@ where
             .as_deref()
             .filter(|session_id| !session_id.is_empty())?;
         let mut states = states.lock();
-        Some(
-            states
-                .entry(session_id.to_string())
-                .or_insert_with(|| Arc::new(AsyncMutex::new(S::default())))
-                .clone(),
-        )
+        let state = states
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(S::default())));
+        Some(Arc::clone(state))
     }
 
     async fn route(
