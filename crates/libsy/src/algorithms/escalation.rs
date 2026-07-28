@@ -7,26 +7,26 @@
 //! Once a session escalates, it is pinned to the capable model for all remaining turns —
 //! avoiding repeated weak attempts on a task the efficient model already failed.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use parking_lot::Mutex;
 use serde::Deserialize;
-use serde_json::Value;
 use switchyard_protocol::{completion_text, LlmRequest, Message, OutputParams, Role};
 
 use crate::{
-    algorithms::util::JudgeConfig, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse,
-    LlmTarget, Request, Response, Result, RoutedLlmClient, SharedState,
+    algorithms::util::{
+        load_judge_config, AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy,
+    },
+    Algorithm, Classification, Classifier, Context, Decision, Driver, Event, LibsyError,
+    LlmResponse, LlmTarget, Processor, Request, Response, Result, RoutedLlmClient, Score,
+    SharedState, State, StateValue,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/escalation/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/escalation/schema.json");
 
-/// Upper bound on retained session pins, keeping the process-local map from growing
-/// without limit; an arbitrary entry is evicted once the bound is reached.
-const MAX_PINS: usize = 4096;
+/// Key in [`State::extra`] that carries the efficient model's response to the judge.
+const CANDIDATE_KEY: &str = "escalation.candidate";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,25 +62,80 @@ impl Decision for EscalationDecision {
     }
 }
 
-struct JudgeCallDecision {
-    model: String,
+/// Builds the judge request from the original request and the efficient model's response,
+/// stored in [`State::extra`] under [`CANDIDATE_KEY`] before the judge is called.
+struct EscalationJudge {
+    config: JudgeConfig,
 }
 
-impl Decision for JudgeCallDecision {
-    fn selected_model(&self) -> &str {
-        &self.model
-    }
+impl Judge for EscalationJudge {
+    type Verdict = EscalationVerdict;
 
-    fn is_routed_call(&self) -> bool {
-        false
-    }
+    fn build_request(&self, state: &State, request: &Request) -> Request {
+        let candidate = state
+            .extra
+            .get(CANDIDATE_KEY)
+            .and_then(|v| {
+                if let StateValue::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("");
 
-    fn reasoning(&self) -> Option<&str> {
-        Some("escalation quality judge")
+        let mut messages =
+            vec![Message::text(Role::System, self.config.system_prompt.clone())];
+        messages.extend(
+            request
+                .llm_request
+                .messages
+                .iter()
+                .filter(|m| matches!(m.role, Role::System | Role::Developer))
+                .cloned(),
+        );
+        if let Some(last_user) = request
+            .llm_request
+            .messages
+            .iter()
+            .rfind(|m| m.role == Role::User)
+        {
+            messages.push(last_user.clone());
+        }
+        messages.push(Message::text(Role::Assistant, candidate));
+        Request {
+            llm_request: LlmRequest {
+                model: request.llm_request.model.clone(),
+                messages,
+                output: OutputParams {
+                    response_format: self.config.response_schema.clone(),
+                    ..OutputParams::default()
+                },
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: request.metadata.clone(),
+        }
     }
+}
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+/// Routes to the capable target when the judge says to escalate, and abstains otherwise.
+struct EscalationPolicy {
+    capable: String,
+}
+
+impl JudgePolicy for EscalationPolicy {
+    type Verdict = EscalationVerdict;
+
+    fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
+        if verdict.is_some_and(|v| v.should_escalate) {
+            Classification::Scores(vec![Score {
+                target: self.capable.clone(),
+                confidence: 1.0,
+            }])
+        } else {
+            Classification::Scores(Vec::new())
+        }
     }
 }
 
@@ -89,10 +144,9 @@ impl Decision for JudgeCallDecision {
 pub struct EscalationRouter {
     efficient_target: LlmTarget,
     capable_target: LlmTarget,
-    judge_target: LlmTarget,
-    judge_config: JudgeConfig,
-    /// Session IDs pinned to the capable model after their first escalation.
-    pins: Mutex<HashMap<String, ()>>,
+    judge_classifier: JudgeClassifier<EscalationJudge, EscalationPolicy>,
+    /// Latches sessions to the capable model after their first escalation.
+    affinity: AffinityRouter,
 }
 
 impl EscalationRouter {
@@ -103,166 +157,19 @@ impl EscalationRouter {
         capable_target: LlmTarget,
         judge_target: LlmTarget,
     ) -> Result<Self> {
+        let config = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+        let capable_name = capable_target.semantic_name.clone();
         Ok(Self {
             efficient_target,
             capable_target,
-            judge_target,
-            judge_config: Self::load_judge_config()?,
-            pins: Mutex::new(HashMap::new()),
+            judge_classifier: JudgeClassifier::new(
+                EscalationJudge { config },
+                judge_target,
+                EscalationPolicy { capable: capable_name.clone() },
+            ),
+            affinity: AffinityRouter::new().with_latch_only([capable_name]),
         })
     }
-
-    fn load_judge_config() -> Result<JudgeConfig> {
-        let response_schema: Value =
-            serde_json::from_str(SCHEMA_TEMPLATE).map_err(|error| LibsyError::AlgorithmError {
-                message: format!("escalation response schema is invalid: {error}"),
-            })?;
-        let prompt_schema = response_schema
-            .pointer("/json_schema/schema")
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "escalation response schema has no json_schema.schema".to_string(),
-            })?;
-        let prompt_schema = serde_json::to_string_pretty(prompt_schema).map_err(|error| {
-            LibsyError::AlgorithmError {
-                message: format!("escalation prompt schema could not be rendered: {error}"),
-            }
-        })?;
-        Ok(JudgeConfig {
-            system_prompt: PROMPT_TEMPLATE.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
-            response_schema: Some(response_schema),
-        })
-    }
-
-    fn is_pinned(&self, session_id: &str) -> bool {
-        self.pins.lock().contains_key(session_id)
-    }
-
-    fn pin(&self, session_id: &str) {
-        let mut pins = self.pins.lock();
-        if pins.len() >= MAX_PINS {
-            if let Some(evicted) = pins.keys().next().cloned() {
-                pins.remove(&evicted);
-            }
-        }
-        pins.insert(session_id.to_string(), ());
-    }
-
-    /// Builds the judge request: judge system prompt, original system/developer instructions,
-    /// last user message, and the efficient model's response as an assistant turn.
-    fn build_judge_request(
-        &self,
-        original: &Request,
-        efficient_text: &str,
-    ) -> Request {
-        let mut messages = vec![Message::text(
-            Role::System,
-            self.judge_config.system_prompt.clone(),
-        )];
-        // Retain the original system/developer instructions so the judge shares context.
-        messages.extend(
-            original
-                .llm_request
-                .messages
-                .iter()
-                .filter(|m| matches!(m.role, Role::System | Role::Developer))
-                .cloned(),
-        );
-        // The last user message is what was actually asked.
-        if let Some(last_user) = original
-            .llm_request
-            .messages
-            .iter()
-            .rfind(|m| m.role == Role::User)
-        {
-            messages.push(last_user.clone());
-        }
-        // The efficient model's response is the candidate answer to evaluate.
-        messages.push(Message::text(Role::Assistant, efficient_text));
-        Request {
-            llm_request: LlmRequest {
-                model: original.llm_request.model.clone(),
-                messages,
-                output: OutputParams {
-                    response_format: self.judge_config.response_schema.clone(),
-                    ..OutputParams::default()
-                },
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: original.metadata.clone(),
-        }
-    }
-
-    /// Calls the judge and returns whether escalation is warranted.
-    /// Any failure (transport, parse) returns `false` — the judge is an optimization,
-    /// not a gatekeeper, so failing safe means skipping escalation.
-    async fn consult_judge(
-        &self,
-        ctx: Context,
-        driver: &Driver,
-        request: &Request,
-        efficient_text: &str,
-    ) -> bool {
-        let judge_model = self.judge_target.semantic_name.as_str();
-        let warn = |error: &dyn std::fmt::Display| {
-            tracing::warn!(
-                target: "libsy",
-                judge_model,
-                error = %error,
-                "escalation judge unavailable; skipping escalation"
-            );
-        };
-
-        let judge_request = self.build_judge_request(request, efficient_text);
-        let judge_decision: Arc<dyn Decision> = Arc::new(JudgeCallDecision {
-            model: self.judge_target.semantic_name.clone(),
-        });
-
-        let response = match driver
-            .call_llm_target(ctx, &self.judge_target, judge_request, judge_decision)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                warn(&e);
-                return false;
-            }
-        };
-
-        let agg = match response.llm_response.into_agg().await {
-            Ok(a) => a,
-            Err(e) => {
-                warn(&e);
-                return false;
-            }
-        };
-
-        let text = completion_text(&agg);
-        match parse_verdict(text.trim()) {
-            Some(v) => v.should_escalate,
-            None => {
-                tracing::warn!(
-                    target: "libsy",
-                    judge_model,
-                    "escalation judge verdict did not parse; skipping escalation"
-                );
-                false
-            }
-        }
-    }
-}
-
-fn parse_verdict(text: &str) -> Option<EscalationVerdict> {
-    serde_json::from_str(strip_json_fence(text)).ok()
-}
-
-fn strip_json_fence(text: &str) -> &str {
-    let Some(rest) = text.strip_prefix("```") else {
-        return text;
-    };
-    let rest = rest.strip_prefix("json").unwrap_or(rest);
-    let rest = rest.trim_start_matches(['\n', '\r']);
-    rest.strip_suffix("```").map(str::trim).unwrap_or(rest)
 }
 
 #[async_trait]
@@ -272,7 +179,7 @@ impl Algorithm<SharedState> for EscalationRouter {
     }
 
     fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        [&self.capable_target, &self.efficient_target, &self.judge_target]
+        [&self.capable_target, &self.efficient_target]
             .iter()
             .find_map(|t| {
                 t.llm_client
@@ -286,18 +193,18 @@ impl Algorithm<SharedState> for EscalationRouter {
         self: Arc<Self>,
         ctx: Context<SharedState>,
         driver: Driver,
-        request: Request,
+        mut request: Request,
     ) -> Result<Response> {
         let bare_ctx = ctx.without_state();
 
         // 1. Check whether this session is already pinned to the capable model.
-        let session_id = request
-            .metadata
-            .as_ref()
-            .and_then(|m| m.session_id.as_deref())
-            .map(str::to_string);
+        let is_pinned = {
+            let mut state = ctx.state.lock().await;
+            let classification = self.affinity.score(&mut state, &mut request, None).await?;
+            matches!(classification, Classification::Scores(ref s) if !s.is_empty())
+        };
 
-        if session_id.as_deref().is_some_and(|id| self.is_pinned(id)) {
+        if is_pinned {
             let decision: Arc<dyn Decision> = Arc::new(EscalationDecision {
                 model: self.capable_target.semantic_name.clone(),
                 tier: "strong",
@@ -334,12 +241,19 @@ impl Algorithm<SharedState> for EscalationRouter {
             .await
             .map_err(|e| LibsyError::external("aggregating efficient response", e))?;
 
-        let efficient_text = completion_text(&efficient_agg);
-
-        // 4. Consult the judge; any failure returns false (skip escalation).
-        let should_escalate = self
-            .consult_judge(bare_ctx.clone(), &driver, &request, &efficient_text)
-            .await;
+        // 4. Store the efficient response in state and consult the judge.
+        let should_escalate = {
+            let mut state = ctx.state.lock().await;
+            state.extra.insert(
+                CANDIDATE_KEY.to_string(),
+                StateValue::String(completion_text(&efficient_agg)),
+            );
+            let classification = self
+                .judge_classifier
+                .score(&mut state, &mut request, Some(&driver))
+                .await?;
+            matches!(classification, Classification::Scores(ref s) if !s.is_empty())
+        };
 
         // 5. No escalation: return the efficient response.
         if !should_escalate {
@@ -349,16 +263,22 @@ impl Algorithm<SharedState> for EscalationRouter {
             });
         }
 
-        // 6. Escalate: pin the session so later turns skip the efficient attempt.
-        if let Some(ref id) = session_id {
-            self.pin(id);
-        }
-
+        // 6. Escalate: latch the session to the capable model so later turns skip the efficient attempt.
         let capable_decision: Arc<dyn Decision> = Arc::new(EscalationDecision {
             model: self.capable_target.semantic_name.clone(),
             tier: "strong",
             reason: "quality escalation to capable model",
         });
+        {
+            let mut state = ctx.state.lock().await;
+            self.affinity
+                .process(&mut state, Event::Request(&mut request))
+                .await?;
+            self.affinity
+                .process(&mut state, Event::Decision(&*capable_decision))
+                .await?;
+        }
+
         driver
             .info(bare_ctx.clone(), capable_decision.clone())
             .await?;
@@ -616,14 +536,5 @@ mod tests {
 
         assert_eq!(trace[0].routing_tier(), Some("weak"));
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn pins_are_bounded_by_max_pins() {
-        let router = router("e", "c", "j");
-        for i in 0..=super::MAX_PINS {
-            router.pin(&format!("session-{i}"));
-        }
-        assert_eq!(router.pins.lock().len(), super::MAX_PINS);
     }
 }
