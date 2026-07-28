@@ -126,7 +126,7 @@ where
     async fn score(
         &self,
         state: &mut State,
-        request: &Request,
+        request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<Classification> {
         // A missing driver is a broken composition, not an unavailable judge.
@@ -293,15 +293,17 @@ mod tests {
         let mut steps = Box::pin(driver.stream());
         let classifier = classifier();
         let mut state = State::default();
-        let request = request();
+        let mut request = request();
 
         let serve = async {
             if let Some(Ok(Step::CallLlm(call))) = steps.next().await {
                 let _ = call.respond(reply);
             }
         };
-        let (classification, ()) =
-            tokio::join!(classifier.score(&mut state, &request, Some(&driver)), serve);
+        let (classification, ()) = tokio::join!(
+            classifier.score(&mut state, &mut request, Some(&driver)),
+            serve
+        );
         selected(classification?)
     }
 
@@ -376,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_driver_is_an_error_not_a_fallback() -> Result<()> {
         let error = classifier()
-            .score(&mut State::default(), &request(), None)
+            .score(&mut State::default(), &mut request(), None)
             .await
             .err()
             .ok_or_else(|| LibsyError::AlgorithmError {

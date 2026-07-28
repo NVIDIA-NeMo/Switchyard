@@ -228,7 +228,7 @@ impl Classifier for LlmTaskClassifier {
     async fn score(
         &self,
         state: &mut State,
-        request: &Request,
+        request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<Classification> {
         self.classifier.score(state, request, driver).await
