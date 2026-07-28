@@ -8,8 +8,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use libsy::algorithms::{LlmClassifier, Noop, Passthrough, Random};
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
+use libsy::algorithms::{FallThrough, LlmTaskClassifier, Noop, Passthrough, Random};
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, SharedState};
 use serde::Deserialize;
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 
@@ -240,7 +240,7 @@ fn build_algorithm(
     route_name: &str,
     config: &RouteConfig,
     targets: &BTreeMap<String, LlmTarget>,
-) -> ServerResult<Arc<dyn Algorithm>> {
+) -> ServerResult<Arc<dyn Algorithm<SharedState>>> {
     match config {
         RouteConfig::Noop { .. } => Ok(Arc::new(Noop {})),
         RouteConfig::Random {
@@ -269,19 +269,15 @@ fn build_algorithm(
             let classifier = resolve_target(route_name, classifier_target, targets)?;
             let strong = resolve_target(route_name, strong_target, targets)?;
             let weak = resolve_target(route_name, weak_target, targets)?;
-            let target_set =
-                LlmTargetSet::new(vec![classifier.clone(), strong.clone(), weak.clone()]);
-            let algorithm = LlmClassifier::new(
-                classifier.semantic_name,
-                strong.semantic_name,
-                weak.semantic_name,
-                *threshold,
-                target_set,
-            )
-            .map_err(|error| {
-                ServerError::new(format!("llm_classifier route {route_name}: {error}"))
-            })?;
-            Ok(Arc::new(algorithm))
+            // The judge is called through its own target, so it is not a routing destination.
+            let target_set = LlmTargetSet::new(vec![strong.clone(), weak.clone()]);
+            // The weak model is the efficient tier; the strong model is the capable one.
+            let judge =
+                LlmTaskClassifier::new(classifier, weak, strong, *threshold).map_err(|error| {
+                    ServerError::new(format!("llm_classifier route {route_name}: {error}"))
+                })?;
+            let router = FallThrough::new(target_set).with_classifier(Arc::new(judge));
+            Ok(Arc::new(router))
         }
     }
 }

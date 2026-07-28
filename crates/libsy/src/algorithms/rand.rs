@@ -130,14 +130,17 @@ fn invalid_weights(message: String) -> LibsyError {
 }
 
 #[async_trait]
-impl Algorithm for Random {
+impl<S> Algorithm<S> for Random
+where
+    S: Clone + Send + Sync + 'static,
+{
     fn name(&self) -> &str {
         "random"
     }
 
     async fn create_run_task(
         self: Arc<Self>,
-        ctx: Context,
+        ctx: Context<S>,
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
@@ -149,6 +152,7 @@ impl Algorithm for Random {
             selected_model: selected,
         });
 
+        let ctx = ctx.without_state();
         driver.info(ctx.clone(), Arc::clone(&decision)).await?;
         driver
             .call_llm_target(ctx, &target, request, decision)
@@ -346,9 +350,8 @@ mod tests {
 
     #[tokio::test]
     async fn process_signals_is_a_noop() -> Result<()> {
-        Arc::new(algorithm(&["only/model"], None, None)?)
-            .process_signals(Signals {})
-            .await?;
+        let algorithm: Arc<dyn Algorithm> = Arc::new(algorithm(&["only/model"], None, None)?);
+        algorithm.process_signals(Signals {}).await?;
         Ok(())
     }
 

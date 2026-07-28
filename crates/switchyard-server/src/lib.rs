@@ -23,7 +23,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
+use libsy::{
+    Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request, SharedState,
+};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
 use tracing::Level;
@@ -68,14 +70,16 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 /// Shared server state used by all endpoint handlers.
 #[derive(Clone)]
 pub struct ServerState {
-    routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
+    /// For now making all the routes to be of type Algorithm<SharedState>
+    /// Nachi's PR will help later
+    routes: Arc<BTreeMap<String, Arc<dyn Algorithm<SharedState>>>>,
     metrics: prometheus::Registry,
 }
 
 impl ServerState {
     /// Creates server state from route model IDs and their libsy algorithms.
     pub fn new(
-        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm>)>,
+        routes: impl IntoIterator<Item = (String, Arc<dyn Algorithm<SharedState>>)>,
     ) -> ServerResult<Self> {
         let mut entries = BTreeMap::new();
         for (model, algorithm) in routes {
@@ -102,7 +106,7 @@ impl ServerState {
         self.routes.keys().map(String::as_str)
     }
 
-    fn algorithm_for_model(&self, model: &str) -> Option<Arc<dyn Algorithm>> {
+    fn algorithm_for_model(&self, model: &str) -> Option<Arc<dyn Algorithm<SharedState>>> {
         self.routes.get(model).map(Arc::clone)
     }
 }
@@ -333,7 +337,10 @@ async fn handle_llm_request(
         raw_request: Some(body),
         metadata: Some(metadata),
     };
-    let (trace, response) = match algorithm.run(Context::default(), request).await {
+    let (trace, response) = match algorithm
+        .run(Context::<SharedState>::default(), request)
+        .await
+    {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };

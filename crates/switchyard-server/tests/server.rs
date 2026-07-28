@@ -18,7 +18,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::algorithms::Random;
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, SharedState};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_server::config::load_server_state;
@@ -96,7 +96,7 @@ async fn upstream_chat(
     }
 
     let content = if model == "model/classifier" {
-        "0.9"
+        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
     } else {
         "ok"
     };
@@ -146,7 +146,8 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                     })
                     .collect(),
             );
-            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
+            let algorithm: Arc<dyn Algorithm<SharedState>> =
+                Arc::new(Random::new(target_set, None, None)?);
             Ok(((*route_model).to_string(), algorithm))
         })
         .collect::<TestResult<Vec<_>>>()?;
@@ -295,7 +296,7 @@ target = "weak"
 
     for (route, selected) in [
         ("switchyard/random", "model/weak"),
-        ("switchyard/classifier", "model/strong"),
+        ("switchyard/classifier", "model/weak"),
         ("switchyard/passthrough", "model/weak"),
     ] {
         let response = send(
@@ -322,7 +323,7 @@ target = "weak"
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[0]["model"], "model/weak");
     assert_eq!(calls[1]["model"], "model/classifier");
-    assert_eq!(calls[2]["model"], "model/strong");
+    assert_eq!(calls[2]["model"], "model/weak");
     assert_eq!(calls[3]["model"], "model/weak");
     Ok(())
 }
