@@ -139,7 +139,7 @@ mod tests {
         let processor = HandoffNoteProcessor::new("recovering from an error", None, true);
         let mut state = state_with_source("fall_open");
         run(&processor, &mut state, "strong").await;
-        assert!(state.extra.get(HANDOFF_NOTE_KEY).is_none());
+        assert!(!state.extra.contains_key(HANDOFF_NOTE_KEY));
     }
 
     #[tokio::test]
@@ -147,7 +147,7 @@ mod tests {
         let processor = HandoffNoteProcessor::new("recovering from an error", None, false);
         let mut state = state_with_source("fall_open");
         run(&processor, &mut state, "strong").await;
-        assert!(state.extra.get(HANDOFF_NOTE_KEY).is_some());
+        assert!(state.extra.contains_key(HANDOFF_NOTE_KEY));
     }
 
     #[tokio::test]
@@ -167,6 +167,6 @@ mod tests {
         let processor = HandoffNoteProcessor::new("esc", None, true);
         let mut state = state_with_source("tests_passed");
         run(&processor, &mut state, "weak").await;
-        assert!(state.extra.get(HANDOFF_NOTE_KEY).is_none());
+        assert!(!state.extra.contains_key(HANDOFF_NOTE_KEY));
     }
 }

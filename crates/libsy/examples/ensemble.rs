@@ -717,7 +717,7 @@ mod tests {
                 _request: Request,
                 _decision: Arc<dyn Decision>,
             ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
-                Err(switchyard_protocol::LlmClientError::Other(
+                Err(switchyard_protocol::LlmClientError::General(
                     "upstream down".into(),
                 ))
             }
