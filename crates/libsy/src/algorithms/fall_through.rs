@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use crate::core::{Classifier, Event, Processor, Score, SharedState};
 use crate::{
     Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
+    RoutedLlmClient,
 };
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
@@ -93,6 +94,10 @@ impl FallThrough {
 impl Algorithm<SharedState> for FallThrough {
     fn name(&self) -> &str {
         "fall_through"
+    }
+
+    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
+        self.targets.count_tokens_client()
     }
 
     async fn create_run_task(

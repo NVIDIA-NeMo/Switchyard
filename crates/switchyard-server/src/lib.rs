@@ -198,6 +198,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
+        .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/models", get(models))
         .route("/metrics", get(prometheus_metrics))
@@ -257,6 +258,52 @@ async fn openai_responses(
     handle_endpoint(state, headers, body, WireFormat::OpenAiResponses).await
 }
 
+/// Anthropic token counting. Resolves the route named by `model`, then does a
+/// **direct passthrough** via [`Algorithm::count_tokens`] to that route's
+/// Anthropic target — it does *not* run the routing cascade (count_tokens is a
+/// pre-flight estimate with no routing decision). Unknown route → 404; a route
+/// with no Anthropic target → 400.
+async fn anthropic_count_tokens(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let body = match llm_json_body(body) {
+        Ok(body) => body,
+        Err(message) => return invalid_body_error(message),
+    };
+    let (algorithm, request, _) = match resolve_route(
+        &state,
+        metadata_from_headers(&headers),
+        body,
+        WireFormat::AnthropicMessages,
+    ) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    match algorithm.count_tokens(request).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(error) => count_tokens_error(error),
+    }
+}
+
+/// Map a [`count_tokens`](Algorithm::count_tokens) failure to an HTTP response:
+/// the route has no Anthropic target → 400, an upstream HTTP error → its own
+/// status, anything else → 502.
+fn count_tokens_error(error: LibsyError) -> Response {
+    // The one count_tokens-specific case is "no Anthropic target in the route";
+    // every upstream/client failure gets the same mapping completions use.
+    match &error {
+        LibsyError::AlgorithmError { message } => error_response(
+            StatusCode::BAD_REQUEST,
+            message.clone(),
+            "invalid_request_error",
+            "count_tokens_unsupported",
+        ),
+        _ => algorithm_error(error),
+    }
+}
+
 async fn handle_endpoint(
     state: ServerState,
     headers: HeaderMap,
@@ -301,42 +348,61 @@ fn llm_json_body(
     }
 }
 
+/// Decode `body`, resolve the route named by its `model`, and build the
+/// [`Request`]. Shared by the completion and `count_tokens` handlers. Returns
+/// the resolved algorithm, the built request, and the requested route model —
+/// or an error [`Response`] (invalid body, empty `model` → 400, unknown route →
+/// 404).
+// Both callers immediately return the `Err(Response)` as the HTTP response, so
+// the large error type is intentional, not propagated up a call stack.
+#[allow(clippy::type_complexity, clippy::result_large_err)]
+fn resolve_route(
+    state: &ServerState,
+    metadata: Metadata,
+    body: Value,
+    wire_format: WireFormat,
+) -> std::result::Result<(Arc<dyn Algorithm<SharedState>>, Request, String), Response> {
+    let llm_request = decode_request(wire_format, &body)
+        .map_err(|error| invalid_body_error(error.to_string()))?;
+    let requested_model = llm_request
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "request body must include a non-empty string `model`",
+                "invalid_request_error",
+                "invalid_request_error",
+            )
+        })?;
+    let algorithm = state.algorithm_for_model(&requested_model).ok_or_else(|| {
+        error_response(
+            StatusCode::NOT_FOUND,
+            format!("No route registered for model {requested_model}"),
+            "model_not_found",
+            "model_not_found",
+        )
+    })?;
+    let request = Request {
+        llm_request,
+        raw_request: Some(body),
+        metadata: Some(metadata),
+    };
+    Ok((algorithm, request, requested_model))
+}
+
 async fn handle_llm_request(
     state: ServerState,
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
-    let llm_request = match decode_request(wire_format, &body) {
-        Ok(request) => request,
-        Err(error) => return invalid_body_error(error.to_string()),
-    };
-    let Some(requested_model) = llm_request
-        .model
-        .clone()
-        .filter(|model| !model.trim().is_empty())
-    else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "request body must include a non-empty string `model`",
-            "invalid_request_error",
-            "invalid_request_error",
-        );
-    };
-    let Some(algorithm) = state.algorithm_for_model(&requested_model) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("No route registered for model {requested_model}"),
-            "model_not_found",
-            "model_not_found",
-        );
-    };
-
-    let request = Request {
-        llm_request,
-        raw_request: Some(body),
-        metadata: Some(metadata),
-    };
+    let (algorithm, request, requested_model) =
+        match resolve_route(&state, metadata, body, wire_format) {
+            Ok(resolved) => resolved,
+            Err(response) => return response,
+        };
     let (trace, response) = match algorithm
         .run(Context::<SharedState>::default(), request)
         .await

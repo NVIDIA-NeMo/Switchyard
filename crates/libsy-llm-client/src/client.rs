@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use reqwest::RequestBuilder;
 use serde_json::Value;
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
+    Context, Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
     decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
@@ -101,6 +101,23 @@ impl TranslatingLlmClient {
         })
     }
 
+    /// A configured Anthropic backend to forward a direct `count_tokens` call to,
+    /// paired with its upstream model id (the id the inbound route name is
+    /// restamped to). `None` when this client has no Anthropic backend;
+    /// `count_tokens` is Anthropic-only.
+    fn anthropic_backend(&self) -> Option<(&str, &Backend)> {
+        self.model_to_config.values().find_map(|config| {
+            if config.default_backend.is_anthropic() {
+                return Some((config.model_name.as_str(), &config.default_backend));
+            }
+            config
+                .other_backends
+                .as_ref()
+                .and_then(|backends| backends.iter().find(|backend| backend.is_anthropic()))
+                .map(|backend| (config.model_name.as_str(), backend))
+        })
+    }
+
     /// The backend serving `model` over `format` — the default backend when its
     /// format matches, otherwise a matching entry in `other_backends`; `None` when
     /// the model is unknown or has no backend for `format`.
@@ -115,6 +132,66 @@ impl TranslatingLlmClient {
                     .and_then(|backends| backends.iter().find(|b| b.wire_format() == format))
             }
         })
+    }
+
+    /// Encode `llm_request` (its model restamped to `model`) for `wire_format`,
+    /// POST it to `url` with the request's forwarded headers plus the backend's
+    /// static headers and auth, and return the successful upstream response and
+    /// whether the request asked for a streamed body. A non-success status maps
+    /// to a typed error — a 400 is classified as a context-window overflow via
+    /// the backend's provider rules. Shared by
+    /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
+    /// backend's completion URL and decodes a response) and
+    /// [`count_tokens`](RoutedLlmClient::count_tokens) (which POSTs to the
+    /// `count_tokens` URL and returns the raw JSON).
+    async fn send_encoded(
+        &self,
+        url: String,
+        backend: &Backend,
+        wire_format: WireFormat,
+        mut llm_request: LlmRequest,
+        metadata: Option<&Metadata>,
+        model: &str,
+    ) -> Result<(reqwest::Response, bool)> {
+        // The resolved name is the upstream model id (per the crate contract).
+        llm_request.model = Some(model.to_string());
+        let mut body = encode_request(&llm_request, wire_format)
+            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+        // `encode_request` round-trips a preserved same-format body verbatim,
+        // which keeps the caller's original `model`; force the resolved model so
+        // the upstream always sees the target id.
+        set_json_model(&mut body, model);
+        let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+
+        let builder = self.client.post(url).json(&body);
+        let builder = forward_metadata_headers(builder, metadata);
+        let builder = apply_extra_headers(builder, backend);
+        let builder = backend.apply_auth(builder);
+
+        let http_response = builder.send().await.map_err(convert_reqwest_error)?;
+        let status = http_response.status();
+        if !status.is_success() {
+            let body = match http_response.text().await {
+                Ok(body) => body,
+                Err(error) if error.is_timeout() => {
+                    return Err(LlmClientError::Timeout {
+                        source: Box::new(error),
+                    })
+                }
+                Err(error) => format!("<failed to read error body: {error}>"),
+            };
+            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
+                return Err(LlmClientError::ContextWindowExceeded {
+                    model: model.to_string(),
+                    message: body,
+                });
+            }
+            return Err(LlmClientError::UpstreamHttp {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok((http_response, streaming))
     }
 
     /// Calls the backend for `model_name` (or the request's own model), over the
@@ -134,7 +211,7 @@ impl TranslatingLlmClient {
         // Own the request's parts so the model can be set without a `mut` param
         // and without cloning the messages. `raw_request` is unused here.
         let Request {
-            mut llm_request,
+            llm_request,
             metadata,
             ..
         } = request;
@@ -161,45 +238,16 @@ impl TranslatingLlmClient {
                     message: format!("model {model:?} has no backend for format {wire_format}"),
                 })?;
 
-        // The resolved name is the upstream model id (per the crate contract).
-        llm_request.model = Some(model.clone());
-
-        let mut body = encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
-        // `encode_request` round-trips a preserved same-format body verbatim,
-        // which keeps the caller's original `model`; force the resolved model so
-        // the upstream always sees the target id.
-        set_json_model(&mut body, &model);
-        let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-
-        let builder = self.client.post(backend.url()).json(&body);
-        let builder = forward_metadata_headers(builder, metadata.as_ref());
-        let builder = apply_extra_headers(builder, backend);
-        let builder = backend.apply_auth(builder);
-
-        let http_response = builder.send().await.map_err(convert_reqwest_error)?;
-        let status = http_response.status();
-        if !status.is_success() {
-            let body = match http_response.text().await {
-                Ok(body) => body,
-                Err(error) if error.is_timeout() => {
-                    return Err(LlmClientError::Timeout {
-                        source: Box::new(error),
-                    })
-                }
-                Err(error) => format!("<failed to read error body: {error}>"),
-            };
-            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
-                return Err(LlmClientError::ContextWindowExceeded {
-                    model,
-                    message: body,
-                });
-            }
-            return Err(LlmClientError::UpstreamHttp {
-                status: status.as_u16(),
-                body,
-            });
-        }
+        let (http_response, streaming) = self
+            .send_encoded(
+                backend.url(),
+                backend,
+                wire_format,
+                llm_request,
+                metadata.as_ref(),
+                &model,
+            )
+            .await?;
 
         let llm_response = if streaming {
             // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
@@ -303,6 +351,42 @@ impl RoutedLlmClient for TranslatingLlmClient {
     ) -> Result<Response> {
         let model_name = Some(decision.selected_model());
         self.call_rewrite_model(ctx, request, model_name).await
+    }
+
+    fn supports_count_tokens(&self) -> bool {
+        self.anthropic_backend().is_some()
+    }
+
+    async fn count_tokens(&self, request: Request) -> Result<Value> {
+        // Direct passthrough: forward straight to this client's Anthropic
+        // backend's count_tokens endpoint. Not routed — no decision.
+        let (model, backend) =
+            self.anthropic_backend()
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: "count_tokens is anthropic-only; this client has no anthropic backend"
+                        .to_string(),
+                })?;
+        // Same encode-and-forward path as the completion call, only to the
+        // `count_tokens` URL; the response is the raw `{"input_tokens": N}` JSON.
+        let Request {
+            llm_request,
+            metadata,
+            ..
+        } = request;
+        let (http_response, _) = self
+            .send_encoded(
+                backend.count_tokens_url(),
+                backend,
+                WireFormat::AnthropicMessages,
+                llm_request,
+                metadata.as_ref(),
+                model,
+            )
+            .await?;
+        let text = http_response.text().await.map_err(convert_reqwest_error)?;
+        serde_json::from_str(&text).map_err(|error| LlmClientError::InvalidResponse {
+            source: Box::new(error),
+        })
     }
 }
 

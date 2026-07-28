@@ -16,7 +16,7 @@ use rand::SeedableRng;
 
 use crate::{
     Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
-    Result,
+    Result, RoutedLlmClient,
 };
 
 /// Decision produced by [`Random`]: which target was chosen and why.
@@ -136,6 +136,10 @@ where
 {
     fn name(&self) -> &str {
         "random"
+    }
+
+    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
+        self.target_set.count_tokens_client()
     }
 
     async fn create_run_task(

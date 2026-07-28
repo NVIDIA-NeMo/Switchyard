@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use switchyard_protocol::{Request, Response};
 
-use crate::{Algorithm, Context, Decision, Driver, LlmTarget, Result};
+use crate::{Algorithm, Context, Decision, Driver, LlmTarget, Result, RoutedLlmClient};
 
 /// See module comment
 pub struct Passthrough {
@@ -46,6 +46,14 @@ where
 {
     fn name(&self) -> &str {
         "passthrough"
+    }
+
+    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
+        self.target
+            .llm_client
+            .as_ref()
+            .filter(|client| client.supports_count_tokens())
+            .cloned()
     }
 
     async fn create_run_task(

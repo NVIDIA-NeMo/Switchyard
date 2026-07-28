@@ -17,7 +17,8 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
-use libsy::algorithms::Random;
+use libsy::algorithms::{FallThrough, Random};
+use libsy::stage_router::{PickerMode, StageClassifier};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, SharedState};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
@@ -44,6 +45,7 @@ impl MockUpstream {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/chat/completions", post(upstream_chat))
+            .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .with_state(Arc::clone(&calls));
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -117,6 +119,14 @@ async fn upstream_chat(
         }
     }))
     .into_response()
+}
+
+async fn upstream_count_tokens(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    Json(json!({"input_tokens": 7})).into_response()
 }
 
 fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<ServerState> {
@@ -325,6 +335,162 @@ target = "weak"
     assert_eq!(calls[1]["model"], "model/classifier");
     assert_eq!(calls[2]["model"], "model/weak");
     assert_eq!(calls[3]["model"], "model/weak");
+    Ok(())
+}
+
+#[tokio::test]
+async fn count_tokens_forwards_to_configured_anthropic_target() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "real/opus"
+llm_client = "claude"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["strong"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages/count_tokens",
+        Some(json!({
+            "model": "switchyard/random",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["input_tokens"], 7);
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    // The inbound route name is rewritten to the real upstream model.
+    assert_eq!(calls[0]["model"], "real/opus");
+    Ok(())
+}
+
+#[tokio::test]
+async fn count_tokens_without_anthropic_target_returns_bad_request() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["weak"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages/count_tokens",
+        Some(json!({
+            "model": "switchyard/random",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    // The route's picked target is OpenAI, so count_tokens (Anthropic-only) is
+    // unsupported for it.
+    assert_eq!(
+        response.json()?["error"]["code"],
+        "count_tokens_unsupported"
+    );
+    Ok(())
+}
+
+// Build a stage_router (FallThrough) with an Anthropic `strong` tier and an
+// OpenAI `weak` tier, both pointed at the mock upstream, and register it.
+fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<ServerState> {
+    let cfg = |url: &str| HttpBackendConfig {
+        base_url: url.to_string(),
+        api_key: Some("k".to_string()),
+        extra_headers: BTreeMap::new(),
+    };
+    let strong: Arc<dyn RoutedLlmClient> =
+        Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+            "strong",
+            Backend::Anthropic(cfg(&upstream.base_url)),
+            None,
+        )])?);
+    let weak: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+        "weak",
+        Backend::OpenAiChat(cfg(&upstream.base_url)),
+        None,
+    )])?);
+    let targets = LlmTargetSet::new(vec![
+        LlmTarget {
+            semantic_name: "strong".to_string(),
+            llm_client: Some(strong),
+        },
+        LlmTarget {
+            semantic_name: "weak".to_string(),
+            llm_client: Some(weak),
+        },
+    ]);
+    let stage: Arc<dyn Algorithm<SharedState>> = Arc::new(
+        FallThrough::new(targets).with_classifier(Arc::new(StageClassifier::new(mode, 0.5))),
+    );
+    Ok(ServerState::new([("switchyard/stage".to_string(), stage)])?)
+}
+
+/// `count_tokens` is a **direct passthrough**, not a routed call, so on a stage
+/// router it goes straight to the Anthropic (`strong`) tier — bypassing the
+/// classifier cascade. This is exactly what makes it work where a completion
+/// can't: a signal-less request (as `count_tokens` always is) gives the
+/// `StageClassifier` nothing to score, so a *completion* on this bare stage
+/// router abstains — but `count_tokens` still succeeds.
+#[tokio::test]
+async fn count_tokens_on_a_stage_router_passes_through_to_the_anthropic_tier() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(stage_router_state(&upstream, PickerMode::EfficientFirst)?);
+    let body = json!({
+        "model": "switchyard/stage",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    // A completion routes → the bare StageClassifier abstains on a signal-less
+    // request → error.
+    let completion = send(&app, "POST", "/v1/messages", Some(body.clone())).await?;
+    assert!(completion.text()?.contains("abstained"));
+
+    // count_tokens does NOT route — it passes through to the strong (Anthropic)
+    // tier and succeeds.
+    let count = send(&app, "POST", "/v1/messages/count_tokens", Some(body)).await?;
+    assert_eq!(count.status, StatusCode::OK);
+    assert_eq!(count.json()?["input_tokens"], 7);
+
+    // The forwarded call went to count_tokens with the strong tier's model id.
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["model"], "strong");
     Ok(())
 }
 
