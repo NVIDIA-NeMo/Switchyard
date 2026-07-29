@@ -176,15 +176,11 @@ impl JudgePolicy for TaskClassifierPolicy {
         // Judge output is untrusted, so only a complete, valid, non-abstained verdict that
         // clears the configured confidence decides. Anything else is "I could not tell" —
         // reported as ambiguous so the composition around this classifier chooses the
-        // fallback, rather than this policy silently imposing one. The capable target rides
-        // along as the safe suggestion for a caller that reads ambiguous scores.
+        // fallback, rather than this policy silently imposing one.
         let Some(verdict) = verdict
             .filter(|v| v.is_valid() && !v.abstain && v.confidence >= self.config.min_confidence)
         else {
-            return Classification::Ambiguous(vec![Score {
-                target: self.capable_target.clone(),
-                confidence: 0.0,
-            }]);
+            return Classification::Ambiguous(vec![]);
         };
         // A usable verdict below the capability threshold is still a decision: the judge
         // does not trust the efficient tier with this task.
@@ -775,11 +771,7 @@ mod tests {
             let classification = policy.to_classification(verdict.as_ref());
             assert!(matches!(classification, Classification::Ambiguous(_)));
             assert!(classification.argmax(false)?.is_none());
-            // The capable tier rides along for a caller that reads ambiguous scores.
-            assert_eq!(
-                classification.argmax(true)?.map(|score| score.target),
-                Some("capable".to_string())
-            );
+            assert!(classification.argmax(true)?.is_none());
         }
         Ok(())
     }
