@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use switchyard_protocol::{completion_text, AggLlmResponse};
+use switchyard_protocol::{completion_text, AggLlmResponse, ContentBlock};
 
 use crate::{
     Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request, Result,
@@ -173,16 +173,41 @@ pub(crate) fn load_judge_config(
 }
 
 fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<T> {
-    // Providers sometimes wrap otherwise valid JSON in a Markdown fence.
     let completion = completion_text(response);
-    serde_json::from_str(strip_json_fence(completion.trim())).map_err(|err| {
-        LibsyError::AlgorithmError {
-            message: format!(
-                "judge reply did not parse as {}: {err}",
-                std::any::type_name::<T>()
-            ),
-        }
+    // Reasoning models behind an OpenAI-compatible gateway sometimes return the whole
+    // structured answer in `reasoning_content` and leave `content` null. The decoder keeps
+    // that as a reasoning block, which `completion_text` skips by design, so an unaided
+    // judge would fail open on every call against such a model.
+    let reply = if completion.trim().is_empty() {
+        reasoning_text(response)
+    } else {
+        completion
+    };
+    // Providers sometimes wrap otherwise valid JSON in a Markdown fence.
+    serde_json::from_str(strip_json_fence(reply.trim())).map_err(|err| LibsyError::AlgorithmError {
+        message: format!(
+            "judge reply did not parse as {}: {err}",
+            std::any::type_name::<T>()
+        ),
     })
+}
+
+/// The reasoning text of the first output, joined across blocks.
+fn reasoning_text(response: &AggLlmResponse) -> String {
+    response
+        .outputs
+        .first()
+        .map(|output| {
+            output
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default()
 }
 
 struct JudgeDecision {
@@ -222,7 +247,7 @@ mod tests {
 
     use futures::StreamExt;
     use serde::Deserialize;
-    use switchyard_protocol::{text_request, text_response, LlmClientError};
+    use switchyard_protocol::{text_request, text_response, LlmClientError, ResponseOutput, Role};
 
     use crate::{LlmResponse, LlmResponseChunk, Response, Score, Step};
 
@@ -279,6 +304,47 @@ mod tests {
             raw_request: None,
             metadata: None,
         }
+    }
+
+    /// A response whose only content is a reasoning block, as some gateways return for
+    /// reasoning models: the answer lands in `reasoning_content` and `content` is null.
+    fn reasoning_only(text: &str) -> AggLlmResponse {
+        AggLlmResponse {
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Reasoning {
+                    text: text.to_string(),
+                    signature: None,
+                }],
+                stop_reason: None,
+            }],
+            ..AggLlmResponse::default()
+        }
+    }
+
+    #[test]
+    fn verdict_parses_from_reasoning_when_content_is_empty() -> Result<()> {
+        let parsed: TestVerdict = parse_json_verdict(&reasoning_only(VERDICT))?;
+        assert_eq!(parsed, TestVerdict { ok: true });
+        Ok(())
+    }
+
+    #[test]
+    fn text_content_wins_over_reasoning() -> Result<()> {
+        // Both present: the real completion is authoritative, reasoning is only a fallback.
+        let mut response = text_response(None, VERDICT);
+        if let Some(output) = response.outputs.first_mut() {
+            output.content.insert(
+                0,
+                ContentBlock::Reasoning {
+                    text: r#"{"ok":false}"#.to_string(),
+                    signature: None,
+                },
+            );
+        }
+        let parsed: TestVerdict = parse_json_verdict(&response)?;
+        assert_eq!(parsed, TestVerdict { ok: true });
+        Ok(())
     }
 
     fn buffered(completion: &str) -> Response {
