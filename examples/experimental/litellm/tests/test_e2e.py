@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import shutil
 import socket
@@ -21,6 +24,8 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="session")
 def litellm_base_url() -> Iterator[str]:
+    if os.environ.get("SWITCHYARD_LITELLM_E2E") != "1":
+        pytest.skip("SWITCHYARD_LITELLM_E2E=1 is required for paid E2E tests")
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY is required for paid E2E tests")
     if shutil.which("docker") is None:
@@ -53,8 +58,23 @@ def litellm_base_url() -> Iterator[str]:
             [*compose, "down", "--volumes", "--remove-orphans"],
             cwd=PACKAGE_ROOT,
             env=env,
-            check=False,
+            check=True,
         )
+
+
+def test_paid_e2e_requires_explicit_spend_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("SWITCHYARD_LITELLM_E2E", raising=False)
+
+    def fail_if_docker_is_checked(_: str) -> str | None:
+        pytest.fail("Docker must not be checked without the paid E2E opt-in")
+
+    monkeypatch.setattr(shutil, "which", fail_if_docker_is_checked)
+    fixture = litellm_base_url.__wrapped__()
+    with pytest.raises(pytest.skip.Exception, match="SWITCHYARD_LITELLM_E2E"):
+        next(fixture)
 
 
 def _request() -> dict[str, object]:

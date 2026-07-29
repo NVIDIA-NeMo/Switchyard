@@ -60,9 +60,11 @@ uv sync
 From the repository root:
 
 ```bash
-uv venv .venv-litellm
-uv pip install --python .venv-litellm/bin/python ./examples/experimental/litellm
-.venv-litellm/bin/python -c "from switchyard_litellm import LiteLLMSyClient"
+LITELLM_ENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/switchyard-litellm-env.XXXXXX")"
+uv venv "$LITELLM_ENV_DIR"
+uv pip install --python "$LITELLM_ENV_DIR/bin/python" ./examples/experimental/litellm
+"$LITELLM_ENV_DIR/bin/python" -c "from switchyard_litellm import LiteLLMSyClient"
+rm -rf -- "$LITELLM_ENV_DIR"
 ```
 
 ### Start and inspect LiteLLM
@@ -141,9 +143,11 @@ PYTHONPATH=. uv run --project . pytest tests -m "not e2e" -v
 ```
 
 The E2E test starts its own LiteLLM gateway and makes two paid calls, one to
-each configured model:
+each configured model. `SWITCHYARD_LITELLM_E2E=1` is the explicit spend
+opt-in:
 
 ```bash
+SWITCHYARD_LITELLM_E2E=1 \
 uv run --project . --env-file .env pytest tests/test_e2e.py -m e2e -v
 ```
 

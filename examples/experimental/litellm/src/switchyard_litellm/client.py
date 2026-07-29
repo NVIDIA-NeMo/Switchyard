@@ -32,16 +32,6 @@ def _sequence(value: object, path: str) -> Sequence[object]:
     return cast(Sequence[object], value)
 
 
-def _contains_payload(value: object) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, Mapping):
-        return any(_contains_payload(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_contains_payload(item) for item in value)
-    return True
-
-
 def _reject_sequence_payload(
     request: Mapping[str, object],
     field: str,
@@ -53,15 +43,29 @@ def _reject_sequence_payload(
         raise ValueError(f"{field} is not supported")
 
 
-def _reject_mapping_payload(
-    request: Mapping[str, object],
-    field: str,
-) -> None:
-    value = request.get(field)
+def _reject_extensions_payload(request: Mapping[str, object]) -> None:
+    value = request.get("extensions")
     if value is None:
         return
-    if _contains_payload(_mapping(value, field)):
-        raise ValueError(f"{field} is not supported")
+    extensions = _mapping(value, "extensions")
+    if set(extensions) - {"fields"}:
+        raise ValueError("extensions is not supported")
+    if "fields" in extensions and _mapping(extensions["fields"], "extensions.fields"):
+        raise ValueError("extensions is not supported")
+
+
+def _reject_preservation_payload(request: Mapping[str, object]) -> None:
+    value = request.get("preservation")
+    if value is None:
+        return
+    preservation = _mapping(value, "preservation")
+    if set(preservation) - {"requests", "responses"}:
+        raise ValueError("preservation is not supported")
+    for field in ("requests", "responses"):
+        if field in preservation and _mapping(
+            preservation[field], f"preservation.{field}"
+        ):
+            raise ValueError("preservation is not supported")
 
 
 def _messages(request: Mapping[str, object]) -> list[dict[str, object]]:
@@ -104,8 +108,8 @@ def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
         _reject_sequence_payload(request, field)
     if request.get("tool_choice") is not None:
         raise ValueError("tool_choice is not supported")
-    for field in ("extensions", "preservation"):
-        _reject_mapping_payload(request, field)
+    _reject_extensions_payload(request)
+    _reject_preservation_payload(request)
 
     sampling = _optional_mapping(request, "sampling")
     output = _optional_mapping(request, "output")
@@ -141,17 +145,14 @@ def _usage(response: ChatCompletion) -> dict[str, int]:
         return {}
     prompt_details = usage.prompt_tokens_details
     completion_details = usage.completion_tokens_details
-    cached = (
-        prompt_details.cached_tokens
-        if prompt_details is not None and prompt_details.cached_tokens is not None
-        else 0
-    )
+    cached_value = prompt_details.cached_tokens if prompt_details is not None else None
+    cached = cached_value if cached_value is not None else 0
     normalized = {
         "input_tokens": max(usage.prompt_tokens - cached, 0),
         "output_tokens": usage.completion_tokens,
         "total_tokens": usage.total_tokens,
     }
-    if cached:
+    if cached_value is not None:
         normalized["cached_input_tokens"] = cached
     if completion_details is not None and completion_details.reasoning_tokens is not None:
         normalized["reasoning_tokens"] = completion_details.reasoning_tokens
@@ -192,7 +193,7 @@ class LiteLLMSyClient:
         if not model:
             raise ValueError("model must not be empty")
         self.model = model
-        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
 
     async def call(
         self,

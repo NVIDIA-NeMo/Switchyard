@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 import respx
-from openai import AuthenticationError
+from openai import AuthenticationError, RateLimitError
 from switchyard_litellm import LiteLLMSyClient
 
 BASE_URL = "http://gateway.test/v1"
@@ -150,6 +150,18 @@ async def test_call_translates_request_and_normalizes_response() -> None:
             lambda body: body["extensions"]["fields"].update(provider="value"),
             "extensions",
         ),
+        (
+            lambda body: body["extensions"]["fields"].update(provider=None),
+            "extensions",
+        ),
+        (
+            lambda body: body["preservation"]["requests"].update(provider=None),
+            "preservation",
+        ),
+        (
+            lambda body: body["preservation"]["responses"].update(provider={}),
+            "preservation",
+        ),
     ],
 )
 async def test_call_rejects_unsupported_normalized_fields(
@@ -159,12 +171,16 @@ async def test_call_rejects_unsupported_normalized_fields(
     request = request_body()
     assert callable(mutate)
     mutate(request)
-    client = LiteLLMSyClient("fast", base_url=BASE_URL)
-    try:
-        with pytest.raises(ValueError, match=match):
-            await client.call(request)
-    finally:
-        await client.aclose()
+    with respx.mock(assert_all_called=False) as router:
+        router.post(f"{BASE_URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=gateway_response())
+        )
+        client = LiteLLMSyClient("fast", base_url=BASE_URL)
+        try:
+            with pytest.raises(ValueError, match=match):
+                await client.call(request)
+        finally:
+            await client.aclose()
 
 
 async def test_call_rejects_missing_messages() -> None:
@@ -226,3 +242,43 @@ async def test_openai_sdk_errors_propagate() -> None:
             await client.call(request_body())
     finally:
         await client.aclose()
+
+
+@respx.mock
+async def test_retryable_openai_error_is_not_retried() -> None:
+    route = respx.post(f"{BASE_URL}/chat/completions").mock(
+        return_value=httpx.Response(
+            429,
+            json={
+                "error": {
+                    "message": "rate limited",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                }
+            },
+        )
+    )
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        with pytest.raises(RateLimitError):
+            await client.call(request_body())
+    finally:
+        await client.aclose()
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_cached_token_count_preserves_explicit_zero() -> None:
+    payload = gateway_response()
+    payload["usage"]["prompt_tokens_details"]["cached_tokens"] = 0
+    respx.post(f"{BASE_URL}/chat/completions").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        response = await client.call(request_body())
+    finally:
+        await client.aclose()
+
+    assert response["usage"]["cached_input_tokens"] == 0
