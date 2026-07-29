@@ -5,7 +5,9 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::{json, Value};
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -740,6 +742,35 @@ fn responses_chat_compatible_extensions_survive_to_openai_chat() -> TestResult {
     assert_eq!(output["top_logprobs"], 2);
     assert_eq!(output["user"], "u-123");
     Ok(())
+}
+
+// Provider-managed Responses continuation handles cannot be replayed through
+// another API. Rejecting policy must fail instead of silently dropping state.
+#[test]
+fn responses_continuation_state_is_rejected_for_cross_protocol_translation() {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "input": "continue",
+        "previous_response_id": "resp_provider_owned",
+        "conversation": "conv_provider_owned"
+    });
+
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        let error =
+            match engine.translate_request(WireFormat::OpenAiResponses, target, &body, &policy) {
+                Ok(_) => panic!("provider-managed continuation state must not be dropped"),
+                Err(error) => error,
+            };
+        let message = error.to_string();
+        assert!(message.contains("provider-managed continuation state"));
+        assert!(message.contains("previous_response_id"));
+        assert!(message.contains("conversation"));
+    }
 }
 
 // Verifies Codex-style reasoning items attach to the turn's tool-call message

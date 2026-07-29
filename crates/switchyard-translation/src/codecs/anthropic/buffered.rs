@@ -25,7 +25,8 @@ use crate::util::{
     exact_preserved_request, exact_preserved_response,
 };
 use crate::util::{
-    json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
+    json_string, push_lossy, stable_id, string_value, validate_no_provider_managed_continuation,
+    validate_request_capabilities,
 };
 
 /// Format codec for Anthropic Messages payloads.
@@ -159,6 +160,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             });
         }
         let mut diagnostics = Vec::new();
+        validate_no_provider_managed_continuation(request, &mut diagnostics, policy)?;
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {

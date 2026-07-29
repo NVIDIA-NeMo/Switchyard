@@ -203,6 +203,33 @@ pub fn validate_request_capabilities(
     Ok(())
 }
 
+/// Rejects provider-owned continuation handles before cross-format encoding.
+///
+/// These identifiers refer to state stored by the Responses provider. Another
+/// wire protocol cannot replay that state, so dropping the fields would turn a
+/// continuation request into a different conversation.
+pub fn validate_no_provider_managed_continuation(
+    request: &LlmRequest,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<()> {
+    let fields = ["previous_response_id", "conversation"]
+        .into_iter()
+        .filter(|field| request.extensions.fields.contains_key(*field))
+        .collect::<Vec<_>>();
+    if !fields.is_empty() {
+        push_lossy(
+            diagnostics,
+            policy,
+            format!(
+                "provider-managed continuation state cannot be translated across protocols: {}",
+                fields.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 // Detects whether any message carries tool calls or tool results.
 fn messages_have_tools(messages: &[Message]) -> bool {
     messages_have_block(messages, |block| {

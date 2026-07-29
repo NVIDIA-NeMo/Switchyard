@@ -23,7 +23,7 @@ use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response, json_string, object, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    string_value, validate_no_provider_managed_continuation, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -185,6 +185,7 @@ impl FormatCodec for OpenAiChatCodec {
             });
         }
         let mut diagnostics = Vec::new();
+        validate_no_provider_managed_continuation(request, &mut diagnostics, policy)?;
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {
