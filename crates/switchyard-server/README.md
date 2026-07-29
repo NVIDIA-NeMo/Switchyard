@@ -40,6 +40,13 @@ base_threshold = 0.5
 id = "switchyard/passthrough"
 type = "passthrough"
 target = "model_a"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "escalation"
+judge_target = "model_a"
+strong_target = "model_a"
+weak_target = "model_b"
 ```
 
 ```bash
@@ -57,8 +64,8 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
-`anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`, and
-`llm_classifier`. An `api_key_env` value names an environment variable; the TOML
+`anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
+`llm_classifier`, and `escalation`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
@@ -82,6 +89,25 @@ content rather than a session id, so unrelated callers sending identical text sh
 assignment.
 
 ## Metrics
+
+An `escalation` route starts every conversation on `weak_target` and has `judge_target` read the
+trajectory before each turn's model call. When the judge finds the run in trouble, the route
+escalates to `strong_target` and pins that conversation to it for the rest of the task, so the
+judge is not consulted again. Costs one model call per turn; the judge never sees the response.
+
+A judge failure — transport, timeout, or an unparseable reply — routes to `weak_target` without
+pinning, so an outage costs quality, never spend. Pinning is keyed on the conversation's session
+id, taken from `x-switchyard-session-id` or an equivalent harness header; requests without one are
+judged independently each turn and cannot accumulate confirmations.
+
+Beyond the three targets it accepts these optional keys, all defaulting to the benchmarked
+configuration:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `confirmations` | `2` | Consecutive escalate verdicts required before pinning. `1` pins on the first. Higher values filter one-shot verdicts and are the route's main cost lever; any non-escalate verdict resets the streak. |
+| `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the system and task anchors. A repeating cycle longer than this window is invisible to it. |
+| `window_message_chars` | `500` | Per-message cap inside that window. Minimum `50`. |
 
 `GET /metrics` exposes Prometheus text from the server's process-wide OpenTelemetry provider.
 Routed-call compatibility metrics are:

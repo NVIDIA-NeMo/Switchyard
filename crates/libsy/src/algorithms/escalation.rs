@@ -69,8 +69,9 @@ const MAX_STREAKS: usize = 4_096;
 /// knobs found to actually change routing outcomes. Everything else it exposed is either a
 /// fixed invariant (see the `*_CHARS` constants above) or operational plumbing.
 ///
-/// Defaults are the ESC7 converged configuration.
-#[derive(Clone, Debug)]
+/// Defaults are the benchmarked configuration; omitted fields take those values.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
 pub struct EscalationJudgeSettings {
     /// Consecutive escalate verdicts required before the latch fires.
     ///
@@ -88,6 +89,26 @@ pub struct EscalationJudgeSettings {
     /// Per-message cap inside the trailing window. Error signatures and command shapes
     /// survive this easily; full file dumps do not need to.
     pub window_message_chars: usize,
+}
+
+impl EscalationJudgeSettings {
+    /// Rejects settings that would leave the judge with nothing useful to read.
+    fn validate(&self) -> Result<()> {
+        let reject = |message: String| Err(crate::LibsyError::AlgorithmError { message });
+        if self.confirmations == 0 {
+            return reject("confirmations must be at least 1".to_string());
+        }
+        if self.recent_turn_window == 0 {
+            return reject("recent_turn_window must be at least 1".to_string());
+        }
+        if self.window_message_chars < 50 {
+            return reject(format!(
+                "window_message_chars must be at least 50, got {}",
+                self.window_message_chars
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for EscalationJudgeSettings {
@@ -229,6 +250,7 @@ impl EscalationRouter {
         judge_target: LlmTarget,
         settings: EscalationJudgeSettings,
     ) -> Result<Self> {
+        settings.validate()?;
         let config = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
         let capable_name = capable_target.semantic_name.clone();
         let confirmations = settings.confirmations;

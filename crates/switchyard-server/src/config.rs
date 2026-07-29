@@ -8,7 +8,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use libsy::algorithms::{LlmTaskClassifier, Noop, Passthrough, Random, TaskClassifierConfig};
+use libsy::algorithms::{
+    EscalationJudgeSettings, EscalationRouter, LlmTaskClassifier, Noop, Passthrough, Random,
+    TaskClassifierConfig,
+};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde::Deserialize;
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
@@ -183,15 +186,25 @@ enum RouteConfig {
         #[serde(flatten)]
         classifier_config: TaskClassifierConfig,
     },
+    Escalation {
+        id: String,
+        judge_target: String,
+        strong_target: String,
+        weak_target: String,
+        #[serde(flatten)]
+        judge_settings: EscalationJudgeSettings,
+    },
 }
 
 impl RouteConfig {
     fn id(&self) -> &str {
         use RouteConfig::*;
         match self {
-            Noop { id } | Random { id, .. } | LlmClassifier { id, .. } | Passthrough { id, .. } => {
-                id
-            }
+            Noop { id }
+            | Random { id, .. }
+            | LlmClassifier { id, .. }
+            | Passthrough { id, .. }
+            | Escalation { id, .. } => id,
         }
     }
 }
@@ -275,6 +288,25 @@ fn build_algorithm(
                 LlmTaskClassifier::new(classifier, weak, strong, classifier_config.clone())
                     .map_err(|error| {
                         ServerError::new(format!("llm_classifier route {route_name}: {error}"))
+                    })?;
+            Ok(Arc::new(algorithm))
+        }
+        RouteConfig::Escalation {
+            judge_target,
+            strong_target,
+            weak_target,
+            judge_settings,
+            ..
+        } => {
+            let judge = resolve_target(route_name, judge_target, targets)?;
+            let strong = resolve_target(route_name, strong_target, targets)?;
+            let weak = resolve_target(route_name, weak_target, targets)?;
+            // The weak model is the efficient tier the judge starts every session on;
+            // the strong model is the capable one it escalates to.
+            let algorithm =
+                EscalationRouter::with_settings(weak, strong, judge, judge_settings.clone())
+                    .map_err(|error| {
+                        ServerError::new(format!("escalation route {route_name}: {error}"))
                     })?;
             Ok(Arc::new(algorithm))
         }
@@ -366,6 +398,13 @@ base_threshold = 0.5
 id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "escalation"
+judge_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
 "#;
 
     fn error_message(toml: &str) -> String {
@@ -383,6 +422,7 @@ target = "weak"
             state.models().collect::<Vec<_>>(),
             [
                 "switchyard/classifier",
+                "switchyard/escalation",
                 "switchyard/noop",
                 "switchyard/passthrough",
                 "switchyard/random",
@@ -463,6 +503,37 @@ target = "weak"
                 "expected error containing {expected}"
             );
         }
+    }
+
+    #[test]
+    fn escalation_route_accepts_judge_settings_and_rejects_unusable_ones() -> ServerResult<()> {
+        // `[routes.escalation]` is the last table, so appended keys land in it.
+        let with_settings = |extra: &str| format!("{VALID_CONFIG}{extra}\n");
+
+        // Omitted settings fall back to the algorithm's benchmarked defaults.
+        server_state_from_toml(VALID_CONFIG)?;
+        server_state_from_toml(&with_settings(
+            "confirmations = 3\nrecent_turn_window = 40\nwindow_message_chars = 250",
+        ))?;
+
+        for (bad, expected) in [
+            ("confirmations = 0", "confirmations must be at least 1"),
+            (
+                "recent_turn_window = 0",
+                "recent_turn_window must be at least 1",
+            ),
+            (
+                "window_message_chars = 10",
+                "window_message_chars must be at least 50",
+            ),
+        ] {
+            let message = error_message(&with_settings(bad));
+            assert!(
+                message.contains(expected),
+                "expected error containing {expected}, got {message}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
