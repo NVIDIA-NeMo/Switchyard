@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use switchyard_libsy::algorithms::LlmTaskClassifier;
+use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
     Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
     Response, Result, RoutedLlmClient,
@@ -25,7 +25,7 @@ const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
 const WEAK: &str = "weak/model";
 /// Lowest judge-estimated solve probability that still routes to the weak model.
-const THRESHOLD: f64 = 0.5;
+const BASE_THRESHOLD: f64 = 0.5;
 
 /// Stub transport. Real integrators implement `RoutedLlmClient` over their own HTTP.
 struct StubClient;
@@ -102,8 +102,18 @@ async fn main() -> Result<()> {
     let classifier = target_set.get_target(CLASSIFIER)?;
     let weak = target_set.get_target(WEAK)?;
     let strong = target_set.get_target(STRONG)?;
-    let algo: Arc<dyn Algorithm> =
-        Arc::new(LlmTaskClassifier::new(classifier, weak, strong, THRESHOLD)?);
+    let algo: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
+        classifier,
+        weak,
+        strong,
+        TaskClassifierConfig {
+            base_threshold: BASE_THRESHOLD,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+        },
+    )?);
 
     let agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

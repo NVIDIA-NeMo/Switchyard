@@ -26,7 +26,7 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
-use switchyard_libsy::algorithms::LlmTaskClassifier;
+use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
     AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmTarget,
     LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
@@ -729,7 +729,13 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         target("classifier"),
         weak,
         strong,
-        0.5,
+        TaskClassifierConfig {
+            base_threshold: 0.5,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+        },
     )?);
 
     let (trace, _response) = router

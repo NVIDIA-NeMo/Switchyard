@@ -24,19 +24,21 @@ use crate::{
 // TODO: As a first implementation, keeping the prompt and schema paths hardcoded. Add a way to dynamically load and parse user passed prompt and schema.
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/schema.json");
-// TODO: There can be more knobs to tune the classifier after its verdict is parsed. Add more later.
+/// Telemetry label for this algorithm's spans, metrics, and logs.
+const ALGORITHM_NAME: &str = "llm_task_classifier";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Parsed judge output. Only confidence, abstention, and solve probability affect v0 routing.
+/// These fields are parsed from the judge output and used to route the request.
+/// For supporting a new schema, we need to add a new Verdict struct and parse the new
 struct TaskClassifierVerdict {
     #[serde(rename = "recommended_route")]
     _recommended_route: String,
     p_solve: f64,
     confidence: f64,
     abstain: bool,
-    #[serde(rename = "capability_boundary")]
-    _capability_boundary: String,
+    capability_boundary: String,
     #[serde(rename = "primary_rule")]
     _primary_rule: String,
     #[serde(rename = "crux")]
@@ -47,10 +49,28 @@ impl TaskClassifierVerdict {
     /// Reject out-of-range probabilities before the policy can route efficiently. Range
     /// containment also rejects NaN and the infinities, which compare false against both bounds.
     fn is_valid(&self) -> bool {
-        (0.0..=1.0).contains(&self.p_solve) && (0.0..=1.0).contains(&self.confidence)
+        (0.0..=1.0).contains(&self.p_solve)
+            && (0.0..=1.0).contains(&self.confidence)
+            && matches!(
+                self.capability_boundary.as_str(),
+                "supported" | "uncertain" | "unsupported" | "unmatched"
+            )
+    }
+
+    /// Whether this verdict needs the elevated capability threshold.
+    /// When capability boundary is "uncertain", "unsupported", or "unmatched", we need to use the elevated capability threshold to route the request to weak model
+    /// This is to ensure that we are not routing too many requests to the weak model.
+    fn is_capability_elevated(&self) -> bool {
+        matches!(
+            self.capability_boundary.as_str(),
+            "uncertain" | "unsupported" | "unmatched"
+        )
     }
 }
 
+/// The judge is responsible for any kind of llm judge based calls
+/// Example: A judge can be a capability classifier, a escalation classifier etc
+/// Builds capability-specific judge requests from shared classifier configuration.
 struct CapabilityJudge {
     config: JudgeConfig,
 }
@@ -58,8 +78,11 @@ struct CapabilityJudge {
 impl Judge for CapabilityJudge {
     type Verdict = TaskClassifierVerdict;
 
+    /// For different judges, the request building logic can be different
+    /// To have a single interface for all judges, we may make a common request building logic here.
     fn build_request(&self, _state: &State, request: &Request) -> Request {
         // For task-based routing, classify only the newest user message with the judge prompt.
+        // For any turn window size setting, use TaskClassifierConfig to define the window size.
         let mut messages = request
             .llm_request
             .messages
@@ -92,20 +115,30 @@ impl Judge for CapabilityJudge {
 struct TaskClassifierPolicy {
     efficient_target: String,
     capable_target: String,
-    /// Lowest `p_solve` that still routes to the efficient target.
-    threshold: f64,
+    config: TaskClassifierConfig,
 }
 
 impl TaskClassifierPolicy {
     fn new(
         efficient_target: impl Into<String>,
         capable_target: impl Into<String>,
-        threshold: f64,
+        config: TaskClassifierConfig,
     ) -> Self {
         Self {
             efficient_target: efficient_target.into(),
             capable_target: capable_target.into(),
-            threshold,
+            config,
+        }
+    }
+
+    /// Returns the required solve probability for one validated verdict.
+    fn threshold(&self, verdict: &TaskClassifierVerdict) -> f64 {
+        if verdict.is_capability_elevated() {
+            self.config
+                .capability_elevated_floor
+                .unwrap_or(self.config.base_threshold)
+        } else {
+            self.config.base_threshold
         }
     }
 }
@@ -114,11 +147,14 @@ impl JudgePolicy for TaskClassifierPolicy {
     type Verdict = TaskClassifierVerdict;
 
     fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
-        // Judge output is untrusted. Anything incomplete, invalid, abstained, or below the
-        // threshold routes to the capable target rather than risking an underpowered route.
+        // Judge output is untrusted. Anything incomplete, invalid, abstained, or below its
+        // configured confidence or capability threshold routes to the capable target.
         let target = match verdict {
             Some(verdict)
-                if verdict.is_valid() && !verdict.abstain && verdict.p_solve >= self.threshold =>
+                if verdict.is_valid()
+                    && !verdict.abstain
+                    && verdict.confidence >= self.config.min_confidence
+                    && verdict.p_solve >= self.threshold(verdict) =>
             {
                 &self.efficient_target
             }
@@ -131,6 +167,69 @@ impl JudgePolicy for TaskClassifierPolicy {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+/// Thresholds that control capability classifier routing.
+pub struct TaskClassifierConfig {
+    /// Lowest solve probability that routes a supported task to the efficient target.
+    pub base_threshold: f64,
+    /// Lowest judge confidence that permits efficient routing.
+    #[serde(default)]
+    pub min_confidence: f64,
+    /// Higher solve-probability floor for uncertain, unmatched, and unsupported tasks.
+    #[serde(default)]
+    pub capability_elevated_floor: Option<f64>,
+    /// Enables session affinity before the judge-backed classifier.
+    #[serde(default)]
+    pub session_affinity: bool,
+    /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
+    #[serde(default)]
+    pub message_hash_fallback: bool,
+}
+
+impl TaskClassifierConfig {
+    /// Validates routing thresholds before the classifier is constructed.
+    fn validate(&self) -> Result<()> {
+        if !(0.0..=1.0).contains(&self.base_threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "base_threshold must be between 0 and 1, got {}",
+                    self.base_threshold
+                ),
+            });
+        }
+        if !(0.0..=1.0).contains(&self.min_confidence) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "min_confidence must be between 0 and 1, got {}",
+                    self.min_confidence
+                ),
+            });
+        }
+        if let Some(floor) = self.capability_elevated_floor {
+            if !(0.0..=1.0).contains(&floor) {
+                return Err(LibsyError::AlgorithmError {
+                    message: format!(
+                        "capability_elevated_floor must be between 0 and 1, got {floor}"
+                    ),
+                });
+            }
+            if floor <= self.base_threshold {
+                return Err(LibsyError::AlgorithmError {
+                    message: format!(
+                        "capability_elevated_floor must be greater than base_threshold, got {floor}"
+                    ),
+                });
+            }
+        }
+        if self.message_hash_fallback && !self.session_affinity {
+            return Err(LibsyError::AlgorithmError {
+                message: "message_hash_fallback requires session_affinity".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
 struct TaskClassifier {
     classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
     efficient_target: String,
@@ -140,71 +239,57 @@ struct TaskClassifier {
 /// A task-level capability routing algorithm with an internal fall-through cascade.
 pub struct LlmTaskClassifier {
     route: FallThrough<State>,
-    targets: LlmTargetSet,
     classifier: Arc<TaskClassifier>,
 }
 
 impl LlmTaskClassifier {
-    /// Routes to `efficient_target` when the judge's `p_solve` reaches `threshold`; otherwise
-    /// routes to `capable_target`. Errors if `threshold` is outside `[0.0, 1.0]`.
+    /// Routes according to `config` and returns errors for invalid thresholds.
     pub fn new(
         judge_target: LlmTarget,
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
-        threshold: f64,
+        config: TaskClassifierConfig,
     ) -> Result<Self> {
-        if !(0.0..=1.0).contains(&threshold) {
-            return Err(LibsyError::AlgorithmError {
-                message: format!("threshold must be between 0 and 1, got {threshold}"),
-            });
-        }
-        let judge = CapabilityJudge {
-            config: Self::load_judge_config()?,
-        };
+        config.validate()?;
+        let judge_config = Self::load_judge_config()?;
         let targets = LlmTargetSet::new(vec![efficient_target.clone(), capable_target.clone()]);
-        let efficient_target = efficient_target.semantic_name;
-        let capable_target = capable_target.semantic_name;
+        let session_affinity = config.session_affinity;
+        let message_hash_fallback = config.message_hash_fallback;
         let classifier = Arc::new(TaskClassifier {
             classifier: JudgeClassifier::new(
-                judge,
+                CapabilityJudge {
+                    config: judge_config,
+                },
                 judge_target,
                 TaskClassifierPolicy::new(
-                    efficient_target.clone(),
-                    capable_target.clone(),
-                    threshold,
+                    efficient_target.semantic_name.clone(),
+                    capable_target.semantic_name.clone(),
+                    config,
                 ),
             ),
-            efficient_target,
-            capable_target,
+            efficient_target: efficient_target.semantic_name,
+            capable_target: capable_target.semantic_name,
         });
-        // Added Fallthrough to the classifier so that it remains the internal implementation detail only
-        // Users just have to export the algorithm as a whole.
+
+        // The cascade is an internal detail: callers drive the algorithm, not its parts.
+        // Affinity comes first so a retained assignment short-circuits the judge call.
+        let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
+        if session_affinity {
+            let affinity = if message_hash_fallback {
+                AffinityRouter::new().with_message_hash_fallback()
+            } else {
+                AffinityRouter::new()
+            };
+            // Both roles must share one `Arc` so the classifier reads what the processor wrote.
+            let affinity = Arc::new(affinity);
+            route = route
+                .with_processor(affinity.clone())
+                .with_classifier(affinity);
+        }
         Ok(Self {
-            route: FallThrough::<State>::new_with_state(targets.clone())
-                .with_name("llm_task_classifier")
-                .with_classifier(classifier.clone()),
-            targets,
+            route: route.with_classifier(classifier.clone()),
             classifier,
         })
-    }
-
-    /// Adds session affinity before the judge-backed classifier.
-    ///
-    /// When `message_hash_fallback` is enabled, requests without a session header are keyed by
-    /// their latest user message.
-    pub fn with_affinity(self, message_hash_fallback: bool) -> Self {
-        let affinity = if message_hash_fallback {
-            AffinityRouter::new().with_message_hash_fallback()
-        } else {
-            AffinityRouter::new()
-        };
-        let affinity = Arc::new(affinity);
-        let route = FallThrough::<State>::new_with_state(self.targets.clone())
-            .with_name("llm_task_classifier")
-            .with_processor(affinity.clone())
-            .with_classifier(affinity)
-            .with_classifier(self.classifier.clone());
-        Self { route, ..self }
     }
 
     /// Loads the judge configuration from the packaged prompt and schema.
@@ -306,8 +391,18 @@ mod tests {
 
     const TEST_THRESHOLD: f64 = 0.5;
 
+    fn test_config(base_threshold: f64) -> TaskClassifierConfig {
+        TaskClassifierConfig {
+            base_threshold,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+        }
+    }
+
     fn policy() -> TaskClassifierPolicy {
-        TaskClassifierPolicy::new("efficient", "capable", TEST_THRESHOLD)
+        TaskClassifierPolicy::new("efficient", "capable", test_config(TEST_THRESHOLD))
     }
 
     /// A verdict whose non-routing fields are fixed — only the three the policy reads vary.
@@ -317,7 +412,7 @@ mod tests {
             p_solve,
             confidence,
             abstain,
-            _capability_boundary: "supported".to_string(),
+            capability_boundary: "supported".to_string(),
             _primary_rule: "SUP-1".to_string(),
             _crux: "test crux".to_string(),
         }
@@ -401,7 +496,7 @@ mod tests {
             target("judge"),
             target("efficient"),
             target("capable"),
-            TEST_THRESHOLD,
+            test_config(TEST_THRESHOLD),
         )?))
     }
 
@@ -424,6 +519,19 @@ mod tests {
             }),
             ..classify_request()
         }
+    }
+
+    fn classify_follow_up_request() -> Request {
+        let mut request = classify_request();
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::Assistant, "I will add the test."));
+        request.llm_request.messages.push(Message::text(
+            Role::User,
+            "Now run the test suite and report the result.",
+        ));
+        request
     }
 
     #[tokio::test]
@@ -457,22 +565,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn affinity_reuses_the_first_session_decision_without_a_second_judge_call() -> Result<()>
-    {
+    async fn classifier_config_enables_session_affinity() -> Result<()> {
         let client = Arc::new(PerRequestClient::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(
-            LlmTaskClassifier::new(
-                target("judge"),
-                target("efficient"),
-                target("capable"),
-                TEST_THRESHOLD,
-            )?
-            .with_affinity(false),
-        );
+        let router = Arc::new(LlmTaskClassifier::new(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            TaskClassifierConfig {
+                session_affinity: true,
+                ..test_config(TEST_THRESHOLD)
+            },
+        )?);
 
         router
             .clone()
@@ -488,21 +595,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_hash_fallback_reuses_a_task_without_session_metadata() -> Result<()> {
+    async fn classifier_config_reuses_message_hash_affinity_for_a_follow_up() -> Result<()> {
         let client = Arc::new(PerRequestClient::default());
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
         };
-        let router = Arc::new(
-            LlmTaskClassifier::new(
-                target("judge"),
-                target("efficient"),
-                target("capable"),
-                TEST_THRESHOLD,
-            )?
-            .with_affinity(true),
-        );
+        let router = Arc::new(LlmTaskClassifier::new(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            TaskClassifierConfig {
+                session_affinity: true,
+                message_hash_fallback: true,
+                ..test_config(TEST_THRESHOLD)
+            },
+        )?);
 
         router
             .clone()
@@ -510,7 +618,7 @@ mod tests {
             .await?;
         router
             .clone()
-            .run(Context::default(), classify_request())
+            .run(Context::default(), classify_follow_up_request())
             .await?;
 
         assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
@@ -530,27 +638,60 @@ mod tests {
     #[test]
     fn the_threshold_moves_the_routing_boundary() -> Result<()> {
         let borderline = verdict(0.5, 1.0, false);
-        let strict = TaskClassifierPolicy::new("efficient", "capable", 0.9);
-        let lenient = TaskClassifierPolicy::new("efficient", "capable", 0.1);
+        let strict = TaskClassifierPolicy::new("efficient", "capable", test_config(0.9));
+        let lenient = TaskClassifierPolicy::new("efficient", "capable", test_config(0.1));
         assert_eq!(selected(&strict, Some(&borderline))?, "capable");
         assert_eq!(selected(&lenient, Some(&borderline))?, "efficient");
         Ok(())
     }
 
     #[test]
-    fn an_out_of_range_threshold_is_rejected() -> Result<()> {
+    fn invalid_classifier_config_is_rejected() -> Result<()> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: None,
         };
         for bad in [1.5, -0.1, f64::NAN, f64::INFINITY] {
             assert!(
-                LlmTaskClassifier::new(target("judge"), target("e"), target("c"), bad).is_err(),
-                "threshold {bad} should be rejected"
+                LlmTaskClassifier::new(
+                    target("judge"),
+                    target("e"),
+                    target("c"),
+                    test_config(bad),
+                )
+                .is_err(),
+                "base threshold {bad} should be rejected"
             );
         }
-        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), 0.0)?;
-        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), 1.0)?;
+        for config in [
+            TaskClassifierConfig {
+                base_threshold: 0.5,
+                min_confidence: 1.1,
+                capability_elevated_floor: None,
+                session_affinity: false,
+                message_hash_fallback: false,
+            },
+            TaskClassifierConfig {
+                base_threshold: 0.5,
+                min_confidence: 0.0,
+                capability_elevated_floor: Some(0.5),
+                session_affinity: false,
+                message_hash_fallback: false,
+            },
+            TaskClassifierConfig {
+                base_threshold: 0.5,
+                min_confidence: 0.0,
+                capability_elevated_floor: None,
+                session_affinity: false,
+                message_hash_fallback: true,
+            },
+        ] {
+            assert!(
+                LlmTaskClassifier::new(target("judge"), target("e"), target("c"), config).is_err()
+            );
+        }
+        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), test_config(0.0))?;
+        LlmTaskClassifier::new(target("judge"), target("e"), target("c"), test_config(1.0))?;
         Ok(())
     }
 
@@ -559,9 +700,40 @@ mod tests {
         let policy = policy();
         let invalid_probability = verdict(1.1, 1.0, false);
         let abstained = verdict(1.0, 1.0, true);
+        let invalid_boundary = TaskClassifierVerdict {
+            capability_boundary: "unknown".to_string(),
+            ..verdict(1.0, 1.0, false)
+        };
         assert_eq!(selected(&policy, Some(&invalid_probability))?, "capable");
         assert_eq!(selected(&policy, Some(&abstained))?, "capable");
+        assert_eq!(selected(&policy, Some(&invalid_boundary))?, "capable");
         assert_eq!(selected(&policy, None)?, "capable");
+        Ok(())
+    }
+
+    #[test]
+    fn elevated_capability_floor_is_a_targeted_safety_brake() -> Result<()> {
+        let policy = TaskClassifierPolicy::new(
+            "efficient",
+            "capable",
+            TaskClassifierConfig {
+                capability_elevated_floor: Some(0.45),
+                ..test_config(0.25)
+            },
+        );
+        let supported = verdict(0.30, 1.0, false);
+        let elevated = TaskClassifierVerdict {
+            capability_boundary: "uncertain".to_string(),
+            ..verdict(0.30, 1.0, false)
+        };
+        let strong_elevated = TaskClassifierVerdict {
+            capability_boundary: "unsupported".to_string(),
+            ..verdict(0.50, 1.0, false)
+        };
+
+        assert_eq!(selected(&policy, Some(&supported))?, "efficient");
+        assert_eq!(selected(&policy, Some(&elevated))?, "capable");
+        assert_eq!(selected(&policy, Some(&strong_elevated))?, "efficient");
         Ok(())
     }
 

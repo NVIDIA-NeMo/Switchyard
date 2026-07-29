@@ -299,7 +299,7 @@ type = "llm_classifier"
 classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
-threshold = 0.5
+base_threshold = 0.5
 
 [routes.passthrough]
 id = "switchyard/passthrough"
