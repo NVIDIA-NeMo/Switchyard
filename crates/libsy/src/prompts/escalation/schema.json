@@ -1,7 +1,7 @@
 {
   "type": "json_schema",
   "json_schema": {
-    "name": "EscalationDecision",
+    "name": "EscalationVerdict",
     "strict": true,
     "schema": {
       "type": "object",
