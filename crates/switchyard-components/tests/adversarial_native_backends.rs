@@ -1004,7 +1004,13 @@ async fn anthropic_strips_unsigned_thinking_blocks_before_native_call() -> Resul
         request.body["messages"][1]["content"][0]["thinking"],
         "real"
     );
-    assert_eq!(request.body["messages"][2]["content"], "");
+    assert_eq!(
+        request.body["messages"]
+            .as_array()
+            .ok_or_else(|| SwitchyardError::Other("messages should be an array".to_string()))?
+            .len(),
+        2
+    );
     Ok(())
 }
 

@@ -52,6 +52,12 @@ fn anthropic_same_format_requests_are_normalized_before_replay() -> TestResult {
                     {"type": "thinking", "thinking": "real", "signature": "signed"},
                     {"type": "text", "text": "visible"}
                 ]
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "only synthetic", "signature": ""}
+                ]
             }
         ]
     });

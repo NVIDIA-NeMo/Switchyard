@@ -345,9 +345,13 @@ fn normalize_outbound_request(mut body: Value) -> Value {
         return body;
     };
     object.remove("reasoning_effort");
+    // Context management is a beta dialect feature. The default codec emits the
+    // conservative Messages shape; target-specific callers can add it afterward.
     object.remove("context_management");
 
     if let Some(messages) = object.remove("messages") {
+        // Message-level system turns are accepted only by newer Anthropic
+        // dialects, while conservative endpoints require top-level `system`.
         let (messages, system_text) = lift_message_level_system(messages);
         append_lifted_system_text(object, system_text);
         let messages = normalize_anthropic_tool_use_ids(messages);
@@ -395,10 +399,11 @@ fn system_text_from_content(content: &Value) -> Option<String> {
                 .collect::<Vec<_>>();
             (!parts.is_empty()).then(|| parts.join("\n\n"))
         }
-        other => Some(other.to_string()),
+        _ => None,
     }
 }
 
+// Only text and input-text blocks can be promoted into a system prompt.
 fn system_text_from_content_block(block: &Value) -> Option<String> {
     match block {
         Value::String(text) if !text.is_empty() => Some(text.clone()),
@@ -461,38 +466,37 @@ fn strip_unsigned_thinking_blocks(messages: Value) -> Value {
         Value::Array(messages) => Value::Array(
             messages
                 .into_iter()
-                .map(strip_unsigned_thinking_from_message)
+                .filter_map(strip_unsigned_thinking_from_message)
                 .collect(),
         ),
         other => other,
     }
 }
 
-fn strip_unsigned_thinking_from_message(message: Value) -> Value {
+fn strip_unsigned_thinking_from_message(message: Value) -> Option<Value> {
     let Value::Object(mut message) = message else {
-        return message;
+        return Some(message);
     };
     let Some(content) = message.remove("content") else {
-        return Value::Object(message);
+        return Some(Value::Object(message));
     };
     let Value::Array(blocks) = content else {
         message.insert("content".to_string(), content);
-        return Value::Object(message);
+        return Some(Value::Object(message));
     };
 
     let kept = blocks
         .into_iter()
         .filter(|block| !is_unsigned_thinking_block(block))
         .collect::<Vec<_>>();
-    let content = if kept.is_empty() {
-        Value::String(String::new())
-    } else {
-        Value::Array(kept)
-    };
-    message.insert("content".to_string(), content);
-    Value::Object(message)
+    if kept.is_empty() {
+        return None;
+    }
+    message.insert("content".to_string(), Value::Array(kept));
+    Some(Value::Object(message))
 }
 
+// A thinking block is unsigned when its signature is absent or empty.
 fn is_unsigned_thinking_block(block: &Value) -> bool {
     block.get("type").and_then(Value::as_str) == Some("thinking")
         && !matches!(
