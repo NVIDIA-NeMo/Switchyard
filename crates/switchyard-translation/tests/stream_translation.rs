@@ -7,7 +7,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
-    decode_stream_event, StreamTranslationState, TranslationEngine, WireFormat,
+    decode_stream_event, LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -265,6 +265,135 @@ fn openai_chat_stream_reasoning_usage_translates_to_responses_usage_details() ->
     Ok(())
 }
 
+// Verifies streamed cache usage reaches Responses clients in the standard details object.
+#[test]
+fn openai_chat_stream_cache_usage_translates_to_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let usage = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-cached",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_tokens_details": {"cached_tokens": 80}
+        }
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &usage,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(completed) = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+    else {
+        return Err("expected final Responses completion event".into());
+    };
+    assert_eq!(completed["response"]["usage"]["input_tokens"], 100);
+    assert_eq!(
+        completed["response"]["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 80})
+    );
+    Ok(())
+}
+
+// Verifies OpenRouter's cache-write field and the legacy alias normalize identically.
+#[test]
+fn openai_chat_stream_cache_write_usage_is_normalized() -> TestResult {
+    for cache_write_field in ["cache_write_tokens", "cache_creation_tokens"] {
+        let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+        let mut event = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-cached",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "prompt_tokens_details": {"cached_tokens": 70}
+            }
+        });
+        event["usage"]["prompt_tokens_details"][cache_write_field] = json!(10);
+
+        let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
+        let Some(usage) = chunks.iter().find_map(|chunk| match chunk {
+            LlmResponseChunk::Usage(usage) => Some(usage),
+            _ => None,
+        }) else {
+            return Err(format!("expected usage chunk for {cache_write_field}").into());
+        };
+
+        assert_eq!(usage.input_tokens, Some(20));
+        assert_eq!(usage.cached_input_tokens(), Some(70));
+        assert_eq!(usage.cache_creation_input_tokens(), Some(10));
+        assert_eq!(usage.output_tokens, Some(5));
+    }
+    Ok(())
+}
+
+// Verifies the streamed total-token fallback keeps cached tokens when upstream omits total_tokens.
+#[test]
+fn responses_stream_usage_without_total_keeps_cached_tokens_in_total() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let created = json!({
+        "type": "response.created",
+        "response": {"id": "resp_1", "model": "gpt-cached"}
+    });
+    engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &created,
+    )?;
+
+    // No total_tokens field: the codec must recompute it from the aggregate input.
+    let completed = json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_1",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 5,
+                "input_tokens_details": {"cached_tokens": 80}
+            }
+        }
+    });
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &completed,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
+
+    let Some(usage) = events
+        .iter()
+        .find_map(|event| event.get("usage").filter(|usage| !usage.is_null()))
+    else {
+        return Err("expected a terminal OpenAI chunk carrying usage".into());
+    };
+    assert_eq!(usage["prompt_tokens"], 100);
+    assert_eq!(usage["total_tokens"], 105);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 80);
+    Ok(())
+}
+
 // Verifies Responses text deltas become OpenAI Chat content chunks.
 #[test]
 fn responses_stream_delta_translates_to_openai_chat_chunk() -> TestResult {
@@ -448,6 +577,67 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
         aggregate.outputs[0].stop_reason,
         Some(StopReason::MaxTokens),
         "the reasonless message_stop must not overwrite the max_tokens stop reason"
+    );
+    Ok(())
+}
+
+// An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
+// instead of a bare message start that silently drops the upstream message.
+#[test]
+fn openai_chat_error_frame_decodes_to_stream_error() -> TestResult {
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let event = json!({"error": {"message": "upstream exploded", "type": "server_error"}});
+
+    let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
+
+    assert_eq!(chunks.len(), 1);
+    match &chunks[0] {
+        LlmResponseChunk::StreamError { message } => assert_eq!(message, "upstream exploded"),
+        other => return Err(format!("expected StreamError, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+// Verifies the streaming encoder matches the buffered one: both Responses usage detail objects
+// are present even when the upstream reports no cache or reasoning breakdown.
+#[test]
+fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let usage = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "plain-model",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 41, "completion_tokens": 3, "total_tokens": 44}
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &usage,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+
+    let Some(completed) = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+    else {
+        return Err("expected final Responses completion event".into());
+    };
+    assert_eq!(
+        completed["response"]["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 0})
+    );
+    assert_eq!(
+        completed["response"]["usage"]["output_tokens_details"],
+        json!({"reasoning_tokens": 0})
     );
     Ok(())
 }

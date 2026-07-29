@@ -2255,7 +2255,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<1.0" },
     { name = "nemo-platform", marker = "extra == 'intake'", specifier = ">=0.1.0,<1.0" },
     { name = "nemo-switchyard", extras = ["server", "cli", "tracing", "intake", "affinity-redis"], marker = "extra == 'all'" },
-    { name = "openai", specifier = ">=2.34.0,<3.0" },
+    { name = "openai", specifier = ">=2.7,<3.0" },
     { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.52,<4.0" },
     { name = "pydantic", specifier = ">=2.13.3,<3.0" },
     { name = "redis", marker = "extra == 'affinity-redis'", specifier = ">=5.0.1,<6" },

@@ -16,16 +16,11 @@ scrape_configs:
   - job_name: switchyard
     metrics_path: /metrics
     scheme: http
-    # Default scrape every 15s — the Latency Service poll cycle defaults
-    # to 10s, so finer scrape resolution captures no additional state.
     scrape_interval: 15s
     static_configs:
-      # Replace with your Switchyard host(s) and port(s). On Kubernetes
-      # with the manifest at examples/k8s/latency-aware-deployment.yaml
-      # the in-cluster DNS resolves to
-      # switchyard-latency.llm-routing.svc.cluster.local on port 80
-      # targeting container port 4100. Swap this static_configs block
-      # for kubernetes_sd_configs in a cluster-native deployment.
+      # Replace with your Switchyard host(s) and port(s). Swap this
+      # static_configs block for kubernetes_sd_configs in a
+      # cluster-native deployment.
       - targets:
           - switchyard.example.internal:4100
 

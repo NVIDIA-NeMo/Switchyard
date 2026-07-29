@@ -89,8 +89,10 @@ class ComponentChainProfile:
         self._fallback_target_on_evict = fallback_target_on_evict
         # Maps session key → frozenset of target IDs that overflowed for that session.
         # Only allocated when eviction is configured; None otherwise.
-        self._session_evictions: SessionCache | None = (
-            SessionCache(self._SESSION_CACHE_MAX) if fallback_target_on_evict is not None else None
+        self._session_evictions: SessionCache[frozenset[str]] | None = (
+            SessionCache[frozenset[str]](self._SESSION_CACHE_MAX)
+            if fallback_target_on_evict is not None
+            else None
         )
 
     def iter_components(self) -> list[object]:
@@ -381,7 +383,7 @@ def _attach_stats_to_request_processors(
     processors: Sequence[Any],
     stats: StatsAccumulator,
 ) -> None:
-    """Wire existing classifier/planner stats hooks without config fields."""
+    """Wire existing request-processor stats hooks without config fields."""
     for processor in processors:
         attach_stats = getattr(processor, "attach_stats_accumulator", None)
         if callable(attach_stats):

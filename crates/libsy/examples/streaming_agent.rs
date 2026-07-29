@@ -12,14 +12,14 @@
 //! answer. Run with:
 //!   cargo run -p libsy --example streaming_agent
 
-use std::error::Error;
 use std::io::Write;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use libsy::{
-    Algorithm, Context, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget, LlmTargetSet,
-    RandomAlgo, Request, Response, Step,
+use switchyard_libsy::algorithms::Random;
+use switchyard_libsy::{
+    Algorithm, Context, LibsyError, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget,
+    LlmTargetSet, Request, Response, Result, Step,
 };
 use switchyard_protocol::{completion_text, text_request};
 
@@ -49,13 +49,13 @@ fn streaming_response(model: &str, tokens: &[&str]) -> Response {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn main() -> Result<()> {
     // One client-less target -> its call is offloaded for us to serve.
     let targets = LlmTargetSet::new(vec![LlmTarget {
         semantic_name: "stream/model".to_string(),
         llm_client: None,
     }]);
-    let algo: Arc<dyn Algorithm> = Arc::new(RandomAlgo::new(targets));
+    let algo: Arc<dyn Algorithm> = Arc::new(Random::new(targets, None, None)?);
 
     let request = Request {
         llm_request: text_request(Some("auto".to_string()), "tell me about switchyard"),
@@ -85,7 +85,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 LlmResponse::Stream(mut chunks) => {
                     print!("agent sees: ");
                     while let Some(chunk) = chunks.next().await {
-                        if let LlmResponseChunk::TextDelta { text, .. } = chunk? {
+                        let chunk = chunk.map_err(|error| {
+                            LibsyError::external("reading response stream", error)
+                        })?;
+                        if let LlmResponseChunk::TextDelta { text, .. } = chunk {
                             print!("{text}");
                             std::io::stdout().flush().ok();
                         }

@@ -15,8 +15,6 @@ class RandomRoutingRequestProcessor:
     """Rewrite requests to the randomly selected strong or weak target.
 
     This is a compatibility component for the current Python profile chain.
-    New Rust serving code uses components-v2 profiles directly instead of
-    exporting a Rust request-processor object.
     """
 
     def __init__(self, config: RandomRoutingProcessorConfig) -> None:

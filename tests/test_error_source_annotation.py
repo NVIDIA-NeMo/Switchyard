@@ -5,9 +5,9 @@
 
 Every client-facing error carries ``x-switchyard-error-source`` naming the
 layer that originated it (``switchyard`` | ``provider``), plus
-``x-switchyard-upstream-model`` when a routing selection had happened. The
-backend-side ctx stamps are covered in ``test_latency_service_llm_backend.py``;
-these tests cover the endpoint layer that renders them.
+``x-switchyard-upstream-model`` when a routing selection had happened. These
+tests cover the endpoint layer that renders those annotations from the ctx
+stamps a backend sets.
 """
 
 from __future__ import annotations

@@ -4,18 +4,18 @@
 //! No-op router. Always returns a hard coded response. Does not route to a backend.
 //! For testing.
 
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
 use switchyard_protocol::{
     AggLlmResponse, ContentBlock, LlmResponse, Request, Response, ResponseOutput, Role, StopReason,
 };
 
-use crate::{Algorithm, Context, Decision, Driver};
+use crate::{Algorithm, Context, Decision, Driver, Result};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
-pub struct NoopAlgo {}
+pub struct Noop {}
 
-/// How [`NoopAlgo`] records which model it chose. This will be the model on the Request if any,
+/// How [`Noop`] records which model it chose. This will be the model on the Request if any,
 /// otherwise a hard coded placeholder. Neither is actually used.
 pub struct NoopDecision {
     model: String,
@@ -34,13 +34,17 @@ impl Decision for NoopDecision {
 }
 
 #[async_trait::async_trait]
-impl Algorithm for NoopAlgo {
+impl Algorithm for Noop {
+    fn name(&self) -> &str {
+        "noop"
+    }
+
     async fn create_run_task(
         self: Arc<Self>,
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+    ) -> Result<Response> {
         let model = request
             .requested_model()
             .unwrap_or("switchyard/noop")
@@ -77,7 +81,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_noop_algo() -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn test_noop_algo() -> Result<()> {
         const TEST_MODEL: &str = "test_noop_algo";
         let request = Request {
             llm_request: LlmRequest {
@@ -89,7 +93,7 @@ mod tests {
             metadata: None,
         };
 
-        let a: Arc<dyn Algorithm> = Arc::new(NoopAlgo {});
+        let a: Arc<dyn Algorithm> = Arc::new(Noop {});
         let (decisions, response) = a.run(Context::default(), request).await?;
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");

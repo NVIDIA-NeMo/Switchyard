@@ -343,8 +343,14 @@ class TestProxyRoundtrip:
                 return self._body
 
         class _FakeClient:
-            def __init__(self, *_, **__):
-                pass
+            def __init__(self, *_, **kwargs):
+                # SWITCH-857: the loopback verify roundtrip must bypass env
+                # proxies, so verify.py builds this client with trust_env=False.
+                # Assert it here so dropping that kwarg fails the suite.
+                assert kwargs.get("trust_env") is False, (
+                    "verify roundtrip must use httpx.Client(trust_env=False) to "
+                    "bypass env proxies on the 127.0.0.1 probe"
+                )
 
             def __enter__(self):
                 return self

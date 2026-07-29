@@ -38,7 +38,6 @@ pub struct StreamTranslationState {
 
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
-    pub(crate) usage_extras: BTreeMap<String, u64>,
     pub(crate) stop_reason: Option<String>,
 
     pub(crate) next_content_index: usize,
@@ -207,7 +206,9 @@ pub fn decode_stream_event(
         .codec(source)
         .map(|codec| codec.decode_event(state, event))
         .unwrap_or_else(|error| {
-            vec![LlmResponseChunk::Error {
+            // A missing codec is a translation-side failure, not something the
+            // upstream sent, so it decodes to `DecodeError` rather than `StreamError`.
+            vec![LlmResponseChunk::DecodeError {
                 message: error.to_string(),
             }]
         })

@@ -122,6 +122,82 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
     Ok(())
 }
 
+// Verifies OpenAI cache usage survives the Chat-to-Responses translation used by Codex.
+#[test]
+fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-cached",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Cached answer"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "prompt_tokens_details": {"cached_tokens": 80}
+        }
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["usage"]["input_tokens"], 100);
+    assert_eq!(
+        output["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 80})
+    );
+    Ok(())
+}
+
+// Verifies OpenRouter's cache-write field and the legacy alias normalize identically.
+#[test]
+fn openai_chat_cache_write_aliases_translate_to_anthropic_usage_fields() -> TestResult {
+    let engine = TranslationEngine::default();
+    for cache_write_field in ["cache_write_tokens", "cache_creation_tokens"] {
+        let mut body = json!({
+            "id": "chatcmpl-test",
+            "model": "gpt-cached",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Cached answer"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "prompt_tokens_details": {"cached_tokens": 70}
+            }
+        });
+        body["usage"]["prompt_tokens_details"][cache_write_field] = json!(10);
+
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+
+        assert_eq!(output["usage"]["input_tokens"], 20);
+        assert_eq!(output["usage"]["cache_read_input_tokens"], 70);
+        assert_eq!(output["usage"]["cache_creation_input_tokens"], 10);
+        assert_eq!(output["usage"]["output_tokens"], 5);
+    }
+    Ok(())
+}
+
 // Verifies Anthropic thinking response blocks become OpenAI reasoning_content.
 #[test]
 fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestResult {
@@ -277,7 +353,13 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     assert_eq!(output["output"][0]["arguments"], "{\"q\": \"rust\"}");
     assert_eq!(
         output["usage"],
-        json!({"input_tokens": 4, "output_tokens": 3, "total_tokens": 7})
+        json!({
+            "input_tokens": 4,
+            "output_tokens": 3,
+            "total_tokens": 7,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        })
     );
     Ok(())
 }
@@ -318,5 +400,85 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
     assert_eq!(output["output"][0]["content"][0]["text"], "Let me check.");
     assert_eq!(output["output"][1]["type"], "function_call");
     assert_eq!(output["output"][1]["call_id"], "call_1");
+    Ok(())
+}
+
+// Verifies both Responses usage detail objects are emitted even when the upstream reports no
+// cache or reasoning breakdown. The Responses schema types them as required, so omitting them
+// makes the payload unparseable by OpenAI-SDK clients.
+#[test]
+fn openai_chat_usage_without_breakdowns_still_emits_responses_usage_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "plain-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hi"},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 41, "completion_tokens": 3, "total_tokens": 44}
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["usage"],
+        json!({
+            "input_tokens": 41,
+            "output_tokens": 3,
+            "total_tokens": 44,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        })
+    );
+    Ok(())
+}
+
+// Verifies a partial breakdown does not suppress the other detail object: an upstream that
+// reports cached tokens but no reasoning tokens must still carry both.
+#[test]
+fn openai_chat_cache_only_usage_still_emits_reasoning_details() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-test",
+        "model": "cache-only-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hi"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 41,
+            "completion_tokens": 3,
+            "total_tokens": 44,
+            "prompt_tokens_details": {"cached_tokens": 32}
+        }
+    });
+
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["usage"]["input_tokens_details"],
+        json!({"cached_tokens": 32})
+    );
+    assert_eq!(
+        output["usage"]["output_tokens_details"],
+        json!({"reasoning_tokens": 0})
+    );
     Ok(())
 }

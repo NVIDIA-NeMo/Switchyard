@@ -298,8 +298,8 @@ def _run_claude_with_switchyard(
 
     Takes a pre-built :class:`Switchyard` and a display-only model
     name.  The caller decides what's in the chain (single-model
-    passthrough, random routing across a preset, latency-service
-    pool, …) — this function owns only the uvicorn-in-a-thread +
+    passthrough, random routing across a preset, …) — this function
+    owns only the uvicorn-in-a-thread +
     ``claude`` supervision + env-var injection boilerplate that is
     identical across those modes.
 

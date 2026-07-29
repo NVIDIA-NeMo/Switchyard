@@ -11,6 +11,7 @@ mod dimension_collector;
 pub(crate) mod intake;
 mod request_processors;
 mod response_processors;
+mod stage_router;
 pub(crate) mod stats;
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -21,5 +22,6 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     response_processors::register(module)?;
     backends::register(module)?;
     dimension_collector::register(module)?;
+    stage_router::register(module)?;
     Ok(())
 }

@@ -71,8 +71,8 @@ class SessionAffinity:
     stickiness: derive a stable conversation key (system prompt + first user
     message, memoized on the request context) and store/look up a pinned value
     in a bounded LRU. The pinned value is opaque — a tier label for the
-    classifier router, an endpoint id for the latency backend. Each caller keeps
-    its own *policy* (when to write a pin, whether to honor one) on top.
+    classifier or escalation router. Each caller keeps its own *policy*
+    (when to write a pin, whether to honor one) on top.
 
     The in-process ``SessionCache`` is the L1. An optional ``l2`` implementing
     :class:`~switchyard.lib.affinity_pin_store.AffinityPinStore` is a shared,
@@ -108,7 +108,7 @@ class SessionAffinity:
             raise ValueError("l2_breaker_cooldown_s must be > 0")
         self._enabled = enabled
         self._warmup_turns = warmup_turns
-        self._pins: SessionCache = SessionCache(max_sessions)
+        self._pins = SessionCache[str](max_sessions)
         #: Optional shared/persistent L2 store; ``None`` keeps behavior L1-only.
         self._l2 = l2
         # L2 observability: hits = pins rescued from the shared store after an

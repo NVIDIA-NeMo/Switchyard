@@ -140,15 +140,61 @@ def test_configure_parser_builds_a_complete_request() -> None:
     # A real `switchyard configure` parse must fill every ConfigureRequest field
     # through the one from_namespace boundary. This is the check the original bug
     # lacked: disable_skill_distillation is the field that crashed first-run.
-    from switchyard.cli.config.user_config import DEFAULT_PROVIDER
     from switchyard.cli.switchyard_cli import _build_parser
 
     namespace = _build_parser().parse_args(["configure"])
     request = ConfigureRequest.from_namespace(namespace)
 
-    assert request.provider == DEFAULT_PROVIDER
+    # --provider defaults to None so it can't shadow a saved default_provider;
+    # cmd_configure resolves the effective provider from the saved config.
+    assert request.provider is None
     assert request.disable_skill_distillation is False
     assert request.routing_profiles is None  # the global flag is merged in
+
+
+def test_main_forwards_harness_args_after_separator(monkeypatch, tmp_path) -> None:
+    """``launch claude ... -- --version`` forwards harness args past the ``--``.
+
+    main() must only strip a ``--`` that occurs before the subcommand token,
+    so the launcher-side ``--`` separating claude args survives argparse and
+    the forwarded args reach ``launch_claude`` intact. Before the fix the first
+    ``--`` was popped unconditionally, so ``--version`` hit argparse as an
+    unrecognized argument (``SystemExit(2)``).
+    """
+    import sys
+
+    from switchyard.cli import switchyard_cli as cli
+
+    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "switchyard", "launch", "claude",
+            "--model", "nvidia/x", "--api-key", "sk-test",
+            "--", "--version",
+        ],
+    )
+    monkeypatch.setattr(
+        "switchyard.cli.launch_command.resolve_launch_connectivity",
+        lambda args, **_kw: ("sk-test", "https://inference-api.nvidia.com/v1"),
+    )
+
+    captured: dict = {}
+
+    def fake_launch(**kwargs):
+        captured.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(
+        "switchyard.cli.launchers.claude_code_launcher.launch_claude",
+        fake_launch,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 0
+    assert captured["claude_args"] == ["--version"]
 
 
 # ---------------------------------------------------------------------------
@@ -1087,10 +1133,10 @@ class TestResolveInitialFromProfiles:
     def test_empty_bundle_raises(self, tmp_path):
         from switchyard.cli.launch_command import _resolve_initial_from_profiles
         yaml_path = tmp_path / "empty.yaml"
-        yaml_path.write_text("routes:\n  noop:\n    type: noop\n")
+        yaml_path.write_text("routes:\n  direct:\n    type: model\n    target: some/model\n")
         assert (
             _resolve_initial_from_profiles(target="codex", routing_profiles=str(yaml_path))
-            == "noop"
+            == "direct"
         )
 
     def test_model_and_profiles_mutually_exclusive(self):
@@ -1195,11 +1241,11 @@ class TestServeRoutingProfilesFallback:
         args = parser.parse_args(["serve", "--port", "4000"])
         with pytest.raises(SystemExit) as excinfo:
             _cmd_serve(args)
-        assert "routing-profiles" in str(excinfo.value)
+        assert "switchyard --routing-profiles PATH configure" in str(excinfo.value)
 
 
 class TestConfigurePersistsRoutingProfiles:
-    """`switchyard configure --routing-profiles PATH` parses + snapshots the bundle."""
+    """`switchyard --routing-profiles PATH configure` snapshots the bundle."""
 
     def test_cli_path_persists_parsed_bundle(self, monkeypatch, tmp_path):
         from switchyard.cli.config.user_config import load_user_config

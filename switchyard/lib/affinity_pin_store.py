@@ -3,7 +3,7 @@
 
 """Pluggable async L2 store for session-affinity pins.
 
-The in-process Rust ``SessionCache`` stays the L1 inside
+The in-process ``SessionCache`` stays the L1 inside
 :class:`switchyard.lib.session_affinity.SessionAffinity`. An optional object
 implementing this protocol is the L2: a shared, out-of-process store (e.g.
 Redis) that lets pins be read by every Switchyard worker/pod and survive pod
@@ -20,8 +20,8 @@ from typing import Protocol, runtime_checkable
 class AffinityPinStore(Protocol):
     """Shared, out-of-process store for conversation→decision pins.
 
-    The pinned value is opaque to the store (an endpoint id for the latency
-    backend, a tier label for the classifier router). Implementations are
+    The pinned value is opaque to the store (a tier label for the classifier
+    or escalation router). Implementations are
     called on the request path, so they should be fast, and
     :class:`SessionAffinity` treats them as **best-effort**: an error or timeout
     must never break request routing (the caller falls back to L1 / unpinned).

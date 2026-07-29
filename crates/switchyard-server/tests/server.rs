@@ -1,841 +1,927 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Integration tests for the components-v2 Rust profile server.
+//! Integration tests for the libsy Rust server.
 
-use std::io::ErrorKind;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener as StdTcpListener, TcpStream};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
+use std::collections::{BTreeMap, HashSet};
+use std::convert::Infallible;
+use std::error::Error;
+use std::io::Write;
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::body::{Body, Bytes};
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{Request as HttpRequest, StatusCode};
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response as HttpResponse};
+use axum::routing::post;
+use axum::{Json, Router};
 use http_body_util::BodyExt;
+use libsy::algorithms::{FallThrough, Random};
+use libsy::stage_router::{PickerMode, StageClassifier};
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, State as AlgorithmState};
 use serde_json::{json, Value};
-use switchyard_components_v2::{
-    parse_profile_config_str, profile_stats_accumulator, Profile, ProfileConfigFormat,
-    ProfileInput, ProfileResponse, RoutingMetadata,
-};
-use switchyard_core::{
-    ChatRequestType, ChatResponse, ModelId, Result, StreamEvent, SwitchyardError,
-};
-use switchyard_server::{build_switchyard_router, ProfileRegistry, ServerState};
+use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_server::config::load_server_state;
+use switchyard_server::{build_switchyard_router, ServerState};
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
+type TestError = Box<dyn Error + Send + Sync>;
+type TestResult<T = ()> = Result<T, TestError>;
+
+const ROUTE_MODEL: &str = "switchyard/random";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+struct MockUpstream {
+    base_url: String,
+    calls: Arc<Mutex<Vec<Value>>>,
+    task: JoinHandle<()>,
+}
+
+impl MockUpstream {
+    async fn start() -> TestResult<Self> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/v1/chat/completions", post(upstream_chat))
+            .route("/v1/messages/count_tokens", post(upstream_count_tokens))
+            .layer(DefaultBodyLimit::disable())
+            .with_state(Arc::clone(&calls));
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, app).await {
+                tracing::error!(error = %error, "mock upstream stopped");
+            }
+        });
+        Ok(Self {
+            base_url: format!("http://{addr}/v1"),
+            calls,
+            task,
+        })
+    }
+}
+
+impl Drop for MockUpstream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn upstream_chat(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    if body["messages"][0]["content"] == "fail" {
+        return (
+            StatusCode::IM_A_TEAPOT,
+            Json(json!({"error": {"message": "upstream rejected request"}})),
+        )
+            .into_response();
+    }
+
+    let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    if body["stream"].as_bool() == Some(true) {
+        if body["messages"][0]["content"] == "stream-error" {
+            let events = [
+                json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
+                json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"content": "before"}}]}).to_string(),
+                json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"content": "still here"}}], "usage": {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8}}).to_string(),
+                json!({"error": {"message": "upstream stream failed", "type": "server_error"}}).to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            return Sse::new(stream).into_response();
+        }
+        let events = [
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "hello"}}]}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-partial"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6, "prompt_tokens_details": {"cached_tokens": 2, "cache_creation_tokens": 1}}}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-final"}}], "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17, "prompt_tokens_details": {"cached_tokens": 7, "cache_creation_tokens": 2}, "completion_tokens_details": {"reasoning_tokens": 3}}}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}).to_string(),
+            "[DONE]".to_string(),
+        ];
+        let stream = futures_util::stream::iter(
+            events
+                .into_iter()
+                .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+        );
+        return Sse::new(stream).into_response();
+    }
+
+    let content = if model == "model/classifier" {
+        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
+    } else {
+        "ok"
+    };
+    Json(json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "total_tokens": 12,
+            "prompt_tokens_details": {"cached_tokens": 7}
+        }
+    }))
+    .into_response()
+}
+
+async fn upstream_count_tokens(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    Json(json!({"input_tokens": 7})).into_response()
+}
+
+fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<ServerState> {
+    let backend = Backend::OpenAiChat(HttpBackendConfig {
+        base_url: base_url.to_string(),
+        api_key: Some("test-key".to_string()),
+        extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
+    });
+    let target_models = routes
+        .iter()
+        .flat_map(|(_, targets)| targets.iter().copied())
+        .collect::<HashSet<_>>();
+    let model_configs = target_models
+        .into_iter()
+        .map(|model| ModelConfig::new(model, backend.clone(), None))
+        .collect::<Vec<_>>();
+    let client: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&model_configs)?);
+    let entries = routes
+        .iter()
+        .map(|(route_model, targets)| {
+            let target_set = LlmTargetSet::new(
+                targets
+                    .iter()
+                    .map(|model| LlmTarget {
+                        semantic_name: (*model).to_string(),
+                        llm_client: Some(Arc::clone(&client)),
+                    })
+                    .collect(),
+            );
+            let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(target_set, None, None)?);
+            Ok(((*route_model).to_string(), algorithm))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    Ok(ServerState::new(entries)?)
+}
+
+async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Router)> {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(random_state(&upstream.base_url, routes)?);
+    Ok((upstream, app))
+}
+
 #[tokio::test]
-async fn minimal_noop_config_boots_and_serves_core_routes() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
-    let app = build_switchyard_router(state_from_yaml(
+async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
+    const MODEL: &str = "model/metrics-buffered";
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+
+    let before = send(&app, "GET", "/metrics", None).await?;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(
+        before
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+    let seeded = before.text()?;
+    for expected in [
+        "# TYPE switchyard_client_responses_total counter",
+        "switchyard_client_responses_total{outcome=\"success\",",
+        "switchyard_client_responses_total{outcome=\"retryable_error\",",
+        "switchyard_client_responses_total{outcome=\"other_error\",",
+        "# TYPE switchyard_upstream_attempts_total counter",
+        "switchyard_upstream_attempts_total{code=\"200\",outcome=\"success\",",
+        "switchyard_upstream_attempts_total{code=\"429\",outcome=\"retryable_error\",",
+        "switchyard_upstream_attempts_total{code=\"500\",outcome=\"retryable_error\",",
+        "switchyard_upstream_attempts_total{code=\"504\",outcome=\"retryable_error\",",
+        "switchyard_upstream_attempts_total{code=\"none\",outcome=\"retryable_error\",",
+        "# TYPE switchyard_router_retry_recovered_total counter",
+        "switchyard_router_retry_recovered_total{otel_scope_name=\"switchyard\"} 0",
+    ] {
+        assert!(
+            seeded.contains(expected),
+            "missing seeded {expected:?} in metrics:\n{seeded}"
+        );
+    }
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    let metrics = after.text()?;
+    for expected in [
+        "# TYPE switchyard_build_info gauge",
+        &format!("switchyard_build_info{{version=\"{VERSION}\""),
+        "# TYPE switchyard_total_requests gauge",
+        "# TYPE switchyard_total_errors gauge",
+        "# TYPE switchyard_requests_total counter",
+        "# TYPE switchyard_model_call_latency_ms histogram",
+        "switchyard_client_responses_total{outcome=\"success\",",
+        "switchyard_upstream_attempts_total{code=\"200\",outcome=\"success\",",
+        "# TYPE switchyard_runs_total counter",
+        "# TYPE switchyard_llm_calls_total counter",
+        "# TYPE switchyard_run_duration_ms histogram",
+        "# TYPE switchyard_llm_call_duration_ms histogram",
+        "# TYPE switchyard_prompt_tokens_total counter",
+        "# TYPE switchyard_completion_tokens_total counter",
+        "# TYPE switchyard_cached_tokens_total counter",
+        "# TYPE switchyard_total_latency_ms histogram",
+        "# TYPE switchyard_routing_overhead_ms histogram",
+        "algorithm=\"random\"",
+        &format!("selected_model=\"{MODEL}\""),
+    ] {
+        assert!(
+            metrics.contains(expected),
+            "missing {expected:?} in metrics:\n{metrics}"
+        );
+    }
+    for (name, expected_delta) in [
+        ("switchyard_prompt_tokens_total", 10.0),
+        ("switchyard_completion_tokens_total", 2.0),
+        ("switchyard_cached_tokens_total", 7.0),
+        ("switchyard_total_latency_ms_count", 1.0),
+    ] {
+        assert_eq!(
+            metric_delta(seeded, metrics, name, &[("model", MODEL)]),
+            Some(expected_delta),
+            "unexpected delta for {name}"
+        );
+    }
+    // A sub-millisecond boundary exists only because of the server's bucket view.
+    assert!(metric_line(
+        metrics,
+        "switchyard_routing_overhead_ms_bucket",
+        &[("algorithm", "random"), ("le", "0.1")]
+    )
+    .is_some());
+    assert!(metric_line(
+        metrics,
+        "switchyard_cache_creation_tokens_total",
+        &[("model", MODEL)]
+    )
+    .is_none());
+    assert!(metric_line(
+        metrics,
+        "switchyard_reasoning_tokens_total",
+        &[("model", MODEL)]
+    )
+    .is_none());
+    for metric in [
+        "switchyard_prompt_tokens_total",
+        "switchyard_completion_tokens_total",
+        "switchyard_cached_tokens_total",
+        "switchyard_total_latency_ms_count",
+    ] {
+        let line = metric_line(metrics, metric, &[("model", MODEL)])
+            .ok_or_else(|| format!("missing {metric} series for {MODEL}"))?;
+        assert!(!line.contains("tier="), "unexpected tier label in {line}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepts_requests_larger_than_the_axum_default_body_limit() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let content = "x".repeat(2 * 1024 * 1024);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": content}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    Ok(())
+}
+
+fn load_test_config(toml: &str) -> TestResult<ServerState> {
+    let mut config = tempfile::Builder::new()
+        .prefix("switchyard-server-config-")
+        .suffix(".toml")
+        .tempfile()?;
+    config.write_all(toml.as_bytes())?;
+    config.flush()?;
+    Ok(load_server_state(config.path())?)
+}
+
+async fn send(app: &Router, method: &str, path: &str, body: Option<Value>) -> TestResult<Response> {
+    let mut builder = HttpRequest::builder().method(method).uri(path);
+    let request_body = if let Some(body) = body {
+        builder = builder.header("content-type", "application/json");
+        Body::from(serde_json::to_vec(&body)?)
+    } else {
+        Body::empty()
+    };
+    let response = app.clone().oneshot(builder.body(request_body)?).await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok(Response {
+        status,
+        headers,
+        bytes,
+    })
+}
+
+struct Response {
+    status: StatusCode,
+    headers: axum::http::HeaderMap,
+    bytes: Bytes,
+}
+
+impl Response {
+    fn json(&self) -> TestResult<Value> {
+        Ok(serde_json::from_slice(&self.bytes)?)
+    }
+
+    fn text(&self) -> TestResult<&str> {
+        Ok(std::str::from_utf8(&self.bytes)?)
+    }
+}
+
+fn metric_line<'a>(metrics: &'a str, name: &str, labels: &[(&str, &str)]) -> Option<&'a str> {
+    metrics.lines().find(|line| {
+        line.starts_with(name)
+            && labels
+                .iter()
+                .all(|(key, value)| line.contains(&format!("{key}=\"{value}\"")))
+    })
+}
+
+fn metric_value(metrics: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+    metric_line(metrics, name, labels)?
+        .split_whitespace()
+        .last()?
+        .parse()
+        .ok()
+}
+
+fn metric_delta(before: &str, after: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+    metric_value(after, name, labels)
+        .map(|after| after - metric_value(before, name, labels).unwrap_or_default())
+}
+
+fn assert_in_order(haystack: &str, needles: &[&str]) {
+    let mut remainder = haystack;
+    for needle in needles {
+        let offset = remainder
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} after prior events in:\n{haystack}"));
+        remainder = &remainder[offset + needle.len()..];
+    }
+}
+
+#[tokio::test]
+async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
         r#"
-profiles:
-  bench:
-    type: noop
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["weak"]
+
+[routes.classifier]
+id = "switchyard/classifier"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+
+[routes.passthrough]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "weak"
 "#,
-    )?);
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
 
-    let health = app
-        .clone()
-        .oneshot(request("GET", "/health", None)?)
-        .await?;
-    assert_eq!(health.status(), StatusCode::OK);
-    assert_eq!(json_body(health).await?, json!({"status": "ok"}));
-
-    let models = app
-        .clone()
-        .oneshot(request("GET", "/v1/models", None)?)
-        .await?;
-    assert_eq!(models.status(), StatusCode::OK);
-    let models = json_body(models).await?;
-    assert_eq!(models["object"], "list");
-    assert_eq!(models["data"][0]["id"], "bench");
-    assert_eq!(models["default_model"], "bench");
-    assert_eq!(models["model_pool"], json!(["bench"]));
-
-    let chat = app
-        .oneshot(request(
+    for (route, selected) in [
+        ("switchyard/random", "model/weak"),
+        ("switchyard/classifier", "model/weak"),
+        ("switchyard/passthrough", "model/weak"),
+    ] {
+        let response = send(
+            &app,
             "POST",
             "/v1/chat/completions",
             Some(json!({
-                "model": "bench",
-                "messages": [{"role": "user", "content": "hi"}],
+                "model": route,
+                "messages": [{"role": "user", "content": "hi"}]
             })),
-        )?)
+        )
         .await?;
-    assert_eq!(chat.status(), StatusCode::OK);
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(selected)
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 4);
+    assert_eq!(calls[0]["model"], "model/weak");
+    assert_eq!(calls[1]["model"], "model/classifier");
+    assert_eq!(calls[2]["model"], "model/weak");
+    assert_eq!(calls[3]["model"], "model/weak");
+    Ok(())
+}
+
+#[tokio::test]
+async fn count_tokens_forwards_to_configured_anthropic_target() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "real/opus"
+llm_client = "claude"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["strong"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages/count_tokens",
+        Some(json!({
+            "model": "switchyard/random",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["input_tokens"], 7);
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    // The inbound route name is rewritten to the real upstream model.
+    assert_eq!(calls[0]["model"], "real/opus");
+    Ok(())
+}
+
+#[tokio::test]
+async fn count_tokens_without_anthropic_target_returns_bad_request() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["weak"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages/count_tokens",
+        Some(json!({
+            "model": "switchyard/random",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    // The route's picked target is OpenAI, so count_tokens (Anthropic-only) is
+    // unsupported for it.
     assert_eq!(
-        json_body(chat).await?["choices"][0]["message"]["content"],
+        response.json()?["error"]["code"],
+        "count_tokens_unsupported"
+    );
+    Ok(())
+}
+
+// Build a stage_router (FallThrough) with an Anthropic `strong` tier and an
+// OpenAI `weak` tier, both pointed at the mock upstream, and register it.
+fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<ServerState> {
+    let cfg = |url: &str| HttpBackendConfig {
+        base_url: url.to_string(),
+        api_key: Some("k".to_string()),
+        extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
+    };
+    let strong: Arc<dyn RoutedLlmClient> =
+        Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+            "strong",
+            Backend::Anthropic(cfg(&upstream.base_url)),
+            None,
+        )])?);
+    let weak: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+        "weak",
+        Backend::OpenAiChat(cfg(&upstream.base_url)),
+        None,
+    )])?);
+    let targets = LlmTargetSet::new(vec![
+        LlmTarget {
+            semantic_name: "strong".to_string(),
+            llm_client: Some(strong),
+        },
+        LlmTarget {
+            semantic_name: "weak".to_string(),
+            llm_client: Some(weak),
+        },
+    ]);
+    let stage: Arc<dyn Algorithm> = Arc::new(
+        FallThrough::<AlgorithmState>::new_with_state(targets)
+            .with_classifier(Arc::new(StageClassifier::new(mode, 0.5))),
+    );
+    Ok(ServerState::new([("switchyard/stage".to_string(), stage)])?)
+}
+
+/// `count_tokens` is a **direct passthrough**, not a routed call, so on a stage
+/// router it goes straight to the Anthropic (`strong`) tier — bypassing the
+/// classifier cascade. This is exactly what makes it work where a completion
+/// can't: a signal-less request (as `count_tokens` always is) gives the
+/// `StageClassifier` nothing to score, so a *completion* on this bare stage
+/// router abstains — but `count_tokens` still succeeds.
+#[tokio::test]
+async fn count_tokens_on_a_stage_router_passes_through_to_the_anthropic_tier() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(stage_router_state(&upstream, PickerMode::EfficientFirst)?);
+    let body = json!({
+        "model": "switchyard/stage",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    // A completion routes → the bare StageClassifier abstains on a signal-less
+    // request → error.
+    let completion = send(&app, "POST", "/v1/messages", Some(body.clone())).await?;
+    assert!(completion.text()?.contains("abstained"));
+
+    // count_tokens does NOT route — it passes through to the strong (Anthropic)
+    // tier and succeeds.
+    let count = send(&app, "POST", "/v1/messages/count_tokens", Some(body)).await?;
+    assert_eq!(count.status, StatusCode::OK);
+    assert_eq!(count.json()?["input_tokens"], 7);
+
+    // The forwarded call went to count_tokens with the strong tier's model id.
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["model"], "strong");
+    Ok(())
+}
+
+#[tokio::test]
+async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
+    let (upstream, app) = test_app(&[
+        ("switchyard/coding", &["model/code"]),
+        ("switchyard/general", &["model/general"]),
+    ])
+    .await?;
+
+    let health = send(&app, "GET", "/health", None).await?;
+    assert_eq!(health.status, StatusCode::OK);
+    assert_eq!(health.json()?, json!({"status": "ok"}));
+
+    let models = send(&app, "GET", "/v1/models", None).await?;
+    assert_eq!(models.status, StatusCode::OK);
+    assert_eq!(
+        models.json()?["model_pool"],
+        json!(["switchyard/coding", "switchyard/general"])
+    );
+
+    let missing = send(&app, "GET", "/missing", None).await?;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.json()?["error"]["code"], "endpoint_not_found");
+
+    for (route_model, target_model) in [
+        ("switchyard/general", "model/general"),
+        ("switchyard/coding", "model/code"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route_model,
+                "messages": [{"role": "user", "content": "hi"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(target_model)
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls[0]["model"], "model/general");
+    assert_eq!(calls[1]["model"], "model/code");
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hi"}),
+        ),
+    ];
+
+    let mut responses = Vec::new();
+    for (path, body) in cases {
+        responses.push(send(&app, "POST", path, Some(body)).await?);
+    }
+
+    assert!(responses
+        .iter()
+        .all(|response| response.status == StatusCode::OK));
+    assert_eq!(
+        responses[0].json()?["choices"][0]["message"]["content"],
         "ok"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn all_request_endpoints_route_through_selected_profile() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
-    let app = build_switchyard_router(state_from_yaml(
-        r#"
-profiles:
-  bench:
-    type: noop
-"#,
-    )?);
-
-    let anthropic = app
-        .clone()
-        .oneshot(request(
-            "POST",
-            "/v1/messages",
-            Some(json!({
-                "model": "bench",
-                "max_tokens": 16,
-                "messages": [{"role": "user", "content": "hi"}],
-            })),
-        )?)
-        .await?;
-    assert_eq!(anthropic.status(), StatusCode::OK);
-    let anthropic = json_body(anthropic).await?;
-    assert_eq!(anthropic["type"], "message");
-    assert_eq!(anthropic["content"][0]["text"], "ok");
-
-    let responses = app
-        .oneshot(request(
-            "POST",
-            "/v1/responses",
-            Some(json!({"model": "bench", "input": "hi"})),
-        )?)
-        .await?;
-    assert_eq!(responses.status(), StatusCode::OK);
-    let responses = json_body(responses).await?;
-    assert_eq!(responses["object"], "response");
-    assert_eq!(responses["output"][0]["content"][0]["text"], "ok");
-    Ok(())
-}
-
-#[tokio::test]
-async fn missing_and_unknown_models_return_client_errors() -> TestResult {
-    let app = build_switchyard_router(state_from_yaml(
-        r#"
-profiles:
-  bench:
-    type: noop
-"#,
-    )?);
-
-    let missing = app
-        .clone()
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({"messages": [{"role": "user", "content": "hi"}]})),
-        )?)
-        .await?;
-    assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(responses[1].json()?["content"][0]["text"], "ok");
     assert_eq!(
-        json_body(missing).await?["error"]["type"],
-        "invalid_request_error"
+        responses[2].json()?["output"][0]["content"][0]["text"],
+        "ok"
     );
-
-    let unknown = app
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": "missing-route",
-                "messages": [{"role": "user", "content": "hi"}],
-            })),
-        )?)
-        .await?;
-    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert_eq!(responses[0].json()?["usage"]["prompt_tokens"], 10);
     assert_eq!(
-        json_body(unknown).await?["error"]["type"],
-        "model_not_found"
+        responses[0].json()?["usage"]["prompt_tokens_details"]["cached_tokens"],
+        7
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn malformed_and_non_object_json_return_shared_client_errors() -> TestResult {
-    let app = build_switchyard_router(state_from_yaml(
-        r#"
-profiles:
-  bench:
-    type: noop
-"#,
-    )?);
-
-    for uri in ["/v1/chat/completions", "/v1/messages", "/v1/responses"] {
-        let malformed = app.clone().oneshot(raw_request("POST", uri, "{")?).await?;
-        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(malformed).await?["error"]["code"], "invalid_body");
-
-        let non_object = app.clone().oneshot(raw_request("POST", uri, "[]")?).await?;
-        assert_eq!(non_object.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(responses[1].json()?["usage"]["input_tokens"], 3);
+    assert_eq!(responses[1].json()?["usage"]["cache_read_input_tokens"], 7);
+    assert_eq!(responses[2].json()?["usage"]["input_tokens"], 10);
+    assert_eq!(
+        responses[2].json()?["usage"]["input_tokens_details"]["cached_tokens"],
+        7
+    );
+    for response in &responses {
         assert_eq!(
-            json_body(non_object).await?["error"]["code"],
-            "invalid_body"
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some("model/a")
+        );
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|call| call["model"] == "model/a"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(response.text()?.contains("hello"));
+    assert!(response.text()?.contains("data: [DONE]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_success_records_only_final_usage_and_one_latency() -> TestResult {
+    const MODEL: &str = "model/stream-success";
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+    let before = send(&app, "GET", "/metrics", None).await?;
+    let before = before.text()?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-success"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_in_order(
+        response.text()?,
+        &[
+            "hello",
+            "-partial",
+            "-final",
+            "\"finish_reason\":\"stop\"",
+            "[DONE]",
+        ],
+    );
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    let after = after.text()?;
+    for (name, expected_delta) in [
+        ("switchyard_prompt_tokens_total", 12.0),
+        ("switchyard_completion_tokens_total", 5.0),
+        ("switchyard_cached_tokens_total", 7.0),
+        ("switchyard_cache_creation_tokens_total", 2.0),
+        ("switchyard_reasoning_tokens_total", 3.0),
+        ("switchyard_total_latency_ms_count", 1.0),
+    ] {
+        assert_eq!(
+            metric_delta(before, after, name, &[("model", MODEL)]),
+            Some(expected_delta),
+            "unexpected delta for {name}"
         );
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn translation_errors_do_not_emit_routing_metadata_headers() -> TestResult {
-    let app = build_switchyard_router(state_from_profile("bad", Arc::new(BadTranslationProfile))?);
+async fn streaming_error_records_neither_usage_nor_latency() -> TestResult {
+    const MODEL: &str = "model/stream-error";
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+    let before = send(&app, "GET", "/metrics", None).await?;
+    let before = before.text()?;
 
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/messages",
-            Some(json!({
-                "model": "bad",
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 8,
-            })),
-        )?)
-        .await?;
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-error"}],
+            "stream": true
+        })),
+    )
+    .await?;
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(!response
-        .headers()
-        .keys()
-        .any(|name| name.as_str().starts_with("x-model-router-")));
-    Ok(())
-}
-
-#[tokio::test]
-async fn target_with_same_id_and_model_is_registered_once() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    let Some(stub) = HttpStub::start(1)? else {
-        log_loopback_bind_skip();
-        return Ok(());
-    };
-    let app = build_switchyard_router(state_from_yaml(&format!(
-        r#"
-targets:
-  upstream-direct:
-    model: upstream-direct
-    format: openai
-    base_url: {base_url}
-profiles:
-  direct-profile:
-    type: passthrough
-    target: upstream-direct
-"#,
-        base_url = stub.base_url
-    ))?);
-
-    let models = app
-        .clone()
-        .oneshot(request("GET", "/v1/models", None)?)
-        .await?;
-    assert_eq!(
-        json_body(models).await?["model_pool"],
-        json!(["direct-profile", "upstream-direct"])
+    assert_eq!(response.status, StatusCode::OK);
+    assert_in_order(
+        response.text()?,
+        &["before", "still here", "upstream stream failed"],
     );
 
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": "upstream-direct",
-                "messages": [{"role": "user", "content": "hi"}],
-            })),
-        )?)
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(stub.requests()?[0]["model"], "upstream-direct");
-    Ok(())
-}
-
-#[tokio::test]
-async fn random_routing_profile_reaches_selected_backend_path() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
-    let Some(stub) = HttpStub::start(1)? else {
-        log_loopback_bind_skip();
-        return Ok(());
-    };
-    let app = build_switchyard_router(state_from_yaml(&format!(
-        r#"
-targets:
-  strong:
-    model: upstream-strong
-    format: openai
-    base_url: {base_url}
-  weak:
-    model: upstream-weak
-    format: openai
-    base_url: {base_url}
-profiles:
-  random:
-    type: random-routing
-    strong: strong
-    weak: weak
-    strong_probability: 0.0000004
-    rng_seed: 7
-"#,
-        base_url = stub.base_url
-    ))?);
-
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": "random",
-                "messages": [{"role": "user", "content": "hi"}],
-            })),
-        )?)
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    for (name, expected) in [
-        ("x-model-router-selected-model", "upstream-weak"),
-        ("x-model-router-selected-tier", "weak"),
-        ("x-model-router-version", "random-routing:v1"),
-        ("x-model-router-tolerance", "0.0000004"),
+    let after = send(&app, "GET", "/metrics", None).await?;
+    let after = after.text()?;
+    for name in [
+        "switchyard_prompt_tokens_total",
+        "switchyard_completion_tokens_total",
+        "switchyard_cached_tokens_total",
+        "switchyard_cache_creation_tokens_total",
+        "switchyard_reasoning_tokens_total",
+        "switchyard_total_latency_ms_count",
     ] {
-        assert_eq!(header(&response, name), Some(expected));
+        assert_eq!(
+            metric_value(after, name, &[("model", MODEL)]),
+            metric_value(before, name, &[("model", MODEL)]),
+            "{name} changed after a failed stream"
+        );
     }
-    assert!(header(&response, "x-model-router-rationale")
-        .is_some_and(|value| value.contains("strong_probability 0.0000004; selected weak")));
-
-    let seen = stub.requests()?;
-    assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0]["model"], "upstream-weak");
     Ok(())
 }
 
 #[tokio::test]
-async fn latency_service_profile_reaches_configured_backend_path() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
-    let Some(stub) = HttpStub::start(1)? else {
-        log_loopback_bind_skip();
-        return Ok(());
-    };
-    let app = build_switchyard_router(state_from_yaml(&format!(
-        r#"
-targets:
-  fast:
-    model: upstream-fast
-    format: openai
-    base_url: {base_url}
-profiles:
-  latency:
-    type: latency-service
-    latency_service_url: http://latency.local
-    targets: [fast]
-"#,
-        base_url = stub.base_url
-    ))?);
+async fn request_and_upstream_errors_use_the_canonical_envelope() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": "latency",
-                "messages": [{"role": "user", "content": "hi"}],
-            })),
-        )?)
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
+    let unknown = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "other",
+            "messages": [{"role": "user", "content": "hi"}]
+        })),
+    )
+    .await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.json()?["error"]["code"], "model_not_found");
 
-    let seen = stub.requests()?;
-    assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0]["model"], "upstream-fast");
-    Ok(())
-}
-
-#[tokio::test]
-async fn stats_endpoints_use_components_v2_global_accumulator() -> TestResult {
-    let _stats_guard = stats_guard().await;
-    reset_stats()?;
-    profile_stats_accumulator().record_success("served-model", Some(12.0), Some("strong"))?;
-    let app = build_switchyard_router(state_from_yaml(
-        r#"
-profiles:
-  bench:
-    type: noop
-"#,
-    )?);
-
-    let stats = app
-        .clone()
-        .oneshot(request("GET", "/v1/routing/stats", None)?)
-        .await?;
-    assert_eq!(stats.status(), StatusCode::OK);
+    let missing_model = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({"messages": [{"role": "user", "content": "hi"}]})),
+    )
+    .await?;
+    assert_eq!(missing_model.status, StatusCode::BAD_REQUEST);
     assert_eq!(
-        json_body(stats).await?["models"]["served-model"]["calls"],
-        1
+        missing_model.json()?["error"]["code"],
+        "invalid_request_error"
     );
 
-    let reset = app
-        .clone()
-        .oneshot(request("POST", "/v1/routing/stats/reset", None)?)
-        .await?;
-    assert_eq!(reset.status(), StatusCode::OK);
-    assert_eq!(json_body(reset).await?, json!({"status": "reset"}));
-
-    let after = app.oneshot(request("GET", "/v1/stats", None)?).await?;
-    assert_eq!(json_body(after).await?["models"], json!({}));
+    let upstream_error = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "fail"}]
+        })),
+    )
+    .await?;
+    assert_eq!(upstream_error.status, StatusCode::IM_A_TEAPOT);
+    assert_eq!(upstream_error.json()?["error"]["code"], "upstream_error");
     Ok(())
 }
-
-#[tokio::test]
-async fn openai_streams_are_sse_framed_with_done() -> TestResult {
-    let app = build_switchyard_router(state_from_profile(
-        "stream",
-        Arc::new(StreamProfile {
-            kind: StreamKind::OpenAi,
-            routing_metadata: None,
-        }),
-    )?);
-
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": "stream",
-                "messages": [{"role": "user", "content": "hi"}],
-                "stream": true,
-            })),
-        )?)
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = text_body(response).await?;
-    assert!(body.contains("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}"));
-    assert!(body.contains("data: [DONE]"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn openai_streams_include_routing_metadata_headers() -> TestResult {
-    let app = build_switchyard_router(state_from_profile(
-        "stream",
-        Arc::new(StreamProfile {
-            kind: StreamKind::OpenAi,
-            routing_metadata: Some(RoutingMetadata {
-                selected_model: Some("served-model".to_string()),
-                selected_tier: Some("weak".to_string()),
-                confidence: Some(0.0000004),
-                router_version: Some("test-router:v1".to_string()),
-                tolerance: Some(0.0000004),
-                rationale: Some("line\nbreak".to_string()),
-            }),
-        }),
-    )?);
-
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": "stream",
-                "messages": [{"role": "user", "content": "hi"}],
-                "stream": true,
-            })),
-        )?)
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    for (name, expected) in [
-        ("x-model-router-selected-model", "served-model"),
-        ("x-model-router-confidence", "0.0000004"),
-        ("x-model-router-rationale", "line break"),
-    ] {
-        assert_eq!(header(&response, name), Some(expected));
-    }
-    let body = text_body(response).await?;
-    assert!(body.contains("data: [DONE]"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn anthropic_streams_are_named_sse_without_done() -> TestResult {
-    let app = build_switchyard_router(state_from_profile(
-        "stream",
-        Arc::new(StreamProfile {
-            kind: StreamKind::Anthropic,
-            routing_metadata: None,
-        }),
-    )?);
-
-    let response = app
-        .oneshot(request(
-            "POST",
-            "/v1/messages",
-            Some(json!({
-                "model": "stream",
-                "max_tokens": 16,
-                "messages": [{"role": "user", "content": "hi"}],
-                "stream": true,
-            })),
-        )?)
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = text_body(response).await?;
-    assert!(body.contains("event: message_start"));
-    assert!(body.contains("\"type\":\"message_start\""));
-    assert!(!body.contains("[DONE]"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn endpoint_metadata_is_passed_to_profiles() -> TestResult {
-    let captured = Arc::new(Mutex::new(None));
-    let app = build_switchyard_router(state_from_profile(
-        "capture",
-        Arc::new(CaptureProfile {
-            captured: Arc::clone(&captured),
-        }),
-    )?);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/messages")
-                .header("content-type", "application/json")
-                .header("X-Request-ID", "req-123")
-                .header("X-Switchyard-Trace", "trace-a")
-                .body(Body::from(
-                    json!({
-                        "model": "capture",
-                        "max_tokens": 16,
-                        "messages": [{"role": "user", "content": "hi"}],
-                    })
-                    .to_string(),
-                ))?,
-        )
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let input = captured
-        .lock()
-        .map_err(|_| "captured input mutex poisoned")?
-        .clone()
-        .ok_or("profile should have received input")?;
-    assert_eq!(input.request.model(), Some("capture"));
-    assert_eq!(
-        input.metadata.request_id.as_ref().map(|id| id.as_str()),
-        Some("req-123")
-    );
-    assert_eq!(
-        input.metadata.inbound_format,
-        Some(ChatRequestType::Anthropic)
-    );
-    assert_eq!(
-        input
-            .metadata
-            .headers
-            .get("x-switchyard-trace")
-            .map(Vec::as_slice),
-        Some(&["trace-a".to_string()][..])
-    );
-    Ok(())
-}
-
-/// Test profile that emits one deterministic stream event for SSE framing checks.
-#[derive(Clone)]
-struct StreamProfile {
-    kind: StreamKind,
-    routing_metadata: Option<RoutingMetadata>,
-}
-
-/// Stream format variant emitted by `StreamProfile`.
-#[derive(Clone, Copy)]
-enum StreamKind {
-    OpenAi,
-    Anthropic,
-}
-
-#[async_trait]
-impl Profile for StreamProfile {
-    async fn run(&self, _input: ProfileInput) -> Result<ProfileResponse> {
-        let response = match self.kind {
-            StreamKind::OpenAi => ChatResponse::OpenAiStream(Box::pin(futures_util::stream::iter(
-                [Ok(StreamEvent::Json(json!({
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion.chunk",
-                    "model": "served-model",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": "hello"},
-                        "finish_reason": null,
-                    }],
-                })))],
-            ))),
-            StreamKind::Anthropic => ChatResponse::AnthropicStream(Box::pin(
-                futures_util::stream::iter([Ok(StreamEvent::Json(json!({
-                    "type": "message_start",
-                    "message": {
-                        "id": "msg-test",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [],
-                        "model": "claude-test",
-                        "stop_reason": null,
-                        "stop_sequence": null,
-                        "usage": {"input_tokens": 1, "output_tokens": 0},
-                    },
-                })))]),
-            )),
-        };
-        Ok(match &self.routing_metadata {
-            Some(metadata) => ProfileResponse::with_routing_metadata(response, metadata.clone()),
-            None => ProfileResponse::from(response),
-        })
-    }
-}
-
-struct CaptureProfile {
-    captured: Arc<Mutex<Option<ProfileInput>>>,
-}
-
-struct BadTranslationProfile;
-
-#[async_trait]
-impl Profile for BadTranslationProfile {
-    async fn run(&self, _input: ProfileInput) -> Result<ProfileResponse> {
-        Ok(ProfileResponse::with_routing_metadata(
-            ChatResponse::openai_completion(json!("not an OpenAI response object")),
-            RoutingMetadata {
-                selected_model: Some("bad-upstream".to_string()),
-                selected_tier: Some("weak".to_string()),
-                router_version: Some("test-router:v1".to_string()),
-                ..RoutingMetadata::default()
-            },
-        ))
-    }
-}
-
-#[async_trait]
-impl Profile for CaptureProfile {
-    async fn run(&self, input: ProfileInput) -> Result<ProfileResponse> {
-        {
-            let mut captured = self
-                .captured
-                .lock()
-                .map_err(|_| SwitchyardError::Other("captured input mutex poisoned".to_string()))?;
-            *captured = Some(input);
-        }
-        Ok(ChatResponse::anthropic_completion(json!({
-            "id": "msg-capture",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "captured"}],
-            "model": "capture",
-            "stop_reason": "end_turn",
-            "stop_sequence": null,
-            "usage": {"input_tokens": 1, "output_tokens": 1},
-        }))
-        .into())
-    }
-}
-
-/// In-process HTTP stub that records JSON request bodies from backend calls.
-struct HttpStub {
-    base_url: String,
-    addr: SocketAddr,
-    expected_requests: usize,
-    requests: Arc<Mutex<Vec<Value>>>,
-    handle: Option<thread::JoinHandle<()>>,
-}
-
-impl HttpStub {
-    /// Binds an ephemeral port and accepts the expected number of stub requests.
-    fn start(expected_requests: usize) -> TestResult<Option<Self>> {
-        let listener = match StdTcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => listener,
-            Err(error) if error.kind() == ErrorKind::PermissionDenied => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let addr = listener.local_addr()?;
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let thread_requests = Arc::clone(&requests);
-        let handle = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let Ok((mut stream, _addr)) = listener.accept() else {
-                    return;
-                };
-                if let Ok(body) = read_http_body(&mut stream) {
-                    if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                        if let Ok(mut requests) = thread_requests.lock() {
-                            requests.push(value);
-                        }
-                    }
-                }
-                let response = json!({
-                    "id": "chatcmpl-stub",
-                    "object": "chat.completion",
-                    "model": "stub",
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "stub-ok"},
-                        "finish_reason": "stop",
-                    }],
-                    "usage": {
-                        "prompt_tokens": 1,
-                        "completion_tokens": 1,
-                        "total_tokens": 2,
-                    },
-                })
-                .to_string();
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    response.len(),
-                    response
-                );
-            }
-        });
-
-        Ok(Some(Self {
-            base_url: format!("http://{addr}/v1"),
-            addr,
-            expected_requests,
-            requests,
-            handle: Some(handle),
-        }))
-    }
-
-    /// Returns the JSON request bodies captured by the stub thread.
-    fn requests(&self) -> TestResult<Vec<Value>> {
-        self.requests
-            .lock()
-            .map(|requests| requests.clone())
-            .map_err(|_| "stub request mutex poisoned".into())
-    }
-}
-
-impl Drop for HttpStub {
-    fn drop(&mut self) {
-        // Wake pending accepts before joining the stub thread.
-        for _ in 0..self.expected_requests {
-            let _ = TcpStream::connect(self.addr);
-        }
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-fn read_http_body(stream: &mut std::net::TcpStream) -> TestResult<Vec<u8>> {
-    let mut buffer = Vec::new();
-    let mut header_end = None;
-    while header_end.is_none() {
-        let mut chunk = [0; 1024];
-        let read = stream.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        header_end = find_bytes(&buffer, b"\r\n\r\n").map(|index| index + 4);
-    }
-
-    let Some(body_start) = header_end else {
-        return Err("HTTP request headers were incomplete".into());
-    };
-    let headers = std::str::from_utf8(&buffer[..body_start])?;
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-
-    while buffer.len() < body_start + content_length {
-        let mut chunk = [0; 1024];
-        let read = stream.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-    }
-
-    Ok(buffer[body_start..body_start + content_length].to_vec())
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn state_from_yaml(input: &str) -> TestResult<ServerState> {
-    let plan = parse_profile_config_str(input, ProfileConfigFormat::Yaml)?.resolve()?;
-    Ok(ServerState::from_plan(&plan)?)
-}
-
-fn state_from_profile(model: &'static str, profile: Arc<dyn Profile>) -> TestResult<ServerState> {
-    let registry = ProfileRegistry::from_profiles([(
-        ModelId::from_static(model),
-        profile,
-        model.to_string(),
-    )])?;
-    Ok(ServerState::new(registry))
-}
-
-fn request(method: &str, uri: &str, body: Option<Value>) -> TestResult<Request<Body>> {
-    let builder = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json");
-    let body = body.map_or_else(Body::empty, |body| Body::from(body.to_string()));
-    Ok(builder.body(body)?)
-}
-
-fn raw_request(method: &str, uri: &str, body: &str) -> TestResult<Request<Body>> {
-    let builder = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json");
-    Ok(builder.body(Body::from(body.to_string()))?)
-}
-
-async fn json_body(response: axum::response::Response) -> TestResult<Value> {
-    let bytes = response.into_body().collect().await?.to_bytes();
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
-async fn text_body(response: axum::response::Response) -> TestResult<String> {
-    let bytes = response.into_body().collect().await?.to_bytes();
-    Ok(String::from_utf8(bytes.to_vec())?)
-}
-
-fn header<'a>(response: &'a axum::response::Response, name: &str) -> Option<&'a str> {
-    response
-        .headers()
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-}
-
-fn reset_stats() -> Result<()> {
-    profile_stats_accumulator().reset()
-}
-
-/// Serializes tests that touch the global profile stats accumulator.
-///
-/// The lock is initialized once for the test process and held by each caller
-/// until the returned guard is dropped.
-async fn stats_guard() -> tokio::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await
-}
-
-fn log_loopback_bind_skip() {
-    eprintln!("SKIP: permission denied binding loopback socket");
-}
-
-type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

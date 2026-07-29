@@ -8,9 +8,6 @@ routes:
     type: model
     target: moonshotai/kimi-k2.6
 
-  openrouter-catalog:               # `type: passthrough` — auto-discovers available models via GET /v1/models
-    type: passthrough
-
   random-router:                    # `type: random_routing` — weighted coin
     type: random_routing
     strong: anthropic/claude-opus-4.7
@@ -18,12 +15,11 @@ routes:
     strong_probability: 0.3
     fallback_target_on_evict: strong
 
-  bench:                            # `type: noop` — for benchmarking
-    type: noop
-
   llm-classifier:                   # `type: deterministic` — LLM-as-classifier
     type: deterministic
     profile: coding_agent           # general | coding_agent | openclaw
+    fallback_target_on_evict: strong  # tier to retry on context-window evict
+
     classifier:
       model: google/gemini-3.5-flash
       api_key: ${OPENROUTER_API_KEY}

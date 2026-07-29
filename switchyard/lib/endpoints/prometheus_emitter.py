@@ -6,9 +6,8 @@
 The accumulator-derived exposition rendered by
 :func:`switchyard.lib.prometheus_exposition.render_prometheus` covers
 request flow (counts, tokens, latency). Components that own state which
-is not request-derived — Latency Service verdicts, poll-loop health,
-endpoint-level live samples — register an emitter here so their lines
-appear on the same ``/metrics`` scrape rather than a sidecar URL.
+is not request-derived register an emitter here so their lines appear on
+the same ``/metrics`` scrape rather than a sidecar URL.
 
 Single-process table by design: a Switchyard server is one process,
 emitters are owned by component lifetimes, and the table is

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use switchyard_components::{
     AnthropicNativeBackend, BackendSelection, OpenAiNativeBackend, OpenAiPassthroughBackend,
 };
-use switchyard_core::{
+use switchyard_components::{
     BackendFormat, ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, EndpointConfig,
     LlmBackend, LlmTarget, LlmTargetId, ModelId, ProxyContext, Result, StreamEvent,
     SwitchyardError,
@@ -1037,6 +1037,42 @@ async fn anthropic_streaming_returns_stream_events() -> Result<()> {
     assert_eq!(events[0]["type"], "message_start");
     assert_eq!(events[0]["message"]["id"], "msg-stream");
     assert_eq!(request.path, "/v1/messages");
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_streaming_stops_at_done_marker() -> Result<()> {
+    let server = OneShotServer::sse(
+        "event: message_start\n\
+         data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-stream\"}}\n\n\
+         data: [DONE]\n\n\
+         event: message_stop\n\
+         data: {\"type\":\"message_stop\"}\n\n",
+    )?;
+    let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
+    let mut ctx = ProxyContext::new();
+
+    let response = backend
+        .call(
+            &mut ctx,
+            &ChatRequest::anthropic(json!({
+                "model": "client-claude",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "stream"}],
+                "stream": true
+            })),
+        )
+        .await?;
+    let events = collect_json_events(response).await?;
+    server.captured()?;
+
+    assert_eq!(
+        events,
+        vec![json!({
+            "type": "message_start",
+            "message": {"id": "msg-stream"}
+        })]
+    );
     Ok(())
 }
 

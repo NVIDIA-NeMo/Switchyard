@@ -18,6 +18,9 @@ if TYPE_CHECKING:
         OpenAIChatEndpoint,
     )
     from switchyard.lib.endpoints.responses_endpoint import ResponsesEndpoint
+    from switchyard.lib.endpoints.routing_log_stats_endpoint import (
+        RoutingLogStatsEndpoint,
+    )
     from switchyard.lib.endpoints.stats_endpoint import StatsEndpoint
 
 __all__ = [
@@ -26,6 +29,7 @@ __all__ = [
     "ModelsEndpoint",
     "OpenAIChatEndpoint",
     "ResponsesEndpoint",
+    "RoutingLogStatsEndpoint",
 ]
 
 
@@ -52,4 +56,9 @@ def __getattr__(name: str) -> Any:
             ResponsesEndpoint,
         )
         return ResponsesEndpoint
+    elif name == "RoutingLogStatsEndpoint":
+        from switchyard.lib.endpoints.routing_log_stats_endpoint import (
+            RoutingLogStatsEndpoint,
+        )
+        return RoutingLogStatsEndpoint
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

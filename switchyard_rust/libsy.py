@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         async def run(
             self,
             request: Mapping[str, object],
+            headers: Mapping[str, str] | None = None,
         ) -> tuple[list[dict[str, object]], dict[str, object]]: ...
 
     def noop() -> Algorithm: ...

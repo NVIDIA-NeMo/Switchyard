@@ -6,8 +6,8 @@
 Implements :class:`~switchyard.lib.affinity_pin_store.AffinityPinStore` against a
 standalone Redis so pins are visible to every Switchyard worker/pod and survive
 pod churn. Keys are namespaced ``{key_prefix}{session_key}`` and expire after
-``ttl_seconds``; the latency backend re-pins on every successful turn, so an
-active conversation slides its own TTL.
+``ttl_seconds``; callers re-pin on every successful turn, so an active
+conversation slides its own TTL.
 
 The ``redis`` dependency is optional (``switchyard[affinity-redis]``) and is
 imported lazily, so the default install never pulls it in. Socket timeouts are

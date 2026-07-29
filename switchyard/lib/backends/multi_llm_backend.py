@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
+from typing import cast
 
 from switchyard.lib.backends.backend_format_resolver import BackendFormatResolver
 from switchyard.lib.backends.llm_target import (
@@ -71,9 +72,12 @@ def build_multi_llm_backend(
         ]
     else:
         target_values = targets
-    return MultiLlmBackend(
-        [build_target_backend(target) for target in target_values],
-        default_target_id=default_target_id,
+    return cast(  # type: ignore[redundant-cast]
+        MultiLlmBackend,
+        MultiLlmBackend(
+            [build_target_backend(target) for target in target_values],
+            default_target_id=default_target_id,
+        ),
     )
 
 

@@ -619,6 +619,55 @@ class TestIntakeRequestProcessor:
         assert "task" not in payload["request"]["switchyard"]
         assert payload["session_id"] == "session-123"
 
+    async def test_store_true_posts_routed_turn_and_submodel_records_to_flat_target(self):
+        """`store: true` alone (no header) opts in, so the routed turn and every
+        recorded routing call post to the flat-document target as distinct
+        documents. This is the opt-in the response-side Python processor could
+        never see."""
+        request_processor = IntakeRequestProcessor()
+        request = ChatRequest.openai_chat({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "store": True,
+        })
+        ctx = ProxyContext()
+        attach_request_metadata(
+            ctx,
+            RequestMetadata.from_headers({"proxy_x_session_id": "sess-xyz"}),
+        )
+        # A router records its own model call, exactly as the LLM classifier does.
+        ctx.record_submodel_call(
+            model="router-clf",
+            prompt_tokens=120,
+            completion_tokens=8,
+            cached_tokens=0,
+            router_type="deterministic",
+            routed_to="classifier",
+        )
+
+        with _IntakeHttpStub() as server:
+            response_processor = IntakeResponseProcessor(
+                IntakeSinkConfig(
+                    target_url=f"{server.base_url}/lake/switchyard/posting",
+                    max_retries=0,
+                )
+            )
+            await request_processor.process(ctx, request)
+            await response_processor.process(
+                ctx, ChatResponse.openai_completion(_completion())
+            )
+            await response_processor.shutdown()
+
+        # One routed-turn document plus one per routing call, all flat documents.
+        posted = server.requests
+        assert len(posted) == 2
+        for entry in posted:
+            assert entry["path"] == "/lake/switchyard/posting"
+        # Distinct _id so the routing record never overwrites the routed turn.
+        assert len({entry["body"]["_id"] for entry in posted}) == 2
+        routed = {entry["body"].get("s_switchyard_routed_to") for entry in posted}
+        assert "classifier" in routed
+
     async def test_header_opt_out_overrides_store_true_in_rust_context(self):
         request_processor = IntakeRequestProcessor()
         request = ChatRequest.openai_chat({

@@ -7,7 +7,7 @@ use serde_json::json;
 use switchyard_components::{
     prefix_probe, ModelStatsSnapshot, StatsAccumulator, StatsSnapshot, TokenUsage,
 };
-use switchyard_core::{Result, SwitchyardError};
+use switchyard_components::{Result, SwitchyardError};
 
 #[test]
 fn accumulator_snapshot_starts_zero_and_reset_clears_all_state() -> Result<()> {
@@ -397,7 +397,7 @@ fn tier_rollup_keeps_distinct_tiers_for_shared_model() -> Result<()> {
         None,
         Some("weak"),
     )?;
-    accumulator.record_success("shared/model", None, Some("executor"))?;
+    accumulator.record_success("shared/model", None, Some("primary"))?;
     accumulator.record_usage(
         "shared/model",
         TokenUsage {
@@ -407,7 +407,7 @@ fn tier_rollup_keeps_distinct_tiers_for_shared_model() -> Result<()> {
         },
         None,
         None,
-        Some("executor"),
+        Some("primary"),
     )?;
 
     let snapshot = accumulator.snapshot()?;
@@ -425,14 +425,14 @@ fn tier_rollup_keeps_distinct_tiers_for_shared_model() -> Result<()> {
     assert_eq!(weak.prompt_tokens, 2);
     assert_eq!(weak.completion_tokens, 3);
 
-    let executor = snapshot
+    let primary = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should exist".to_string()))?;
-    assert_eq!(executor.model, "shared/model");
-    assert_eq!(executor.calls, 1);
-    assert_eq!(executor.prompt_tokens, 5);
-    assert_eq!(executor.completion_tokens, 7);
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should exist".to_string()))?;
+    assert_eq!(primary.model, "shared/model");
+    assert_eq!(primary.calls, 1);
+    assert_eq!(primary.prompt_tokens, 5);
+    assert_eq!(primary.completion_tokens, 7);
     Ok(())
 }
 
@@ -461,7 +461,7 @@ fn tier_usage_can_attach_explicit_untiered_success() -> Result<()> {
         },
         None,
         None,
-        Some("executor"),
+        Some("primary"),
     )?;
 
     let snapshot = accumulator.snapshot()?;
@@ -478,13 +478,13 @@ fn tier_usage_can_attach_explicit_untiered_success() -> Result<()> {
     assert_eq!(weak.prompt_tokens, 2);
     assert_eq!(weak.completion_tokens, 3);
 
-    let executor = snapshot
+    let primary = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should exist".to_string()))?;
-    assert_eq!(executor.calls, 1);
-    assert_eq!(executor.prompt_tokens, 5);
-    assert_eq!(executor.completion_tokens, 7);
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should exist".to_string()))?;
+    assert_eq!(primary.calls, 1);
+    assert_eq!(primary.prompt_tokens, 5);
+    assert_eq!(primary.completion_tokens, 7);
     Ok(())
 }
 
@@ -545,7 +545,7 @@ fn already_attributed_usage_does_not_consume_legacy_pending_success() -> Result<
         },
         None,
         None,
-        Some("executor"),
+        Some("primary"),
     )?;
 
     let snapshot = accumulator.snapshot()?;
@@ -562,13 +562,13 @@ fn already_attributed_usage_does_not_consume_legacy_pending_success() -> Result<
     assert_eq!(weak.prompt_tokens, 2);
     assert_eq!(weak.completion_tokens, 3);
 
-    let executor = snapshot
+    let primary = snapshot
         .tiers
-        .get("executor")
-        .ok_or_else(|| SwitchyardError::Other("executor tier should exist".to_string()))?;
-    assert_eq!(executor.calls, 1);
-    assert_eq!(executor.prompt_tokens, 5);
-    assert_eq!(executor.completion_tokens, 7);
+        .get("primary")
+        .ok_or_else(|| SwitchyardError::Other("primary tier should exist".to_string()))?;
+    assert_eq!(primary.calls, 1);
+    assert_eq!(primary.prompt_tokens, 5);
+    assert_eq!(primary.completion_tokens, 7);
     Ok(())
 }
 
@@ -703,32 +703,6 @@ fn classifier_bucket_keeps_same_model_separate_from_routed_traffic() -> Result<(
 }
 
 #[test]
-fn planner_bucket_tracks_max_observed_context_tokens() -> Result<()> {
-    let accumulator = StatsAccumulator::new();
-    for (prompt_tokens, completion_tokens) in [(120, 0), (300, 5), (200, 200)] {
-        accumulator.record_planner_usage(
-            "planner/model",
-            TokenUsage {
-                prompt_tokens,
-                completion_tokens,
-                ..TokenUsage::default()
-            },
-            None,
-        )?;
-    }
-
-    let snapshot = accumulator.snapshot()?;
-    let planner = snapshot
-        .planner
-        .models
-        .get("planner/model")
-        .ok_or_else(|| SwitchyardError::Other("planner row missing".to_string()))?;
-    assert_eq!(planner.prompt_tokens, 620);
-    assert_eq!(planner.max_observed_context_tokens, 400);
-    Ok(())
-}
-
-#[test]
 fn classifier_latency_lands_on_classifier_model_call_latency() -> Result<()> {
     let accumulator = StatsAccumulator::new();
     accumulator.record_classifier_usage(
@@ -777,7 +751,7 @@ fn routing_decision_counts_are_grouped_by_profile_type() -> Result<()> {
     accumulator.record_routing_decision("stage_router", "dimensions")?;
     accumulator.record_routing_decision("stage_router", "dimensions")?;
     accumulator.record_routing_decision("stage_router", "llm-classifier")?;
-    accumulator.record_routing_decision("latency-service", "health")?;
+    accumulator.record_routing_decision("escalation_router", "judge")?;
 
     let snapshot = accumulator.snapshot()?;
     assert_eq!(
@@ -797,8 +771,8 @@ fn routing_decision_counts_are_grouped_by_profile_type() -> Result<()> {
     assert_eq!(
         snapshot
             .routing_decisions
-            .get("latency-service")
-            .and_then(|sources| sources.get("health")),
+            .get("escalation_router")
+            .and_then(|sources| sources.get("judge")),
         Some(&1)
     );
 

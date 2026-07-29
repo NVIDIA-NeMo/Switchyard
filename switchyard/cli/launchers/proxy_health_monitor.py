@@ -3,10 +3,9 @@
 
 """Lightweight health indicator for launcher footers."""
 
-from __future__ import annotations
-
 import time
-import urllib.request
+
+from switchyard.cli.launchers.launcher_runtime import _LOCAL_OPENER
 
 
 class ProxyHealthMonitor:
@@ -31,7 +30,9 @@ class ProxyHealthMonitor:
             return
         self._last_check = now
         try:
-            with urllib.request.urlopen(self._url, timeout=0.5):
+            # Loopback: bypass env proxies so a configured HTTP_PROXY can't
+            # intercept the 127.0.0.1 health probe.
+            with _LOCAL_OPENER.open(self._url, timeout=0.5):
                 self._healthy = True
         except Exception:
             self._healthy = False

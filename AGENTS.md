@@ -89,36 +89,52 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - One focused commit per step; every changed line traces to that step.
 - Single-line commit message in Conventional Commits form
   (`type(scope): summary`). No body, no `Co-Authored-By` trailer.
+- Pull request titles use the same Conventional Commits form.
+- Use `git commit -s` so every commit carries the required DCO sign-off.
 - Never commit unprompted. Show the diff, get approval, then commit.
+
+Before repairing DCO, inspect every affected commit:
+
+```bash
+git log origin/main..HEAD --format='%h %an <%ae> %s'
+```
+
+If every affected commit is yours, add the trailers and update the remote safely:
+
+```bash
+git rebase origin/main --signoff
+git push --force-with-lease origin HEAD
+```
+
+For a mixed-author branch, use an interactive rebase and mark only your unsigned commits for
+editing. At each stop, run `git commit --amend --no-edit --signoff`, then
+`git rebase --continue`. Never add your sign-off to another contributor's commit.
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-## Start here: discover skills before doing anything
+### 7. Review Discipline
 
-This repo ships project-specific agent skills under `.agents/skills/`. **Before reading code, planning a change, debugging a failure, or running validation, list and consult these skills.** They encode the workflows the maintainers expect you to follow.
+- Verify every finding against the current code path before reporting it.
+- Draft findings before posting review comments unless the user explicitly asks you to post them.
+- Resolve only your own review threads, and only after verifying the fix in code.
 
-```bash
-ls .agents/skills/
-```
+## Task-Specific Skills
 
-Two general-purpose entry points cover most tasks:
+The repository keeps a small set of optional runbooks under `.agents/skills/`. Read a skill only
+when its description directly matches the task. Ordinary code exploration, implementation,
+testing, and review do not require loading a skill.
 
-- `.agents/skills/switchyard-codebase-exploration/SKILL.md` — read-before-edit workflow; builds an impact map of the files, symbols, and tests touched by a change.
-- `.agents/skills/switchyard-testing-ci/SKILL.md` — picks the smallest trustworthy local validation set and maps failures to fixes.
-- `.agents/skills/switchyard-pr-reviewer/SKILL.md` — multi-mode PR-review workflow (correctness, tests, design-vs-ticket, simplify, docs, Rust-craft); adversarially verifies every finding and drafts comments before posting. Dispatches Rust to `rust-code-reviewer`. Use for any "review this PR / is this blocking? / post comments" request.
+| Skill | Use it for |
+|---|---|
+| `publish-python-release` | Python wheel artifacts, PyPI releases, and release workflow changes |
+| `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
+| `switchyard-docs` | Published Fern docs, `fern check`, previews, and docs CI |
+| `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
+| `switchyard-stage-router-scorer` | Replaying benchmark trajectories through the stage-router scorer and picker |
+| `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
 
-Task-specific skills (publish-package, run-pre-merge-checks, etc.) live alongside them — scan the directory and read the SKILL.md of any whose `description` matches the task. If no skill applies, say so explicitly and proceed; do not silently skip discovery.
-
-### Keep skills in sync with the code they cover
-
-A skill that points at stale `file:line` references, removed flags, or a renamed symbol is worse than no skill — it actively misleads the next agent. **If your change modifies code that a skill describes, update the skill in the same change.** Specifically:
-
-- After editing any file referenced by a SKILL.md, re-grep the skill for the file path and verify each `file:line` and symbol still resolves.
-- If you rename a symbol, move a file, change a CLI flag, add or remove a factory/recipe/processor/backend/translator, or change a public export, update every skill that mentions it.
-- If you discover a workflow the skill does not cover but should, add a row to the skill's Quick Reference or Anti-Patterns table — do not let the gap survive the PR.
-- Anti-patterns called out in `switchyard-lib-core` and `switchyard-coding-agent-launchers` are the contract: if you change the golden patterns those skills describe (random-routing factory + recipe shape, CLI-launcher recipe consumption), update the skill first and have the skill change reviewed alongside the code.
-
-The skill files are part of the codebase. Treat them like tests or docs — drift is a real defect, caught only by the next person who consults the skill.
+Skills should contain stable operational constraints, not mutable architecture inventories. Read the
+current source and CI workflows for implementation details.
 
 ## Architecture: staged chain
 
@@ -128,9 +144,10 @@ Everything flows through a fixed-shape chain enforced at construction time:
 request-side component* → LLMBackend → response-side component* → TranslationEngine
 ```
 
-The chain executor is `Switchyard` (`switchyard/lib/switchyard.py`). `LLMBackend` remains the
-shared role class re-exported from `switchyard/lib/roles.py`; request-side and response-side
-processors are plain async components with `process(...)` methods.
+The chain executor is `Switchyard` (`switchyard/lib/switchyard.py`). `LLMBackend` is the shared
+Python role class re-exported from `switchyard/lib/roles.py`; native implementations register with
+it, and request-side and response-side processors are plain async components with `process(...)`
+methods.
 Direct Rust bindings for migrated concrete processors/backends are exposed from
 `switchyard_rust.components` and implemented under `crates/switchyard-py/src/component_bindings/`.
 
@@ -147,7 +164,7 @@ Direct Rust bindings for migrated concrete processors/backends are exposed from
 switchyard/
 ├── __init__.py                     # Public API — all exports live here
 ├── lib/                            # Core library
-│   ├── roles.py                    # Rust-owned LLMBackend re-export and translation aliases
+│   ├── roles.py                    # Python LLMBackend re-export and translation aliases
 │   ├── switchyard.py               # Switchyard — chain executor
 │   ├── proxy_context.py            # ProxyContext — per-request state carrier
 │   ├── profiles/                   # Profile configs/runtimes for pre-built routing behavior
@@ -155,7 +172,6 @@ switchyard/
 │   ├── route_table_builders.py     # Shared profile-backed table builders
 │   ├── llm_client.py               # OpenAILLMClient
 │   ├── cost_estimator.py           # Token-cost bookkeeping
-│   ├── live_stats_collector.py     # Live request stats
 │   ├── stats_accumulator.py        # Stats accumulation helpers
 │   ├── request_metadata.py         # RequestMetadata
 │   ├── chat_response/              # Rust-backed response re-exports + stream adapters
@@ -167,18 +183,15 @@ switchyard/
 │   │   ├── openai_llm_backend.py           # OpenAiPassthroughBackend
 │   │   ├── openai_native_backend.py        # OpenAiNativeBackend
 │   │   ├── anthropic_native_llm_backend.py # AnthropicNativeBackend
-│   │   ├── latency_service_llm_backend.py  # LatencyServiceLLMBackend
 │   │   ├── llm_target.py                   # LlmTarget, BackendFormat
 │   │   ├── multi_llm_backend.py            # MultiLlmBackend helpers
 │   │   ├── stats_llm_backend.py            # StatsLlmBackend
-│   │   ├── backend_format_resolver.py      # BackendFormatResolver
-│   │   └── health_poller.py                # HealthPoller, EndpointHealthStatus
+│   │   └── backend_format_resolver.py      # BackendFormatResolver
 │   ├── processors/                 # Request-side / response-side component implementations
 │   │   ├── format_translate.py
 │   │   ├── random_routing_request_processor.py
 │   │   ├── stats_request_processor.py
 │   │   ├── stats_response_processor_accumulator.py
-│   │   ├── stats_response_processor_live_collector.py
 │   │   ├── intake_request_processor.py
 │   │   ├── intake_response_processor.py
 │   │   ├── intake_payload_builder.py
@@ -191,8 +204,7 @@ switchyard/
 │   │   ├── sse_helpers.py
 │   │   └── base.py
 │   └── config/
-│       ├── intake_sink_config.py
-│       └── latency_service_backend_config.py
+│       └── intake_sink_config.py
 ├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
 │   ├── switchyard_cli.py           # `switchyard` entry point
 │   ├── launch_command.py           # `switchyard launch claude/codex`
@@ -246,10 +258,8 @@ and their transitives never appear in downstream vulnerability scans.
 export OPENAI_API_KEY="sk-..."       # or NVIDIA_API_KEY / ANTHROPIC_API_KEY where supported
 export OPENROUTER_API_KEY="sk-or-..." # pass with --api-key or save via configure
 
-# Serve a profile config (passthrough, random-routing, llm-routing, stage_router).
-# Endpoints, targets, and profiles live in the YAML; see docs/routing_algorithms/overview.mdx.
-switchyard serve --config profiles.yaml --port 4000
-switchyard serve --config profiles.yaml --inbound anthropic --port 4000
+# Serve a routing bundle. Routes live in YAML; see docs/routing_algorithms/overview.mdx.
+switchyard --routing-profiles routes.yaml -- serve --port 4000
 
 # One-command launchers — single-model passthrough via --model
 switchyard launch claude --model openai/gpt-4o-mini \
@@ -291,7 +301,7 @@ uv run mypy switchyard
 1. Pick the right stage: request component (pre-call), response component (post-call), `LLMBackend` (rare), or Rust translation codec work.
 2. Create a file with the explicit name (`snake_case` of the class name), one class per file.
 3. Implement the async method for that stage (`process` for components, `call` for backends).
-4. Wire into the owning profile config.
+4. Wire into the owning programmatic profile config or route-bundle builder.
 5. Add tests under `tests/`.
 6. Export from the relevant `__init__.py` and from `switchyard/__init__.py`'s `__all__`.
 
@@ -363,7 +373,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 
 ### Ask first
 - Modifying `pyproject.toml` dependencies.
-- Changes to the chain shape or Rust-owned role classes in `switchyard/lib/roles.py`.
+- Changes to the chain shape or public role classes in `switchyard/lib/roles.py`.
 - Adding new HTTP endpoints.
 - Removing or renaming any public API currently in `switchyard/__init__.__all__`.
 

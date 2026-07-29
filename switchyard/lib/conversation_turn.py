@@ -25,14 +25,11 @@ def conversation_turn_number(request: ChatRequest) -> int:
     if not isinstance(body, dict):
         return 1
 
-    request_type = request.request_type
-    if request_type is ChatRequestType.OPENAI_CHAT:
-        return _count_assistant_messages(body.get("messages")) + 1
-    if request_type is ChatRequestType.ANTHROPIC:
-        return _count_assistant_messages(body.get("messages")) + 1
-    if request_type is ChatRequestType.OPENAI_RESPONSES:
-        return _count_responses_turn(body)
-    return 1
+    match request.request_type:
+        case ChatRequestType.OPENAI_CHAT | ChatRequestType.ANTHROPIC:
+            return _count_assistant_messages(body.get("messages")) + 1
+        case ChatRequestType.OPENAI_RESPONSES:
+            return _count_responses_turn(body)
 
 
 def _count_assistant_messages(messages: Any) -> int:

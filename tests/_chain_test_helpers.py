@@ -1,18 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared test infrastructure for classifier and chain-composition tests.
+"""Shared test infrastructure for classifier chain tests.
 
 Private (underscore-prefixed) module so pytest doesn't try to collect
 it as a test file.  Symbols inside also keep the underscore-private
 convention used by the test files that import them.
 
-Owners are the offline e2e tests for:
-
-* :mod:`tests.test_llm_classifier_e2e` — classifier-only routing chain.
-* :mod:`tests.test_classifier_planner_chain` — classifier + planner
-  composition.  The planner-specific stub bodies and URLs live in that
-  file (not here) so this module stays orthogonal to plan_execute.
+The owner is :mod:`tests.test_llm_classifier_e2e`, which exercises the
+classifier-only routing chain.
 """
 
 from __future__ import annotations
@@ -29,8 +25,8 @@ import httpx
 # URL + model constants shared between classifier and chain harnesses.
 # ---------------------------------------------------------------------------
 
-#: respx-intercepted classifier endpoint.  Distinct from any planner /
-#: backend URL so an unexpected hit is caught by missing-mock errors.
+#: respx-intercepted classifier endpoint. Distinct from the backend URL so an
+#: unexpected hit is caught by missing-mock errors.
 _CLASSIFIER_BASE = "https://classifier.test/v1"
 _CLASSIFIER_URL = f"{_CLASSIFIER_BASE}/chat/completions"
 

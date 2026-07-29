@@ -3,7 +3,7 @@
 
 """Unit tests for SessionAffinity's L1 (in-process) + optional L2 (shared) tiering.
 
-The latency backend and classifier router integration tests cover affinity
+The classifier and escalation router integration tests cover affinity
 *policy*; these tests cover the store mechanics in isolation: write-through,
 read-through with L1 warming, and best-effort (fail-open) degradation when the
 L2 errors.

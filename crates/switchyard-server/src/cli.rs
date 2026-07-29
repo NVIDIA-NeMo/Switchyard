@@ -1,14 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! CLI entrypoint for running the components-v2 Rust profile server.
+//! CLI entrypoint for running the configured libsy server.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use clap::Parser;
-use switchyard_core::{Result, SwitchyardError};
-use switchyard_server::{run_server, ServerRunOptions, TLSOptions, DEFAULT_LISTEN_BACKLOG};
+use switchyard_server::config::load_server_state;
+use switchyard_server::{
+    run_server, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
+    DEFAULT_LISTEN_BACKLOG,
+};
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 const DEFAULT_PORT: u16 = 4000;
@@ -17,37 +20,37 @@ const DEFAULT_PORT: u16 = 4000;
 #[derive(Debug, Parser)]
 #[command(
     name = "switchyard-server",
-    about = "Run the Rust Switchyard server from a components-v2 profile config",
+    about = "Serve explicitly configured libsy algorithms",
     version
 )]
 pub(crate) struct ServerArgs {
-    /// Path to a components-v2 profile config file.
-    #[arg(short, long, env = "SWITCHYARD_PROFILE_CONFIG", value_name = "PATH")]
-    pub(crate) config: PathBuf,
+    /// TOML file defining LLM clients, targets, and algorithm routes.
+    #[arg(long, value_name = "PATH")]
+    config: PathBuf,
 
     /// Host address to bind.
     #[arg(long, default_value_t = DEFAULT_HOST)]
-    pub(crate) host: IpAddr,
+    host: IpAddr,
 
     /// Port to bind.
     #[arg(short, long, default_value_t = DEFAULT_PORT)]
-    pub(crate) port: u16,
+    port: u16,
 
     /// TCP listen backlog passed to the socket before Axum accepts traffic.
     #[arg(long, default_value_t = DEFAULT_LISTEN_BACKLOG)]
-    pub(crate) backlog: u32,
+    backlog: u32,
 
-    /// Validate and build the config without starting the HTTP listener.
+    /// Validate the algorithm and client configuration without binding a socket.
     #[arg(long)]
-    pub(crate) dry_run: bool,
+    dry_run: bool,
 
-    /// TLS certificate path, PEM format
+    /// TLS certificate path in PEM format.
     #[arg(long, requires = "tls_key")]
-    pub(crate) tls_cert: Option<PathBuf>,
+    tls_cert: Option<PathBuf>,
 
-    /// TLS certificate key path, PEM format
+    /// TLS private-key path in PEM format.
     #[arg(long, requires = "tls_cert")]
-    pub(crate) tls_key: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
 }
 
 impl ServerArgs {
@@ -56,30 +59,33 @@ impl ServerArgs {
         Self::parse()
     }
 
-    fn into_options(self) -> Result<ServerRunOptions> {
-        let mut tls_options = None;
-        if let (Some(cert), Some(key)) = (self.tls_cert, self.tls_key) {
-            if !cert.exists() || !key.exists() {
-                return Err(SwitchyardError::InvalidConfig(format!(
-                    "Invalid path in --tls-cert {} or --tls-key {}. File does not exist.",
-                    cert.display(),
-                    key.display()
-                )));
+    fn into_runtime(self) -> ServerResult<(ServerState, ServerRunOptions)> {
+        let state = load_server_state(&self.config)?;
+        let tls = match (self.tls_cert, self.tls_key) {
+            (Some(cert), Some(key)) => {
+                if !cert.exists() || !key.exists() {
+                    return Err(ServerError::new(format!(
+                        "invalid --tls-cert {} or --tls-key {}: file does not exist",
+                        cert.display(),
+                        key.display()
+                    )));
+                }
+                Some(TlsOptions { cert, key })
             }
-            tls_options = Some(TLSOptions { cert, key })
+            _ => None,
         };
-        Ok(ServerRunOptions {
-            config: self.config,
+        let options = ServerRunOptions {
             addr: SocketAddr::new(self.host, self.port),
             backlog: self.backlog,
             dry_run: self.dry_run,
-            tls: tls_options,
-        })
+            tls,
+        };
+        Ok((state, options))
     }
 }
 
-/// Loads config, optionally validates it, then starts the Rust server.
-pub(crate) async fn run(args: ServerArgs) -> Result<()> {
-    let opts = args.into_options()?;
-    run_server(opts).await
+/// Loads the configured algorithms and starts the server.
+pub(crate) async fn run(args: ServerArgs) -> ServerResult<()> {
+    let (state, options) = args.into_runtime()?;
+    run_server(state, options).await
 }

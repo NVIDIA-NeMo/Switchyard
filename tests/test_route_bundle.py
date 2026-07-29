@@ -50,18 +50,6 @@ def _random_processor(chain: object) -> Any:
     )
 
 
-def _latency_backend(chain: object) -> Any:
-    from switchyard.lib.backends.latency_service_llm_backend import (
-        LatencyServiceLLMBackend,
-    )
-
-    return next(
-        component
-        for component in chain.iter_components()
-        if isinstance(component, LatencyServiceLLMBackend)
-    )
-
-
 class _NoopRequestProcessor:
     async def process(self, _ctx: ProxyContext, request: ChatRequest) -> ChatRequest:
         return request
@@ -152,7 +140,6 @@ def test_route_bundle_rejects_missing_environment_variable() -> None:
             },
             "strong_probablity",
         ),
-        ({"type": "passthrough", "model": "gpt-4o"}, "model"),
         ({"type": "model", "target": {"modle": "gpt-4o"}}, "modle"),
     ],
 )
@@ -164,11 +151,24 @@ def test_route_bundle_rejects_unknown_route_keys(
         build_route_bundle_table({"routes": {"bad": route}})
 
 
-def test_empty_route_mapping_registers_noop() -> None:
-    table = build_route_bundle_table({"routes": {"noop": {}}})
+@pytest.mark.parametrize("route_type", ["passthrough", "noop"])
+def test_removed_route_types_are_rejected(route_type: str) -> None:
+    """``type: passthrough`` and ``type: noop`` are no longer valid route types."""
+    with pytest.raises(RouteBundleConfigError, match="unsupported route type"):
+        build_route_bundle_table({"routes": {"r": {"type": route_type}}})
 
-    assert table.registered_models() == ["noop"]
-    assert table.registered_model_entries()[0]["switchyard"]["profile"] == "noop"
+
+def test_empty_route_mapping_is_rejected() -> None:
+    """An empty ``{}`` route no longer defaults to a noop; it is rejected."""
+    with pytest.raises(RouteBundleConfigError, match="missing 'type'"):
+        build_route_bundle_table({"routes": {"r": {}}})
+
+
+def test_model_route_requires_target() -> None:
+    """``type: model`` is the only single-upstream route, so it fails closed
+    when no ``target``/``model`` is given rather than inventing a default."""
+    with pytest.raises(RouteBundleConfigError, match="requires target or model"):
+        build_route_bundle_table({"routes": {"m": {"type": "model"}}})
 
 
 def test_random_routing_hydrates_tier_and_catalog_models(
@@ -253,86 +253,6 @@ def test_model_route_aliases_under_route_key(
     assert table.default_model() == "configured-route"
 
 
-def test_passthrough_route_hydrates_catalog(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A ``passthrough`` route hydrates the catalog under the route id.
-
-    The route's YAML key becomes the tier's configured model name (passthrough
-    routes don't take an explicit target); catalog entries register alongside.
-    """
-    monkeypatch.setattr(
-        "switchyard.cli.route_bundle.fetch_model_ids",
-        lambda base_url, api_key: ["catalog/x", "catalog/y"],
-    )
-
-    table = build_route_bundle_table({
-        "routes": {
-            "openai-passthrough": {
-                "type": "passthrough",
-                "api_key": "k",
-                "base_url": "https://example/v1",
-            },
-        },
-    })
-
-    assert table.registered_models() == [
-        "openai-passthrough",
-        "catalog/x",
-        "catalog/y",
-    ]
-    assert table.default_model() == "openai-passthrough"
-
-
-def test_route_bundle_keeps_first_passthrough_route_as_default() -> None:
-    """Later discovered-route merges must not override the advertised default."""
-    table = build_route_bundle_table({
-        "routes": {
-            "first-route": {
-                "type": "passthrough",
-                "api_key": "k-first",
-                "base_url": "https://first.example/v1",
-            },
-            "second-route": {
-                "type": "passthrough",
-                "api_key": "k-second",
-                "base_url": "https://second.example/v1",
-            },
-        },
-    })
-
-    assert table.registered_models() == ["first-route", "second-route"]
-    assert table.default_model() == "first-route"
-
-
-def test_passthrough_route_preserves_warning_when_catalog_fetch_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_catalog(_base_url: str, _api_key: str) -> list[str]:
-        raise RuntimeError("catalog timed out")
-
-    monkeypatch.setattr(
-        "switchyard.cli.route_bundle.fetch_model_ids",
-        fail_catalog,
-    )
-
-    table = build_route_bundle_table({
-        "routes": {
-            "configured-route": {
-                "type": "passthrough",
-                "api_key": "k",
-                "base_url": "https://primary.example/v1",
-            },
-        },
-    })
-
-    assert table.registered_models() == ["configured-route"]
-    assert table.default_model() == "configured-route"
-    assert table.model_listing_warnings() == [
-        "Model discovery failed for https://primary.example/v1: catalog timed out"
-    ]
-
-
 def test_random_routing_with_empty_catalog_registers_only_tier_passthroughs() -> None:
     """When discovery yields an empty catalog, only tier passthroughs register.
 
@@ -374,12 +294,12 @@ def test_route_bundle_threads_extra_processors_through_routes() -> None:
     response_processor = _NoopResponseProcessor()
 
     table = build_route_bundle_table(
-        {"routes": {"noop": {"type": "noop"}}},
+        {"routes": {"direct": {"type": "model", "target": "some/model"}}},
         pre_routing_request_processors=[request_processor],
         extra_response_processors=[response_processor],
     )
 
-    components = table.lookup_switchyard("noop").iter_components()
+    components = table.lookup_switchyard("direct").iter_components()
     assert request_processor in components
     assert response_processor in components
 
@@ -391,7 +311,7 @@ def test_serve_subcommand_hands_table_to_server(
     import switchyard.cli.switchyard_cli as cli
 
     yaml_path = tmp_path / "routes.yaml"
-    yaml_path.write_text("routes:\n  noop:\n    type: noop\n")
+    yaml_path.write_text("routes:\n  direct:\n    type: model\n    target: some/model\n")
     captured: dict[str, Any] = {}
 
     def _fake_serve(
@@ -416,124 +336,9 @@ def test_serve_subcommand_hands_table_to_server(
     args.func(args)
 
     assert isinstance(captured["switchyard"], RouteTable)
-    assert captured["switchyard"].registered_models() == ["noop"]
+    assert captured["switchyard"].registered_models() == ["direct"]
     assert captured["args"].port == 4555
     assert captured["inbound_default"] == "both"
-
-
-def test_serve_config_delegates_to_rust_profile_server(
-    mocker: Any,
-    tmp_path,
-) -> None:
-    import switchyard.cli.switchyard_cli as cli
-    import switchyard_rust.server as rust_server
-
-    config_path = tmp_path / "profiles.yaml"
-    config_path.write_text("profiles:\n  bench:\n    type: noop\n")
-    captured: dict[str, Any] = {}
-
-    def _fake_run_profile_server(
-        config_path: str,
-        host: str = "127.0.0.1",
-        port: int = 4000,
-        backlog: int = 65_535,
-        dry_run: bool = False,
-    ) -> None:
-        captured["config_path"] = config_path
-        captured["host"] = host
-        captured["port"] = port
-        captured["backlog"] = backlog
-        captured["dry_run"] = dry_run
-
-    mocker.patch.object(
-        rust_server,
-        "run_profile_server",
-        side_effect=_fake_run_profile_server,
-    )
-
-    def _fail_build_and_serve(
-        args: argparse.Namespace,
-        switchyard: object,
-        *,
-        inbound_default: str = "openai",
-        disable_backend_streaming: bool = False,
-        **_kwargs: object,
-    ) -> None:
-        _ = (args, switchyard, inbound_default, disable_backend_streaming)
-        pytest.fail("route-bundle server should not run")
-
-    mocker.patch.object(
-        cli,
-        "build_and_serve",
-        side_effect=_fail_build_and_serve,
-    )
-
-    args = cli._build_parser().parse_args([
-        "serve",
-        "--config",
-        str(config_path),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "4555",
-    ])
-    args.func(args)
-
-    assert captured == {
-        "config_path": str(config_path),
-        "host": "127.0.0.1",
-        "port": 4555,
-        "backlog": 65_535,
-        "dry_run": False,
-    }
-
-
-def test_serve_config_and_routing_profiles_are_mutually_exclusive(
-    tmp_path,
-) -> None:
-    config_path = tmp_path / "profiles.yaml"
-    routes_path = tmp_path / "routes.yaml"
-    config_path.write_text("profiles:\n  bench:\n    type: noop\n")
-    routes_path.write_text("routes:\n  bench:\n    type: noop\n")
-
-    args = cli._build_parser().parse_args([
-        "--routing-profiles",
-        str(routes_path),
-        "serve",
-        "--config",
-        str(config_path),
-    ])
-
-    with pytest.raises(SystemExit, match="cannot be combined"):
-        args.func(args)
-
-
-@pytest.mark.parametrize(
-    "serve_args, match",
-    [
-        (["--reload"], "--reload"),
-        (["--workers", "2"], "--workers"),
-        (["--inbound", "openai"], "--inbound"),
-        (["--inbound", "both"], "--inbound"),
-        (["--intake-enabled"], "Intake"),
-    ],
-)
-def test_serve_config_rejects_python_only_options(
-    tmp_path,
-    serve_args: list[str],
-    match: str,
-) -> None:
-    config_path = tmp_path / "profiles.yaml"
-    config_path.write_text("profiles:\n  bench:\n    type: noop\n")
-    args = cli._build_parser().parse_args([
-        "serve",
-        "--config",
-        str(config_path),
-        *serve_args,
-    ])
-
-    with pytest.raises(SystemExit, match=match):
-        args.func(args)
 
 
 def test_main_reports_route_bundle_config_error_without_traceback(
@@ -621,13 +426,13 @@ def test_main_reports_non_utf8_route_bundle_without_traceback(
     assert "\n" not in str(excinfo.value.code)
 
 
-def test_main_warns_when_routing_profiles_flag_is_used(
+def test_main_accepts_routing_profiles_flag(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     yaml_path = tmp_path / "routes.yaml"
-    yaml_path.write_text("routes:\n  noop:\n    type: noop\n")
+    yaml_path.write_text("routes:\n  direct:\n    type: model\n    target: some/model\n")
 
     monkeypatch.setattr(
         sys, "argv", ["switchyard", "--routing-profiles", str(yaml_path), "serve"]
@@ -645,13 +450,10 @@ def test_main_warns_when_routing_profiles_flag_is_used(
 
     cli.main()
 
-    stderr = capsys.readouterr().err
-    assert "warning: --routing-profiles is deprecated." in stderr
-    assert "switchyard serve --config PATH" in stderr
-    assert "removed in a future release" in stderr
+    assert capsys.readouterr().err == ""
 
 
-def test_serve_warns_when_saved_route_bundle_is_used(
+def test_serve_accepts_saved_route_bundle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     capsys: pytest.CaptureFixture[str],
@@ -659,7 +461,9 @@ def test_serve_warns_when_saved_route_bundle_is_used(
     from switchyard.cli.config.user_config import UserConfig, save_user_config
 
     monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-    save_user_config(UserConfig(routing_profiles={"routes": {"noop": {"type": "noop"}}}))
+    save_user_config(UserConfig(routing_profiles={"routes": {
+        "direct": {"type": "model", "target": "some/model"},
+    }}))
 
     def _fake_serve(
         args: argparse.Namespace,
@@ -674,10 +478,7 @@ def test_serve_warns_when_saved_route_bundle_is_used(
 
     cli._cmd_serve(args)
 
-    stderr = capsys.readouterr().err
-    assert "warning: saved routing-profile bundle is deprecated." in stderr
-    assert "switchyard serve --config PATH" in stderr
-    assert "Clear the saved bundle" in stderr
+    assert capsys.readouterr().err == ""
 
 
 def test_serve_subcommand_enables_intake_from_cli_args(
@@ -693,8 +494,9 @@ def test_serve_subcommand_enables_intake_from_cli_args(
     yaml_path = tmp_path / "routes.yaml"
     yaml_path.write_text(
         "routes:\n"
-        "  noop:\n"
-        "    type: noop\n"
+        "  direct:\n"
+        "    type: model\n"
+        "    target: some/model\n"
     )
     captured: dict[str, Any] = {}
 
@@ -722,7 +524,7 @@ def test_serve_subcommand_enables_intake_from_cli_args(
     ])
     args.func(args)
 
-    components = captured["switchyard"].lookup_switchyard("noop").iter_components()
+    components = captured["switchyard"].lookup_switchyard("direct").iter_components()
     assert any(isinstance(component, IntakeRequestProcessor) for component in components)
     assert any(isinstance(component, IntakeResponseProcessor) for component in components)
 
@@ -1448,90 +1250,6 @@ class TestStageRouterRouteType:
         assert snapshot["routing_decisions"]["stage_router"]["llm-classifier"] == 1
 
 
-class TestPlanExecuteRouteType:
-    """`type: plan_execute` wires the strong-planner / weak-executor chain via YAML."""
-
-    def _bundle(self) -> dict:
-        return {
-            "routes": {
-                "myrouter/plan-execute": {
-                    "type": "plan_execute",
-                    "cadence_n": 3,
-                    "planner": {
-                        "model": "azure/anthropic/claude-opus-4-6",
-                        "api_key": "sk-planner",
-                        "base_url": "https://planner.invalid/v1",
-                    },
-                    "executor": {
-                        "model": "nvidia/nvidia/nemotron-3-super-v3",
-                        "api_key": "sk-executor",
-                        "base_url": "https://executor.invalid/v1",
-                    },
-                },
-            },
-        }
-
-    def test_registers_under_route_key(self):
-        table = build_route_bundle_table(self._bundle())
-        assert table.registered_models() == ["myrouter/plan-execute"]
-
-    def test_metadata_records_plan_execute_profile(self):
-        table = build_route_bundle_table(self._bundle())
-        _, _, metadata = next(iter(table.items()))
-        assert metadata["switchyard"]["profile"] == "plan_execute"
-
-    def test_plan_alias_registers_plan_execute_route(self):
-        bundle = self._bundle()
-        bundle["routes"]["myrouter/plan-execute"]["type"] = "plan"
-        table = build_route_bundle_table(bundle)
-        _, _, metadata = next(iter(table.items()))
-        assert metadata["switchyard"]["profile"] == "plan_execute"
-
-    def test_tiers_default_to_shipping_preset(self):
-        # A minimal route (no planner/executor) reproduces the retired
-        # --plan-execute flag: tiers fall back to the coding-agent preset.
-        bundle = {
-            "defaults": {"api_key": "sk-x", "base_url": "https://x.invalid/v1"},
-            "routes": {"router/pe": {"type": "plan_execute"}},
-        }
-        table = build_route_bundle_table(bundle)
-        assert table.registered_models() == ["router/pe"]
-
-    def test_rejects_unknown_route_key(self):
-        bundle = self._bundle()
-        bundle["routes"]["myrouter/plan-execute"]["bogus_field"] = 1
-        with pytest.raises(RouteBundleConfigError) as exc:
-            build_route_bundle_table(bundle)
-        assert "bogus_field" in str(exc.value)
-
-    def test_rejects_invalid_cadence(self):
-        bundle = self._bundle()
-        bundle["routes"]["myrouter/plan-execute"]["cadence_n"] = 0
-        with pytest.raises((RouteBundleConfigError, ValueError)):
-            build_route_bundle_table(bundle)
-
-    def test_string_tier_shorthand_accepted(self):
-        bundle = self._bundle()
-        bundle["routes"]["myrouter/plan-execute"]["executor"] = "nvidia/nvidia/nemotron-3-super-v3"
-        table = build_route_bundle_table(bundle)
-        assert "myrouter/plan-execute" in table.registered_models()
-
-    def test_enable_stats_false_disables_stats_processors(self):
-        from switchyard.lib.processors.stats_request_processor import (
-            StatsRequestProcessor,
-        )
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        bundle = self._bundle()
-        bundle["routes"]["myrouter/plan-execute"]["enable_stats"] = False
-        table = build_route_bundle_table(bundle)
-        components = list(table.iter_components())
-        assert not any(isinstance(c, StatsRequestProcessor) for c in components)
-        assert not any(isinstance(c, StatsResponseProcessor) for c in components)
-
-
 def test_stage_router_route_hydrates_tier_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1691,113 +1409,13 @@ _AFFINITY_DET_ROUTE = {
     "strong": {"model": "s", "api_key": "k", "base_url": "https://ls.test/v1"},
     "weak": {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
 }
-_AFFINITY_LAT_ROUTE = {
-    "type": "latency_service",
-    "latency_service_url": "http://ls.test:8080",
-    "session_affinity": True,
-    "affinity_max_sessions": 50,
-    "endpoints": [
-        {"model": "s", "api_key": "k", "base_url": "https://ls.test/v1"},
-        {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
-    ],
-}
 
 
-@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE, _AFFINITY_LAT_ROUTE])
+@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE])
 def test_session_affinity_keys_accepted_by_route_bundle(route: dict[str, Any]) -> None:
-    """session_affinity / affinity_max_sessions are valid keys on both route types."""
+    """session_affinity / affinity_max_sessions are valid keys on the deterministic route."""
     table = build_route_bundle_table({"routes": {"r": route}})
     assert isinstance(table, RouteTable)
-
-
-def test_latency_service_credential_policy_defaults_to_endpoint_keys() -> None:
-    """Omitting credential_policy keeps the server-configured endpoint keys authoritative."""
-    table = build_route_bundle_table({"routes": {"r": _AFFINITY_LAT_ROUTE}})
-
-    backend = _latency_backend(table.lookup_switchyard("r"))
-
-    assert backend._config.credential_policy == "configured_endpoint"
-
-
-def test_latency_service_credential_policy_reaches_backend_config() -> None:
-    """YAML credential_policy opts into BYO-key caller overrides."""
-    table = build_route_bundle_table({
-        "routes": {
-            "r": {
-                **_AFFINITY_LAT_ROUTE,
-                "credential_policy": "caller_override",
-            },
-        },
-    })
-
-    backend = _latency_backend(table.lookup_switchyard("r"))
-
-    assert backend._config.credential_policy == "caller_override"
-
-
-def test_latency_service_invalid_credential_policy_rejected_via_bundle() -> None:
-    """Invalid latency-service credential policy values fail closed."""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        build_route_bundle_table({
-            "routes": {
-                "r": {
-                    **_AFFINITY_LAT_ROUTE,
-                    "credential_policy": "caller-overrides",
-                },
-            },
-        })
-
-
-def test_latency_endpoint_request_type_reaches_backend_config() -> None:
-    """Endpoint-level request_type in YAML selects the upstream API surface."""
-    table = build_route_bundle_table({
-        "routes": {
-            "r": {
-                "type": "latency_service",
-                "latency_service_url": "http://ls.test:8080",
-                "endpoints": [
-                    {
-                        "model": "codex-mini",
-                        "api_key": "k",
-                        "base_url": "https://ls.test/v1",
-                        "request_type": "openai_responses",
-                    },
-                    {"model": "w", "api_key": "k", "base_url": "https://ls.test/v1"},
-                ],
-            },
-        },
-    })
-
-    backend = _latency_backend(table.lookup_switchyard("r"))
-
-    by_model = {endpoint.model: endpoint for endpoint in backend._config.endpoints}
-    assert by_model["codex-mini"].request_type == "openai_responses"
-    assert by_model["w"].request_type == "openai_chat"
-
-
-def test_latency_route_key_reaches_backend_as_route_model() -> None:
-    """The YAML route key becomes the backend's metrics route_model id."""
-    table = build_route_bundle_table({
-        "routes": {
-            "nvidia/switchyard/gpt-5.4": {
-                "type": "latency_service",
-                "latency_service_url": "http://ls.test:8080",
-                "endpoints": [
-                    {
-                        "model": "azure/openai/gpt-5.4",
-                        "api_key": "k",
-                        "base_url": "https://ls.test/v1",
-                    },
-                ],
-            },
-        },
-    })
-
-    backend = _latency_backend(table.lookup_switchyard("nvidia/switchyard/gpt-5.4"))
-
-    assert backend._config.route_model == "nvidia/switchyard/gpt-5.4"
 
 
 def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
@@ -1808,44 +1426,13 @@ def test_deterministic_affinity_warmup_turns_accepted_by_route_bundle() -> None:
     assert isinstance(table, RouteTable)
 
 
-@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE, _AFFINITY_LAT_ROUTE])
+@pytest.mark.parametrize("route", [_AFFINITY_DET_ROUTE])
 def test_zero_capacity_affinity_rejected_via_bundle(route: dict[str, Any]) -> None:
     """A zero cap with affinity on is rejected — proving the keys reach the config."""
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         build_route_bundle_table({"routes": {"r": {**route, "affinity_max_sessions": 0}}})
-
-
-def test_latency_affinity_redis_reaches_backend_via_bundle() -> None:
-    """Redis L2 keys parse and construct a RedisPinStore on the latency backend."""
-    from switchyard.lib.redis_pin_store import RedisPinStore
-
-    table = build_route_bundle_table({
-        "routes": {
-            "r": {
-                **_AFFINITY_LAT_ROUTE,
-                "affinity_store": "redis",
-                "affinity_store_url": "redis://cache:6379/0",
-                "affinity_store_ttl_seconds": 120,
-                "affinity_key_prefix": "k:",
-            },
-        },
-    })
-    backend = _latency_backend(table.lookup_switchyard("r"))
-    assert backend._config.affinity_store == "redis"
-    assert backend._config.affinity_store_url == "redis://cache:6379/0"
-    assert isinstance(backend._affinity._l2, RedisPinStore)
-
-
-def test_latency_affinity_redis_requires_url_via_bundle() -> None:
-    """affinity_store=redis without a URL fails closed at config load."""
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        build_route_bundle_table({
-            "routes": {"r": {**_AFFINITY_LAT_ROUTE, "affinity_store": "redis"}},
-        })
 
 
 def test_negative_affinity_warmup_turns_rejected_via_bundle() -> None:

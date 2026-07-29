@@ -31,7 +31,10 @@ classifiers = [
 #   pip install nemo-switchyard[cli]            # Add prompt-toolkit for CLI
 #   pip install nemo-switchyard[all]            # Everything
 dependencies = [
-    "openai>=2.34.0,<3.0",
+    # openai: request/response schema types, plus the async client in lib/llm_client.py.
+    # Keep this floor low enough for downstream consumers to co-install us; NeMo Gym pins
+    # openai<=2.7.2. The suite passes unchanged from 2.7.0 through 2.48.0.
+    "openai>=2.7,<3.0",
     "anthropic>=0.99.0,<1.0",
     "httpx>=0.28.1,<1.0",
     "pydantic>=2.13.3,<3.0",

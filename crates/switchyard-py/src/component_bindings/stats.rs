@@ -8,8 +8,8 @@ use pyo3::prelude::*;
 use serde::Serialize;
 use switchyard_components::{StatsAccumulator, StatsRouteLabel, TokenUsage};
 
-use crate::core_bindings::context::PyProxyContext;
 use crate::errors::py_core_error;
+use crate::interop::context::insert_into_python;
 use crate::py_serde::value_to_python;
 
 #[pyclass(name = "StatsAccumulator", skip_from_py_object)]
@@ -190,56 +190,6 @@ impl PyStatsAccumulator {
         })
     }
 
-    #[pyo3(signature = (
-        model,
-        prompt_tokens=0,
-        completion_tokens=0,
-        cached_tokens=0,
-        cache_creation_tokens=0,
-        reasoning_tokens=0,
-        latency_ms=None,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn record_planner_usage<'py>(
-        &self,
-        py: Python<'py>,
-        model: String,
-        prompt_tokens: u64,
-        completion_tokens: u64,
-        cached_tokens: u64,
-        cache_creation_tokens: u64,
-        reasoning_tokens: u64,
-        latency_ms: Option<f64>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let accumulator = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let usage = TokenUsage {
-                prompt_tokens,
-                completion_tokens,
-                cached_tokens,
-                cache_creation_tokens,
-                reasoning_tokens,
-                cacheable_prompt_tokens: 0,
-            };
-            accumulator
-                .record_planner_usage(model, usage, latency_ms)
-                .map_err(py_core_error)
-        })
-    }
-
-    fn record_planner_error<'py>(
-        &self,
-        py: Python<'py>,
-        model: String,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let accumulator = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            accumulator
-                .record_planner_error(model)
-                .map_err(py_core_error)
-        })
-    }
-
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let accumulator = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -276,12 +226,12 @@ fn to_python(py: Python<'_>, value: &impl Serialize) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
-fn set_stats_route_label(ctx: PyRef<'_, PyProxyContext>, label: &str) -> PyResult<()> {
+fn set_stats_route_label(ctx: &Bound<'_, PyAny>, label: &str) -> PyResult<()> {
     let label = label.trim();
     if label.is_empty() {
         return Err(PyValueError::new_err("stats route label must not be empty"));
     }
-    ctx.insert_value(StatsRouteLabel::new(label))
+    insert_into_python(ctx, StatsRouteLabel::new(label))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

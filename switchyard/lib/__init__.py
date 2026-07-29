@@ -11,6 +11,6 @@ of the library:
 - ``translation`` — pure format-conversion functions and typed translation engines
 - ``processors`` — reusable request/response components used by profiles
 - ``backends`` — LLM backend implementations (OpenAI, Anthropic, multi-tier routing)
-- ``profiles`` — profile-owned runtime/config abstractions for the flatter v2 shape
+- ``profiles`` — profile-owned runtime and programmatic config abstractions
 - ``roles`` — backend role definitions and translation response aliases
 """

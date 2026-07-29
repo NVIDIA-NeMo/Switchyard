@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::{ChatRequest, ChatRequestType};
 use serde::{Deserialize, Serialize};
-use switchyard_core::{ChatRequest, ChatRequestType};
 
 /// Header carrying the client session ID used by intake.
 pub const PROXY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
@@ -76,6 +76,30 @@ impl IntakeRequestState {
         self.skip
     }
 }
+
+/// One routing-strategy sub-model call captured for intake: the model a router
+/// called to pick a route, plus that call's token usage. Never message content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubModelCall {
+    /// Model the router called to make its routing decision.
+    pub model: String,
+    /// Prompt tokens the routing call spent.
+    pub prompt_tokens: i64,
+    /// Completion tokens the routing call spent.
+    pub completion_tokens: i64,
+    /// Cached prompt tokens the routing call reused.
+    pub cached_tokens: i64,
+    /// Router family that made the call (e.g. `deterministic`, `stage_router`).
+    pub router_type: String,
+    /// Route label the router produced (e.g. `classifier`, `judge`).
+    pub routed_to: String,
+}
+
+/// Routing-strategy sub-model calls made while serving one request. Routers
+/// append one entry per call; the response-side intake processor emits each as
+/// its own anonymous record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubModelCalls(pub Vec<SubModelCall>);
 
 // Header extraction treats empty strings as absent to match Python behavior.
 fn header_value(headers: &BTreeMap<String, &str>, name: &str) -> Option<String> {

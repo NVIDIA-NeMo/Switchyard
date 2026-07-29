@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde_json::Value;
-use switchyard_core::{Result, SwitchyardError};
+use switchyard_components::{Result, SwitchyardError};
 
 pub mod config;
 pub mod intake;

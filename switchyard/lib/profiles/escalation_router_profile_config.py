@@ -138,9 +138,9 @@ class EscalationRouterProfileConfig:
 def _build_affinity_l2(config: EscalationRouterConfig) -> AffinityPinStore | None:
     """Build the optional shared L2 latch store (``None`` = L1-only).
 
-    Mirrors the latency route's ``affinity_store`` semantics; ``"redis"``
-    imports :class:`RedisPinStore` lazily so the ``redis`` dependency stays
-    optional. Config validation guarantees a URL when the store is Redis.
+    Uses the shared ``affinity_store`` semantics; ``"redis"`` imports
+    :class:`RedisPinStore` lazily so the ``redis`` dependency stays optional.
+    Config validation guarantees a URL when the store is Redis.
     """
     if config.affinity_store != "redis":
         return None

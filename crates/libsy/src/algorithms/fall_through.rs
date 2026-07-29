@@ -1,0 +1,678 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Fall-through classifier routing: a composable [`Algorithm`] that routes each turn
+//! through a processor chain and a classifier cascade.
+//!
+//! Each turn: request-side [`Processor`]s fold facts into the composition's state; the
+//! [`Classifier`] cascade is consulted in order and the first to score decides the target
+//! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
+//! stateful ones (latch, affinity) can bind it.
+//!
+//! The default `FallThrough<()>` has no state. Stateful compositions share one private state
+//! value across turns with the same session ID. Requests without a session ID use unretained
+//! per-run state.
+
+use std::{collections::HashMap, sync::Arc};
+
+use async_trait::async_trait;
+use parking_lot::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::core::{Classifier, Event, Processor, Score};
+use crate::{
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
+    RoutedLlmClient,
+};
+
+type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
+
+/// The decision a fall-through run produces: the selected model plus a human-readable reason.
+pub struct FallThroughDecision {
+    /// Target selected by the classifier cascade.
+    pub selected_model: String,
+    /// Human-readable explanation of the selection.
+    pub reasoning: String,
+    tier: Option<&'static str>,
+}
+
+impl Decision for FallThroughDecision {
+    fn selected_model(&self) -> &str {
+        &self.selected_model
+    }
+
+    fn routing_tier(&self) -> Option<&str> {
+        self.tier
+    }
+
+    fn reasoning(&self) -> Option<&str> {
+        Some(&self.reasoning)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Processor chain → classifier cascade → routed model call. See the [module docs](self).
+///
+/// The generic state type is shared by every processor and classifier in the composition.
+pub struct FallThrough<S = ()> {
+    name: String,
+    decision_reason: fn(&str, &Score) -> String,
+    processors: Vec<Arc<dyn Processor<S>>>,
+    classifiers: Vec<Arc<dyn Classifier<S>>>,
+    targets: LlmTargetSet,
+    session_states: Option<SessionStates<S>>,
+}
+
+impl FallThrough<()> {
+    /// Creates an empty stateless router.
+    pub fn new(targets: LlmTargetSet) -> Self {
+        Self {
+            name: "fall_through".to_string(),
+            decision_reason: default_decision_reason,
+            processors: Vec::new(),
+            classifiers: Vec::new(),
+            targets,
+            session_states: None,
+        }
+    }
+}
+
+impl<S> FallThrough<S>
+where
+    S: Default + Send + 'static,
+{
+    /// Creates a router that retains one private `S` per session.
+    pub fn new_with_state(targets: LlmTargetSet) -> Self {
+        Self {
+            name: "fall_through".to_string(),
+            decision_reason: default_decision_reason,
+            processors: Vec::new(),
+            classifiers: Vec::new(),
+            targets,
+            session_states: Some(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Sets the stable, low-cardinality telemetry name for this composition.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Sets the decision reasoning for an algorithm assembled from this cascade.
+    pub(crate) fn with_decision_reason(mut self, reason: fn(&str, &Score) -> String) -> Self {
+        self.decision_reason = reason;
+        self
+    }
+
+    /// Appends a processor to the head-of-request chain.
+    pub fn with_processor(mut self, processor: Arc<dyn Processor<S>>) -> Self {
+        self.processors.push(processor);
+        self
+    }
+
+    /// Appends a classifier to the cascade.
+    pub fn with_classifier(mut self, classifier: Arc<dyn Classifier<S>>) -> Self {
+        self.classifiers.push(classifier);
+        self
+    }
+    /// Registers one dual-role component in *both* the processor chain and the classifier
+    /// cascade.
+    ///
+    /// A component that writes state as a [`Processor`] and reads it back as a
+    /// [`Classifier`] — such as [`AffinityRouter`](crate::algorithms::AffinityRouter) —
+    /// shares that state through the instance, so both roles must be the same `Arc`.
+    /// Registering the two separately is easy to half-wire: omit the processor and the
+    /// classifier silently never sees an assignment. This registers both at once.
+    pub fn with_component<T>(self, component: Arc<T>) -> Self
+    where
+        T: Processor<S> + Classifier<S> + 'static,
+    {
+        self.with_processor(component.clone())
+            .with_classifier(component)
+    }
+
+    /// Executes the processor/classifier/target-call sequence for wrappers and the trait entrypoint.
+    pub(crate) async fn execute(
+        &self,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Response> {
+        // The request is threaded mutably through the whole fold: any component may rewrite
+        // it, later components see the rewrite, and the final value reaches the model.
+        let mut request = request;
+        let session_state = self.session_state(&request);
+        let (target, decision) = match session_state {
+            Some(state) => {
+                let mut state = state.lock().await;
+                self.route(&mut state, &ctx, &driver, &mut request).await?
+            }
+            None => {
+                let mut state = S::default();
+                self.route(&mut state, &ctx, &driver, &mut request).await?
+            }
+        };
+
+        driver
+            .call_llm_target(ctx, &target, request, decision)
+            .await
+    }
+
+    /// Returns this request's retained state without holding the registry lock.
+    fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<S>>> {
+        let states = self.session_states.as_ref()?;
+        let session_id = request
+            .metadata
+            .as_ref()?
+            .session_id
+            .as_deref()
+            .filter(|session_id| !session_id.is_empty())?;
+        let mut states = states.lock();
+        let state = states
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(S::default())));
+        Some(Arc::clone(state))
+    }
+
+    async fn route(
+        &self,
+        state: &mut S,
+        ctx: &Context,
+        driver: &Driver,
+        request: &mut Request,
+    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>)> {
+        // 1. Processor chain accumulates request-side facts into the composition's state.
+        for processor in &self.processors {
+            processor.process(state, Event::Request(request)).await?;
+        }
+
+        // 2. Fall through the cascade: the first classifier to score decides (argmax). The
+        //    per-request driver is offered to each — driver-backed classifiers use it.
+        let mut maybe_score: Option<Score> = None;
+        let mut maybe_tier: Option<&'static str> = None;
+        for classifier in &self.classifiers {
+            let scores = classifier.score(state, request, Some(driver)).await?;
+            maybe_score = scores.argmax(false)?;
+            if let Some(s) = maybe_score.as_ref() {
+                maybe_tier = classifier.routing_tier(&s.target);
+                break;
+            }
+        }
+        let Some(score) = maybe_score else {
+            return Err(LibsyError::AlgorithmError {
+                message: "every classifier abstained".to_string(),
+            });
+        };
+
+        // 3. Resolve the target and publish the decision.
+        let target = self.targets.get_target(&score.target)?;
+        let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
+            selected_model: score.target.clone(),
+            reasoning: (self.decision_reason)(&self.name, &score),
+            tier: maybe_tier,
+        });
+        driver.info(ctx.clone(), decision.clone()).await?;
+
+        // 4. Replay the decision to the processors so stateful ones can bind it.
+        for processor in &self.processors {
+            processor
+                .process(
+                    state,
+                    Event::Decision {
+                        request,
+                        decision: decision.as_ref(),
+                    },
+                )
+                .await?;
+        }
+
+        Ok((target, decision))
+    }
+}
+
+fn default_decision_reason(_name: &str, winner: &Score) -> String {
+    format!(
+        "fall-through selected {} (confidence {:.3})",
+        winner.target, winner.confidence
+    )
+}
+
+#[async_trait]
+impl<S> Algorithm for FallThrough<S>
+where
+    S: Default + Send + 'static,
+{
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
+        self.targets.count_tokens_client()
+    }
+
+    async fn create_run_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Response> {
+        self.execute(ctx, driver, request).await
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Classification;
+
+    use switchyard_protocol::{
+        completion_text, text_response, LlmRequest, Message, Metadata, Role,
+    };
+
+    use crate::{LlmResponse, LlmTarget, RoutedLlmClient};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct TestError(&'static str);
+
+    fn test_error(message: &'static str) -> LibsyError {
+        LibsyError::external("test", TestError(message))
+    }
+
+    // --- fixtures ----------------------------------------------------------------------
+
+    /// A client that echoes the routed model name back as the completion.
+    struct EchoClient;
+
+    #[async_trait]
+    impl RoutedLlmClient for EchoClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
+        }
+    }
+
+    /// A client that captures the request it was handed, so a test can assert on what
+    /// actually reached the model.
+    struct CapturingClient(Arc<parking_lot::Mutex<Option<Request>>>);
+
+    #[async_trait]
+    impl RoutedLlmClient for CapturingClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+            *self.0.lock() = Some(request);
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
+        }
+    }
+
+    /// A target set whose targets all serve via [`EchoClient`].
+    fn target_set(names: &[&str]) -> LlmTargetSet {
+        LlmTargetSet::new(
+            names
+                .iter()
+                .map(|name| LlmTarget {
+                    semantic_name: name.to_string(),
+                    llm_client: Some(Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
+                })
+                .collect(),
+        )
+    }
+
+    /// A classifier that emits fixed scores (empty = abstain).
+    struct FixedClassifier(Vec<Score>);
+
+    #[async_trait]
+    impl Classifier for FixedClassifier {
+        async fn score(
+            &self,
+            _state: &mut (),
+            _request: &mut Request,
+            _driver: Option<&Driver>,
+        ) -> Result<Classification> {
+            Ok(Classification::Scores(
+                self.0
+                    .iter()
+                    .map(|s| Score {
+                        confidence: s.confidence,
+                        target: s.target.clone(),
+                    })
+                    .collect(),
+            ))
+        }
+    }
+
+    fn score(target: &str, confidence: f64) -> Score {
+        Score {
+            confidence,
+            target: target.to_string(),
+        }
+    }
+
+    fn fixed(scores: Vec<Score>) -> Arc<dyn Classifier> {
+        Arc::new(FixedClassifier(scores))
+    }
+
+    fn request() -> Request {
+        Request {
+            llm_request: LlmRequest {
+                model: Some("auto".to_string()),
+                messages: vec![Message::text(Role::User, "hi")],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                ..Metadata::default()
+            }),
+        }
+    }
+
+    /// Drives a shared router with one request, returning the completion text + trace.
+    async fn run_request<S>(
+        router: &Arc<FallThrough<S>>,
+        request: Request,
+    ) -> Result<(String, Vec<Arc<dyn Decision>>)>
+    where
+        S: Default + Send + 'static,
+    {
+        let (trace, response) = router.clone().run(Context::default(), request).await?;
+        let text = response
+            .llm_response
+            .into_agg()
+            .await
+            .map(|agg| completion_text(&agg))
+            .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
+        Ok((text, trace))
+    }
+
+    /// Drives a shared router through one turn in the default test session.
+    async fn run_turn<S>(router: &Arc<FallThrough<S>>) -> Result<(String, Vec<Arc<dyn Decision>>)>
+    where
+        S: Default + Send + 'static,
+    {
+        run_request(router, request()).await
+    }
+
+    /// Drives a fresh router through one turn.
+    async fn run(router: FallThrough) -> Result<(String, Vec<Arc<dyn Decision>>)> {
+        run_turn(&Arc::new(router)).await
+    }
+
+    // --- tests -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+            .with_classifier(fixed(vec![score("weak", 0.2), score("strong", 0.9)]));
+        let (model, trace) = run(router).await?;
+        assert_eq!(model, "strong");
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0].selected_model(), "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn falls_through_the_first_abstaining_classifier() -> Result<()> {
+        // First classifier abstains (empty); the second decides.
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+            .with_classifier(fixed(vec![]))
+            .with_classifier(fixed(vec![score("weak", 1.0)]));
+        let (model, _) = run(router).await?;
+        assert_eq!(model, "weak");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn first_deciding_classifier_wins_the_cascade() -> Result<()> {
+        // The first classifier decides; the second is never consulted.
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+            .with_classifier(fixed(vec![score("strong", 0.6)]))
+            .with_classifier(fixed(vec![score("weak", 1.0)]));
+        let (model, _) = run(router).await?;
+        assert_eq!(model, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn all_abstaining_is_an_error() -> Result<()> {
+        let router =
+            FallThrough::<()>::new(target_set(&["strong", "weak"])).with_classifier(fixed(vec![]));
+        let error = run(router)
+            .await
+            .err()
+            .ok_or_else(|| test_error("expected classifiers to abstain"))?;
+        assert!(matches!(
+            error,
+            LibsyError::AlgorithmError { message } if message == "every classifier abstained"
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classifiers_receive_the_per_request_driver() -> Result<()> {
+        // A classifier that only decides when handed a driver — proving the cascade offers
+        // the per-request driver to every classifier (driver-backed ones need it).
+        struct NeedsDriver;
+
+        #[async_trait]
+        impl Classifier for NeedsDriver {
+            async fn score(
+                &self,
+                _state: &mut (),
+                _request: &mut Request,
+                driver: Option<&Driver>,
+            ) -> Result<Classification> {
+                match driver {
+                    Some(_) => Ok(Classification::Scores(vec![score("strong", 1.0)])),
+                    None => Err(test_error("expected a driver")),
+                }
+            }
+        }
+
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+            .with_classifier(Arc::new(NeedsDriver));
+        let (model, _) = run(router).await?;
+        assert_eq!(model, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn processor_observes_request_and_decision() -> Result<()> {
+        use parking_lot::Mutex;
+
+        // Records which event kinds it saw, proving the request-then-decision replay.
+        struct RecordingProcessor(Arc<Mutex<Vec<&'static str>>>);
+
+        #[async_trait]
+        impl Processor for RecordingProcessor {
+            async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
+                let kind = match event {
+                    Event::Request(_) => "request",
+                    Event::Decision { .. } => "decision",
+                    _ => "other",
+                };
+                self.0.lock().push(kind);
+                Ok(())
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
+            .with_processor(Arc::new(RecordingProcessor(seen.clone())))
+            .with_classifier(fixed(vec![score("strong", 1.0)]));
+        run(router).await?;
+
+        assert_eq!(*seen.lock(), vec!["request", "decision"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_propagates_down_the_chain_and_into_the_model_call() -> Result<()> {
+        use parking_lot::Mutex;
+
+        /// Appends a marker message to the request it observes.
+        struct Appender(&'static str);
+
+        #[async_trait]
+        impl Processor for Appender {
+            async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
+                if let Event::Request(request) = event {
+                    request
+                        .llm_request
+                        .messages
+                        .push(Message::text(Role::User, self.0));
+                }
+                Ok(())
+            }
+        }
+
+        /// Records the marker trail it was handed, then appends its own — proving the
+        /// classifier scored the processors' rewrite rather than the original request.
+        struct TrailClassifier(Arc<Mutex<Vec<String>>>);
+
+        #[async_trait]
+        impl Classifier for TrailClassifier {
+            async fn score(
+                &self,
+                _state: &mut (),
+                request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<Classification> {
+                *self.0.lock() = request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.text_content(""))
+                    .collect();
+                request
+                    .llm_request
+                    .messages
+                    .push(Message::text(Role::User, "classifier"));
+                Ok(Classification::Scores(vec![score("strong", 1.0)]))
+            }
+        }
+
+        let seen_by_classifier = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_model = Arc::new(Mutex::new(None));
+        let targets = LlmTargetSet::new(vec![LlmTarget {
+            semantic_name: "strong".to_string(),
+            llm_client: Some(Arc::new(CapturingClient(seen_by_model.clone()))),
+        }]);
+        let router = FallThrough::new(targets)
+            .with_processor(Arc::new(Appender("first")))
+            .with_processor(Arc::new(Appender("second")))
+            .with_classifier(Arc::new(TrailClassifier(seen_by_classifier.clone())));
+
+        run_turn(&Arc::new(router)).await?;
+
+        // The classifier saw both processors' edits, in chain order, on top of the original.
+        assert_eq!(*seen_by_classifier.lock(), vec!["hi", "first", "second"]);
+
+        // ...and the request that reached the model carries the classifier's edit too.
+        let routed = seen_by_model
+            .lock()
+            .take()
+            .ok_or_else(|| test_error("the model was never called"))?;
+        let trail: Vec<String> = routed
+            .llm_request
+            .messages
+            .iter()
+            .filter_map(|message| message.text_content(""))
+            .collect();
+        assert_eq!(trail, vec!["hi", "first", "second", "classifier"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_is_shared_within_a_session_and_isolated_between_sessions() -> Result<()> {
+        #[derive(Default)]
+        struct TurnState {
+            count: u32,
+        }
+
+        // Increments the session turn count on every request.
+        struct CountingProcessor;
+
+        #[async_trait]
+        impl Processor<TurnState> for CountingProcessor {
+            async fn process(&self, state: &mut TurnState, event: Event<'_>) -> Result<()> {
+                if let Event::Request(_) = event {
+                    state.count += 1;
+                }
+                Ok(())
+            }
+        }
+
+        // Routes weak on a session's first turn and strong on later turns.
+        struct ThresholdClassifier;
+
+        #[async_trait]
+        impl Classifier<TurnState> for ThresholdClassifier {
+            async fn score(
+                &self,
+                state: &mut TurnState,
+                _request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<Classification> {
+                let target = if state.count >= 2 { "strong" } else { "weak" };
+                Ok(Classification::Scores(vec![score(target, 1.0)]))
+            }
+        }
+
+        let router = Arc::new(
+            FallThrough::<TurnState>::new_with_state(target_set(&["strong", "weak"]))
+                .with_processor(Arc::new(CountingProcessor))
+                .with_classifier(Arc::new(ThresholdClassifier)),
+        );
+
+        let (turn1, _) = run_turn(&router).await?;
+        let (turn2, _) = run_turn(&router).await?;
+        let (second_session, _) = run_request(
+            &router,
+            Request {
+                metadata: Some(Metadata {
+                    session_id: Some("session-2".to_string()),
+                    ..Metadata::default()
+                }),
+                ..request()
+            },
+        )
+        .await?;
+        let anonymous = Request {
+            metadata: None,
+            ..request()
+        };
+        let (anonymous1, _) = run_request(&router, anonymous.clone()).await?;
+        let (anonymous2, _) = run_request(&router, anonymous).await?;
+
+        assert_eq!(turn1, "weak");
+        assert_eq!(turn2, "strong");
+        assert_eq!(second_session, "weak");
+        assert_eq!(anonymous1, "weak");
+        assert_eq!(anonymous2, "weak");
+        Ok(())
+    }
+}

@@ -3,8 +3,8 @@
 
 //! Backend execution metadata for observability components.
 
+use crate::{LlmTargetId, ModelId};
 use serde::{Deserialize, Serialize};
-use switchyard_core::{LlmTargetId, ModelId};
 
 /// How a backend resolved the final upstream target/model for a request.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]

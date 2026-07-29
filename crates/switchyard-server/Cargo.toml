@@ -4,7 +4,7 @@
 [package]
 name = "switchyard-server"
 version = "0.1.0"
-description = "Rust HTTP server surface for Switchyard profiles"
+description = "Rust HTTP server surface for libsy algorithms"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,22 +12,30 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-async-stream = "0.3"
+async-stream.workspace = true
+async-trait.workspace = true
 axum = "0.8"
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-rustls = { version = "0.23" }
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 clap = { version = "4", features = ["derive", "env"] }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-switchyard-components-v2 = { path = "../switchyard-components-v2" }
-switchyard-core = { path = "../switchyard-core" }
-switchyard-translation = { path = "../switchyard-translation" }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+futures-util.workspace = true
+libsy = { package = "switchyard-libsy", path = "../libsy" }
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+opentelemetry-prometheus = "0.32"
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics"] }
+prometheus = "0.14"
+serde.workspace = true
+toml = "1.1"
+switchyard-llm-client.workspace = true
+serde_json.workspace = true
+switchyard-translation.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-async-trait = "0.1"
+async-trait.workspace = true
 http-body-util = "0.1"
-tokio = { version = "1", features = ["macros", "rt", "net"] }
+tempfile = "3"
+tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }

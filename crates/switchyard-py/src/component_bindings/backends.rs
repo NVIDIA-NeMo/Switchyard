@@ -12,13 +12,13 @@ use switchyard_components::{
     AnthropicNativeBackend, LlmTargetBackend, MultiLlmBackend, OpenAiNativeBackend,
     OpenAiPassthroughBackend, StatsLlmBackend,
 };
-use switchyard_core::{ChatRequestType, EndpointConfig, LlmBackend, LlmTargetId};
+use switchyard_components::{ChatRequestType, EndpointConfig, LlmBackend, LlmTargetId};
 
 use super::config::{endpoint_config_from_python, PyEndpointConfig, PyLlmTarget};
 use super::stats::PyStatsAccumulator;
-use crate::core_bindings::request::request_type_from_python;
-use crate::core_bindings::roles::PyLlmBackend;
 use crate::errors::py_core_error;
+use crate::interop::request::request_type_from_python;
+use crate::interop::roles::PyLlmBackend;
 
 #[pyclass(name = "LlmTargetBackend", frozen, skip_from_py_object)]
 #[derive(Clone, Debug)]

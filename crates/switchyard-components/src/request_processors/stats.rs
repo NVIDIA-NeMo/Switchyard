@@ -3,7 +3,7 @@
 
 //! Request-side stats processor.
 
-use switchyard_core::{ChatRequest, ProxyContext, Result};
+use crate::{ChatRequest, ProxyContext, Result};
 
 use crate::stats::{prefix_probe, StatsRequestStart};
 

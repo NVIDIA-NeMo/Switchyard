@@ -4,11 +4,11 @@
 //! Adversarial tests for the random routing engine.
 
 use serde_json::json;
-use switchyard_components::{RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier};
-use switchyard_core::{
+use switchyard_components::{
     BackendFormat, ChatRequest, EndpointConfig, LlmTarget, LlmTargetId, ModelId, Result,
     SwitchyardError,
 };
+use switchyard_components::{RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier};
 
 // Builds a deterministic strong/weak config for routing tests.
 fn config(strong_probability: f64, rng_seed: u64) -> Result<RandomRoutingProcessorConfig> {

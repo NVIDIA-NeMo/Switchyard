@@ -60,6 +60,36 @@ async def test_random_runs_with_a_python_client() -> None:
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
 
 
+async def test_random_weights_and_seed_are_reproducible() -> None:
+    def algorithm():
+        return algorithms.random(
+            [
+                LlmTarget("fast", EchoClient("fast")),
+                LlmTarget("capable", EchoClient("capable")),
+            ],
+            weights=[1, 3],
+            seed=42,
+        )
+
+    first_router = algorithm()
+    second_router = algorithm()
+    first = [(await first_router.run(request_body()))[1]["model"] for _ in range(100)]
+    second = [(await second_router.run(request_body()))[1]["model"] for _ in range(100)]
+
+    assert first == second
+    assert 65 <= second.count("capable") <= 85
+
+
+def test_random_rejects_invalid_weights() -> None:
+    targets = [
+        LlmTarget("fast", EchoClient("fast")),
+        LlmTarget("capable", EchoClient("capable")),
+    ]
+
+    with pytest.raises(ValueError, match="expected 2 weights, got 1"):
+        algorithms.random(targets, weights=[1])
+
+
 async def test_noop_needs_no_client() -> None:
     decisions, response = await algorithms.noop().run(request_body())
 

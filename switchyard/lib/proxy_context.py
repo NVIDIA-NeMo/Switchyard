@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""ProxyContext constants and Rust-owned context binding."""
+"""ProxyContext re-export and shared metadata keys."""
 
 from switchyard_rust.core import ProxyContext
 
@@ -58,8 +58,8 @@ CTX_UPSTREAM_HTTP_BODY = "_upstream_http_body"
 
 #: Set truthy by a backend that records its own per-attempt
 #: ``switchyard.lib.endpoints.outcome_metrics`` upstream-attempt counters
-#: (e.g. :class:`LatencyServiceLLMBackend`, which retries across endpoints and
-#: must count each attempt). When present, the endpoint layer skips its
+#: (e.g. a backend that retries across endpoints and must count each
+#: attempt). When present, the endpoint layer skips its
 #: single-attempt fallback recording for this request so retry fan-out is not
 #: double-counted. Absent for the Rust native / passthrough / multi backends,
 #: which issue exactly one upstream attempt per call and have no Python retry

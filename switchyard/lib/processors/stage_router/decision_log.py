@@ -8,8 +8,9 @@ from threading import Lock
 from typing import Literal
 
 DecisionSource = Literal[
-    "override",         # _apply_overrides short-circuited (severity ≥ 1.0, large prompt, tests_passed)
-    "dimensions",       # scorer confidence ≥ confidence_threshold
+    "override",         # _apply_overrides short-circuited (severity ≥ 1.0, CRITICAL)
+    "tests_passed",     # settled run (recent test-pass + recent write, no error) → EFFICIENT
+    "dimensions",       # scorer confidence ≥ confidence_threshold → routed by sign
     "llm-classifier",   # classifier consulted and returned a tier
     "fall_open",        # classifier configured but returned None, OR not configured at all
     "no_signal",        # ToolResultSignal not present (first turn)

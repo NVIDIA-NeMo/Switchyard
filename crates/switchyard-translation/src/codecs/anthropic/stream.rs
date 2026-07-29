@@ -48,7 +48,7 @@ fn decode_anthropic_stream(
     event: &Value,
 ) -> Vec<LlmResponseChunk> {
     let Some(object) = event.as_object() else {
-        return vec![LlmResponseChunk::Error {
+        return vec![LlmResponseChunk::DecodeError {
             message: "Anthropic stream event is not an object".to_string(),
         }];
     };
@@ -107,7 +107,7 @@ fn decode_anthropic_stream(
         Some("message_stop") => vec![LlmResponseChunk::MessageStop {
             reason: state.stop_reason.clone(),
         }],
-        Some("error") => vec![LlmResponseChunk::Error {
+        Some("error") => vec![LlmResponseChunk::StreamError {
             message: object
                 .get("error")
                 .and_then(Value::as_object)
@@ -181,7 +181,7 @@ fn encode_anthropic_stream(
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        LlmResponseChunk::Error { message } => {
+        LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
             vec![json!({"type": "error", "error": {"message": message}})]
         }
     }
@@ -480,18 +480,21 @@ fn capture_anthropic_usage(state: &mut StreamTranslationState, usage: &Value) {
     let Some(usage) = usage.as_object() else {
         return;
     };
-    for key in [
-        "input_tokens",
-        "output_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-    ] {
-        if let Some(value) = usage.get(key).and_then(Value::as_u64) {
-            state.usage_extras.insert(key.to_string(), value);
-        }
+    if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
+        state.usage.input_tokens = Some(value);
     }
-    state.usage.input_tokens = state.usage_extras.get("input_tokens").copied();
-    state.usage.output_tokens = state.usage_extras.get("output_tokens").copied();
+    if let Some(value) = usage.get("output_tokens").and_then(Value::as_u64) {
+        state.usage.output_tokens = Some(value);
+    }
+    if let Some(value) = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+    {
+        state.usage.set_cache_creation_input_tokens(value);
+    }
+    if let Some(value) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+        state.usage.set_cached_input_tokens(value);
+    }
 }
 
 // Builds Anthropic usage payloads from normalized and provider-extra state.
@@ -508,11 +511,11 @@ fn anthropic_stream_usage(state: &StreamTranslationState) -> Value {
     } else {
         usage.insert("output_tokens".to_string(), json!(state.output_tokens_seen));
     }
-    for (key, value) in &state.usage_extras {
-        if key == "input_tokens" || key == "output_tokens" {
-            continue;
-        }
-        usage.insert(key.clone(), json!(value));
+    if let Some(value) = state.usage.cache_creation_input_tokens() {
+        usage.insert("cache_creation_input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = state.usage.cached_input_tokens() {
+        usage.insert("cache_read_input_tokens".to_string(), json!(value));
     }
     Value::Object(usage)
 }

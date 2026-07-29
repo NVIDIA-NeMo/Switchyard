@@ -12,6 +12,7 @@ import textwrap
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -24,6 +25,9 @@ from switchyard.cli.launchers.launcher_runtime import (
 )
 from switchyard.cli.route_bundle import RouteBundleConfigError, build_route_bundle_table
 from switchyard.cli.switchyard_cli import _build_parser
+
+if TYPE_CHECKING:
+    from tests._mock_openai_server import _MockOpenAIServer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUIDE_PATH = REPO_ROOT / "docs" / "getting_started.mdx"
@@ -158,28 +162,31 @@ def test_all_yaml_blocks_in_guide_validate_as_route_bundles(
 
 
 @pytest.fixture
-def noop_routes_yaml(tmp_path: Path) -> Path:
+def model_routes_yaml(tmp_path: Path, local_mock_openai_server: _MockOpenAIServer) -> Path:
     # Same shape as the guide's Step 3 YAML (defaults + a single named route),
-    # but `type: noop` so the lifecycle test runs without an upstream.
+    # but a `type: model` route pointed at a local in-process mock OpenAI
+    # server so the lifecycle test serves a real chain fully offline.
+    base_url = local_mock_openai_server.base_url
     path = tmp_path / "routes.yaml"
     path.write_text(
-        textwrap.dedent("""\
+        textwrap.dedent(f"""\
         defaults:
           api_key: dummy
-          base_url: https://upstream.invalid/v1
+          base_url: {base_url}
           format: openai
 
         routes:
           gpt-4o:
-            type: noop
+            type: model
+            model: gpt-4o
         """)
     )
     return path
 
 
-def test_step3_and_step4_serve_lifecycle_with_noop(noop_routes_yaml: Path) -> None:
+def test_step3_and_step4_serve_lifecycle_with_local_mock(model_routes_yaml: Path) -> None:
     port = find_free_port()
-    with _serve_in_background(noop_routes_yaml, port):
+    with _serve_in_background(model_routes_yaml, port):
         health_status, health_body = _http_get(f"http://127.0.0.1:{port}/health")
         assert health_status == 200, f"GET /health → {health_status}: {health_body!r}"
 

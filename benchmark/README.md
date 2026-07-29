@@ -273,6 +273,8 @@ run_manifest.json
 server.log
 harbor.log
 routing_stats_final.json
+routing_requests.jsonl
+routing_stats_by_task.json
 jobs/<job-name>/result.json
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
@@ -283,6 +285,34 @@ settings, agent version pins, log paths, and final Harbor status. When the routi
 deterministic LLM-classifier routes, `server.classifier_prompts` records each route's effective
 prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` for reproducibility. Direct
 runs mark routing stats as `not-requested`.
+
+Switchyard runs also write `routing_requests.jsonl` (one record per router request: task, trial,
+session, served model, tier, and the six token fields from the global schema) and roll it up into
+`routing_stats_by_task.json` at finalize. The per-task proxy sidecar stamps the identity headers on
+model-bound requests: `x-switchyard-intake-task`, `x-switchyard-trial-id` (Harbor's trial name), and
+a per-attempt `proxy_x_session_id`.
+
+Each task in `routing_stats_by_task.json` splits into `final` and `retries`. Requests are grouped by
+trial, and within a trial the latest attempt is the one Harbor kept (it retries sequentially and
+discards earlier attempts), so tokens spent on retried-away attempts land in `retries` and can be
+netted out of cost.
+
+### Replay Stage-Router Scores
+
+Replay completed trajectories through the stage-router scorer and both picker policies:
+
+```bash
+uv run python benchmark/score_staged_run.py \
+  --run benchmark/tb_runs/<run-name>
+```
+
+Use `--threshold` and `--window` to override the scorer defaults. The command writes per-turn JSONL
+to `/tmp/<run-name>-scores.jsonl` and a per-task summary to
+`/tmp/<run-name>-per-task.csv` unless `--output` or `--csv` is supplied.
+
+The script processes each turn once, then applies both pickers to the same signal. Use `pick_cf` and
+`pick_ef` for actual routing decisions; score bands alone do not include picker overrides or
+fall-open behavior.
 
 ## Docker Image Notes
 

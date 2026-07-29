@@ -5,39 +5,33 @@
 
 from __future__ import annotations
 
-import json
-import logging
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import openai
 import pytest
 from fastapi.testclient import TestClient
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.completion_usage import CompletionUsage
 
-from switchyard.lib.backends.health_poller import (
-    EndpointHealth,
-    EndpointHealthStatus,
-    HealthPoller,
-)
-from switchyard.lib.config.latency_service_backend_config import (
-    LatencyServiceBackendConfig,
-    LatencyServiceEndpoint,
-)
 from switchyard.lib.endpoints import outcome_metrics
 from switchyard.lib.endpoints.upstream_error import (
     record_upstream_attempt_failure,
     record_upstream_attempt_success,
 )
-from switchyard.lib.profiles import LatencyServiceProfileConfig, ProfileSwitchyard
 from switchyard.lib.proxy_context import (
     CTX_UPSTREAM_ATTEMPTS_RECORDED,
     CTX_UPSTREAM_HTTP_STATUS,
     ProxyContext,
 )
+from switchyard.lib.roles import LLMBackend
+from switchyard.lib.switchyard import Switchyard
 from switchyard.server.switchyard_app import build_switchyard_app
-from switchyard_rust.core import ChatRequest, SwitchyardUpstreamError
+from switchyard_rust.core import (
+    ChatRequest,
+    ChatRequestType,
+    ChatResponse,
+    SwitchyardUpstreamError,
+)
+from switchyard_rust.translation import TranslationEngine
 
 
 @pytest.fixture(autouse=True)
@@ -45,17 +39,6 @@ def _reset_counters():
     outcome_metrics._reset_for_tests()
     yield
     outcome_metrics._reset_for_tests()
-
-
-def _latency_service_switchyard(
-    config: LatencyServiceBackendConfig,
-) -> ProfileSwitchyard:
-    """Build the latency-service profile-backed serving adapter."""
-    return ProfileSwitchyard(
-        LatencyServiceProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(enable_stats=config.enable_stats)
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,295 +178,6 @@ class TestRender:
 
 
 # ---------------------------------------------------------------------------
-# Latency-service backend wiring
-# ---------------------------------------------------------------------------
-
-
-def _config(*models: str) -> LatencyServiceBackendConfig:
-    return LatencyServiceBackendConfig(
-        latency_service_url="http://latency.test:8080",
-        endpoints=[
-            LatencyServiceEndpoint(
-                model=model,
-                base_url=f"http://llm-{model}.test/v1",
-                api_key="test-key",
-            )
-            for model in models
-        ],
-        max_retries=2,
-    )
-
-
-def _build_backend(config: LatencyServiceBackendConfig):
-    from switchyard.lib.backends.latency_service_llm_backend import (
-        LatencyServiceLLMBackend,
-    )
-
-    with patch(
-        "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
-    ) as mock_cls:
-        mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
-        with patch.object(HealthPoller, "start"):
-            return LatencyServiceLLMBackend(config)
-
-
-def _make_completion() -> ChatCompletion:
-    return ChatCompletion(
-        id="cmpl-test",
-        object="chat.completion",
-        created=1700000000,
-        model="any",
-        choices=[
-            Choice(
-                index=0,
-                message=ChatCompletionMessage(role="assistant", content="ok"),
-                finish_reason="stop",
-            )
-        ],
-    )
-
-
-def _api_status_error(status_code: int) -> openai.APIStatusError:
-    """Build a synthetic APIStatusError carrying the given status code.
-
-    Mirrors what ``OpenAILLMClient.acompletion`` raises when the upstream
-    HTTP call returns a non-2xx response.
-    """
-    import httpx
-
-    response = httpx.Response(
-        status_code,
-        request=httpx.Request("POST", "http://llm.test/v1/chat/completions"),
-        json={"error": {"message": "synthetic"}},
-    )
-    return openai.APIStatusError(
-        "synthetic", response=response, body={"error": "synthetic"}
-    )
-
-
-class TestBackendCounters:
-    async def test_success_records_one_attempt_success(self) -> None:
-        backend = _build_backend(_config("model-A"))
-        backend._clients["model-A"].acompletion = AsyncMock(
-            return_value=_make_completion()
-        )
-
-        await backend.call(ProxyContext(), ChatRequest.openai_chat({
-            "model": "model-A",
-            "messages": [{"role": "user", "content": "hi"}],
-        }))
-
-        out = "\n".join(outcome_metrics.render_lines())
-        assert 'switchyard_upstream_attempts_total{outcome="success",code="200"} 1' in out
-        assert (
-            'switchyard_upstream_attempts_total{outcome="retryable_error",code="429"} 0'
-            in out
-        )
-        assert "switchyard_router_retry_recovered_total 0" in out
-
-    async def test_429_then_success_increments_recovered(self) -> None:
-        """First attempt 429, retry succeeds — the steering signal we care about."""
-        backend = _build_backend(_config("model-A", "model-B"))
-        # Pin model-A as the sole HEALTHY endpoint so it is tried first
-        # deterministically; otherwise selection is a random coin between two
-        # UNKNOWN endpoints and the 429-then-recover path only fires by chance.
-        with backend._cache_lock:
-            backend._health_cache["model-A"] = EndpointHealth(
-                status=EndpointHealthStatus.HEALTHY,
-            )
-            backend._health_cache["model-B"] = EndpointHealth(
-                status=EndpointHealthStatus.UNKNOWN,
-            )
-        backend._clients["model-A"].acompletion = AsyncMock(
-            side_effect=_api_status_error(429),
-        )
-        backend._clients["model-B"].acompletion = AsyncMock(
-            return_value=_make_completion(),
-        )
-        with backend._cache_lock:
-            backend._health_cache["model-A"] = EndpointHealth(
-                EndpointHealthStatus.HEALTHY,
-                10.0,
-            )
-            backend._health_cache["model-B"] = EndpointHealth(
-                EndpointHealthStatus.DEGRADED,
-                100.0,
-            )
-
-        await backend.call(ProxyContext(), ChatRequest.openai_chat({
-            "model": "x",
-            "messages": [{"role": "user", "content": "hi"}],
-        }))
-
-        out = "\n".join(outcome_metrics.render_lines())
-        assert (
-            'switchyard_upstream_attempts_total{outcome="retryable_error",code="429"} 1'
-            in out
-        )
-        assert 'switchyard_upstream_attempts_total{outcome="success",code="200"} 1' in out
-        assert "switchyard_router_retry_recovered_total 1" in out
-
-    async def test_401_does_not_count_as_retryable(self) -> None:
-        """A 401 (bad key) is ``other_error`` and is not retried — fail fast."""
-        backend = _build_backend(_config("model-A"))
-        backend._clients["model-A"].acompletion = AsyncMock(
-            side_effect=_api_status_error(401),
-        )
-
-        import pytest as _pytest
-        with _pytest.raises(openai.APIStatusError):
-            await backend.call(ProxyContext(), ChatRequest.openai_chat({
-                "model": "x",
-                "messages": [{"role": "user", "content": "hi"}],
-            }))
-
-        # A 4xx client error is deterministic, so the loop fails fast: exactly
-        # one attempt, no failover retries.
-        assert backend._clients["model-A"].acompletion.call_count == 1
-        out = "\n".join(outcome_metrics.render_lines())
-        assert (
-            'switchyard_upstream_attempts_total{outcome="other_error",code="401"} 1'
-            in out
-        )
-        assert (
-            'switchyard_upstream_attempts_total{outcome="retryable_error",code="429"} 0'
-            in out
-        )
-        assert "switchyard_router_retry_recovered_total 0" in out
-
-    async def test_network_error_counts_as_retryable(self) -> None:
-        """Non-HTTP exceptions (network, pre-status timeout) map to retryable_error."""
-        backend = _build_backend(_config("model-A"))
-        backend._clients["model-A"].acompletion = AsyncMock(
-            side_effect=RuntimeError("connection refused"),
-        )
-
-        import pytest as _pytest
-        with _pytest.raises(RuntimeError):
-            await backend.call(ProxyContext(), ChatRequest.openai_chat({
-                "model": "x",
-                "messages": [{"role": "user", "content": "hi"}],
-            }))
-
-        out = "\n".join(outcome_metrics.render_lines())
-        assert (
-            'switchyard_upstream_attempts_total{outcome="retryable_error",code="none"} 3'
-            in out
-        )
-
-    async def test_failure_emits_structured_error_log(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Every failed attempt emits one per-event structured log for Loki.
-
-        Single endpoint that always 429s — deterministic, unlike a
-        multi-endpoint setup whose first pick is a random choice.
-        """
-        backend = _build_backend(_config("model-A"))
-        backend._clients["model-A"].acompletion = AsyncMock(
-            side_effect=_api_status_error(429),
-        )
-
-        with caplog.at_level(logging.WARNING, logger="switchyard.upstream_errors"):
-            with pytest.raises(openai.APIStatusError):
-                await backend.call(ProxyContext(), ChatRequest.openai_chat({
-                    "model": "x",
-                    "messages": [{"role": "user", "content": "hi"}],
-                }))
-
-        records = [
-            json.loads(r.getMessage())
-            for r in caplog.records
-            if r.name == "switchyard.upstream_errors"
-        ]
-        # 3 attempts (1 + max_retries=2), all 429 → 3 structured records,
-        # attempt numbers 1-based and increasing.
-        assert len(records) == 3
-        assert all(r["event"] == "upstream_attempt_failed" for r in records)
-        assert all(r["status_code"] == 429 and r["code"] == "429" for r in records)
-        assert all(r["model"] == "model-A" for r in records)
-        assert [r["attempt"] for r in records] == [1, 2, 3]
-
-
-# ---------------------------------------------------------------------------
-# FastAPI middleware — client-side counter
-# ---------------------------------------------------------------------------
-
-
-class TestClientResponseMiddleware:
-    def test_successful_chat_completion_counts_as_success(self) -> None:
-        with patch(
-            "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
-        ) as mock_cls:
-            mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
-            with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
-                switchyard = _latency_service_switchyard(
-                    LatencyServiceBackendConfig(
-                        latency_service_url="http://latency.test:8080",
-                        endpoints=[
-                            LatencyServiceEndpoint(
-                                model="model-A",
-                                api_key="test-key",
-                                base_url="http://llm.test/v1",
-                            ),
-                        ],
-                    )
-                )
-                backend = next(
-                    component for component in switchyard.iter_components()
-                    if hasattr(component, "_clients")
-                )
-                backend._clients["model-A"].acompletion = AsyncMock(
-                    return_value=_make_completion(),
-                )
-
-                app = build_switchyard_app(switchyard)
-                with TestClient(app, raise_server_exceptions=False) as client:
-                    response = client.post(
-                        "/v1/chat/completions",
-                        json={
-                            "model": "model-A",
-                            "messages": [{"role": "user", "content": "hi"}],
-                        },
-                    )
-                    assert response.status_code == 200
-                    metrics = client.get("/metrics").text
-
-        assert 'switchyard_client_responses_total{outcome="success"} 1' in metrics
-        assert 'switchyard_client_responses_total{outcome="retryable_error"} 0' in metrics
-
-    def test_metrics_route_is_not_counted_as_client_response(self) -> None:
-        """Only the LLM routes feed the client outcome counter. Otherwise a
-        scraper polling /metrics every 10s would inflate the success count."""
-        with patch(
-            "switchyard.lib.backends.latency_service_llm_backend.OpenAILLMClient",
-        ) as mock_cls:
-            mock_cls.side_effect = lambda **kw: MagicMock(name=f"client-{kw.get('base_url')}")
-            with patch.object(HealthPoller, "start"), patch.object(HealthPoller, "stop"):
-                switchyard = _latency_service_switchyard(
-                    LatencyServiceBackendConfig(
-                        latency_service_url="http://latency.test:8080",
-                        endpoints=[
-                            LatencyServiceEndpoint(
-                                model="model-A",
-                                api_key="test-key",
-                                base_url="http://llm.test/v1",
-                            ),
-                        ],
-                    )
-                )
-                app = build_switchyard_app(switchyard)
-                with TestClient(app, raise_server_exceptions=False) as client:
-                    for _ in range(5):
-                        client.get("/metrics")
-                        client.get("/health")
-                        client.get("/v1/models")
-                    metrics = client.get("/metrics").text
-
-        assert 'switchyard_client_responses_total{outcome="success"} 0' in metrics
-
-
-# ---------------------------------------------------------------------------
 # Endpoint-layer fallback — wires the upstream-attempt counter for backends
 # (Rust native / passthrough / multi) that issue one attempt and can't reach
 # the Python-only outcome_metrics themselves.
@@ -540,17 +234,71 @@ class TestEndpointUpstreamAttemptFallback:
         assert f"{_upstream_count(out, 'success', '200')} 0" in out
         assert f"{_upstream_count(out, 'retryable_error', 'none')} 0" in out
 
-    async def test_latency_service_backend_sets_dedup_flag(self) -> None:
-        """The latency-service backend claims attempt accounting on its ctx."""
-        backend = _build_backend(_config("model-A"))
-        backend._clients["model-A"].acompletion = AsyncMock(return_value=_make_completion())
-        ctx = ProxyContext()
-        await backend.call(ctx, ChatRequest.openai_chat({
-            "model": "model-A",
-            "messages": [{"role": "user", "content": "hi"}],
-        }))
-        assert ctx.metadata.get(CTX_UPSTREAM_ATTEMPTS_RECORDED) is True
-        # It recorded exactly one attempt itself — and the flag would stop the
-        # endpoint fallback from adding a second.
-        out = "\n".join(outcome_metrics.render_lines())
-        assert f"{_upstream_count(out, 'success', '200')} 1" in out
+
+# ---------------------------------------------------------------------------
+# Client-response middleware — only the /v1/* LLM routes feed the client
+# outcome counter; the operational routes (/metrics, /health, /v1/models) do
+# not, so a scraper polling them cannot inflate the success count.
+# ---------------------------------------------------------------------------
+
+
+class _CannedBackend(LLMBackend):
+    """Passthrough-style backend: returns one canned OpenAI completion per call."""
+
+    def supported_request_types(self) -> list[ChatRequestType]:
+        return [
+            ChatRequestType.OPENAI_CHAT,
+            ChatRequestType.OPENAI_RESPONSES,
+            ChatRequestType.ANTHROPIC,
+        ]
+
+    async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        return ChatResponse.openai_completion(
+            ChatCompletion(
+                id="chatcmpl-test",
+                object="chat.completion",
+                created=1700000000,
+                model="mock-model",
+                choices=[
+                    Choice(
+                        index=0,
+                        message=ChatCompletionMessage(role="assistant", content="hi"),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=CompletionUsage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
+            )
+        )
+
+
+def _canned_app() -> object:
+    return build_switchyard_app(
+        Switchyard(backend=_CannedBackend(), translator=TranslationEngine())
+    )
+
+
+class TestClientResponseMiddleware:
+    def test_successful_chat_completion_counts_as_success(self) -> None:
+        """A served /v1/chat/completions success increments the client outcome counter."""
+        with TestClient(_canned_app(), raise_server_exceptions=False) as client:
+            response = client.post(
+                "/v1/chat/completions",
+                json={"model": "mock-model", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200
+
+        metrics = "\n".join(outcome_metrics.render_lines())
+        assert 'switchyard_client_responses_total{outcome="success"} 1' in metrics
+        assert 'switchyard_client_responses_total{outcome="retryable_error"} 0' in metrics
+
+    def test_operational_routes_are_not_counted_as_client_responses(self) -> None:
+        """Polling /metrics, /health, /v1/models must not feed the client counter —
+        otherwise a scraper on a fixed cadence would inflate the success count."""
+        with TestClient(_canned_app(), raise_server_exceptions=False) as client:
+            for _ in range(5):
+                client.get("/metrics")
+                client.get("/health")
+                client.get("/v1/models")
+
+        metrics = "\n".join(outcome_metrics.render_lines())
+        assert 'switchyard_client_responses_total{outcome="success"} 0' in metrics

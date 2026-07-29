@@ -8,15 +8,15 @@ use std::env;
 use std::fmt;
 use std::sync::Arc;
 
-use async_stream::try_stream;
-use async_trait::async_trait;
-use futures_util::StreamExt;
-use serde_json::{json, Map, Value};
-use switchyard_core::{
+use crate::{
     merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
     ChatResponse, LlmBackend, LlmTarget, LlmTargetId, ProxyContext, Result, StreamEvent,
     SwitchyardError,
 };
+use async_stream::try_stream;
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use serde_json::{json, Map, Value};
 use switchyard_translation::{
     normalize_anthropic_tool_use_ids, TranslationEngine, TranslationPolicy, WireFormat,
 };
@@ -524,9 +524,10 @@ fn anthropic_sse_stream(response: reqwest::Response) -> BoxResponseStream {
             // Anthropic SSE has named events, but the payload we care about is
             // still the JSON `data:` line.
             while let Some(frame) = drain_next_sse_frame(&mut buffer, "Anthropic")? {
-                match parse_json_sse_frame(&frame, "Anthropic", None)? {
+                match parse_json_sse_frame(&frame, "Anthropic", Some("[DONE]"))? {
                     ParsedSseFrame::Json(value) => yield StreamEvent::Json(value),
-                    ParsedSseFrame::Done | ParsedSseFrame::Empty => {}
+                    ParsedSseFrame::Done => return,
+                    ParsedSseFrame::Empty => {}
                 }
             }
         }
@@ -535,7 +536,7 @@ fn anthropic_sse_stream(response: reqwest::Response) -> BoxResponseStream {
         // separator.
         if has_non_whitespace_bytes(&buffer) {
             let frame = decode_sse_frame(&buffer, "Anthropic")?;
-            match parse_json_sse_frame(&frame, "Anthropic", None)? {
+            match parse_json_sse_frame(&frame, "Anthropic", Some("[DONE]"))? {
                 ParsedSseFrame::Json(value) => yield StreamEvent::Json(value),
                 ParsedSseFrame::Done | ParsedSseFrame::Empty => {}
             }
@@ -545,10 +546,9 @@ fn anthropic_sse_stream(response: reqwest::Response) -> BoxResponseStream {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
+    use crate::{EndpointConfig, LlmTargetId, ModelId};
+    use parking_lot::Mutex;
     use serde_json::json;
-    use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
 
     use super::*;
 
@@ -569,21 +569,10 @@ mod tests {
     #[async_trait]
     impl AnthropicTransport for FakeAnthropicTransport {
         async fn send(&self, request: AnthropicHttpRequest) -> Result<AnthropicHttpResponse> {
-            self.requests
-                .lock()
-                .map_err(|_| {
-                    SwitchyardError::Other("fake transport request mutex poisoned".to_string())
-                })?
-                .push(request);
-            self.response
-                .lock()
-                .map_err(|_| {
-                    SwitchyardError::Other("fake transport response mutex poisoned".to_string())
-                })?
-                .take()
-                .ok_or_else(|| {
-                    SwitchyardError::Other("fake transport response already consumed".to_string())
-                })?
+            self.requests.lock().push(request);
+            self.response.lock().take().ok_or_else(|| {
+                SwitchyardError::Other("fake transport response already consumed".to_string())
+            })?
         }
     }
 

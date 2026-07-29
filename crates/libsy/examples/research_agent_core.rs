@@ -6,15 +6,15 @@
 //! With no client, every `driver.call_llm_target` is offloaded as a promise the orchestrator
 //! surfaces as a `CallLlm` step. The agent makes the "real" model call itself and
 //! fulfills the promise — this is the offload/streaming path ("ask, don't call").
-//! The classifier's two steps show up as two `model call:` lines. Run with:
+//! The judge and selected target show up as two `model call:` lines. Run with:
 //!   cargo run -p libsy --example research_agent_core
 
-use std::error::Error;
 use std::sync::Arc;
 
-use libsy::LlmClassifierOrchAlgo;
-use libsy::{
-    Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Step,
+use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
+use switchyard_libsy::{
+    Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
+    Response, Result, Step,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 use tokio_stream::StreamExt;
@@ -22,6 +22,8 @@ use tokio_stream::StreamExt;
 const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";
 const WEAK: &str = "weak/model";
+/// Lowest judge-estimated solve probability that still routes to the weak model.
+const BASE_THRESHOLD: f64 = 0.5;
 
 /// The "real" model call the agent makes to fulfill a promise. The core never
 /// makes the call itself — it hands back a request and waits for the response.
@@ -29,7 +31,7 @@ const WEAK: &str = "weak/model";
 async fn call_model(model: &str) -> Response {
     println!("  -> model call: {model}");
     let completion = if model == CLASSIFIER {
-        "0.9".to_string()
+        r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
     } else {
         format!("answer from {model}")
     };
@@ -58,7 +60,7 @@ impl ResearchAgent {
         vec![format!("look up: {question}")]
     }
 
-    async fn run(&mut self, question: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    async fn run(&mut self, question: &str) -> Result<String> {
         let mut notes = Vec::new();
         for step in self.plan(question) {
             let request = Request {
@@ -78,7 +80,11 @@ impl ResearchAgent {
                     // Decisions stream in as the algorithm makes them.
                     Step::Decision(decision) => print_decision(decision.as_ref()),
                     Step::ReturnToAgent(response) => {
-                        notes.push(completion_text(&response.llm_response.into_agg().await?));
+                        let aggregate =
+                            response.llm_response.into_agg().await.map_err(|error| {
+                                LibsyError::external("aggregating response", error)
+                            })?;
+                        notes.push(completion_text(&aggregate));
                     }
                 }
             }
@@ -97,14 +103,25 @@ fn print_decision(decision: &dyn Decision) {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let algo: Arc<dyn Algorithm> = Arc::new(LlmClassifierOrchAlgo::new(
-        CLASSIFIER,
-        STRONG,
-        WEAK,
-        0.5,
-        targets(),
-    ));
+async fn main() -> Result<()> {
+    let target_set = targets();
+    // Resolving every target up front means an unknown name fails here rather than on the
+    // first request, after the judge call has already been made.
+    let classifier = target_set.get_target(CLASSIFIER)?;
+    let weak = target_set.get_target(WEAK)?;
+    let strong = target_set.get_target(STRONG)?;
+    let algo: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
+        classifier,
+        weak,
+        strong,
+        TaskClassifierConfig {
+            base_threshold: BASE_THRESHOLD,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+        },
+    )?);
 
     let mut agent = ResearchAgent { algo };
     println!("{}", agent.run("what is switchyard?").await?);

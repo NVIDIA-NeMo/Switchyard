@@ -7,8 +7,7 @@
 Exposed as the ``switchyard`` console script.
 
 Subcommands:
-    serve           Serve a v2 profile config (--config) as model-keyed
-                    profiles.
+    serve           Serve a routing-profile bundle.
     launch claude   Spawn Claude Code against a proxy. Single model
                     (``--model``) or full routing via ``--routing-profiles``.
                     Pair with ``--smoke`` to run a one-shot harness round-trip
@@ -26,12 +25,7 @@ Subcommands:
 
 Examples::
 
-    # v2 profile config (primary serve path): each profile id + target id
-    # becomes a model on GET /v1/models, selectable with --model <id>.
-    switchyard serve --config profiles.yaml --port 4000
-
-    # Deprecated: --routing-profiles is a global flag
-    # (use -- to separate from the subcommand)
+    # --routing-profiles is a global flag (use -- to separate it from the subcommand).
     switchyard --routing-profiles routes.yaml -- serve --port 4000
     switchyard --routing-profiles dev.yaml -- serve --port 4001
     switchyard --routing-profiles profiles.yaml -- launch claude
@@ -49,10 +43,10 @@ Examples::
     # Forwarding args to the launched tool (second -- after the subcommand)
     switchyard --routing-profiles profiles.yaml -- launch claude -- --no-auto-approve
 
-Legacy routing policies that used to be top-level CLI verbs (``passthrough``,
-``random-routing``, ``latency-service``) and launcher flags
+Routing policies that used to be top-level CLI verbs (``passthrough``,
+``random-routing``) and launcher flags
 (``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
-are expressed in deprecated routing-profile YAML files. ``serve`` and
+are expressed in routing-profile YAML files. ``serve`` and
 launchers still parse the YAML into profile-backed runtimes.
 """
 
@@ -64,7 +58,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from inspect import signature
-from typing import Any, cast
+from typing import Any
 
 from switchyard.cli.command_utils import (
     quiet_dependency_loggers as _quiet_dependency_loggers,
@@ -99,7 +93,6 @@ from switchyard.server.server_util import (
     add_transport_args,
     build_and_serve,
     load_secrets,
-    resolve_port,
     resolve_rl_log_dir,
 )
 
@@ -108,51 +101,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_OPENROUTER_BASE_URL = DEFAULT_OPENROUTER_BASE_URL
 _CANONICAL_INTAKE_ENABLE_FLAG = "--intake-enabled"
 _DEPRECATED_INTAKE_ENABLE_FLAG = "--enable-intake"
-_DEPRECATED_ROUTING_PROFILES_FLAG = "--routing-profiles"
 _ARGPARSE_ACTION_SUPPORTS_DEPRECATED = (
     "deprecated" in signature(argparse.Action.__init__).parameters
 )
-
-
-def _print_deprecation_warning(
-    subject: str,
-    details: tuple[str, ...] = (),
-) -> None:
-    """Print a concise, readable CLI deprecation warning to stderr."""
-    print(f"warning: {subject} is deprecated.", file=sys.stderr)
-    for detail in details:
-        print(f"  {detail}", file=sys.stderr)
-
-
-def _warn_deprecated_routing_profiles() -> None:
-    _print_deprecation_warning(
-        _DEPRECATED_ROUTING_PROFILES_FLAG,
-        details=(
-            "Prefer v2 profile configs with `switchyard serve --config PATH`.",
-            "Legacy route bundles still run for now, but this flag will be removed in a future release.",
-        ),
-    )
-
-
-def _warn_deprecated_saved_route_bundle() -> None:
-    _print_deprecation_warning(
-        "saved routing-profile bundle",
-        details=(
-            "Prefer v2 profile configs with `switchyard serve --config PATH`.",
-            "Clear the saved bundle with `switchyard --routing-profiles '' -- configure`.",
-        ),
-    )
-
-
-def _warn_deprecated_python_profile_server(python_profiles: Sequence[str]) -> None:
-    _print_deprecation_warning(
-        "Python-defined profile serving",
-        details=(
-            "This config is using the Python FastAPI adapter.",
-            f"Python profile(s): {', '.join(python_profiles)}.",
-            "Prefer Rust-defined components-v2 profiles for new serve configs.",
-        ),
-    )
 
 
 class _IntakeEnabledAction(argparse.Action):
@@ -224,7 +175,7 @@ def _resolve_intake_config(args: argparse.Namespace) -> IntakeSinkConfig | None:
         intake_base_url=intake.base_url,
         workspace=intake.workspace,
         api_key=intake.api_key,
-        nvdataflow_project=intake.nvdataflow_project,
+        target_url=intake.target_url,
     )
 
 
@@ -234,7 +185,10 @@ def _resolve_intake_processors(
     intake = _resolve_intake_config(args)
     if intake is None:
         return [], []
-    return [IntakeRequestProcessor()], [IntakeResponseProcessor(intake)]
+    return (
+        [IntakeRequestProcessor()],
+        [IntakeResponseProcessor(intake)],
+    )
 
 
 def _add_intake_args(parser: argparse.ArgumentParser) -> None:
@@ -273,11 +227,11 @@ def _add_common_intake_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--intake-nvdataflow-project", type=str, default=None,
+        "--intake-target-url", type=str, default=None,
         help=(
-            "Post flat per-request telemetry to this NVDataflow project's "
-            "posting endpoint instead of nemo-platform chat-completions "
-            "ingest. Defaults to $SWITCHYARD_NVDATAFLOW_PROJECT."
+            "Post flat per-request telemetry to this full URL (a data-lake "
+            "posting endpoint) instead of nemo-platform chat-completions "
+            "ingest. Defaults to $SWITCHYARD_INTAKE_TARGET_URL."
         ),
     )
 
@@ -405,21 +359,23 @@ def _cmd_launch_openclaw(args: argparse.Namespace) -> None:
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
-    """Serve a v2 profile config or a legacy route bundle."""
+    """Serve a routing-profile bundle."""
     from switchyard.cli.config.user_config import load_user_config
     from switchyard.cli.route_bundle import build_route_bundle_table
 
     routing_profiles = args.routing_profiles
-    if args.config:
-        _cmd_serve_profile_config(args)
-        return
-
     # Intake sink + local RL trace logging both attach as chain processors;
     # combine them so a single serve invocation can run either or both.
     intake_request, intake_response = _resolve_intake_processors(args)
     rl_request, rl_response = build_rl_logging_processors(resolve_rl_log_dir(args))
     request_processors = [*intake_request, *rl_request]
     response_processors = [*intake_response, *rl_response]
+    if getattr(args, "routing_log_file", None):
+        from switchyard.lib.processors.routing_log_response_processor import (
+            RoutingLogResponseProcessor,
+        )
+
+        response_processors.append(RoutingLogResponseProcessor(args.routing_log_file))
     if routing_profiles:
         table = load_route_bundle_table(
             routing_profiles,
@@ -432,14 +388,13 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         if not saved:
             raise SystemExit(
                 "serve: no routing-profiles given. Pass --routing-profiles "
-                "PATH or run `switchyard configure --routing-profiles PATH` "
+                "PATH or run `switchyard --routing-profiles PATH configure` "
                 "to save one."
             )
         # Saved bundles are stored as parsed dicts, so we can skip the
         # YAML parse step and feed them straight into the dict-driven
         # entrypoint. Env-var references inside the dict expand inside
         # build_route_bundle_table on each run.
-        _warn_deprecated_saved_route_bundle()
         table = build_route_bundle_table(
             saved,
             pre_routing_request_processors=request_processors,
@@ -462,128 +417,6 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         except Exception:
             pass
     build_and_serve(args, table, inbound_default="both", strategy_summary=strategy_summary)
-
-
-def _cmd_serve_profile_config(args: argparse.Namespace) -> None:
-    """Serve a components-v2 profile config."""
-    if args.routing_profiles:
-        raise SystemExit(
-            "serve --config cannot be combined with --routing-profiles; "
-            "use exactly one config surface."
-        )
-    if args.inbound is not None:
-        raise SystemExit(
-            "serve --config always exposes "
-            "OpenAI, Anthropic, and Responses endpoints; omit --inbound."
-        )
-    if args.reload:
-        raise SystemExit("serve --config does not support --reload.")
-    if args.workers != 1:
-        raise SystemExit("serve --config does not support --workers.")
-    unsupported_intake = any((
-        args.intake_enabled,
-        args.intake_base_url,
-        args.intake_workspace,
-        args.intake_api_key,
-        args.intake_nvdataflow_project,
-    ))
-    if unsupported_intake:
-        raise SystemExit("serve --config does not support Intake options yet.")
-    if getattr(args, "enable_rl_logging", False):
-        raise SystemExit(
-            "serve --config does not support --enable-rl-logging: the Rust "
-            "profile server has no Python processor chain to attach the trace "
-            "logger to. Use serve --routing-profiles for local RL trace logging."
-        )
-
-    # Inspect first so files containing only Rust-defined profiles can use the
-    # Rust server path, while files with Python-defined profiles use FastAPI.
-    from switchyard.lib.profiles.loader import python_profile_ids
-
-    try:
-        python_profiles = python_profile_ids(args.config)
-    except Exception as exc:
-        raise SystemExit(
-            "serve --config: failed to inspect profile config for "
-            f"Python-defined profiles: {exc}"
-        ) from exc
-    if python_profiles:
-        _cmd_serve_mixed_profile_config(args, python_profiles)
-        return
-
-    from switchyard_rust.server import run_profile_server
-
-    port = args.port if isinstance(args.port, int) else resolve_port()
-    logger.info(
-        "Switchyard components-v2 profile config loaded from %s",
-        args.config,
-    )
-    run_profile_server(args.config, args.host, port)
-
-
-def _cmd_serve_mixed_profile_config(
-    args: argparse.Namespace,
-    python_profiles: list[str],
-) -> None:
-    """Serve a config containing Python-defined profiles through FastAPI."""
-    _warn_deprecated_python_profile_server(python_profiles)
-    table = _profile_config_route_table(args.config)
-    logger.info(
-        "Switchyard profile config loaded from %s with Python-defined profile(s): %s",
-        args.config,
-        ", ".join(python_profiles),
-    )
-    build_and_serve(args, table, inbound_default="both")
-
-
-def _profile_config_route_table(config_path: str) -> Any:
-    from switchyard.lib.profiles import PassthroughProfileConfig, ProfileSwitchyard
-    from switchyard.lib.profiles.loader import load_profiles_and_targets
-    from switchyard.lib.route_table import RouteTable
-
-    profiles, targets = load_profiles_and_targets(config_path)
-    table = RouteTable()
-    for profile_id, profile in profiles.items():
-        _register_profile_config_model(
-            table,
-            profile_id,
-            ProfileSwitchyard(cast(Any, profile)),
-            kind="profile",
-        )
-    for target_id, target in targets.items():
-        target_switchyard = ProfileSwitchyard(PassthroughProfileConfig(target=target).build())
-        _register_profile_config_model(
-            table,
-            target_id,
-            target_switchyard,
-            kind="target",
-        )
-        if target.model != target_id:
-            _register_profile_config_model(
-                table,
-                target.model,
-                target_switchyard,
-                kind="target-model",
-            )
-    return table
-
-
-def _register_profile_config_model(
-    table: Any,
-    model_id: str,
-    switchyard: Any,
-    kind: str,
-) -> None:
-    if model_id in table.registered_models():
-        raise SystemExit(
-            f"serve --config: duplicate public model id {model_id!r} while "
-            "registering profile config routes."
-        )
-    table.register(
-        model_id,
-        switchyard,
-        metadata={"switchyard": {"source": "profile-config", "kind": kind}},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -878,7 +711,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Deprecated path to a routing-profiles YAML file. Applies to "
+            "Path to a routing-profiles YAML file. Applies to "
             "serve, launch, and configure (saves it as the default). Separate "
             "from the subcommand with -- for clarity: "
             "switchyard --routing-profiles dev.yaml -- launch claude"
@@ -910,25 +743,22 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- serve --
     serve = subparsers.add_parser(
         "serve",
-        help="Serve a v2 profile config (--config)",
+        help="Serve a routing-profile bundle",
         description=(
-            "Serve a Switchyard v2 profile config via serve --config: one "
-            "YAML/JSON/TOML file of endpoints, targets, and profiles; each "
-            "profile id and target id is exposed on GET /v1/models."
+            "Serve a routing-profile YAML bundle selected with the global "
+            "--routing-profiles option."
         ),
     )
     add_transport_args(serve)
     _add_intake_args(serve)
     serve.add_argument(
-        "--config",
-        dest="config",
+        "--routing-log-file",
+        dest="routing_log_file",
         default=None,
         metavar="PATH",
         help=(
-            "Path to a Switchyard v2 profile config (YAML, JSON, or TOML). "
-            "Files containing only Rust-defined profiles use the Rust profile "
-            "server; files with Python-defined profiles use the Python FastAPI "
-            "adapter."
+            "Append one JSONL routing record per request (task, session, "
+            "selected model, tier, token usage) to PATH."
         ),
     )
     serve.add_argument(
@@ -982,8 +812,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     cfg.add_argument(
-        "--provider", type=str, default=DEFAULT_PROVIDER,
-        help=f"Provider id to configure (default: {DEFAULT_PROVIDER})",
+        "--provider", type=str, default=None,
+        help=f"Provider id to configure (default: the saved default_provider, "
+        f"or {DEFAULT_PROVIDER} if none is saved)",
     )
     cfg.add_argument(
         "--base-url", type=str, default=None,
@@ -1102,7 +933,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  --model X               single-model passthrough — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
             "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, plan_execute, passthrough, …); the first declared route "
+            "stage_router, …); the first declared route "
             "is the initial model.\n\n"
             "With neither flag, the saved routing bundle from "
             "`switchyard configure` is used."
@@ -1201,7 +1032,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  --model X               single-model passthrough — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
             "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, plan_execute, passthrough, …); the first declared route "
+            "stage_router, …); the first declared route "
             "is the initial model.\n\n"
             "With neither flag, the saved routing bundle from "
             "`switchyard configure` is used."
@@ -1296,7 +1127,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  --model X               single-model passthrough — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
             "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, plan_execute, passthrough, …); the first declared route "
+            "stage_router, …); the first declared route "
             "is the initial model.\n\n"
             "With neither flag, the saved routing bundle from "
             "`switchyard configure` is used."
@@ -1453,14 +1284,20 @@ def main() -> None:
     #   switchyard --routing-profiles dev.yaml -- launch claude
     # The '--' is purely visual — argparse doesn't need it.
     argv = list(sys.argv[1:])
-    try:
-        argv.pop(argv.index("--"))
-    except ValueError:
-        pass
+    # Only strip a '--' that precedes the subcommand token; a '--' after it is
+    # the harness separator (e.g. `launch claude ... -- --version`) and must
+    # survive so forwarded args reach the launcher instead of tripping argparse.
+    # Read the subcommand names off the parser so this can't drift as
+    # subcommands are added.
+    subparsers_action = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    subcommands = set(subparsers_action.choices)
+    sep_idx = argv.index("--") if "--" in argv else len(argv)
+    cmd_idx = next((i for i, t in enumerate(argv) if t in subcommands), len(argv))
+    if sep_idx < cmd_idx:
+        argv.pop(sep_idx)
     args = parser.parse_args(argv)
-
-    if args.routing_profiles is not None:
-        _warn_deprecated_routing_profiles()
 
     if not hasattr(args, "func"):
         parser.print_help()

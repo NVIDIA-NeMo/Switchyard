@@ -3,9 +3,9 @@
 
 //! Response-side stats processor.
 
+use crate::{BoxResponseStream, ChatResponse, ProxyContext, Result};
 use async_stream::try_stream;
 use futures_util::StreamExt;
-use switchyard_core::{BoxResponseStream, ChatResponse, ProxyContext, Result};
 
 use crate::stats::{
     openai_chat_usage_from_stream_event, openai_responses_usage_from_stream_event,

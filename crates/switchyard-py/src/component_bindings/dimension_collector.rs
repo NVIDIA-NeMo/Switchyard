@@ -17,176 +17,20 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use switchyard_components::ChatResponse;
 use switchyard_components::{
     dimension_collector::{
-        extract_response_signals as core_extract_response_signals, ContextSignals, DimensionScore,
-        Keywords, ResponseFlag, ResponseSignals, ScoringConfig, ToolResultSignal,
-        DEFAULT_RECENT_WINDOW,
+        extract_response_signals as core_extract_response_signals, ResponseFlag, ResponseSignals,
+        ToolResultSignal, DEFAULT_RECENT_WINDOW,
     },
     DimensionCollector, ResponseSignalCollector,
 };
-use switchyard_core::ChatResponse;
 
 use crate::py_serde::value_from_python;
 
-use crate::core_bindings::context::PyProxyContext;
-use crate::core_bindings::request::PyChatRequest;
-use crate::core_bindings::response::PyChatResponse;
-
-/// One scorer's output as a Python-visible record.
-#[pyclass(name = "DimensionScore", frozen, skip_from_py_object)]
-#[derive(Clone, Debug)]
-pub(crate) struct PyDimensionScore {
-    inner: DimensionScore,
-}
-
-#[pymethods]
-impl PyDimensionScore {
-    #[getter]
-    fn name(&self) -> &'static str {
-        self.inner.name
-    }
-
-    #[getter]
-    fn score(&self) -> f32 {
-        self.inner.score
-    }
-
-    #[getter]
-    fn signal(&self) -> Option<&str> {
-        self.inner.signal.as_deref()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "DimensionScore(name={:?}, score={}, signal={:?})",
-            self.inner.name, self.inner.score, self.inner.signal,
-        )
-    }
-}
-
-impl PyDimensionScore {
-    fn from_core(inner: DimensionScore) -> Self {
-        Self { inner }
-    }
-}
-
-/// Aggregate context-signal record stamped by [`PyDimensionCollector`].
-#[pyclass(name = "ContextSignals", frozen, skip_from_py_object)]
-#[derive(Clone, Debug)]
-pub(crate) struct PyContextSignals {
-    inner: ContextSignals,
-}
-
-#[pymethods]
-impl PyContextSignals {
-    /// The 15 scored dimensions in canonical order.
-    #[getter]
-    fn dimensions(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
-        let items: Vec<Py<PyDimensionScore>> = self
-            .inner
-            .dimensions
-            .iter()
-            .map(|dim| Py::new(py, PyDimensionScore::from_core(dim.clone())))
-            .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new(py, items)?.unbind())
-    }
-
-    /// Estimated input-token count (`chars / 4` heuristic for now).
-    #[getter]
-    fn token_count_estimate(&self) -> u32 {
-        self.inner.token_count_estimate
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ContextSignals(dimensions=<{} items>, token_count_estimate={})",
-            self.inner.dimensions.len(),
-            self.inner.token_count_estimate,
-        )
-    }
-}
-
-impl PyContextSignals {
-    fn from_core(inner: ContextSignals) -> Self {
-        Self { inner }
-    }
-}
-
-/// Python-facing scoring config; keyword lists are lower-cased on the way in.
-#[pyclass(name = "ScoringConfig", skip_from_py_object)]
-#[derive(Clone, Debug, Default)]
-pub(crate) struct PyScoringConfig {
-    inner: ScoringConfig,
-}
-
-#[pymethods]
-impl PyScoringConfig {
-    #[new]
-    #[pyo3(signature = (
-        token_count_short = 50,
-        token_count_long = 500,
-        code_keywords = vec![],
-        reasoning_keywords = vec![],
-        simple_keywords = vec![],
-        technical_keywords = vec![],
-        creative_keywords = vec![],
-        imperative_verbs = vec![],
-        constraint_indicators = vec![],
-        output_format_keywords = vec![],
-        reference_keywords = vec![],
-        negation_keywords = vec![],
-        domain_specific_keywords = vec![],
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn py_new(
-        token_count_short: u32,
-        token_count_long: u32,
-        code_keywords: Vec<String>,
-        reasoning_keywords: Vec<String>,
-        simple_keywords: Vec<String>,
-        technical_keywords: Vec<String>,
-        creative_keywords: Vec<String>,
-        imperative_verbs: Vec<String>,
-        constraint_indicators: Vec<String>,
-        output_format_keywords: Vec<String>,
-        reference_keywords: Vec<String>,
-        negation_keywords: Vec<String>,
-        domain_specific_keywords: Vec<String>,
-    ) -> Self {
-        let inner = ScoringConfig {
-            token_count: switchyard_components::dimension_collector::TokenCountThresholds {
-                short: token_count_short,
-                long: token_count_long,
-            },
-            code_keywords: Keywords::new(code_keywords),
-            reasoning_keywords: Keywords::new(reasoning_keywords),
-            simple_keywords: Keywords::new(simple_keywords),
-            technical_keywords: Keywords::new(technical_keywords),
-            creative_keywords: Keywords::new(creative_keywords),
-            imperative_verbs: Keywords::new(imperative_verbs),
-            constraint_indicators: Keywords::new(constraint_indicators),
-            output_format_keywords: Keywords::new(output_format_keywords),
-            reference_keywords: Keywords::new(reference_keywords),
-            negation_keywords: Keywords::new(negation_keywords),
-            domain_specific_keywords: Keywords::new(domain_specific_keywords),
-        };
-        Self { inner }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ScoringConfig(token_count_short={}, token_count_long={})",
-            self.inner.token_count.short, self.inner.token_count.long,
-        )
-    }
-}
-
-impl PyScoringConfig {
-    fn clone_core(&self) -> ScoringConfig {
-        self.inner.clone()
-    }
-}
+use crate::interop::context::{get_cloned_from_python, lease_from_python};
+use crate::interop::request::{request_from_python, request_to_python};
+use crate::interop::response::{response_from_python, response_to_python};
 
 /// Request-side component that runs the dimension collector.
 #[pyclass(name = "DimensionCollector", skip_from_py_object)]
@@ -198,12 +42,11 @@ pub(crate) struct PyDimensionCollector {
 #[pymethods]
 impl PyDimensionCollector {
     #[new]
-    #[pyo3(signature = (config = None, *, recent_window = None))]
-    fn py_new(config: Option<PyRef<'_, PyScoringConfig>>, recent_window: Option<usize>) -> Self {
-        let scoring = config.map(|cfg| cfg.clone_core()).unwrap_or_default();
+    #[pyo3(signature = (*, recent_window = None))]
+    fn py_new(recent_window: Option<usize>) -> Self {
         let window = recent_window.unwrap_or(DEFAULT_RECENT_WINDOW);
         Self {
-            inner: DimensionCollector::with_recent_window(scoring, window),
+            inner: DimensionCollector::with_recent_window(window),
         }
     }
 
@@ -218,38 +61,24 @@ impl PyDimensionCollector {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        request: PyRef<'_, PyChatRequest>,
+        ctx: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let processor = self.inner.clone();
-        let mut lease = ctx.lease()?;
-        let request = request.clone_core();
+        let mut lease = lease_from_python(ctx)?;
+        let request = request_from_python(request)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = processor.process(lease.context_mut()?, request).await;
             let restore_result = lease.restore();
             let request = result.map_err(crate::errors::py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatRequest::from_core(request)).map(|request| request.into_any())
-            })
+            Python::attach(|py| request_to_python(py, request))
         })
     }
 
     fn __repr__(&self) -> &'static str {
         "DimensionCollector()"
     }
-}
-
-/// Returns the `ContextSignals` stamped by a `DimensionCollector` run.
-///
-/// Mirrors the Python idiom `ctx.metadata.get("context_signals")` from
-/// the deleted Python implementation, but uses the typed extension bag
-/// so consumers don't pay for the dict round-trip.
-#[pyfunction]
-fn get_context_signals(ctx: PyRef<'_, PyProxyContext>) -> PyResult<Option<PyContextSignals>> {
-    Ok(ctx
-        .get_cloned::<ContextSignals>()?
-        .map(PyContextSignals::from_core))
 }
 
 /// Closed set of response-side quality flags emitted by the response
@@ -365,11 +194,11 @@ impl PyResponseSignalCollector {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        mut response: PyRefMut<'_, PyChatResponse>,
+        ctx: &Bound<'_, PyAny>,
+        response: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let mut lease = ctx.lease()?;
-        let response = response.take_core(py)?;
+        let mut lease = lease_from_python(ctx)?;
+        let response = response_from_python(response)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = ResponseSignalCollector
                 .process(lease.context_mut()?, response)
@@ -377,10 +206,7 @@ impl PyResponseSignalCollector {
             let restore_result = lease.restore();
             let response = result.map_err(crate::errors::py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatResponse::from_core(py, response)?)
-                    .map(|response| response.into_any())
-            })
+            Python::attach(|py| response_to_python(py, response))
         })
     }
 
@@ -395,10 +221,8 @@ impl PyResponseSignalCollector {
 /// response was a streaming response (which the buffered-body checks
 /// can't introspect).
 #[pyfunction]
-fn get_response_signals(ctx: PyRef<'_, PyProxyContext>) -> PyResult<Option<PyResponseSignals>> {
-    Ok(ctx
-        .get_cloned::<ResponseSignals>()?
-        .map(PyResponseSignals::from_core))
+fn get_response_signals(ctx: &Bound<'_, PyAny>) -> PyResult<Option<PyResponseSignals>> {
+    Ok(get_cloned_from_python::<ResponseSignals>(ctx)?.map(PyResponseSignals::from_core))
 }
 
 /// Runs the response-side checks against an inline response body dict.
@@ -449,18 +273,6 @@ impl PyToolResultSignal {
     #[getter]
     fn severity(&self) -> f32 {
         self.inner.severity
-    }
-
-    /// Pattern names that fired in the most recent tool result.
-    #[getter]
-    fn patterns(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
-        let items: Vec<Py<pyo3::types::PyString>> = self
-            .inner
-            .patterns
-            .iter()
-            .map(|p| Ok(pyo3::types::PyString::new(py, p).unbind()))
-            .collect::<PyResult<_>>()?;
-        Ok(PyList::new(py, items)?.unbind())
     }
 
     /// Consecutive clean tool results at the end of history (``0`` if last failed).
@@ -535,10 +347,11 @@ impl PyToolResultSignal {
         self.inner.turn_depth
     }
 
-    /// Character count of the last user message (current-ask size).
+    /// The request carries a context-compaction summary — the picker forces + holds
+    /// the strong tier, since compaction otherwise de-escalates the router to weak.
     #[getter]
-    fn prompt_char_count(&self) -> u32 {
-        self.inner.prompt_char_count
+    fn compacted(&self) -> bool {
+        self.inner.compacted
     }
 
     fn __repr__(&self) -> String {
@@ -557,28 +370,27 @@ impl PyToolResultSignal {
     fn from_core(inner: ToolResultSignal) -> Self {
         Self { inner }
     }
+
+    /// The underlying Rust signal — used by the stage_router picker binding.
+    pub(crate) fn core(&self) -> &ToolResultSignal {
+        &self.inner
+    }
 }
 
 /// Returns the :class:`ToolResultSignal` stamped by a :class:`DimensionCollector` run.
 ///
 /// Returns ``None`` when the collector has not run on this context yet.
 #[pyfunction]
-fn get_tool_result_signal(ctx: PyRef<'_, PyProxyContext>) -> PyResult<Option<PyToolResultSignal>> {
-    Ok(ctx
-        .get_cloned::<ToolResultSignal>()?
-        .map(PyToolResultSignal::from_core))
+fn get_tool_result_signal(ctx: &Bound<'_, PyAny>) -> PyResult<Option<PyToolResultSignal>> {
+    Ok(get_cloned_from_python::<ToolResultSignal>(ctx)?.map(PyToolResultSignal::from_core))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyDimensionScore>()?;
-    module.add_class::<PyContextSignals>()?;
-    module.add_class::<PyScoringConfig>()?;
     module.add_class::<PyDimensionCollector>()?;
     module.add_class::<PyResponseFlag>()?;
     module.add_class::<PyResponseSignals>()?;
     module.add_class::<PyResponseSignalCollector>()?;
     module.add_class::<PyToolResultSignal>()?;
-    module.add_function(wrap_pyfunction!(get_context_signals, module)?)?;
     module.add_function(wrap_pyfunction!(get_response_signals, module)?)?;
     module.add_function(wrap_pyfunction!(extract_response_signals, module)?)?;
     module.add_function(wrap_pyfunction!(get_tool_result_signal, module)?)?;

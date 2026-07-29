@@ -3,8 +3,6 @@
 
 """Shared CLI/env resolution for intake options."""
 
-from __future__ import annotations
-
 import argparse
 import os
 from collections.abc import Mapping
@@ -23,7 +21,7 @@ class IntakeCliConfig:
     task: str | None = None
     session_id: str | None = None
     user_id: str | None = None
-    nvdataflow_project: str | None = None
+    target_url: str | None = None
 
     @classmethod
     def from_server_args(
@@ -31,7 +29,7 @@ class IntakeCliConfig:
         args: argparse.Namespace,
         *,
         env: Mapping[str, str] | None = None,
-    ) -> IntakeCliConfig:
+    ) -> "IntakeCliConfig":
         resolved_env = os.environ if env is None else env
         base_url, workspace, api_key = _resolve_sink_connection(args, resolved_env)
         return cls(
@@ -40,8 +38,8 @@ class IntakeCliConfig:
             base_url=base_url,
             workspace=workspace,
             api_key=api_key,
-            nvdataflow_project=_arg_or_env(
-                args, "intake_nvdataflow_project", resolved_env, "SWITCHYARD_NVDATAFLOW_PROJECT",
+            target_url=_arg_or_env(
+                args, "intake_target_url", resolved_env, "SWITCHYARD_INTAKE_TARGET_URL",
             ),
         )
 
@@ -51,7 +49,7 @@ class IntakeCliConfig:
         args: argparse.Namespace,
         *,
         env: Mapping[str, str] | None = None,
-    ) -> IntakeCliConfig:
+    ) -> "IntakeCliConfig":
         resolved_env = os.environ if env is None else env
         base_url, workspace, api_key = _resolve_sink_connection(args, resolved_env)
         return cls(
@@ -68,8 +66,8 @@ class IntakeCliConfig:
             user_id=_arg_or_env(
                 args, "intake_user_id", resolved_env, "SWITCHYARD_USER_ID",
             ),
-            nvdataflow_project=_arg_or_env(
-                args, "intake_nvdataflow_project", resolved_env, "SWITCHYARD_NVDATAFLOW_PROJECT",
+            target_url=_arg_or_env(
+                args, "intake_target_url", resolved_env, "SWITCHYARD_INTAKE_TARGET_URL",
             ),
         )
 

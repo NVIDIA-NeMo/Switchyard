@@ -3,22 +3,20 @@
 
 //! Minimal Python API for running Rust-owned libsy algorithms.
 
-use std::error::Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LlmResponse, LlmTarget, LlmTargetSet, NoopAlgo,
-    RandomAlgo, Request, Response, RoutedLlmClient,
-};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
+use switchyard_libsy::algorithms::{Noop, Random};
+use switchyard_libsy::{
+    AggLlmResponse, Algorithm, Context, Decision, LibsyError as RustLibsyError, LlmClientError,
+    LlmResponse, LlmTarget, LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
+};
 
 use crate::errors::py_libsy_error;
 use crate::py_serde::{from_python, to_python};
-
-type BoxError = Box<dyn Error + Send + Sync>;
 
 /// Adapts a Python object with `async call(request)` to libsy.
 struct PythonLlmClient {
@@ -32,18 +30,18 @@ impl RoutedLlmClient for PythonLlmClient {
         _ctx: Context,
         request: Request,
         _decision: Arc<dyn Decision>,
-    ) -> Result<Response, BoxError> {
+    ) -> Result<Response, LlmClientError> {
         let metadata = request.metadata;
         let future = Python::attach(|py| {
             let request = to_python(py, &request.llm_request)?;
             let awaitable = self.inner.bind(py).call_method1("call", (request,))?;
             pyo3_async_runtimes::tokio::into_future(awaitable)
         })
-        .map_err(boxed_python_error)?;
+        .map_err(other_python_error)?;
 
-        let response = future.await.map_err(boxed_python_error)?;
+        let response = future.await.map_err(other_python_error)?;
         let aggregate = Python::attach(|py| from_python::<AggLlmResponse>(response.bind(py)))
-            .map_err(boxed_python_error)?;
+            .map_err(invalid_python_response)?;
         Ok(Response {
             llm_response: LlmResponse::Agg(aggregate),
             metadata,
@@ -110,12 +108,23 @@ impl PyAlgorithm {
 #[pymethods]
 impl PyAlgorithm {
     /// Run to completion using the clients configured on the algorithm's targets.
-    fn run<'py>(&self, py: Python<'py>, request: &Bound<'_, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    ///
+    /// `headers`, when given, is normalized into the request's correlation
+    /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
+    /// so metadata-driven algorithms see the same signals in Python as when
+    /// served over HTTP.
+    #[pyo3(signature = (request, headers=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        request: &Bound<'_, PyAny>,
+        headers: Option<std::collections::BTreeMap<String, String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let algorithm = Arc::clone(&self.inner);
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
-            metadata: None,
+            metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (decisions, response) = algorithm
@@ -148,26 +157,42 @@ impl PyAlgorithm {
 /// Construct the no-op reference algorithm.
 #[pyfunction(name = "noop")]
 fn noop_algorithm() -> PyAlgorithm {
-    PyAlgorithm::new(Arc::new(NoopAlgo {}))
+    PyAlgorithm::new(Arc::new(Noop {}))
 }
 
-/// Construct uniform random routing over targets with Python clients.
+/// Construct random routing over targets with optional relative weights and seed.
 #[pyfunction(name = "random")]
-fn random_algorithm(py: Python<'_>, targets: Vec<Py<PyLlmTarget>>) -> PyResult<PyAlgorithm> {
-    if targets.is_empty() {
-        return Err(PyValueError::new_err("random requires at least one target"));
-    }
+#[pyo3(signature = (targets, *, weights=None, seed=None))]
+fn random_algorithm(
+    py: Python<'_>,
+    targets: Vec<Py<PyLlmTarget>>,
+    weights: Option<Vec<f64>>,
+    seed: Option<u64>,
+) -> PyResult<PyAlgorithm> {
     let targets = targets
         .iter()
         .map(|target| Ok(target.bind(py).try_borrow()?.clone_core(py)))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyAlgorithm::new(Arc::new(RandomAlgo::new(
-        LlmTargetSet::new(targets),
-    ))))
+    let algorithm =
+        Random::new(LlmTargetSet::new(targets), weights, seed).map_err(|error| match error {
+            RustLibsyError::NoTargets => {
+                PyValueError::new_err("random requires at least one target")
+            }
+            other => PyValueError::new_err(other.to_string()),
+        })?;
+    Ok(PyAlgorithm::new(Arc::new(algorithm)))
 }
 
-fn boxed_python_error(error: PyErr) -> BoxError {
-    std::io::Error::other(error.to_string()).into()
+fn other_python_error(error: PyErr) -> LlmClientError {
+    LlmClientError::Ffi {
+        source: Box::new(error),
+    }
+}
+
+fn invalid_python_response(error: PyErr) -> LlmClientError {
+    LlmClientError::InvalidResponse {
+        source: Box::new(error),
+    }
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

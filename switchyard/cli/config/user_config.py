@@ -29,7 +29,7 @@ CONFIG_FILENAME = "config.json"
 CREDENTIALS_FILENAME = "credentials.json"
 
 LaunchTarget = Literal["claude", "codex", "openclaw"]
-LaunchRouteType = Literal["single", "random", "deterministic", "plan_execute"]
+LaunchRouteType = Literal["single", "random", "deterministic"]
 PRIMARY_TIER = "primary"
 WEAK_TIER = "weak"
 
@@ -126,7 +126,7 @@ class UserConfig:
     """Non-secret Switchyard defaults stored under the user config dir.
 
     ``routing_profiles`` is a parsed routing-profile YAML bundle saved by
-    ``switchyard configure --routing-profiles PATH``. Stored as a parsed
+    ``switchyard --routing-profiles PATH configure``. Stored as a parsed
     JSON object inline (not as a path — paths rot when files move); env
     var references inside the bundle are preserved verbatim and
     re-expanded on each load. Consumed by ``switchyard serve`` (and as a
@@ -267,8 +267,6 @@ def _route_type_value(data: Mapping[str, object], key: str) -> LaunchRouteType |
         return "random"
     if value == "deterministic":
         return "deterministic"
-    if value == "plan_execute":
-        return "plan_execute"
     return None
 
 

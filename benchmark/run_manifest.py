@@ -223,13 +223,119 @@ def _copy_if_present(source: Path | None, dest: Path | None) -> str:
     return "present"
 
 
+_TOKEN_FIELDS = (
+    "prompt_tokens",
+    "cached_tokens",
+    "cache_creation_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+)
+
+
+def _new_section() -> dict[str, Any]:
+    return {"calls": 0, "totals": dict.fromkeys(_TOKEN_FIELDS, 0), "_buckets": {}}
+
+
+def _accumulate(section: dict[str, Any], record: dict[str, Any]) -> None:
+    section["calls"] += 1
+    model = record.get("model") or "unknown"
+    tier = record.get("tier") or ""
+    bucket = section["_buckets"].setdefault(
+        (model, tier),
+        {"model": model, "tier": tier, "calls": 0, **dict.fromkeys(_TOKEN_FIELDS, 0)},
+    )
+    bucket["calls"] += 1
+    for field in _TOKEN_FIELDS:
+        value = record.get(field)
+        value = value if isinstance(value, int) else 0
+        bucket[field] += value
+        section["totals"][field] += value
+
+
+def _finalize_section(section: dict[str, Any]) -> None:
+    buckets = section.pop("_buckets")
+    section["models"] = [buckets[key] for key in sorted(buckets)]
+
+
+def _kept_sessions(records: list[dict[str, Any]]) -> set[str]:
+    """The kept attempt of each trial is its latest-timestamped session.
+
+    Harbor retries sequentially and keeps only the final attempt, so within a
+    trial the session with the newest timestamp is the one that survived.
+    Records without a ``trial_id`` are all treated as kept (no netting).
+    """
+    latest: dict[str, tuple[str, str]] = {}
+    for record in records:
+        trial = record.get("trial_id")
+        session = record.get("session_id")
+        if not trial or not session:
+            continue
+        ts = record.get("ts") or ""
+        if trial not in latest or ts > latest[trial][0]:
+            latest[trial] = (ts, session)
+    return {session for _, session in latest.values()}
+
+
+def summarize_routing_log(log_path: Path) -> dict[str, Any]:
+    """Roll the routing log into per-task ``final`` and ``retries`` sections.
+
+    Requests are grouped by trial; the latest attempt in each trial is ``final``
+    and earlier attempts are ``retries`` (see :func:`_kept_sessions`).
+    """
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    total_requests = 0
+    for raw in log_path.read_text().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        total_requests += 1
+        by_task.setdefault(record.get("task") or "unattributed", []).append(record)
+
+    tasks: dict[str, dict[str, Any]] = {}
+    for task, records in by_task.items():
+        kept = _kept_sessions(records)
+        entry = {
+            "requests": len(records),
+            "n_retries": 0,
+            "final": _new_section(),
+            "retries": _new_section(),
+        }
+        retry_sessions: set[str] = set()
+        for record in records:
+            session = record.get("session_id")
+            # A record is a retry only when it has a trial_id and its session was
+            # not the kept one; untagged records default to final.
+            is_retry = bool(record.get("trial_id")) and session not in kept
+            _accumulate(entry["retries" if is_retry else "final"], record)
+            if is_retry and session:
+                retry_sessions.add(session)
+        entry["n_retries"] = len(retry_sessions)
+        _finalize_section(entry["final"])
+        _finalize_section(entry["retries"])
+        tasks[task] = entry
+    return {"total_requests": total_requests, "tasks": tasks}
+
+
 def finalize_manifest(
     path: Path,
     *,
     harbor_rc: int | None,
     harbor_job_dir: Path | None = None,
     routing_stats: Path | None = None,
+    routing_log: Path | None = None,
+    routing_stats_by_task: Path | None = None,
 ) -> int:
+    """Copy run artifacts into place, roll up the routing log, and record outcomes.
+
+    Returns 0 on success, 1 when the manifest is missing.
+    """
     if not path.is_file():
         print(f"ERROR: manifest not found: {path}")
         return 1
@@ -263,6 +369,20 @@ def finalize_manifest(
             if strip_source is not None:
                 break
         closed_book["proxy_strip_log_status"] = _copy_if_present(strip_source, strip_dest)
+
+    if routing_stats_by_task is not None:
+        status = "missing"
+        if routing_log is not None and routing_log.is_file():
+            try:
+                summary = summarize_routing_log(routing_log)
+                routing_stats_by_task.write_text(
+                    json.dumps(summary, indent=2, sort_keys=False) + "\n"
+                )
+                status = "present"
+            except OSError:
+                status = "missing"
+        outcomes["routing_stats_by_task_json"] = str(routing_stats_by_task.resolve())
+        outcomes["routing_stats_by_task_json_status"] = status
 
     outcomes["harbor_rc"] = harbor_rc
     outcomes["completed_at"] = _iso_timestamp()
@@ -341,6 +461,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
     finalize.add_argument("--harbor-rc", type=int, default=None)
     finalize.add_argument("--harbor-job-dir", type=Path, default=None)
     finalize.add_argument("--routing-stats", type=Path, default=None)
+    finalize.add_argument("--routing-log", type=Path, default=None)
+    finalize.add_argument("--routing-stats-by-task", type=Path, default=None)
 
     ns = parser.parse_args(argv)
     if ns.command == "finalize":
@@ -349,6 +471,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
             harbor_rc=ns.harbor_rc,
             harbor_job_dir=ns.harbor_job_dir,
             routing_stats=ns.routing_stats,
+            routing_log=ns.routing_log,
+            routing_stats_by_task=ns.routing_stats_by_task,
         )
     if ns.command != "write":
         parser.print_help()

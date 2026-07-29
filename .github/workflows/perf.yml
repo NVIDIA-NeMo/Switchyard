@@ -23,12 +23,15 @@ permissions:
 
 jobs:
   proxy-perf:
-    name: Proxy overhead (No-Op backend)
+    name: Proxy overhead (local stub backend)
     runs-on: ubuntu-latest
 
     env:
       PROXY_PORT: 4000
-      PERF_MODEL: noop
+      STUB_PORT: 9000
+      # A local zero-latency stub replaces the removed noop route; the proxy
+      # forwards to it over loopback, which adds a small constant overhead.
+      PERF_MODEL: mock-model
       # gpt2 tokenizer is ~500 KB and downloads in < 2 s on Actions runners.
       # It is only used for dataset-manager token counting; actual inference
       # token counts come from the server (--use-server-token-count).
@@ -52,14 +55,91 @@ jobs:
         run: uv pip install aiperf
 
       # ------------------------------------------------------------------
-      # Start the proxy with the No-Op backend
+      # Start a local zero-latency mock OpenAI upstream. This replaces the
+      # removed noop route: the proxy serves a real `type: model` chain that
+      # forwards to this loopback stub, which returns a fixed completion
+      # instantly. The extra loopback hop adds a small constant overhead.
       # ------------------------------------------------------------------
-      - name: Start switchyard noop proxy
+      - name: Start local mock OpenAI upstream
         run: |
-          cat > bench.yaml <<'YAML'
+          cat > perf_stub.py <<'PY'
+          """Zero-latency OpenAI-compatible chat.completions stub (loopback only)."""
+          import json
+          import os
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          _COMPLETION = {
+              "id": "chatcmpl-perf-stub",
+              "object": "chat.completion",
+              "created": 1700000000,
+              "model": "mock-model",
+              "choices": [
+                  {
+                      "index": 0,
+                      "message": {"role": "assistant", "content": "4"},
+                      "finish_reason": "stop",
+                  }
+              ],
+              "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+          }
+
+          _CHUNK = {
+              "id": "chatcmpl-perf-stub",
+              "object": "chat.completion.chunk",
+              "created": 1700000000,
+              "model": "mock-model",
+              "choices": [
+                  {"index": 0, "delta": {"content": "4"}, "finish_reason": "stop"}
+              ],
+              "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+          }
+
+
+          class Handler(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.1"
+
+              def do_POST(self):
+                  length = int(self.headers.get("content-length", "0"))
+                  body = json.loads(self.rfile.read(length) or b"{}")
+                  if body.get("stream"):
+                      payload = (
+                          f"data: {json.dumps(_CHUNK)}\n\n".encode()
+                          + b"data: [DONE]\n\n"
+                      )
+                      content_type = "text/event-stream"
+                  else:
+                      payload = json.dumps(_COMPLETION).encode()
+                      content_type = "application/json"
+                  self.send_response(200)
+                  self.send_header("content-type", content_type)
+                  self.send_header("content-length", str(len(payload)))
+                  self.end_headers()
+                  self.wfile.write(payload)
+
+              def log_message(self, *_args):
+                  return None
+
+
+          port = int(os.environ["STUB_PORT"])
+          ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+          PY
+          python3 perf_stub.py &
+          echo "STUB_PID=$!" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------
+      # Start the proxy: a `type: model` route pointed at the local stub.
+      # ------------------------------------------------------------------
+      - name: Start switchyard proxy
+        run: |
+          cat > bench.yaml <<YAML
+          defaults:
+            api_key: dummy
+            base_url: http://localhost:$STUB_PORT/v1
+            format: openai
           routes:
-            noop:
-              type: noop
+            mock-model:
+              type: model
+              model: mock-model
           YAML
           uv run switchyard --routing-profiles bench.yaml -- serve --port $PROXY_PORT &
           echo "PROXY_PID=$!" >> "$GITHUB_ENV"
@@ -128,11 +208,13 @@ jobs:
             --output-artifact-dir perf-results/streaming
 
       # ------------------------------------------------------------------
-      # Stop proxy
+      # Stop proxy and local stub
       # ------------------------------------------------------------------
-      - name: Stop proxy
+      - name: Stop proxy and stub
         if: always()
-        run: kill "$PROXY_PID" || true
+        run: |
+          kill "$PROXY_PID" || true
+          kill "$STUB_PID" || true
 
       # ------------------------------------------------------------------
       # Upload results as a build artifact for comparison over time

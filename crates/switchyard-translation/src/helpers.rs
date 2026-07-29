@@ -13,6 +13,7 @@ use async_stream::try_stream;
 use futures::io::AsyncBufReadExt;
 use futures::{Stream, StreamExt, TryStreamExt};
 use serde_json::Value;
+use switchyard_protocol::LlmClientError;
 
 use crate::sse;
 use crate::{
@@ -81,10 +82,15 @@ pub fn encode_stream(
     chunks: LlmResponseStream,
     target: WireFormat,
     requested_model: Option<String>,
-) -> std::result::Result<RawEventStream, Box<dyn std::error::Error + Send + Sync>> {
+) -> std::result::Result<RawEventStream, LlmClientError> {
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
-    let codec = StreamCodecRegistry::with_builtins().codec(target)?;
+    let codec = StreamCodecRegistry::with_builtins()
+        .codec(target)
+        // Currently the only error is that the codec is missing, which is Configuration
+        .map_err(|err| LlmClientError::Configuration {
+            message: err.to_string(),
+        })?;
 
     let mut state = StreamTranslationState {
         target: Some(target.into()),
@@ -117,20 +123,22 @@ pub fn encode_stream(
 pub fn decode_stream<S>(
     bytes: S,
     source: WireFormat,
-) -> std::result::Result<LlmResponseStream, Box<dyn std::error::Error + Send + Sync>>
+) -> std::result::Result<LlmResponseStream, LlmClientError>
 where
-    S: Stream<Item = std::result::Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>>
-        + Send
-        + 'static,
+    S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
 {
     let marker = sse::done_marker(source);
     // The source is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
-    let codec = StreamCodecRegistry::with_builtins().codec(source)?;
+    let codec = StreamCodecRegistry::with_builtins()
+        .codec(source)
+        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
     // Adapt the byte-chunk stream into an async line reader. The BufReader
     // reassembles data split across network chunks (including multi-byte UTF-8),
     // and `lines()` yields one SSE field line at a time. The stream is boxed to
-    // an `io::Error` item so `into_async_read`'s error bound resolves cleanly.
+    // an `io::Error` item so `into_async_read`'s error bound resolves cleanly. The
+    // source error is boxed intact rather than stringified, so
+    // `llm_client_error_from_io` can recover its original variant on the way out.
     let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> =
         Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
     let lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
@@ -140,10 +148,12 @@ where
     let stream = Box::pin(try_stream! {
         futures::pin_mut!(lines);
         while let Some(line) = lines.next().await {
-            let line = line?;
+            let line = line.map_err(llm_client_error_from_io)?;
             // A blank line (allowing a bare CR for CRLF streams) ends the frame.
             if line.trim_end().is_empty() {
-                if let Some(value) = sse::parse_json_sse_frame(&frame, marker)? {
+                if let Some(value) = sse::parse_json_sse_frame(&frame, marker)
+                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?
+                {
                     for event in codec.decode_event(&mut state, &value) {
                         yield event;
                     }
@@ -158,7 +168,9 @@ where
         // A non-standard upstream might omit the final blank line; parse a trailing
         // complete frame instead of losing its last chunk.
         if !frame.trim_end().is_empty() {
-            if let Some(value) = sse::parse_json_sse_frame(&frame, marker)? {
+            if let Some(value) = sse::parse_json_sse_frame(&frame, marker)
+                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?
+            {
                 for event in codec.decode_event(&mut state, &value) {
                     yield event;
                 }
@@ -168,12 +180,28 @@ where
     Ok(stream)
 }
 
+// Recover transport errors wrapped for `AsyncRead`; other reader failures are
+// invalid upstream responses.
+fn llm_client_error_from_io(error: std::io::Error) -> LlmClientError {
+    let kind = error.kind();
+    let message = error.to_string();
+    match error.into_inner() {
+        Some(source) => match source.downcast::<LlmClientError>() {
+            Ok(error) => *error,
+            Err(source) => LlmClientError::InvalidResponse { source },
+        },
+        None => LlmClientError::InvalidResponse {
+            source: Box::new(std::io::Error::new(kind, message)),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
     use futures::{stream, Stream, StreamExt};
     use serde_json::{json, Value};
-    use switchyard_protocol::{completion_text, LlmResponseChunk};
+    use switchyard_protocol::{completion_text, LlmClientError, LlmResponseChunk};
 
     use super::{
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
@@ -186,9 +214,9 @@ mod tests {
 
     // Collects a decoded IR stream, surfacing the first error instead of panicking.
     fn decode_all(
-        bytes: impl Stream<Item = Result<Vec<u8>, BoxError>> + Send + 'static,
+        bytes: impl Stream<Item = Result<Vec<u8>, LlmClientError>> + Send + 'static,
         source: WireFormat,
-    ) -> Result<Vec<LlmResponseChunk>, BoxError> {
+    ) -> Result<Vec<LlmResponseChunk>, LlmClientError> {
         block_on(decode_stream(bytes, source)?.collect::<Vec<_>>())
             .into_iter()
             .collect()
@@ -278,10 +306,11 @@ mod tests {
 
     #[test]
     fn encode_stream_propagates_chunk_errors() -> Result<(), BoxError> {
-        let chunks: LlmResponseStream = stream::iter(vec![Err::<LlmResponseChunk, BoxError>(
-            "chunk exploded".into(),
-        )])
-        .boxed();
+        let chunks: LlmResponseStream =
+            stream::iter(vec![Err::<LlmResponseChunk, LlmClientError>(
+                LlmClientError::General("chunk exploded".to_string()),
+            )])
+            .boxed();
         let results =
             block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>());
         assert!(results.iter().any(Result::is_err));
@@ -289,12 +318,12 @@ mod tests {
     }
 
     #[test]
-    fn decode_stream_parses_sse_bytes_into_ir_chunks() -> Result<(), BoxError> {
+    fn decode_stream_parses_sse_bytes_into_ir_chunks() -> Result<(), LlmClientError> {
         let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
              data: [DONE]\n\n"
             .to_vec();
-        let bytes = stream::once(async move { Ok::<Vec<u8>, BoxError>(sse) });
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "Hello world");
         Ok(())
@@ -309,7 +338,7 @@ mod tests {
         let bytes = stream::iter(
             sse.into_bytes()
                 .into_iter()
-                .map(|byte| Ok::<Vec<u8>, BoxError>(vec![byte])),
+                .map(|byte| Ok::<Vec<u8>, LlmClientError>(vec![byte])),
         );
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "café");
@@ -321,7 +350,7 @@ mod tests {
         // A non-standard upstream omits the final blank line; the last frame
         // must still be decoded rather than dropped.
         let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}".to_vec();
-        let bytes = stream::once(async move { Ok::<Vec<u8>, BoxError>(sse) });
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "tail");
         Ok(())
@@ -334,7 +363,7 @@ mod tests {
         let sse =
             b"data: {\"choices\":[{\"delta\":{\"content\":\"crlf\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
                 .to_vec();
-        let bytes = stream::once(async move { Ok::<Vec<u8>, BoxError>(sse) });
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "crlf");
         Ok(())
@@ -344,13 +373,30 @@ mod tests {
     fn decode_stream_propagates_source_errors() -> Result<(), BoxError> {
         // A transport error mid-stream surfaces as an error item, not a panic.
         let bytes = stream::iter(vec![
-            Ok::<Vec<u8>, BoxError>(
+            Ok::<Vec<u8>, LlmClientError>(
                 b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n".to_vec(),
             ),
-            Err::<Vec<u8>, BoxError>("upstream exploded".into()),
+            Err::<Vec<u8>, LlmClientError>(LlmClientError::Transport {
+                source: Box::new(std::io::Error::other("upstream exploded")),
+            }),
         ]);
         let results = block_on(decode_stream(bytes, WireFormat::OpenAiChat)?.collect::<Vec<_>>());
-        assert!(results.iter().any(Result::is_err));
+        let Some(Err(error)) = results.last() else {
+            panic!("expected the source error");
+        };
+        assert!(matches!(error, LlmClientError::Transport { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_classifies_invalid_sse_json() -> Result<(), BoxError> {
+        let bytes =
+            stream::once(async { Ok::<Vec<u8>, LlmClientError>(b"data: {invalid}\n\n".to_vec()) });
+        let results = block_on(decode_stream(bytes, WireFormat::OpenAiChat)?.collect::<Vec<_>>());
+        let Some(Err(error)) = results.last() else {
+            panic!("expected invalid SSE JSON to fail");
+        };
+        assert!(matches!(error, LlmClientError::ResponseTranslation(_)));
         Ok(())
     }
 }

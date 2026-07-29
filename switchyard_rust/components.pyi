@@ -97,7 +97,9 @@ class IntakeSinkConfig:
     workspace: str | None
     user_id: str
     api_key: str | None
-    nvdataflow_project: str | None
+    target_url: str | None
+    target_format: str | None
+    target_authenticated: bool | None
     max_queue_size: int
     request_timeout_s: float
     max_retries: int
@@ -110,7 +112,9 @@ class IntakeSinkConfig:
         workspace: str | None = None,
         user_id: str | None = None,
         api_key: str | None = None,
-        nvdataflow_project: str | None = None,
+        target_url: str | None = None,
+        target_format: str | None = None,
+        target_authenticated: bool | None = None,
         max_queue_size: int | None = None,
         request_timeout_s: float | None = None,
         max_retries: int | None = None,
@@ -181,17 +185,6 @@ class StatsAccumulator:
         latency_ms: float | None = None,
     ) -> None: ...
     async def record_classifier_error(self, model: str) -> None: ...
-    async def record_planner_usage(
-        self,
-        model: str,
-        prompt_tokens: int = 0,
-        completion_tokens: int = 0,
-        cached_tokens: int = 0,
-        cache_creation_tokens: int = 0,
-        reasoning_tokens: int = 0,
-        latency_ms: float | None = None,
-    ) -> None: ...
-    async def record_planner_error(self, model: str) -> None: ...
     async def snapshot(self) -> dict[str, Any]: ...
     def snapshot_sync(self) -> dict[str, Any]: ...
     async def reset(self) -> None: ...
@@ -282,40 +275,9 @@ class IntakeResponseProcessor:
     async def shutdown(self) -> None: ...
 
 
-class DimensionScore:
-    name: str
-    score: float
-    signal: str | None
-
-
-class ContextSignals:
-    dimensions: list[DimensionScore]
-    token_count_estimate: int
-
-
-class ScoringConfig:
-    def __init__(
-        self,
-        token_count_short: int = 50,
-        token_count_long: int = 500,
-        code_keywords: Iterable[str] = (),
-        reasoning_keywords: Iterable[str] = (),
-        simple_keywords: Iterable[str] = (),
-        technical_keywords: Iterable[str] = (),
-        creative_keywords: Iterable[str] = (),
-        imperative_verbs: Iterable[str] = (),
-        constraint_indicators: Iterable[str] = (),
-        output_format_keywords: Iterable[str] = (),
-        reference_keywords: Iterable[str] = (),
-        negation_keywords: Iterable[str] = (),
-        domain_specific_keywords: Iterable[str] = (),
-    ) -> None: ...
-
-
 class DimensionCollector:
     def __init__(
         self,
-        config: ScoringConfig | None = None,
         *,
         recent_window: int | None = None,
     ) -> None: ...
@@ -324,12 +286,8 @@ class DimensionCollector:
     async def shutdown(self) -> None: ...
 
 
-def get_context_signals(ctx: ProxyContext) -> ContextSignals | None: ...
-
-
 class ToolResultSignal:
     severity: float
-    patterns: tuple[str, ...]
     turn_depth: int
     write_count: int
     edit_count: int
@@ -342,10 +300,27 @@ class ToolResultSignal:
     pure_bash_streak: int
     no_error_streak: int
     tests_passed: bool
-    prompt_char_count: int
+    compacted: bool
 
 
 def get_tool_result_signal(ctx: ProxyContext) -> ToolResultSignal | None: ...
+
+
+class PickOutcome:
+    resolved: bool
+    tier: str | None
+    source: str | None
+    default_tier: str
+    score: float
+    confidence: float | None
+
+
+def stage_pick_tier(
+    signal: ToolResultSignal, picker_mode: str, confidence_threshold: float
+) -> PickOutcome: ...
+
+
+def stage_score_signal(signal: ToolResultSignal) -> tuple[float, float]: ...
 
 
 class ResponseFlag:

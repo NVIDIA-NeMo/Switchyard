@@ -655,6 +655,191 @@ class TestConvertResponsesRequestToChatCompletions:
         assert messages[0]["tool_calls"][0]["function"]["arguments"] == "[[...]]"
         assert messages[1]["content"] == "[[...]]"
 
+    def test_codex_reasoning_items_do_not_become_empty_assistant_messages(self):
+        """Codex replays each model turn as message + reasoning + function_call items.
+
+        The reasoning item must ride with the turn's tool-call message instead of
+        surfacing as a fabricated ``{"role": "assistant", "content": ""}`` chat
+        message; those empty turns accumulate every round-trip and degrade the
+        upstream model until it stops emitting tool calls.
+        """
+        body = {
+            "model": "big-reasoner",
+            "instructions": "You are a coding agent.",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Fix the broken pip install."}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "\n\n"}],
+                },
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [
+                        {"type": "reasoning_text", "text": "Let me check the python setup."}
+                    ],
+                    "encrypted_content": None,
+                },
+                {
+                    "type": "function_call",
+                    "name": "shell_command",
+                    "arguments": '{"command":"pip3 --version","workdir":"/app"}',
+                    "call_id": "call-1",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "ModuleNotFoundError: No module named 'pip'",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "\n\n"}],
+                },
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "pip is missing; ensurepip."}],
+                    "encrypted_content": None,
+                },
+                {
+                    "type": "function_call",
+                    "name": "shell_command",
+                    "arguments": '{"command":"python3 -m ensurepip","workdir":"/app"}',
+                    "call_id": "call-2",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-2",
+                    "output": "Successfully installed pip",
+                },
+            ],
+        }
+        result = _responses_request_to_chat(body)
+
+        assert result["messages"] == [
+            {"role": "system", "content": "You are a coding agent."},
+            {"role": "user", "content": "Fix the broken pip install."},
+            {"role": "assistant", "content": "\n\n"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": '{"command":"pip3 --version","workdir":"/app"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "ModuleNotFoundError: No module named 'pip'",
+            },
+            {"role": "assistant", "content": "\n\n"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": '{"command":"python3 -m ensurepip","workdir":"/app"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-2",
+                "content": "Successfully installed pip",
+            },
+        ]
+
+    def test_reasoning_item_merges_into_following_assistant_message(self):
+        """Native item ordering puts reasoning before the assistant message it belongs to."""
+        body = {
+            "model": "gpt-5",
+            "input": [
+                {"type": "message", "role": "user", "content": "Check the file"},
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Reading it now."}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Let me check."}],
+                },
+                {
+                    "type": "function_call",
+                    "name": "read_file",
+                    "call_id": "call-r",
+                    "arguments": '{"path":"a.py"}',
+                },
+                {"type": "function_call_output", "call_id": "call-r", "output": "print(1)"},
+            ],
+        }
+        result = _responses_request_to_chat(body)
+
+        assert result["messages"] == [
+            {"role": "user", "content": "Check the file"},
+            {"role": "assistant", "content": "Let me check."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-r",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.py"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-r", "content": "print(1)"},
+        ]
+
+    def test_reasoning_only_turn_does_not_add_empty_assistant_message(self):
+        """A reasoning item directly before a tool call must not split the turn."""
+        body = {
+            "model": "gpt-5",
+            "input": [
+                {"type": "message", "role": "user", "content": "List files"},
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "Simple ls."}],
+                },
+                {
+                    "type": "function_call",
+                    "name": "shell",
+                    "call_id": "call-ls",
+                    "arguments": '{"command":"ls"}',
+                },
+                {"type": "function_call_output", "call_id": "call-ls", "output": "a.py"},
+            ],
+        }
+        result = _responses_request_to_chat(body)
+
+        empty_assistants = [
+            message
+            for message in result["messages"]
+            if message.get("role") == "assistant" and message.get("content") == ""
+        ]
+        assert empty_assistants == []
+        assert result["messages"][1]["tool_calls"][0]["id"] == "call-ls"
+
 
 # ---------------------------------------------------------------------------
 # Response conversion tests
@@ -820,3 +1005,133 @@ class TestConvertChatResponseToResponses:
         assert result["output"][0]["content"][0]["text"] == "Let me check that."
         assert result["output"][1]["type"] == "function_call"
         assert result["output"][1]["name"] == "lookup"
+
+    def test_reasoning_content_with_tool_calls_has_no_empty_message_item(self):
+        """Reasoning + tool calls with empty text must not fabricate an empty message item."""
+        response = {
+            "id": "chatcmpl-reason",
+            "model": "big-reasoner",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning_content": "Inspect the repository first.",
+                        "tool_calls": [
+                            {
+                                "id": "call-9",
+                                "type": "function",
+                                "function": {
+                                    "name": "shell",
+                                    "arguments": '{"command":"ls"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        }
+        result = _chat_response_to_responses(response)
+
+        assert [item["type"] for item in result["output"]] == ["reasoning", "function_call"]
+        reasoning = result["output"][0]
+        assert reasoning["content"] == [
+            {"type": "reasoning_text", "text": "Inspect the repository first."}
+        ]
+        function_call = result["output"][1]
+        assert function_call["call_id"] == "call-9"
+        assert function_call["name"] == "shell"
+        assert function_call["arguments"] == '{"command": "ls"}'
+
+
+# ---------------------------------------------------------------------------
+# Streaming conversion tests (chat chunks -> Responses SSE events)
+# ---------------------------------------------------------------------------
+
+
+def _chat_chunk(delta: dict, finish: str | None = None) -> dict:
+    return {
+        "id": "chatcmpl-stream",
+        "object": "chat.completion.chunk",
+        "model": "big-reasoner",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
+
+
+async def _translate_chat_stream_to_responses(chunks: list[dict]) -> list[dict]:
+    async def _source():
+        for chunk in chunks:
+            yield chunk
+
+    return [
+        event
+        async for event in ENGINE.translate_stream("openai_chat", "openai_responses", _source())
+    ]
+
+
+class TestChatStreamToResponsesSse:
+    """Pins the SSE contract codex consumes for streamed tool calls."""
+
+    async def test_tool_call_stream_produces_well_formed_function_call_events(self):
+        events = await _translate_chat_stream_to_responses(
+            [
+                _chat_chunk({"role": "assistant", "content": ""}),
+                _chat_chunk({"reasoning_content": "Need to inspect the repo."}),
+                _chat_chunk({"content": "\n\n"}),
+                _chat_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-9",
+                                "type": "function",
+                                "function": {"name": "shell", "arguments": '{"command":'},
+                            }
+                        ]
+                    }
+                ),
+                _chat_chunk(
+                    {"tool_calls": [{"index": 0, "function": {"arguments": '"ls"}'}}]}
+                ),
+                _chat_chunk({}, finish="tool_calls"),
+            ]
+        )
+
+        added = [
+            event["item"]
+            for event in events
+            if event["type"] == "response.output_item.added"
+            and event["item"]["type"] == "function_call"
+        ]
+        assert len(added) == 1
+        assert added[0]["call_id"] == "call-9"
+        assert added[0]["name"] == "shell"
+
+        argument_deltas = [
+            event["delta"]
+            for event in events
+            if event["type"] == "response.function_call_arguments.delta"
+        ]
+        assert "".join(argument_deltas) == '{"command":"ls"}'
+
+        done = [
+            event["item"]
+            for event in events
+            if event["type"] == "response.output_item.done"
+            and event["item"]["type"] == "function_call"
+        ]
+        assert len(done) == 1
+        assert done[0]["call_id"] == "call-9"
+        assert done[0]["name"] == "shell"
+        assert done[0]["arguments"] == '{"command":"ls"}'
+        assert done[0]["status"] == "completed"
+
+        completed = [event for event in events if event["type"] == "response.completed"]
+        assert len(completed) == 1
+        output_types = [item["type"] for item in completed[0]["response"]["output"]]
+        assert output_types == ["reasoning", "message", "function_call"]
+        function_item = completed[0]["response"]["output"][2]
+        assert function_item["call_id"] == "call-9"
+        assert function_item["arguments"] == '{"command":"ls"}'

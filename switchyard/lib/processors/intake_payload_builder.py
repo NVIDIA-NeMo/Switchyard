@@ -3,8 +3,6 @@
 
 """Build intake payloads from request/response primitives."""
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version

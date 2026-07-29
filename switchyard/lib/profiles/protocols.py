@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Python profile protocols matching the components-v2 runtime shape."""
+"""Python-owned profile request values and runtime protocols."""
 
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
@@ -69,11 +69,11 @@ class ProfileLifecycle(Protocol):
 
 @runtime_checkable
 class ContextAwareProfile(Profile[ProcessedRequestT], Protocol[ProcessedRequestT]):
-    """Optional legacy bridge surface for profiles that need ``ProxyContext``.
+    """Optional component bridge surface for profiles that need ``ProxyContext``.
 
-    Pure v2 profiles can implement only ``run`` / ``process`` / ``rprocess``.
-    Compatibility profiles that still compose existing Python components also
-    expose these methods so endpoint adapters can reuse the caller's context.
+    Profiles can implement only ``run`` / ``process`` / ``rprocess``. Profiles
+    that compose existing Python components also expose these methods so
+    endpoint adapters can reuse the caller's context.
     """
 
     async def process_with_context(

@@ -3,8 +3,6 @@
 
 """Request processor that asks an LLM to extract routing signals."""
 
-from __future__ import annotations
-
 import json
 import logging
 import sys
@@ -384,9 +382,24 @@ class LLMClassifierRequestProcessor:
             _fail_open_exc: Exception | None = exc
         else:
             _fail_open_exc = None
+            prompt_tokens, completion_tokens, cached_tokens = _classifier_token_counts(
+                completion.usage,
+            )
+            # Record usage so the intake sink emits the classifier sub-call as its
+            # own record; the routed-turn record never sees this call.
+            ctx.record_submodel_call(
+                model=self._config.model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+                router_type="deterministic",
+                routed_to="classifier",
+            )
             if self._stats_accumulator is not None:
                 await self._record_classifier_call(
-                    usage=completion.usage,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cached_tokens=cached_tokens,
                     latency_ms=(time.perf_counter() - started_at) * 1000,
                 )
 
@@ -417,36 +430,38 @@ class LLMClassifierRequestProcessor:
 
     async def _record_classifier_call(
         self,
-        *,
-        usage: Any,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int,
         latency_ms: float,
     ) -> None:
-        """Extract token counts from the SDK ``usage`` object and record them.
+        """Record classifier token spend into the ``StatsAccumulator``.
 
-        Records into the classifier bucket on :class:`StatsAccumulator`
-        so the classifier model's token spend doesn't merge with the
-        same-named backend tier (default TB-lite config has classifier
-        and weak both pointing at Nemotron-3-Super-v3). Latency is
-        recorded too so the per-request classifier-tax line shows up
+        Records into the classifier bucket so the classifier model's token
+        spend doesn't merge with the same-named backend tier (default TB-lite
+        config has classifier and weak both pointing at Nemotron-3-Super-v3).
+        Latency is recorded too so the per-request classifier-tax line shows up
         on the snapshot's classifier-models block.
         """
         assert self._stats_accumulator is not None
-        prompt = 0
-        completion = 0
-        cached = 0
-        if usage is not None:
-            prompt = getattr(usage, "prompt_tokens", 0) or 0
-            completion = getattr(usage, "completion_tokens", 0) or 0
-            ptd = getattr(usage, "prompt_tokens_details", None)
-            if ptd is not None:
-                cached = getattr(ptd, "cached_tokens", 0) or 0
         await self._stats_accumulator.record_classifier_usage(
             model=self._config.model,
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            cached_tokens=cached,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
             latency_ms=latency_ms,
         )
+
+
+def _classifier_token_counts(usage: Any) -> tuple[int, int, int]:
+    """Return ``(prompt, completion, cached)`` tokens from an SDK usage object."""
+    if usage is None:
+        return 0, 0, 0
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    ptd = getattr(usage, "prompt_tokens_details", None)
+    cached = (getattr(ptd, "cached_tokens", 0) or 0) if ptd is not None else 0
+    return prompt, completion, cached
 
 
 def parse_route_decision(

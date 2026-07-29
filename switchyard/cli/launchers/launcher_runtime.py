@@ -3,8 +3,6 @@
 
 """Shared proxy/runtime helpers for one-command launchers."""
 
-from __future__ import annotations
-
 import logging
 import os
 import socket
@@ -13,19 +11,20 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import uvicorn
 
 from switchyard.cli.config.user_config import get_user_config_dir
+from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.route_table import SwitchyardApp
 from switchyard.server.switchyard_app import build_switchyard_app
 
-if TYPE_CHECKING:
-    from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
-
 _debug_file_handler: logging.FileHandler | None = None
 log = logging.getLogger(__name__)
+
+#: Opener that ignores env proxies — loopback probes to the in-process proxy
+#: must never be routed through a configured HTTP_PROXY.
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 #: System CA bundle paths to try (Debian/Ubuntu, RHEL/CentOS/Fedora).
@@ -75,7 +74,9 @@ def wait_for_proxy_ready(port: int, *, timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=0.5):
+            # Loopback: bypass env proxies so a configured HTTP_PROXY can't
+            # intercept the 127.0.0.1 health probe.
+            with _LOCAL_OPENER.open(url, timeout=0.5):
                 return True
         except Exception:
             time.sleep(0.05)
@@ -270,14 +271,10 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
         profile = r.get("profile")
         profile_part = f", profile={profile}" if profile else ""
         return f"llm-classifier: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{clf}{profile_part}"
-    if route_type == "plan_execute":
-        cadence = r.get("cadence_n")
-        cadence_part = f", cadence_n={cadence}" if cadence is not None else ""
-        return f"plan-execute: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{cadence_part}"
     if route_type == "random_routing":
         p = r.get("strong_probability", "")
         return f"random-routing: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}, p_strong={p}"
-    if route_type in ("model", "passthrough"):
+    if route_type == "model":
         target = r.get("model") or r.get("target") or route_key
         return f"passthrough → {target}"
     return f"{route_type}: {route_key}"

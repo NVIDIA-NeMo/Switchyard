@@ -123,6 +123,19 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "openai/nvidia/moonshotai/kimi-k2.5": ModelPriceData(
         input=0.60, output=2.50, cached=0.15, cache_write=0.60,
     ),
+    # Z.ai GLM-5.2 — REFERENCE pricing only. Switchyard reaches this model as
+    # ``glm-5.2-fp8`` on a self-hosted vLLM deployment, which has no per-token
+    # billing at all: the real cost is GPU-hours. These rates are
+    # SiliconFlow's published GLM-5.2 serverless tier (verified 2026-07-27),
+    # carried so benchmark arms can be compared against commercial models on a
+    # common basis — "what this traffic would have cost at market rates", not
+    # what we are billed. Provider rates vary about 2x (OpenRouter lists
+    # $0.76/$2.42), so treat the absolute number as indicative, not exact.
+    # OpenAI wire format and no documented cache-write premium, so
+    # cache_write = input.
+    "glm-5.2-fp8": ModelPriceData(
+        input=1.40, output=4.40, cached=0.26, cache_write=1.40,
+    ),
     # DeepSeek V4 Flash — official api-docs.deepseek.com standard list
     # price (post-promo). 284B total / 13B active, 1M-token context
     # window. Aggressive cache discount (98% off on hits). OpenAI wire
@@ -179,7 +192,13 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     # --- Anthropic Claude on AWS Bedrock (via NVIDIA Inference Hub) ---
     # 5-minute cache write = 1.25x input; cache read = 0.1x input.
     # Opus 4.8 keeps the Opus-tier $5/$25 list price (docs.anthropic.com,
-    # verified 2026-07-11).
+    # verified 2026-07-11).  Opus 5 ships as a drop-in upgrade at the same
+    # Opus-tier rate (platform.claude.com/docs/en/about-claude/pricing,
+    # verified 2026-07-27); fast mode ($10/$50) is a separate SKU and is
+    # not priced here.
+    "aws/anthropic/bedrock-claude-opus-5": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "aws/anthropic/bedrock-claude-opus-4-8": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
@@ -208,6 +227,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     "azure/anthropic/claude-opus-4-8": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),
+    "azure/anthropic/claude-opus-5": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "azure/anthropic/claude-sonnet-4-5": ModelPriceData(
         input=3.00, output=15.00, cached=0.30, cache_write=3.75,
     ),
@@ -221,6 +243,9 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
         input=1.00, output=5.00, cached=0.10, cache_write=1.25,
     ),
     # --- Anthropic direct API aliases (no AWS prefix) ---
+    "claude-opus-5": ModelPriceData(
+        input=5.00, output=25.00, cached=0.50, cache_write=6.25,
+    ),
     "claude-opus-4-8": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),

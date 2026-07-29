@@ -64,8 +64,8 @@ def routing_span(name: str) -> Iterator[Span]:
 def set_tags(span: Span, tags: Mapping[str, Any]) -> None:
     """Set each non-``None`` tag on *span*.
 
-    ``None`` values are skipped so an unavailable signal (e.g. no latency-service
-    poll has completed yet) leaves no empty/misleading tag on the span.
+    ``None`` values are skipped so an unavailable signal (e.g. a signal that
+    has not been recorded yet) leaves no empty/misleading tag on the span.
     """
     for key, value in tags.items():
         if value is not None:

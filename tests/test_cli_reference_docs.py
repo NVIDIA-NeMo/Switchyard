@@ -99,15 +99,15 @@ def test_cli_reference_omits_unsupported_skill_distillation_flags() -> None:
     )
 
 
-def test_cli_reference_serve_overview_points_to_config_path() -> None:
+def test_cli_reference_serve_overview_points_to_route_bundle() -> None:
     serve_row = next(
         line
         for line in CLI_REFERENCE.read_text().splitlines()
         if line.startswith("| [`serve`](#switchyard-serve)")
     )
 
-    assert "`serve --config`" in serve_row
-    assert "--routing-profiles" not in serve_row
+    assert "--routing-profiles" in serve_row
+    assert "`serve --config`" not in serve_row
     assert "inbound format" not in serve_row.lower()
 
 
@@ -131,7 +131,7 @@ def test_cli_reference_documents_shared_intake_flags_once() -> None:
     assert doc.count("`--intake-base-url URL`") == 1
     assert doc.count("`--intake-workspace NAME`") == 1
     assert doc.count("`--intake-api-key VALUE`") == 1
-    assert doc.count("`--intake-nvdataflow-project PROJECT`") == 1
+    assert doc.count("`--intake-target-url URL`") == 1
     assert "`--intake-app NAME`" in doc
 
 

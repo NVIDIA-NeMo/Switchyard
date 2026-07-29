@@ -7,14 +7,8 @@ from switchyard.lib.config.intake_sink_config import (
     IntakeQueueFullPolicy,
     IntakeSinkConfig,
 )
-from switchyard.lib.config.latency_service_backend_config import (
-    LatencyServiceBackendConfig,
-    LatencyServiceEndpoint,
-)
 
 __all__ = [
     "IntakeQueueFullPolicy",
     "IntakeSinkConfig",
-    "LatencyServiceBackendConfig",
-    "LatencyServiceEndpoint",
 ]

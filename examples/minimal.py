@@ -25,7 +25,7 @@ from pathlib import Path
 # Add package to path for development (not needed when installed via pip)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from switchyard import ChatRequest, SwitchyardRecipes
+from switchyard import ChatRequest, PassthroughProfileConfig, ProfileSwitchyard
 
 
 async def main():
@@ -39,10 +39,10 @@ async def main():
         return
 
     # Create a passthrough proxy that forwards to OpenAI
-    switchyard = SwitchyardRecipes.passthrough_recipe(
+    switchyard = ProfileSwitchyard(PassthroughProfileConfig(
         api_key=api_key,
         base_url="https://api.openai.com/v1",
-    )
+    ).build())
 
     print("=" * 60)
     print("Switchyard Minimal Example")
@@ -64,8 +64,8 @@ async def main():
     response = await switchyard.call(request)
 
     print("\nResponse:")
-    print(f"  Content: {response.body['choices'][0]['message']['content']}")
-    print(f"  Tokens: {response.body['usage']['total_tokens']}")
+    print(f"  Content: {response['choices'][0]['message']['content']}")
+    print(f"  Tokens: {response['usage']['total_tokens']}")
 
     print("\n" + "=" * 60)
     print("Example completed!")

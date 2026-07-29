@@ -34,23 +34,19 @@ from pydantic import ValidationError
 
 from switchyard.cli.model_catalog.model_discovery import fetch_model_ids
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
-from switchyard.lib.config import LatencyServiceBackendConfig, LatencyServiceEndpoint
 from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
 from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
 from switchyard.lib.profiles import (
     DeterministicRoutingProfileConfig,
     EscalationRouterProfileConfig,
-    LatencyServiceProfileConfig,
-    PlanExecuteProfileConfig,
     ProfileSwitchyard,
     StageRouterProfileConfig,
 )
 from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
 from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
-from switchyard.lib.profiles.plan_execute_config import PlanExecuteConfig
-from switchyard.lib.profiles.plan_execute_presets import PlanExecutePresets
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
 from switchyard.lib.profiles.stage_router_config import StageRouterConfig
+from switchyard.lib.profiles.subagent_override import SubagentOverrideRuntime
 from switchyard.lib.route_table import ChainRuntime, RouteTable
 from switchyard.lib.route_table_builders import (
     build_passthrough_table,
@@ -144,13 +140,21 @@ _TARGET_DEFAULT_KEYS = frozenset({
     "extra_headers",
     "endpoint",
 })
+# Envelope keys valid on every route type, whatever its own schema. They configure the
+# wrapper around a route's chain rather than the chain itself, so they are accepted by
+# _validate_route_keys and excluded from the per-profile config in _route_config.
+_ROUTE_ENVELOPE_KEYS = frozenset({
+    # Delegated sub-agent work is served by this target instead of the route's own
+    # chain. Consumed in _build_switchyard_for_route.
+    "subagent_target",
+})
 _COMMON_ROUTE_KEYS = frozenset({
     "type",
     "kind",
     "defaults",
     "display_name",
     "description",
-})
+}) | _ROUTE_ENVELOPE_KEYS
 _ROUTE_METADATA_KEYS = frozenset({
     "type",
     "kind",
@@ -176,44 +180,6 @@ _RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS |
     "preset",
     "fallback_target_on_evict",
 })
-_PASSTHROUGH_SETTING_KEYS = frozenset({
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-})
-_PASSTHROUGH_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | frozenset({"defaults", "enable_stats"})
-    | _PASSTHROUGH_SETTING_KEYS
-)
-_LATENCY_ENDPOINT_DEFAULT_KEYS = frozenset({
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-})
-_LATENCY_ENDPOINT_KEYS = _LATENCY_ENDPOINT_DEFAULT_KEYS | frozenset(
-    {"model", "upstream_model", "request_type"}
-)
-_LATENCY_SERVICE_ROUTE_KEYS = _ROUTE_METADATA_KEYS | frozenset({
-    "defaults",
-    "endpoints",
-    "latency_service_url",
-    "latency_url",
-    "poll_interval_s",
-    "poll_timeout_s",
-    "max_retries",
-    "credential_policy",
-    "enable_stats",
-    "session_affinity",
-    "affinity_max_sessions",
-    "affinity_store",
-    "affinity_store_url",
-    "affinity_store_ttl_seconds",
-    "affinity_key_prefix",
-}) | _LATENCY_ENDPOINT_DEFAULT_KEYS
-_NOOP_ROUTE_KEYS = _ROUTE_METADATA_KEYS
 _DETERMINISTIC_ROUTE_KEYS = (
     _ROUTE_METADATA_KEYS
     | _TARGET_DEFAULT_ROUTE_KEYS
@@ -240,19 +206,9 @@ _STAGE_ROUTER_ROUTE_KEYS = (
         "confidence_threshold",
         "signal_recent_window",
         "classifier",
-        "enable_stats",
-        "fallback_target_on_evict",
-    })
-)
-_PLAN_EXECUTE_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | _TARGET_DEFAULT_ROUTE_KEYS
-    | frozenset({
-        "planner",
-        "executor",
-        "cadence_n",
-        "disable_reasoning",
-        "fail_open",
+        "handoff_notes",
+        "strong_system_prompt",
+        "weak_system_prompt",
         "enable_stats",
         "fallback_target_on_evict",
     })
@@ -322,32 +278,17 @@ _CLASSIFIER_DEFAULT_KEYS = frozenset({
 _ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _MODEL_ROUTE_KEYS,
     "random_routing": _RANDOM_ROUTING_ROUTE_KEYS,
-    "latency_service": _LATENCY_SERVICE_ROUTE_KEYS,
-    "noop": _NOOP_ROUTE_KEYS,
-    "passthrough": _PASSTHROUGH_ROUTE_KEYS,
     "deterministic": _DETERMINISTIC_ROUTE_KEYS,
     "escalation_router": _ESCALATION_ROUTE_KEYS,
     "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
-    "plan_execute": _PLAN_EXECUTE_ROUTE_KEYS,
 }
 _DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "model": _TARGET_DEFAULT_KEYS,
     "random_routing": _TARGET_DEFAULT_KEYS,
-    "latency_service": _LATENCY_ENDPOINT_DEFAULT_KEYS,
-    "passthrough": _PASSTHROUGH_SETTING_KEYS,
-    "noop": frozenset(),
     "deterministic": _TARGET_DEFAULT_KEYS,
     "escalation_router": _TARGET_DEFAULT_KEYS,
     "stage_router": _TARGET_DEFAULT_KEYS,
-    "plan_execute": _TARGET_DEFAULT_KEYS,
 }
-
-# Shipping planner/executor model ids for `type: plan_execute` routes, so an
-# omitted tier reproduces the retired `--plan-execute` flag. ``api_key=""`` is a
-# placeholder — only the tier `.model` strings are read; credentials cascade
-# from the route defaults.
-_PLAN_EXECUTE_DEFAULTS = PlanExecutePresets.coding_agent_default(api_key="")
-
 
 def _deterministic_profile_factories() -> dict[
     str, Any,
@@ -373,7 +314,7 @@ class _YamlModule(Protocol):
 #: ``classifier`` tier is intentionally NOT surfaced — it is an internal-only
 #: LLM call, not a user-facing target.
 _USER_FACING_TIER_FIELDS: tuple[str, ...] = (
-    "strong", "weak", "planner", "executor", "target",
+    "strong", "weak", "target",
 )
 
 
@@ -408,8 +349,8 @@ def routing_profile_model_ids(
 
     Returns each route's YAML key followed by its tier ``model`` fields
     (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
-    ``planner`` / ``executor`` for plan_execute, ``target`` for
-    ``model`` / ``passthrough``). Declaration order, later duplicates dropped.
+    ``target`` for ``model``). Declaration order, later
+    duplicates dropped.
     Returns ``[]`` for a ``None`` or empty bundle.
 
     Used by both the configure wizard (preview the picker) and the launchers
@@ -499,7 +440,12 @@ def _parse_route_bundle_dict(raw: object) -> RouteBundle:
     validation runs inside :func:`build_table_from_bundle` so callers
     that construct a bundle programmatically still benefit.
     """
-    bundle = _require_mapping(_expand_env(raw), "route bundle")
+    return _validate_route_bundle_dict(_expand_env(raw))
+
+
+def _validate_route_bundle_dict(raw: object) -> RouteBundle:
+    """Validate bundle structure without expanding environment references."""
+    bundle = _require_mapping(raw, "route bundle")
     _validate_allowed_keys(bundle, frozenset({"defaults", "routes"}), "route bundle")
     defaults = _optional_mapping(bundle.get("defaults", {}), "defaults")
     _validate_allowed_keys(defaults, _TARGET_DEFAULT_KEYS, "defaults")
@@ -552,22 +498,6 @@ def build_table_from_bundle(
             _merge_random_routing_route(
                 table, model_id, route,
                 target_defaults=route_defaults, stats=stats,
-                pre_routing_request_processors=pre_routing_request_processors,
-                extra_response_processors=extra_response_processors,
-            )
-            continue
-
-        # `passthrough` routes hydrate their single tier's catalog into the
-        # table alongside the configured target model. (`model` routes are
-        # pure aliases — they register under the route key only, no catalog.)
-        if route_type == "passthrough":
-            _merge_discovered_single_tier(
-                table,
-                model_id,
-                route,
-                route_type=route_type,
-                target_defaults=route_defaults,
-                stats=stats,
                 pre_routing_request_processors=pre_routing_request_processors,
                 extra_response_processors=extra_response_processors,
             )
@@ -664,69 +594,6 @@ def _merge_random_routing_route(
             table.set_default_model(default_model)
 
 
-def _merge_discovered_single_tier(
-    table: RouteTable,
-    model_id: str,
-    route: Mapping[str, object],
-    route_type: str,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> None:
-    """Expand a ``passthrough`` route with catalog discovery.
-
-    Builds a single ``LlmTarget`` from the route's fields, then goes through
-    :func:`build_passthrough_table` with the shared
-    :func:`_default_discovery_fn` — the same path the launcher's per-tier
-    passthrough registration takes. Follows the unified ordering rule:
-
-      - The YAML route key registered first (aliasing the tier's chain when
-        the key differs from ``tier.model``).
-      - The tier's configured model registered next.
-      - Every catalog entry from the tier's ``GET /v1/models`` after that.
-    """
-    tier = _passthrough_target(model_id, route, target_defaults, route_type)
-    sub_table = build_passthrough_table(
-        (tier,),
-        stats,
-        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
-        discovery_fn=_default_discovery_fn,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    was_empty = not table.registered_models()
-    items = list(sub_table.items())
-    alias_registered = False
-    if model_id != tier.model:
-        tier_chain, tier_metadata = next(
-            ((ch, md) for mid, ch, md in items if mid == tier.model),
-            (None, {}),
-        )
-        if tier_chain is not None:
-            # YAML key first as an alias to the tier's chain so
-            # `registered_models()[0]` is always the user-declared route key.
-            table.register(
-                model_id,
-                tier_chain,
-                metadata={**dict(tier_metadata), "display_name": model_id},
-            )
-            alias_registered = True
-    for sub_model, sub_chain, sub_metadata in items:
-        if sub_model == model_id:
-            if alias_registered:
-                continue
-            # When YAML key == tier.model this entry is the route key itself;
-            # let it register here so it lands at position 0 of the table.
-            table.register(sub_model, sub_chain, metadata=sub_metadata)
-            continue
-        table.register(sub_model, sub_chain, metadata=sub_metadata)
-    for warning in sub_table.model_listing_warnings():
-        table.add_model_listing_warning(warning)
-    if was_empty and model_id in table.registered_models():
-        table.set_default_model(model_id)
-
-
 def _merge_multi_target_discovery(
     table: RouteTable,
     model_id: str,
@@ -803,41 +670,76 @@ def _build_switchyard_for_route(
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> ChainRuntime:
-    if route_type in ("model", "passthrough"):
-        # Both kinds resolve to a single-tier passthrough chain — same shape the
-        # launcher produces via build_passthrough_table's per-tier registration.
-        # The "passthrough" kind synthesizes a target whose model defaults to the
-        # route's table key when no explicit target/model is given.
-        target = _passthrough_target(model_id, route, target_defaults, route_type)
+    """Build the route's chain, wrapping it when the route sets ``subagent_target``."""
+    chain = _build_route_chain(
+        model_id,
+        route,
+        route_type=route_type,
+        target_defaults=target_defaults,
+        stats=stats,
+        pre_routing_request_processors=pre_routing_request_processors,
+        extra_response_processors=extra_response_processors,
+    )
+    worker = _subagent_worker_runtime(
+        model_id,
+        route,
+        target_defaults=target_defaults,
+        stats=stats,
+        pre_routing_request_processors=pre_routing_request_processors,
+        extra_response_processors=extra_response_processors,
+    )
+    return chain if worker is None else SubagentOverrideRuntime(chain, worker)
+
+
+def _subagent_worker_runtime(
+    model_id: str,
+    route: Mapping[str, object],
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime | None:
+    """Build the route's sub-agent worker chain, or ``None`` when unset.
+
+    The worker is a plain passthrough to one target: delegated work is served directly
+    rather than re-routed through the route's own policy.
+    """
+    subagent_raw = route.get("subagent_target")
+    if subagent_raw is None:
+        return None
+    return build_tier_passthrough_switchyard(
+        _target_value(
+            subagent_raw,
+            target_defaults,
+            default_id=f"{model_id}#subagent",
+            where=f"route {model_id!r} subagent_target",
+        ),
+        stats,
+        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
+        extra_request_processors=pre_routing_request_processors,
+        extra_response_processors=extra_response_processors,
+    )
+
+
+def _build_route_chain(
+    model_id: str,
+    route: Mapping[str, object],
+    route_type: str,
+    target_defaults: Mapping[str, object],
+    stats: StatsAccumulator,
+    pre_routing_request_processors: Sequence[Any] = (),
+    extra_response_processors: Sequence[Any] = (),
+) -> ChainRuntime:
+    if route_type == "model":
+        # Resolves to a single-tier passthrough chain — same shape the launcher
+        # produces via build_passthrough_table's per-tier registration.
+        target = _passthrough_target(model_id, route, target_defaults)
         return build_tier_passthrough_switchyard(
             target,
             stats,
             enable_stats=_optional_bool(route.get("enable_stats"), default=True),
             extra_request_processors=pre_routing_request_processors,
             extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "latency_service":
-        return _latency_service_switchyard(
-            model_id,
-            route,
-            target_defaults,
-            stats=stats,
-            extra_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "noop":
-        from switchyard.lib.profiles.noop import NoopProfileConfig
-
-        return ProfileSwitchyard(
-            NoopProfileConfig()
-            .build()
-            .with_runtime_components(
-                stats_accumulator=stats,
-                pre_request_processors=pre_routing_request_processors,
-                response_processors=extra_response_processors,
-            )
         )
 
     if route_type == "deterministic":
@@ -862,16 +764,6 @@ def _build_switchyard_for_route(
 
     if route_type == "stage_router":
         return _stage_router_switchyard(
-            model_id,
-            route,
-            target_defaults=target_defaults,
-            stats=stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "plan_execute":
-        return _plan_execute_switchyard(
             model_id,
             route,
             target_defaults=target_defaults,
@@ -1221,8 +1113,8 @@ def _stage_router_switchyard(
             allowed_keys=_STAGE_ROUTER_CLASSIFIER_KEYS,
             where=f"{model_id}.classifier",
         )
-    # The deprecated bundle keeps the shared strong/weak tier keys (also used by
-    # deterministic); map them onto StageRouterConfig's capable/efficient fields.
+    # The YAML schema shares strong/weak tier keys with deterministic routing;
+    # map them onto StageRouterConfig's capable/efficient fields.
     resolved = _route_config(route, target_defaults, ("strong", "weak"))
     resolved["capable"] = resolved.pop("strong")
     resolved["efficient"] = resolved.pop("weak")
@@ -1239,124 +1131,22 @@ def _stage_router_switchyard(
     )
 
 
-def _plan_execute_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    *,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    """Build a strong-planner / weak-executor chain from a ``type: plan_execute`` route.
-
-    Mirrors :func:`_stage_router_switchyard`: tiers and scalar fields go through the
-    shared ``_route_config`` → :meth:`PlanExecuteConfig.model_validate` path. An
-    omitted ``planner`` / ``executor`` defaults to the shipping preset model so a
-    minimal route reproduces the retired ``--plan-execute`` flag; every other
-    field falls back to ``PlanExecuteConfig``'s own defaults.
-    """
-    # Seed omitted tiers with the preset model before the shared coercion path
-    # (`_route_config` would otherwise reject a missing tier).
-    route = dict(route)
-    if route.get("planner") is None:
-        route["planner"] = _PLAN_EXECUTE_DEFAULTS.planner.model
-    if route.get("executor") is None:
-        route["executor"] = _PLAN_EXECUTE_DEFAULTS.executor.model
-    config_data = _route_config(route, target_defaults, ("planner", "executor"))
-    config_data.setdefault(
-        "fallback_target_on_evict", cast(LlmTarget, config_data["planner"]).id,
-    )
-    config = PlanExecuteConfig.model_validate(config_data)
-    return ProfileSwitchyard(
-        PlanExecuteProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=pre_routing_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
 def _passthrough_target(
     model_id: str,
     route: Mapping[str, object],
     target_defaults: Mapping[str, object],
-    route_type: str,
 ) -> LlmTarget:
-    """Resolve the LlmTarget for a ``model`` or ``passthrough`` route.
+    """Resolve the LlmTarget for a ``model`` route.
 
-    ``model`` routes require an explicit ``target`` or ``model`` field. The
-    ``passthrough`` kind is permissive: if no target is given, the route's
-    table key becomes the model name and the rest of the target is
-    populated from defaults plus inline route fields.
+    A ``model`` route requires an explicit ``target`` or ``model`` field; the
+    target is built from that plus the route defaults and inline fields.
     """
     target_raw = route.get("target", route.get("model"))
     if target_raw is None:
-        if route_type == "model":
-            raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
-        target_raw = model_id
+        raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
     return coerce_llm_target(
         _target_mapping(target_raw, target_defaults, default_id=model_id, where="target"),
         default_id=model_id,
-    )
-
-
-def _latency_service_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    extra_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    endpoints_raw = _require_sequence(route.get("endpoints"), "latency_service.endpoints")
-    endpoints = [
-        _latency_endpoint(value, target_defaults, index=index)
-        for index, value in enumerate(endpoints_raw)
-    ]
-    enable_stats = _optional_bool(route.get("enable_stats"), default=True)
-    credential_policy = (
-        _optional_str(route["credential_policy"])
-        if "credential_policy" in route
-        else "configured_endpoint"
-    )
-    config = LatencyServiceBackendConfig.model_validate({
-        "latency_service_url": _required_str(
-            route.get("latency_service_url", route.get("latency_url")),
-            "latency_service.latency_service_url",
-        ),
-        "endpoints": endpoints,
-        # The YAML route key is what clients send as ``model``; hand it to the
-        # backend so the per-model metric can attribute route-key traffic.
-        "route_model": model_id,
-        "poll_interval_s": _optional_float(route.get("poll_interval_s"), default=10.0),
-        "poll_timeout_s": _optional_float(route.get("poll_timeout_s"), default=5.0),
-        "max_retries": _optional_int(route.get("max_retries"), default=2),
-        "credential_policy": credential_policy,
-        "enable_stats": enable_stats,
-        "session_affinity": _optional_bool(route.get("session_affinity"), default=False),
-        "affinity_max_sessions": _optional_int(
-            route.get("affinity_max_sessions"), default=10_000
-        ),
-        "affinity_store": _optional_str(route.get("affinity_store")) or "memory",
-        "affinity_store_url": _optional_str(route.get("affinity_store_url")),
-        "affinity_store_ttl_seconds": _optional_int(
-            route.get("affinity_store_ttl_seconds"), default=3_600
-        ),
-        "affinity_key_prefix": _optional_str(route.get("affinity_key_prefix")) or "swyd:pin:",
-    })
-    return ProfileSwitchyard(
-        LatencyServiceProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=extra_request_processors,
-            response_processors=extra_response_processors,
-        )
     )
 
 
@@ -1437,33 +1227,6 @@ def _target_mapping(
     return target
 
 
-def _latency_endpoint(
-    raw: object,
-    defaults: Mapping[str, object],
-    index: int,
-) -> LatencyServiceEndpoint:
-    data = dict(defaults)
-    where = f"latency_service.endpoints[{index}]"
-    if isinstance(raw, str):
-        data["model"] = raw
-    elif isinstance(raw, Mapping):
-        endpoint_mapping = _require_mapping(raw, where)
-        _validate_allowed_keys(endpoint_mapping, _LATENCY_ENDPOINT_KEYS, where)
-        data.update(endpoint_mapping)
-    else:
-        raise RouteBundleConfigError(f"{where} must be a string or mapping")
-
-    if "timeout" not in data and "timeout_secs" in data:
-        data["timeout"] = data["timeout_secs"]
-
-    endpoint_data = {
-        key: data[key]
-        for key in ("model", "upstream_model", "api_key", "base_url", "timeout", "request_type")
-        if key in data
-    }
-    return LatencyServiceEndpoint.model_validate(endpoint_data)
-
-
 def _target_defaults(
     bundle_defaults: Mapping[str, object],
     route: Mapping[str, object],
@@ -1490,9 +1253,7 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
     raw_type = route.get("type", route.get("kind"))
     if raw_type is None:
         if not route:
-            return "noop"
-        if "latency_service_url" in route or "latency_url" in route:
-            return "latency_service"
+            raise RouteBundleConfigError(f"route {model_id!r}: missing 'type'")
         if "strong" in route and "weak" in route:
             return "random_routing"
         if "target" in route or "model" in route:
@@ -1511,11 +1272,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "target": "model",
         "random": "random_routing",
         "random_routing": "random_routing",
-        "latency": "latency_service",
-        "latency_service": "latency_service",
-        "noop": "noop",
-        "no_op": "noop",
-        "passthrough": "passthrough",
         "deterministic": "deterministic",
         "llm_classifier": "deterministic",
         "llm_classifier_routing": "deterministic",
@@ -1523,8 +1279,6 @@ def _route_type(model_id: str, route: Mapping[str, object]) -> str:
         "escalation_router": "escalation_router",
         "stage_router": "stage_router",
         "stage_router_routing": "stage_router",
-        "plan": "plan_execute",
-        "plan_execute": "plan_execute",
     }
     try:
         return aliases[normalized]
@@ -1538,7 +1292,7 @@ def _validate_route_keys(
     route_type: str,
 ) -> None:
     where = f"route {model_id!r}"
-    _validate_allowed_keys(route, _ROUTE_KEYS_BY_TYPE[route_type], where)
+    _validate_allowed_keys(route, _ROUTE_KEYS_BY_TYPE[route_type] | _ROUTE_ENVELOPE_KEYS, where)
     if "defaults" in route:
         defaults = _require_mapping(route["defaults"], f"{where}.defaults")
         _validate_allowed_keys(
@@ -1614,12 +1368,6 @@ def _optional_mapping(value: object, where: str) -> dict[str, object]:
     if value is None:
         return {}
     return _require_mapping(value, where)
-
-
-def _require_sequence(value: object, where: str) -> Sequence[object]:
-    if not isinstance(value, list):
-        raise RouteBundleConfigError(f"{where} must be a list")
-    return value
 
 
 def _required_str(value: object, where: str) -> str:

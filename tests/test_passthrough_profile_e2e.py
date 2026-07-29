@@ -399,7 +399,7 @@ class TestPassthroughProfileBackendErrors:
 
 
 class TestPassthroughProfileUpstreamAttemptCounters:
-    """`switchyard_upstream_attempts_total` must populate for non-latency chains.
+    """`switchyard_upstream_attempts_total` must populate for passthrough chains.
 
     The endpoint-layer fallback records one upstream attempt per request for
     backends (here the Rust ``OpenAiPassthroughBackend``) that issue exactly

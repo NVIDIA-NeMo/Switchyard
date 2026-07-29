@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -267,6 +268,30 @@ def _read_routing_profiles_file(path: str) -> dict[str, object]:
     return parsed
 
 
+def _bundle_default_credential(
+    bundle: dict[str, object] | None, key: str
+) -> str | None:
+    """Return the env-expanded ``defaults.<key>`` from a route bundle, if set.
+
+    A saved bundle keeps ``${VAR}`` literal for portability; configure needs the
+    concrete value now, so expand it here (the same way serve/launch do at load
+    time). An unset ``${VAR}`` stays literal after expansion, so a result that is
+    empty or still contains ``${`` is treated as unresolved.
+    """
+    if not bundle:
+        return None
+    defaults = bundle.get("defaults")
+    if not isinstance(defaults, dict):
+        return None
+    raw = defaults.get(key)
+    if not isinstance(raw, str) or not raw:
+        return None
+    expanded = os.path.expandvars(raw)
+    if not expanded or "${" in expanded:
+        return None
+    return expanded
+
+
 def _discover_models_for_endpoint(
     *,
     cache: dict[tuple[str, str], list[str]],
@@ -367,13 +392,15 @@ def cmd_configure(request: ConfigureRequest) -> None:
             print("No Switchyard user config found.")
         return
 
-    provider = request.provider
     target_scope = request.target
     configure_claude = target_scope in ("all", "claude")
     configure_codex = target_scope in ("all", "codex")
     configure_openclaw = target_scope in ("all", "openclaw")
     existing_config = load_user_config()
     existing_credentials = load_user_credentials()
+    # A CLI --provider wins; otherwise honor the saved default_provider so the
+    # save path doesn't overwrite it with the argparse fallback.
+    provider = request.provider or existing_config.default_provider
     skill_distillation = _apply_skill_distillation_args(
         existing_config.skill_distillation,
         request,
@@ -404,7 +431,26 @@ def cmd_configure(request: ConfigureRequest) -> None:
     if wizard:
         wizard.start(target=target_scope)
 
-    base_url_default = existing_provider.base_url or _default_base_url_for_provider(provider)
+    # Resolve the routing-profiles bundle now (global/CLI --routing-profiles, or
+    # the saved bundle). The interactive wizard can still offer one below when no
+    # path was given. Loading it here lets non-interactive `configure` fall back
+    # to the bundle's env-expanded defaults.api_key/base_url for credentials, the
+    # same way serve/launch read that bundle.
+    routing_profiles = existing_config.routing_profiles
+    if request.routing_profiles is not None:
+        # Empty string clears, any other value is a path whose YAML we parse.
+        routing_profiles = (
+            _read_routing_profiles_file(request.routing_profiles)
+            if request.routing_profiles else None
+        )
+    bundle_api_key = _bundle_default_credential(routing_profiles, "api_key")
+    bundle_base_url = _bundle_default_credential(routing_profiles, "base_url")
+
+    base_url_default = (
+        existing_provider.base_url
+        or bundle_base_url
+        or _default_base_url_for_provider(provider)
+    )
     if request.base_url:
         base_url = request.base_url
     elif reuse_existing_provider and existing_provider.base_url:
@@ -417,9 +463,19 @@ def cmd_configure(request: ConfigureRequest) -> None:
     api_key = request.api_key
     if not api_key:
         existing_api_key = existing_credentials.api_key(provider)
+        # Fall back to the selected provider's own env key so non-interactive
+        # `configure` (no --api-key, no saved key) picks up e.g. OPENROUTER_API_KEY
+        # instead of erroring that it "requires an API key". Read only the
+        # provider's own <PROVIDER>_API_KEY so `configure --provider nvidia` can't
+        # save another provider's key under `nvidia`; if that var isn't set we
+        # fall through to the route-bundle key, then require --api-key.
+        env_prefix = provider.upper().replace("-", "_")
+        env_api_key = os.environ.get(f"{env_prefix}_API_KEY")
         prompt_default_api_key = (
             existing_api_key
             or request.prompt_default_api_key
+            or env_api_key
+            or bundle_api_key
         )
         prompt_default_api_key_source = request.prompt_default_api_key_source
         if reuse_existing_provider and existing_api_key:
@@ -447,19 +503,12 @@ def cmd_configure(request: ConfigureRequest) -> None:
             disabled=request.no_model_discovery,
         )
 
-    # Resolve routing-profiles up front (CLI > existing config > interactive
-    # prompt) so the model picker can surface route ids + their tier models
-    # alongside the upstream catalog. Without this the wizard offers only the
-    # raw `/v1/models` response and the user can't pick e.g. `opus-ds-stage_router`
-    # even when their YAML declares it.
-    routing_profiles = existing_config.routing_profiles
-    if request.routing_profiles is not None:
-        # Empty string clears, any other value is a path whose YAML we parse.
-        routing_profiles = (
-            _read_routing_profiles_file(request.routing_profiles)
-            if request.routing_profiles else None
-        )
-    elif interactive and wizard:
+    # A global/CLI --routing-profiles path (or the saved bundle) was already
+    # loaded above; only the interactive prompt for a fresh path remains. The
+    # resolved bundle also feeds the model picker below so it can surface route
+    # ids + their tier models (e.g. `opus-ds-stage_router`) alongside the raw
+    # `/v1/models` catalog, not just the upstream response.
+    if request.routing_profiles is None and interactive and wizard:
         prompted = wizard.prompt_routing_profiles(default=None)
         if prompted:
             routing_profiles = _read_routing_profiles_file(prompted)

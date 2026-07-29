@@ -8,13 +8,10 @@ coverage matters more than success — any real-world flakiness must fall open
 to ``None`` so the picker keeps moving.
 """
 
-from __future__ import annotations
-
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
-
-import pytest
 
 from switchyard.lib.processors.stage_router.classifier import (
     CAPABLE_TIER,
@@ -65,7 +62,6 @@ async def _build_signal() -> Any:
     return ctx, signal
 
 
-@pytest.mark.asyncio
 async def test_returns_capable_on_valid_capable_response():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
@@ -75,7 +71,6 @@ async def test_returns_capable_on_valid_capable_response():
     assert await classifier.classify(ctx, signal) == CAPABLE_TIER
 
 
-@pytest.mark.asyncio
 async def test_returns_efficient_on_valid_efficient_response():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
@@ -85,7 +80,6 @@ async def test_returns_efficient_on_valid_efficient_response():
     assert await classifier.classify(ctx, signal) == EFFICIENT_TIER
 
 
-@pytest.mark.asyncio
 async def test_falls_open_on_malformed_json():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
@@ -95,7 +89,6 @@ async def test_falls_open_on_malformed_json():
     assert await classifier.classify(ctx, signal) is None
 
 
-@pytest.mark.asyncio
 async def test_falls_open_on_unexpected_tier_value():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
@@ -105,7 +98,6 @@ async def test_falls_open_on_unexpected_tier_value():
     assert await classifier.classify(ctx, signal) is None
 
 
-@pytest.mark.asyncio
 async def test_falls_open_on_network_error():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
@@ -115,7 +107,6 @@ async def test_falls_open_on_network_error():
     assert await classifier.classify(ctx, signal) is None
 
 
-@pytest.mark.asyncio
 async def test_falls_open_on_empty_choices():
     ctx, signal = await _build_signal()
     classifier = TierClassifier(
@@ -125,7 +116,6 @@ async def test_falls_open_on_empty_choices():
     assert await classifier.classify(ctx, signal) is None
 
 
-@pytest.mark.asyncio
 async def test_default_window_omits_recent_messages():
     """recent_turn_window=0 keeps the prompt to the aggregate state only."""
     ctx, signal = await _build_signal()
@@ -152,7 +142,6 @@ async def test_default_window_omits_recent_messages():
     assert "Recent turns" not in user_prompt
 
 
-@pytest.mark.asyncio
 async def test_disable_reasoning_passes_enable_thinking_false_extra_body():
     """Reasoning models on the NVIDIA Inference Hub misroute JSON output into
     `reasoning_content` unless `enable_thinking=False` is hinted via vLLM's
@@ -174,7 +163,6 @@ async def test_disable_reasoning_passes_enable_thinking_false_extra_body():
     assert captured["temperature"] == 0
 
 
-@pytest.mark.asyncio
 async def test_disable_reasoning_false_omits_extra_body():
     """Opt-out path: `disable_reasoning=False` sends no extra_body."""
     ctx, signal = await _build_signal()
@@ -192,7 +180,6 @@ async def test_disable_reasoning_false_omits_extra_body():
     assert captured["extra_body"] is None
 
 
-@pytest.mark.asyncio
 async def test_window_4_appends_last_four_messages():
     """recent_turn_window=4 includes the last four messages, in order."""
     ctx, signal = await _build_signal()
@@ -224,3 +211,29 @@ async def test_window_4_appends_last_four_messages():
     assert "msg-5" in user_prompt
     assert "msg-0" not in user_prompt
     assert "msg-1" not in user_prompt
+
+
+async def test_classify_stashes_submodel_call_for_intake() -> None:
+    """A successful tier-classifier call is recorded for the intake sink to emit."""
+    ctx, signal = await _build_signal()
+    resp = _Resp(content=json.dumps({"tier": "capable"}))
+    # The producer reads token usage off the response; _Resp carries no usage
+    # field, so attach one shaped like the OpenAI SDK usage object.
+    resp.usage = SimpleNamespace(  # type: ignore[attr-defined]
+        prompt_tokens=333,
+        completion_tokens=12,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=5),
+    )
+    classifier = TierClassifier(model="tier-clf", api_key="k", client=_StubClient(resp))
+
+    assert await classifier.classify(ctx, signal) == CAPABLE_TIER
+    assert ctx.submodel_calls == [
+        {
+            "model": "tier-clf",
+            "prompt_tokens": 333,
+            "completion_tokens": 12,
+            "cached_tokens": 5,
+            "router_type": "stage_router",
+            "routed_to": "tier_classifier",
+        }
+    ]

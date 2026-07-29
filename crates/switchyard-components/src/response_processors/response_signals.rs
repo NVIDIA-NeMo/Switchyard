@@ -9,7 +9,7 @@
 //! stage_router / escalation logic can read structured response-quality
 //! flags without re-parsing the wire body.
 
-use switchyard_core::{ChatResponse, ProxyContext, Result};
+use crate::{ChatResponse, ProxyContext, Result};
 
 use crate::dimension_collector::response::{extract_response_signals, ResponseSignals};
 
@@ -47,7 +47,7 @@ mod tests {
     use crate::dimension_collector::response::ResponseFlag;
     use serde_json::json;
 
-    use switchyard_core::Result;
+    use crate::Result;
 
     #[tokio::test]
     async fn stamps_response_signals_for_buffered_response() -> Result<()> {
