@@ -22,13 +22,14 @@ provider SDK.
   when set, otherwise the model's default backend.
 - **Backends.** A [`Backend`] is one of `OpenAiChat`, `OpenAiResponses`, or
   `Anthropic`, each wrapping an [`HttpBackendConfig`] (`base_url`, `api_key`,
-  static `extra_headers`). The variant fixes the URL path and auth scheme
-  (Bearer vs `x-api-key` + `anthropic-version`).
+  static `extra_headers`, default `extra_body` fields). The variant fixes the URL
+  path and auth scheme (Bearer vs `x-api-key` + `anthropic-version`).
 - **Model rewrite.** The resolved model name is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
 - **Streaming is chosen by the request.** If the encoded body has `stream: true`
   (i.e. `request.llm_request.stream`), you get `LlmResponse::Stream`; otherwise
-  `LlmResponse::Agg`.
+  `LlmResponse::Agg`. OpenAI Chat streaming requests default
+  `stream_options.include_usage` to `true`; an explicit caller value is preserved.
 
 ## Add the dependency
 
@@ -56,6 +57,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
     };
 
     let models = [ModelConfig::new(
@@ -169,6 +171,8 @@ fn build_multi_format_client(
   `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
   caller's placeholder credential never overrides the backend's real key.
 - Per-backend static headers go in `HttpBackendConfig::extra_headers`.
+- Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
+  The merge is shallow and fields already present in the request take precedence.
 
 ## Errors
 

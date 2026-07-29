@@ -411,6 +411,7 @@ async fn main() -> Result<()> {
                 .map_err(|error| LibsyError::external("reading NVIDIA_API_KEY", error))?,
         ),
         extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
     };
     let models: Vec<_> = CANDIDATE_MODELS
         .iter()

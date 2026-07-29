@@ -16,6 +16,7 @@ api_key_env = "API_KEY"
 [targets.model_a]
 id = "model/a"
 llm_client = "example"
+extra_body = { service_tier = "priority" }
 
 [targets.model_b]
 id = "model/b"
@@ -60,6 +61,8 @@ Each target references an entry under `llm_clients`. All configured clients use
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`, and
 `llm_classifier`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
+Target-level `extra_body` values are shallow-merged into the upstream request when
+the request does not already contain that key.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.

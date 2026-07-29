@@ -6,6 +6,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use reqwest::RequestBuilder;
+use serde_json::Value;
 use switchyard_protocol::WireFormat;
 
 use crate::error::is_overflow_body;
@@ -39,6 +40,8 @@ pub struct HttpBackendConfig {
     pub api_key: Option<String>,
     /// Static headers added to every outbound call to this backend.
     pub extra_headers: BTreeMap<String, String>,
+    /// Default top-level request fields, applied only when the request omits the key.
+    pub extra_body: BTreeMap<String, Value>,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -47,6 +50,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("extra_headers", &self.extra_headers)
+            .field("extra_body_keys", &self.extra_body.keys())
             .finish()
     }
 }
@@ -124,6 +128,11 @@ impl Backend {
         &self.config().extra_headers
     }
 
+    /// Default top-level fields to merge into outbound request bodies.
+    pub fn extra_body(&self) -> &BTreeMap<String, Value> {
+        &self.config().extra_body
+    }
+
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {
@@ -186,6 +195,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
             extra_headers: BTreeMap::new(),
+            extra_body: BTreeMap::new(),
         }
     }
 

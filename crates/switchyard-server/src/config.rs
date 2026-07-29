@@ -11,6 +11,7 @@ use std::sync::Arc;
 use libsy::algorithms::{LlmTaskClassifier, Noop, Passthrough, Random, TaskClassifierConfig};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde::Deserialize;
+use serde_json::Value;
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 
 use crate::{ServerError, ServerResult, ServerState};
@@ -94,7 +95,7 @@ impl ServerConfig {
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
             model_configs.push(ModelConfig::new(
                 &target.id,
-                build_backend(&target.llm_client, client_config)?,
+                build_backend(&target.llm_client, client_config, &target.extra_body)?,
                 None,
             ));
         }
@@ -147,6 +148,8 @@ struct LlmClientConfig {
 struct TargetConfig {
     id: String,
     llm_client: String,
+    #[serde(default)]
+    extra_body: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -196,7 +199,11 @@ impl RouteConfig {
     }
 }
 
-fn build_backend(client_name: &str, config: &LlmClientConfig) -> ServerResult<Backend> {
+fn build_backend(
+    client_name: &str,
+    config: &LlmClientConfig,
+    extra_body: &BTreeMap<String, Value>,
+) -> ServerResult<Backend> {
     let base_url = config.base_url.trim();
     if base_url.is_empty() {
         return Err(ServerError::new(format!(
@@ -229,6 +236,7 @@ fn build_backend(client_name: &str, config: &LlmClientConfig) -> ServerResult<Ba
         base_url: base_url.to_string(),
         api_key,
         extra_headers: config.extra_headers.clone(),
+        extra_body: extra_body.clone(),
     };
     Ok(match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
@@ -317,6 +325,7 @@ fn validate_value(label: &str, value: &str) -> ServerResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -482,6 +491,39 @@ target = "weak"
             "base_threshold = 0.25\nmin_confidence = 0.0\ncapability_elevated_floor = 0.45\nsession_affinity = true\nmessage_hash_fallback = true",
         );
         server_state_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
+    fn target_extra_body_is_parsed_and_applied_to_its_backend() -> ServerResult<()> {
+        let configured = VALID_CONFIG.replacen(
+            "llm_client = \"primary\"",
+            "llm_client = \"primary\"\n\
+             extra_body = { service_tier = \"priority\", \
+             chat_template_kwargs = { enable_thinking = false } }",
+            1,
+        );
+        let config: ServerConfig = toml::from_str(&configured)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        let Some(target) = config.targets.get("classifier") else {
+            return Err(ServerError::new("classifier target is missing"));
+        };
+        let Some(client) = config.llm_clients.get("primary") else {
+            return Err(ServerError::new("primary llm client is missing"));
+        };
+        let backend = build_backend("primary", client, &target.extra_body)?;
+
+        assert_eq!(
+            backend.extra_body().get("service_tier"),
+            Some(&json!("priority"))
+        );
+        assert_eq!(
+            backend
+                .extra_body()
+                .get("chat_template_kwargs")
+                .and_then(|value| value.get("enable_thinking")),
+            Some(&json!(false))
+        );
         Ok(())
     }
 

@@ -136,6 +136,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
         extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
     });
     let target_models = routes
         .iter()
@@ -482,6 +483,7 @@ fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<S
         base_url: url.to_string(),
         api_key: Some("k".to_string()),
         extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
     };
     let strong: Arc<dyn RoutedLlmClient> =
         Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(

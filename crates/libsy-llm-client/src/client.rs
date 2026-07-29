@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::RequestBuilder;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use switchyard_protocol::{
     Context, Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
@@ -162,6 +162,10 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, model);
+        merge_extra_body(&mut body, backend.extra_body());
+        if matches!(backend, Backend::OpenAiChat(_)) {
+            ensure_openai_stream_usage(&mut body);
+        }
         let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
         let builder = self.client.post(url).json(&body);
@@ -454,6 +458,39 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+// Applies target defaults without overriding fields supplied by the caller.
+fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    for (key, value) in extra_body {
+        object.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+// Requests streamed Chat usage by default while preserving an explicit caller choice.
+fn ensure_openai_stream_usage(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if object.get("stream").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+
+    match object.get_mut("stream_options") {
+        Some(Value::Object(options)) => {
+            options
+                .entry("include_usage".to_string())
+                .or_insert(Value::Bool(true));
+        }
+        _ => {
+            let mut options = Map::new();
+            options.insert("include_usage".to_string(), Value::Bool(true));
+            object.insert("stream_options".to_string(), Value::Object(options));
+        }
+    }
+}
+
 // Case-insensitive membership test against RESERVED_HEADERS.
 fn is_reserved_header(name: &str) -> bool {
     RESERVED_HEADERS
@@ -481,6 +518,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
             extra_headers: BTreeMap::new(),
+            extra_body: BTreeMap::new(),
         }
     }
 
@@ -491,6 +529,15 @@ mod tests {
             Backend::OpenAiChat(config(base_url)),
             None,
         )]
+    }
+
+    fn chat_map_with_extra_body(
+        base_url: &str,
+        extra_body: BTreeMap<String, Value>,
+    ) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.extra_body = extra_body;
+        vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
     }
 
     fn truncated_response_server(
@@ -772,14 +819,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extra_body_adds_defaults_without_overriding_the_request(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "gpt",
+                "max_tokens": 7,
+                "service_tier": "priority"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([
+            ("max_tokens".to_string(), json!(999)),
+            ("service_tier".to_string(), json!("priority")),
+        ]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 7
+        });
+
+        client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn streaming_openai_chat_aggregates(
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n\
              data: [DONE]\n\n";
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "stream": true,
+                "stream_options": {"include_usage": true}
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
             .mount(&server)
             .await;
@@ -792,6 +894,46 @@ mod tests {
         assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hello world");
+        assert_eq!(agg.usage.input_tokens, Some(1));
+        assert_eq!(agg.usage.output_tokens, Some(2));
+        assert_eq!(agg.usage.total_tokens, Some(3));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_openai_chat_preserves_usage_opt_out(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "stream": true,
+                "stream_options": {"include_usage": false}
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "stream_options": {"include_usage": false}
+        });
+
+        let response = client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        assert!(matches!(response, RawResponse::Stream(_)));
         Ok(())
     }
 
