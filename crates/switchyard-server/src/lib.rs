@@ -17,12 +17,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{rejection::JsonRejection, DefaultBodyLimit, State};
+use axum::extract::{rejection::JsonRejection, DefaultBodyLimit, Request as HttpRequest, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
 use serde_json::{json, Value};
@@ -193,6 +194,20 @@ async fn serve(listener: TcpListener, router: Router) -> ServerResult<()> {
         .map_err(server_io_error)
 }
 
+/// Ingress timestamp for one request, taken before any body is read.
+#[derive(Clone, Copy)]
+struct RequestStart(Instant);
+
+/// Stamps the ingress instant into request extensions. Runs as a router layer,
+/// so it executes before the handlers' `Json` extractor buffers the body —
+/// request-latency measurements therefore include body read and decode.
+async fn stamp_request_start(mut request: HttpRequest, next: Next) -> Response {
+    request
+        .extensions_mut()
+        .insert(RequestStart(Instant::now()));
+    next.run(request).await
+}
+
 /// Builds an Axum router for the supported LLM wire formats.
 pub fn build_switchyard_router(state: ServerState) -> Router {
     Router::new()
@@ -205,6 +220,8 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/health", get(health))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
+        // `layer` only wraps routes registered before it, so this stays last.
+        .layer(axum::middleware::from_fn(stamp_request_start))
         .with_state(state)
 }
 
@@ -237,26 +254,29 @@ async fn shutdown_signal() {
 
 async fn openai_chat_completions(
     State(state): State<ServerState>,
+    Extension(started): Extension<RequestStart>,
     headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    handle_endpoint(state, headers, body, WireFormat::OpenAiChat).await
+    handle_endpoint(state, started, headers, body, WireFormat::OpenAiChat).await
 }
 
 async fn anthropic_messages(
     State(state): State<ServerState>,
+    Extension(started): Extension<RequestStart>,
     headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    handle_endpoint(state, headers, body, WireFormat::AnthropicMessages).await
+    handle_endpoint(state, started, headers, body, WireFormat::AnthropicMessages).await
 }
 
 async fn openai_responses(
     State(state): State<ServerState>,
+    Extension(started): Extension<RequestStart>,
     headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    handle_endpoint(state, headers, body, WireFormat::OpenAiResponses).await
+    handle_endpoint(state, started, headers, body, WireFormat::OpenAiResponses).await
 }
 
 /// Anthropic token counting. Resolves the route named by `model`, then does a
@@ -307,13 +327,14 @@ fn count_tokens_error(error: LibsyError) -> Response {
 
 async fn handle_endpoint(
     state: ServerState,
+    started: RequestStart,
     headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
     let metadata = metadata_from_headers(&headers);
     let request_log = RequestLogContext {
-        started: Instant::now(),
+        started: started.0,
         wire_format,
         requested_model: body
             .as_ref()
@@ -332,7 +353,7 @@ async fn handle_endpoint(
     };
 
     let response = match llm_json_body(body) {
-        Ok(body) => handle_llm_request(state, metadata, body, wire_format).await,
+        Ok(body) => handle_llm_request(state, started, metadata, body, wire_format).await,
         Err(message) => invalid_body_error(message),
     };
     metrics::record_client_response(response.status().as_u16());
@@ -396,11 +417,11 @@ fn resolve_route(
 
 async fn handle_llm_request(
     state: ServerState,
+    started: RequestStart,
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
-    let started = Instant::now();
     let (algorithm, request, requested_model) =
         match resolve_route(&state, metadata, body, wire_format) {
             Ok(resolved) => resolved,
@@ -415,7 +436,7 @@ async fn handle_llm_request(
             response,
             decision.selected_model(),
             decision.routing_tier(),
-            started,
+            started.0,
         )
     } else {
         response

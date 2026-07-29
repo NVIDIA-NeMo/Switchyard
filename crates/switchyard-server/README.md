@@ -108,9 +108,11 @@ The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classi
 is omitted for untiered algorithms. Classifier calls are excluded from these families.
 
 `switchyard_total_latency_ms` observes an aggregate when it becomes available or a stream when it
-ends cleanly. Its clock starts after HTTP body decoding, at the routed-request handler entry, so it
-is slightly narrower than the Python server's request-ingress-to-completion measurement. The Rust
-server exports this metric as a histogram, while the Python server exports its counterpart as a
-summary; this matches the existing histogram/summary difference for model-call latency.
+ends cleanly. Its clock starts in a router-wide middleware, before the request body is read and
+decoded, so it covers the same span as the Python server's request-ingress-to-completion
+measurement. It still excludes connection accept and TLS handshake, which hyper completes before
+the server sees the request. The Rust server exports this metric as a histogram, while the Python
+server exports its counterpart as a summary; this matches the existing histogram/summary difference
+for model-call latency.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.
