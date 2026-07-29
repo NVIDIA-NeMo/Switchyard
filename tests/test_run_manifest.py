@@ -117,14 +117,12 @@ def test_cli_write_applies_extra_fields(tmp_path: Path) -> None:
     assert manifest["harbor"]["dataset_fingerprint"].startswith("sha256:")
 
 
-def test_cli_write_records_routing_profile_digest(tmp_path: Path) -> None:
+def test_cli_write_records_server_config_digest(tmp_path: Path) -> None:
     module = _load_manifest_module()
     out = tmp_path / "run_manifest.json"
     run_dir = tmp_path / "run"
-    profile = tmp_path / "routes.yaml"
-    profile.write_text(
-        "routes:\n  tb-lite-random-routing:\n    type: model\n    target: some/model\n"
-    )
+    config = tmp_path / "routes.toml"
+    config.write_text('schema_version = 1\n\n[routes.noop]\nid = "noop"\ntype = "noop"\n')
     dataset = tmp_path / "dataset"
     dataset.mkdir()
 
@@ -135,12 +133,10 @@ def test_cli_write_records_routing_profile_digest(tmp_path: Path) -> None:
             str(out),
             "--server-preset",
             "serve",
-            "--routing-profiles",
-            str(profile),
+            "--server-config",
+            str(config),
             "--route-model",
-            "tb-lite-random-routing",
-            "--classifier-prompts-json",
-            '{"tb-lite-random-routing":{"classifier_prompt_sha256":"abc"}}',
+            "noop",
             "--harbor-path",
             str(dataset),
             "--agent",
@@ -166,16 +162,13 @@ def test_cli_write_records_routing_profile_digest(tmp_path: Path) -> None:
 
     assert rc == 0
     manifest = json.loads(out.read_text())
-    assert manifest["server"]["routing_profiles"] == str(profile)
-    assert manifest["server"]["routing_profiles_digest"] == module.path_digest(profile)
-    snapshot = run_dir / "routing_profiles" / profile.name
-    assert manifest["server"]["routing_profiles_snapshot"] == str(snapshot)
-    assert manifest["server"]["routing_profiles_snapshot_digest"] == module.path_digest(snapshot)
-    assert snapshot.read_bytes() == profile.read_bytes()
-    assert manifest["server"]["route_model"] == "tb-lite-random-routing"
-    assert manifest["server"]["classifier_prompts"] == {
-        "tb-lite-random-routing": {"classifier_prompt_sha256": "abc"}
-    }
+    assert manifest["server"]["server_config"] == str(config)
+    assert manifest["server"]["server_config_digest"] == module.path_digest(config)
+    snapshot = run_dir / "server_config" / config.name
+    assert manifest["server"]["server_config_snapshot"] == str(snapshot)
+    assert manifest["server"]["server_config_snapshot_digest"] == module.path_digest(snapshot)
+    assert snapshot.read_bytes() == config.read_bytes()
+    assert manifest["server"]["route_model"] == "noop"
 
 
 def test_cli_write_rejects_non_object_classifier_prompts(tmp_path: Path) -> None:
@@ -272,6 +265,7 @@ def test_cli_write_records_direct_upstream_mode_without_routing_stats(tmp_path: 
     assert manifest["server"]["mode"] == "direct"
     assert manifest["server"]["upstream_base_url"] == "https://inference-api.nvidia.com/v1"
     assert manifest["server"]["upstream_api_key_env"] == "NVIDIA_API_KEY"
+    assert manifest["server"]["server_config"] is None
     assert manifest["server"]["routing_profiles"] is None
     assert manifest["outcomes"]["routing_stats_json_status"] == "not-requested"
 
@@ -417,24 +411,35 @@ def test_finalize_copies_harbor_result_and_marks_stats(tmp_path: Path) -> None:
     stats = run_dir / "routing_stats_final.json"
     stats.parent.mkdir(parents=True, exist_ok=True)
     stats.write_text('{"total_requests":1}\n')
+    metrics = run_dir / "server_metrics_final.prom"
+    metrics.write_text("switchyard_requests_total 1\n")
 
     module.write_manifest(
         out,
         outcomes={
             "harbor_result_json": str(run_dir / "harbor_result.json"),
             "harbor_result_json_status": "predicted",
+            "server_metrics_prom": str(metrics),
+            "server_metrics_prom_status": "predicted",
             "routing_stats_json": str(stats),
             "routing_stats_json_status": "predicted",
             "harbor_rc": None,
         },
     )
 
-    rc = module.finalize_manifest(out, harbor_rc=0, harbor_job_dir=job_dir, routing_stats=stats)
+    rc = module.finalize_manifest(
+        out,
+        harbor_rc=0,
+        harbor_job_dir=job_dir,
+        server_metrics=metrics,
+        routing_stats=stats,
+    )
 
     assert rc == 0
     manifest = json.loads(out.read_text())
     assert manifest["outcomes"]["harbor_rc"] == 0
     assert manifest["outcomes"]["harbor_result_json_status"] == "present"
+    assert manifest["outcomes"]["server_metrics_prom_status"] == "present"
     assert manifest["outcomes"]["routing_stats_json_status"] == "present"
     assert (run_dir / "harbor_result.json").is_file()
 

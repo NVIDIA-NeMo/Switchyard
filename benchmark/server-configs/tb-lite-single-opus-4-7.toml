@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.primary]
+id = "anthropic/claude-opus-4.7"
+llm_client = "openrouter"
+
+[routes.primary]
+id = "tb-lite-single-opus-4-7"
+type = "passthrough"
+target = "primary"

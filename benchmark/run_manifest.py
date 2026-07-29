@@ -130,6 +130,19 @@ def snapshot_routing_profiles(source: Path | None, run_dir: Path) -> Path | None
     return dest
 
 
+def snapshot_server_config(source: Path | None, run_dir: Path) -> Path | None:
+    """Copy the Rust server configuration used for the run."""
+    if source is None:
+        return None
+    if not source.is_file():
+        raise FileNotFoundError(source)
+
+    dest = run_dir.resolve() / "server_config" / source.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, dest)
+    return dest
+
+
 def snapshot_dataset_manifest(source: Path | None, run_dir: Path) -> Path | None:
     """Copy a generated local dataset manifest into the run directory."""
     if source is None:
@@ -328,6 +341,7 @@ def finalize_manifest(
     *,
     harbor_rc: int | None,
     harbor_job_dir: Path | None = None,
+    server_metrics: Path | None = None,
     routing_stats: Path | None = None,
     routing_log: Path | None = None,
     routing_stats_by_task: Path | None = None,
@@ -348,6 +362,14 @@ def finalize_manifest(
     outcomes["harbor_result_json_status"] = _copy_if_present(harbor_source, harbor_dest)
     if harbor_job_dir is not None:
         outcomes["harbor_job_dir"] = str(harbor_job_dir.resolve())
+
+    metrics_dest = (
+        Path(outcomes["server_metrics_prom"]) if outcomes.get("server_metrics_prom") else None
+    )
+    if outcomes.get("server_metrics_prom_status") != "not-requested":
+        if server_metrics is None and metrics_dest is not None:
+            server_metrics = metrics_dest
+        outcomes["server_metrics_prom_status"] = _copy_if_present(server_metrics, metrics_dest)
 
     stats_dest = (
         Path(outcomes["routing_stats_json"]) if outcomes.get("routing_stats_json") else None
@@ -427,6 +449,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
     write.add_argument("--harbor-base-url", default="")
     write.add_argument("--upstream-base-url", default="")
     write.add_argument("--upstream-api-key-env", default="")
+    write.add_argument("--server-config", type=Path, default=None)
     write.add_argument("--routing-profiles", type=Path, default=None)
     write.add_argument("--route-model", default="")
     write.add_argument("--harbor-command-json", default="[]")
@@ -452,6 +475,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
     write.add_argument("--run-dir", type=Path, required=True)
     write.add_argument("--log-path", type=Path, required=True)
     write.add_argument("--harbor-result-json", type=Path, required=True)
+    write.add_argument("--server-metrics-prom", type=Path, default=None)
+    write.add_argument("--server-metrics-status", default="not-requested")
     write.add_argument("--routing-stats-json", type=Path, required=True)
     write.add_argument("--routing-stats-status", default="predicted")
     write.add_argument("--extra", action="append", default=[])
@@ -460,6 +485,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
     finalize.add_argument("--manifest", type=Path, required=True)
     finalize.add_argument("--harbor-rc", type=int, default=None)
     finalize.add_argument("--harbor-job-dir", type=Path, default=None)
+    finalize.add_argument("--server-metrics", type=Path, default=None)
     finalize.add_argument("--routing-stats", type=Path, default=None)
     finalize.add_argument("--routing-log", type=Path, default=None)
     finalize.add_argument("--routing-stats-by-task", type=Path, default=None)
@@ -470,6 +496,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
             ns.manifest,
             harbor_rc=ns.harbor_rc,
             harbor_job_dir=ns.harbor_job_dir,
+            server_metrics=ns.server_metrics,
             routing_stats=ns.routing_stats,
             routing_log=ns.routing_log,
             routing_stats_by_task=ns.routing_stats_by_task,
@@ -479,6 +506,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
         return 2
 
     task_list = ns.task_list_file.resolve() if ns.task_list_file else None
+    server_config = ns.server_config.resolve() if ns.server_config else None
     routing_profiles = ns.routing_profiles.resolve() if ns.routing_profiles else None
     harbor_path = ns.harbor_path.resolve() if ns.harbor_path else None
     codex_model_catalog = (
@@ -490,6 +518,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
         print("ERROR: --classifier-prompts-json must decode to a JSON object")
         return 2
     try:
+        server_config_snapshot = snapshot_server_config(server_config, run_dir)
         routing_profiles_snapshot = snapshot_routing_profiles(routing_profiles, run_dir)
         dataset_manifest_snapshot = snapshot_dataset_manifest(harbor_path, run_dir)
     except OSError as exc:
@@ -555,6 +584,14 @@ def _cli_main(argv: list[str] | None = None) -> int:
             "harbor_base_url": _opt(ns.harbor_base_url),
             "upstream_base_url": _opt(ns.upstream_base_url),
             "upstream_api_key_env": _opt(ns.upstream_api_key_env),
+            "server_config": str(server_config) if server_config else None,
+            "server_config_digest": path_digest(server_config) if server_config else None,
+            "server_config_snapshot": (
+                str(server_config_snapshot) if server_config_snapshot else None
+            ),
+            "server_config_snapshot_digest": (
+                path_digest(server_config_snapshot) if server_config_snapshot else None
+            ),
             "routing_profiles": str(routing_profiles) if routing_profiles else None,
             "routing_profiles_digest": (
                 path_digest(routing_profiles) if routing_profiles else None
@@ -579,6 +616,10 @@ def _cli_main(argv: list[str] | None = None) -> int:
             "log_path": str(ns.log_path.resolve()),
             "harbor_result_json": str(ns.harbor_result_json.resolve()),
             "harbor_result_json_status": "predicted",
+            "server_metrics_prom": (
+                str(ns.server_metrics_prom.resolve()) if ns.server_metrics_prom else None
+            ),
+            "server_metrics_prom_status": ns.server_metrics_status,
             "routing_stats_json": str(ns.routing_stats_json.resolve()),
             "routing_stats_json_status": ns.routing_stats_status,
             "harbor_rc": None,
