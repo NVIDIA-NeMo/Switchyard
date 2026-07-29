@@ -55,6 +55,13 @@ pub enum LibsyError {
     #[error("algorithm run ended without a final response")]
     MissingFinalResponse,
 
+    /// The algorithm does not expose a decision-only execution contract.
+    #[error("algorithm {algorithm:?} does not support decision-only execution")]
+    DecisionOnlyUnsupported {
+        /// Algorithm that cannot terminate with a routing decision.
+        algorithm: String,
+    },
+
     /// A target's protocol client failed while serving a routed request.
     #[error("client call to target {target:?} failed: {source}")]
     ClientCall {

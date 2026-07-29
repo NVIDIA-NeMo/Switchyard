@@ -114,7 +114,8 @@ the id it calls — they can differ (`"strong"` → `"openai/gpt-4o"`) or coinci
 
 ## Running a request
 
-Hold the algorithm as `Arc<dyn Algorithm>` and choose one of two entry points:
+Hold the algorithm as `Arc<dyn Algorithm>` and choose the entry point that matches
+who owns dispatch:
 
 ```rust
 // run: libsy drives the request to completion, serving each call with the target's
@@ -123,11 +124,47 @@ let (trace, response) = algo.clone().run(Context::default(), req).await?;
 
 // run_stream: "ask, don't call" — you drive the stream and make the calls.
 let stream = algo.clone().run_stream(Context::default(), req);
+
+// run_decision_stream: compute a route but do not dispatch the selected target.
+let decisions = algo.clone().run_decision_stream(Context::default(), req);
 ```
 
 Under the hood every model call is *offloaded* to the request's `Step` stream; `run` is
 the convenience that serves each one via the target's client. The step stream is bounded,
 so pulling it paces the algorithm; each run is independent, so many run concurrently.
+
+## Computing a route without target dispatch
+
+`run_decision_stream` is an explicit capability for hosts that need to observe a route
+without executing the selected target. A supported algorithm may still request
+supporting model calls needed to compute its answer, but it terminates with
+`FinalDecision` before target dispatch. This is different from consuming the first
+`Decision` from `run_stream` and dropping the stream: dropping a normal stream cancels
+the in-progress algorithm task.
+
+```rust
+let stream = algo.clone().run_decision_stream(Context::default(), req);
+tokio::pin!(stream);
+while let Some(step) = stream.next().await {
+    match step? {
+        DecisionStep::CallLlm(call) => {
+            // Optional supporting call used by the algorithm to decide.
+            let response = serve_supporting_call(call.get_routed()).await;
+            call.respond(response)?;
+        }
+        DecisionStep::Decision(decision) => { /* intermediate trace */ }
+        DecisionStep::FinalDecision(decision) => {
+            // Observe decision.selected_model(); do not dispatch it.
+        }
+    }
+}
+```
+
+Algorithms opt in by implementing `create_decision_task`. Unsupported algorithms
+terminate with the typed `LibsyError::DecisionOnlyUnsupported` error rather than
+silently weakening their full request/response semantics. The reference `Random` and
+`FallThrough` routers support decision-only execution. Runnable:
+[`decision_only`](examples/decision_only.rs).
 
 ## Streaming responses
 
@@ -208,9 +245,17 @@ pub trait Algorithm: Send + Sync + 'static {
     // interior mutability for state. Offload calls/decisions on `driver`.
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
         -> switchyard_libsy::Result<Response>;
+    // Optional: terminate with a final route without dispatching its selected target.
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> switchyard_libsy::Result<Arc<dyn Decision>>;
     async fn process_signals(self: Arc<Self>, signals: Signals)
         -> switchyard_libsy::Result<()>;
-    // provided: run(ctx, request) -> (trace, response), run_stream(ctx, request) -> Stream<Step>
+    // provided: run(...), run_stream(...) -> Stream<Step>,
+    // run_decision_stream(...) -> Stream<DecisionStep>
 }
 
 pub trait Decision: Send + Sync {

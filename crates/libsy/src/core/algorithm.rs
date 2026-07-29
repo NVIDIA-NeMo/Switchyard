@@ -28,6 +28,10 @@ use crate::{observability, DriverError, LibsyError, Result};
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 
+/// A boxed, `Send` stream of [`DecisionStep`]s — the output of
+/// [`Algorithm::run_decision_stream`].
+pub type DecisionStepStream = Pin<Box<dyn Stream<Item = Result<DecisionStep>> + Send>>;
+
 /// A request paired with the routing [`Decision`] that produced it — the offload
 /// payload a host reads (via [`CallLlmRequest::get_routed`]) to serve the call.
 ///
@@ -207,6 +211,19 @@ impl Driver {
         }
     }
 
+    /// Emit the terminal decision-only step. Internal: called once by
+    /// [`Algorithm::run_decision_stream`] when the algorithm finishes.
+    pub(crate) async fn finish_decision(
+        &self,
+        ctx: Context,
+        result: Result<Arc<dyn Decision>>,
+    ) -> Result<()> {
+        match result {
+            Ok(decision) => self.driver.done(ctx, decision).await,
+            Err(err) => self.driver.fail(ctx, err).await,
+        }
+    }
+
     /// Transform the raw driver stream into a stream of [`Step`]s. Internal: the
     /// consumer stream is taken (once) by [`run_stream`](Algorithm::run_stream). A
     /// payload that does not match the expected type for its step becomes an `Err` item.
@@ -233,6 +250,35 @@ impl Driver {
                 }),
         })
     }
+
+    /// Transform the raw driver stream into a stream of [`DecisionStep`]s.
+    /// Internal: the consumer stream is taken once by
+    /// [`Algorithm::run_decision_stream`].
+    pub(crate) fn decision_stream(&self) -> impl Stream<Item = Result<DecisionStep>> {
+        self.driver.stream().map(|item| match item? {
+            DriverStep::Request(req) => {
+                Ok(DecisionStep::CallLlm(Box::new(CallLlmRequest::new(req))))
+            }
+            DriverStep::Info(payload) => payload
+                .downcast::<Arc<dyn Decision>>()
+                .map(|decision| DecisionStep::Decision(*decision))
+                .map_err(|_| {
+                    DriverError::TypeMismatch {
+                        expected: "Arc<dyn Decision>",
+                    }
+                    .into()
+                }),
+            DriverStep::Done(payload) => payload
+                .downcast::<Arc<dyn Decision>>()
+                .map(|decision| DecisionStep::FinalDecision(*decision))
+                .map_err(|_| {
+                    DriverError::TypeMismatch {
+                        expected: "Arc<dyn Decision>",
+                    }
+                    .into()
+                }),
+        })
+    }
 }
 
 impl Default for Driver {
@@ -252,6 +298,22 @@ pub enum Step {
     Decision(Arc<dyn Decision>),
     /// The algorithm finished with its final response — the last step of a run.
     ReturnToAgent(Box<Response>),
+}
+
+/// One item in the stream returned by [`Algorithm::run_decision_stream`].
+///
+/// A decision-only run may still request supporting model calls while computing a
+/// route. It never dispatches the final selected target: successful completion is
+/// represented explicitly by [`FinalDecision`](Self::FinalDecision).
+pub enum DecisionStep {
+    /// The algorithm needs a supporting model call to compute its final decision.
+    /// The host serves and fulfills it exactly like [`Step::CallLlm`].
+    CallLlm(Box<CallLlmRequest>),
+    /// An intermediate decision or trace event published while the algorithm runs.
+    Decision(Arc<dyn Decision>),
+    /// The algorithm completed with the decision the host may observe without
+    /// dispatching its selected target.
+    FinalDecision(Arc<dyn Decision>),
 }
 
 /// Abort guard
@@ -347,6 +409,25 @@ pub trait Algorithm: Send + Sync + 'static {
         request: Request,
     ) -> Result<Response>;
 
+    /// Compute the final routing decision without dispatching its selected target.
+    ///
+    /// Algorithms that support this contract implement the same orchestration they
+    /// use for a normal run up to target dispatch, returning the terminal decision
+    /// instead. Supporting calls needed to compute that decision may still be
+    /// offloaded through `driver`. The default is an explicit typed error because a
+    /// full-lifecycle algorithm cannot necessarily be reduced to one route.
+    #[allow(unused_variables)]
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        Err(LibsyError::DecisionOnlyUnsupported {
+            algorithm: self.name().to_string(),
+        })
+    }
+
     /// Feed the algorithm agentic-stack events (tool results, budgets, etc.). The
     /// reference algorithms ignore signals; a stateful algorithm updates its own
     /// (interior-mutable) state. Takes `self: Arc<Self>` like the other run methods.
@@ -436,6 +517,57 @@ pub trait Algorithm: Send + Sync + 'static {
         let stream: StepStream = Box::pin(stream);
         Box::pin(futures::stream::select(stream, tail).map(move |step| {
             // link abort guard to stream
+            let _keep_alive = &abort_guard;
+            step
+        }))
+    }
+
+    /// Compute one request's final routing decision as a stream without dispatching
+    /// the selected target.
+    ///
+    /// The stream may contain [`DecisionStep::CallLlm`] for supporting calls an
+    /// algorithm requires to decide, followed by informational
+    /// [`DecisionStep::Decision`] items. Success terminates explicitly with
+    /// [`DecisionStep::FinalDecision`]. Algorithms that cannot faithfully provide
+    /// this contract yield [`LibsyError::DecisionOnlyUnsupported`].
+    fn run_decision_stream(self: Arc<Self>, ctx: Context, request: Request) -> DecisionStepStream {
+        let mut ctx = ctx;
+        ctx.values.insert(
+            observability::ALGORITHM_KEY.to_string(),
+            self.name().to_string(),
+        );
+        let driver = Driver::new();
+        let task_driver = driver.clone();
+        let task_ctx = ctx.clone();
+        let stream = task_driver.decision_stream();
+        let span = observability::run_span(self.name(), request.metadata.as_ref());
+        let handle = tokio::spawn(
+            async move {
+                observability::observe_run(
+                    task_ctx.clone(),
+                    self.create_decision_task(task_ctx, task_driver, request),
+                )
+                .await
+            }
+            .instrument(span),
+        );
+        let abort_guard = AbortOnDrop(handle.abort_handle());
+
+        let finish_driver = driver.clone();
+        let finish_ctx = ctx;
+        let tail: DecisionStepStream = Box::pin(
+            futures::stream::once(async move {
+                let result = match handle.await {
+                    Ok(decision) => decision,
+                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
+                };
+                finish_driver.finish_decision(finish_ctx, result).await
+            })
+            .filter_map(|finish_result| async move { finish_result.err().map(Err) }),
+        );
+
+        let stream: DecisionStepStream = Box::pin(stream);
+        Box::pin(futures::stream::select(stream, tail).map(move |step| {
             let _keep_alive = &abort_guard;
             step
         }))
@@ -769,6 +901,101 @@ mod tests {
             final_completion.ok_or_else(|| test_error("no ReturnToAgent step"))?,
             "fulfilled"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_is_an_explicit_typed_capability() -> Result<()> {
+        let stream = orch(target_set(&[("offload/model", false)]))
+            .run_decision_stream(Context::default(), request());
+        tokio::pin!(stream);
+
+        let error = stream
+            .next()
+            .await
+            .ok_or_else(|| test_error("decision-only stream ended without a result"))?
+            .err()
+            .ok_or_else(|| test_error("unsupported algorithm unexpectedly decided"))?;
+        assert!(matches!(
+            error,
+            LibsyError::DecisionOnlyUnsupported { algorithm } if algorithm == "test"
+        ));
+        assert!(
+            stream.next().await.is_none(),
+            "unsupported decision-only stream should terminate after its typed error"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_can_offload_supporting_calls_without_dispatching_the_final_target(
+    ) -> Result<()> {
+        struct SupportingCallAlgo {
+            judge: LlmTarget,
+        }
+
+        #[async_trait]
+        impl Algorithm for SupportingCallAlgo {
+            fn name(&self) -> &str {
+                "supporting_call"
+            }
+
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response> {
+                Err(test_error("full execution is not used by this test"))
+            }
+
+            async fn create_decision_task(
+                self: Arc<Self>,
+                ctx: Context,
+                driver: Driver,
+                request: Request,
+            ) -> Result<Arc<dyn Decision>> {
+                let judge_decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                    model: self.judge.semantic_name.clone(),
+                });
+                driver
+                    .call_llm_target(ctx, &self.judge, request, judge_decision)
+                    .await?;
+                Ok(Arc::new(TestDecision {
+                    model: "final/model".to_string(),
+                }))
+            }
+        }
+
+        let algorithm: Arc<dyn Algorithm> = Arc::new(SupportingCallAlgo {
+            judge: LlmTarget {
+                semantic_name: "judge/model".to_string(),
+                llm_client: None,
+            },
+        });
+        let stream = algorithm.run_decision_stream(Context::default(), request());
+        tokio::pin!(stream);
+
+        let mut calls = Vec::new();
+        let mut final_model = None;
+        while let Some(step) = stream.next().await {
+            match step? {
+                DecisionStep::CallLlm(call) => {
+                    calls.push(call.get_decision().selected_model().to_string());
+                    call.respond(Ok(Response {
+                        llm_response: LlmResponse::Agg(text_response(None, "judge result")),
+                        metadata: None,
+                    }))?;
+                }
+                DecisionStep::Decision(_) => {}
+                DecisionStep::FinalDecision(decision) => {
+                    final_model = Some(decision.selected_model().to_string());
+                }
+            }
+        }
+
+        assert_eq!(calls, vec!["judge/model"]);
+        assert_eq!(final_model.as_deref(), Some("final/model"));
         Ok(())
     }
 

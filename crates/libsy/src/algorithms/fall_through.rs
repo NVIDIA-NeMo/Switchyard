@@ -162,6 +162,28 @@ where
             .await
     }
 
+    /// Executes the processor/classifier sequence without dispatching the selected
+    /// target, returning the final decision to a decision-only stream.
+    pub(crate) async fn decide(
+        &self,
+        ctx: Context,
+        driver: Driver,
+        mut request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        let session_state = self.session_state(&request);
+        let (_, decision) = match session_state {
+            Some(state) => {
+                let mut state = state.lock().await;
+                self.route(&mut state, &ctx, &driver, &mut request).await?
+            }
+            None => {
+                let mut state = S::default();
+                self.route(&mut state, &ctx, &driver, &mut request).await?
+            }
+        };
+        Ok(decision)
+    }
+
     /// Returns this request's retained state without holding the registry lock.
     fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<S>>> {
         let states = self.session_states.as_ref()?;
@@ -261,6 +283,15 @@ where
         request: Request,
     ) -> Result<Response> {
         self.execute(ctx, driver, request).await
+    }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        self.decide(ctx, driver, request).await
     }
 }
 #[cfg(test)]

@@ -135,10 +135,10 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
 /// Runs one algorithm task to completion, recording the run counter, duration
 /// histogram, span outcome, and failure log when it resolves. Executes inside
 /// the `libsy.run` span its caller instruments the task with.
-pub(crate) async fn observe_run(
+pub(crate) async fn observe_run<T>(
     ctx: Context,
-    run: impl Future<Output = Result<Response>>,
-) -> Result<Response> {
+    run: impl Future<Output = Result<T>>,
+) -> Result<T> {
     let started = Instant::now();
     let result = run.await;
     record_run(
@@ -164,7 +164,7 @@ pub(crate) fn record_client_call(result: &Result<Response>) {
 /// Records the end of one algorithm run: the run counter and duration
 /// histogram, the `outcome`/`error` fields on `span`, and a warn log when the
 /// run failed.
-fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, span: &Span) {
+fn record_run<T>(algorithm: &str, duration: Duration, result: &Result<T>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
     if let Err(error) = result {

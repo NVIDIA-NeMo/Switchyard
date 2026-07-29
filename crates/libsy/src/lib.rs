@@ -19,7 +19,10 @@
 //!   returns the final [`Response`]. The provided
 //!   [`run_stream`](Algorithm::run_stream) drives that on its own task and hands
 //!   back a stream of [`Step`]s; [`run`](Algorithm::run) runs
-//!   it to completion with the targets' default clients.
+//!   it to completion with the targets' default clients. Algorithms that can
+//!   faithfully terminate after selecting a route also implement
+//!   [`create_decision_task`](Algorithm::create_decision_task), driven by
+//!   [`run_decision_stream`](Algorithm::run_decision_stream).
 //! - An [`LlmTarget`] names a routing target by its [`semantic_name`](LlmTarget::semantic_name).
 //!   Every call is *offloaded* to the request's stream as a [`Step::CallLlm`]; the
 //!   target's [`RoutedLlmClient`], if any, rides along as
@@ -42,6 +45,12 @@
 //!   [`Step::ReturnToAgent`] carrying the final response. The step stream is bounded,
 //!   so pulling it paces the algorithm one step at a time — an "ask, don't call" mode
 //!   that lets a host that owns its transport keep control of every call.
+//! - [`run_decision_stream`](Algorithm::run_decision_stream) — compute a final
+//!   route without dispatching the selected target. Supporting model calls needed
+//!   by an algorithm may still arrive as [`DecisionStep::CallLlm`]; success ends
+//!   explicitly with [`DecisionStep::FinalDecision`]. Algorithms that cannot be
+//!   reduced faithfully to one route return
+//!   [`LibsyError::DecisionOnlyUnsupported`].
 //!
 //! ## Concurrency
 //!

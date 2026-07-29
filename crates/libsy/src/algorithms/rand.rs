@@ -171,17 +171,29 @@ impl Algorithm for Random {
     ) -> Result<Response> {
         self.inner.execute(ctx, driver, request).await
     }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn crate::Decision>> {
+        self.inner.decide(ctx, driver, request).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use std::collections::HashSet;
 
     use switchyard_protocol::{completion_text, text_request, text_response, Metadata};
 
     use crate::algorithms::AffinityRouter;
-    use crate::{Decision, LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals};
+    use crate::{
+        Decision, DecisionStep, LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals,
+    };
 
     /// Echoes the selected target so tests can inspect which target was called.
     struct EchoClient;
@@ -342,6 +354,88 @@ mod tests {
         assert!(
             (700..=800).contains(&second_count),
             "expected a roughly 25/75 split, selected b/model {second_count} times"
+        );
+        Ok(())
+    }
+
+    async fn decision_only_selections(
+        algorithm: Arc<dyn Algorithm>,
+        count: usize,
+    ) -> Result<Vec<String>> {
+        let mut selected = Vec::with_capacity(count);
+        for _ in 0..count {
+            let stream = algorithm
+                .clone()
+                .run_decision_stream(Context::default(), request());
+            tokio::pin!(stream);
+
+            let mut final_decision = None;
+            while let Some(step) = stream.next().await {
+                match step? {
+                    DecisionStep::CallLlm(_) => {
+                        return Err(LibsyError::AlgorithmError {
+                            message: "random decision-only run requested an LLM call".to_string(),
+                        });
+                    }
+                    DecisionStep::Decision(_) => {}
+                    DecisionStep::FinalDecision(decision) => {
+                        final_decision = Some(decision.selected_model().to_string());
+                    }
+                }
+            }
+            selected.push(final_decision.ok_or_else(|| LibsyError::AlgorithmError {
+                message: "random decision-only run had no final decision".to_string(),
+            })?);
+        }
+        Ok(selected)
+    }
+
+    #[tokio::test]
+    async fn decision_only_selects_without_dispatching_the_target() -> Result<()> {
+        let algorithm: Arc<dyn Algorithm> =
+            Arc::new(Random::new(target_set(&["only/model"]), None, Some(42))?);
+
+        let stream = algorithm.run_decision_stream(Context::default(), request());
+        tokio::pin!(stream);
+        let mut steps = Vec::new();
+        while let Some(step) = stream.next().await {
+            match step? {
+                DecisionStep::CallLlm(_) => {
+                    return Err(LibsyError::AlgorithmError {
+                        message: "random decision-only run dispatched its selected target"
+                            .to_string(),
+                    });
+                }
+                DecisionStep::Decision(decision) => {
+                    assert_eq!(decision.selected_model(), "only/model");
+                    steps.push("decision");
+                }
+                DecisionStep::FinalDecision(decision) => {
+                    assert_eq!(decision.selected_model(), "only/model");
+                    steps.push("final_decision");
+                }
+            }
+        }
+        assert_eq!(steps, vec!["decision", "final_decision"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_seeded_selection_is_reproducible() -> Result<()> {
+        let first: Arc<dyn Algorithm> = Arc::new(algorithm(
+            &["a/model", "b/model"],
+            Some(vec![1.0, 3.0]),
+            Some(42),
+        )?);
+        let second: Arc<dyn Algorithm> = Arc::new(algorithm(
+            &["a/model", "b/model"],
+            Some(vec![1.0, 3.0]),
+            Some(42),
+        )?);
+
+        assert_eq!(
+            decision_only_selections(first, 1_000).await?,
+            decision_only_selections(second, 1_000).await?
         );
         Ok(())
     }
