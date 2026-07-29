@@ -7,11 +7,14 @@
 //! Once a session escalates, it is pinned to the capable model for all remaining turns —
 //! avoiding repeated weak attempts on a task the efficient model already failed.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use switchyard_protocol::{completion_text, LlmRequest, Message, OutputParams, Role};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     algorithms::util::{
@@ -19,7 +22,7 @@ use crate::{
     },
     Algorithm, Classification, Classifier, Context, Decision, Driver, Event, LibsyError,
     LlmResponse, LlmTarget, Processor, Request, Response, Result, RoutedLlmClient, Score,
-    SharedState, State, StateValue,
+    State, StateValue,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/escalation/prompt.md");
@@ -31,9 +34,7 @@ const CANDIDATE_KEY: &str = "escalation.candidate";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EscalationVerdict {
-    should_escalate: bool,
-    #[allow(dead_code)]
-    confidence: f64,
+    escalate: bool,
     #[allow(dead_code)]
     reason: String,
 }
@@ -84,24 +85,12 @@ impl Judge for EscalationJudge {
             })
             .unwrap_or("");
 
+        // Pass the full conversation so the judge sees the session trajectory,
+        // matching the Python-side escalation judge which sees task framing +
+        // all recent turns of activity.
         let mut messages =
             vec![Message::text(Role::System, self.config.system_prompt.clone())];
-        messages.extend(
-            request
-                .llm_request
-                .messages
-                .iter()
-                .filter(|m| matches!(m.role, Role::System | Role::Developer))
-                .cloned(),
-        );
-        if let Some(last_user) = request
-            .llm_request
-            .messages
-            .iter()
-            .rfind(|m| m.role == Role::User)
-        {
-            messages.push(last_user.clone());
-        }
+        messages.extend(request.llm_request.messages.iter().cloned());
         messages.push(Message::text(Role::Assistant, candidate));
         Request {
             llm_request: LlmRequest {
@@ -128,7 +117,7 @@ impl JudgePolicy for EscalationPolicy {
     type Verdict = EscalationVerdict;
 
     fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
-        if verdict.is_some_and(|v| v.should_escalate) {
+        if verdict.is_some_and(|v| v.escalate) {
             Classification::Scores(vec![Score {
                 target: self.capable.clone(),
                 confidence: 1.0,
@@ -147,6 +136,8 @@ pub struct EscalationRouter {
     judge_classifier: JudgeClassifier<EscalationJudge, EscalationPolicy>,
     /// Latches sessions to the capable model after their first escalation.
     affinity: AffinityRouter,
+    /// Per-session routing state, keyed by session ID.
+    session_states: Mutex<HashMap<String, Arc<AsyncMutex<State>>>>,
 }
 
 impl EscalationRouter {
@@ -168,39 +159,40 @@ impl EscalationRouter {
                 EscalationPolicy { capable: capable_name.clone() },
             ),
             affinity: AffinityRouter::new().with_latch_only([capable_name]),
+            session_states: Mutex::new(HashMap::new()),
         })
+    }
+
+    fn session_state(&self, request: &Request) -> Arc<AsyncMutex<State>> {
+        let session_id = request
+            .metadata
+            .as_ref()
+            .and_then(|m| m.session_id.as_deref())
+            .filter(|id| !id.is_empty());
+        if let Some(id) = session_id {
+            let mut states = self.session_states.lock();
+            Arc::clone(
+                states
+                    .entry(id.to_string())
+                    .or_insert_with(|| Arc::new(AsyncMutex::new(State::default()))),
+            )
+        } else {
+            Arc::new(AsyncMutex::new(State::default()))
+        }
     }
 }
 
-#[async_trait]
-impl Algorithm<SharedState> for EscalationRouter {
-    fn name(&self) -> &str {
-        "escalation"
-    }
-
-    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
-        [&self.capable_target, &self.efficient_target]
-            .iter()
-            .find_map(|t| {
-                t.llm_client
-                    .as_ref()
-                    .filter(|c| c.supports_count_tokens())
-                    .cloned()
-            })
-    }
-
-    async fn create_run_task(
-        self: Arc<Self>,
-        ctx: Context<SharedState>,
-        driver: Driver,
-        mut request: Request,
-    ) -> Result<Response> {
-        let bare_ctx = ctx.without_state();
+impl EscalationRouter {
+    async fn execute(&self, ctx: Context, driver: Driver, request: Request) -> Result<Response> {
+        let mut request = request;
+        let session = self.session_state(&request);
 
         // 1. Check whether this session is already pinned to the capable model.
+        // AffinityRouter::score/process ignore their `_state` arg — pass a scratch State to
+        // avoid a `MutexGuard` borrow that needs `'static` (S: 'static in its impl bound).
         let is_pinned = {
-            let mut state = ctx.state.lock().await;
-            let classification = self.affinity.score(&mut state, &mut request, None).await?;
+            let mut scratch = State::default();
+            let classification = self.affinity.score(&mut scratch, &mut request, None).await?;
             matches!(classification, Classification::Scores(ref s) if !s.is_empty())
         };
 
@@ -210,9 +202,9 @@ impl Algorithm<SharedState> for EscalationRouter {
                 tier: "strong",
                 reason: "session pinned to capable after prior escalation",
             });
-            driver.info(bare_ctx.clone(), decision.clone()).await?;
+            driver.info(ctx.clone(), decision.clone()).await?;
             return driver
-                .call_llm_target(bare_ctx, &self.capable_target, request, decision)
+                .call_llm_target(ctx, &self.capable_target, request, decision)
                 .await;
         }
 
@@ -222,12 +214,10 @@ impl Algorithm<SharedState> for EscalationRouter {
             tier: "weak",
             reason: "initial efficient-model attempt",
         });
-        driver
-            .info(bare_ctx.clone(), efficient_decision.clone())
-            .await?;
+        driver.info(ctx.clone(), efficient_decision.clone()).await?;
         let efficient_response = driver
             .call_llm_target(
-                bare_ctx.clone(),
+                ctx.clone(),
                 &self.efficient_target,
                 request.clone(),
                 efficient_decision,
@@ -243,7 +233,7 @@ impl Algorithm<SharedState> for EscalationRouter {
 
         // 4. Store the efficient response in state and consult the judge.
         let should_escalate = {
-            let mut state = ctx.state.lock().await;
+            let mut state = session.lock().await;
             state.extra.insert(
                 CANDIDATE_KEY.to_string(),
                 StateValue::String(completion_text(&efficient_agg)),
@@ -270,21 +260,50 @@ impl Algorithm<SharedState> for EscalationRouter {
             reason: "quality escalation to capable model",
         });
         {
-            let mut state = ctx.state.lock().await;
+            // AffinityRouter::process ignores _state — use scratch (same reason as step 1).
+            let mut scratch = State::default();
             self.affinity
-                .process(&mut state, Event::Request(&mut request))
+                .process(&mut scratch, Event::Request(&mut request))
                 .await?;
             self.affinity
-                .process(&mut state, Event::Decision(&*capable_decision))
+                .process(
+                    &mut scratch,
+                    Event::Decision { request: &request, decision: &*capable_decision },
+                )
                 .await?;
         }
 
+        driver.info(ctx.clone(), capable_decision.clone()).await?;
         driver
-            .info(bare_ctx.clone(), capable_decision.clone())
-            .await?;
-        driver
-            .call_llm_target(bare_ctx, &self.capable_target, request, capable_decision)
+            .call_llm_target(ctx, &self.capable_target, request, capable_decision)
             .await
+    }
+}
+
+#[async_trait]
+impl Algorithm for EscalationRouter {
+    fn name(&self) -> &str {
+        "escalation"
+    }
+
+    fn count_tokens_client(&self) -> Option<Arc<dyn RoutedLlmClient>> {
+        [&self.capable_target, &self.efficient_target]
+            .iter()
+            .find_map(|t| {
+                t.llm_client
+                    .as_ref()
+                    .filter(|c| c.supports_count_tokens())
+                    .cloned()
+            })
+    }
+
+    async fn create_run_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Response> {
+        self.execute(ctx, driver, request).await
     }
 }
 
@@ -298,7 +317,6 @@ mod tests {
 
     use crate::{
         Algorithm, Context, Decision, LlmResponse, LlmTarget, Request, Response, RoutedLlmClient,
-        SharedState,
     };
 
     use super::EscalationRouter;
@@ -332,10 +350,8 @@ mod tests {
         }
     }
 
-    fn verdict_json(should_escalate: bool) -> String {
-        format!(
-            r#"{{"should_escalate": {should_escalate}, "confidence": 0.9, "reason": "test"}}"#
-        )
+    fn verdict_json(escalate: bool) -> String {
+        format!(r#"{{"escalate": {escalate}, "reason": "test"}}"#)
     }
 
     /// Records which models were called (in order) and returns pre-supplied text replies.
@@ -416,7 +432,7 @@ mod tests {
         ]);
 
         let (_, response) = router
-            .run(Context::<SharedState>::default(), request(Some("s1")))
+            .run(Context::default(), request(Some("s1")))
             .await?;
 
         let agg = response.llm_response.as_agg().expect("should be Agg");
@@ -434,7 +450,7 @@ mod tests {
         ]);
 
         let (trace, response) = router
-            .run(Context::<SharedState>::default(), request(Some("s2")))
+            .run(Context::default(), request(Some("s2")))
             .await?;
 
         let agg = response.llm_response.as_agg().expect("should be Agg");
@@ -458,12 +474,12 @@ mod tests {
         // First request escalates and pins the session.
         router
             .clone()
-            .run(Context::<SharedState>::default(), request(Some("s3")))
+            .run(Context::default(), request(Some("s3")))
             .await?;
 
         // Second request on the same session goes straight to capable.
         let (trace, _) = router
-            .run(Context::<SharedState>::default(), request(Some("s3")))
+            .run(Context::default(), request(Some("s3")))
             .await?;
 
         assert_eq!(trace.len(), 1);
@@ -483,7 +499,7 @@ mod tests {
         ]);
 
         let (_, response) = router
-            .run(Context::<SharedState>::default(), request(Some("s4")))
+            .run(Context::default(), request(Some("s4")))
             .await?;
 
         let agg = response.llm_response.as_agg().expect("should be Agg");
@@ -504,11 +520,11 @@ mod tests {
 
         router
             .clone()
-            .run(Context::<SharedState>::default(), request(None))
+            .run(Context::default(), request(None))
             .await?;
 
         router
-            .run(Context::<SharedState>::default(), request(None))
+            .run(Context::default(), request(None))
             .await?;
 
         assert_eq!(
@@ -531,7 +547,7 @@ mod tests {
         ]);
 
         let (trace, _) = router
-            .run(Context::<SharedState>::default(), request(Some("s5")))
+            .run(Context::default(), request(Some("s5")))
             .await?;
 
         assert_eq!(trace[0].routing_tier(), Some("weak"));

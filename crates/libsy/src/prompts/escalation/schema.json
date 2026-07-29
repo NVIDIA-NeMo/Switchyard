@@ -6,20 +6,16 @@
     "schema": {
       "type": "object",
       "properties": {
-        "should_escalate": {
+        "escalate": {
           "type": "boolean",
-          "description": "True when the response should be escalated to a more capable model."
-        },
-        "confidence": {
-          "type": "number",
-          "description": "Confidence in this assessment, between 0.0 and 1.0."
+          "description": "True when the run is likely doomed without escalation to the strong tier."
         },
         "reason": {
           "type": "string",
-          "description": "One concise sentence naming the specific issue or confirming sufficiency."
+          "description": "One short sentence naming the trouble pattern, or stating why the run is progressing."
         }
       },
-      "required": ["should_escalate", "confidence", "reason"],
+      "required": ["escalate", "reason"],
       "additionalProperties": false
     }
   }
