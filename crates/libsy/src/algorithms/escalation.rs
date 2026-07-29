@@ -188,11 +188,12 @@ impl EscalationRouter {
         let session = self.session_state(&request);
 
         // 1. Check whether this session is already pinned to the capable model.
-        // AffinityRouter::score/process ignore their `_state` arg — pass a scratch State to
-        // avoid a `MutexGuard` borrow that needs `'static` (S: 'static in its impl bound).
+        // Dispatch through `dyn Classifier<State>` so async_trait does not propagate the
+        // `S: 'static` bound from AffinityRouter's impl (same pattern as FallThrough::route).
         let is_pinned = {
-            let mut scratch = State::default();
-            let classification = self.affinity.score(&mut scratch, &mut request, None).await?;
+            let mut state = session.lock().await;
+            let cls: &dyn Classifier<State> = &self.affinity;
+            let classification = cls.score(&mut *state, &mut request, None).await?;
             matches!(classification, Classification::Scores(ref s) if !s.is_empty())
         };
 
@@ -260,17 +261,14 @@ impl EscalationRouter {
             reason: "quality escalation to capable model",
         });
         {
-            // AffinityRouter::process ignores _state — use scratch (same reason as step 1).
-            let mut scratch = State::default();
-            self.affinity
-                .process(&mut scratch, Event::Request(&mut request))
-                .await?;
-            self.affinity
-                .process(
-                    &mut scratch,
-                    Event::Decision { request: &request, decision: &*capable_decision },
-                )
-                .await?;
+            let mut state = session.lock().await;
+            let proc: &dyn Processor<State> = &self.affinity;
+            proc.process(&mut *state, Event::Request(&mut request)).await?;
+            proc.process(
+                &mut *state,
+                Event::Decision { request: &request, decision: &*capable_decision },
+            )
+            .await?;
         }
 
         driver.info(ctx.clone(), capable_decision.clone()).await?;
