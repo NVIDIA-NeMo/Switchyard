@@ -26,8 +26,8 @@ def _free_port() -> int:
 def litellm_base_url() -> Iterator[str]:
     if os.environ.get("SWITCHYARD_LITELLM_E2E") != "1":
         pytest.skip("SWITCHYARD_LITELLM_E2E=1 is required for paid E2E tests")
-    if not os.environ.get("OPENAI_API_KEY"):
-        pytest.skip("OPENAI_API_KEY is required for paid E2E tests")
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY is required for paid E2E tests")
     if shutil.which("docker") is None:
         pytest.skip("Docker is required for paid E2E tests")
     subprocess.run(
@@ -65,7 +65,7 @@ def litellm_base_url() -> Iterator[str]:
 def test_paid_e2e_requires_explicit_spend_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.delenv("SWITCHYARD_LITELLM_E2E", raising=False)
 
     def fail_if_docker_is_checked(_: str) -> str | None:
@@ -74,6 +74,22 @@ def test_paid_e2e_requires_explicit_spend_opt_in(
     monkeypatch.setattr(shutil, "which", fail_if_docker_is_checked)
     fixture = litellm_base_url.__wrapped__()
     with pytest.raises(pytest.skip.Exception, match="SWITCHYARD_LITELLM_E2E"):
+        next(fixture)
+
+
+def test_paid_e2e_requires_openrouter_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWITCHYARD_LITELLM_E2E", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "legacy-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    def fail_if_docker_is_checked(_: str) -> str | None:
+        pytest.fail("Docker must not be checked without OPENROUTER_API_KEY")
+
+    monkeypatch.setattr(shutil, "which", fail_if_docker_is_checked)
+    fixture = litellm_base_url.__wrapped__()
+    with pytest.raises(pytest.skip.Exception, match="OPENROUTER_API_KEY"):
         next(fixture)
 
 
@@ -97,7 +113,7 @@ def _request() -> dict[str, object]:
 
 
 @pytest.mark.e2e
-async def test_random_router_calls_both_real_openai_models(
+async def test_random_router_calls_both_real_openrouter_models(
     litellm_base_url: str,
 ) -> None:
     strong_client = LiteLLMSyClient("strong", base_url=litellm_base_url)

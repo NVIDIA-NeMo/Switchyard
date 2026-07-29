@@ -30,5 +30,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "e2e: makes paid calls through Dockerized LiteLLM to real OpenAI models",
+    "e2e: makes paid calls through Dockerized LiteLLM to real OpenRouter models",
 ]

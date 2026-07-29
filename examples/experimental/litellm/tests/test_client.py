@@ -34,7 +34,7 @@ def request_body() -> dict[str, object]:
     }
 
 
-def gateway_response(model: str = "gpt-5.6-luna") -> dict[str, object]:
+def gateway_response(model: str = "moonshotai/kimi-k3") -> dict[str, object]:
     return {
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -113,7 +113,7 @@ async def test_call_translates_request_and_normalizes_response() -> None:
     assert request == original
     assert response == {
         "id": "chatcmpl-test",
-        "model": "gpt-5.6-luna",
+        "model": "moonshotai/kimi-k3",
         "outputs": [
             {
                 "role": "assistant",
