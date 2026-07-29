@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::{
     LlmClientError,
+    format::FormatId,
     llm::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage},
 };
 
@@ -58,21 +59,7 @@ impl LlmResponse {
             LlmResponse::Stream(mut stream) => {
                 let mut accumulator = ResponseAccumulator::new();
                 while let Some(item) = stream.next().await {
-                    match item? {
-                        LlmResponseChunk::DecodeError { message } => {
-                            return Err(LlmClientError::ResponseTranslation(message));
-                        }
-                        LlmResponseChunk::StreamError { message } => {
-                            // The upstream reported the failure inside the response body, so
-                            // there is no real status line to carry; 502 stands in for "the
-                            // upstream failed" the same way a failed non-streaming call would.
-                            return Err(LlmClientError::UpstreamHttp {
-                                status: MID_STREAM_UPSTREAM_STATUS,
-                                body: message,
-                            });
-                        }
-                        chunk => accumulator.push(chunk),
-                    }
+                    push_checked_chunk(&mut accumulator, item?)?;
                 }
                 Ok(accumulator.finish())
             }
@@ -144,11 +131,48 @@ impl AggLlmResponse {
     }
 }
 
-/// One provider-neutral streaming event — the normalized counterpart to
-/// [`AggLlmResponse`](crate::AggLlmResponse), sitting between stream decoders and
-/// encoders. `switchyard-translation` re-exports it as `ConversationStreamEvent`.
+fn push_checked_chunk(
+    accumulator: &mut ResponseAccumulator,
+    chunk: LlmResponseChunk,
+) -> Result<(), LlmClientError> {
+    match chunk {
+        LlmResponseChunk::ProviderEvent { normalized, .. } => {
+            for chunk in normalized {
+                push_checked_chunk(accumulator, chunk)?;
+            }
+            Ok(())
+        }
+        LlmResponseChunk::DecodeError { message } => {
+            Err(LlmClientError::ResponseTranslation(message))
+        }
+        LlmResponseChunk::StreamError { message } => Err(LlmClientError::UpstreamHttp {
+            status: MID_STREAM_UPSTREAM_STATUS,
+            body: message,
+        }),
+        chunk => {
+            accumulator.push(chunk);
+            Ok(())
+        }
+    }
+}
+
+/// One streaming event carried between a host and an algorithm.
+///
+/// Normalized variants expose provider-neutral meaning. [`ProviderEvent`](Self::ProviderEvent)
+/// additionally retains exact source JSON for a lossless same-format round trip while keeping
+/// normalized children available to algorithms and cross-format encoders.
+/// `switchyard-translation` re-exports this type as `ConversationStreamEvent`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
+    /// One exact provider event paired with the neutral events decoded from it.
+    ProviderEvent {
+        /// Provider format that produced `raw`.
+        source: FormatId,
+        /// Exact parsed provider event.
+        raw: Value,
+        /// Provider-neutral events decoded from `raw`, in source order.
+        normalized: Vec<LlmResponseChunk>,
+    },
     MessageStart {
         id: Option<String>,
         model: Option<String>,
@@ -216,6 +240,11 @@ impl ResponseAccumulator {
     /// earlier ones; text, reasoning, and tool-call arguments append.
     pub fn push(&mut self, chunk: LlmResponseChunk) {
         match chunk {
+            LlmResponseChunk::ProviderEvent { normalized, .. } => {
+                for chunk in normalized {
+                    self.push(chunk);
+                }
+            }
             LlmResponseChunk::MessageStart { id, model } => {
                 if id.is_some() {
                     self.id = id;
@@ -359,6 +388,50 @@ mod tests {
                 text: "Hello".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn folds_normalized_chunks_inside_provider_event() {
+        let aggregate = fold(vec![LlmResponseChunk::ProviderEvent {
+            source: crate::WireFormat::OpenAiChat.into(),
+            raw: json!({
+                "choices": [{"delta": {"content": "hello"}}],
+                "system_fingerprint": "fp_exact"
+            }),
+            normalized: vec![LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hello".to_string(),
+            }],
+        }]);
+
+        assert_eq!(
+            aggregate.outputs[0].content,
+            vec![ContentBlock::Text {
+                text: "hello".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn stream_errors_inside_provider_events_remain_typed() {
+        let response = LlmResponse::Stream(Box::pin(stream::iter([Ok(
+            LlmResponseChunk::ProviderEvent {
+                source: crate::WireFormat::OpenAiChat.into(),
+                raw: json!({"error": {"message": "provider failed"}}),
+                normalized: vec![LlmResponseChunk::StreamError {
+                    message: "provider failed".to_string(),
+                }],
+            },
+        )])));
+
+        let error = block_on(response.into_agg()).err();
+        assert!(matches!(
+            error,
+            Some(LlmClientError::UpstreamHttp {
+                status: MID_STREAM_UPSTREAM_STATUS,
+                ..
+            })
+        ));
     }
 
     #[test]
