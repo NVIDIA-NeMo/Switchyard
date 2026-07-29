@@ -1,0 +1,105 @@
+import os
+import shutil
+import socket
+import subprocess
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from switchyard_litellm import LiteLLMSyClient
+
+from switchyard.libsy import LlmTarget, algorithms
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture(scope="session")
+def litellm_base_url() -> Iterator[str]:
+    if not os.environ.get("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY is required for paid E2E tests")
+    if shutil.which("docker") is None:
+        pytest.skip("Docker is required for paid E2E tests")
+    subprocess.run(
+        ["docker", "compose", "version"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+    port = _free_port()
+    project = f"switchyard-litellm-e2e-{os.getpid()}"
+    network = f"{project}-network"
+    env = {
+        **os.environ,
+        "LITELLM_PORT": str(port),
+        "LITELLM_NETWORK": network,
+    }
+    compose = ["docker", "compose", "--project-name", project]
+    try:
+        subprocess.run(
+            [*compose, "up", "-d", "--wait"],
+            cwd=PACKAGE_ROOT,
+            env=env,
+            check=True,
+        )
+        yield f"http://127.0.0.1:{port}/v1"
+    finally:
+        subprocess.run(
+            [*compose, "down", "--volumes", "--remove-orphans"],
+            cwd=PACKAGE_ROOT,
+            env=env,
+            check=False,
+        )
+
+
+def _request() -> dict[str, object]:
+    return {
+        "model": "auto",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Reply with a short greeting for a Switchyard E2E test.",
+                    }
+                ],
+            }
+        ],
+        "reasoning": {"effort": "low"},
+        "output": {"max_output_tokens": 128},
+    }
+
+
+@pytest.mark.e2e
+async def test_random_router_calls_both_real_openai_models(
+    litellm_base_url: str,
+) -> None:
+    strong_client = LiteLLMSyClient("strong", base_url=litellm_base_url)
+    fast_client = LiteLLMSyClient("fast", base_url=litellm_base_url)
+    targets = [
+        LlmTarget("strong", strong_client),
+        LlmTarget("fast", fast_client),
+    ]
+    try:
+        strong_trace, strong_response = await algorithms.random(
+            targets, weights=[1, 0], seed=42
+        ).run(_request())
+        fast_trace, fast_response = await algorithms.random(
+            targets, weights=[0, 1], seed=42
+        ).run(_request())
+    finally:
+        await strong_client.aclose()
+        await fast_client.aclose()
+
+    assert [item["selected_model"] for item in strong_trace] == ["strong"]
+    assert [item["selected_model"] for item in fast_trace] == ["fast"]
+    for response in (strong_response, fast_response):
+        text = response["outputs"][0]["content"][0]["text"]
+        assert isinstance(text, str)
+        assert text.strip()
