@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -255,6 +256,22 @@ fn f64_histogram_count(
     })
 }
 
+/// Latest cumulative sample sum of an `f64` histogram, in whole milliseconds.
+fn f64_histogram_sum_ms(
+    snapshots: &[ResourceMetrics],
+    name: &str,
+    wanted: &[(&str, &str)],
+) -> Option<u64> {
+    latest_metric_value(snapshots, name, |data| match data {
+        AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
+            .data_points()
+            .filter(|point| attributes_match(point.attributes(), wanted))
+            .map(|point| point.sum() as u64)
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
 /// Latest value of a `u64` observable gauge.
 fn u64_gauge_value(snapshots: &[ResourceMetrics], name: &str) -> Option<u64> {
     latest_metric_value(snapshots, name, |data| match data {
@@ -288,8 +305,12 @@ struct UsageClient {
     usage: Usage,
 }
 
-/// Client that returns a weak classifier verdict.
-struct ClassifierClient;
+/// Client that returns a weak classifier verdict. The delays let a test tell
+/// classifier time apart from routed-call time.
+struct ClassifierClient {
+    classifier_delay: Duration,
+    routed_delay: Duration,
+}
 
 #[async_trait]
 impl RoutedLlmClient for ClassifierClient {
@@ -301,8 +322,10 @@ impl RoutedLlmClient for ClassifierClient {
     ) -> Result<Response, LlmClientError> {
         let model = decision.selected_model().to_string();
         let completion = if decision.is_routed_call() {
+            tokio::time::sleep(self.routed_delay).await;
             "routed response"
         } else {
+            tokio::time::sleep(self.classifier_delay).await;
             r#"{"recommended_route":"weak","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
         };
         Ok(Response {
@@ -483,6 +506,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         u64_gauge_value(&snapshots, "switchyard.total_errors"),
         Some(total_errors_before)
     );
+    // One overhead observation per run, keyed by algorithm alone.
+    assert_eq!(
+        f64_histogram_count(
+            &snapshots,
+            "switchyard.routing_overhead_ms",
+            &[("algorithm", ALGO)]
+        ),
+        Some(1)
+    );
 
     // Spans: one run span carrying the correlation ids and outcome, one child
     // llm_call span carrying the selection, outcome, and token counts.
@@ -637,6 +669,15 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         u64_gauge_value(&snapshots, "switchyard.total_errors"),
         Some(total_errors_before + 1)
     );
+    // Nothing was served, so there is nothing to measure routing against.
+    assert_eq!(
+        f64_histogram_count(
+            &snapshots,
+            "switchyard.routing_overhead_ms",
+            &[("algorithm", ALGO)]
+        ),
+        None
+    );
 
     // Spans: both spans carry outcome=error and the propagated error text.
     let spans = store.spans();
@@ -692,7 +733,10 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let total_requests_before =
         u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
 
-    let client = Arc::new(ClassifierClient);
+    let client = Arc::new(ClassifierClient {
+        classifier_delay: Duration::from_millis(60),
+        routed_delay: Duration::from_millis(200),
+    });
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
         llm_client: Some(client.clone()),
@@ -769,6 +813,18 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     assert_eq!(
         u64_gauge_value(&snapshots, "switchyard.total_requests"),
         Some(total_requests_before + 1)
+    );
+    // The classifier call is the router's own work but the routed call is not,
+    // so overhead lands near the classifier's 60ms, not their 260ms sum.
+    let overhead = f64_histogram_sum_ms(
+        &snapshots,
+        "switchyard.routing_overhead_ms",
+        &[("algorithm", "llm_task_classifier")],
+    )
+    .unwrap_or_default();
+    assert!(
+        (60..200).contains(&overhead),
+        "expected roughly the classifier's 60ms, got {overhead}ms"
     );
     Ok(())
 }

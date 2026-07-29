@@ -6,11 +6,18 @@
 use std::sync::OnceLock;
 
 use opentelemetry::{global, KeyValue};
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
 use prometheus::{Encoder, Registry, TextEncoder};
 use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label};
 
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// Bucket boundaries for `switchyard.routing_overhead_ms`.
+/// Need a broad range because some algos call an LLM (classifier), and some
+/// do very little (passthrough).
+const ROUTING_OVERHEAD_BUCKETS_MS: &[f64] = &[
+    0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+];
 
 struct Metrics {
     registry: Registry,
@@ -33,7 +40,10 @@ fn initialize() -> Result<Metrics, String> {
         .with_registry(registry.clone())
         .build()
         .map_err(|error| format!("failed to initialize Prometheus metrics: {error}"))?;
-    let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+    let provider = SdkMeterProvider::builder()
+        .with_reader(exporter)
+        .with_view(routing_overhead_buckets)
+        .build();
     global::set_meter_provider(provider.clone());
     libsy::initialize_metrics();
     global::meter("switchyard")
@@ -45,6 +55,20 @@ fn initialize() -> Result<Metrics, String> {
         registry,
         _provider: provider,
     })
+}
+
+fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {
+    if instrument.name() != "switchyard.routing_overhead_ms" {
+        return None;
+    }
+    Stream::builder()
+        .with_aggregation(Aggregation::ExplicitBucketHistogram {
+            boundaries: ROUTING_OVERHEAD_BUCKETS_MS.to_vec(),
+            // Cumulative min/max cover the whole process, so they aren't useful.
+            record_min_max: false,
+        })
+        .build()
+        .ok()
 }
 
 /// Make the metrics exist before they get a hit. Nicer for dashboards but not really necessary.

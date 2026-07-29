@@ -254,6 +254,7 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         "# TYPE switchyard_completion_tokens_total counter",
         "# TYPE switchyard_cached_tokens_total counter",
         "# TYPE switchyard_total_latency_ms histogram",
+        "# TYPE switchyard_routing_overhead_ms histogram",
         "algorithm=\"random\"",
         &format!("selected_model=\"{MODEL}\""),
     ] {
@@ -274,6 +275,13 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
             "unexpected delta for {name}"
         );
     }
+    // A sub-millisecond boundary exists only because of the server's bucket view.
+    assert!(metric_line(
+        metrics,
+        "switchyard_routing_overhead_ms_bucket",
+        &[("algorithm", "random"), ("le", "0.1")]
+    )
+    .is_some());
     assert!(metric_line(
         metrics,
         "switchyard_cache_creation_tokens_total",

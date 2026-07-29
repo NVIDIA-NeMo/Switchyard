@@ -5,10 +5,15 @@
 //! routing/optimization algorithm implements, and the offload channel it makes model
 //! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
 
-use std::{pin::Pin, sync::Arc, time::Instant};
+use std::{
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use parking_lot::Mutex;
 use tracing::Instrument;
 
 /// The request/response protocol types, re-exported from [`switchyard_protocol`].
@@ -111,6 +116,8 @@ impl CallLlmRequest {
 #[derive(Clone)]
 pub struct Driver {
     driver: TypeErasedDriver,
+    // How long the call that served this run took. We need this to calculate routing overhead.
+    routed_call: Arc<Mutex<Option<Duration>>>,
 }
 
 impl Driver {
@@ -119,7 +126,13 @@ impl Driver {
     pub(crate) fn new() -> Self {
         Self {
             driver: TypeErasedDriver::new(),
+            routed_call: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// How long the call that served this run took, if one has succeeded.
+    pub(crate) fn routed_call_duration(&self) -> Option<Duration> {
+        *self.routed_call.lock()
     }
 
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
@@ -155,15 +168,21 @@ impl Driver {
             .driver
             .fulfill_request::<RoutedRequest, Response>(routed.ctx.clone(), routed)
             .await;
+        let elapsed = started.elapsed();
         observability::record_llm_call(
             &algorithm,
             &selected_model,
             tier.as_deref(),
             is_routed,
-            started.elapsed(),
+            elapsed,
             &result,
             &tracing::Span::current(),
         );
+        // Classifier and judge calls are routing overhead.
+        // And don't record time for failed calls.
+        if is_routed && result.is_ok() {
+            *self.routed_call.lock() = Some(elapsed);
+        }
         result
     }
 
@@ -407,10 +426,12 @@ pub trait Algorithm: Send + Sync + 'static {
         // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
         // contextual parenting.
         let span = observability::run_span(self.name(), request.metadata.as_ref());
+        let observed_driver = task_driver.clone();
         let handle = tokio::spawn(
             async move {
                 observability::observe_run(
                     task_ctx.clone(),
+                    observed_driver,
                     self.create_run_task(task_ctx, task_driver, request),
                 )
                 .await
