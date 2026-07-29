@@ -200,6 +200,15 @@ pub fn validate_request_capabilities(
             "target format/profile does not support structured response formats",
         )?;
     }
+    if policy.target_capabilities.supports_parallel_tool_calls == Some(false)
+        && request.parallel_tool_calls == Some(true)
+    {
+        push_lossy(
+            diagnostics,
+            policy,
+            "target format/profile does not support parallel tool calls",
+        )?;
+    }
     Ok(())
 }
 

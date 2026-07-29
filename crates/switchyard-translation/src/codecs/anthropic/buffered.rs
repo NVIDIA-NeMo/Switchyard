@@ -64,6 +64,12 @@ impl FormatCodec for AnthropicMessagesCodec {
                     .map(ToOwned::to_owned),
                 raw: body.get("thinking").cloned(),
             },
+            parallel_tool_calls: body
+                .get("tool_choice")
+                .and_then(Value::as_object)
+                .and_then(|choice| choice.get("disable_parallel_tool_use"))
+                .and_then(Value::as_bool)
+                .map(|disabled| !disabled),
             stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
             preservation: capture_request_preservation(
                 WireFormat::AnthropicMessages,
@@ -192,11 +198,22 @@ impl FormatCodec for AnthropicMessagesCodec {
         if !request.tools.is_empty() {
             body.insert("tools".to_string(), encode_anthropic_tools(&request.tools));
         }
-        if let Some(choice) = &request.tool_choice {
-            body.insert(
-                "tool_choice".to_string(),
-                encode_anthropic_tool_choice(choice),
-            );
+        if request.tool_choice.is_some() || request.parallel_tool_calls.is_some() {
+            let choice = request
+                .tool_choice
+                .as_ref()
+                .map(encode_anthropic_tool_choice)
+                .unwrap_or_else(|| json!({"type": "auto"}));
+            let mut choice = choice.as_object().cloned().unwrap_or_else(|| {
+                Map::from_iter([("type".to_string(), Value::String("auto".to_string()))])
+            });
+            if let Some(parallel_tool_calls) = request.parallel_tool_calls {
+                choice.insert(
+                    "disable_parallel_tool_use".to_string(),
+                    Value::Bool(!parallel_tool_calls),
+                );
+            }
+            body.insert("tool_choice".to_string(), Value::Object(choice));
         }
         if let Some(stop_sequences) =
             anthropic_stop_sequences_from_extensions(&request.extensions.fields)

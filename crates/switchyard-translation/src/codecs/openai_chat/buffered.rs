@@ -63,6 +63,7 @@ impl FormatCodec for OpenAiChatCodec {
                     .map(ToOwned::to_owned),
                 raw: None,
             },
+            parallel_tool_calls: body.get("parallel_tool_calls").and_then(Value::as_bool),
             preservation: capture_request_preservation(
                 WireFormat::OpenAiChat,
                 &Value::Object(body.clone()),
@@ -162,6 +163,7 @@ impl FormatCodec for OpenAiChatCodec {
                 "reasoning_effort",
                 "tools",
                 "tool_choice",
+                "parallel_tool_calls",
             ],
         );
 
@@ -213,6 +215,12 @@ impl FormatCodec for OpenAiChatCodec {
             if let Some(choice) = &request.tool_choice {
                 body.insert("tool_choice".to_string(), encode_openai_tool_choice(choice));
             }
+        }
+        if let Some(parallel_tool_calls) = request.parallel_tool_calls {
+            body.insert(
+                "parallel_tool_calls".to_string(),
+                Value::Bool(parallel_tool_calls),
+            );
         }
         if let Some(value) = request.output.max_output_tokens {
             body.insert("max_completion_tokens".to_string(), json!(value));

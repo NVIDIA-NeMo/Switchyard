@@ -221,6 +221,8 @@ pub struct LlmRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
     pub tool_choice: Option<ToolChoice>,
+    /// Whether the provider may emit more than one tool call in a model turn.
+    pub parallel_tool_calls: Option<bool>,
     pub sampling: SamplingParams,
     pub output: OutputParams,
     pub reasoning: ReasoningParams,

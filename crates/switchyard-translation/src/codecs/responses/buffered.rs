@@ -64,6 +64,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: None,
             },
+            parallel_tool_calls: body.get("parallel_tool_calls").and_then(Value::as_bool),
             stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
             preservation: capture_request_preservation(
                 WireFormat::OpenAiResponses,
@@ -99,6 +100,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 "input",
                 "tools",
                 "tool_choice",
+                "parallel_tool_calls",
                 "max_output_tokens",
                 "text",
                 "reasoning",
@@ -156,6 +158,12 @@ impl FormatCodec for OpenAiResponsesCodec {
             if let Some(choice) = encode_responses_tool_choice(choice) {
                 body.insert("tool_choice".to_string(), choice);
             }
+        }
+        if let Some(parallel_tool_calls) = request.parallel_tool_calls {
+            body.insert(
+                "parallel_tool_calls".to_string(),
+                Value::Bool(parallel_tool_calls),
+            );
         }
         if let Some(max_output_tokens) = request.output.max_output_tokens {
             body.insert("max_output_tokens".to_string(), json!(max_output_tokens));

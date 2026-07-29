@@ -6,7 +6,7 @@
 use pretty_assertions::assert_eq;
 use serde_json::{json, Value};
 use switchyard_translation::{
-    LossyConversionPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    LossyConversionPolicy, TargetCapabilities, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -771,6 +771,109 @@ fn responses_continuation_state_is_rejected_for_cross_protocol_translation() {
         assert!(message.contains("previous_response_id"));
         assert!(message.contains("conversation"));
     }
+}
+
+// OpenAI's "at most one tool call" constraint maps to Anthropic's inverse flag.
+#[test]
+fn openai_parallel_tool_constraint_maps_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "Use one tool"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object"}
+            }
+        }],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["tool_choice"]["type"], "auto");
+    assert_eq!(output["tool_choice"]["disable_parallel_tool_use"], true);
+    Ok(())
+}
+
+// Anthropic's inverse flag maps back to OpenAI's top-level request constraint.
+#[test]
+fn anthropic_parallel_tool_constraint_maps_to_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "Use one tool"}],
+        "tools": [{
+            "name": "lookup",
+            "input_schema": {"type": "object"}
+        }],
+        "tool_choice": {
+            "type": "auto",
+            "disable_parallel_tool_use": true
+        }
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["parallel_tool_calls"], false);
+    Ok(())
+}
+
+// A target explicitly unable to execute calls in parallel must reject a
+// request that requires parallel tool calls under rejecting policy.
+#[test]
+fn target_parallel_tool_capability_is_enforced() {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        target_capabilities: TargetCapabilities {
+            supports_parallel_tool_calls: Some(false),
+            ..TargetCapabilities::default()
+        },
+        ..TranslationPolicy::default()
+    };
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{"role": "user", "content": "Use tools in parallel"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object"}
+            }
+        }],
+        "parallel_tool_calls": true
+    });
+
+    let error = match engine.translate_request(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &body,
+        &policy,
+    ) {
+        Ok(_) => panic!("parallel tool requirement must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("target format/profile does not support parallel tool calls"));
 }
 
 // Verifies Codex-style reasoning items attach to the turn's tool-call message
