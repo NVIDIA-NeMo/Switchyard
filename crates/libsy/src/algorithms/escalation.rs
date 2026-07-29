@@ -4,12 +4,11 @@
 //! Trajectory-judged escalation: serve the efficient model until an LLM judge finds the run
 //! in trouble, then latch the session to the capable model for the rest of the task.
 //!
-//! [`EscalationRouter`] is the assembled algorithm: a [`FallThrough`] over the three ordered
-//! rules the policy is made of — the affinity latch pins an already-escalated session, the
-//! [`ConfirmedJudge`] escalates one whose verdicts have confirmed, and a [`DefaultTarget`]
-//! closes the cascade on the efficient tier. Only the last is unconditional, which keeps a
-//! judge outage from failing the turn. The cascade is an internal detail — callers drive the
-//! algorithm, not its parts.
+//! [`EscalationRouter`] is the assembled algorithm: a [`FallThrough`] driving one classifier
+//! that applies the three ordered rules the policy is made of — the affinity latch pins an
+//! already-escalated session, the [`ConfirmedJudge`] escalates one whose verdicts have
+//! confirmed, and the efficient tier serves everything else. Only the last rule is
+//! unconditional, which keeps a judge outage from failing the turn.
 //!
 //! The judge picks the tier *before* the turn's model call, so a turn costs one model call and
 //! the target's response — streamed or aggregated — reaches the caller untouched. A judge
@@ -22,10 +21,10 @@ use async_trait::async_trait;
 
 use super::util::escalation::ConfirmedJudge;
 use super::util::AffinityRouter;
-use super::{DefaultTarget, FallThrough};
+use super::FallThrough;
 use crate::{
-    Algorithm, Classification, Classifier, Context, Driver, Event, LlmTarget, LlmTargetSet,
-    Processor, Request, Response, Result, RoutedLlmClient, Score, State,
+    Algorithm, Classification, Classifier, Context, Decision, Driver, Event, LlmTarget,
+    LlmTargetSet, Processor, Request, Response, Result, RoutedLlmClient, State,
 };
 
 pub use super::util::escalation::EscalationJudgeConfig;
@@ -39,58 +38,98 @@ const TIER_CAPABLE: &str = "strong";
 /// Tier label reported for turns served by the efficient target.
 const TIER_EFFICIENT: &str = "weak";
 
-/// States the tier and rationale a cascade member publishes when it wins the turn.
+/// The tier this router served and the rule that chose it.
 ///
-/// The components underneath are composition-agnostic — an affinity latch does not know which
-/// tier it pins — so the router says it once here instead of teaching each one about tiers.
-/// The processor role is delegated too, so a dual-role component keeps both.
-struct Labelled<C> {
-    inner: C,
+/// Escalating and staying escalated both select the capable target, so a reason derived from
+/// the target alone could not tell the two apart.
+struct EscalationDecision {
+    selected_model: String,
     tier: &'static str,
     reason: &'static str,
 }
 
-impl<C> Labelled<C> {
-    fn new(inner: C, tier: &'static str, reason: &'static str) -> Self {
-        Self {
-            inner,
-            tier,
-            reason,
-        }
+impl Decision for EscalationDecision {
+    fn selected_model(&self) -> &str {
+        &self.selected_model
     }
-}
 
-#[async_trait]
-impl<C> Processor<State> for Labelled<C>
-where
-    C: Processor<State>,
-{
-    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-        self.inner.process(state, event).await
-    }
-}
-
-#[async_trait]
-impl<C> Classifier<State> for Labelled<C>
-where
-    C: Classifier<State>,
-{
-    // Every member of this cascade scores one target, so both labels are unconditional.
-    fn routing_tier(&self, _selected_model: &str) -> Option<&'static str> {
+    fn routing_tier(&self) -> Option<&str> {
         Some(self.tier)
     }
 
-    fn reasoning(&self, _score: &Score) -> Option<String> {
-        Some(self.reason.to_string())
+    fn reasoning(&self) -> Option<&str> {
+        Some(self.reason)
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The escalation policy as one classifier: latch, then judge, then the efficient tier.
+///
+/// Owns the affinity latch so its two roles — the processor that retains a decision and the
+/// classifier that reads it back — cannot drift apart. The components underneath are
+/// composition-agnostic (a latch does not know which tier it pins), so this is where the
+/// policy's tiers and reasons are named.
+struct EscalationClassifier {
+    latch: AffinityRouter,
+    judge: ConfirmedJudge,
+    capable: String,
+    efficient: String,
+}
+
+impl EscalationClassifier {
+    /// The verdict for `model`, labelled with the tier it is and the rule that picked it.
+    fn decided(model: &str, tier: &'static str, reason: &'static str) -> Classification {
+        Classification::Decided(Arc::new(EscalationDecision {
+            selected_model: model.to_string(),
+            tier,
+            reason,
+        }))
+    }
+}
+
+#[async_trait]
+impl Processor<State> for EscalationClassifier {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+        // Only the latch binds anything on a decision; the judge's streak is its own.
+        self.latch.process(state, event).await
+    }
+}
+
+#[async_trait]
+impl Classifier<State> for EscalationClassifier {
     async fn score(
         &self,
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<Classification> {
-        self.inner.score(state, request, driver).await
+        // A pinned session stays capable without paying for another judge call.
+        let latched = self.latch.score(state, request, driver).await?;
+        if latched.argmax(false)?.is_some() {
+            return Ok(Self::decided(
+                &self.capable,
+                TIER_CAPABLE,
+                "session pinned to capable after prior escalation",
+            ));
+        }
+        let judged = self.judge.score(state, request, driver).await?;
+        if judged.argmax(false)?.is_some() {
+            return Ok(Self::decided(
+                &self.capable,
+                TIER_CAPABLE,
+                "judge escalated the run to the capable model",
+            ));
+        }
+        // Unconditional, so a declined or unavailable judge costs quality risk rather than
+        // the turn.
+        Ok(Self::decided(
+            &self.efficient,
+            TIER_EFFICIENT,
+            "judge has not confirmed the run is in trouble",
+        ))
     }
 }
 
@@ -113,8 +152,25 @@ impl EscalationRouter {
         judge_target: LlmTarget,
         config: EscalationJudgeConfig,
     ) -> Result<Self> {
+        let capable = capable_target.semantic_name.clone();
+        let efficient = efficient_target.semantic_name.clone();
+        // Capable first: `count_tokens` passes through to the first target whose client
+        // supports it, and the capable tier is the one a caller is asking about. The judge is
+        // called through its own target and is not a routing destination, so it stays out of
+        // the set.
+        let targets = LlmTargetSet::new(vec![capable_target, efficient_target]);
+        let classifier = Arc::new(EscalationClassifier {
+            // Latching only the capable target is what makes escalation one-way: an efficient
+            // turn is never pinned.
+            latch: AffinityRouter::new().with_latch_only([capable.clone()]),
+            judge: ConfirmedJudge::new(judge_target, capable.clone(), config)?,
+            capable,
+            efficient,
+        });
         Ok(Self {
-            route: build_route(efficient_target, capable_target, judge_target, config)?,
+            route: FallThrough::<State>::new_with_state(targets)
+                .with_name(ALGORITHM_NAME)
+                .with_component(classifier),
         })
     }
 }
@@ -137,46 +193,6 @@ impl Algorithm for EscalationRouter {
     ) -> Result<Response> {
         self.route.execute(ctx, driver, request).await
     }
-}
-
-/// Wires the cascade the wrapper drives.
-fn build_route(
-    efficient_target: LlmTarget,
-    capable_target: LlmTarget,
-    judge_target: LlmTarget,
-    config: EscalationJudgeConfig,
-) -> Result<FallThrough<State>> {
-    let capable = capable_target.semantic_name.clone();
-    let efficient = efficient_target.semantic_name.clone();
-    // Capable first: `count_tokens` passes through to the first target whose client supports
-    // it, and the capable tier is the one a caller is asking about. The judge is called
-    // through its own target and is not a routing destination, so it stays out of the set.
-    let targets = LlmTargetSet::new(vec![capable_target, efficient_target]);
-
-    // Per-run state only — the latch and the streak each keep their own bounded store, so
-    // there is nothing to retain per session here.
-    Ok(FallThrough::<State>::new_unretained(targets)
-        .with_name(ALGORITHM_NAME)
-        // Latching only the capable target is what makes escalation one-way: an efficient
-        // turn is never pinned. Both roles must share one `Arc` so the classifier reads back
-        // what the processor latched.
-        .with_component(Arc::new(Labelled::new(
-            AffinityRouter::new().with_latch_only([capable.clone()]),
-            TIER_CAPABLE,
-            "session pinned to capable after prior escalation",
-        )))
-        .with_classifier(Arc::new(Labelled::new(
-            ConfirmedJudge::new(judge_target, capable, config)?,
-            TIER_CAPABLE,
-            "judge escalated the run to the capable model",
-        )))
-        // Nothing behind this, so a declined or unavailable judge costs quality risk rather
-        // than the turn.
-        .with_classifier(Arc::new(Labelled::new(
-            DefaultTarget::new(efficient),
-            TIER_EFFICIENT,
-            "judge has not confirmed the run is in trouble",
-        ))))
 }
 
 #[cfg(test)]
@@ -561,7 +577,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_cascade_rule_labels_its_own_decision() -> crate::Result<()> {
+    async fn each_rule_labels_its_own_decision() -> crate::Result<()> {
         let (router, _) = instrumented_router_with(
             [
                 ok(&verdict_json(false)), // judge: decline

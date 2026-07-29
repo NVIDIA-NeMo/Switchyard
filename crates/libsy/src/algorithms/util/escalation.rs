@@ -242,7 +242,8 @@ impl Classifier<State> for ConfirmedJudge {
                 false
             }
             // Judge unavailable: fail open to efficient without disturbing the streak.
-            Classification::Ambiguous(_) => false,
+            // `Decided` never reaches here — the judge classifier only ever scores.
+            _ => false,
         };
         if escalate {
             // The policy already named the capable target; pass its verdict through.

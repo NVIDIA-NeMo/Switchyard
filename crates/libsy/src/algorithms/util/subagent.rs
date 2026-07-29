@@ -151,7 +151,7 @@ mod tests {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].confidence, 1.0);
             }
-            Classification::Ambiguous(_) => panic!("override must score definitively"),
+            _ => panic!("override must score definitively"),
         }
         Ok(())
     }

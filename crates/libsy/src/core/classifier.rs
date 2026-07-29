@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Arc;
+
 use crate::{Driver, LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::Request;
+use switchyard_protocol::{Decision, Request};
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +24,12 @@ pub enum Classification {
     /// Recommendations the classifier considers ambiguous; [`argmax`](Self::argmax) yields
     /// nothing unless the caller opts to ignore ambiguity.
     Ambiguous(Vec<Score>),
+    /// A target the classifier chose *and* explained, published by the composition as-is.
+    ///
+    /// For a classifier that knows more than the target name can carry — which of its rules
+    /// fired, which tier that target is — since a composition can only derive a decision from
+    /// the target it was handed.
+    Decided(Arc<dyn Decision>),
 }
 
 impl Classification {
@@ -40,6 +48,11 @@ impl Classification {
                     Ok(None)
                 }
             }
+            // Already decided, so there is nothing left to rank.
+            Classification::Decided(decision) => Ok(Some(Score {
+                confidence: 1.0,
+                target: decision.selected_model().to_string(),
+            })),
         }
     }
 }
@@ -72,16 +85,6 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 pub trait Classifier<S = ()>: Send + Sync {
     /// Stable tier represented by `selected_model`, when this classifier defines one.
     fn routing_tier(&self, _selected_model: &str) -> Option<&'static str> {
-        None
-    }
-
-    /// Why this classifier picked `score`, when it can say more than the composition can.
-    ///
-    /// A cascade's decision reason is otherwise derived from the winning target alone, which
-    /// cannot distinguish two classifiers that select the same target for different reasons —
-    /// a session latched by a prior turn versus one escalated by this one. Returning `None`
-    /// (the default) leaves the composition's own wording in place.
-    fn reasoning(&self, _score: &Score) -> Option<String> {
         None
     }
 
