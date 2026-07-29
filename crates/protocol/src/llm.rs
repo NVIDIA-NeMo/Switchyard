@@ -119,6 +119,7 @@ pub enum FileSource {
     FileId(String),
     FileData {
         data: String,
+        media_type: Option<String>,
         filename: Option<String>,
     },
     Raw(Value),

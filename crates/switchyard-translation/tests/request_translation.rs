@@ -1471,3 +1471,164 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
         .any(|item| item["type"] == "function_call_output"));
     Ok(())
 }
+
+#[test]
+fn anthropic_inline_pdf_translates_to_a_valid_responses_file() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0xLjQ="
+                },
+                "title": "report.pdf"
+            }]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &strict_policy(),
+        )?
+        .body;
+
+    let file = output["input"][0]["content"]
+        .as_array()
+        .and_then(|content| content.iter().find(|part| part["type"] == "input_file"))
+        .ok_or("expected a Responses input_file content part")?;
+    assert_eq!(file["file_data"], "JVBERi0xLjQ=");
+    assert_eq!(file["filename"], "report.pdf");
+    assert!(file.get("file").is_none());
+    Ok(())
+}
+
+#[test]
+fn responses_inline_pdf_translates_to_a_valid_anthropic_document() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_file",
+                "file_data": "JVBERi0xLjQ=",
+                "filename": "report.pdf"
+            }]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &strict_policy(),
+        )?
+        .body;
+
+    let document = &output["messages"][0]["content"][0];
+    assert_eq!(document["type"], "document");
+    assert_eq!(document["source"]["type"], "base64");
+    assert_eq!(document["source"]["media_type"], "application/pdf");
+    assert_eq!(document["source"]["data"], "JVBERi0xLjQ=");
+    assert_eq!(document["title"], "report.pdf");
+    assert!(document["source"].get("filename").is_none());
+    Ok(())
+}
+
+#[test]
+fn non_pdf_inline_file_is_rejected_for_anthropic() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_file",
+                "file_data": "bm90ZXM=",
+                "filename": "notes.txt"
+            }]
+        }]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &strict_policy(),
+        )
+        .expect_err("Anthropic base64 documents require PDF media");
+    assert!(error.to_string().contains("application/pdf"));
+}
+
+#[test]
+fn provider_owned_file_id_is_rejected_across_protocols() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_file", "file_id": "file-provider-owned"}]
+        }]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &strict_policy(),
+        )
+        .expect_err("provider-owned file IDs must not cross protocols");
+    assert!(error.to_string().contains("provider-owned file"));
+}
+
+#[test]
+fn unsupported_audio_and_video_are_rejected_instead_of_serialized_as_text() {
+    let engine = TranslationEngine::default();
+    for content in [
+        json!({"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}),
+        json!({"type": "input_video", "video": {"data": "AAAA", "media_type": "video/mp4"}}),
+    ] {
+        let body = json!({
+            "model": "gpt-5",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [content]
+            }]
+        });
+        let error = engine
+            .translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &body,
+                &strict_policy(),
+            )
+            .expect_err("unsupported media must fail before provider dispatch");
+        assert!(
+            error.to_string().contains("audio") || error.to_string().contains("video"),
+            "{error}"
+        );
+    }
+}
+
+fn strict_policy() -> TranslationPolicy {
+    TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    }
+}

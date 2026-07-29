@@ -34,6 +34,9 @@ pub enum TranslationError {
     #[error("invalid value at {path}: {message}")]
     InvalidValue { path: String, message: String },
 
+    #[error("provider-owned {kind} cannot be translated without target affinity")]
+    NonPortableReference { kind: &'static str },
+
     #[error("{0}")]
     Other(String),
 }
@@ -48,6 +51,7 @@ impl TranslationError {
             Self::LossyConversion(_) => "LossyConversion",
             Self::UnknownField { .. } => "UnknownField",
             Self::InvalidValue { .. } => "InvalidValue",
+            Self::NonPortableReference { .. } => "NonPortableReference",
             Self::Other(_) => "Other",
         }
     }

@@ -554,12 +554,15 @@ pub(crate) fn decode_file_source(block: &Map<String, Value>) -> FileSource {
             return FileSource::FileId(file_id.to_string());
         }
         if let Some(file_data) = file.get("file_data").and_then(Value::as_str) {
+            let filename = file
+                .get("filename")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let (data, media_type) = decode_inline_file_data(file_data, filename.as_deref());
             return FileSource::FileData {
-                data: file_data.to_string(),
-                filename: file
-                    .get("filename")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
+                data,
+                media_type,
+                filename,
             };
         }
         return FileSource::Raw(Value::Object(file.clone()));
@@ -567,7 +570,45 @@ pub(crate) fn decode_file_source(block: &Map<String, Value>) -> FileSource {
     if let Some(file_id) = block.get("file_id").and_then(Value::as_str) {
         return FileSource::FileId(file_id.to_string());
     }
+    if let Some(file_data) = block.get("file_data").and_then(Value::as_str) {
+        let filename = block
+            .get("filename")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let (data, media_type) = decode_inline_file_data(file_data, filename.as_deref());
+        return FileSource::FileData {
+            data,
+            media_type,
+            filename,
+        };
+    }
     FileSource::Raw(Value::Object(block.clone()))
+}
+
+fn decode_inline_file_data(data: &str, filename: Option<&str>) -> (String, Option<String>) {
+    if let Some(encoded) = data.strip_prefix("data:") {
+        if let Some((metadata, payload)) = encoded.split_once(',') {
+            if let Some(media_type) = metadata.strip_suffix(";base64") {
+                return (payload.to_string(), Some(media_type.to_string()));
+            }
+        }
+    }
+    (
+        data.to_string(),
+        filename
+            .and_then(media_type_from_filename)
+            .map(str::to_string),
+    )
+}
+
+fn media_type_from_filename(filename: &str) -> Option<&'static str> {
+    let extension = filename.rsplit_once('.')?.1.to_ascii_lowercase();
+    match extension.as_str() {
+        "pdf" => Some("application/pdf"),
+        "txt" | "md" | "csv" => Some("text/plain"),
+        "json" => Some("application/json"),
+        _ => None,
+    }
 }
 
 /// Decodes one OpenAI tool call into a normalized tool call.
@@ -894,7 +935,7 @@ pub(crate) fn encode_openai_content(
                     blocks.push(openai_text_part(&image_source_text(source)));
                 }
             },
-            ContentBlock::File { source } => match openai_file_part(source) {
+            ContentBlock::File { source } => match openai_file_part(source)? {
                 Some(part) => blocks.push(part),
                 None => {
                     push_lossy(
@@ -998,17 +1039,25 @@ fn image_source_text(source: &ImageSource) -> String {
 }
 
 // Maps IR file sources to OpenAI Chat file content parts when possible.
-fn openai_file_part(source: &FileSource) -> Option<Value> {
+fn openai_file_part(source: &FileSource) -> Result<Option<Value>> {
     match source {
-        FileSource::FileId(file_id) => Some(json!({"type": "file", "file": {"file_id": file_id}})),
-        FileSource::FileData { data, filename } => {
-            let mut file = json!({"file_data": data});
+        FileSource::FileId(_) => Err(TranslationError::NonPortableReference { kind: "file_id" }),
+        FileSource::FileData {
+            data,
+            media_type,
+            filename,
+        } => {
+            let file_data = media_type.as_ref().map_or_else(
+                || data.clone(),
+                |media_type| format!("data:{media_type};base64,{data}"),
+            );
+            let mut file = json!({"file_data": file_data});
             if let Some(filename) = filename {
                 file["filename"] = Value::String(filename.clone());
             }
-            Some(json!({"type": "file", "file": file}))
+            Ok(Some(json!({"type": "file", "file": file})))
         }
-        FileSource::Raw(_) => None,
+        FileSource::Raw(_) => Ok(None),
     }
 }
 
@@ -1016,8 +1065,13 @@ fn openai_file_part(source: &FileSource) -> Option<Value> {
 fn file_source_text(source: &FileSource) -> String {
     match source {
         FileSource::FileId(file_id) => json_string(&json!({"file_id": file_id})),
-        FileSource::FileData { data, filename } => json_string(&json!({
+        FileSource::FileData {
+            data,
+            media_type,
+            filename,
+        } => json_string(&json!({
             "file_data": data,
+            "media_type": media_type,
             "filename": filename,
         })),
         FileSource::Raw(raw) => json_string(raw),

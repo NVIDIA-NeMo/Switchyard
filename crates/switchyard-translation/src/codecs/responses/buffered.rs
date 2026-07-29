@@ -18,7 +18,7 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, LlmRequest, MediaSource, Message, OutputParams,
+    AggLlmResponse, ContentBlock, FileSource, LlmRequest, MediaSource, Message, OutputParams,
     ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
     ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
@@ -629,6 +629,12 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                     Some("input_file") => out.push(ContentBlock::File {
                         source: decode_file_source(block),
                     }),
+                    Some("input_audio") => out.push(ContentBlock::Audio {
+                        source: decode_responses_media_source(block, "input_audio", "audio"),
+                    }),
+                    Some("input_video") => out.push(ContentBlock::Video {
+                        source: decode_responses_media_source(block, "video", "video"),
+                    }),
                     _ => out.push(ContentBlock::Unknown {
                         provider: WireFormat::OpenAiResponses.into(),
                         raw: Value::Object(block.clone()),
@@ -649,6 +655,34 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
             text: string_value(other).unwrap_or_default(),
         }],
     }
+}
+
+fn decode_responses_media_source(
+    block: &Map<String, Value>,
+    nested_field: &str,
+    media_kind: &str,
+) -> MediaSource {
+    let payload = block
+        .get(nested_field)
+        .and_then(Value::as_object)
+        .unwrap_or(block);
+    if let Some(data) = payload.get("data").and_then(Value::as_str) {
+        let media_type = payload
+            .get("media_type")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                payload
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .map(|format| format!("{media_kind}/{format}"))
+            });
+        return MediaSource::Base64 {
+            media_type,
+            data: data.to_string(),
+        };
+    }
+    MediaSource::Raw(Value::Object(block.clone()))
 }
 
 // Decodes Responses role strings into normalized roles. Used for decoding
@@ -957,32 +991,46 @@ fn encode_responses_content(
             ContentBlock::Image { source } => {
                 blocks.push(json!({"type": "input_image", "image_url": source}));
             }
-            ContentBlock::Audio { source } => blocks.push(match source {
-                MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
-                MediaSource::Url { url, media_type } => json!({
-                    "type": "input_audio",
-                    "audio_url": url,
-                    "media_type": media_type,
-                }),
-                MediaSource::Base64 { media_type, data } => json!({
-                    "type": "input_audio",
-                    "audio": {"media_type": media_type, "data": data},
-                }),
-            }),
-            ContentBlock::Video { source } => blocks.push(match source {
-                MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
-                MediaSource::Url { url, media_type } => json!({
-                    "type": "input_video",
-                    "video_url": url,
-                    "media_type": media_type,
-                }),
-                MediaSource::Base64 { media_type, data } => json!({
-                    "type": "input_video",
-                    "video": {"media_type": media_type, "data": data},
-                }),
-            }),
-            ContentBlock::File { source } => {
-                blocks.push(json!({"type": "input_file", "file": source}));
+            ContentBlock::Audio { .. } => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Responses codec does not have a validated cross-protocol audio mapping",
+                )?;
+            }
+            ContentBlock::Video { .. } => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Responses codec does not have a validated cross-protocol video mapping",
+                )?;
+            }
+            ContentBlock::File {
+                source: FileSource::FileId(_),
+            } => return Err(TranslationError::NonPortableReference { kind: "file_id" }),
+            ContentBlock::File {
+                source:
+                    FileSource::FileData {
+                        data,
+                        media_type: _,
+                        filename,
+                    },
+            } => {
+                let mut file = json!({"type": "input_file", "file_data": data});
+                if let Some(filename) = filename {
+                    file["filename"] = Value::String(filename.clone());
+                }
+                blocks.push(file);
+            }
+            ContentBlock::File {
+                source: FileSource::Raw(raw),
+            } => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Responses codec could not map raw file content",
+                )?;
+                blocks.push(json!({"type": "input_text", "text": json_string(raw)}));
             }
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(

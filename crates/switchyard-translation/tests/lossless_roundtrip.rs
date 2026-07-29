@@ -304,7 +304,10 @@ fn request_fixture(format: WireFormat) -> Value {
                         },
                         {
                             "type": "file",
-                            "file": {"file_id": "file_123"}
+                            "file": {
+                                "file_data": "data:application/pdf;base64,JVBERi0xLjQ=",
+                                "filename": "report.pdf"
+                            }
                         },
                         {
                             "type": "vendor_block",
@@ -395,9 +398,10 @@ fn request_fixture(format: WireFormat) -> Value {
                             "type": "document",
                             "source": {
                                 "type": "base64",
-                                "data": "ZmlsZQ==",
-                                "filename": "notes.txt"
-                            }
+                                "media_type": "application/pdf",
+                                "data": "JVBERi0xLjQ="
+                            },
+                            "title": "report.pdf"
                         },
                         {"type": "vendor_block", "payload": {"keep": ["this"]}}
                     ]
@@ -470,7 +474,8 @@ fn request_fixture(format: WireFormat) -> Value {
                         },
                         {
                             "type": "input_file",
-                            "file": {"file_id": "file_123"}
+                            "file_data": "JVBERi0xLjQ=",
+                            "filename": "report.pdf"
                         },
                         {
                             "type": "vendor_block",

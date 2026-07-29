@@ -504,11 +504,41 @@ fn decode_anthropic_content_block(
         Some("input_file") | Some("file") => vec![ContentBlock::File {
             source: decode_file_source(block),
         }],
+        Some("document") => vec![ContentBlock::File {
+            source: decode_anthropic_document(block),
+        }],
         _ => vec![ContentBlock::Unknown {
             provider: WireFormat::AnthropicMessages.into(),
             raw: Value::Object(block.clone()),
         }],
     })
+}
+
+fn decode_anthropic_document(block: &Map<String, Value>) -> FileSource {
+    let Some(source) = block.get("source").and_then(Value::as_object) else {
+        return FileSource::Raw(Value::Object(block.clone()));
+    };
+    match source.get("type").and_then(Value::as_str) {
+        Some("file") => source.get("file_id").and_then(Value::as_str).map_or_else(
+            || FileSource::Raw(Value::Object(block.clone())),
+            |file_id| FileSource::FileId(file_id.to_string()),
+        ),
+        Some("base64") => source.get("data").and_then(Value::as_str).map_or_else(
+            || FileSource::Raw(Value::Object(block.clone())),
+            |data| FileSource::FileData {
+                data: data.to_string(),
+                media_type: source
+                    .get("media_type")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                filename: block
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+            },
+        ),
+        _ => FileSource::Raw(Value::Object(block.clone())),
+    }
 }
 
 // Converts Anthropic tool-result content into text-like IR blocks.
@@ -694,6 +724,58 @@ fn encode_anthropic_content_with_policy(
                 )?;
                 blocks.push(json!({"type": "text", "text": json_string(raw)}));
             }
+            ContentBlock::File {
+                source: FileSource::FileId(_),
+            } => {
+                return Err(TranslationError::NonPortableReference { kind: "file_id" });
+            }
+            ContentBlock::File {
+                source:
+                    FileSource::FileData {
+                        data,
+                        media_type,
+                        filename,
+                    },
+            } => {
+                let Some(media_type) = media_type.as_ref() else {
+                    return Err(TranslationError::InvalidValue {
+                        path: "$.messages[].content[].source.media_type".to_string(),
+                        message: "portable inline files require a media type".to_string(),
+                    });
+                };
+                if media_type != "application/pdf" {
+                    return Err(TranslationError::InvalidValue {
+                        path: "$.messages[].content[].source.media_type".to_string(),
+                        message: "Anthropic base64 documents require application/pdf".to_string(),
+                    });
+                }
+                let mut document = json!({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    },
+                });
+                if let Some(filename) = filename {
+                    document["title"] = Value::String(filename.clone());
+                }
+                blocks.push(document);
+            }
+            ContentBlock::Audio { .. } => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic Messages does not support audio content blocks",
+                )?;
+            }
+            ContentBlock::Video { .. } => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic Messages does not support video content blocks",
+                )?;
+            }
             other => blocks.extend(encode_one_anthropic_block(other)),
         }
     }
@@ -774,13 +856,18 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
             FileSource::FileId(file_id) => {
                 json!({"type": "document", "source": {"type": "file", "file_id": file_id}})
             }
-            FileSource::FileData { data, filename } => json!({
+            FileSource::FileData {
+                data,
+                media_type,
+                filename,
+            } => json!({
                 "type": "document",
                 "source": {
                     "type": "base64",
                     "data": data,
-                    "filename": filename,
+                    "media_type": media_type,
                 },
+                "title": filename,
             }),
             FileSource::Raw(raw) => raw.clone(),
         }],
