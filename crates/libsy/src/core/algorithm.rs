@@ -485,13 +485,19 @@ pub trait Algorithm: Send + Sync + 'static {
         mut ctx: Context,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
+        // The last overflow is what the caller should see once the pool is exhausted:
+        // `AllTargetsExcluded` is internal, and only the client error maps to a 400.
+        let mut last_overflow: Option<LibsyError> = None;
         loop {
-            match self.clone().run_once(ctx.clone(), request.clone()).await {
-                Err(LibsyError::ClientCall {
+            let result = self.clone().run_once(ctx.clone(), request.clone()).await;
+            let Err(error) = result else { return result };
+            match &error {
+                LibsyError::ClientCall {
                     target,
                     source: LlmClientError::ContextWindowExceeded { .. },
-                }) if ctx.exclude_target(&target) => continue,
-                result => return result,
+                } if ctx.exclude_target(target) => last_overflow = Some(error),
+                LibsyError::AllTargetsExcluded => return Err(last_overflow.unwrap_or(error)),
+                _ => return Err(error),
             }
         }
     }
@@ -1564,14 +1570,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exhausting_every_target_surfaces_the_overflow() -> Result<()> {
+    async fn exhausting_every_target_surfaces_the_client_overflow() -> Result<()> {
+        // The caller must still see the client error: only that maps to a 400 upstream.
         let algo = eligible_algo(&["weak", "strong"], &["weak", "strong"]);
         match algo.run(Context::default(), request()).await {
             Ok(_) => Err(test_error("expected an overflow error, got a response")),
-            Err(err) => {
-                assert!(err.to_string().contains("context window"));
-                Ok(())
-            }
+            Err(LibsyError::ClientCall {
+                source: LlmClientError::ContextWindowExceeded { .. },
+                ..
+            }) => Ok(()),
+            Err(other) => Err(test_error(Box::leak(
+                format!("expected ContextWindowExceeded, got {other:?}").into_boxed_str(),
+            ))),
         }
     }
 

@@ -193,12 +193,12 @@ where
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut maybe_score: Option<Score> = None;
-        let mut maybe_tier: Option<&'static str> = None;
+        let mut deciding: Option<&Arc<dyn Classifier<S>>> = None;
         for classifier in &self.classifiers {
             let scores = classifier.score(state, request, Some(driver)).await?;
             maybe_score = scores.argmax(false)?;
-            if let Some(s) = maybe_score.as_ref() {
-                maybe_tier = classifier.routing_tier(&s.target);
+            if maybe_score.is_some() {
+                deciding = Some(classifier);
                 break;
             }
         }
@@ -208,12 +208,21 @@ where
             });
         };
 
-        // 3. Resolve the target and publish the decision.
+        // 3. Resolve the target and publish the decision. When an excluded target sends
+        //    the request elsewhere, the tier and reasoning describe where it actually went.
         let target = self.targets.resolve_target(&score.target, ctx)?;
+        let reasoning = if target.semantic_name == score.target {
+            (self.decision_reason)(&self.name, &score)
+        } else {
+            format!(
+                "{} exceeded its context window; fell back to {}",
+                score.target, target.semantic_name
+            )
+        };
         let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
             selected_model: target.semantic_name.clone(),
-            reasoning: (self.decision_reason)(&self.name, &score),
-            tier: maybe_tier,
+            reasoning,
+            tier: deciding.and_then(|c| c.routing_tier(&target.semantic_name)),
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
@@ -422,6 +431,31 @@ mod tests {
     }
 
     // --- tests -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn an_excluded_target_reports_the_target_it_fell_back_to() -> Result<()> {
+        // Headers and usage metrics read the decision, so it must describe the real call.
+        let router = Arc::new(
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        let mut ctx = Context::default();
+        ctx.exclude_target("weak");
+        let (trace, response) = router.run(ctx, request()).await?;
+        let text = response
+            .llm_response
+            .into_agg()
+            .await
+            .map(|agg| completion_text(&agg))
+            .map_err(|error| LibsyError::external("aggregating fall-through response", error))?;
+
+        assert_eq!(text, "strong");
+        assert_eq!(trace[0].selected_model(), "strong");
+        assert!(trace[0]
+            .reasoning()
+            .is_some_and(|r| r.contains("fell back to strong")));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn argmax_picks_the_highest_confidence_target() -> Result<()> {
