@@ -614,7 +614,13 @@ pub trait Algorithm: Send + Sync + 'static {
             observability::ALGORITHM_KEY.to_string(),
             self.name().to_string(),
         );
-        let driver = Driver::new();
+        ctx.values.insert(
+            ALGORITHM_VERSION_KEY.to_string(),
+            self.version().to_string(),
+        );
+        ctx.values
+            .insert(RUN_ID_KEY.to_string(), generated_id("run"));
+        let driver = Driver::new(ctx.clone());
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
         let stream = task_driver.decision_stream();
@@ -1076,6 +1082,82 @@ mod tests {
             "unsupported decision-only stream should terminate after its typed error"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_metadata_uses_the_algorithm_version_and_run_identity() -> Result<()> {
+        struct VersionedDecision {
+            metadata: DecisionMetadata,
+        }
+
+        impl Decision for VersionedDecision {
+            fn selected_model(&self) -> &str {
+                "versioned/model"
+            }
+
+            fn reasoning(&self) -> Option<&str> {
+                None
+            }
+
+            fn metadata(&self) -> Option<&DecisionMetadata> {
+                Some(&self.metadata)
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        struct VersionedDecisionAlgo;
+
+        #[async_trait]
+        impl Algorithm for VersionedDecisionAlgo {
+            fn name(&self) -> &str {
+                "versioned_decision"
+            }
+
+            fn version(&self) -> &str {
+                "custom-2.4.1"
+            }
+
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                _driver: Driver,
+                _request: Request,
+            ) -> Result<Response> {
+                Err(test_error("full execution is not used by this test"))
+            }
+
+            async fn create_decision_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                driver: Driver,
+                _request: Request,
+            ) -> Result<Arc<dyn Decision>> {
+                Ok(Arc::new(VersionedDecision {
+                    metadata: driver.decision_metadata(DecisionRole::Final, None, None, None),
+                }))
+            }
+        }
+
+        let stream =
+            Arc::new(VersionedDecisionAlgo).run_decision_stream(Context::default(), request());
+        tokio::pin!(stream);
+
+        while let Some(step) = stream.next().await {
+            if let DecisionStep::FinalDecision(decision) = step? {
+                let metadata = decision
+                    .metadata()
+                    .ok_or_else(|| test_error("decision metadata missing"))?;
+                assert_eq!(metadata.algorithm.name, "versioned_decision");
+                assert_eq!(metadata.algorithm.version, "custom-2.4.1");
+                assert!(metadata.run_id.starts_with("sy_run_"));
+                return Ok(());
+            }
+        }
+
+        Err(test_error("final decision missing"))
     }
 
     #[tokio::test]
