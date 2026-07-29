@@ -12,11 +12,11 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use switchyard_core::{
+use crate::{
     ChatRequest, ChatRequestType, ChatResponse, LlmBackend, LlmTarget, LlmTargetId, ProxyContext,
     Result, SwitchyardError,
 };
+use async_trait::async_trait;
 
 use super::{BackendSelection, BackendSelectionReason};
 

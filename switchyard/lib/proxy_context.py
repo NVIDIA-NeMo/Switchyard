@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""ProxyContext constants and Rust-owned context binding."""
+"""ProxyContext re-export and shared metadata keys."""
 
 from switchyard_rust.core import ProxyContext
 

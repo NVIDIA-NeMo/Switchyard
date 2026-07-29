@@ -7,7 +7,7 @@ use serde_json::json;
 use switchyard_components::{
     HttpIntakeSink, IntakeFormat, IntakeSink, IntakeSinkConfig, IntakeTarget,
 };
-use switchyard_core::{Result, SwitchyardError};
+use switchyard_components::{Result, SwitchyardError};
 
 use support::{OneShotServer, SequenceServer};
 

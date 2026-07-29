@@ -7,7 +7,7 @@
 //! It walks the request's tool-call history and stamps the resulting
 //! [`ToolResultSignal`] into `ProxyContext` for the stage_router picker to read.
 
-use switchyard_core::{ChatRequest, ProxyContext, Result};
+use crate::{ChatRequest, ProxyContext, Result};
 
 use crate::dimension_collector::{
     extract_tool_signals_with_window, ToolResultSignal, DEFAULT_RECENT_WINDOW,

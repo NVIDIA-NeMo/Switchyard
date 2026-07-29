@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Error types used by the Rust core contracts.
+//! Errors shared by compatibility backends and Python bindings.
 
 use thiserror::Error;
 
-use crate::ids::{InvalidId, ModelId};
-use crate::types::ChatRequestType;
+use super::ids::{InvalidId, ModelId};
+use super::types::ChatRequestType;
 
 /// Result alias for core Switchyard operations.
 pub type Result<T> = std::result::Result<T, SwitchyardError>;

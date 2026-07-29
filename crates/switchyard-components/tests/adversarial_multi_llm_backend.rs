@@ -9,11 +9,11 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use switchyard_components::{
-    BackendSelection, BackendSelectionReason, LlmTargetBackend, MultiLlmBackend,
-};
-use switchyard_core::{
     BackendFormat, ChatRequest, ChatRequestType, ChatResponse, LlmBackend, LlmTarget, LlmTargetId,
     ModelId, ProxyContext, Result, SwitchyardError,
+};
+use switchyard_components::{
+    BackendSelection, BackendSelectionReason, LlmTargetBackend, MultiLlmBackend,
 };
 
 /// One backend call observed by the recording backend.

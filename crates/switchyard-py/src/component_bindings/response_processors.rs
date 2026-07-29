@@ -8,9 +8,9 @@ use switchyard_components::{IntakeResponseProcessor, StatsResponseProcessor};
 
 use super::config::PyIntakeSinkConfig;
 use super::stats::PyStatsAccumulator;
-use crate::core_bindings::context::PyProxyContext;
-use crate::core_bindings::response::PyChatResponse;
 use crate::errors::py_core_error;
+use crate::interop::context::lease_from_python;
+use crate::interop::response::{response_from_python, response_to_python};
 
 #[pyclass(name = "StatsResponseProcessor", skip_from_py_object)]
 #[derive(Clone, Debug)]
@@ -46,21 +46,18 @@ impl PyStatsResponseProcessor {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        mut response: PyRefMut<'_, PyChatResponse>,
+        ctx: &Bound<'_, PyAny>,
+        response: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let processor = self.inner.clone();
-        let mut lease = ctx.lease()?;
-        let response = response.take_core(py)?;
+        let mut lease = lease_from_python(ctx)?;
+        let response = response_from_python(response)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = processor.process(lease.context_mut()?, response).await;
             let restore_result = lease.restore();
             let response = result.map_err(py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatResponse::from_core(py, response)?)
-                    .map(|response| response.into_any())
-            })
+            Python::attach(|py| response_to_python(py, response))
         })
     }
 
@@ -113,21 +110,18 @@ impl PyIntakeResponseProcessor {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        mut response: PyRefMut<'_, PyChatResponse>,
+        ctx: &Bound<'_, PyAny>,
+        response: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let processor = self.inner.clone();
-        let mut lease = ctx.lease()?;
-        let response = response.take_core(py)?;
+        let mut lease = lease_from_python(ctx)?;
+        let response = response_from_python(response)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = processor.process(lease.context_mut()?, response).await;
             let restore_result = lease.restore();
             let response = result.map_err(py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatResponse::from_core(py, response)?)
-                    .map(|response| response.into_any())
-            })
+            Python::attach(|py| response_to_python(py, response))
         })
     }
 

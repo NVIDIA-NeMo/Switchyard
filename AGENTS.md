@@ -144,9 +144,10 @@ Everything flows through a fixed-shape chain enforced at construction time:
 request-side component* → LLMBackend → response-side component* → TranslationEngine
 ```
 
-The chain executor is `Switchyard` (`switchyard/lib/switchyard.py`). `LLMBackend` remains the
-shared role class re-exported from `switchyard/lib/roles.py`; request-side and response-side
-processors are plain async components with `process(...)` methods.
+The chain executor is `Switchyard` (`switchyard/lib/switchyard.py`). `LLMBackend` is the shared
+Python role class re-exported from `switchyard/lib/roles.py`; native implementations register with
+it, and request-side and response-side processors are plain async components with `process(...)`
+methods.
 Direct Rust bindings for migrated concrete processors/backends are exposed from
 `switchyard_rust.components` and implemented under `crates/switchyard-py/src/component_bindings/`.
 
@@ -163,7 +164,7 @@ Direct Rust bindings for migrated concrete processors/backends are exposed from
 switchyard/
 ├── __init__.py                     # Public API — all exports live here
 ├── lib/                            # Core library
-│   ├── roles.py                    # Rust-owned LLMBackend re-export and translation aliases
+│   ├── roles.py                    # Python LLMBackend re-export and translation aliases
 │   ├── switchyard.py               # Switchyard — chain executor
 │   ├── proxy_context.py            # ProxyContext — per-request state carrier
 │   ├── profiles/                   # Profile configs/runtimes for pre-built routing behavior
@@ -372,7 +373,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 
 ### Ask first
 - Modifying `pyproject.toml` dependencies.
-- Changes to the chain shape or Rust-owned role classes in `switchyard/lib/roles.py`.
+- Changes to the chain shape or public role classes in `switchyard/lib/roles.py`.
 - Adding new HTTP endpoints.
 - Removing or renaming any public API currently in `switchyard/__init__.__all__`.
 

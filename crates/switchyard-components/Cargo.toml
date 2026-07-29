@@ -14,17 +14,18 @@ rust-version.workspace = true
 [dependencies]
 async-stream.workspace = true
 async-trait.workspace = true
+futures-core = "0.3"
 futures-util.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-switchyard-core.workspace = true
 switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 tokio.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

@@ -14,8 +14,8 @@
 //! formats are different enough that uniform JSONPath would either be
 //! lossy or 4x more code than direct shape access.
 
+use crate::ChatResponse;
 use serde_json::Value;
-use switchyard_core::ChatResponse;
 
 /// Returns `true` if any `tool_calls[].function.arguments` string is not
 /// valid JSON. Operates on OpenAI-Chat and Anthropic responses.

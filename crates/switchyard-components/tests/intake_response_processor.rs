@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use serde_json::json;
 use switchyard_components::{
-    IntakeRequestState, IntakeResponseProcessor, IntakeSinkConfig, SubModelCall, SubModelCalls,
-};
-use switchyard_core::{
     ChatRequestType, ChatResponse, ModelId, ProxyContext, Result, StreamEvent, SwitchyardError,
+};
+use switchyard_components::{
+    IntakeRequestState, IntakeResponseProcessor, IntakeSinkConfig, SubModelCall, SubModelCalls,
 };
 
 use support::intake::{

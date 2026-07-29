@@ -17,6 +17,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use switchyard_components::ChatResponse;
 use switchyard_components::{
     dimension_collector::{
         extract_response_signals as core_extract_response_signals, ResponseFlag, ResponseSignals,
@@ -24,13 +25,12 @@ use switchyard_components::{
     },
     DimensionCollector, ResponseSignalCollector,
 };
-use switchyard_core::ChatResponse;
 
 use crate::py_serde::value_from_python;
 
-use crate::core_bindings::context::PyProxyContext;
-use crate::core_bindings::request::PyChatRequest;
-use crate::core_bindings::response::PyChatResponse;
+use crate::interop::context::{get_cloned_from_python, lease_from_python};
+use crate::interop::request::{request_from_python, request_to_python};
+use crate::interop::response::{response_from_python, response_to_python};
 
 /// Request-side component that runs the dimension collector.
 #[pyclass(name = "DimensionCollector", skip_from_py_object)]
@@ -61,20 +61,18 @@ impl PyDimensionCollector {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        request: PyRef<'_, PyChatRequest>,
+        ctx: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let processor = self.inner.clone();
-        let mut lease = ctx.lease()?;
-        let request = request.clone_core();
+        let mut lease = lease_from_python(ctx)?;
+        let request = request_from_python(request)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = processor.process(lease.context_mut()?, request).await;
             let restore_result = lease.restore();
             let request = result.map_err(crate::errors::py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatRequest::from_core(request)).map(|request| request.into_any())
-            })
+            Python::attach(|py| request_to_python(py, request))
         })
     }
 
@@ -196,11 +194,11 @@ impl PyResponseSignalCollector {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        mut response: PyRefMut<'_, PyChatResponse>,
+        ctx: &Bound<'_, PyAny>,
+        response: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let mut lease = ctx.lease()?;
-        let response = response.take_core(py)?;
+        let mut lease = lease_from_python(ctx)?;
+        let response = response_from_python(response)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = ResponseSignalCollector
                 .process(lease.context_mut()?, response)
@@ -208,10 +206,7 @@ impl PyResponseSignalCollector {
             let restore_result = lease.restore();
             let response = result.map_err(crate::errors::py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatResponse::from_core(py, response)?)
-                    .map(|response| response.into_any())
-            })
+            Python::attach(|py| response_to_python(py, response))
         })
     }
 
@@ -226,10 +221,8 @@ impl PyResponseSignalCollector {
 /// response was a streaming response (which the buffered-body checks
 /// can't introspect).
 #[pyfunction]
-fn get_response_signals(ctx: PyRef<'_, PyProxyContext>) -> PyResult<Option<PyResponseSignals>> {
-    Ok(ctx
-        .get_cloned::<ResponseSignals>()?
-        .map(PyResponseSignals::from_core))
+fn get_response_signals(ctx: &Bound<'_, PyAny>) -> PyResult<Option<PyResponseSignals>> {
+    Ok(get_cloned_from_python::<ResponseSignals>(ctx)?.map(PyResponseSignals::from_core))
 }
 
 /// Runs the response-side checks against an inline response body dict.
@@ -388,10 +381,8 @@ impl PyToolResultSignal {
 ///
 /// Returns ``None`` when the collector has not run on this context yet.
 #[pyfunction]
-fn get_tool_result_signal(ctx: PyRef<'_, PyProxyContext>) -> PyResult<Option<PyToolResultSignal>> {
-    Ok(ctx
-        .get_cloned::<ToolResultSignal>()?
-        .map(PyToolResultSignal::from_core))
+fn get_tool_result_signal(ctx: &Bound<'_, PyAny>) -> PyResult<Option<PyToolResultSignal>> {
+    Ok(get_cloned_from_python::<ToolResultSignal>(ctx)?.map(PyToolResultSignal::from_core))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

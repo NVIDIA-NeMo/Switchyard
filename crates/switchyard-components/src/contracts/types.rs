@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Provider-agnostic request and response wrappers used by core chains.
+//! Provider-agnostic request and response wrappers used by compatibility chains.
 
 use std::fmt;
 use std::pin::Pin;
@@ -10,7 +10,7 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::error::{Result, SwitchyardError};
+use super::error::{Result, SwitchyardError};
 
 /// Supported inbound request wire formats.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]

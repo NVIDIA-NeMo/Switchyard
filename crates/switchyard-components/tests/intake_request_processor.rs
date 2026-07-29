@@ -6,10 +6,10 @@ mod support;
 use std::collections::BTreeMap;
 
 use serde_json::json;
+use switchyard_components::{ChatRequest, ChatRequestType, ProxyContext, Result, SwitchyardError};
 use switchyard_components::{
     IntakeRequestMetadata, IntakeRequestProcessor, IntakeRequestState, RequestMetadata,
 };
-use switchyard_core::{ChatRequest, ChatRequestType, ProxyContext, Result, SwitchyardError};
 
 use support::intake::request;
 

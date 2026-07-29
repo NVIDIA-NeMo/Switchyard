@@ -7,7 +7,7 @@ use serde_json::json;
 use switchyard_components::{
     prefix_probe, ModelStatsSnapshot, StatsAccumulator, StatsSnapshot, TokenUsage,
 };
-use switchyard_core::{Result, SwitchyardError};
+use switchyard_components::{Result, SwitchyardError};
 
 #[test]
 fn accumulator_snapshot_starts_zero_and_reset_clears_all_state() -> Result<()> {

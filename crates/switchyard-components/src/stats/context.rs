@@ -5,8 +5,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::ProxyContext;
 use serde::{Deserialize, Serialize};
-use switchyard_core::ProxyContext;
 
 use crate::backends::BackendSelection;
 use crate::request_processors::RandomRoutingDecision;

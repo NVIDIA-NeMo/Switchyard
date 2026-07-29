@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::{Result, SwitchyardError};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::Value;
-use switchyard_core::{Result, SwitchyardError};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -326,7 +326,7 @@ fn nibble_to_hex(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
-    use switchyard_core::Result;
+    use crate::Result;
 
     use super::*;
 

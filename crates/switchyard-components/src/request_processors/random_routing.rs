@@ -5,11 +5,11 @@
 
 use std::fmt;
 
+use crate::{LlmTarget, LlmTargetId, ModelId, Result, SwitchyardError};
 use parking_lot::Mutex;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use switchyard_core::{LlmTarget, LlmTargetId, ModelId, Result, SwitchyardError};
 
 const DEFAULT_STRONG_PROBABILITY: f64 = 0.5;
 

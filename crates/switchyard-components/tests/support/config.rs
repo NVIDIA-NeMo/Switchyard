@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use switchyard_core::{
+use switchyard_components::{
     BackendFormat, EndpointConfig, LlmTarget, LlmTargetId, ModelId, Result, SwitchyardError,
 };
 

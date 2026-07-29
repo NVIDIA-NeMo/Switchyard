@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Concrete Switchyard implementations built on `switchyard-core`.
+//! Compatibility backends and processors for the Python Switchyard runtime.
 //!
-//! `switchyard-core` owns traits and wire wrappers. This crate owns built-in
-//! compatibility implementations: backends, request processors, and response
-//! processors. New Rust orchestration belongs in libsy algorithms and clients.
+//! New Rust orchestration belongs in libsy algorithms and clients. The contracts
+//! here remain only while the Python compatibility runtime uses these components.
 
 pub mod backends;
+mod contracts;
 pub mod dimension_collector;
 pub mod intake;
 pub mod request_processors;
@@ -20,6 +20,7 @@ pub use backends::{
     AnthropicNativeBackend, BackendSelection, BackendSelectionReason, LlmTargetBackend,
     MultiLlmBackend, OpenAiNativeBackend, OpenAiPassthroughBackend, StatsLlmBackend,
 };
+pub use contracts::*;
 pub use dimension_collector::{
     extract_tool_signals, ResponseFlag, ResponseSignals, ToolResultSignal,
 };

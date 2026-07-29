@@ -89,8 +89,10 @@ class ComponentChainProfile:
         self._fallback_target_on_evict = fallback_target_on_evict
         # Maps session key → frozenset of target IDs that overflowed for that session.
         # Only allocated when eviction is configured; None otherwise.
-        self._session_evictions: SessionCache | None = (
-            SessionCache(self._SESSION_CACHE_MAX) if fallback_target_on_evict is not None else None
+        self._session_evictions: SessionCache[frozenset[str]] | None = (
+            SessionCache[frozenset[str]](self._SESSION_CACHE_MAX)
+            if fallback_target_on_evict is not None
+            else None
         )
 
     def iter_components(self) -> list[object]:

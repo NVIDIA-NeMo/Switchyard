@@ -15,8 +15,8 @@
 
 pub mod checks;
 
+use crate::ChatResponse;
 use serde::{Deserialize, Serialize};
-use switchyard_core::ChatResponse;
 
 /// Aggregate of response-side quality flags emitted by [`extract_response_signals`].
 ///

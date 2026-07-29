@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Non-empty string identifiers used across core routing and component wiring.
+//! Non-empty string identifiers used by compatibility component wiring.
 
 use std::fmt;
 use std::str::FromStr;
@@ -106,10 +106,6 @@ macro_rules! string_id {
     };
 }
 
-string_id!(BackendId);
-string_id!(ComponentId);
-string_id!(EndpointId);
 string_id!(LlmTargetId);
 string_id!(ModelId);
-string_id!(ProfileId);
 string_id!(RequestId);

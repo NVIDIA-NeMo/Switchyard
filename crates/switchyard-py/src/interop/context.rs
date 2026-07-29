@@ -1,291 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Python bindings for Rust-owned request context values.
+//! Private adapter for Rust-owned request context values.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
-use pyo3::class::basic::CompareOp;
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict};
+use pyo3::types::PyDict;
 use std::time::Duration;
 use switchyard_components::{
     BackendSelection, BackendSelectionReason, StatsBackendLatency, SubModelCall, SubModelCalls,
 };
-use switchyard_core::{EvictedTargets, LlmTargetId, ModelId, ProxyContext, RequestId};
+use switchyard_components::{EvictedTargets, LlmTargetId, ModelId, ProxyContext, RequestId};
 
 use crate::component_bindings::intake::request_metadata_from_mapping;
 
 use super::request::{request_type_from_python, request_type_object};
 
-/// Python-owned metadata values kept beside the Rust proxy context.
-#[derive(Default)]
-struct MetadataStore {
-    /// Arbitrary metadata values keyed by Python string.
-    values: BTreeMap<String, Py<PyAny>>,
-}
-
-/// Cloneable handle to the shared Python metadata store.
-#[derive(Clone)]
-pub(crate) struct PyProxyMetadataStore {
-    /// Shared metadata storage used by context clones.
-    inner: Arc<Mutex<MetadataStore>>,
-}
-
-/// Dict-like Python object used for `ProxyContext.metadata`.
-#[pyclass(name = "ProxyMetadata")]
-struct PyProxyMetadata {
-    /// Shared metadata storage protected across Python/Rust calls.
-    inner: Arc<Mutex<MetadataStore>>,
-}
-
-impl PyProxyMetadata {
-    /// Creates an empty metadata object.
-    fn new() -> Self {
-        Self::from_store(PyProxyMetadataStore::default())
-    }
-
-    /// Creates a metadata object from an existing shared store.
-    fn from_store(store: PyProxyMetadataStore) -> Self {
-        Self { inner: store.inner }
-    }
-
-    /// Returns the cloneable store handle for sharing with `ProxyContext`.
-    fn metadata_store(&self) -> PyProxyMetadataStore {
-        PyProxyMetadataStore {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-
-    /// Builds metadata from any Python mapping accepted by `dict.update`.
-    fn from_mapping(py: Python<'_>, metadata: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let store = Self::new();
-        store.update_from_mapping(py, metadata)?;
-        Ok(store)
-    }
-
-    /// Locks the metadata store.
-    fn lock(&self) -> MutexGuard<'_, MetadataStore> {
-        self.inner.lock()
-    }
-
-    /// Merges entries from a Python mapping into the metadata store.
-    fn update_from_mapping(&self, py: Python<'_>, metadata: &Bound<'_, PyAny>) -> PyResult<()> {
-        let entries = metadata_entries(py, metadata)?;
-        let mut store = self.lock();
-        store.values.extend(entries);
-        Ok(())
-    }
-
-    /// Materializes the metadata store as a Python dict.
-    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        let entries = {
-            let store = self.lock();
-            store
-                .values
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone_ref(py)))
-                .collect::<Vec<_>>()
-        };
-        let dict = PyDict::new(py);
-        for (key, value) in entries {
-            dict.set_item(key, value)?;
-        }
-        Ok(dict.unbind())
-    }
-}
-
-impl Default for PyProxyMetadataStore {
-    fn default() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(MetadataStore::default())),
-        }
-    }
-}
-
-#[pymethods]
-impl PyProxyMetadata {
-    /// Creates metadata from an optional mapping.
-    #[new]
-    #[pyo3(signature = (metadata=None))]
-    fn py_new(py: Python<'_>, metadata: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-        let store = Self::new();
-        if let Some(metadata) = metadata {
-            if !metadata.is_none() {
-                store.update_from_mapping(py, metadata)?;
-            }
-        }
-        Ok(store)
-    }
-
-    /// Implements `dict.get`.
-    #[pyo3(signature = (key, default=None))]
-    fn get(
-        &self,
-        py: Python<'_>,
-        key: &str,
-        default: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let value = self.lock().values.get(key).map(|value| value.clone_ref(py));
-        match value {
-            Some(value) => Ok(value),
-            None => Ok(default
-                .map(|value| value.clone().unbind())
-                .unwrap_or_else(|| py.None())),
-        }
-    }
-
-    /// Implements `dict.setdefault`.
-    #[pyo3(signature = (key, default=None))]
-    fn setdefault(
-        &self,
-        py: Python<'_>,
-        key: String,
-        default: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let default = default
-            .map(|value| value.clone().unbind())
-            .unwrap_or_else(|| py.None());
-        let mut store = self.lock();
-        if let Some(value) = store.values.get(&key) {
-            return Ok(value.clone_ref(py));
-        }
-        store.values.insert(key, default.clone_ref(py));
-        Ok(default)
-    }
-
-    /// Implements `dict.update`.
-    fn update(&self, py: Python<'_>, metadata: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.update_from_mapping(py, metadata)
-    }
-
-    /// Returns a shallow Python dict copy.
-    fn copy(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        self.to_dict(py)
-    }
-
-    /// Returns a Python keys view.
-    fn keys(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.to_dict(py)?
-            .bind(py)
-            .call_method0("keys")
-            .map(Bound::unbind)
-    }
-
-    /// Returns a Python values view.
-    fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.to_dict(py)?
-            .bind(py)
-            .call_method0("values")
-            .map(Bound::unbind)
-    }
-
-    /// Returns a Python items view.
-    fn items(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.to_dict(py)?
-            .bind(py)
-            .call_method0("items")
-            .map(Bound::unbind)
-    }
-
-    /// Implements metadata indexing.
-    fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
-        self.lock()
-            .values
-            .get(key)
-            .map(|value| value.clone_ref(py))
-            .ok_or_else(|| PyKeyError::new_err(key.to_string()))
-    }
-
-    /// Implements metadata assignment.
-    fn __setitem__(&self, key: String, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.lock().values.insert(key, value.clone().unbind());
-        Ok(())
-    }
-
-    /// Implements metadata deletion.
-    fn __delitem__(&self, key: &str) -> PyResult<()> {
-        self.lock()
-            .values
-            .remove(key)
-            .map(|_| ())
-            .ok_or_else(|| PyKeyError::new_err(key.to_string()))
-    }
-
-    /// Implements `key in metadata`.
-    fn __contains__(&self, key: &str) -> PyResult<bool> {
-        Ok(self.lock().values.contains_key(key))
-    }
-
-    /// Implements `len(metadata)`.
-    fn __len__(&self) -> PyResult<usize> {
-        Ok(self.lock().values.len())
-    }
-
-    /// Iterates over metadata keys like a Python dict.
-    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.keys(py)?
-            .bind(py)
-            .call_method0("__iter__")
-            .map(Bound::unbind)
-    }
-
-    /// Compares metadata by Python dict equality semantics.
-    fn __richcmp__(
-        &self,
-        py: Python<'_>,
-        other: &Bound<'_, PyAny>,
-        op: CompareOp,
-    ) -> PyResult<Py<PyAny>> {
-        match op {
-            CompareOp::Eq | CompareOp::Ne => {
-                let equals = self
-                    .to_dict(py)?
-                    .bind(py)
-                    .rich_compare(other, CompareOp::Eq)?
-                    .extract::<bool>()?;
-                let result = if matches!(op, CompareOp::Eq) {
-                    equals
-                } else {
-                    !equals
-                };
-                Ok(PyBool::new(py, result).to_owned().unbind().into_any())
-            }
-            _ => Ok(py.NotImplemented()),
-        }
-    }
-
-    /// Returns the Python dict representation.
-    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        self.to_dict(py)?.bind(py).repr()?.extract()
-    }
-}
-
-/// Extracts string-keyed entries from any mapping accepted by `dict.update`.
-fn metadata_entries(
-    py: Python<'_>,
-    metadata: &Bound<'_, PyAny>,
-) -> PyResult<Vec<(String, Py<PyAny>)>> {
-    let dict = PyDict::new(py);
-    dict.call_method1("update", (metadata,))?;
-    dict.iter()
-        .map(|(key, value)| Ok((key.extract::<String>()?, value.clone().unbind())))
-        .collect()
-}
-
 /// Python-facing proxy context backed by the Rust `ProxyContext`.
-#[pyclass(name = "ProxyContext", skip_from_py_object)]
+#[pyclass(name = "_NativeProxyContext", skip_from_py_object)]
 pub(crate) struct PyProxyContext {
     /// Shared Rust context guarded across Python and async Rust calls.
     inner: Arc<Mutex<ProxyContext>>,
     /// Borrow flag that prevents Python mutation while Rust owns the context.
     in_use: Arc<AtomicBool>,
-    /// Dict-like compatibility metadata store.
-    metadata: Py<PyProxyMetadata>,
 }
 
 impl PyProxyContext {
@@ -336,6 +77,36 @@ impl PyProxyContext {
     {
         Ok(self.lock()?.get::<T>().cloned())
     }
+}
+
+/// Leases the native context carried by a Python `ProxyContext`.
+pub(crate) fn lease_from_python(value: &Bound<'_, PyAny>) -> PyResult<PyProxyContextLease> {
+    value
+        .getattr("_native")?
+        .extract::<PyRef<'_, PyProxyContext>>()?
+        .lease()
+}
+
+/// Inserts a typed value into a Python context's native state.
+pub(crate) fn insert_into_python<T>(value: &Bound<'_, PyAny>, item: T) -> PyResult<()>
+where
+    T: Send + Sync + 'static,
+{
+    value
+        .getattr("_native")?
+        .extract::<PyRef<'_, PyProxyContext>>()?
+        .insert_value(item)
+}
+
+/// Reads a typed value from a Python context's native state.
+pub(crate) fn get_cloned_from_python<T>(value: &Bound<'_, PyAny>) -> PyResult<Option<T>>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    value
+        .getattr("_native")?
+        .extract::<PyRef<'_, PyProxyContext>>()?
+        .get_cloned::<T>()
 }
 
 /// Temporary ownership lease for passing `ProxyContext` into async Rust roles.
@@ -391,13 +162,6 @@ impl PyProxyContext {
             Some(metadata) if !metadata.is_none() => request_metadata_from_mapping(py, metadata)?,
             _ => None,
         };
-        let metadata = match metadata {
-            Some(metadata) if !metadata.is_none() => {
-                Py::new(py, PyProxyMetadata::from_mapping(py, metadata)?)?
-            }
-            _ => Py::new(py, PyProxyMetadata::new())?,
-        };
-
         let request_id = request_id
             .map(RequestId::new)
             .transpose()
@@ -407,8 +171,6 @@ impl PyProxyContext {
 
         let mut inner = ProxyContext::default();
         inner.request_id = request_id;
-        let metadata_store = metadata.borrow(py).metadata_store();
-        inner.insert(metadata_store);
         if let Some(request_metadata) = request_metadata {
             inner.insert(request_metadata);
         }
@@ -416,14 +178,7 @@ impl PyProxyContext {
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             in_use: Arc::new(AtomicBool::new(false)),
-            metadata,
         })
-    }
-
-    /// Returns the dict-like metadata object.
-    #[getter]
-    fn metadata(&self, py: Python<'_>) -> Py<PyProxyMetadata> {
-        self.metadata.clone_ref(py)
     }
 
     /// Records one routing-strategy sub-model call for intake capture.
@@ -677,7 +432,6 @@ impl PyProxyContext {
 
 /// Registers proxy context bindings into the Python module.
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyProxyMetadata>()?;
     module.add_class::<PyProxyContext>()?;
     Ok(())
 }

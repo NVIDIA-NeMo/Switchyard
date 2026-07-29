@@ -7,11 +7,13 @@ mod support;
 
 use serde_json::{json, Value};
 use switchyard_components::{
+    ChatRequest, ChatRequestType, LlmTargetId, ModelId, ProxyContext, Result,
+};
+use switchyard_components::{
     IntakeFormat, IntakePayloadBuilder, IntakeRequestMetadata, IntakeRequestState,
     IntakeSinkConfig, IntakeTarget, RandomRoutingDecision, RandomRoutingTier, RequestMetadata,
     StatsRouteLabel, SubModelCall,
 };
-use switchyard_core::{ChatRequest, ChatRequestType, LlmTargetId, ModelId, ProxyContext, Result};
 
 use support::intake::{
     completion, completion_with_usage, openai_chat_request, record_backend_selection,

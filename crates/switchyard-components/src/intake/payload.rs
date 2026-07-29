@@ -7,11 +7,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Map, Value};
-use switchyard_core::{
+use crate::{
     ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, ProxyContext, Result,
     StreamEvent, SwitchyardError,
 };
+use serde_json::{json, Map, Value};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use crate::backends::BackendSelection;
@@ -1632,7 +1632,7 @@ impl AnthropicContentBlockState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_core::Result;
+    use crate::Result;
 
     // Timestamp formatting should match the Python intake payloads exactly.
     #[test]

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use switchyard_components::{
     AnthropicNativeBackend, BackendSelection, OpenAiNativeBackend, OpenAiPassthroughBackend,
 };
-use switchyard_core::{
+use switchyard_components::{
     BackendFormat, ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, EndpointConfig,
     LlmBackend, LlmTarget, LlmTargetId, ModelId, ProxyContext, Result, StreamEvent,
     SwitchyardError,

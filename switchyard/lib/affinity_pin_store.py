@@ -3,7 +3,7 @@
 
 """Pluggable async L2 store for session-affinity pins.
 
-The in-process Rust ``SessionCache`` stays the L1 inside
+The in-process ``SessionCache`` stays the L1 inside
 :class:`switchyard.lib.session_affinity.SessionAffinity`. An optional object
 implementing this protocol is the L2: a shared, out-of-process store (e.g.
 Redis) that lets pins be read by every Switchyard worker/pod and survive pod

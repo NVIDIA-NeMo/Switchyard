@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Adversarial tests for core identifiers, context storage, and wire wrappers.
+//! Adversarial tests for compatibility identifiers, context storage, and wire wrappers.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use serde_json::json;
-use switchyard_core::{
-    BackendFormat, ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, ComponentId,
-    LlmTarget, LlmTargetId, ModelId, ProxyContext, StreamEvent,
+use switchyard_components::{
+    BackendFormat, ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, LlmTarget,
+    LlmTargetId, ModelId, ProxyContext, StreamEvent,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -22,7 +22,7 @@ struct ContextMarker(&'static str);
 struct EmptyStream;
 
 impl Stream for EmptyStream {
-    type Item = switchyard_core::Result<StreamEvent>;
+    type Item = switchyard_components::Result<StreamEvent>;
 
     fn poll_next(self: Pin<&mut Self>, _ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Poll::Ready(None)
@@ -34,17 +34,11 @@ impl Stream for EmptyStream {
 fn ids_reject_empty_and_whitespace_values_from_constructors_and_serde() -> TestResult {
     assert!(ModelId::new("").is_err());
     assert!(ModelId::new("   ").is_err());
-    assert!(ComponentId::new("").is_err());
-    assert!(ComponentId::new("   ").is_err());
     assert!(serde_json::from_value::<ModelId>(json!("")).is_err());
     assert!(serde_json::from_value::<ModelId>(json!("   ")).is_err());
-    assert!(serde_json::from_value::<ComponentId>(json!("")).is_err());
-    assert!(serde_json::from_value::<ComponentId>(json!("   ")).is_err());
 
     let parsed = serde_json::from_value::<ModelId>(json!("real-model"))?;
     assert_eq!(parsed.as_str(), "real-model");
-    let parsed = serde_json::from_value::<ComponentId>(json!("route"))?;
-    assert_eq!(parsed.as_str(), "route");
     Ok(())
 }
 

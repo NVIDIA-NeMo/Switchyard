@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-request context and typed extension storage for chain components.
+//! Per-request context and typed extension storage for compatibility components.
 
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ids::{LlmTargetId, RequestId};
-use crate::types::ChatRequestType;
+use super::ids::{LlmTargetId, RequestId};
+use super::types::ChatRequestType;
 
 /// Mutable state shared across processors and the backend for one request.
 #[derive(Default)]
