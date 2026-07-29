@@ -176,7 +176,13 @@ fn build_multi_format_client(
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
-  transport failures, timeouts, HTTP 408/429, and 5xx responses.
+  transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
+  transport failures are retried; streaming body failures are not replayed after
+  the response has been returned.
+
+Retries replay the same upstream request. A transport failure can therefore
+duplicate a request that the provider processed but did not finish returning,
+and the retry budget plus capped `Retry-After` delays determines total latency.
 
 ## Errors
 
