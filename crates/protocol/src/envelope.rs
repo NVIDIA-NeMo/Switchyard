@@ -12,18 +12,21 @@ use std::collections::{HashMap, HashSet};
 pub struct Context {
     /// Caller-specific values propagated through the request.
     pub values: HashMap<String, String>,
-    /// Targets that overflowed their context window on this request.
+    /// Targets this request must not route to. A caller may set these up front to keep a
+    /// request off a given target; routing also adds any target that overflows its context
+    /// window mid-request.
     excluded_targets: HashSet<String>,
 }
 
 impl Context {
     /// Excludes a target from this request, returning whether it was newly excluded.
-    /// The retry loop relies on the `false` return to stop after every target is tried.
+    /// Re-excluding returns `false`, which is what bounds the overflow retry once every
+    /// target has been tried.
     pub fn exclude_target(&mut self, target: impl Into<String>) -> bool {
         self.excluded_targets.insert(target.into())
     }
 
-    /// Whether a target has already overflowed on this request.
+    /// Whether this request is barred from routing to `target`.
     pub fn is_excluded(&self, target: &str) -> bool {
         self.excluded_targets.contains(target)
     }

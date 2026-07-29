@@ -327,7 +327,8 @@ impl LlmTargetSet {
             })
     }
 
-    /// The named target, or the first still-eligible one when it has been excluded.
+    /// The named target, or the first one this request is not barred from when it has been
+    /// excluded (see [`Context::exclude_target`]). Errors if every target is excluded.
     pub fn resolve_target(&self, name: &str, ctx: &Context) -> Result<LlmTarget> {
         let target = self.get_target(name)?;
         if !ctx.is_excluded(&target.semantic_name) {
