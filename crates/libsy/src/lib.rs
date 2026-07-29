@@ -95,6 +95,7 @@ pub mod algorithms;
 
 mod observability;
 pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
+pub use algorithms::util::ToolSignalProcessor;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 ///

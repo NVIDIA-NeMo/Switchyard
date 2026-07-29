@@ -11,3 +11,4 @@ pub(crate) mod tool_signals;
 pub use affinity::AffinityRouter;
 pub(crate) use llm_judge::{Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
 pub use subagent::SubagentOverride;
+pub use tool_signals::ToolSignalProcessor;
