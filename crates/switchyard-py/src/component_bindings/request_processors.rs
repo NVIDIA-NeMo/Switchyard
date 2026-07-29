@@ -8,9 +8,9 @@ use switchyard_components::{
     tracking_enabled_from_env, IntakeRequestProcessor, StatsRequestProcessor,
 };
 
-use crate::core_bindings::context::PyProxyContext;
-use crate::core_bindings::request::PyChatRequest;
 use crate::errors::py_core_error;
+use crate::interop::context::lease_from_python;
+use crate::interop::request::{request_from_python, request_to_python};
 
 #[pyclass(name = "StatsRequestProcessor", skip_from_py_object)]
 #[derive(Clone, Copy, Debug)]
@@ -38,20 +38,18 @@ impl PyStatsRequestProcessor {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        request: PyRef<'_, PyChatRequest>,
+        ctx: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let processor = self.inner;
-        let mut lease = ctx.lease()?;
-        let request = request.clone_core();
+        let mut lease = lease_from_python(ctx)?;
+        let request = request_from_python(request)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = processor.process(lease.context_mut()?, request).await;
             let restore_result = lease.restore();
             let request = result.map_err(py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatRequest::from_core(request)).map(|request| request.into_any())
-            })
+            Python::attach(|py| request_to_python(py, request))
         })
     }
 
@@ -82,11 +80,11 @@ impl PyIntakeRequestProcessor {
     fn process<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        request: PyRef<'_, PyChatRequest>,
+        ctx: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let mut lease = ctx.lease()?;
-        let request = request.clone_core();
+        let mut lease = lease_from_python(ctx)?;
+        let request = request_from_python(request)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = IntakeRequestProcessor
                 .process(lease.context_mut()?, request)
@@ -94,9 +92,7 @@ impl PyIntakeRequestProcessor {
             let restore_result = lease.restore();
             let request = result.map_err(py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatRequest::from_core(request)).map(|request| request.into_any())
-            })
+            Python::attach(|py| request_to_python(py, request))
         })
     }
 

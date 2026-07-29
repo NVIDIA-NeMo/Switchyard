@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::{ChatRequest, ChatRequestType};
 use serde::{Deserialize, Serialize};
-use switchyard_core::{ChatRequest, ChatRequestType};
 
 /// Header carrying the client session ID used by intake.
 pub const PROXY_SESSION_ID_HEADER: &str = "proxy_x_session_id";

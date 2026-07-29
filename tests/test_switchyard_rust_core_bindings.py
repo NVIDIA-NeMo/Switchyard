@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for Rust-owned switchyard_rust core bindings."""
+"""Tests for Python core values and their native component interop."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def test_request_constructors_preserve_wire_format() -> None:
     assert anthropic.model == "claude-sonnet-4.5"
 
 
-def test_set_model_mutates_rust_owned_body() -> None:
+def test_set_model_mutates_owned_body() -> None:
     request = ChatRequest.openai_chat({"model": "old", "messages": []})
 
     request.set_model("new")
@@ -113,6 +113,13 @@ def test_openai_completion_response_owns_body() -> None:
     assert response.body["model"] == "gpt-4o"
 
 
+def test_buffered_response_preserves_json_null_body() -> None:
+    response = ChatResponse.openai_completion(None)
+
+    assert response.body is None
+    assert response.to_body() is None
+
+
 def test_response_constructors_preserve_wire_shape() -> None:
     responses = ChatResponse.openai_responses_completion({
         "id": "resp-test",
@@ -131,7 +138,7 @@ def test_response_constructors_preserve_wire_shape() -> None:
     assert anthropic.response_type.value == "anthropic_completion"
 
 
-async def test_stream_response_uses_rust_owned_async_stream_and_rejects_body_access() -> None:
+async def test_stream_response_uses_owned_async_stream_and_rejects_body_access() -> None:
     async def source():
         yield {"delta": "hello"}
 
@@ -185,7 +192,7 @@ async def test_stream_response_supports_taps_maps_and_completion_callbacks() -> 
         _ = [event async for event in stream]
 
 
-def test_proxy_context_is_rust_owned_with_rust_metadata_mapping() -> None:
+def test_proxy_context_uses_python_wrappers_with_shared_native_state() -> None:
     metadata = {"request_id": "client-visible", "nested": {"value": 1}}
 
     ctx = ProxyContext(metadata=metadata, request_id="rust-request")
@@ -240,7 +247,7 @@ def test_provider_stream_adapters_are_rust_chat_response_stream_aliases() -> Non
     assert AnthropicResponseStream is ChatResponseStream
 
 
-def test_backend_role_class_is_rust_owned_public_export() -> None:
+def test_backend_role_class_is_the_public_python_export() -> None:
     from switchyard.lib.roles import LLMBackend as PublicLLMBackend
 
     assert PublicLLMBackend is LLMBackend

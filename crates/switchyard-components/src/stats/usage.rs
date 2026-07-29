@@ -3,9 +3,9 @@
 
 //! Provider usage extraction for buffered and streaming responses.
 
+use crate::StreamEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use switchyard_core::StreamEvent;
 
 /// Normalized token usage counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

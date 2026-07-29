@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Python bindings for Rust-owned chat response values.
+//! Private adapter for Rust-owned chat response values.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,311 +10,103 @@ use std::task::{Context, Poll};
 
 use futures_util::{stream, Stream, StreamExt};
 use parking_lot::Mutex;
-use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyStopAsyncIteration, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyType;
-use serde_json::Value;
-use switchyard_core::{BoxResponseStream, ChatResponse, ChatResponseType, StreamEvent};
+use switchyard_components::{BoxResponseStream, ChatResponse, ChatResponseType, StreamEvent};
 
 use crate::errors::py_core_error;
 use crate::py_serde::{value_from_python, value_to_python};
 
-#[pyclass(name = "ChatResponseType", frozen, eq, skip_from_py_object)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PyChatResponseType {
-    inner: ChatResponseType,
-}
-
-impl PyChatResponseType {
-    const fn new(inner: ChatResponseType) -> Self {
-        Self { inner }
-    }
-}
-
-#[pymethods]
-impl PyChatResponseType {
-    #[classattr]
-    const OPENAI_COMPLETION: Self = Self::new(ChatResponseType::OpenAiCompletion);
-
-    #[classattr]
-    const OPENAI_STREAM: Self = Self::new(ChatResponseType::OpenAiStream);
-
-    #[classattr]
-    const OPENAI_RESPONSES_COMPLETION: Self =
-        Self::new(ChatResponseType::OpenAiResponsesCompletion);
-
-    #[classattr]
-    const OPENAI_RESPONSES_STREAM: Self = Self::new(ChatResponseType::OpenAiResponsesStream);
-
-    #[classattr]
-    const ANTHROPIC_COMPLETION: Self = Self::new(ChatResponseType::AnthropicCompletion);
-
-    #[classattr]
-    const ANTHROPIC_STREAM: Self = Self::new(ChatResponseType::AnthropicStream);
-
-    #[getter]
-    fn value(&self) -> &'static str {
-        response_type_name(self.inner)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ChatResponseType.{}",
-            response_type_variant_name(self.inner)
-        )
-    }
-
-    fn __str__(&self) -> &'static str {
-        response_type_name(self.inner)
-    }
-
-    fn __hash__(&self) -> isize {
-        match self.inner {
-            ChatResponseType::OpenAiCompletion => 1,
-            ChatResponseType::OpenAiStream => 2,
-            ChatResponseType::OpenAiResponsesCompletion => 3,
-            ChatResponseType::OpenAiResponsesStream => 4,
-            ChatResponseType::AnthropicCompletion => 5,
-            ChatResponseType::AnthropicStream => 6,
+/// Converts a public Python response into the native response value.
+pub(crate) fn response_from_python(value: &Bound<'_, PyAny>) -> PyResult<ChatResponse> {
+    let response_type = response_type_from_python(&value.getattr("response_type")?)?;
+    Ok(match response_type {
+        ChatResponseType::OpenAiCompletion => {
+            ChatResponse::openai_completion(value_from_python(&value.getattr("_body")?)?)
         }
+        ChatResponseType::OpenAiResponsesCompletion => {
+            ChatResponse::openai_responses_completion(value_from_python(&value.getattr("_body")?)?)
+        }
+        ChatResponseType::AnthropicCompletion => {
+            ChatResponse::anthropic_completion(value_from_python(&value.getattr("_body")?)?)
+        }
+        ChatResponseType::OpenAiStream => ChatResponse::OpenAiStream(stream_from_python(value)?),
+        ChatResponseType::OpenAiResponsesStream => {
+            ChatResponse::OpenAiResponsesStream(stream_from_python(value)?)
+        }
+        ChatResponseType::AnthropicStream => {
+            ChatResponse::AnthropicStream(stream_from_python(value)?)
+        }
+    })
+}
+
+/// Converts a native response into the public Python response value.
+pub(crate) fn response_to_python(py: Python<'_>, response: ChatResponse) -> PyResult<Py<PyAny>> {
+    let core = py.import("switchyard_rust.core")?;
+    let (factory, payload) = match response {
+        ChatResponse::OpenAiCompletion(response) => (
+            "openai_completion",
+            value_to_python(py, &response.into_body())?,
+        ),
+        ChatResponse::OpenAiResponsesCompletion(response) => (
+            "openai_responses_completion",
+            value_to_python(py, &response.into_body())?,
+        ),
+        ChatResponse::AnthropicCompletion(response) => (
+            "anthropic_completion",
+            value_to_python(py, &response.into_body())?,
+        ),
+        ChatResponse::OpenAiStream(stream) => {
+            ("openai_stream", stream_to_python(py, &core, stream)?)
+        }
+        ChatResponse::OpenAiResponsesStream(stream) => (
+            "openai_responses_stream",
+            stream_to_python(py, &core, stream)?,
+        ),
+        ChatResponse::AnthropicStream(stream) => {
+            ("anthropic_stream", stream_to_python(py, &core, stream)?)
+        }
+    };
+    core.getattr("ChatResponse")?
+        .call_method1(factory, (payload,))
+        .map(Bound::unbind)
+}
+
+fn response_type_from_python(value: &Bound<'_, PyAny>) -> PyResult<ChatResponseType> {
+    let raw = if let Ok(value_attr) = value.getattr("value") {
+        value_attr.extract::<String>()?
+    } else {
+        value.extract::<String>()?
+    };
+    match raw.as_str() {
+        "openai_completion" => Ok(ChatResponseType::OpenAiCompletion),
+        "openai_stream" => Ok(ChatResponseType::OpenAiStream),
+        "openai_responses_completion" => Ok(ChatResponseType::OpenAiResponsesCompletion),
+        "openai_responses_stream" => Ok(ChatResponseType::OpenAiResponsesStream),
+        "anthropic_completion" => Ok(ChatResponseType::AnthropicCompletion),
+        "anthropic_stream" => Ok(ChatResponseType::AnthropicStream),
+        _ => Err(PyValueError::new_err(format!(
+            "Unknown response type: {raw:?}"
+        ))),
     }
 }
 
-enum PyChatResponseInner {
-    Buffered {
-        response_type: ChatResponseType,
-        body: Value,
-    },
-    Stream {
-        response_type: ChatResponseType,
-        stream: Py<PyResponseStream>,
-    },
+fn stream_from_python(value: &Bound<'_, PyAny>) -> PyResult<BoxResponseStream> {
+    let native = value.getattr("stream")?.getattr("_native")?;
+    native
+        .extract::<PyRef<'_, PyResponseStream>>()?
+        .take_core_stream()
 }
 
-#[pyclass(name = "ChatResponse")]
-pub(crate) struct PyChatResponse {
-    inner: PyChatResponseInner,
-}
-
-#[pymethods]
-impl PyChatResponse {
-    #[classmethod]
-    fn openai_completion(_cls: &Bound<'_, PyType>, body: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Ok(Self {
-            inner: PyChatResponseInner::Buffered {
-                response_type: ChatResponseType::OpenAiCompletion,
-                body: value_from_python(body)?,
-            },
-        })
-    }
-
-    #[classmethod]
-    fn openai_stream(_cls: &Bound<'_, PyType>, stream: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Self::stream_response(stream.py(), ChatResponseType::OpenAiStream, stream)
-    }
-
-    #[classmethod]
-    fn openai_responses_completion(
-        _cls: &Bound<'_, PyType>,
-        body: &Bound<'_, PyAny>,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            inner: PyChatResponseInner::Buffered {
-                response_type: ChatResponseType::OpenAiResponsesCompletion,
-                body: value_from_python(body)?,
-            },
-        })
-    }
-
-    #[classmethod]
-    fn openai_responses_stream(
-        _cls: &Bound<'_, PyType>,
-        stream: &Bound<'_, PyAny>,
-    ) -> PyResult<Self> {
-        Self::stream_response(stream.py(), ChatResponseType::OpenAiResponsesStream, stream)
-    }
-
-    #[classmethod]
-    fn anthropic_completion(_cls: &Bound<'_, PyType>, body: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Ok(Self {
-            inner: PyChatResponseInner::Buffered {
-                response_type: ChatResponseType::AnthropicCompletion,
-                body: value_from_python(body)?,
-            },
-        })
-    }
-
-    #[classmethod]
-    fn anthropic_stream(_cls: &Bound<'_, PyType>, stream: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Self::stream_response(stream.py(), ChatResponseType::AnthropicStream, stream)
-    }
-
-    #[getter]
-    fn response_type(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        response_type_object(py, self.response_type_inner())
-    }
-
-    #[getter]
-    fn body(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.to_body(py)
-    }
-
-    #[getter]
-    fn stream(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &self.inner {
-            PyChatResponseInner::Stream { stream, .. } => Ok(stream.clone_ref(py).into_any()),
-            PyChatResponseInner::Buffered { .. } => Err(PyAttributeError::new_err(
-                "buffered ChatResponse values do not have a stream",
-            )),
-        }
-    }
-
-    fn replace_body(&mut self, body: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.inner = match self.response_type_inner() {
-            ChatResponseType::OpenAiCompletion => {
-                let body = value_from_python(body)?;
-                PyChatResponseInner::Buffered {
-                    response_type: ChatResponseType::OpenAiCompletion,
-                    body,
-                }
-            }
-            ChatResponseType::OpenAiResponsesCompletion => {
-                let body = value_from_python(body)?;
-                PyChatResponseInner::Buffered {
-                    response_type: ChatResponseType::OpenAiResponsesCompletion,
-                    body,
-                }
-            }
-            ChatResponseType::AnthropicCompletion => {
-                let body = value_from_python(body)?;
-                PyChatResponseInner::Buffered {
-                    response_type: ChatResponseType::AnthropicCompletion,
-                    body,
-                }
-            }
-            ChatResponseType::OpenAiStream
-            | ChatResponseType::OpenAiResponsesStream
-            | ChatResponseType::AnthropicStream => {
-                return Err(PyValueError::new_err(
-                    "streaming ChatResponse values do not have a replaceable body",
-                ));
-            }
-        };
-        Ok(())
-    }
-
-    fn to_body(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &self.inner {
-            PyChatResponseInner::Buffered { body, .. } => value_to_python(py, body),
-            PyChatResponseInner::Stream { .. } => Err(PyAttributeError::new_err(
-                "streaming ChatResponse values do not have a buffered body",
-            )),
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ChatResponse(response_type='{}')",
-            response_type_name(self.response_type_inner())
-        )
-    }
-}
-
-impl PyChatResponse {
-    pub(crate) fn from_core(py: Python<'_>, response: ChatResponse) -> PyResult<Self> {
-        let inner = match response {
-            ChatResponse::OpenAiCompletion(response) => PyChatResponseInner::Buffered {
-                response_type: ChatResponseType::OpenAiCompletion,
-                body: response.into_body(),
-            },
-            ChatResponse::OpenAiStream(stream) => PyChatResponseInner::Stream {
-                response_type: ChatResponseType::OpenAiStream,
-                stream: Py::new(py, PyResponseStream::from_core_stream(stream))?,
-            },
-            ChatResponse::OpenAiResponsesCompletion(response) => PyChatResponseInner::Buffered {
-                response_type: ChatResponseType::OpenAiResponsesCompletion,
-                body: response.into_body(),
-            },
-            ChatResponse::OpenAiResponsesStream(stream) => PyChatResponseInner::Stream {
-                response_type: ChatResponseType::OpenAiResponsesStream,
-                stream: Py::new(py, PyResponseStream::from_core_stream(stream))?,
-            },
-            ChatResponse::AnthropicCompletion(response) => PyChatResponseInner::Buffered {
-                response_type: ChatResponseType::AnthropicCompletion,
-                body: response.into_body(),
-            },
-            ChatResponse::AnthropicStream(stream) => PyChatResponseInner::Stream {
-                response_type: ChatResponseType::AnthropicStream,
-                stream: Py::new(py, PyResponseStream::from_core_stream(stream))?,
-            },
-        };
-        Ok(Self { inner })
-    }
-
-    pub(crate) fn take_core(&mut self, py: Python<'_>) -> PyResult<ChatResponse> {
-        match &self.inner {
-            PyChatResponseInner::Buffered {
-                response_type,
-                body,
-            } => Ok(match response_type {
-                ChatResponseType::OpenAiCompletion => ChatResponse::openai_completion(body.clone()),
-                ChatResponseType::OpenAiResponsesCompletion => {
-                    ChatResponse::openai_responses_completion(body.clone())
-                }
-                ChatResponseType::AnthropicCompletion => {
-                    ChatResponse::anthropic_completion(body.clone())
-                }
-                ChatResponseType::OpenAiStream
-                | ChatResponseType::OpenAiResponsesStream
-                | ChatResponseType::AnthropicStream => {
-                    return Err(PyRuntimeError::new_err(
-                        "streaming response type stored without a stream",
-                    ));
-                }
-            }),
-            PyChatResponseInner::Stream {
-                response_type,
-                stream,
-            } => {
-                let stream = stream.bind(py).borrow().take_core_stream()?;
-                Ok(match response_type {
-                    ChatResponseType::OpenAiStream => ChatResponse::OpenAiStream(stream),
-                    ChatResponseType::OpenAiResponsesStream => {
-                        ChatResponse::OpenAiResponsesStream(stream)
-                    }
-                    ChatResponseType::AnthropicStream => ChatResponse::AnthropicStream(stream),
-                    ChatResponseType::OpenAiCompletion
-                    | ChatResponseType::OpenAiResponsesCompletion
-                    | ChatResponseType::AnthropicCompletion => {
-                        return Err(PyRuntimeError::new_err(
-                            "buffered response type stored with a stream",
-                        ));
-                    }
-                })
-            }
-        }
-    }
-
-    fn stream_response(
-        py: Python<'_>,
-        response_type: ChatResponseType,
-        stream: &Bound<'_, PyAny>,
-    ) -> PyResult<Self> {
-        let stream = Py::new(py, PyResponseStream::new(stream.clone().unbind()))?;
-        Ok(Self {
-            inner: PyChatResponseInner::Stream {
-                response_type,
-                stream,
-            },
-        })
-    }
-
-    fn response_type_inner(&self) -> ChatResponseType {
-        match &self.inner {
-            PyChatResponseInner::Buffered { response_type, .. } => *response_type,
-            PyChatResponseInner::Stream { response_type, .. } => *response_type,
-        }
-    }
+fn stream_to_python(
+    py: Python<'_>,
+    core: &Bound<'_, PyModule>,
+    stream: BoxResponseStream,
+) -> PyResult<Py<PyAny>> {
+    let native = Py::new(py, PyResponseStream::from_core_stream(stream))?;
+    core.getattr("ChatResponseStream")?
+        .call_method1("_from_native", (native,))
+        .map(Bound::unbind)
 }
 
 struct PyResponseStreamSource {
@@ -325,7 +117,7 @@ struct PyResponseStreamSource {
 
 type BoxPyResponseStream = std::pin::Pin<Box<dyn Stream<Item = PyResult<Py<PyAny>>> + Send>>;
 
-#[pyclass(name = "ChatResponseStream")]
+#[pyclass(name = "_NativeChatResponseStream")]
 pub(crate) struct PyResponseStream {
     stream: Arc<tokio::sync::Mutex<Option<BoxPyResponseStream>>>,
     taps: Arc<Mutex<Vec<Py<PyAny>>>>,
@@ -400,7 +192,7 @@ impl PyResponseStream {
                     };
                     (
                         event.map_err(|error| {
-                            switchyard_core::SwitchyardError::Processor(error.to_string())
+                            switchyard_components::SwitchyardError::Processor(error.to_string())
                         }),
                         (stream, taps, maps, on_complete, completed),
                     )
@@ -637,7 +429,7 @@ impl SourceClosingStream {
 }
 
 impl Stream for SourceClosingStream {
-    type Item = switchyard_core::Result<StreamEvent>;
+    type Item = switchyard_components::Result<StreamEvent>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // All fields are ``Unpin``, so projecting through ``get_mut`` is sound.
@@ -815,37 +607,7 @@ fn is_stop_async_iteration(error: &PyErr) -> bool {
     Python::attach(|py| error.is_instance_of::<PyStopAsyncIteration>(py))
 }
 
-fn response_type_name(response_type: ChatResponseType) -> &'static str {
-    match response_type {
-        ChatResponseType::OpenAiCompletion => "openai_completion",
-        ChatResponseType::OpenAiStream => "openai_stream",
-        ChatResponseType::OpenAiResponsesCompletion => "openai_responses_completion",
-        ChatResponseType::OpenAiResponsesStream => "openai_responses_stream",
-        ChatResponseType::AnthropicCompletion => "anthropic_completion",
-        ChatResponseType::AnthropicStream => "anthropic_stream",
-    }
-}
-
-fn response_type_variant_name(response_type: ChatResponseType) -> &'static str {
-    match response_type {
-        ChatResponseType::OpenAiCompletion => "OPENAI_COMPLETION",
-        ChatResponseType::OpenAiStream => "OPENAI_STREAM",
-        ChatResponseType::OpenAiResponsesCompletion => "OPENAI_RESPONSES_COMPLETION",
-        ChatResponseType::OpenAiResponsesStream => "OPENAI_RESPONSES_STREAM",
-        ChatResponseType::AnthropicCompletion => "ANTHROPIC_COMPLETION",
-        ChatResponseType::AnthropicStream => "ANTHROPIC_STREAM",
-    }
-}
-
-fn response_type_object(py: Python<'_>, response_type: ChatResponseType) -> PyResult<Py<PyAny>> {
-    py.get_type::<PyChatResponseType>()
-        .getattr(response_type_variant_name(response_type))
-        .map(Bound::unbind)
-}
-
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyChatResponseType>()?;
-    module.add_class::<PyChatResponse>()?;
     module.add_class::<PyResponseStream>()?;
     Ok(())
 }

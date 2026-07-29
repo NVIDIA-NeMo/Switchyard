@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rust-owned backend role class and translated-response aliases.
+"""Python backend role class and translated-response aliases.
 
-Request-side and response-side components are now plain objects with async
+Request-side and response-side components are plain objects with async
 ``process(...)`` methods. The backend remains nominal because it owns upstream
-transport behavior and request-format support.
+transport behavior and request-format support; native implementations register
+with the same Python role class.
 """
 
 from __future__ import annotations

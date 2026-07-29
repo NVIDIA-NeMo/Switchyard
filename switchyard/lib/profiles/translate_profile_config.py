@@ -68,8 +68,9 @@ class _TranslateHookOnlyBackend(LLMBackend):
             ChatRequestType.ANTHROPIC,
         ]
 
-    async def call(self, _ctx: ProxyContext, _request: ChatRequest) -> ChatResponse:
+    async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
         """Reject complete execution; external hosts own the backend call."""
+        del ctx, request
         raise SwitchyardBackendError(
             "TranslateProfileConfig is hook-only; call process(), invoke the host "
             "backend, then call rprocess()"

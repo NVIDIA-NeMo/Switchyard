@@ -3,8 +3,8 @@
 
 //! Request-side intake processor.
 
+use crate::{ChatRequest, ProxyContext, Result};
 use serde_json::Value;
-use switchyard_core::{ChatRequest, ProxyContext, Result};
 
 use crate::intake::context::{IntakeRequestState, RequestMetadata};
 use crate::intake::payload::now_millis;

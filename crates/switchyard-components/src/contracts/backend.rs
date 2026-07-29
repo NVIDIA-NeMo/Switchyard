@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! LLM target configuration shared by routing and factory code.
+//! LLM target configuration shared by compatibility routing and factory code.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{LlmTargetId, ModelId};
+use super::ids::{LlmTargetId, ModelId};
 
 /// Wire format expected by an LLM target.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]

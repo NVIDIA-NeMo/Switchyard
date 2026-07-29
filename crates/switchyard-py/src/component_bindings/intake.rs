@@ -12,7 +12,7 @@ use pyo3::types::{PyBool, PyDict, PyType};
 use serde::Serialize;
 use switchyard_components::{IntakeRequestMetadata, RequestMetadata};
 
-use crate::core_bindings::context::PyProxyContext;
+use crate::interop::context::insert_into_python;
 use crate::py_serde::value_to_python;
 
 #[pyclass(name = "IntakeRequestMetadata", frozen, skip_from_py_object)]
@@ -146,8 +146,8 @@ impl PyRequestMetadata {
         to_python(py, &self.inner)
     }
 
-    fn apply_to_context(&self, ctx: PyRef<'_, PyProxyContext>) -> PyResult<()> {
-        ctx.insert_value(self.clone_core())
+    fn apply_to_context(&self, ctx: &Bound<'_, PyAny>) -> PyResult<()> {
+        insert_into_python(ctx, self.clone_core())
     }
 
     fn __richcmp__(

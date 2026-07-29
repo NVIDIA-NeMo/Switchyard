@@ -7,10 +7,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::{ChatRequest, ChatRequestType, ChatResponse, LlmBackend, ProxyContext, Result};
 use async_trait::async_trait;
-use switchyard_core::{
-    ChatRequest, ChatRequestType, ChatResponse, LlmBackend, ProxyContext, Result,
-};
 
 use crate::stats::{
     selected_stats_model, selected_stats_tier, StatsAccumulator, StatsBackendLatency,

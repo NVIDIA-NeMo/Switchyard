@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Backend trait shared by Rust-owned LLM callers.
+//! Backend trait shared by compatibility LLM callers.
 
 use async_trait::async_trait;
 
-use crate::context::ProxyContext;
-use crate::error::Result;
-use crate::types::{ChatRequest, ChatRequestType, ChatResponse};
+use super::context::ProxyContext;
+use super::error::Result;
+use super::types::{ChatRequest, ChatRequestType, ChatResponse};
 
 /// Backend abstraction responsible for making the LLM call.
 #[async_trait]

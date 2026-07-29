@@ -6,7 +6,7 @@
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use switchyard_core::SwitchyardError;
+use switchyard_components::SwitchyardError;
 use switchyard_translation::TranslationError;
 
 create_exception!(_switchyard_rust, SwitchyardRuntimeError, PyRuntimeError);

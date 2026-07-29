@@ -13,7 +13,7 @@ use switchyard_components::{
     BackendSelection, BackendSelectionReason, IntakeRequestMetadata, IntakeRequestState,
     IntakeSink, RequestMetadata,
 };
-use switchyard_core::{
+use switchyard_components::{
     ChatRequest, ChatRequestType, ChatResponse, ModelId, ProxyContext, Result, StreamEvent,
     SwitchyardError,
 };

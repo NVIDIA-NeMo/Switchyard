@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Python bindings for Rust-owned backend role abstractions.
+//! Private adapter for Rust-owned backend role abstractions.
 
 use std::sync::Arc;
 
@@ -9,14 +9,14 @@ use pyo3::exceptions::{PyNotImplementedError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
 use pyo3::PyTypeInfo;
-use switchyard_core::LlmBackend;
+use switchyard_components::LlmBackend;
 
-use super::context::PyProxyContext;
-use super::request::{request_type_object, PyChatRequest};
-use super::response::PyChatResponse;
+use super::context::lease_from_python;
+use super::request::{request_from_python, request_type_object};
+use super::response::response_to_python;
 use crate::errors::py_core_error;
 
-#[pyclass(name = "LLMBackend", subclass)]
+#[pyclass(name = "_NativeLlmBackend", subclass)]
 pub(crate) struct PyLlmBackend {
     inner: Option<Arc<dyn LlmBackend>>,
 }
@@ -78,24 +78,21 @@ impl PyLlmBackend {
     fn call<'py>(
         &self,
         py: Python<'py>,
-        ctx: PyRef<'_, PyProxyContext>,
-        request: PyRef<'_, PyChatRequest>,
+        ctx: &Bound<'_, PyAny>,
+        request: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let backend = self
             .inner
             .clone()
             .ok_or_else(|| PyNotImplementedError::new_err("LLMBackend.call must be implemented"))?;
-        let mut lease = ctx.lease()?;
-        let request = request.clone_core();
+        let mut lease = lease_from_python(ctx)?;
+        let request = request_from_python(request)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = backend.call(lease.context_mut()?, &request).await;
             let restore_result = lease.restore();
             let response = result.map_err(py_core_error)?;
             restore_result?;
-            Python::attach(|py| {
-                Py::new(py, PyChatResponse::from_core(py, response)?)
-                    .map(|response| response.into_any())
-            })
+            Python::attach(|py| response_to_python(py, response))
         })
     }
 

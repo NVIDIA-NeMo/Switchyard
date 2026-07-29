@@ -7,9 +7,9 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{btree_map::Entry, BTreeMap, BinaryHeap, HashSet};
 use std::sync::Arc;
 
+use crate::Result;
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
-use switchyard_core::Result;
 
 use super::cost::{estimate_cost, CostEstimate};
 use super::{PrefixProbe, TokenUsage};

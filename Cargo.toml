@@ -7,7 +7,6 @@ members = [
     "crates/libsy",
     "crates/libsy-llm-client",
     "crates/switchyard-components",
-    "crates/switchyard-core",
     "crates/switchyard-py",
     "crates/protocol",
     "crates/switchyard-server",
@@ -32,7 +31,7 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-switchyard-core = { path = "crates/switchyard-core", version = "0.1.0" }
+switchyard-components = { path = "crates/switchyard-components", version = "0.1.0" }
 switchyard-libsy = { path = "crates/libsy", version = "0.1.0" }
 switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.1.0" }
 switchyard-protocol = { path = "crates/protocol", version = "0.1.0" }

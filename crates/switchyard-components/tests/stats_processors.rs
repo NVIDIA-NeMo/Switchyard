@@ -16,7 +16,7 @@ use switchyard_components::{
     StatsAccumulator, StatsBackendLatency, StatsLlmBackend, StatsRequestProcessor,
     StatsRequestStart, StatsResponseProcessor, StatsRouteLabel,
 };
-use switchyard_core::{
+use switchyard_components::{
     ChatRequest, ChatRequestType, ChatResponse, LlmBackend, LlmTargetId, ModelId, ProxyContext,
     Result, StreamEvent, SwitchyardError,
 };

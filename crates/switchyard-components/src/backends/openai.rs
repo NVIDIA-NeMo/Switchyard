@@ -8,15 +8,15 @@ use std::env;
 use std::fmt;
 use std::sync::Arc;
 
-use async_stream::try_stream;
-use async_trait::async_trait;
-use futures_util::StreamExt;
-use serde_json::{Map, Value};
-use switchyard_core::{
+use crate::{
     merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
     ChatResponse, EndpointConfig, LlmBackend, LlmTarget, LlmTargetId, ModelId, ProxyContext,
     Result, StreamEvent, SwitchyardError,
 };
+use async_stream::try_stream;
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use serde_json::{Map, Value};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use super::common::{
@@ -580,9 +580,9 @@ fn openai_sse_stream(response: reqwest::Response) -> BoxResponseStream {
 
 #[cfg(test)]
 mod tests {
+    use crate::{EndpointConfig, LlmTargetId, ModelId};
     use parking_lot::Mutex;
     use serde_json::json;
-    use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
 
     use super::*;
 

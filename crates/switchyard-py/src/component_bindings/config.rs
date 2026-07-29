@@ -8,11 +8,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
 use serde::Serialize;
+use switchyard_components::{BackendFormat, EndpointConfig, LlmTarget, LlmTargetId, ModelId};
 use switchyard_components::{
     IntakeFormat, IntakeQueueFullPolicy, IntakeSinkConfig, IntakeTarget,
     RandomRoutingProcessorConfig,
 };
-use switchyard_core::{BackendFormat, EndpointConfig, LlmTarget, LlmTargetId, ModelId};
 
 use crate::errors::py_core_error;
 use crate::py_serde::{value_from_python, value_to_python};

@@ -140,11 +140,11 @@ def build_switchyard_app(switchyard: SwitchyardApp) -> FastAPI:
     async def _invalid_request_handler(
         _request: Request, exc: SwitchyardInvalidRequestError
     ) -> Response:
-        """Map Rust-side request validation failures to the 400 envelope.
+        """Map request validation failures to the 400 envelope.
 
         ``ChatRequest.validate()`` (called by the inbound endpoints) raises
-        this from the Rust core when a body is structurally valid but
-        semantically invalid. The only such check today is a present-but-empty
+        this when a body is structurally valid but semantically invalid. The
+        only such check today is a present-but-empty
         ``messages`` array, so the envelope uses ``code="empty_messages"``;
         revisit if more validations start sharing this error.
         """

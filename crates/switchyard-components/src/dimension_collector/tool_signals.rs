@@ -8,7 +8,7 @@
 //! [`switchyard_protocol::Request`] (raw body + wire-format metadata) so the two
 //! request models share one implementation.
 
-use switchyard_core::{ChatRequest, ChatRequestType};
+use crate::{ChatRequest, ChatRequestType};
 use switchyard_protocol::{Metadata, Request, WireFormat};
 
 /// The tool-signal output type. Re-exported from libsy so downstream consumers

@@ -46,7 +46,7 @@ def attach_request_metadata(
     metadata: RequestMetadata,
     headers: Mapping[str, str] | None = None,
 ) -> None:
-    """Attach request metadata to both Python and Rust-owned context storage."""
+    """Attach request metadata to both Python and native typed context storage."""
     ctx.metadata[CTX_REQUEST_METADATA] = metadata
     if headers is not None:
         # Redact credential headers before retaining the map: the caller key is

@@ -6,8 +6,8 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::{ChatRequestType, Result, SwitchyardError};
 use serde_json::{Map, Value};
-use switchyard_core::{ChatRequestType, Result, SwitchyardError};
 use switchyard_translation::{TranslationEngine, WireFormat};
 
 pub(crate) enum ParsedSseFrame {

@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
+use crate::{BoxResponseStream, ChatResponse, ProxyContext, Result};
 use async_stream::try_stream;
 use futures_util::StreamExt;
-use switchyard_core::{BoxResponseStream, ChatResponse, ProxyContext, Result};
 
 use crate::intake::{
     now_millis, HttpIntakeSink, IntakePayloadBuilder, IntakePayloadContext, IntakeRequestState,

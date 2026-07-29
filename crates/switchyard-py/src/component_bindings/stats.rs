@@ -8,8 +8,8 @@ use pyo3::prelude::*;
 use serde::Serialize;
 use switchyard_components::{StatsAccumulator, StatsRouteLabel, TokenUsage};
 
-use crate::core_bindings::context::PyProxyContext;
 use crate::errors::py_core_error;
+use crate::interop::context::insert_into_python;
 use crate::py_serde::value_to_python;
 
 #[pyclass(name = "StatsAccumulator", skip_from_py_object)]
@@ -226,12 +226,12 @@ fn to_python(py: Python<'_>, value: &impl Serialize) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
-fn set_stats_route_label(ctx: PyRef<'_, PyProxyContext>, label: &str) -> PyResult<()> {
+fn set_stats_route_label(ctx: &Bound<'_, PyAny>, label: &str) -> PyResult<()> {
     let label = label.trim();
     if label.is_empty() {
         return Err(PyValueError::new_err("stats route label must not be empty"));
     }
-    ctx.insert_value(StatsRouteLabel::new(label))
+    insert_into_python(ctx, StatsRouteLabel::new(label))
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

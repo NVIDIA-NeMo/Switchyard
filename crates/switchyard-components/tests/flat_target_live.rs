@@ -14,10 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use switchyard_components::intake::to_flat_document;
+use switchyard_components::Result;
 use switchyard_components::{
     HttpIntakeSink, IntakeFormat, IntakeSink, IntakeSinkConfig, IntakeTarget,
 };
-use switchyard_core::Result;
 
 // A representative chat-completions intake payload, the input the production
 // builder produces before flattening.
