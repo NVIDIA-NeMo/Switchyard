@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod affinity;
+pub(crate) mod escalation;
 pub(crate) mod handoff_notes;
 mod llm_judge;
 pub(crate) mod stage_router;

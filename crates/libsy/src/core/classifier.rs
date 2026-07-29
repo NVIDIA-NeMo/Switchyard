@@ -75,6 +75,16 @@ pub trait Classifier<S = ()>: Send + Sync {
         None
     }
 
+    /// Why this classifier picked `score`, when it can say more than the composition can.
+    ///
+    /// A cascade's decision reason is otherwise derived from the winning target alone, which
+    /// cannot distinguish two classifiers that select the same target for different reasons —
+    /// a session latched by a prior turn versus one escalated by this one. Returning `None`
+    /// (the default) leaves the composition's own wording in place.
+    fn reasoning(&self, _score: &Score) -> Option<String> {
+        None
+    }
+
     /// Score the classifier's targets given the current state and request.
     /// driver is optional. It is used to offload model calls
     ///
