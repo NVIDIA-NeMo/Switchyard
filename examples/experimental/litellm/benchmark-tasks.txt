@@ -1,0 +1,4 @@
+# Small deterministic TB Lite smoke sample.
+broken-python
+cosign-keyless-signing
+jq-data-processing
