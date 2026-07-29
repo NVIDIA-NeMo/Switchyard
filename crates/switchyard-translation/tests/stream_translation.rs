@@ -12,6 +12,60 @@ use switchyard_translation::{
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+// Verifies a libsy round trip can replay an exact same-format provider event.
+#[test]
+fn preserved_same_format_event_replays_unknown_fields_exactly() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "system_fingerprint": "fp_provider_specific",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "Hi"},
+            "finish_reason": null
+        }]
+    });
+
+    let preserved = engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, &chunk)?;
+    let replayed = engine.encode_stream_event(&mut state, WireFormat::OpenAiChat, preserved)?;
+
+    assert_eq!(replayed, vec![chunk]);
+    Ok(())
+}
+
+// Verifies cross-format encoding uses the neutral events rather than leaking
+// fields that have no representation in the target protocol.
+#[test]
+fn preserved_cross_format_event_translates_normalized_content() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "system_fingerprint": "fp_provider_specific",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "Hi"},
+            "finish_reason": null
+        }]
+    });
+
+    let preserved = engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, &chunk)?;
+    let translated =
+        engine.encode_stream_event(&mut state, WireFormat::AnthropicMessages, preserved)?;
+
+    assert_eq!(translated[2]["delta"]["text"], "Hi");
+    assert!(translated
+        .iter()
+        .all(|event| event.get("system_fingerprint").is_none()));
+    Ok(())
+}
+
 // Verifies an OpenAI text delta opens the expected Anthropic message and content blocks.
 #[test]
 fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResult {

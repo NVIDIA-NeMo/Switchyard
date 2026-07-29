@@ -126,6 +126,15 @@ fn encode_anthropic_stream(
     event: LlmResponseChunk,
 ) -> Vec<Value> {
     match event {
+        LlmResponseChunk::ProviderEvent {
+            source,
+            raw,
+            normalized: _,
+        } if source == WireFormat::AnthropicMessages.into() => vec![raw],
+        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
+            .into_iter()
+            .flat_map(|event| encode_anthropic_stream(state, event))
+            .collect(),
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             if state.emitted_message_start {

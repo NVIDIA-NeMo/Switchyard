@@ -214,6 +214,21 @@ pub fn decode_stream_event(
         })
 }
 
+/// Decodes one provider stream event and retains its exact source JSON.
+pub fn decode_stream_event_preserving(
+    state: &mut StreamTranslationState,
+    source: impl Into<FormatId>,
+    event: &Value,
+) -> LlmResponseChunk {
+    let source = source.into();
+    state.source = Some(source.clone());
+    LlmResponseChunk::ProviderEvent {
+        source: source.clone(),
+        raw: event.clone(),
+        normalized: decode_stream_event(state, source, event),
+    }
+}
+
 /// Encodes one neutral stream event with the built-in codec registry.
 pub fn encode_stream_event(
     state: &mut StreamTranslationState,
