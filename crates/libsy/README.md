@@ -287,11 +287,9 @@ boundary — so algorithms carry no telemetry code beyond `Algorithm::name()`, t
 - **Structured logs** (`tracing`, target `libsy`): an info event per published
   `Decision` (selected model + reasoning), warn events for failed calls and runs.
 - **Metrics** (OpenTelemetry, scope `switchyard`, via the global meter provider): counters
-  `switchyard.runs`, `switchyard.llm_calls`, `switchyard.decisions`,
-  `switchyard.input_tokens`, `switchyard.output_tokens`, `switchyard.total_tokens`,
-  `switchyard.reasoning_tokens`; histograms `switchyard.run_duration_ms` and
-  `switchyard.llm_call_duration_ms`. Attributes are `algorithm`, `selected_model`, and
-  `outcome` (`ok`/`error`) — failure rates are the
+  `switchyard.runs`, `switchyard.llm_calls`, and `switchyard.decisions`; histograms
+  `switchyard.run_duration_ms` and `switchyard.llm_call_duration_ms`. Attributes are
+  `algorithm`, `selected_model`, and `outcome` (`ok`/`error`) — failure rates are the
   `outcome="error"` share of runs/calls.
 
 libsy also records compatibility metrics for final routed calls:

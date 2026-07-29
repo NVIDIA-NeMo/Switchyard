@@ -193,9 +193,8 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
 }
 
 /// Records the resolution of one offloaded model call: the call counter and
-/// latency histogram, token counters from the response usage (absent fields are
-/// skipped, not recorded as zero), the `outcome`/`error`/token fields on
-/// `span`, and a warn log when the call failed.
+/// latency histogram, the `outcome`/`error`/token fields on `span`, and a warn
+/// log when the call failed.
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
@@ -254,38 +253,14 @@ pub(crate) fn record_llm_call(
             let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) else {
                 return;
             };
-            let token_attributes = [
-                KeyValue::new("algorithm", algorithm.to_string()),
-                KeyValue::new("selected_model", selected_model.to_string()),
-            ];
-            for (counter, field, value) in [
-                (
-                    "switchyard.input_tokens",
-                    "input_tokens",
-                    usage.input_tokens,
-                ),
-                (
-                    "switchyard.output_tokens",
-                    "output_tokens",
-                    usage.output_tokens,
-                ),
-                (
-                    "switchyard.total_tokens",
-                    "total_tokens",
-                    usage.total_tokens,
-                ),
-                (
-                    "switchyard.reasoning_tokens",
-                    "reasoning_tokens",
-                    usage.reasoning_tokens,
-                ),
+            for (field, value) in [
+                ("input_tokens", usage.input_tokens),
+                ("output_tokens", usage.output_tokens),
+                ("total_tokens", usage.total_tokens),
+                ("reasoning_tokens", usage.reasoning_tokens),
             ] {
                 if let Some(value) = value {
                     span.record(field, value);
-                    meter
-                        .u64_counter(counter)
-                        .build()
-                        .add(value, &token_attributes);
                 }
             }
         }

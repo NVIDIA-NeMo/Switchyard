@@ -433,7 +433,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     assert_eq!(trace.len(), 1);
 
     // Metrics: run/call counters and latency histograms keyed by algorithm,
-    // token counters from the response usage, one published decision.
+    // plus one published decision.
     let snapshots = flushed_metrics(exporter, provider);
     let run_attrs = [("algorithm", ALGO), ("outcome", "ok")];
     let call_attrs = [
@@ -457,22 +457,6 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     assert_eq!(
         f64_histogram_count(&snapshots, "switchyard.llm_call_duration_ms", &call_attrs),
         Some(1)
-    );
-    assert_eq!(
-        u64_counter_value(&snapshots, "switchyard.input_tokens", &token_attrs),
-        Some(11)
-    );
-    assert_eq!(
-        u64_counter_value(&snapshots, "switchyard.output_tokens", &token_attrs),
-        Some(7)
-    );
-    assert_eq!(
-        u64_counter_value(&snapshots, "switchyard.total_tokens", &token_attrs),
-        Some(18)
-    );
-    assert_eq!(
-        u64_counter_value(&snapshots, "switchyard.reasoning_tokens", &token_attrs),
-        Some(2)
     );
     assert_eq!(
         u64_counter_value(&snapshots, "switchyard.decisions", &token_attrs),
@@ -625,8 +609,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         "expected an error step from the failed call"
     );
 
-    // Metrics: the call and the run both count under outcome=error, and no
-    // token counters exist for the failed model.
+    // Metrics: the call and the run both count under outcome=error.
     let snapshots = flushed_metrics(exporter, provider);
     let run_attrs = [("algorithm", ALGO), ("outcome", "error")];
     let call_attrs = [
@@ -641,14 +624,6 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     assert_eq!(
         u64_counter_value(&snapshots, "switchyard.llm_calls", &call_attrs),
         Some(1)
-    );
-    assert_eq!(
-        u64_counter_value(
-            &snapshots,
-            "switchyard.input_tokens",
-            &[("algorithm", ALGO), ("selected_model", MODEL)],
-        ),
-        None
     );
     assert_eq!(
         u64_counter_value(&snapshots, "switchyard.errors", &[("model", MODEL)]),

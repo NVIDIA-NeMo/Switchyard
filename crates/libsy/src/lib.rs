@@ -61,8 +61,8 @@
 //! (fulfillment time as the algorithm observes it) plus a `libsy.client_call`
 //! span around the actual API call when [`run`](Algorithm::run) serves it;
 //! each [`Driver::info`] decision is logged with its reasoning; and OpenTelemetry
-//! metrics record run/call counts, latency, token usage, and published
-//! decisions, keyed by [`Algorithm::name`] plus `selected_model` and `outcome`.
+//! metrics record run/call counts, latency, and published decisions, keyed by
+//! [`Algorithm::name`] plus `selected_model` and `outcome`.
 //! Metrics use the global meter provider and spans/logs the `tracing` facade: a
 //! host that installs an OTel SDK and a `tracing` subscriber (bridged with
 //! `tracing-opentelemetry` for OTLP spans) gets the full signal set; with

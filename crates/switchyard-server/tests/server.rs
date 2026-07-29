@@ -85,9 +85,25 @@ async fn upstream_chat(
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
     if body["stream"].as_bool() == Some(true) {
+        if body["messages"][0]["content"] == "stream-error" {
+            let events = [
+                json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
+                json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"content": "before"}}]}).to_string(),
+                json!({"id": "chatcmpl-stream-error", "model": model, "choices": [{"index": 0, "delta": {"content": "still here"}}], "usage": {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8}}).to_string(),
+                json!({"error": {"message": "upstream stream failed", "type": "server_error"}}).to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            return Sse::new(stream).into_response();
+        }
         let events = [
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "hello"}}]}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-partial"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6, "prompt_tokens_details": {"cached_tokens": 2, "cache_creation_tokens": 1}}}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-final"}}], "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17, "prompt_tokens_details": {"cached_tokens": 7, "cache_creation_tokens": 2}, "completion_tokens_details": {"reasoning_tokens": 3}}}).to_string(),
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}).to_string(),
             "[DONE]".to_string(),
         ];
@@ -173,7 +189,8 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
 
 #[tokio::test]
 async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
-    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    const MODEL: &str = "model/metrics-buffered";
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
 
     let before = send(&app, "GET", "/metrics", None).await?;
     assert_eq!(before.status, StatusCode::OK);
@@ -232,13 +249,51 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         "# TYPE switchyard_llm_calls_total counter",
         "# TYPE switchyard_run_duration_ms histogram",
         "# TYPE switchyard_llm_call_duration_ms histogram",
+        "# TYPE switchyard_prompt_tokens_total counter",
+        "# TYPE switchyard_completion_tokens_total counter",
+        "# TYPE switchyard_cached_tokens_total counter",
+        "# TYPE switchyard_total_latency_ms histogram",
         "algorithm=\"random\"",
-        "selected_model=\"model/a\"",
+        &format!("selected_model=\"{MODEL}\""),
     ] {
         assert!(
             metrics.contains(expected),
             "missing {expected:?} in metrics:\n{metrics}"
         );
+    }
+    for (name, expected_delta) in [
+        ("switchyard_prompt_tokens_total", 10.0),
+        ("switchyard_completion_tokens_total", 2.0),
+        ("switchyard_cached_tokens_total", 7.0),
+        ("switchyard_total_latency_ms_count", 1.0),
+    ] {
+        assert_eq!(
+            metric_delta(seeded, metrics, name, &[("model", MODEL)]),
+            Some(expected_delta),
+            "unexpected delta for {name}"
+        );
+    }
+    assert!(metric_line(
+        metrics,
+        "switchyard_cache_creation_tokens_total",
+        &[("model", MODEL)]
+    )
+    .is_none());
+    assert!(metric_line(
+        metrics,
+        "switchyard_reasoning_tokens_total",
+        &[("model", MODEL)]
+    )
+    .is_none());
+    for metric in [
+        "switchyard_prompt_tokens_total",
+        "switchyard_completion_tokens_total",
+        "switchyard_cached_tokens_total",
+        "switchyard_total_latency_ms_count",
+    ] {
+        let line = metric_line(metrics, metric, &[("model", MODEL)])
+            .ok_or_else(|| format!("missing {metric} series for {MODEL}"))?;
+        assert!(!line.contains("tier="), "unexpected tier label in {line}");
     }
     Ok(())
 }
@@ -305,6 +360,38 @@ impl Response {
 
     fn text(&self) -> TestResult<&str> {
         Ok(std::str::from_utf8(&self.bytes)?)
+    }
+}
+
+fn metric_line<'a>(metrics: &'a str, name: &str, labels: &[(&str, &str)]) -> Option<&'a str> {
+    metrics.lines().find(|line| {
+        line.starts_with(name)
+            && labels
+                .iter()
+                .all(|(key, value)| line.contains(&format!("{key}=\"{value}\"")))
+    })
+}
+
+fn metric_value(metrics: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+    metric_line(metrics, name, labels)?
+        .split_whitespace()
+        .last()?
+        .parse()
+        .ok()
+}
+
+fn metric_delta(before: &str, after: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+    metric_value(after, name, labels)
+        .map(|after| after - metric_value(before, name, labels).unwrap_or_default())
+}
+
+fn assert_in_order(haystack: &str, needles: &[&str]) {
+    let mut remainder = haystack;
+    for needle in needles {
+        let offset = remainder
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} after prior events in:\n{haystack}"));
+        remainder = &remainder[offset + needle.len()..];
     }
 }
 
@@ -687,6 +774,100 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     assert_eq!(response.status, StatusCode::OK);
     assert!(response.text()?.contains("hello"));
     assert!(response.text()?.contains("data: [DONE]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_success_records_only_final_usage_and_one_latency() -> TestResult {
+    const MODEL: &str = "model/stream-success";
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+    let before = send(&app, "GET", "/metrics", None).await?;
+    let before = before.text()?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-success"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_in_order(
+        response.text()?,
+        &[
+            "hello",
+            "-partial",
+            "-final",
+            "\"finish_reason\":\"stop\"",
+            "[DONE]",
+        ],
+    );
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    let after = after.text()?;
+    for (name, expected_delta) in [
+        ("switchyard_prompt_tokens_total", 12.0),
+        ("switchyard_completion_tokens_total", 5.0),
+        ("switchyard_cached_tokens_total", 7.0),
+        ("switchyard_cache_creation_tokens_total", 2.0),
+        ("switchyard_reasoning_tokens_total", 3.0),
+        ("switchyard_total_latency_ms_count", 1.0),
+    ] {
+        assert_eq!(
+            metric_delta(before, after, name, &[("model", MODEL)]),
+            Some(expected_delta),
+            "unexpected delta for {name}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_error_records_neither_usage_nor_latency() -> TestResult {
+    const MODEL: &str = "model/stream-error";
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
+    let before = send(&app, "GET", "/metrics", None).await?;
+    let before = before.text()?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "stream-error"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_in_order(
+        response.text()?,
+        &["before", "still here", "upstream stream failed"],
+    );
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    let after = after.text()?;
+    for name in [
+        "switchyard_prompt_tokens_total",
+        "switchyard_completion_tokens_total",
+        "switchyard_cached_tokens_total",
+        "switchyard_cache_creation_tokens_total",
+        "switchyard_reasoning_tokens_total",
+        "switchyard_total_latency_ms_count",
+    ] {
+        assert_eq!(
+            metric_value(after, name, &[("model", MODEL)]),
+            metric_value(before, name, &[("model", MODEL)]),
+            "{name} changed after a failed stream"
+        );
+    }
     Ok(())
 }
 

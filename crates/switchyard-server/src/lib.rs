@@ -7,6 +7,7 @@ pub mod config;
 mod metrics;
 mod response;
 mod sse;
+mod usage_metrics;
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -399,6 +400,7 @@ async fn handle_llm_request(
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
+    let started = Instant::now();
     let (algorithm, request, requested_model) =
         match resolve_route(&state, metadata, body, wire_format) {
             Ok(resolved) => resolved,
@@ -407,6 +409,16 @@ async fn handle_llm_request(
     let (trace, response) = match algorithm.run(Context::default(), request).await {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
+    };
+    let response = if let Some(decision) = trace.last() {
+        usage_metrics::observe(
+            response,
+            decision.selected_model(),
+            decision.routing_tier(),
+            started,
+        )
+    } else {
+        response
     };
 
     let mut response = match into_http_response(response, wire_format, Some(requested_model)) {

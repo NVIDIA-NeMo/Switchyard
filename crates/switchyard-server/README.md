@@ -94,11 +94,23 @@ Routed-call compatibility metrics are:
 | `switchyard_requests_total` | counter | `model`, optional `tier` | Successful final routed calls |
 | `switchyard_errors_total` | counter | `model`, optional `tier` | Failed final routed calls |
 | `switchyard_model_call_latency_ms` | histogram | `model`, optional `tier` | Successful final routed-call latency |
+| `switchyard_prompt_tokens_total` | counter | `model`, optional `tier` | Input tokens, including cached and cache-creation tokens |
+| `switchyard_completion_tokens_total` | counter | `model`, optional `tier` | Output tokens |
+| `switchyard_cached_tokens_total` | counter | `model`, optional `tier` | Cached input tokens |
+| `switchyard_cache_creation_tokens_total` | counter | `model`, optional `tier` | Cache-creation input tokens |
+| `switchyard_reasoning_tokens_total` | counter | `model`, optional `tier` | Reasoning output tokens |
+| `switchyard_total_latency_ms` | histogram | `model`, optional `tier` | Full-turn latency for successful routed responses |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
 | `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
 
 The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
 is omitted for untiered algorithms. Classifier calls are excluded from these families.
+
+`switchyard_total_latency_ms` observes an aggregate when it becomes available or a stream when it
+ends cleanly. Its clock starts after HTTP body decoding, at the routed-request handler entry, so it
+is slightly narrower than the Python server's request-ingress-to-completion measurement. The Rust
+server exports this metric as a histogram, while the Python server exports its counterpart as a
+summary; this matches the existing histogram/summary difference for model-call latency.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.
