@@ -45,9 +45,9 @@ const ALGORITHM_NAME: &str = "escalation";
 /// [`ConfirmationProcessor`] and read by [`EscalationClassifier`].
 const STREAK_KEY: &str = "escalation_streak";
 
-/// Session-state key holding this turn's judge verdict while it travels from the classifier
-/// to the confirmation processor.
-const VERDICT_KEY: &str = "escalation_verdict";
+/// Session-state key holding the streak this turn's verdict would leave behind, while it
+/// travels from the classifier to [`ConfirmationProcessor`].
+const PENDING_KEY: &str = "escalation_pending_streak";
 
 /// Separator marking where [`truncate_middle`] dropped a message's interior.
 const TRIM_MARKER: &str = " ...[trimmed] ";
@@ -143,55 +143,22 @@ struct EscalationVerdict {
     reason: String,
 }
 
-/// What the judge concluded about one turn.
-///
-/// Recorded by the classifier and consumed by [`ConfirmationProcessor`], which is why
-/// "the judge declined" and "the judge was unavailable" stay distinguishable: both keep the
-/// turn on the efficient tier, but only a decline is evidence about the run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Verdict {
-    Escalate,
-    Decline,
-    Unavailable,
-}
-
-impl Verdict {
-    fn as_str(self) -> &'static str {
-        match self {
-            Verdict::Escalate => "escalate",
-            Verdict::Decline => "decline",
-            Verdict::Unavailable => "unavailable",
-        }
-    }
-
-    fn parse(text: &str) -> Option<Self> {
-        match text {
-            "escalate" => Some(Verdict::Escalate),
-            "decline" => Some(Verdict::Decline),
-            "unavailable" => Some(Verdict::Unavailable),
-            _ => None,
-        }
-    }
-}
-
-/// The routing decision for one escalation turn, carrying the tier it selected.
-struct EscalationDecision {
+/// The efficient tier's serving call, published so its span and metrics carry the tier.
+struct EfficientCall {
     model: String,
-    tier: &'static str,
-    reason: &'static str,
 }
 
-impl Decision for EscalationDecision {
+impl Decision for EfficientCall {
     fn selected_model(&self) -> &str {
         &self.model
     }
 
-    fn routing_tier(&self) -> Option<&'static str> {
-        Some(self.tier)
+    fn routing_tier(&self) -> Option<&str> {
+        Some("weak")
     }
 
     fn reasoning(&self) -> Option<&str> {
-        Some(self.reason)
+        Some("efficient tier serves the turn the judge reads")
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -334,10 +301,8 @@ impl Classifier<State> for EscalationClassifier {
                 Context::default(),
                 &self.efficient_target,
                 request.clone(),
-                Arc::new(EscalationDecision {
+                Arc::new(EfficientCall {
                     model: self.efficient.clone(),
-                    tier: "weak",
-                    reason: "efficient tier serves the turn the judge reads",
                 }),
             )
             .await?;
@@ -359,21 +324,22 @@ impl Classifier<State> for EscalationClassifier {
             .messages
             .push(assistant_message(&aggregate));
         let (classification, _) = self.judge.score(state, &mut judged, Some(driver)).await?;
-        let verdict = match classification {
-            Classification::Scores(ref scores) if !scores.is_empty() => Verdict::Escalate,
-            Classification::Scores(_) => Verdict::Decline,
-            Classification::Ambiguous(_) => Verdict::Unavailable,
-        };
-        state.extra.insert(
-            VERDICT_KEY.to_string(),
-            StateValue::String(verdict.as_str().to_string()),
-        );
 
-        // Escalate once this turn's verdict completes the streak. The processor records the
-        // verdict afterwards, so the streak read here does not yet include it.
-        let confirmed =
-            verdict == Verdict::Escalate && streak(state) + 1 >= self.confirmations.max(1);
-        if confirmed {
+        // Fold the verdict into the streak this turn would leave behind. Strict-consecutive:
+        // an escalate verdict extends the streak, any decline clears it, and an unavailable
+        // judge is no evidence either way so it leaves the streak untouched. The processor
+        // commits `pending` once the turn's decision is final.
+        let held = streak(state);
+        let (escalate, pending) = match classification {
+            Classification::Scores(ref scores) if !scores.is_empty() => (true, held + 1),
+            Classification::Scores(_) => (false, 0),
+            Classification::Ambiguous(_) => (false, held),
+        };
+        state
+            .extra
+            .insert(PENDING_KEY.to_string(), StateValue::Count(pending));
+
+        if escalate && pending >= self.confirmations {
             // The efficient reply is discarded: the capable model answers this turn.
             return Ok((decisive(&self.capable), None));
         }
@@ -387,7 +353,7 @@ impl Classifier<State> for EscalationClassifier {
     }
 }
 
-/// Folds each turn's judge verdict into the session's confirmation streak.
+/// Commits the streak the classifier computed for this turn.
 ///
 /// Split from the classifier so the streak only moves once the turn's decision is final: the
 /// classifier reads the streak to gate its verdict, this writes it back afterwards.
@@ -397,26 +363,17 @@ struct ConfirmationProcessor;
 impl Processor<State> for ConfirmationProcessor {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         match event {
-            // Drop last turn's verdict before the classifier records this turn's, so a run
-            // that fails between classification and decision cannot leave one behind.
+            // Drop a stale pending streak before the classifier records this turn's, so a run
+            // that failed between classification and decision cannot leave one behind.
             Event::Request(_) => {
-                state.extra.remove(VERDICT_KEY);
+                state.extra.remove(PENDING_KEY);
             }
-            Event::Decision { .. } => match take_verdict(state) {
-                // Strict-consecutive: an escalate verdict extends the streak and any decline
-                // clears it. An unavailable judge is no evidence either way, so it neither
-                // extends nor breaks the streak.
-                Some(Verdict::Escalate) => {
-                    let extended = streak(state) + 1;
-                    state
-                        .extra
-                        .insert(STREAK_KEY.to_string(), StateValue::Count(extended));
+            // A latched turn never reaches the judge, so it records nothing to commit.
+            Event::Decision { .. } => {
+                if let Some(pending) = state.extra.remove(PENDING_KEY) {
+                    state.extra.insert(STREAK_KEY.to_string(), pending);
                 }
-                Some(Verdict::Decline) => {
-                    state.extra.remove(STREAK_KEY);
-                }
-                Some(Verdict::Unavailable) | None => {}
-            },
+            }
             _ => {}
         }
         Ok(())
@@ -428,14 +385,6 @@ fn streak(state: &State) -> u32 {
     match state.extra.get(STREAK_KEY) {
         Some(StateValue::Count(count)) => *count,
         _ => 0,
-    }
-}
-
-/// Removes and returns this turn's recorded verdict.
-fn take_verdict(state: &mut State) -> Option<Verdict> {
-    match state.extra.remove(VERDICT_KEY) {
-        Some(StateValue::String(text)) => Verdict::parse(&text),
-        _ => None,
     }
 }
 
