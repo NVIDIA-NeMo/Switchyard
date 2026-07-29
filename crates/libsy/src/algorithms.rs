@@ -13,7 +13,7 @@ pub mod noop;
 pub mod passthrough;
 pub mod rand;
 
-pub use escalation::EscalationRouter;
+pub use escalation::{EscalationJudgeSettings, EscalationRouter};
 pub use fall_through::{FallThrough, FallThroughDecision};
 pub use llm_class::LlmTaskClassifier;
 pub use noop::{Noop, NoopDecision};
