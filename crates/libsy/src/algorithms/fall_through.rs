@@ -21,8 +21,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::{Classifier, Event, Processor, Score};
 use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmClientError, LlmTargetSet, Request,
-    Response, Result, RoutedLlmClient,
+    Algorithm, Context, Decision, Driver, LibsyError, LlmClientError, LlmTarget, LlmTargetSet,
+    Request, Response, Result, RoutedLlmClient,
 };
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
@@ -157,11 +157,23 @@ where
             }
         };
 
-        // Routing already ran; a target that overflows is retried around the call alone so
-        // processors and the published decision see exactly one turn.
-        let mut ctx = ctx;
-        let mut target = target;
-        let mut decision = decision;
+        self.call_with_overflow_fallback(ctx, &driver, target, decision, request)
+            .await
+    }
+
+    /// Calls `target`, falling back to the next eligible target whenever one overflows its
+    /// context window, until a call succeeds or every target has been tried.
+    ///
+    /// Routing is deliberately not re-run: the fallback replaces the target in place so the
+    /// processor chain and the retained session state still see exactly one turn.
+    async fn call_with_overflow_fallback(
+        &self,
+        mut ctx: Context,
+        driver: &Driver,
+        mut target: LlmTarget,
+        mut decision: Arc<dyn Decision>,
+        request: Request,
+    ) -> Result<Response> {
         loop {
             let result = driver
                 .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
@@ -174,27 +186,33 @@ where
             else {
                 return Err(error);
             };
+            // A target already excluded means the pool is spent; surface the client error
+            // so the caller still sees a context overflow rather than an internal failure.
             if !ctx.exclude_target(failed) {
                 return Err(error);
             }
             let Ok(next) = self.targets.resolve_target(&target.semantic_name, &ctx) else {
                 return Err(error);
             };
-            let tier = self
-                .classifiers
-                .iter()
-                .find_map(|c| c.routing_tier(&next.semantic_name));
-            decision = Arc::new(FallThroughDecision {
-                selected_model: next.semantic_name.clone(),
-                reasoning: format!(
-                    "{} exceeded its context window; fell back to {}",
-                    target.semantic_name, next.semantic_name
-                ),
-                tier,
-            });
+            decision = self.fallback_decision(&target, &next);
             target = next;
             driver.info(ctx.clone(), decision.clone()).await?;
         }
+    }
+
+    /// The decision published when an overflow sends the request to a different target.
+    fn fallback_decision(&self, from: &LlmTarget, to: &LlmTarget) -> Arc<dyn Decision> {
+        Arc::new(FallThroughDecision {
+            selected_model: to.semantic_name.clone(),
+            reasoning: format!(
+                "{} exceeded its context window; fell back to {}",
+                from.semantic_name, to.semantic_name
+            ),
+            tier: self
+                .classifiers
+                .iter()
+                .find_map(|c| c.routing_tier(&to.semantic_name)),
+        })
     }
 
     /// Returns this request's retained state without holding the registry lock.
