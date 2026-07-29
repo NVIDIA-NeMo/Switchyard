@@ -8,13 +8,11 @@
 //! the route.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use switchyard_protocol::{completion_text, AggLlmResponse};
-use tokio::time::timeout;
 
 use crate::{
     Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request, Result,
@@ -55,8 +53,6 @@ pub struct JudgeClassifier<J, P> {
     judge: J,
     target: LlmTarget,
     policy: P,
-    /// Wall-clock budget for one consultation, or `None` to wait indefinitely.
-    timeout: Option<Duration>,
 }
 
 impl<J, P> JudgeClassifier<J, P>
@@ -70,17 +66,7 @@ where
             judge,
             target,
             policy,
-            timeout: None,
         }
-    }
-
-    /// Bounds one consultation — the call, the stream drain, and the parse — to `timeout`.
-    ///
-    /// The judge sits in front of the caller's own model call, so a stalled judge taxes every
-    /// turn it runs on. Expiry folds into the same fail-open path as any other judge failure.
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
     }
 
     /// Consults the judge, yielding `None` when it is unavailable or unintelligible.
@@ -89,8 +75,7 @@ where
     /// judge is down would be worse than routing without it, so every failure — transport,
     /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
     /// fail-closed branch. A closed driver stream is folded too; the algorithm's next driver
-    /// call surfaces it, so nothing is masked. A [`with_timeout`](Self::with_timeout) expiry
-    /// folds in the same way.
+    /// call surfaces it, so nothing is masked.
     async fn verdict(
         &self,
         state: &mut State,
@@ -107,41 +92,28 @@ where
             );
         };
 
-        let consult = async {
-            let response = driver
-                .call_llm_target(
-                    Context::default(),
-                    &self.target,
-                    self.judge.build_request(state, request),
-                    Arc::new(JudgeDecision {
-                        model: self.target.semantic_name.to_string(),
-                    }),
-                )
-                .await
-                .inspect_err(|error| warn(error))
-                .ok()?;
-            let aggregate = response
-                .llm_response
-                .into_agg()
-                .await
-                .inspect_err(|error| warn(error))
-                .ok()?;
-            self.judge
-                .parse(&aggregate)
-                .inspect_err(|error| warn(error))
-                .ok()
-        };
-
-        match self.timeout {
-            Some(budget) => match timeout(budget, consult).await {
-                Ok(verdict) => verdict,
-                Err(elapsed) => {
-                    warn(&elapsed);
-                    None
-                }
-            },
-            None => consult.await,
-        }
+        let response = driver
+            .call_llm_target(
+                Context::default(),
+                &self.target,
+                self.judge.build_request(state, request),
+                Arc::new(JudgeDecision {
+                    model: self.target.semantic_name.to_string(),
+                }),
+            )
+            .await
+            .inspect_err(|error| warn(error))
+            .ok()?;
+        let aggregate = response
+            .llm_response
+            .into_agg()
+            .await
+            .inspect_err(|error| warn(error))
+            .ok()?;
+        self.judge
+            .parse(&aggregate)
+            .inspect_err(|error| warn(error))
+            .ok()
     }
 }
 

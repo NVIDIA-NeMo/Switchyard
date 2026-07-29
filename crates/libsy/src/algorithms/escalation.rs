@@ -13,10 +13,11 @@
 //! already failed this task wastes a turn. A judge failure fails open to the efficient tier and
 //! never latches: an outage costs quality risk, never money.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, LlmRequest, Message, OutputParams, Role};
 
@@ -34,48 +35,57 @@ const SCHEMA_TEMPLATE: &str = include_str!("../prompts/escalation/schema.json");
 /// Separator marking where [`truncate_middle`] dropped a message's interior.
 const TRIM_MARKER: &str = " ...[trimmed] ";
 
-/// Suffix marking a transcript cut off by [`EscalationJudgeSettings::max_request_chars`].
+/// Suffix marking a transcript cut off by [`MAX_REQUEST_CHARS`].
 const TRUNCATION_SUFFIX: &str = "...<truncated>";
 
-/// How the judge is consulted and how much of the trajectory it sees.
+/// Per-message cap for system and developer anchors. Coding-agent harnesses inject very large
+/// boilerplate system prompts carrying no trajectory signal; uncapped they crowd out the window.
+const SYSTEM_CHARS: usize = 1_000;
+
+/// Cap for the first user message — the task statement the judge needs to detect drift, so it
+/// gets the most generous anchor budget.
+const FIRST_USER_CHARS: usize = 2_000;
+
+/// Backstop on the whole assembled transcript, for a pathological single message. The window
+/// caps below normally bind first; when this does bind, the oldest window lines drop.
+const MAX_REQUEST_CHARS: usize = 18_000;
+
+/// Ceiling on tracked confirmation streaks, mirroring `AffinityRouter`'s assignment cap.
+const MAX_STREAKS: usize = 4_096;
+
+/// The tuning surface for the trajectory judge.
 ///
-/// The defaults are the escalation router's tuned values. They exist to keep the judge cheap
-/// and fast: it runs in front of the caller's own model call on every pre-escalation turn, so
-/// an unbounded transcript would tax the whole session and can overflow the judge's context.
+/// Deliberately small: these are the three settings an audit of the Python router's twenty-odd
+/// knobs found to actually change routing outcomes. Everything else it exposed is either a
+/// fixed invariant (see the `*_CHARS` constants above) or operational plumbing.
+///
+/// Defaults are the ESC7 converged configuration.
 #[derive(Clone, Debug)]
 pub struct EscalationJudgeSettings {
-    /// First conversation turn the judge runs on. Earlier turns have no trajectory to judge
-    /// and always route to the efficient tier.
-    pub min_turn: usize,
+    /// Consecutive escalate verdicts required before the latch fires.
+    ///
+    /// `1` latches on the first verdict. Higher values filter one-shot eager verdicts — a
+    /// single failed command misread as a pattern — while keeping recall on real trouble,
+    /// which by definition persists across turns. On the benchmarked workload `2` suppressed
+    /// roughly two thirds of escalate verdicts, so this is the router's main cost dial.
+    ///
+    /// The streak is keyed on the session id and held per process. A request without a
+    /// session id cannot accumulate one, so at `2` or higher it can never escalate.
+    pub confirmations: u32,
     /// Trailing messages shown on top of the anchors. Loop detection needs to see the
     /// repeats, so a cycle longer than this window is invisible to the judge.
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window. Error signatures and command shapes
     /// survive this easily; full file dumps do not need to.
     pub window_message_chars: usize,
-    /// Per-message cap for system and developer anchors. Coding-agent harnesses inject very
-    /// large boilerplate system prompts carrying no trajectory signal; uncapped they would
-    /// crowd out the window.
-    pub system_chars: usize,
-    /// Cap for the first user message — the task statement the judge needs to detect drift,
-    /// so it gets the most generous anchor budget.
-    pub first_user_chars: usize,
-    /// Cap on the whole assembled transcript.
-    pub max_request_chars: usize,
-    /// Wall-clock budget for one judge consultation.
-    pub judge_timeout: Duration,
 }
 
 impl Default for EscalationJudgeSettings {
     fn default() -> Self {
         Self {
-            min_turn: 3,
-            recent_turn_window: 14,
-            window_message_chars: 300,
-            system_chars: 1_000,
-            first_user_chars: 2_000,
-            max_request_chars: 12_000,
-            judge_timeout: Duration::from_secs(5),
+            confirmations: 2,
+            recent_turn_window: 28,
+            window_message_chars: 500,
         }
     }
 }
@@ -145,7 +155,13 @@ impl Judge for EscalationJudge {
     }
 }
 
-/// Routes to the capable target when the judge says to escalate, and abstains otherwise.
+/// Maps the judge's verdict to a routing classification, keeping "the judge declined" and
+/// "the judge was unavailable" distinguishable.
+///
+/// Both route to the efficient tier, but only a decline is evidence about the run, so only a
+/// decline clears a confirmation streak. [`Classification::Ambiguous`] carries the unavailable
+/// case: it argmaxes to nothing, exactly like an empty score set, but the router can tell them
+/// apart.
 struct EscalationPolicy {
     capable: String,
 }
@@ -154,13 +170,13 @@ impl JudgePolicy for EscalationPolicy {
     type Verdict = EscalationVerdict;
 
     fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
-        if verdict.is_some_and(|v| v.escalate) {
-            Classification::Scores(vec![Score {
+        match verdict {
+            Some(verdict) if verdict.escalate => Classification::Scores(vec![Score {
                 target: self.capable.clone(),
                 confidence: 1.0,
-            }])
-        } else {
-            Classification::Scores(Vec::new())
+            }]),
+            Some(_) => Classification::Scores(Vec::new()),
+            None => Classification::Ambiguous(Vec::new()),
         }
     }
 }
@@ -173,8 +189,11 @@ pub struct EscalationRouter {
     judge_classifier: JudgeClassifier<EscalationJudge, EscalationPolicy>,
     /// Latches sessions to the capable model after their first escalation.
     affinity: AffinityRouter,
-    /// First turn the judge runs on; mirrors [`EscalationJudgeSettings::min_turn`].
-    min_turn: usize,
+    /// Consecutive escalate verdicts required to latch.
+    confirmations: u32,
+    /// Consecutive escalate verdicts per session, cleared by any decline. Only consulted when
+    /// `confirmations > 1`; a single-verdict latch needs no bookkeeping.
+    streaks: Mutex<HashMap<String, u32>>,
 }
 
 impl EscalationRouter {
@@ -202,8 +221,7 @@ impl EscalationRouter {
     ) -> Result<Self> {
         let config = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
         let capable_name = capable_target.semantic_name.clone();
-        let min_turn = settings.min_turn;
-        let judge_timeout = settings.judge_timeout;
+        let confirmations = settings.confirmations;
         Ok(Self {
             efficient_target,
             capable_target,
@@ -213,11 +231,43 @@ impl EscalationRouter {
                 EscalationPolicy {
                     capable: capable_name.clone(),
                 },
-            )
-            .with_timeout(judge_timeout),
+            ),
             affinity: AffinityRouter::new().with_latch_only([capable_name]),
-            min_turn,
+            confirmations,
+            streaks: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Records one escalate verdict and reports whether the session has now confirmed.
+    ///
+    /// A session id is required to accumulate across turns, so without one nothing can confirm
+    /// beyond a single-verdict latch.
+    fn confirm(&self, request: &Request) -> bool {
+        if self.confirmations <= 1 {
+            return true;
+        }
+        let Some(session) = session_id(request) else {
+            return false;
+        };
+        let mut streaks = self.streaks.lock();
+        if streaks.len() >= MAX_STREAKS && !streaks.contains_key(session) {
+            if let Some(evicted) = streaks.keys().next().cloned() {
+                streaks.remove(&evicted);
+            }
+        }
+        let streak = streaks.entry(session.to_string()).or_insert(0);
+        *streak += 1;
+        *streak >= self.confirmations
+    }
+
+    /// Clears a session's streak after a decline. Strict-consecutive: any decline resets.
+    fn clear_streak(&self, request: &Request) {
+        if self.confirmations <= 1 {
+            return;
+        }
+        if let Some(session) = session_id(request) {
+            self.streaks.lock().remove(session);
+        }
     }
 
     /// Publishes the routing decision and serves the turn from `target`.
@@ -290,28 +340,22 @@ impl Algorithm for EscalationRouter {
                 .await;
         }
 
-        // Before `min_turn` there is no trajectory worth the judge call.
-        if conversation_turn(&request) < self.min_turn {
-            return self
-                .call_tier(
-                    ctx,
-                    &driver,
-                    request,
-                    &self.efficient_target,
-                    "weak",
-                    "below the first judged turn",
-                )
-                .await;
-        }
-
-        let should_escalate = {
-            let classification = self
-                .judge_classifier
-                .score(&mut state, &mut request, Some(&driver))
-                .await?;
-            matches!(classification, Classification::Scores(ref s) if !s.is_empty())
+        // Consult the judge. A decline and an unavailable judge both stay on the efficient
+        // tier, but only a decline is evidence, so only a decline clears the streak.
+        let classification = self
+            .judge_classifier
+            .score(&mut state, &mut request, Some(&driver))
+            .await?;
+        let escalate = match classification {
+            Classification::Scores(ref scores) if !scores.is_empty() => self.confirm(&request),
+            Classification::Scores(_) => {
+                self.clear_streak(&request);
+                false
+            }
+            // Judge unavailable: fail open to efficient without disturbing the streak.
+            Classification::Ambiguous(_) => false,
         };
-        if !should_escalate {
+        if !escalate {
             return self
                 .call_tier(
                     ctx,
@@ -319,7 +363,7 @@ impl Algorithm for EscalationRouter {
                     request,
                     &self.efficient_target,
                     "weak",
-                    "judge found the run on track",
+                    "judge has not confirmed the run is in trouble",
                 )
                 .await;
         }
@@ -348,6 +392,15 @@ impl Algorithm for EscalationRouter {
             .call_llm_target(ctx, &self.capable_target, request, decision)
             .await
     }
+}
+
+/// The caller-supplied conversation id, when present and non-empty.
+fn session_id(request: &Request) -> Option<&str> {
+    request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.session_id.as_deref())
+        .filter(|id| !id.is_empty())
 }
 
 /// The 1-indexed model invocation this request represents: one past each assistant reply.
@@ -436,13 +489,13 @@ fn summarize_for_judge(
             Role::System | Role::Developer => anchors.push(format!(
                 "[{}] {}",
                 role_label(message.role),
-                truncate_middle(&text, settings.system_chars)
+                truncate_middle(&text, SYSTEM_CHARS)
             )),
             Role::User if !first_user_seen => {
                 first_user_seen = true;
                 anchors.push(format!(
                     "[user (task)] {}",
-                    truncate_middle(&text, settings.first_user_chars)
+                    truncate_middle(&text, FIRST_USER_CHARS)
                 ));
             }
             role => window.push(format!(
@@ -471,14 +524,12 @@ fn summarize_for_judge(
     };
 
     let mut text = assemble(&window);
-    while text.chars().count() > settings.max_request_chars && !window.is_empty() {
+    while text.chars().count() > MAX_REQUEST_CHARS && !window.is_empty() {
         window.remove(0);
         text = assemble(&window);
     }
-    if text.chars().count() > settings.max_request_chars {
-        let keep = settings
-            .max_request_chars
-            .saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
+    if text.chars().count() > MAX_REQUEST_CHARS {
+        let keep = MAX_REQUEST_CHARS.saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
         text = text.chars().take(keep).collect::<String>() + TRUNCATION_SUFFIX;
     }
     text
@@ -499,7 +550,6 @@ fn role_label(role: Role) -> &'static str {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use futures::StreamExt;
     use parking_lot::Mutex;
@@ -515,7 +565,7 @@ mod tests {
 
     use super::{
         conversation_turn, message_text, summarize_for_judge, truncate_middle,
-        EscalationJudgeSettings, EscalationRouter,
+        EscalationJudgeSettings, EscalationRouter, MAX_REQUEST_CHARS,
     };
 
     fn target(name: &str, client: Option<Arc<dyn RoutedLlmClient>>) -> LlmTarget {
@@ -547,9 +597,17 @@ mod tests {
         }
     }
 
-    /// A request the judge will actually run on, i.e. at the default `min_turn`.
+    /// A mid-conversation request: enough trajectory for the judge to have something to read.
     fn request(session_id: Option<&str>) -> Request {
-        request_at_turn(session_id, EscalationJudgeSettings::default().min_turn)
+        request_at_turn(session_id, 3)
+    }
+
+    /// Settings that latch on a single escalate verdict, for tests not exercising streaks.
+    fn latch_immediately() -> EscalationJudgeSettings {
+        EscalationJudgeSettings {
+            confirmations: 1,
+            ..EscalationJudgeSettings::default()
+        }
     }
 
     fn verdict_json(escalate: bool) -> String {
@@ -564,8 +622,6 @@ mod tests {
         Stream(String),
         /// Fail the call the way a transport error would.
         Fail,
-        /// Never return, so a judge timeout can expire.
-        Hang,
     }
 
     /// Convenience: a normal text reply.
@@ -629,7 +685,6 @@ mod tests {
                 Reply::Fail => Err(LlmClientError::Configuration {
                     message: "test error".into(),
                 }),
-                Reply::Hang => std::future::pending().await,
             }
         }
     }
@@ -676,11 +731,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fail_judge_escalates_to_capable_without_calling_efficient() -> crate::Result<()> {
-        let (router, calls) = instrumented_router([
-            ok(&verdict_json(true)), // judge: escalate
-            ok("The answer is 4"),   // capable
-        ])?;
+    async fn confirmed_escalation_serves_capable_without_calling_efficient() -> crate::Result<()> {
+        let (router, calls) = instrumented_router_with(
+            [
+                ok(&verdict_json(true)), // judge: escalate
+                ok("The answer is 4"),   // capable
+            ],
+            latch_immediately(),
+        )?;
 
         let (trace, response) = router.run(Context::default(), request(Some("s2"))).await?;
 
@@ -695,11 +753,14 @@ mod tests {
 
     #[tokio::test]
     async fn pinned_session_skips_the_judge() -> crate::Result<()> {
-        let (router, calls) = instrumented_router([
-            ok(&verdict_json(true)), // judge: escalate (first request)
-            ok("right"),             // capable (first request)
-            ok("right again"),       // capable (second request — pinned)
-        ])?;
+        let (router, calls) = instrumented_router_with(
+            [
+                ok(&verdict_json(true)), // judge: escalate (first request)
+                ok("right"),             // capable (first request)
+                ok("right again"),       // capable (second request — pinned)
+            ],
+            latch_immediately(),
+        )?;
 
         router
             .clone()
@@ -744,29 +805,112 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_judge_times_out_and_fails_open_without_latching() -> crate::Result<()> {
-        let settings = EscalationJudgeSettings {
-            judge_timeout: Duration::from_millis(50),
-            ..EscalationJudgeSettings::default()
-        };
-        let (router, calls) = instrumented_router_with(
-            [
-                Reply::Hang,              // judge: never returns
-                ok("4"),                  // efficient
-                ok(&verdict_json(false)), // judge (second request — proves no latch)
-                ok("4"),                  // efficient
-            ],
-            settings,
-        )?;
+    async fn one_escalate_verdict_does_not_latch_at_default_confirmations() -> crate::Result<()> {
+        let (router, calls) = instrumented_router([
+            ok(&verdict_json(true)), // judge: escalate, streak 1 of 2
+            ok("4"),                 // efficient — not yet confirmed
+        ])?;
+
+        let (trace, _) = router.run(Context::default(), request(Some("c1"))).await?;
+
+        assert_eq!(trace[0].selected_model(), "efficient");
+        assert_eq!(*calls.lock(), vec!["judge", "efficient"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn two_consecutive_escalate_verdicts_latch() -> crate::Result<()> {
+        let (router, calls) = instrumented_router([
+            ok(&verdict_json(true)), // judge: escalate, streak 1
+            ok("4"),                 // efficient
+            ok(&verdict_json(true)), // judge: escalate, streak 2 — confirmed
+            ok("strong answer"),     // capable
+            ok("still strong"),      // capable (third request — pinned)
+        ])?;
 
         router
             .clone()
-            .run(Context::default(), request(Some("s6")))
+            .run(Context::default(), request(Some("c2")))
             .await?;
-        let (trace, _) = router.run(Context::default(), request(Some("s6"))).await?;
+        router
+            .clone()
+            .run(Context::default(), request(Some("c2")))
+            .await?;
+        let (trace, _) = router.run(Context::default(), request(Some("c2"))).await?;
 
-        // A timed-out judge must not pin the session to the capable tier.
-        assert_eq!(trace[0].selected_model(), "efficient");
+        assert_eq!(trace[0].selected_model(), "capable");
+        assert_eq!(
+            *calls.lock(),
+            vec!["judge", "efficient", "judge", "capable", "capable"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_decline_between_escalate_verdicts_resets_the_streak() -> crate::Result<()> {
+        let (router, calls) = instrumented_router([
+            ok(&verdict_json(true)),  // streak 1
+            ok("4"),                  // efficient
+            ok(&verdict_json(false)), // decline — streak cleared
+            ok("4"),                  // efficient
+            ok(&verdict_json(true)),  // streak 1 again, not 2
+            ok("4"),                  // efficient — still no latch
+        ])?;
+
+        for _ in 0..3 {
+            router
+                .clone()
+                .run(Context::default(), request(Some("c3")))
+                .await?;
+        }
+
+        assert!(
+            !calls.lock().contains(&"capable".to_string()),
+            "strict-consecutive confirmation must not latch across a decline"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_judge_leaves_the_streak_intact() -> crate::Result<()> {
+        let (router, _calls) = instrumented_router([
+            ok(&verdict_json(true)), // streak 1
+            ok("4"),                 // efficient
+            Reply::Fail,             // judge unavailable — no evidence either way
+            ok("4"),                 // efficient
+            ok(&verdict_json(true)), // streak 2 — confirmed despite the gap
+            ok("strong answer"),     // capable
+        ])?;
+
+        for _ in 0..2 {
+            router
+                .clone()
+                .run(Context::default(), request(Some("c4")))
+                .await?;
+        }
+        let (trace, _) = router.run(Context::default(), request(Some("c4"))).await?;
+
+        assert_eq!(trace[0].selected_model(), "capable");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn without_a_session_id_confirmations_can_never_accumulate() -> crate::Result<()> {
+        let (router, calls) = instrumented_router([
+            ok(&verdict_json(true)),
+            ok("4"),
+            ok(&verdict_json(true)),
+            ok("4"),
+        ])?;
+
+        router
+            .clone()
+            .run(Context::default(), request(None))
+            .await?;
+        router.run(Context::default(), request(None)).await?;
+
+        // No session id means no streak store, so the capable tier is unreachable at
+        // confirmations > 1. Documented behaviour, asserted so it cannot change silently.
         assert_eq!(
             *calls.lock(),
             vec!["judge", "efficient", "judge", "efficient"]
@@ -775,27 +919,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn below_min_turn_serves_efficient_without_judging() -> crate::Result<()> {
-        let (router, calls) = instrumented_router([ok("4")])?;
-
-        let (trace, _) = router
-            .run(Context::default(), request_at_turn(Some("s7"), 1))
-            .await?;
-
-        assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].selected_model(), "efficient");
-        assert_eq!(*calls.lock(), vec!["efficient"]);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn no_session_id_routes_without_pinning() -> crate::Result<()> {
-        let (router, calls) = instrumented_router([
-            ok(&verdict_json(true)),  // judge: escalate (request 1)
-            ok("4"),                  // capable (request 1)
-            ok(&verdict_json(false)), // judge: no escalation (request 2 — not pinned)
-            ok("4"),                  // efficient (request 2)
-        ])?;
+        let (router, calls) = instrumented_router_with(
+            [
+                ok(&verdict_json(true)),  // judge: escalate (request 1)
+                ok("4"),                  // capable (request 1)
+                ok(&verdict_json(false)), // judge: no escalation (request 2 — not pinned)
+                ok("4"),                  // efficient (request 2)
+            ],
+            latch_immediately(),
+        )?;
 
         router
             .clone()
@@ -925,32 +1058,35 @@ mod tests {
 
     #[test]
     fn summary_drops_oldest_window_lines_under_the_char_cap() {
+        // MAX_REQUEST_CHARS is a backstop, not a dial: at default settings the window caps
+        // bind first (28 x 500 plus anchors sits under it), so reaching it takes an unusually
+        // wide per-message cap. That is the point — it only fires on pathological input.
         let mut messages = vec![
             Message::text(Role::System, "framing"),
             Message::text(Role::User, "task"),
         ];
-        for i in 0..6 {
+        for i in 0..20 {
             messages.push(Message::text(
                 Role::Assistant,
-                format!("{i} {}", "x".repeat(80)),
+                format!("{i} {}", "x".repeat(2_000)),
             ));
         }
         let settings = EscalationJudgeSettings {
-            max_request_chars: 250,
+            window_message_chars: 2_000,
             ..EscalationJudgeSettings::default()
         };
 
-        let summary = summarize_for_judge(&messages, 7, &settings);
+        let summary = summarize_for_judge(&messages, 21, &settings);
 
         assert!(
-            summary.chars().count() <= 250,
+            summary.chars().count() <= MAX_REQUEST_CHARS,
             "{}",
             summary.chars().count()
         );
         // Anchors are never dropped, and the newest activity outlives the oldest.
         assert!(summary.contains("[system] framing"), "{summary}");
         assert!(summary.contains("[user (task)] task"), "{summary}");
-        assert!(summary.contains("5 xxx"), "{summary}");
+        assert!(summary.contains("19 xxx"), "{summary}");
         assert!(!summary.contains("0 xxx"), "{summary}");
     }
 }
