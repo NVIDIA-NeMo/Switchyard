@@ -74,7 +74,8 @@ class EscalationRouterConfig(BaseModel):
         judge_system_prompt: Optional judge prompt override. ``None`` uses the
             built-in prompt.
         judge_timeout_s: Per-call judge timeout (seconds); the judge fails
-            open to the weak tier at timeout.
+            open to the weak tier at timeout. Defaults to the benchmarked
+            value. A judge target's own ``timeout_secs`` wins over this.
         session_key_depth: ``0`` (default) keys conversations on system +
             first user message (the shared Rust session key). ``N > 0``
             extends the key with the first ``N`` post-first-user messages so
@@ -116,7 +117,7 @@ class EscalationRouterConfig(BaseModel):
     judge_window_message_chars: int = Field(default=500, ge=50)
     judge_max_request_chars: int = Field(default=18_000, ge=1_000)
     judge_system_prompt: str | None = Field(default=None, min_length=1)
-    judge_timeout_s: float = Field(default=5.0, gt=0.0)
+    judge_timeout_s: float = Field(default=30.0, gt=0.0)
     session_key_depth: int = Field(default=0, ge=0)
     tier_timeout_s: float | None = Field(
         default=DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,

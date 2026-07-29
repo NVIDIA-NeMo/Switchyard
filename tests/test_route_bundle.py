@@ -607,7 +607,7 @@ class TestEscalationRouterRouteType:
         assert judge._config.window_message_chars == 500
         assert judge._config.dump_verdicts_to_stderr is False
         assert judge._config.max_completion_tokens == 128
-        assert judge._config.timeout_s == 5.0
+        assert judge._config.timeout_s == 30.0
         assert judge._affinity._l2 is None
 
     def test_invalid_value_is_a_one_line_config_error(self):
