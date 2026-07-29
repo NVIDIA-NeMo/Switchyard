@@ -83,7 +83,7 @@ impl AffinityRouter {
         }
     }
 
-    /// Uses the latest user-message text as a fallback key when metadata has no session.
+    /// Uses the first user-message text as a fallback key when metadata has no session.
     pub fn with_message_hash_fallback(mut self) -> Self {
         self.message_hash_fallback = true;
         self
@@ -127,7 +127,7 @@ impl AffinityRouter {
             .is_some_and(|metadata| metadata.is_subagent);
         (!self.subagents_only && !is_subagent && self.message_hash_fallback)
             .then(|| {
-                last_user_message_hash(request).map(|hash| {
+                first_user_message_hash(request).map(|hash| {
                     tracing::debug!(affinity_key = %hash, "affinity using message hash fallback");
                     AffinityKey::Session(hash)
                 })
@@ -156,15 +156,14 @@ where
     }
 }
 
-/// Hashes the newest user message for task-based fallback affinity.
-/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we need to hash the latest user message.
+/// Hashes the first user message so later turns retain the initial task's affinity.
+/// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
 /// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
-fn last_user_message_hash(request: &Request) -> Option<String> {
+fn first_user_message_hash(request: &Request) -> Option<String> {
     let message = request
         .llm_request
         .messages
         .iter()
-        .rev()
         .find(|message| message.role == Role::User)?;
     let mut hasher = DefaultHasher::new();
     message.text_content("")?.hash(&mut hasher);
@@ -441,7 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_hash_fallback_uses_the_latest_user_message() -> Result<(), BoxErr> {
+    async fn message_hash_fallback_uses_the_first_user_message() -> Result<(), BoxErr> {
         let router = AffinityRouter::new().with_message_hash_fallback();
         let mut state = ();
 
@@ -452,25 +451,25 @@ mod tests {
         );
         retain(&router, &mut state, &mut first, "weak").await?;
 
-        let mut same_turn = task_request(
+        let mut follow_up = task_request(
             None,
             "Add a unit test for this function.",
-            Some("Now run the test suite."),
+            Some("Now file a pull request."),
         );
         assert_eq!(
-            scores(&router, &mut state, &mut same_turn)
+            scores(&router, &mut state, &mut follow_up)
                 .await?
                 .first()
                 .map(|score| score.target.as_str()),
             Some("weak")
         );
 
-        let mut next_turn = task_request(
+        let mut other_task = task_request(
             None,
-            "Add a unit test for this function.",
-            Some("Now file a pull request."),
+            "Reimplement this binary from two input/output pairs.",
+            Some("Now run the test suite."),
         );
-        assert!(scores(&router, &mut state, &mut next_turn)
+        assert!(scores(&router, &mut state, &mut other_task)
             .await?
             .is_empty());
         Ok(())
@@ -501,8 +500,8 @@ mod tests {
         });
 
         assert_eq!(
-            last_user_message_hash(&text_only),
-            last_user_message_hash(&text_with_reasoning)
+            first_user_message_hash(&text_only),
+            first_user_message_hash(&text_with_reasoning)
         );
     }
 

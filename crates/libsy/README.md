@@ -12,7 +12,7 @@ Build the targets, pick an algorithm, run a request:
 
 ```rust
 use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, Request};
-use switchyard_libsy::algorithms::LlmTaskClassifier;
+use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
@@ -21,7 +21,11 @@ let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
 let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
 
 let algo: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
-    target("classifier"), target("weak"), target("strong"), 0.5,
+    target("classifier"),   // the judge
+    target("weak"),         // efficient tier
+    target("strong"),       // capable tier
+    // Every field but `base_threshold` has a default; see "Tuning the classifier" below.
+    TaskClassifierConfig { base_threshold: 0.5, ..Default::default() },
 )?);
 
 let req = Request {
@@ -220,8 +224,34 @@ pub trait Decision: Send + Sync {
 then invokes the selected target:
 
 ```rust
-let router = LlmTaskClassifier::new(judge_target, weak_target, strong_target, 0.5)?;
+let router = LlmTaskClassifier::new(
+    judge_target,
+    weak_target,
+    strong_target,
+    TaskClassifierConfig { base_threshold: 0.5, ..Default::default() },
+)?;
 ```
+
+### Tuning the classifier
+
+The judge returns a `p_solve` — its estimate that the efficient tier completes the task
+correctly — plus a confidence and a capability boundary. `TaskClassifierConfig` decides what
+to do with that verdict. Anything invalid, abstained, or below a threshold routes to the
+capable target, so every knob below trades cost against quality in the same direction.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `base_threshold` | *required* | Lowest `p_solve` that routes a supported task to the efficient target. Raise it to send less traffic to the cheap model. |
+| `min_confidence` | `0.0` | Lowest judge confidence that permits efficient routing. `0.0` disables the gate. |
+| `capability_elevated_floor` | `None` | A higher `p_solve` floor applied only when the judge marks the task `uncertain`, `unsupported`, or `unmatched`. `None` reuses `base_threshold`. |
+| `session_affinity` | `false` | Retains the first decision per session and reuses it on later turns, so the judge is called once per session instead of once per turn. |
+| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on a hash of the first user message. Requires `session_affinity`. |
+
+Two things to understand before enabling affinity. The retained decision is **sticky for the
+process lifetime** — including a fail-closed `capable` verdict produced when the judge was
+unreachable — so a transient judge failure pins that identity until restart. And
+`message_hash_fallback` keys on request *content*, not a correlation id, so unrelated callers
+sending identical text share one assignment.
 
 ## Errors
 

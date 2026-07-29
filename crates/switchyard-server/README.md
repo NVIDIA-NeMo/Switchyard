@@ -34,7 +34,7 @@ type = "llm_classifier"
 classifier_target = "model_a"
 strong_target = "model_a"
 weak_target = "model_b"
-threshold = 0.5
+base_threshold = 0.5
 
 [routes.passthrough]
 id = "switchyard/passthrough"
@@ -64,6 +64,23 @@ never contains the secret itself. If omitted, the client sends no authentication
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.
 
+An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
+routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
+`base_threshold` is required, and anything the judge cannot decide routes to `strong_target`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
+| `min_confidence` | `0.0` | Lowest judge confidence that permits weak routing. `0.0` disables the gate. |
+| `capability_elevated_floor` | unset | Higher solve-probability floor applied only to tasks the judge marks uncertain, unsupported, or unmatched. Unset reuses `base_threshold`. |
+| `session_affinity` | `false` | Reuses a session's first routing decision on later turns, so the judge is called once per session rather than once per turn. |
+| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `session_affinity = true`. |
+
+Session affinity retains a decision for the process lifetime, including a `strong_target`
+fallback produced while the judge was unreachable. `message_hash_fallback` keys on request
+content rather than a session id, so unrelated callers sending identical text share one
+assignment.
+
 ## Metrics
 
 `GET /metrics` exposes Prometheus text from the server's process-wide OpenTelemetry provider.
@@ -77,6 +94,9 @@ Routed-call compatibility metrics are:
 | `switchyard_requests_total` | counter | `model`, optional `tier` | Successful final routed calls |
 | `switchyard_errors_total` | counter | `model`, optional `tier` | Failed final routed calls |
 | `switchyard_model_call_latency_ms` | histogram | `model`, optional `tier` | Successful final routed-call latency |
+| `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
+| `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
+| `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
 
 The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
 is omitted for untiered algorithms. Classifier calls are excluded from these families.

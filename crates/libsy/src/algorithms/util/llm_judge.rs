@@ -176,7 +176,10 @@ where
 /// `schema_template` must be a `{ "type": "json_schema", "json_schema": { "schema": ... } }`
 /// object; the inner `schema` is substituted into the `{{RESPONSE_SCHEMA}}` placeholder in
 /// `prompt_template`.
-pub(crate) fn load_judge_config(prompt_template: &str, schema_template: &str) -> Result<JudgeConfig> {
+pub(crate) fn load_judge_config(
+    prompt_template: &str,
+    schema_template: &str,
+) -> Result<JudgeConfig> {
     let response_schema: Value =
         serde_json::from_str(schema_template).map_err(|error| LibsyError::AlgorithmError {
             message: format!("response schema is invalid: {error}"),
@@ -186,10 +189,11 @@ pub(crate) fn load_judge_config(prompt_template: &str, schema_template: &str) ->
         .ok_or_else(|| LibsyError::AlgorithmError {
             message: "response schema has no json_schema.schema".to_string(),
         })?;
-    let prompt_schema =
-        serde_json::to_string_pretty(prompt_schema).map_err(|error| LibsyError::AlgorithmError {
+    let prompt_schema = serde_json::to_string_pretty(prompt_schema).map_err(|error| {
+        LibsyError::AlgorithmError {
             message: format!("prompt schema could not be rendered: {error}"),
-        })?;
+        }
+    })?;
     Ok(JudgeConfig {
         system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
         response_schema: Some(response_schema),

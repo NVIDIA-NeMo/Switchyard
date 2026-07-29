@@ -74,12 +74,11 @@
 //!
 //! [`algorithms::Random`] provides uniform or weighted random routing.
 //!
-//! [`algorithms::LlmTaskClassifier`] classifies with one model; compose it with
-//! [`algorithms::FallThrough`] to route to the selected target.
+//! [`algorithms::LlmTaskClassifier`] uses one model to classify and route to its selected target.
 //!
-//! [`algorithms::EscalationRouter`] calls an efficient model first and escalates to a
-//! capable model when a judge finds the response insufficient; it pins escalated sessions
-//! to the capable model for all subsequent turns.
+//! [`algorithms::EscalationRouter`] serves an efficient model until an LLM judge reading the
+//! conversation finds the run in trouble, then escalates to a capable model and pins the
+//! session to it for all subsequent turns.
 
 mod core;
 pub use core::*;

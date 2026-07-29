@@ -194,8 +194,8 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
-        .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/responses", post(openai_responses))
+        .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
         .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
@@ -330,6 +330,7 @@ async fn handle_endpoint(
         Ok(body) => handle_llm_request(state, metadata, body, wire_format).await,
         Err(message) => invalid_body_error(message),
     };
+    metrics::record_client_response(response.status().as_u16());
     request_log.emit(&response);
     response
 }
