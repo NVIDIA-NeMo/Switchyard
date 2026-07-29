@@ -19,7 +19,7 @@ pub(crate) fn is_known_role_name(name: &str) -> bool {
 pub(crate) fn text_from_blocks(content: &[ContentBlock], separator: &str) -> String {
     content
         .iter()
-        .filter_map(|block| match block {
+        .filter_map(|block| match block.normalized() {
             ContentBlock::Text { text } => Some(text.as_str()),
             ContentBlock::Refusal { text } => Some(text.as_str()),
             ContentBlock::Unknown { raw, .. } => raw.as_str(),
@@ -33,7 +33,7 @@ pub(crate) fn text_from_blocks(content: &[ContentBlock], separator: &str) -> Str
 pub(crate) fn reasoning_text_from_blocks(content: &[ContentBlock], separator: &str) -> String {
     content
         .iter()
-        .filter_map(|block| match block {
+        .filter_map(|block| match block.normalized() {
             ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
             _ => None,
         })

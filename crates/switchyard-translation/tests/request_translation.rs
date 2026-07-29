@@ -68,14 +68,17 @@ fn anthropic_requests_are_normalized_through_ir() -> TestResult {
         preservation: PreservationPolicy::Disabled,
         ..TranslationPolicy::default()
     };
-    let output = TranslationEngine::default()
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::AnthropicMessages,
-            &body,
-            &policy,
-        )?
-        .body;
+    let translated = TranslationEngine::default().translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::AnthropicMessages,
+        &body,
+        &policy,
+    )?;
+    assert!(translated
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("unsigned Anthropic thinking")));
+    let output = translated.body;
 
     assert_eq!(
         output["system"],
@@ -94,6 +97,123 @@ fn anthropic_requests_are_normalized_through_ir() -> TestResult {
     );
     assert_eq!(output["messages"][3]["content"][0]["thinking"], "real");
     assert_eq!(output["messages"][3]["content"][1]["text"], "visible");
+    Ok(())
+}
+
+// Provider-owned nested fields must survive canonical IR normalization.
+#[test]
+fn anthropic_canonical_ir_preserves_native_nested_features() -> TestResult {
+    let body = json!({
+        "model": "claude",
+        "system": [{
+            "type": "text",
+            "text": "Stable rules.",
+            "cache_control": {"type": "ephemeral"}
+        }],
+        "messages": [
+            {"role": "system", "content": "Lifted rules."},
+            {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Use the tool.",
+                    "cache_control": {"type": "ephemeral"}
+                }]
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "synthetic", "signature": ""},
+                    {"type": "redacted_thinking", "data": "encrypted"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_bad:id",
+                        "name": "lookup",
+                        "input": {},
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_bad:id",
+                    "is_error": false,
+                    "cache_control": {"type": "ephemeral"},
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "abc"
+                            }
+                        },
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": "pdf"
+                            }
+                        },
+                        {"type": "search_result", "title": "Result", "source": "https://example.test"}
+                    ]
+                }]
+            }
+        ],
+        "tools": [{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+            "cache_control": {"type": "ephemeral"}
+        }],
+        "max_tokens": 1024
+    });
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &policy,
+        )?
+        .body;
+
+    assert_eq!(output["system"][0], body["system"][0]);
+    assert_eq!(
+        output["system"][1],
+        json!({"type": "text", "text": "Lifted rules."})
+    );
+    assert_eq!(
+        output["messages"][0]["content"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+    assert_eq!(
+        output["messages"][1]["content"][0],
+        json!({"type": "redacted_thinking", "data": "encrypted"})
+    );
+    assert_eq!(output["messages"][1]["content"][1]["id"], "toolu_bad_id");
+    assert_eq!(
+        output["messages"][1]["content"][1]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+    assert_eq!(
+        output["messages"][2]["content"][0]["tool_use_id"],
+        "toolu_bad_id"
+    );
+    assert_eq!(
+        output["messages"][2]["content"][0]["content"],
+        body["messages"][3]["content"][0]["content"]
+    );
+    assert_eq!(output["messages"][2]["content"][0]["is_error"], false);
+    assert_eq!(output["tools"][0], body["tools"][0]);
+    assert!(output["tools"][0].get("input_schema").is_none());
     Ok(())
 }
 

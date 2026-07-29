@@ -17,8 +17,9 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    MediaSource, Message, OutputParams, ProviderExtensions, ProviderPayload, ReasoningParams,
+    ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition,
+    ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -185,18 +186,10 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
         }
-        let system_text = request
-            .instructions
-            .iter()
-            .flat_map(|instruction| instruction.content.iter())
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if !system_text.is_empty() {
-            body.insert("system".to_string(), Value::String(system_text));
+        if let Some(system) =
+            encode_anthropic_system(&request.instructions, &mut diagnostics, policy)?
+        {
+            body.insert("system".to_string(), system);
         }
 
         body.insert(
@@ -209,7 +202,10 @@ impl FormatCodec for AnthropicMessagesCodec {
         );
 
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_anthropic_tools(&request.tools));
+            body.insert(
+                "tools".to_string(),
+                encode_anthropic_tools(&request.tools, source_is_anthropic),
+            );
         }
         if let Some(choice) = &request.tool_choice {
             body.insert(
@@ -374,7 +370,7 @@ fn decode_anthropic_system(
         Value::String(_) | Value::Null => Ok(None),
         Value::Array(blocks) => {
             let mut content = Vec::new();
-            for block in blocks {
+            for (index, block) in blocks.iter().enumerate() {
                 if let Some(block) = block.as_object() {
                     if block.get("type").and_then(Value::as_str) == Some("text") {
                         let text = block
@@ -382,8 +378,24 @@ fn decode_anthropic_system(
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
-                        content.push(ContentBlock::Text { text });
+                        content.push(preserve_anthropic_block(
+                            block,
+                            &["type", "text"],
+                            ContentBlock::Text { text },
+                        ));
+                    } else {
+                        push_lossy(
+                            diagnostics,
+                            policy,
+                            format!("Anthropic system block at index {index} was not text"),
+                        )?;
                     }
+                } else {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        format!("Anthropic system block at index {index} was not an object"),
+                    )?;
                 }
             }
             Ok((!content.is_empty()).then_some(content))
@@ -394,6 +406,56 @@ fn decode_anthropic_system(
                 text: string_value(other).unwrap_or_default(),
             }]))
         }
+    }
+}
+
+// Retains provider-owned block fields without hiding the normalized semantics.
+fn preserve_anthropic_block(
+    raw: &Map<String, Value>,
+    known: &[&str],
+    normalized: ContentBlock,
+) -> ContentBlock {
+    if provider_extensions(raw, known).is_empty() {
+        return normalized;
+    }
+    ContentBlock::Provider {
+        payload: ProviderPayload {
+            provider: WireFormat::AnthropicMessages.into(),
+            raw: Value::Object(raw.clone()),
+        },
+        normalized: Box::new(normalized),
+    }
+}
+
+// Decodes Anthropic's nested image source while retaining unrecognized source shapes.
+fn decode_anthropic_image_source(source: Option<&Value>) -> ImageSource {
+    let Some(source) = source else {
+        return ImageSource::Raw(Value::Null);
+    };
+    let Some(object) = source.as_object() else {
+        return ImageSource::Raw(source.clone());
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("url") => object
+            .get("url")
+            .and_then(Value::as_str)
+            .map(|url| ImageSource::Url {
+                url: url.to_string(),
+                detail: None,
+            })
+            .unwrap_or_else(|| ImageSource::Raw(source.clone())),
+        Some("base64") => object
+            .get("data")
+            .and_then(Value::as_str)
+            .map(|data| ImageSource::Base64 {
+                media_type: object
+                    .get("media_type")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                data: data.to_string(),
+            })
+            .unwrap_or_else(|| ImageSource::Raw(source.clone())),
+        _ => ImageSource::Raw(source.clone()),
     }
 }
 
@@ -447,68 +509,96 @@ fn decode_anthropic_content_block(
     block: &Map<String, Value>,
     _role: Role,
     generated_counter: usize,
-    _diagnostics: &mut Vec<TranslationDiagnostic>,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
     Ok(match block.get("type").and_then(Value::as_str) {
-        Some("text") | Some("input_text") => vec![ContentBlock::Text {
-            text: block
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        }],
-        Some("thinking") => vec![ContentBlock::Reasoning {
-            text: block
-                .get("thinking")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            signature: block
-                .get("signature")
-                .and_then(Value::as_str)
-                .filter(|signature| !signature.is_empty())
-                .map(ToOwned::to_owned),
-        }],
-        Some("tool_use") => vec![ContentBlock::ToolCall(ToolCall {
-            id: block
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| match &policy.deterministic_ids {
-                    DeterministicIdPolicy::GenerateStable { prefix } => {
-                        stable_id(prefix, generated_counter)
-                    }
-                    DeterministicIdPolicy::Preserve => String::new(),
-                }),
-            name: block
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
-        })],
-        Some("tool_result") => vec![ContentBlock::ToolResult(ToolResult {
-            tool_call_id: block
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            content: decode_tool_result_content(block.get("content").unwrap_or(&Value::Null)),
-            is_error: block.get("is_error").and_then(Value::as_bool),
-        })],
+        Some("text") | Some("input_text") => vec![preserve_anthropic_block(
+            block,
+            &["type", "text"],
+            ContentBlock::Text {
+                text: block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+        )],
+        Some("thinking") => vec![preserve_anthropic_block(
+            block,
+            &["type", "thinking", "signature"],
+            ContentBlock::Reasoning {
+                text: block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                signature: block
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .filter(|signature| !signature.is_empty())
+                    .map(ToOwned::to_owned),
+            },
+        )],
+        Some("tool_use") => vec![preserve_anthropic_block(
+            block,
+            &["type", "id", "name", "input"],
+            ContentBlock::ToolCall(ToolCall {
+                id: block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| match &policy.deterministic_ids {
+                        DeterministicIdPolicy::GenerateStable { prefix } => {
+                            stable_id(prefix, generated_counter)
+                        }
+                        DeterministicIdPolicy::Preserve => String::new(),
+                    }),
+                name: block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
+            }),
+        )],
+        Some("tool_result") => vec![preserve_anthropic_block(
+            block,
+            &["type", "tool_use_id", "content", "is_error"],
+            ContentBlock::ToolResult(ToolResult {
+                tool_call_id: block
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                content: decode_tool_result_content(
+                    block.get("content").unwrap_or(&Value::Null),
+                    generated_counter,
+                    diagnostics,
+                    policy,
+                )?,
+                is_error: block.get("is_error").and_then(Value::as_bool),
+            }),
+        )],
         Some("image") => {
-            let source = block
-                .get("source")
-                .cloned()
-                .map(ImageSource::Raw)
-                .unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone())));
-            vec![ContentBlock::Image { source }]
+            let source = decode_anthropic_image_source(block.get("source"));
+            vec![preserve_anthropic_block(
+                block,
+                &["type", "source"],
+                ContentBlock::Image { source },
+            )]
         }
         Some("input_image") | Some("image_url") => decode_image_source(block)
             .map(|source| vec![ContentBlock::Image { source }])
             .unwrap_or_default(),
+        Some("document") => vec![preserve_anthropic_block(
+            block,
+            &["type", "source"],
+            ContentBlock::File {
+                source: FileSource::Raw(block.get("source").cloned().unwrap_or(Value::Null)),
+            },
+        )],
         Some("input_file") | Some("file") => vec![ContentBlock::File {
             source: decode_file_source(block),
         }],
@@ -520,36 +610,41 @@ fn decode_anthropic_content_block(
 }
 
 // Converts Anthropic tool-result content into text-like IR blocks.
-fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
+fn decode_tool_result_content(
+    value: &Value,
+    generated_counter: usize,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<ContentBlock>> {
     match value {
-        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
         Value::Array(blocks) => {
-            let mut text = Vec::new();
-            for block in blocks {
-                if let Some(block) = block.as_object() {
-                    if block.get("type").and_then(Value::as_str) == Some("text") {
-                        text.push(
-                            block
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        );
-                    } else {
-                        text.push(json_string(&Value::Object(block.clone())));
-                    }
-                }
+            let mut content = Vec::new();
+            for (index, block) in blocks.iter().enumerate() {
+                let Some(block) = block.as_object() else {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        format!("Anthropic tool-result block at index {index} was not an object"),
+                    )?;
+                    continue;
+                };
+                content.extend(decode_anthropic_content_block(
+                    block,
+                    Role::User,
+                    generated_counter + index,
+                    diagnostics,
+                    policy,
+                )?);
             }
-            vec![ContentBlock::Text {
-                text: text.join(" "),
-            }]
+            Ok(content)
         }
-        Value::Null => vec![ContentBlock::Text {
+        Value::Null => Ok(vec![ContentBlock::Text {
             text: String::new(),
-        }],
-        other => vec![ContentBlock::Text {
+        }]),
+        other => Ok(vec![ContentBlock::Text {
             text: json_string(other),
-        }],
+        }]),
     }
 }
 
@@ -573,6 +668,10 @@ fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
                     .cloned()
                     .unwrap_or_else(|| json!({})),
                 strict: None,
+                provider_payload: Some(ProviderPayload {
+                    provider: WireFormat::AnthropicMessages.into(),
+                    raw: Value::Object(tool.clone()),
+                }),
             })
         })
         .collect()
@@ -601,6 +700,75 @@ fn decode_anthropic_tool_choice(value: &Value) -> ToolChoice {
     }
 }
 
+// Encodes instructions as text unless provider-owned fields require structured blocks.
+fn encode_anthropic_system(
+    instructions: &[InstructionBlock],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<Value>> {
+    let mut blocks = Vec::new();
+    let mut needs_structured_blocks = false;
+    for block in instructions
+        .iter()
+        .flat_map(|instruction| instruction.content.iter())
+    {
+        let Some((encoded, preserved)) = encode_anthropic_system_block(block, diagnostics, policy)?
+        else {
+            continue;
+        };
+        blocks.push(encoded);
+        needs_structured_blocks |= preserved;
+    }
+    if blocks.is_empty() {
+        return Ok(None);
+    }
+    if needs_structured_blocks {
+        return Ok(Some(Value::Array(blocks)));
+    }
+    let text = blocks
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok((!text.is_empty()).then_some(Value::String(text)))
+}
+
+// Encodes one instruction block and reapplies same-provider fields when present.
+fn encode_anthropic_system_block(
+    block: &ContentBlock,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<(Value, bool)>> {
+    match block {
+        ContentBlock::Provider {
+            payload,
+            normalized,
+        } => {
+            let Some((encoded, preserved)) =
+                encode_anthropic_system_block(normalized, diagnostics, policy)?
+            else {
+                return Ok(None);
+            };
+            if is_anthropic_payload(payload) {
+                Ok(Some((merge_provider_payload(payload, encoded), true)))
+            } else {
+                Ok(Some((encoded, preserved)))
+            }
+        }
+        ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+            Ok(Some((json!({"type": "text", "text": text}), false)))
+        }
+        _ => {
+            push_lossy(
+                diagnostics,
+                policy,
+                "non-text instruction block omitted from Anthropic system",
+            )?;
+            Ok(None)
+        }
+    }
+}
+
 // Encodes one normalized message into Anthropic message JSON.
 fn encode_anthropic_message(
     message: &Message,
@@ -621,25 +789,14 @@ fn encode_anthropic_message(
         used_ids,
     )?;
     if content.is_empty() {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic message omitted after all content blocks were removed",
+        )?;
         return Ok(None);
     }
-    let simple_text = content.len() == 1
-        && content
-            .first()
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("type"))
-            .and_then(Value::as_str)
-            == Some("text");
-    let content = if simple_text {
-        content
-            .first()
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("text"))
-            .cloned()
-            .unwrap_or_else(|| Value::String(String::new()))
-    } else {
-        Value::Array(content)
-    };
+    let content = simple_anthropic_text(&content).unwrap_or(Value::Array(content));
     Ok(Some(json!({"role": role, "content": content})))
 }
 
@@ -701,7 +858,7 @@ fn message_is_tool_result_only(message: &Message) -> bool {
         && message
             .content
             .iter()
-            .all(|block| matches!(block, ContentBlock::ToolResult(_)))
+            .all(|block| matches!(block.normalized(), ContentBlock::ToolResult(_)))
 }
 
 // Encodes content while applying lossy-conversion policy to unknown blocks.
@@ -715,6 +872,11 @@ fn encode_anthropic_content_with_policy(
     let mut blocks = Vec::new();
     for block in content {
         match block {
+            ContentBlock::Unknown { provider, raw }
+                if provider.as_str() == WireFormat::AnthropicMessages.as_str() =>
+            {
+                blocks.push(raw.clone());
+            }
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,
@@ -723,8 +885,35 @@ fn encode_anthropic_content_with_policy(
                 )?;
                 blocks.push(json!({"type": "text", "text": json_string(raw)}));
             }
+            ContentBlock::Provider {
+                payload,
+                normalized,
+            } => {
+                let encoded = encode_anthropic_content_with_policy(
+                    std::slice::from_ref(normalized),
+                    diagnostics,
+                    policy,
+                    id_map,
+                    used_ids,
+                )?;
+                if is_anthropic_payload(payload) {
+                    blocks.extend(
+                        encoded
+                            .into_iter()
+                            .map(|block| merge_provider_payload(payload, block)),
+                    );
+                } else {
+                    blocks.extend(encoded);
+                }
+            }
             other => {
-                blocks.extend(encode_one_anthropic_request_block(other, id_map, used_ids));
+                blocks.extend(encode_one_anthropic_request_block(
+                    other,
+                    diagnostics,
+                    policy,
+                    id_map,
+                    used_ids,
+                )?);
             }
         }
     }
@@ -734,23 +923,63 @@ fn encode_anthropic_content_with_policy(
 // Encodes request blocks while keeping sanitized tool call/result IDs aligned.
 fn encode_one_anthropic_request_block(
     block: &ContentBlock,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
     id_map: &mut BTreeMap<String, String>,
     used_ids: &mut BTreeMap<String, String>,
-) -> Vec<Value> {
-    match block {
+) -> Result<Vec<Value>> {
+    Ok(match block {
         ContentBlock::ToolCall(call) => vec![json!({
             "type": "tool_use",
             "id": mapped_tool_id(&call.id, id_map, used_ids),
             "name": call.name,
             "input": anthropic_tool_input(&call.arguments),
         })],
-        ContentBlock::ToolResult(result) => vec![json!({
-            "type": "tool_result",
-            "tool_use_id": mapped_tool_id(&result.tool_call_id, id_map, used_ids),
-            "content": text_from_blocks(&result.content, " "),
-        })],
+        ContentBlock::ToolResult(result) => {
+            let mut tool_result = Map::new();
+            tool_result.insert("type".to_string(), Value::String("tool_result".to_string()));
+            tool_result.insert(
+                "tool_use_id".to_string(),
+                Value::String(mapped_tool_id(&result.tool_call_id, id_map, used_ids)),
+            );
+            let content = encode_anthropic_content_with_policy(
+                &result.content,
+                diagnostics,
+                policy,
+                id_map,
+                used_ids,
+            )?;
+            tool_result.insert(
+                "content".to_string(),
+                simple_anthropic_text(&content).unwrap_or(Value::Array(content)),
+            );
+            if let Some(is_error) = result.is_error {
+                tool_result.insert("is_error".to_string(), Value::Bool(is_error));
+            }
+            vec![Value::Object(tool_result)]
+        }
+        ContentBlock::Reasoning { signature, .. }
+            if signature.as_deref().is_none_or(str::is_empty) =>
+        {
+            push_lossy(
+                diagnostics,
+                policy,
+                "unsigned Anthropic thinking block omitted",
+            )?;
+            Vec::new()
+        }
         other => encode_one_anthropic_block(other),
-    }
+    })
+}
+
+// Uses Anthropic's compact string form only when no block metadata would be lost.
+fn simple_anthropic_text(blocks: &[Value]) -> Option<Value> {
+    let object = blocks.first()?.as_object()?;
+    (blocks.len() == 1
+        && object.len() == 2
+        && object.get("type").and_then(Value::as_str) == Some("text"))
+    .then(|| object.get("text").cloned())
+    .flatten()
 }
 
 // Encodes content without producing diagnostics for response paths.
@@ -768,6 +997,20 @@ fn encode_anthropic_content(content: &[ContentBlock]) -> Vec<Value> {
 // Encodes response content, where synthetic reasoning may be shown to clients.
 fn encode_one_anthropic_response_block(block: &ContentBlock) -> Vec<Value> {
     match block {
+        ContentBlock::Provider {
+            payload,
+            normalized,
+        } => {
+            let encoded = encode_one_anthropic_response_block(normalized);
+            if is_anthropic_payload(payload) {
+                encoded
+                    .into_iter()
+                    .map(|block| merge_provider_payload(payload, block))
+                    .collect()
+            } else {
+                encoded
+            }
+        }
         ContentBlock::Reasoning {
             text,
             signature: None,
@@ -818,7 +1061,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
                     "data": data,
                 },
             }),
-            ImageSource::Raw(raw) => raw.clone(),
+            ImageSource::Raw(raw) => encode_anthropic_raw_image(raw),
         }],
         ContentBlock::File { source } => vec![match source {
             FileSource::FileId(file_id) => {
@@ -832,7 +1075,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
                     "filename": filename,
                 },
             }),
-            FileSource::Raw(raw) => raw.clone(),
+            FileSource::Raw(raw) => encode_anthropic_raw_document(raw),
         }],
         ContentBlock::Audio { source } => vec![match source {
             MediaSource::Url { url, media_type } => {
@@ -863,6 +1106,38 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
             MediaSource::Raw(raw) => raw.clone(),
         }],
         ContentBlock::Unknown { raw, .. } => vec![raw.clone()],
+        ContentBlock::Provider {
+            payload,
+            normalized,
+        } => {
+            let encoded = encode_one_anthropic_block(normalized);
+            if is_anthropic_payload(payload) {
+                encoded
+                    .into_iter()
+                    .map(|block| merge_provider_payload(payload, block))
+                    .collect()
+            } else {
+                encoded
+            }
+        }
+    }
+}
+
+// Restores the outer Anthropic image block around a raw source object.
+fn encode_anthropic_raw_image(raw: &Value) -> Value {
+    if raw.get("type").and_then(Value::as_str) == Some("image") {
+        raw.clone()
+    } else {
+        json!({"type": "image", "source": raw})
+    }
+}
+
+// Restores the outer Anthropic document block around a raw source object.
+fn encode_anthropic_raw_document(raw: &Value) -> Value {
+    if raw.get("type").and_then(Value::as_str) == Some("document") {
+        raw.clone()
+    } else {
+        json!({"type": "document", "source": raw})
     }
 }
 
@@ -888,20 +1163,51 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
     }
 }
 
-// Encodes normalized tool definitions into Anthropic tool JSON.
-fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
+// Encodes normalized tools while retaining Anthropic-native server-tool fields.
+fn encode_anthropic_tools(tools: &[ToolDefinition], source_is_anthropic: bool) -> Value {
     Value::Array(
         tools
             .iter()
             .map(|tool| {
-                json!({
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "input_schema": tool.parameters,
-                })
+                let preserved = source_is_anthropic
+                    .then_some(tool.provider_payload.as_ref())
+                    .flatten()
+                    .filter(|payload| is_anthropic_payload(payload))
+                    .and_then(|payload| payload.raw.as_object())
+                    .cloned();
+                let mut encoded = preserved.unwrap_or_default();
+                encoded.insert("name".to_string(), Value::String(tool.name.clone()));
+                if encoded.contains_key("input_schema") || !encoded.contains_key("type") {
+                    encoded.insert("input_schema".to_string(), tool.parameters.clone());
+                    if let Some(description) = &tool.description {
+                        encoded.insert(
+                            "description".to_string(),
+                            Value::String(description.clone()),
+                        );
+                    } else {
+                        encoded.remove("description");
+                    }
+                }
+                Value::Object(encoded)
             })
             .collect(),
     )
+}
+
+fn is_anthropic_payload(payload: &ProviderPayload) -> bool {
+    payload.provider.as_str() == WireFormat::AnthropicMessages.as_str()
+}
+
+// Reapplies provider-owned fields while letting canonical fields win.
+fn merge_provider_payload(payload: &ProviderPayload, encoded: Value) -> Value {
+    match (&payload.raw, encoded) {
+        (Value::Object(raw), Value::Object(encoded)) => {
+            let mut merged = raw.clone();
+            merged.extend(encoded);
+            Value::Object(merged)
+        }
+        (_, encoded) => encoded,
+    }
 }
 
 // Encodes normalized tool choice into Anthropic tool-choice JSON.

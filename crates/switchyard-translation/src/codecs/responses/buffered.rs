@@ -137,7 +137,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             .instructions
             .iter()
             .flat_map(|instruction| instruction.content.iter())
-            .filter_map(|block| match block {
+            .filter_map(|block| match block.normalized() {
                 ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
                 _ => None,
             })
@@ -699,6 +699,7 @@ fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
                                 .cloned()
                                 .unwrap_or_else(|| json!({})),
                             strict: function.get("strict").and_then(Value::as_bool),
+                            provider_payload: None,
                         });
                     }
                 }
@@ -736,6 +737,7 @@ fn push_responses_function_tool(
             .map(ToOwned::to_owned),
         parameters: tool.get("parameters").cloned().unwrap_or_else(|| json!({})),
         strict: tool.get("strict").and_then(Value::as_bool),
+        provider_payload: None,
     });
     true
 }
@@ -765,6 +767,7 @@ fn push_responses_id_tool(
             .cloned()
             .unwrap_or_else(|| json!({})),
         strict: None,
+        provider_payload: None,
     });
     true
 }
@@ -830,9 +833,12 @@ fn encode_responses_input(
     if messages.len() == 1
         && matches!(messages[0].role, Role::User)
         && messages[0].content.len() == 1
-        && matches!(messages[0].content[0], ContentBlock::Text { .. })
+        && matches!(
+            messages[0].content[0].normalized(),
+            ContentBlock::Text { .. }
+        )
     {
-        if let ContentBlock::Text { text } = &messages[0].content[0] {
+        if let ContentBlock::Text { text } = messages[0].content[0].normalized() {
             return Ok(Value::String(text.clone()));
         }
     }
@@ -844,7 +850,7 @@ fn encode_responses_input(
             .iter()
             .filter(|block| {
                 !matches!(
-                    block,
+                    block.normalized(),
                     ContentBlock::Reasoning {
                         signature: Some(_),
                         ..
@@ -858,7 +864,7 @@ fn encode_responses_input(
         }
         if content.iter().any(|block| {
             matches!(
-                block,
+                block.normalized(),
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
@@ -889,7 +895,7 @@ fn encode_responses_input(
 
 // Encodes IR blocks that Responses represents as top-level input items.
 fn encode_responses_special_input(block: &ContentBlock) -> Option<Value> {
-    match block {
+    match block.normalized() {
         ContentBlock::Reasoning {
             text,
             signature: None,
@@ -931,7 +937,7 @@ fn encode_responses_content(
 ) -> Result<Value> {
     let has_non_text = content.iter().any(|block| {
         !matches!(
-            block,
+            block.normalized(),
             ContentBlock::Text { .. }
                 | ContentBlock::Refusal { .. }
                 | ContentBlock::Reasoning { .. }
@@ -942,7 +948,7 @@ fn encode_responses_content(
     }
     let mut blocks = Vec::new();
     for block in content {
-        match block {
+        match block.normalized() {
             ContentBlock::Text { text } => blocks.push(json!({"type": "input_text", "text": text})),
             ContentBlock::Refusal { text } => {
                 blocks.push(json!({"type": "refusal", "refusal": text}));
@@ -987,7 +993,8 @@ fn encode_responses_content(
             }
             ContentBlock::Reasoning { .. }
             | ContentBlock::ToolCall(_)
-            | ContentBlock::ToolResult(_) => {}
+            | ContentBlock::ToolResult(_)
+            | ContentBlock::Provider { .. } => {}
         }
     }
     Ok(Value::Array(blocks))
@@ -1080,7 +1087,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                 let has_tool_calls = output
                     .content
                     .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
+                    .any(|block| matches!(block.normalized(), ContentBlock::ToolCall(_)));
                 let text = text_from_blocks(&output.content, "");
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
                 let mut items = Vec::new();
@@ -1103,15 +1110,20 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     }));
                 }
 
-                items.extend(output.content.iter().filter_map(|block| match block {
-                    ContentBlock::ToolCall(call) => Some(json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "arguments": json_string_python_style(&call.arguments),
-                    })),
-                    _ => None,
-                }));
+                items.extend(
+                    output
+                        .content
+                        .iter()
+                        .filter_map(|block| match block.normalized() {
+                            ContentBlock::ToolCall(call) => Some(json!({
+                                "type": "function_call",
+                                "call_id": call.id,
+                                "name": call.name,
+                                "arguments": json_string_python_style(&call.arguments),
+                            })),
+                            _ => None,
+                        }),
+                );
 
                 items
             })

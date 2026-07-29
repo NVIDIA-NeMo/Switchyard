@@ -49,7 +49,7 @@ impl Message {
         let parts = self
             .content
             .iter()
-            .filter_map(|block| match block {
+            .filter_map(|block| match block.normalized() {
                 ContentBlock::Text { text } => Some(text.as_str()),
                 ContentBlock::Refusal { text } => Some(text.as_str()),
                 _ => None,
@@ -61,6 +61,13 @@ impl Message {
             Some(parts.join(separator))
         }
     }
+}
+
+/// Provider-owned source JSON retained beside its normalized representation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderPayload {
+    pub provider: FormatId,
+    pub raw: Value,
 }
 
 /// Normalized content block variants carried by messages and tool results.
@@ -95,6 +102,20 @@ pub enum ContentBlock {
         provider: FormatId,
         raw: Value,
     },
+    Provider {
+        payload: ProviderPayload,
+        normalized: Box<ContentBlock>,
+    },
+}
+
+impl ContentBlock {
+    /// Returns the provider-neutral block under any preservation wrapper.
+    pub fn normalized(&self) -> &Self {
+        match self {
+            Self::Provider { normalized, .. } => normalized.normalized(),
+            _ => self,
+        }
+    }
 }
 
 /// Image payload forms supported by the conversation model.
@@ -162,6 +183,8 @@ pub struct ToolDefinition {
     pub description: Option<String>,
     pub parameters: Value,
     pub strict: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_payload: Option<ProviderPayload>,
 }
 
 /// Normalized tool choice policy.

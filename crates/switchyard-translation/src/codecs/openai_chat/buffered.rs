@@ -334,7 +334,7 @@ impl FormatCodec for OpenAiChatCodec {
                 output
                     .content
                     .iter()
-                    .filter_map(|block| match block {
+                    .filter_map(|block| match block.normalized() {
                         ContentBlock::ToolCall(call) => Some(json!({
                             "id": call.id,
                             "type": "function",
@@ -649,6 +649,7 @@ pub(crate) fn decode_openai_tools(
                 .cloned()
                 .unwrap_or_else(|| json!({})),
             strict: function.get("strict").and_then(Value::as_bool),
+            provider_payload: None,
         });
     }
     Ok(definitions)
@@ -700,7 +701,7 @@ fn encode_message_with_tool_results_to_openai(
     let mut pending_content = Vec::new();
 
     for block in &message.content {
-        if let ContentBlock::ToolResult(result) = block {
+        if let ContentBlock::ToolResult(result) = block.normalized() {
             push_pending_openai_message(
                 &mut out,
                 message.role,
@@ -766,7 +767,7 @@ fn encode_message_without_tool_results_to_openai(
     let tool_calls = message
         .content
         .iter()
-        .filter_map(|block| match block {
+        .filter_map(|block| match block.normalized() {
             ContentBlock::ToolCall(call) => Some(json!({
                 "id": call.id,
                 "type": "function",
@@ -783,7 +784,7 @@ fn encode_message_without_tool_results_to_openai(
         .iter()
         .filter(|block| {
             !matches!(
-                block,
+                block.normalized(),
                 ContentBlock::ToolCall(_) | ContentBlock::Reasoning { .. }
             )
         })
@@ -807,7 +808,7 @@ fn message_has_tool_results(message: &Message) -> bool {
     message
         .content
         .iter()
-        .any(|block| matches!(block, ContentBlock::ToolResult(_)))
+        .any(|block| matches!(block.normalized(), ContentBlock::ToolResult(_)))
 }
 
 // Copies Chat-compatible extension fields preserved in the IR.
@@ -839,7 +840,7 @@ fn copy_openai_chat_request_extensions(
 
 // Detects placeholder empty text generated while decoding assistant tool calls.
 fn is_empty_text_only(content: &[ContentBlock]) -> bool {
-    matches!(content, [ContentBlock::Text { text }] if text.is_empty())
+    matches!(content, [block] if matches!(block.normalized(), ContentBlock::Text { text } if text.is_empty()))
 }
 
 /// Encodes normalized content into OpenAI Chat content JSON.
@@ -851,7 +852,7 @@ pub(crate) fn encode_openai_content(
 ) -> Result<Value> {
     let has_non_text = content.iter().any(|block| {
         matches!(
-            block,
+            block.normalized(),
             ContentBlock::Image { .. }
                 | ContentBlock::Audio { .. }
                 | ContentBlock::Video { .. }
@@ -872,7 +873,7 @@ pub(crate) fn encode_openai_content(
     }
     let mut blocks = Vec::new();
     for block in content {
-        match block {
+        match block.normalized() {
             ContentBlock::Text { text } => blocks.push(json!({"type": "text", "text": text})),
             ContentBlock::Refusal { text } => blocks.push(json!({"type": "text", "text": text})),
             ContentBlock::Image { source } => match openai_image_part(source) {
@@ -923,7 +924,8 @@ pub(crate) fn encode_openai_content(
             }
             ContentBlock::Reasoning { .. }
             | ContentBlock::ToolCall(_)
-            | ContentBlock::ToolResult(_) => {}
+            | ContentBlock::ToolResult(_)
+            | ContentBlock::Provider { .. } => {}
         }
     }
     Ok(Value::Array(blocks))

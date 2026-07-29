@@ -137,7 +137,7 @@ pub fn validate_request_capabilities(
     }
     if policy.target_capabilities.supports_images == Some(false)
         && messages_have_block(&request.messages, |block| {
-            matches!(block, ContentBlock::Image { .. })
+            matches!(block.normalized(), ContentBlock::Image { .. })
         })
     {
         push_lossy(
@@ -148,7 +148,7 @@ pub fn validate_request_capabilities(
     }
     if policy.target_capabilities.supports_audio == Some(false)
         && messages_have_block(&request.messages, |block| {
-            matches!(block, ContentBlock::Audio { .. })
+            matches!(block.normalized(), ContentBlock::Audio { .. })
         })
     {
         push_lossy(
@@ -159,7 +159,7 @@ pub fn validate_request_capabilities(
     }
     if policy.target_capabilities.supports_video == Some(false)
         && messages_have_block(&request.messages, |block| {
-            matches!(block, ContentBlock::Video { .. })
+            matches!(block.normalized(), ContentBlock::Video { .. })
         })
     {
         push_lossy(
@@ -170,7 +170,7 @@ pub fn validate_request_capabilities(
     }
     if policy.target_capabilities.supports_files == Some(false)
         && messages_have_block(&request.messages, |block| {
-            matches!(block, ContentBlock::File { .. })
+            matches!(block.normalized(), ContentBlock::File { .. })
         })
     {
         push_lossy(
@@ -207,7 +207,7 @@ pub fn validate_request_capabilities(
 fn messages_have_tools(messages: &[Message]) -> bool {
     messages_have_block(messages, |block| {
         matches!(
-            block,
+            block.normalized(),
             ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
         )
     })

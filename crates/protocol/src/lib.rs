@@ -80,7 +80,7 @@ pub fn completion_text(response: &AggLlmResponse) -> String {
             output
                 .content
                 .iter()
-                .filter_map(|block| match block {
+                .filter_map(|block| match block.normalized() {
                     ContentBlock::Text { text } => Some(text.as_str()),
                     _ => None,
                 })

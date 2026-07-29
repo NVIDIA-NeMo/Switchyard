@@ -85,28 +85,28 @@ impl AnthropicNativeBackend {
 
     fn outbound_body(&self, request: &ChatRequest) -> Result<Value> {
         let source = request.request_type();
-        // Native cache annotations are provider-owned nested extensions that
-        // the current IR does not represent, so preserve those requests exactly.
-        let preservation_policy = (source == ChatRequestType::Anthropic
-            && has_anthropic_cache_control(request.body()))
-        .then(TranslationPolicy::default);
-        let policy = preservation_policy
-            .as_ref()
-            .unwrap_or(&self.translation_policy);
-        let mut body = self
+        let translated = self
             .translation
             .translate_request(
                 request_wire_format(source),
                 WireFormat::AnthropicMessages,
                 request.body(),
-                policy,
+                &self.translation_policy,
             )
             .map_err(|error| {
                 SwitchyardError::Backend(format!(
                     "failed to translate {source:?} request to Anthropic Messages: {error}"
                 ))
-            })?
-            .body;
+            })?;
+        for diagnostic in &translated.diagnostics {
+            tracing::debug!(
+                code = %diagnostic.code,
+                message = %diagnostic.message,
+                path = ?diagnostic.path,
+                "Anthropic request translation diagnostic"
+            );
+        }
+        let mut body = translated.body;
         set_json_model(&mut body, self.target.model.as_str());
         // Per-target ``extra_body`` merged last; caller wins on key
         // conflicts (see :func:`merge_target_extra_body`).
@@ -287,29 +287,6 @@ fn validate_target_format(target: &LlmTarget) -> Result<()> {
             )))
         }
     }
-}
-
-// Detects native cache annotations that require exact same-format replay.
-fn has_anthropic_cache_control(body: &Value) -> bool {
-    body.get("system").is_some_and(blocks_have_cache_control)
-        || body
-            .get("messages")
-            .and_then(Value::as_array)
-            .is_some_and(|messages| {
-                messages.iter().any(|message| {
-                    message
-                        .get("content")
-                        .is_some_and(blocks_have_cache_control)
-                })
-            })
-}
-
-fn blocks_have_cache_control(value: &Value) -> bool {
-    value.as_array().is_some_and(|blocks| {
-        blocks
-            .iter()
-            .any(|block| block.get("cache_control").is_some())
-    })
 }
 
 fn messages_url(base_url: Option<&str>) -> String {

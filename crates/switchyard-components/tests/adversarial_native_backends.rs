@@ -896,14 +896,24 @@ async fn anthropic_preserves_native_cache_control_blocks() -> Result<()> {
                     "text": "Stable rules.",
                     "cache_control": {"type": "ephemeral"}
                 }],
-                "messages": [{
-                    "role": "user",
-                    "content": [{
-                        "type": "text",
-                        "text": "hello",
-                        "cache_control": {"type": "ephemeral"}
-                    }]
-                }]
+                "messages": [
+                    {"role": "system", "content": "Lifted rules."},
+                    {
+                        "role": "user",
+                        "content": [{
+                            "type": "text",
+                            "text": "hello",
+                            "cache_control": {"type": "ephemeral"}
+                        }]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "synthetic", "signature": ""},
+                            {"type": "redacted_thinking", "data": "encrypted"}
+                        ]
+                    }
+                ]
             })),
         )
         .await?;
@@ -916,6 +926,14 @@ async fn anthropic_preserves_native_cache_control_blocks() -> Result<()> {
     assert_eq!(
         request.body["messages"][0]["content"][0]["cache_control"],
         json!({"type": "ephemeral"})
+    );
+    assert_eq!(
+        request.body["system"][1],
+        json!({"type": "text", "text": "Lifted rules."})
+    );
+    assert_eq!(
+        request.body["messages"][1]["content"],
+        json!([{"type": "redacted_thinking", "data": "encrypted"}])
     );
     assert_eq!(request.body["model"], "target-claude");
     Ok(())
