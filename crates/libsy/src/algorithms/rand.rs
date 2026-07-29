@@ -144,6 +144,7 @@ impl Random {
         let inner = FallThrough::<()>::new(target_set)
             .with_name("random")
             .with_decision_reason(random_decision_reason)
+            .with_decision_confidence(|_| None)
             .with_classifier(classifier);
         Ok(Self { inner })
     }
@@ -349,6 +350,41 @@ mod tests {
             );
             assert_eq!(trace[0].selected_model(), selected.as_str());
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_random_decisions_have_independent_identity_without_fake_confidence(
+    ) -> Result<()> {
+        let algorithm = shared_algorithm(&["a/model", "b/model"])?;
+        let (first, second) = tokio::join!(
+            algorithm.clone().run(Context::default(), request()),
+            algorithm.run(Context::default(), request())
+        );
+        let (first_trace, _) = first?;
+        let (second_trace, _) = second?;
+
+        let first = first_trace[0]
+            .metadata()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "random decision omitted structured metadata".to_string(),
+            })?;
+        let second = second_trace[0]
+            .metadata()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "random decision omitted structured metadata".to_string(),
+            })?;
+
+        assert!(!first.decision_id.is_empty());
+        assert!(!first.run_id.is_empty());
+        assert_ne!(first.decision_id, second.decision_id);
+        assert_ne!(first.run_id, second.run_id);
+        assert_eq!(first.algorithm.name, "random");
+        assert_eq!(first.algorithm.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(first.role, switchyard_protocol::DecisionRole::Final);
+        assert_eq!(first.confidence, None);
+        assert_eq!(first.baseline, None);
+        assert_eq!(first.response_source_decision_id, None);
         Ok(())
     }
 

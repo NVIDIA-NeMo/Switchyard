@@ -735,7 +735,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
             &snapshots,
             "switchyard.llm_calls",
             &[
-                ("algorithm", ""),
+                ("algorithm", "llm_task_classifier"),
                 ("selected_model", "classifier"),
                 ("outcome", "ok"),
             ],

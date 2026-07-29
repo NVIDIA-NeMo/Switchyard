@@ -16,12 +16,49 @@ use tracing::Instrument;
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
 pub use switchyard_protocol::{
-    AggLlmResponse, Context, Decision, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals, Usage,
+    AggLlmResponse, AlgorithmIdentity, Context, Decision, DecisionBaseline, DecisionMetadata,
+    DecisionRole, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream,
+    Metadata, Request, Response, RoutedLlmClient, Signals, Usage,
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
 use crate::{observability, DriverError, LibsyError, Result};
+
+const RUN_ID_KEY: &str = "switchyard.run_id";
+const ALGORITHM_VERSION_KEY: &str = "switchyard.algorithm_version";
+
+fn decision_metadata(
+    ctx: &Context,
+    role: DecisionRole,
+    confidence: Option<f64>,
+    baseline: Option<DecisionBaseline>,
+    response_source_decision_id: Option<String>,
+) -> DecisionMetadata {
+    DecisionMetadata {
+        decision_id: generated_id("decision"),
+        run_id: ctx
+            .values
+            .get(RUN_ID_KEY)
+            .cloned()
+            .unwrap_or_else(|| generated_id("run")),
+        algorithm: AlgorithmIdentity {
+            name: observability::algorithm_label(ctx).to_string(),
+            version: ctx
+                .values
+                .get(ALGORITHM_VERSION_KEY)
+                .cloned()
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+        },
+        role,
+        confidence,
+        baseline,
+        response_source_decision_id,
+    }
+}
+
+fn generated_id(kind: &str) -> String {
+    format!("sy_{kind}_{:032x}", rand::random::<u128>())
+}
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -115,15 +152,42 @@ impl CallLlmRequest {
 #[derive(Clone)]
 pub struct Driver {
     driver: TypeErasedDriver,
+    ctx: Context,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream).
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ctx: Context) -> Self {
         Self {
             driver: TypeErasedDriver::new(),
+            ctx,
         }
+    }
+
+    pub(crate) fn context(&self) -> &Context {
+        &self.ctx
+    }
+
+    /// Constructs structured metadata for a decision in this run.
+    ///
+    /// Every value is algorithm-owned. Callers should leave confidence,
+    /// baseline, or response provenance unset when the algorithm does not
+    /// define those semantics.
+    pub fn decision_metadata(
+        &self,
+        role: DecisionRole,
+        confidence: Option<f64>,
+        baseline: Option<DecisionBaseline>,
+        response_source_decision_id: Option<String>,
+    ) -> DecisionMetadata {
+        decision_metadata(
+            &self.ctx,
+            role,
+            confidence,
+            baseline,
+            response_source_decision_id,
+        )
     }
 
     /// Offload a model call: publish `routed` as a [`Step::CallLlm`] and await the
@@ -283,7 +347,7 @@ impl Driver {
 
 impl Default for Driver {
     fn default() -> Self {
-        Self::new()
+        Self::new(Context::default())
     }
 }
 
@@ -397,6 +461,14 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emits for its runs (see the crate docs' Observability section).
     fn name(&self) -> &str;
 
+    /// Version of this algorithm implementation recorded on its decisions.
+    ///
+    /// Built-in algorithms use the libsy crate version. External algorithms
+    /// should override this when their implementation is versioned separately.
+    fn version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
+
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
     /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
@@ -480,7 +552,13 @@ pub trait Algorithm: Send + Sync + 'static {
             observability::ALGORITHM_KEY.to_string(),
             self.name().to_string(),
         );
-        let driver = Driver::new();
+        ctx.values.insert(
+            ALGORITHM_VERSION_KEY.to_string(),
+            self.version().to_string(),
+        );
+        ctx.values
+            .insert(RUN_ID_KEY.to_string(), generated_id("run"));
+        let driver = Driver::new(ctx.clone());
         let task_driver = driver.clone();
         let task_ctx = ctx.clone();
         let stream = task_driver.stream();
@@ -766,6 +844,79 @@ mod tests {
             error,
             Some(LibsyError::TargetNotFound { target }) if target == "missing"
         ));
+    }
+
+    #[tokio::test]
+    async fn decision_metadata_uses_the_algorithm_version_override() -> Result<()> {
+        struct VersionedDecision {
+            metadata: DecisionMetadata,
+        }
+
+        impl Decision for VersionedDecision {
+            fn selected_model(&self) -> &str {
+                "versioned/model"
+            }
+
+            fn reasoning(&self) -> Option<&str> {
+                None
+            }
+
+            fn metadata(&self) -> Option<&DecisionMetadata> {
+                Some(&self.metadata)
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        struct VersionedAlgo;
+
+        #[async_trait]
+        impl Algorithm for VersionedAlgo {
+            fn name(&self) -> &str {
+                "versioned"
+            }
+
+            fn version(&self) -> &str {
+                "custom-2.4.1"
+            }
+
+            async fn create_run_task(
+                self: Arc<Self>,
+                ctx: Context,
+                driver: Driver,
+                _request: Request,
+            ) -> Result<Response> {
+                let decision: Arc<dyn Decision> = Arc::new(VersionedDecision {
+                    metadata: driver.decision_metadata(DecisionRole::Final, None, None, None),
+                });
+                driver.info(ctx, decision).await?;
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(text_response(
+                        None,
+                        "versioned response".to_string(),
+                    )),
+                    metadata: None,
+                })
+            }
+        }
+
+        let stream = Arc::new(VersionedAlgo).run_stream(Context::default(), request());
+        tokio::pin!(stream);
+
+        while let Some(step) = stream.next().await {
+            if let Step::Decision(decision) = step? {
+                let metadata = decision
+                    .metadata()
+                    .ok_or_else(|| test_error("decision metadata missing"))?;
+                assert_eq!(metadata.algorithm.name, "versioned");
+                assert_eq!(metadata.algorithm.version, "custom-2.4.1");
+                return Ok(());
+            }
+        }
+
+        Err(test_error("decision step missing"))
     }
 
     /// Client that serves a call as a token stream — its `call` returns

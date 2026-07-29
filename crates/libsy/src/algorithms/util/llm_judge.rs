@@ -15,8 +15,7 @@ use serde_json::Value;
 use switchyard_protocol::{completion_text, AggLlmResponse};
 
 use crate::{
-    Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request, Result,
-    State,
+    Classification, Classifier, Decision, Driver, LibsyError, LlmTarget, Request, Result, State,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -94,11 +93,17 @@ where
 
         let response = driver
             .call_llm_target(
-                Context::default(),
+                driver.context().clone(),
                 &self.target,
                 self.judge.build_request(state, request),
                 Arc::new(JudgeDecision {
                     model: self.target.semantic_name.to_string(),
+                    metadata: driver.decision_metadata(
+                        crate::DecisionRole::Judge,
+                        None,
+                        None,
+                        None,
+                    ),
                 }),
             )
             .await
@@ -158,6 +163,7 @@ fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<
 
 struct JudgeDecision {
     model: String,
+    metadata: crate::DecisionMetadata,
 }
 
 impl Decision for JudgeDecision {
@@ -171,6 +177,10 @@ impl Decision for JudgeDecision {
 
     fn reasoning(&self) -> Option<&str> {
         Some("llm judge consultation")
+    }
+
+    fn metadata(&self) -> Option<&crate::DecisionMetadata> {
+        Some(&self.metadata)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -293,7 +303,7 @@ mod tests {
     /// Serves the single offloaded judge call with `reply`. The stream is taken first
     /// because the driver refuses to publish a step until a consumer exists.
     async fn score_served_with(reply: Result<Response>) -> Result<String> {
-        let driver = Driver::new();
+        let driver = Driver::new(crate::Context::default());
         let mut steps = Box::pin(driver.stream());
         let classifier = classifier();
         let mut state = State::default();

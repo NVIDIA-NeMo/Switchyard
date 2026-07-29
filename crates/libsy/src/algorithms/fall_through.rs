@@ -21,8 +21,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::{Classifier, Event, Processor, Score};
 use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
-    RoutedLlmClient,
+    Algorithm, Context, Decision, DecisionMetadata, DecisionRole, Driver, LibsyError, LlmTargetSet,
+    Request, Response, Result, RoutedLlmClient,
 };
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
@@ -34,6 +34,7 @@ pub struct FallThroughDecision {
     /// Human-readable explanation of the selection.
     pub reasoning: String,
     tier: Option<&'static str>,
+    metadata: DecisionMetadata,
 }
 
 impl Decision for FallThroughDecision {
@@ -49,6 +50,10 @@ impl Decision for FallThroughDecision {
         Some(&self.reasoning)
     }
 
+    fn metadata(&self) -> Option<&DecisionMetadata> {
+        Some(&self.metadata)
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -60,6 +65,7 @@ impl Decision for FallThroughDecision {
 pub struct FallThrough<S = ()> {
     name: String,
     decision_reason: fn(&str, &Score) -> String,
+    decision_confidence: fn(&Score) -> Option<f64>,
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
@@ -72,6 +78,7 @@ impl FallThrough<()> {
         Self {
             name: "fall_through".to_string(),
             decision_reason: default_decision_reason,
+            decision_confidence: |score| Some(score.confidence),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -89,6 +96,7 @@ where
         Self {
             name: "fall_through".to_string(),
             decision_reason: default_decision_reason,
+            decision_confidence: |score| Some(score.confidence),
             processors: Vec::new(),
             classifiers: Vec::new(),
             targets,
@@ -105,6 +113,14 @@ where
     /// Sets the decision reasoning for an algorithm assembled from this cascade.
     pub(crate) fn with_decision_reason(mut self, reason: fn(&str, &Score) -> String) -> Self {
         self.decision_reason = reason;
+        self
+    }
+
+    pub(crate) fn with_decision_confidence(
+        mut self,
+        confidence: fn(&Score) -> Option<f64>,
+    ) -> Self {
+        self.decision_confidence = confidence;
         self
     }
 
@@ -236,6 +252,12 @@ where
             selected_model: score.target.clone(),
             reasoning: (self.decision_reason)(&self.name, &score),
             tier: maybe_tier,
+            metadata: driver.decision_metadata(
+                DecisionRole::Final,
+                (self.decision_confidence)(&score),
+                None,
+                None,
+            ),
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 

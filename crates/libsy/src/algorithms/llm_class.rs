@@ -487,6 +487,41 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct MetadataClient {
+        calls: Mutex<
+            Vec<(
+                String,
+                Context,
+                Option<switchyard_protocol::DecisionMetadata>,
+            )>,
+        >,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for MetadataClient {
+        async fn call(
+            &self,
+            ctx: Context,
+            request: Request,
+            decision: Arc<dyn crate::Decision>,
+        ) -> std::result::Result<Response, LlmClientError> {
+            let model = decision.selected_model().to_string();
+            self.calls
+                .lock()
+                .push((model.clone(), ctx, decision.metadata().cloned()));
+            let completion = if model == "judge" {
+                r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
+            } else {
+                format!("answer from {model}")
+            };
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, completion)),
+                metadata: request.metadata,
+            })
+        }
+    }
+
     fn router(client: Arc<dyn RoutedLlmClient>) -> Result<Arc<LlmTaskClassifier>> {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
@@ -561,6 +596,46 @@ mod tests {
             client.calls(),
             vec!["judge", "efficient", "judge", "efficient"]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supporting_and_final_calls_share_run_identity_and_have_distinct_roles() -> Result<()> {
+        let client = Arc::new(MetadataClient::default());
+        router(client.clone())?
+            .run(Context::default(), classify_request())
+            .await?;
+
+        let calls = client.calls.lock();
+        assert_eq!(calls.len(), 2);
+        let (judge_model, judge_ctx, judge_metadata) = &calls[0];
+        let (final_model, final_ctx, final_metadata) = &calls[1];
+        let judge_metadata = judge_metadata
+            .as_ref()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "judge call omitted decision metadata".to_string(),
+            })?;
+        let final_metadata = final_metadata
+            .as_ref()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "final call omitted decision metadata".to_string(),
+            })?;
+
+        assert_eq!(judge_model, "judge");
+        assert_eq!(final_model, "efficient");
+        assert_eq!(
+            judge_metadata.role,
+            switchyard_protocol::DecisionRole::Judge
+        );
+        assert_eq!(
+            final_metadata.role,
+            switchyard_protocol::DecisionRole::Final
+        );
+        assert_ne!(judge_metadata.decision_id, final_metadata.decision_id);
+        assert_eq!(judge_metadata.run_id, final_metadata.run_id);
+        assert_eq!(judge_metadata.algorithm, final_metadata.algorithm);
+        assert_eq!(judge_metadata.algorithm.name, "llm_task_classifier");
+        assert_eq!(judge_ctx.values, final_ctx.values);
         Ok(())
     }
 

@@ -13,12 +13,65 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{Context, Request, Response};
 
 /// A boxed client-specific error preserved as the source of a routed call failure.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Stable identity for the algorithm that produced a routing decision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AlgorithmIdentity {
+    /// Stable, low-cardinality algorithm name.
+    pub name: String,
+    /// Version of the algorithm implementation.
+    pub version: String,
+}
+
+/// Semantic role a decision plays within one algorithm run.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionRole {
+    /// A supporting model call used to compute another decision.
+    Supporting,
+    /// A candidate response that may or may not be selected.
+    Candidate,
+    /// A judge call used to select among candidates.
+    Judge,
+    /// The final route or response selected for the caller.
+    Final,
+}
+
+/// Counterfactual route supplied by an algorithm that defines a baseline.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DecisionBaseline {
+    /// Semantic target name of the baseline route.
+    pub selected_model: String,
+    /// Optional routing tier of the baseline route.
+    pub routing_tier: Option<String>,
+}
+
+/// Structured, algorithm-owned metadata for one routing decision.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct DecisionMetadata {
+    /// Unique identifier for this decision.
+    pub decision_id: String,
+    /// Identifier shared by every decision and model call in one algorithm run.
+    pub run_id: String,
+    /// Algorithm implementation that produced the decision.
+    pub algorithm: AlgorithmIdentity,
+    /// Role this decision plays in the run.
+    pub role: DecisionRole,
+    /// Optional algorithm-defined confidence in the decision.
+    pub confidence: Option<f64>,
+    /// Optional algorithm-defined counterfactual route.
+    pub baseline: Option<DecisionBaseline>,
+    /// Decision whose provider response became the final response, when distinct
+    /// from this decision.
+    pub response_source_decision_id: Option<String>,
+}
 
 /// Failures a routed LLM client can surface to its caller.
 ///
@@ -132,6 +185,10 @@ pub trait Decision: Send + Sync {
     }
     /// A human-readable explanation of the decision, for logs and traces.
     fn reasoning(&self) -> Option<&str>;
+    /// Structured identity and telemetry supplied by the algorithm.
+    fn metadata(&self) -> Option<&DecisionMetadata> {
+        None
+    }
     /// Downcast handle: a consumer that knows the algorithm can recover the
     /// concrete decision type via `as_any().downcast_ref::<ConcreteDecision>()`.
     fn as_any(&self) -> &dyn std::any::Any;
@@ -173,5 +230,35 @@ pub trait RoutedLlmClient: Send + Sync {
         Err(LlmClientError::Configuration {
             message: "count_tokens is not supported by this client".to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_metadata_round_trips_with_stable_role_names(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = DecisionMetadata {
+            decision_id: "decision-1".to_string(),
+            run_id: "run-1".to_string(),
+            algorithm: AlgorithmIdentity {
+                name: "ensemble".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            role: DecisionRole::Judge,
+            confidence: Some(0.75),
+            baseline: Some(DecisionBaseline {
+                selected_model: "baseline".to_string(),
+                routing_tier: Some("weak".to_string()),
+            }),
+            response_source_decision_id: Some("candidate-2".to_string()),
+        };
+
+        let value = serde_json::to_value(&metadata)?;
+        assert_eq!(value["role"], "judge");
+        assert_eq!(serde_json::from_value::<DecisionMetadata>(value)?, metadata);
+        Ok(())
     }
 }
