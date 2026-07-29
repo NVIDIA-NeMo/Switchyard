@@ -46,6 +46,11 @@ generic OpenAI-compatible endpoint.
 `.env.example` contains `OPENROUTER_API_KEY`. The example remains local-only
 and keeps its existing unauthenticated loopback gateway behavior.
 
+The pinned LiteLLM release does not yet recognize Kimi K3's current
+`reasoning_effort` support. `LiteLLMSyClient` forwards LiteLLM's
+`allowed_openai_params` hint to the gateway so the supported parameter reaches
+OpenRouter instead of being rejected by LiteLLM's stale model metadata.
+
 No package dependency changes are required.
 
 ## Documentation
@@ -69,6 +74,7 @@ Offline coverage will verify:
 
 - the gateway aliases use the exact `openrouter/...` model values;
 - both aliases reference `OPENROUTER_API_KEY`;
+- the client forwards the `reasoning_effort` compatibility hint;
 - Compose passes `OPENROUTER_API_KEY`;
 - the E2E fixture requires the explicit spend opt-in before checking Docker;
 - the E2E fixture requires `OPENROUTER_API_KEY`; and

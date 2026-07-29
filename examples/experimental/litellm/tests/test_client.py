@@ -107,6 +107,7 @@ async def test_call_translates_request_and_normalizes_response() -> None:
         "top_p": 0.9,
         "max_completion_tokens": 64,
         "reasoning_effort": "low",
+        "allowed_openai_params": ["reasoning_effort"],
     }
     assert sent["model"] == "fast"
     assert sent["model"] != "openai/fast"

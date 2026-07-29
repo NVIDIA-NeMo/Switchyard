@@ -206,6 +206,7 @@ class LiteLLMSyClient:
             api_key=self._api_key,
             num_retries=0,
             allowed_openai_params=["reasoning_effort"],
+            extra_body={"allowed_openai_params": ["reasoning_effort"]},
         )
         return _response(cast(ModelResponse, response))
 

@@ -140,6 +140,11 @@ asyncio.run(main())
 This example intentionally supports buffered, text-only Chat Completions.
 Tools, media, structured output, and streaming fail explicitly.
 
+The pinned LiteLLM release does not yet recognize Kimi K3's current
+`reasoning_effort` support. `LiteLLMSyClient` forwards LiteLLM's
+`allowed_openai_params` hint to the gateway so OpenRouter receives that
+supported parameter. Recheck this compatibility hint when upgrading LiteLLM.
+
 ## Test
 
 From the package directory, run the offline tests without provider calls:
