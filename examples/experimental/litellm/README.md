@@ -8,19 +8,21 @@ LiteLLM gateway. It demonstrates the integration end to end, and its client,
 Compose configuration, and example code are intended as a copyable starting
 point for your own application.
 
-LiteLLM provides the OpenAI-compatible gateway, model aliases, and provider
-boundary. Switchyard makes the routing decision. `LiteLLMSyClient` connects
-Switchyard's normalized libsy requests to the selected alias through LiteLLM's
-asynchronous Completion API and the Dockerized gateway. Together, they let an
-application keep routing policy in Switchyard while LiteLLM owns
-provider-specific model access and configuration.
+LiteLLM provides the OpenAI-compatible gateway, model aliases, and OpenRouter
+provider integration. Switchyard makes the routing decision.
+`LiteLLMSyClient` connects Switchyard's normalized libsy requests to the
+selected alias through LiteLLM's asynchronous Completion API and the
+Dockerized gateway. Together, they let an application keep routing policy in
+Switchyard while LiteLLM owns model access and sends Chat Completions inference
+through OpenRouter.
 
 ## Request flow
 
 ```text
 your application → libsy normalized request → Switchyard router
                  → LiteLLMSyClient → LiteLLM async Completion API
-                 → Dockerized gateway alias → OpenAI model
+                 → Dockerized gateway alias → OpenRouter Chat Completions
+                 → selected model
 ```
 
 The bundled router selects either `strong` or `fast`; the client asks LiteLLM's
@@ -31,15 +33,15 @@ provider model ID in application code.
 
 This example uses these pinned gateway aliases and image:
 
-- `strong` maps to `openai/gpt-5.6-sol`.
-- `fast` maps to `openai/gpt-5.6-luna`.
+- `strong` maps to OpenRouter's `openai/gpt-5.6-sol` model.
+- `fast` maps to OpenRouter's `moonshotai/kimi-k3` model.
 - The Python client pins `litellm==1.92.0`.
 - The gateway runs `ghcr.io/berriai/litellm:v1.92.0`.
 
 ### Prerequisites
 
 You need Python 3.12 or later, [uv](https://docs.astral.sh/uv/), Docker Compose,
-an `OPENAI_API_KEY`, and account access to both model IDs.
+an `OPENROUTER_API_KEY`, and OpenRouter account access to both model IDs.
 
 ### Configure
 
@@ -48,7 +50,7 @@ From the repository root:
 ```bash
 cd examples/experimental/litellm
 cp .env.example .env
-# Edit .env and set OPENAI_API_KEY.
+# Edit .env and set OPENROUTER_API_KEY.
 ```
 
 ### Install from the checkout
@@ -146,9 +148,9 @@ From the package directory, run the offline tests without provider calls:
 PYTHONPATH=. uv run --project . pytest tests -m "not e2e" -v
 ```
 
-The E2E test starts its own LiteLLM gateway and makes two paid calls, one to
-each configured model. `SWITCHYARD_LITELLM_E2E=1` is the explicit spend
-opt-in:
+The E2E test starts its own LiteLLM gateway and makes two paid OpenRouter Chat
+Completions calls, one to each configured model.
+`SWITCHYARD_LITELLM_E2E=1` is the explicit spend opt-in:
 
 ```bash
 SWITCHYARD_LITELLM_E2E=1 \
@@ -160,7 +162,7 @@ uv run --project . --env-file .env pytest tests/test_e2e.py -m e2e -v
 See the repository's [Harbor benchmark guide](../../../benchmark/README.md) for
 the one-time Harbor patch and dataset preparation. This is a separate test
 boundary: the package E2E tests `LiteLLMSyClient`, while Harbor tests
-`Harbor → Switchyard server → LiteLLM → OpenAI`.
+`Harbor → Switchyard server → LiteLLM → OpenRouter`.
 
 From the repository root, start the example gateway:
 
@@ -253,8 +255,9 @@ docker compose --env-file examples/experimental/litellm/.env \
 
 ## Troubleshooting
 
-- Ensure `OPENAI_API_KEY` is present and not blank in `.env`.
-- Confirm your account can access `gpt-5.6-sol` and `gpt-5.6-luna`.
+- Ensure `OPENROUTER_API_KEY` is present and not blank in `.env`.
+- Confirm your OpenRouter account can access `openai/gpt-5.6-sol` and
+  `moonshotai/kimi-k3`.
 - If host port 4000 is occupied, set `LITELLM_PORT` to an unused port and use
   it in the health check, gateway URL, and `LiteLLMSyClient` `base_url`. The
   bundled `example.py` assumes port 4000 unless you edit it.
@@ -275,8 +278,8 @@ deployment guidance before exposing it remotely.
 
 ## References
 
-- [OpenAI model catalog](https://developers.openai.com/api/docs/models)
-- [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
-- [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna)
+- [OpenRouter Chat Completions](https://openrouter.ai/docs/api-reference/chat-completion)
+- [GPT-5.6 Sol on OpenRouter](https://openrouter.ai/openai/gpt-5.6-sol)
+- [Kimi K3 on OpenRouter](https://openrouter.ai/moonshotai/kimi-k3-20260715)
 - [LiteLLM gateway quick start](https://docs.litellm.ai/docs/proxy/quick_start)
 - [Switchyard random-routing docs](../../../docs/routing_algorithms/random_routing.md)
