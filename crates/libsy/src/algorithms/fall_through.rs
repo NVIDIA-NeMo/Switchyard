@@ -9,6 +9,13 @@
 //! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
 //! stateful ones (latch, affinity) can bind it.
 //!
+//! Nothing runs on the way back: the model's response is returned as it arrives, so a
+//! streamed reply stays a stream all the way to the caller.
+//!
+//! A deciding classifier may return the response it already obtained (see
+//! [`Classifier::score`]), in which case the model call is skipped and that response is the
+//! turn's answer. The decision is published and replayed either way.
+//!
 //! The default `FallThrough<()>` has no state. Stateful compositions share one private state
 //! value across turns with the same session ID. Requests without a session ID use unretained
 //! per-run state.
@@ -146,7 +153,7 @@ where
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (target, decision) = match session_state {
+        let (target, decision, served) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &ctx, &driver, &mut request).await?
@@ -157,9 +164,17 @@ where
             }
         };
 
-        driver
-            .call_llm_target(ctx, &target, request, decision)
-            .await
+        // A deciding classifier that already called a model hands its response back here, so
+        // the turn is not paid for twice. Nothing on this side reads the response: whatever
+        // the model returns, streamed or buffered, reaches the caller untouched.
+        match served {
+            Some(response) => Ok(response),
+            None => {
+                driver
+                    .call_llm_target(ctx, &target, request, decision)
+                    .await
+            }
+        }
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -184,7 +199,7 @@ where
         ctx: &Context,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>)> {
+    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -194,11 +209,15 @@ where
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut maybe_score: Option<Score> = None;
         let mut maybe_tier: Option<&'static str> = None;
+        let mut served: Option<Response> = None;
         for classifier in &self.classifiers {
-            let scores = classifier.score(state, request, Some(driver)).await?;
+            let (scores, response) = classifier.score(state, request, Some(driver)).await?;
             maybe_score = scores.argmax(false)?;
             if let Some(s) = maybe_score.as_ref() {
                 maybe_tier = classifier.routing_tier(&s.target);
+                // Only the deciding classifier's response answers the turn; an abstaining
+                // classifier selected nothing for it to be the answer to.
+                served = response;
                 break;
             }
         }
@@ -230,7 +249,7 @@ where
                 .await?;
         }
 
-        Ok((target, decision))
+        Ok((target, decision, served))
     }
 }
 
@@ -266,13 +285,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Classification;
+    use crate::core::{Classification, Scored};
 
     use switchyard_protocol::{
         completion_text, text_response, LlmRequest, Message, Metadata, Role,
     };
 
     use crate::{LlmResponse, LlmTarget, RoutedLlmClient};
+    use futures::StreamExt;
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
@@ -351,15 +371,18 @@ mod tests {
             _state: &mut (),
             _request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
-            Ok(Classification::Scores(
-                self.0
-                    .iter()
-                    .map(|s| Score {
-                        confidence: s.confidence,
-                        target: s.target.clone(),
-                    })
-                    .collect(),
+        ) -> Result<Scored> {
+            Ok((
+                Classification::Scores(
+                    self.0
+                        .iter()
+                        .map(|s| Score {
+                            confidence: s.confidence,
+                            target: s.target.clone(),
+                        })
+                        .collect(),
+                ),
+                None,
             ))
         }
     }
@@ -484,9 +507,9 @@ mod tests {
                 _state: &mut (),
                 _request: &mut Request,
                 driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<Scored> {
                 match driver {
-                    Some(_) => Ok(Classification::Scores(vec![score("strong", 1.0)])),
+                    Some(_) => Ok((Classification::Scores(vec![score("strong", 1.0)]), None)),
                     None => Err(test_error("expected a driver")),
                 }
             }
@@ -499,33 +522,161 @@ mod tests {
         Ok(())
     }
 
+    /// Records which event kinds it saw, proving the request-then-decision replay and that
+    /// nothing runs on the response.
+    struct RecordingProcessor(Arc<parking_lot::Mutex<Vec<&'static str>>>);
+
+    #[async_trait]
+    impl Processor for RecordingProcessor {
+        async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
+            let kind = match event {
+                Event::Request(_) => "request",
+                Event::Decision { .. } => "decision",
+                Event::ModelResponse(_) => "model_response",
+                _ => "other",
+            };
+            self.0.lock().push(kind);
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn processor_observes_request_and_decision() -> Result<()> {
-        use parking_lot::Mutex;
-
-        // Records which event kinds it saw, proving the request-then-decision replay.
-        struct RecordingProcessor(Arc<Mutex<Vec<&'static str>>>);
-
-        #[async_trait]
-        impl Processor for RecordingProcessor {
-            async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-                let kind = match event {
-                    Event::Request(_) => "request",
-                    Event::Decision { .. } => "decision",
-                    _ => "other",
-                };
-                self.0.lock().push(kind);
-                Ok(())
-            }
-        }
-
-        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let router = FallThrough::<()>::new(target_set(&["strong", "weak"]))
             .with_processor(Arc::new(RecordingProcessor(seen.clone())))
             .with_classifier(fixed(vec![score("strong", 1.0)]));
         run(router).await?;
 
+        // The response side is not processed, even when the backend answers buffered.
         assert_eq!(*seen.lock(), vec!["request", "decision"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_streamed_response_reaches_the_caller_unbuffered() -> Result<()> {
+        /// Answers with a live stream, as a streaming backend does.
+        struct StreamingClient;
+
+        #[async_trait]
+        impl RoutedLlmClient for StreamingClient {
+            async fn call(
+                &self,
+                _ctx: Context,
+                _request: Request,
+                _decision: Arc<dyn Decision>,
+            ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+                let chunk = crate::LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: "streamed".to_string(),
+                };
+                Ok(Response {
+                    llm_response: LlmResponse::Stream(futures::stream::iter([Ok(chunk)]).boxed()),
+                    metadata: None,
+                })
+            }
+        }
+
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let targets = LlmTargetSet::new(vec![LlmTarget {
+            semantic_name: "strong".to_string(),
+            llm_client: Some(Arc::new(StreamingClient)),
+        }]);
+        let router = Arc::new(
+            FallThrough::new(targets)
+                .with_processor(Arc::new(RecordingProcessor(seen.clone())))
+                .with_classifier(fixed(vec![score("strong", 1.0)])),
+        );
+
+        let (_, response) = router.run(Context::default(), request()).await?;
+
+        // Handing the response to a processor would mean draining the stream, so nothing
+        // does: the caller keeps its stream and no response event is published.
+        assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
+        assert_eq!(*seen.lock(), vec!["request", "decision"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_classifier_response_is_served_instead_of_calling_the_model() -> Result<()> {
+        /// Decides `strong` and hands back the response it already obtained.
+        struct AlreadyServed;
+
+        #[async_trait]
+        impl Classifier for AlreadyServed {
+            async fn score(
+                &self,
+                _state: &mut (),
+                _request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<Scored> {
+                Ok((
+                    Classification::Scores(vec![score("strong", 1.0)]),
+                    Some(Response {
+                        llm_response: LlmResponse::Agg(text_response(None, "already served")),
+                        metadata: None,
+                    }),
+                ))
+            }
+        }
+
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let called = Arc::new(parking_lot::Mutex::new(None));
+        let targets = LlmTargetSet::new(vec![LlmTarget {
+            semantic_name: "strong".to_string(),
+            llm_client: Some(Arc::new(CapturingClient(called.clone()))),
+        }]);
+        let router = Arc::new(
+            FallThrough::new(targets)
+                .with_processor(Arc::new(RecordingProcessor(seen.clone())))
+                .with_classifier(Arc::new(AlreadyServed)),
+        );
+
+        let (text, trace) = run_request(&router, request()).await?;
+
+        assert_eq!(text, "already served");
+        // The target was never called, yet the decision is still published and replayed.
+        assert!(called.lock().is_none(), "the model must not be called");
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0].selected_model(), "strong");
+        assert_eq!(*seen.lock(), vec!["request", "decision"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_abstaining_classifier_does_not_serve_its_response() -> Result<()> {
+        /// Abstains while still handing back a response, which must be ignored: it selected
+        /// nothing for that response to be the answer to.
+        struct AbstainsWithResponse;
+
+        #[async_trait]
+        impl Classifier for AbstainsWithResponse {
+            async fn score(
+                &self,
+                _state: &mut (),
+                _request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<Scored> {
+                Ok((
+                    Classification::Scores(Vec::new()),
+                    Some(Response {
+                        llm_response: LlmResponse::Agg(text_response(None, "ignored")),
+                        metadata: None,
+                    }),
+                ))
+            }
+        }
+
+        let router = Arc::new(
+            FallThrough::new(target_set(&["strong", "weak"]))
+                .with_classifier(Arc::new(AbstainsWithResponse))
+                .with_classifier(fixed(vec![score("weak", 1.0)])),
+        );
+
+        let (text, _) = run_request(&router, request()).await?;
+
+        // The deciding classifier abstained on serving, so the model answered.
+        assert_eq!(text, "weak");
         Ok(())
     }
 
@@ -560,7 +711,7 @@ mod tests {
                 _state: &mut (),
                 request: &mut Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<Scored> {
                 *self.0.lock() = request
                     .llm_request
                     .messages
@@ -571,7 +722,7 @@ mod tests {
                     .llm_request
                     .messages
                     .push(Message::text(Role::User, "classifier"));
-                Ok(Classification::Scores(vec![score("strong", 1.0)]))
+                Ok((Classification::Scores(vec![score("strong", 1.0)]), None))
             }
         }
 
@@ -636,9 +787,9 @@ mod tests {
                 state: &mut TurnState,
                 _request: &mut Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<Scored> {
                 let target = if state.count >= 2 { "strong" } else { "weak" };
-                Ok(Classification::Scores(vec![score(target, 1.0)]))
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
             }
         }
 

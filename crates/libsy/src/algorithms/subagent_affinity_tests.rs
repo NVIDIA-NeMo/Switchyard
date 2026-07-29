@@ -16,7 +16,7 @@ use super::fall_through::FallThrough;
 use super::{AffinityRouter, SubagentOverride};
 use crate::{
     Algorithm, Classification, Classifier, Context, Decision, Driver, LlmResponse, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, Result, RoutedLlmClient, Score,
+    LlmTargetSet, Metadata, Request, Response, Result, RoutedLlmClient, Score, Scored,
 };
 use switchyard_protocol::{completion_text, text_request, text_response};
 
@@ -48,11 +48,14 @@ impl Classifier for AlwaysOrchestrator {
         _state: &mut (),
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        Ok(Classification::Scores(vec![Score {
-            confidence: 0.5,
-            target: "orchestrator".to_string(),
-        }]))
+    ) -> Result<Scored> {
+        Ok((
+            Classification::Scores(vec![Score {
+                confidence: 0.5,
+                target: "orchestrator".to_string(),
+            }]),
+            None,
+        ))
     }
 }
 

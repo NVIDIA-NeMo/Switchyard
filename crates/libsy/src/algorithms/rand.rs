@@ -18,7 +18,7 @@ use rand::SeedableRng;
 use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
 use crate::{
     Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTargetSet, Request,
-    Response, Result, RoutedLlmClient, Score,
+    Response, Result, RoutedLlmClient, Score, Scored,
 };
 
 /// Compatibility name for the decision produced by [`Random`].
@@ -111,11 +111,14 @@ where
         _state: &mut S,
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        Ok(Classification::Scores(vec![Score {
-            confidence: 1.0,
-            target: self.select_target(),
-        }]))
+    ) -> Result<Scored> {
+        Ok((
+            Classification::Scores(vec![Score {
+                confidence: 1.0,
+                target: self.select_target(),
+            }]),
+            None,
+        ))
     }
 }
 
@@ -378,6 +381,7 @@ mod tests {
         let retained = affinity
             .score(&mut state, &mut request, None)
             .await?
+            .0
             .argmax(false)?;
         assert_eq!(
             retained.map(|score| score.target),

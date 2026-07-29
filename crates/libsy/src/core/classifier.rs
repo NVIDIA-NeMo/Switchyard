@@ -3,7 +3,7 @@
 
 use crate::{Driver, LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::Request;
+use switchyard_protocol::{Request, Response};
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +67,12 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     Ok(best.cloned())
 }
 
+/// A classification paired with a response the classifier already obtained for the request.
+///
+/// The response is the classifier's answer to "I had to call a model to classify, and that
+/// call also serves the turn" — see [`Classifier::score`].
+pub type Scored = (Classification, Option<Response>);
+
 /// Scores targets from the current request and the composition's state.
 #[async_trait]
 pub trait Classifier<S = ()>: Send + Sync {
@@ -83,12 +89,20 @@ pub trait Classifier<S = ()>: Send + Sync {
     /// later classifiers in the cascade score the rewritten request, and it is the
     /// rewritten request that is finally sent to the selected model. Most classifiers
     /// only read it.
+    ///
+    /// A classifier that had to call a model to decide — and whose call *is* the turn's
+    /// answer, not a side consultation — may return that [`Response`] alongside its
+    /// classification. The caller serves it directly instead of calling the selected
+    /// target again, so the turn costs one model call rather than two. Only the deciding
+    /// classifier's response is honoured: a classifier that abstains has not selected
+    /// anything for the response to be the answer *to*, so anything it returns is dropped.
+    /// Most classifiers return `None`.
     async fn score(
         &self,
         state: &mut S,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification>;
+    ) -> Result<Scored>;
 }
 
 #[cfg(test)]
@@ -183,13 +197,16 @@ mod tests {
             state: &mut bool,
             request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
+        ) -> Result<Scored> {
             *state = true;
             let target = request.requested_model().unwrap_or("auto").to_string();
-            Ok(Classification::Scores(vec![Score {
-                target,
-                confidence: 1.0,
-            }]))
+            Ok((
+                Classification::Scores(vec![Score {
+                    target,
+                    confidence: 1.0,
+                }]),
+                None,
+            ))
         }
     }
 
@@ -202,9 +219,10 @@ mod tests {
             metadata: None,
         };
         // A `None` driver is valid: the classifier scored without offloading a model call.
-        let classification = RecordingClassifier
+        let (classification, response) = RecordingClassifier
             .score(&mut state, &mut request, None)
             .await?;
+        assert!(response.is_none());
         assert_eq!(
             classification.argmax(false)?.map(|s| s.target),
             Some("strong".to_string())
@@ -223,12 +241,15 @@ mod tests {
             _state: &mut (),
             request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
+        ) -> Result<Scored> {
             request.llm_request.model = Some("rewritten".to_string());
-            Ok(Classification::Scores(vec![Score {
-                target: "rewritten".to_string(),
-                confidence: 1.0,
-            }]))
+            Ok((
+                Classification::Scores(vec![Score {
+                    target: "rewritten".to_string(),
+                    confidence: 1.0,
+                }]),
+                None,
+            ))
         }
     }
 

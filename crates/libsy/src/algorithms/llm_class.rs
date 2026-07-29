@@ -19,7 +19,7 @@ use super::util::{
 use super::FallThrough;
 use crate::{
     Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTarget, LlmTargetSet,
-    Request, Response, Result, RoutedLlmClient, Score, State,
+    Request, Response, Result, RoutedLlmClient, Score, Scored, State,
 };
 
 // TODO: As a first implementation, keeping the prompt and schema paths hardcoded. Add a way to dynamically load and parse user passed prompt and schema.
@@ -318,7 +318,7 @@ impl Classifier<State> for TaskClassifier {
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<Scored> {
         self.classifier.score(state, request, driver).await
     }
 }
@@ -334,7 +334,7 @@ impl Classifier<State> for LlmTaskClassifier {
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<Scored> {
         self.classifier.score(state, request, driver).await
     }
 }
