@@ -1,21 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trajectory-judge components for the escalation router — the judge, its verdict policy, the
-//! confirmation streak, and the transcript condenser they read.
+//! Trajectory-judge components for the escalation router — the judge, its verdict policy, and
+//! the transcript condenser they read.
 //!
-//! [`ConfirmedJudge`] is the whole cascade-facing surface; everything else here is private to
-//! it. The assembled algorithm lives in [`crate::algorithms::escalation`].
+//! [`build_judge`] is the whole surface; the confirmation policy that consumes its verdicts
+//! lives with the assembled algorithm in [`crate::algorithms::escalation`].
 
-use std::collections::HashMap;
-
-use async_trait::async_trait;
-use parking_lot::Mutex;
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, LlmRequest, Message, OutputParams, Role};
 
 use super::{load_judge_config, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
-use crate::{Classification, Classifier, Driver, LlmTarget, Request, Result, Score, State};
+use crate::{Classification, LlmTarget, Request, Result, Score, State};
 
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
@@ -39,9 +35,6 @@ const MAX_REQUEST_CHARS: usize = 18_000;
 /// Completion budget for one judge reply, reasoning included. A runaway guard, not a budget:
 /// too tight truncates mid-reasoning into unparseable JSON and fails the judge open.
 const JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
-
-/// Ceiling on tracked confirmation streaks, mirroring `AffinityRouter`'s assignment cap.
-const MAX_STREAKS: usize = 4_096;
 
 /// The tuning surface for the trajectory judge.
 ///
@@ -95,12 +88,12 @@ impl Default for EscalationJudgeConfig {
 /// case and measurably sharpens the verdict — routing reads only the boolean, so it is
 /// deserialized away rather than carried.
 #[derive(Deserialize)]
-struct EscalationVerdict {
+pub(crate) struct EscalationVerdict {
     escalate: bool,
 }
 
 /// Builds the judge request from the conversation so far.
-struct EscalationJudge {
+pub(crate) struct EscalationJudge {
     rubric: JudgeConfig,
     config: EscalationJudgeConfig,
 }
@@ -136,7 +129,7 @@ impl Judge for EscalationJudge {
 /// distinguishable: both stay efficient, but only a decline is evidence, so only a decline
 /// clears a streak. [`Classification::Ambiguous`] carries the unavailable case — it argmaxes
 /// to nothing, exactly like an empty score set, but the caller can tell them apart.
-struct EscalationPolicy {
+pub(crate) struct EscalationPolicy {
     capable: String,
 }
 
@@ -155,112 +148,22 @@ impl JudgePolicy for EscalationPolicy {
     }
 }
 
-/// Escalates once a session's escalate verdicts have confirmed.
+/// Builds the trajectory judge over `judge_target`, scoring `capable` when it escalates.
 ///
-/// Abstains — deferring to whatever follows it in the cascade — on a decline, on an escalate
-/// verdict that has not yet confirmed, and on an unavailable judge. Only a decline is evidence
-/// about the run, so only a decline clears the streak.
-pub(crate) struct ConfirmedJudge {
-    classifier: JudgeClassifier<EscalationJudge, EscalationPolicy>,
-    /// Consecutive escalate verdicts required to latch.
-    confirmations: u32,
-    /// Consecutive escalate verdicts per session, cleared by any decline. Only consulted when
-    /// `confirmations > 1`; a single-verdict latch needs no bookkeeping.
-    streaks: Mutex<HashMap<String, u32>>,
-}
-
-impl ConfirmedJudge {
-    /// Builds the judge over `judge_target`, scoring `capable` when it escalates.
-    ///
-    /// Loads the packaged prompt and schema, so an unusable asset or an unusable `config`
-    /// value fails here rather than on the first request.
-    pub(crate) fn new(
-        judge_target: LlmTarget,
-        capable: String,
-        config: EscalationJudgeConfig,
-    ) -> Result<Self> {
-        config.validate()?;
-        let rubric = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-        let confirmations = config.confirmations;
-        Ok(Self {
-            classifier: JudgeClassifier::new(
-                EscalationJudge { rubric, config },
-                judge_target,
-                EscalationPolicy { capable },
-            ),
-            confirmations,
-            streaks: Mutex::new(HashMap::new()),
-        })
-    }
-
-    /// Records one escalate verdict and reports whether the session has now confirmed.
-    ///
-    /// A session id is required to accumulate across turns, so without one nothing can confirm
-    /// beyond a single-verdict latch.
-    fn confirm(&self, request: &Request) -> bool {
-        if self.confirmations <= 1 {
-            return true;
-        }
-        let Some(session) = session_id(request) else {
-            return false;
-        };
-        let mut streaks = self.streaks.lock();
-        if streaks.len() >= MAX_STREAKS && !streaks.contains_key(session) {
-            if let Some(evicted) = streaks.keys().next().cloned() {
-                streaks.remove(&evicted);
-            }
-        }
-        let streak = streaks.entry(session.to_string()).or_insert(0);
-        *streak += 1;
-        *streak >= self.confirmations
-    }
-
-    /// Clears a session's streak after a decline. Strict-consecutive: any decline resets.
-    fn clear_streak(&self, request: &Request) {
-        if self.confirmations <= 1 {
-            return;
-        }
-        if let Some(session) = session_id(request) {
-            self.streaks.lock().remove(session);
-        }
-    }
-}
-
-#[async_trait]
-impl Classifier<State> for ConfirmedJudge {
-    async fn score(
-        &self,
-        state: &mut State,
-        request: &mut Request,
-        driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        let classification = self.classifier.score(state, request, driver).await?;
-        let escalate = match classification {
-            Classification::Scores(ref scores) if !scores.is_empty() => self.confirm(request),
-            Classification::Scores(_) => {
-                self.clear_streak(request);
-                false
-            }
-            // Judge unavailable: fail open to efficient without disturbing the streak.
-            // `Decided` never reaches here — the judge classifier only ever scores.
-            _ => false,
-        };
-        if escalate {
-            // The policy already named the capable target; pass its verdict through.
-            Ok(classification)
-        } else {
-            Ok(Classification::Scores(Vec::new()))
-        }
-    }
-}
-
-/// The caller-supplied conversation id, when present and non-empty.
-fn session_id(request: &Request) -> Option<&str> {
-    request
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.session_id.as_deref())
-        .filter(|id| !id.is_empty())
+/// Loads the packaged prompt and schema, so an unusable asset or an unusable `config` value
+/// fails here rather than on the first request.
+pub(crate) fn build_judge(
+    judge_target: LlmTarget,
+    capable: String,
+    config: EscalationJudgeConfig,
+) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
+    config.validate()?;
+    let rubric = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    Ok(JudgeClassifier::new(
+        EscalationJudge { rubric, config },
+        judge_target,
+        EscalationPolicy { capable },
+    ))
 }
 
 /// The 1-indexed model invocation this request represents: one past each assistant reply.

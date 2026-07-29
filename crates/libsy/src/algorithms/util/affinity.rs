@@ -311,7 +311,7 @@ mod tests {
     ) -> Result<Vec<Score>, BoxErr> {
         match classifier.score(state, request, None).await? {
             Classification::Scores(scores) => Ok(scores),
-            _ => Err("affinity only ever returns definite scores".into()),
+            Classification::Ambiguous(_) => Err("affinity never returns ambiguous scores".into()),
         }
     }
 

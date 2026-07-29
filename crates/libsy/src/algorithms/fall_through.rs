@@ -7,9 +7,7 @@
 //! Each turn: request-side [`Processor`]s fold facts into the composition's state; the
 //! [`Classifier`] cascade is consulted in order and the first to score decides the target
 //! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
-//! stateful ones (latch, affinity) can bind it. A classifier that returns
-//! [`Classification::Decided`] supplies that decision itself, since the target alone cannot
-//! say which rule in the cascade selected it.
+//! stateful ones (latch, affinity) can bind it.
 //!
 //! The default `FallThrough<()>` has no state. Stateful compositions share one private state
 //! value across turns with the same session ID. Requests without a session ID use unretained
@@ -21,7 +19,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::{Classification, Classifier, Event, Processor, Score};
+use crate::core::{Classifier, Event, Processor, Score};
 use crate::{
     Algorithm, Context, Decision, Driver, LibsyError, LlmTargetSet, Request, Response, Result,
     RoutedLlmClient,
@@ -194,26 +192,17 @@ where
 
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
-        let mut winner: Option<(Score, Arc<dyn Decision>)> = None;
+        let mut maybe_score: Option<Score> = None;
+        let mut maybe_tier: Option<&'static str> = None;
         for classifier in &self.classifiers {
-            let classification = classifier.score(state, request, Some(driver)).await?;
-            let Some(score) = classification.argmax(false)? else {
-                continue;
-            };
-            // A classifier that decided for itself carries its own tier and reason;
-            // otherwise the composition speaks for the target it was handed.
-            let decision: Arc<dyn Decision> = match classification {
-                Classification::Decided(decision) => decision,
-                _ => Arc::new(FallThroughDecision {
-                    selected_model: score.target.clone(),
-                    reasoning: (self.decision_reason)(&self.name, &score),
-                    tier: classifier.routing_tier(&score.target),
-                }),
-            };
-            winner = Some((score, decision));
-            break;
+            let scores = classifier.score(state, request, Some(driver)).await?;
+            maybe_score = scores.argmax(false)?;
+            if let Some(s) = maybe_score.as_ref() {
+                maybe_tier = classifier.routing_tier(&s.target);
+                break;
+            }
         }
-        let Some((score, decision)) = winner else {
+        let Some(score) = maybe_score else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -221,6 +210,11 @@ where
 
         // 3. Resolve the target and publish the decision.
         let target = self.targets.get_target(&score.target)?;
+        let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
+            selected_model: score.target.clone(),
+            reasoning: (self.decision_reason)(&self.name, &score),
+            tier: maybe_tier,
+        });
         driver.info(ctx.clone(), decision.clone()).await?;
 
         // 4. Replay the decision to the processors so stateful ones can bind it.
@@ -679,47 +673,6 @@ mod tests {
         assert_eq!(second_session, "weak");
         assert_eq!(anonymous1, "weak");
         assert_eq!(anonymous2, "weak");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_decided_classification_is_published_verbatim() -> Result<()> {
-        /// Publishes its own decision rather than a bare score.
-        struct SpeakingClassifier;
-
-        #[async_trait]
-        impl Classifier for SpeakingClassifier {
-            async fn score(
-                &self,
-                _state: &mut (),
-                _request: &mut Request,
-                _driver: Option<&Driver>,
-            ) -> Result<Classification> {
-                Ok(Classification::Decided(Arc::new(FallThroughDecision {
-                    selected_model: "strong".to_string(),
-                    reasoning: "rule two fired".to_string(),
-                    tier: Some("strong"),
-                })))
-            }
-        }
-
-        // The deciding classifier's own wording and tier reach the trace unchanged.
-        let speaking = FallThrough::<()>::new(target_set(&["strong", "weak"]))
-            .with_classifier(fixed(vec![]))
-            .with_classifier(Arc::new(SpeakingClassifier));
-        let (model, trace) = run(speaking).await?;
-        assert_eq!(model, "strong");
-        assert_eq!(trace[0].reasoning(), Some("rule two fired"));
-        assert_eq!(trace[0].routing_tier(), Some("strong"));
-
-        // A classifier that only scores leaves the composition's own wording in place.
-        let silent = FallThrough::<()>::new(target_set(&["strong", "weak"]))
-            .with_classifier(fixed(vec![score("strong", 0.5)]));
-        let (_, trace) = run(silent).await?;
-        assert_eq!(
-            trace[0].reasoning(),
-            Some("fall-through selected strong (confidence 0.500)")
-        );
         Ok(())
     }
 }

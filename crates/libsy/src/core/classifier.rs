@@ -1,11 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
-
 use crate::{Driver, LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::{Decision, Request};
+use switchyard_protocol::Request;
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,12 +22,6 @@ pub enum Classification {
     /// Recommendations the classifier considers ambiguous; [`argmax`](Self::argmax) yields
     /// nothing unless the caller opts to ignore ambiguity.
     Ambiguous(Vec<Score>),
-    /// A target the classifier chose *and* explained, published by the composition as-is.
-    ///
-    /// For a classifier that knows more than the target name can carry — which of its rules
-    /// fired, which tier that target is — since a composition can only derive a decision from
-    /// the target it was handed.
-    Decided(Arc<dyn Decision>),
 }
 
 impl Classification {
@@ -48,11 +40,6 @@ impl Classification {
                     Ok(None)
                 }
             }
-            // Already decided, so there is nothing left to rank.
-            Classification::Decided(decision) => Ok(Some(Score {
-                confidence: 1.0,
-                target: decision.selected_model().to_string(),
-            })),
         }
     }
 }
