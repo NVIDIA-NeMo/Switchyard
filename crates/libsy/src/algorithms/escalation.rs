@@ -7,18 +7,14 @@
 //! [`EscalationRouter`] is the assembled algorithm: a [`FallThrough`] over the three ordered
 //! rules the policy is made of — the affinity latch pins an already-escalated session, the
 //! [`ConfirmedJudge`] escalates one whose verdicts have confirmed, and a [`DefaultTarget`]
-//! closes the cascade on the efficient tier. Only the last is unconditional, which is what
-//! keeps a judge outage from failing the turn. The cascade is an internal detail — callers
-//! drive the algorithm, not its parts.
+//! closes the cascade on the efficient tier. Only the last is unconditional, which keeps a
+//! judge outage from failing the turn. The cascade is an internal detail — callers drive the
+//! algorithm, not its parts.
 //!
-//! The judge reads the conversation as it arrives — which already carries the previous turns'
-//! assistant output and tool results — and picks the tier *before* the turn's model call. So a
-//! turn costs one model call, and nothing is buffered on the way back: the target's response,
-//! streamed or aggregated, reaches the caller untouched.
-//!
-//! Once a session escalates it stays on the capable model, since re-trying a model that has
-//! already failed this task wastes a turn. A judge failure fails open to the efficient tier and
-//! never latches: an outage costs quality risk, never money.
+//! The judge picks the tier *before* the turn's model call, so a turn costs one model call and
+//! the target's response — streamed or aggregated — reaches the caller untouched. A judge
+//! failure fails open to the efficient tier and never latches: an outage costs quality risk,
+//! never money.
 
 use std::sync::Arc;
 
@@ -32,7 +28,7 @@ use crate::{
     Processor, Request, Response, Result, RoutedLlmClient, Score, State,
 };
 
-pub use super::util::escalation::EscalationJudgeSettings;
+pub use super::util::escalation::EscalationJudgeConfig;
 
 /// Telemetry label for this algorithm's spans, metrics, and logs.
 const ALGORITHM_NAME: &str = "escalation";
@@ -45,10 +41,9 @@ const TIER_EFFICIENT: &str = "weak";
 
 /// States the tier and rationale a cascade member publishes when it wins the turn.
 ///
-/// The components underneath are composition-agnostic: an affinity latch does not know which
-/// tier it pins, and a fallback target does not know why it was reached. This router does, so
-/// it says so once here rather than teaching every component about tiers. Delegates the
-/// processor role too, so a dual-role component keeps both.
+/// The components underneath are composition-agnostic — an affinity latch does not know which
+/// tier it pins — so the router says it once here instead of teaching each one about tiers.
+/// The processor role is delegated too, so a dual-role component keeps both.
 struct Labelled<C> {
     inner: C,
     tier: &'static str,
@@ -106,33 +101,20 @@ pub struct EscalationRouter {
 }
 
 impl EscalationRouter {
-    /// Routes between `efficient_target` and `capable_target` using `judge_target`, with the
-    /// default [`EscalationJudgeSettings`].
+    /// Routes between `efficient_target` and `capable_target`, consulting `judge_target` on
+    /// every turn that is not already latched. [`EscalationJudgeConfig::default`] is the
+    /// benchmarked configuration.
+    ///
+    /// Errors when `config` would leave the judge nothing useful to read, or when the packaged
+    /// judge prompt and schema cannot be loaded.
     pub fn new(
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
         judge_target: LlmTarget,
-    ) -> Result<Self> {
-        Self::with_settings(
-            efficient_target,
-            capable_target,
-            judge_target,
-            EscalationJudgeSettings::default(),
-        )
-    }
-
-    /// Routes between the tiers with explicit judge settings.
-    ///
-    /// Errors when `settings` would leave the judge nothing useful to read, or when the
-    /// packaged judge prompt and schema cannot be loaded.
-    pub fn with_settings(
-        efficient_target: LlmTarget,
-        capable_target: LlmTarget,
-        judge_target: LlmTarget,
-        settings: EscalationJudgeSettings,
+        config: EscalationJudgeConfig,
     ) -> Result<Self> {
         Ok(Self {
-            route: build_route(efficient_target, capable_target, judge_target, settings)?,
+            route: build_route(efficient_target, capable_target, judge_target, config)?,
         })
     }
 }
@@ -162,7 +144,7 @@ fn build_route(
     efficient_target: LlmTarget,
     capable_target: LlmTarget,
     judge_target: LlmTarget,
-    settings: EscalationJudgeSettings,
+    config: EscalationJudgeConfig,
 ) -> Result<FallThrough<State>> {
     let capable = capable_target.semantic_name.clone();
     let efficient = efficient_target.semantic_name.clone();
@@ -184,7 +166,7 @@ fn build_route(
             "session pinned to capable after prior escalation",
         )))
         .with_classifier(Arc::new(Labelled::new(
-            ConfirmedJudge::new(judge_target, capable, settings)?,
+            ConfirmedJudge::new(judge_target, capable, config)?,
             TIER_CAPABLE,
             "judge escalated the run to the capable model",
         )))
@@ -223,10 +205,10 @@ mod tests {
     }
 
     /// Settings that latch on a single escalate verdict, for tests not exercising streaks.
-    fn latch_immediately() -> EscalationJudgeSettings {
-        EscalationJudgeSettings {
+    fn latch_immediately() -> EscalationJudgeConfig {
+        EscalationJudgeConfig {
             confirmations: 1,
-            ..EscalationJudgeSettings::default()
+            ..EscalationJudgeConfig::default()
         }
     }
 
@@ -317,20 +299,20 @@ mod tests {
     fn instrumented_router(
         replies: impl IntoIterator<Item = Reply>,
     ) -> crate::Result<InstrumentedRouter> {
-        instrumented_router_with(replies, EscalationJudgeSettings::default())
+        instrumented_router_with(replies, EscalationJudgeConfig::default())
     }
 
     fn instrumented_router_with(
         replies: impl IntoIterator<Item = Reply>,
-        settings: EscalationJudgeSettings,
+        config: EscalationJudgeConfig,
     ) -> crate::Result<InstrumentedRouter> {
         let (client, calls) = RecordingClient::new(replies);
         let client: Arc<dyn RoutedLlmClient> = client;
-        let router = Arc::new(EscalationRouter::with_settings(
+        let router = Arc::new(EscalationRouter::new(
             target("efficient", Some(client.clone())),
             target("capable", Some(client.clone())),
             target("judge", Some(client)),
-            settings,
+            config,
         )?);
         Ok((router, calls))
     }
@@ -633,35 +615,40 @@ mod tests {
 
     #[tokio::test]
     async fn schema_and_prompt_load_at_construction() -> crate::Result<()> {
-        EscalationRouter::new(target("a", None), target("b", None), target("c", None))?;
+        EscalationRouter::new(
+            target("a", None),
+            target("b", None),
+            target("c", None),
+            EscalationJudgeConfig::default(),
+        )?;
         Ok(())
     }
 
     #[test]
-    fn unusable_judge_settings_are_rejected_at_construction() {
-        for settings in [
-            EscalationJudgeSettings {
+    fn unusable_judge_config_is_rejected_at_construction() {
+        for config in [
+            EscalationJudgeConfig {
                 confirmations: 0,
-                ..EscalationJudgeSettings::default()
+                ..EscalationJudgeConfig::default()
             },
-            EscalationJudgeSettings {
+            EscalationJudgeConfig {
                 recent_turn_window: 0,
-                ..EscalationJudgeSettings::default()
+                ..EscalationJudgeConfig::default()
             },
-            EscalationJudgeSettings {
+            EscalationJudgeConfig {
                 window_message_chars: 49,
-                ..EscalationJudgeSettings::default()
+                ..EscalationJudgeConfig::default()
             },
         ] {
             assert!(
-                EscalationRouter::with_settings(
+                EscalationRouter::new(
                     target("a", None),
                     target("b", None),
                     target("c", None),
-                    settings,
+                    config,
                 )
                 .is_err(),
-                "settings that starve the judge must not build a router"
+                "a config that starves the judge must not build a router"
             );
         }
     }

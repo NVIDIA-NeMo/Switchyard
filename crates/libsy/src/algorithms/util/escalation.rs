@@ -1,13 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trajectory-judge components for the escalation router — the judge itself, the verdict
-//! policy, the confirmation streak, and the transcript condenser they read.
+//! Trajectory-judge components for the escalation router — the judge, its verdict policy, the
+//! confirmation streak, and the transcript condenser they read.
 //!
-//! [`ConfirmedJudge`] is the whole cascade-facing surface: it calls the judge, applies the
-//! confirmation policy, and scores the capable tier only once a session has confirmed.
-//! Everything else here is private to that. The assembled algorithm lives in
-//! [`crate::algorithms::escalation`].
+//! [`ConfirmedJudge`] is the whole cascade-facing surface; everything else here is private to
+//! it. The assembled algorithm lives in [`crate::algorithms::escalation`].
 
 use std::collections::HashMap;
 
@@ -28,26 +26,18 @@ const TRIM_MARKER: &str = " ...[trimmed] ";
 /// Suffix marking a transcript cut off by [`MAX_REQUEST_CHARS`].
 const TRUNCATION_SUFFIX: &str = "...<truncated>";
 
-/// Per-message cap for system and developer anchors. Coding-agent harnesses inject very large
-/// boilerplate system prompts carrying no trajectory signal; uncapped they crowd out the window.
+/// Per-message cap for system and developer anchors, which carry no trajectory signal but
+/// which coding-agent harnesses make very large.
 const SYSTEM_CHARS: usize = 1_000;
 
-/// Cap for the first user message — the task statement the judge needs to detect drift, so it
-/// gets the most generous anchor budget.
+/// Cap for the first user message — the task statement, so it gets the widest anchor budget.
 const FIRST_USER_CHARS: usize = 2_000;
 
-/// Backstop on the whole assembled transcript, for a pathological single message. The window
-/// caps below normally bind first; when this does bind, the oldest window lines drop.
+/// Backstop on the assembled transcript; the per-message caps normally bind first.
 const MAX_REQUEST_CHARS: usize = 18_000;
 
-/// Completion budget for one judge reply, covering any reasoning the judge model emits
-/// alongside the verdict.
-///
-/// A runaway guard, not a budget: output tokens cost what they generate, so a generous cap is
-/// nearly free, while a tight one truncates mid-reasoning into unparseable JSON and fails the
-/// judge open on every call. Sized well above the verdict itself — the benchmarked judge's
-/// `reason` ran ~40 tokens at the median and ~136 at its longest — leaving the remainder as
-/// reasoning headroom.
+/// Completion budget for one judge reply, reasoning included. A runaway guard, not a budget:
+/// too tight truncates mid-reasoning into unparseable JSON and fails the judge open.
 const JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
 
 /// Ceiling on tracked confirmation streaks, mirroring `AffinityRouter`'s assignment cap.
@@ -55,33 +45,23 @@ const MAX_STREAKS: usize = 4_096;
 
 /// The tuning surface for the trajectory judge.
 ///
-/// Deliberately small: these are the three settings an audit of the Python router's twenty-odd
-/// knobs found to actually change routing outcomes. Everything else it exposed is either a
-/// fixed invariant (see the `*_CHARS` constants above) or operational plumbing.
-///
-/// Defaults are the benchmarked configuration; omitted fields take those values.
+/// Deliberately small: the three settings an audit of the Python router's twenty-odd knobs
+/// found to actually change routing outcomes. Everything else is a fixed invariant (the
+/// constants above). Defaults are the benchmarked configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
-pub struct EscalationJudgeSettings {
+pub struct EscalationJudgeConfig {
     /// Consecutive escalate verdicts required before the latch fires.
-    ///
-    /// `1` latches on the first verdict. Higher values filter one-shot eager verdicts — a
-    /// single failed command misread as a pattern — while keeping recall on real trouble,
-    /// which by definition persists across turns. On the benchmarked workload `2` suppressed
-    /// roughly two thirds of escalate verdicts, so this is the router's main cost dial.
-    ///
-    /// The streak is keyed on the session id and held per process. A request without a
-    /// session id cannot accumulate one, so at `2` or higher it can never escalate.
+    /// `1` latches on the first verdict; the router's main cost dial.
+    /// `2` or higher requires a session id to accumulate.
     pub confirmations: u32,
-    /// Trailing messages shown on top of the anchors. Loop detection needs to see the
-    /// repeats, so a cycle longer than this window is invisible to the judge.
+    /// Trailing messages shown on top of the anchors. A loop longer than this is invisible.
     pub recent_turn_window: usize,
-    /// Per-message cap inside the trailing window. Error signatures and command shapes
-    /// survive this easily; full file dumps do not need to.
+    /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
 }
 
-impl EscalationJudgeSettings {
+impl EscalationJudgeConfig {
     /// Rejects settings that would leave the judge with nothing useful to read.
     fn validate(&self) -> Result<()> {
         let reject = |message: String| Err(crate::LibsyError::AlgorithmError { message });
@@ -101,7 +81,7 @@ impl EscalationJudgeSettings {
     }
 }
 
-impl Default for EscalationJudgeSettings {
+impl Default for EscalationJudgeConfig {
     fn default() -> Self {
         Self {
             confirmations: 2,
@@ -111,18 +91,18 @@ impl Default for EscalationJudgeSettings {
     }
 }
 
+/// The judge's verdict. The schema also requires a `reason`, which makes the judge state its
+/// case and measurably sharpens the verdict — routing reads only the boolean, so it is
+/// deserialized away rather than carried.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct EscalationVerdict {
     escalate: bool,
-    #[allow(dead_code)]
-    reason: String,
 }
 
 /// Builds the judge request from the conversation so far.
 struct EscalationJudge {
-    config: JudgeConfig,
-    settings: EscalationJudgeSettings,
+    rubric: JudgeConfig,
+    config: EscalationJudgeConfig,
 }
 
 impl Judge for EscalationJudge {
@@ -132,16 +112,16 @@ impl Judge for EscalationJudge {
     /// message. `state` is unused: the judge reads only the live request.
     fn build_request(&self, _state: &State, request: &Request) -> Request {
         let messages = &request.llm_request.messages;
-        let summary = summarize_for_judge(messages, conversation_turn(request), &self.settings);
+        let summary = summarize_for_judge(messages, conversation_turn(request), &self.config);
         Request {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
                 messages: vec![
-                    Message::text(Role::System, self.config.system_prompt.clone()),
+                    Message::text(Role::System, self.rubric.system_prompt.clone()),
                     Message::text(Role::User, summary),
                 ],
                 output: OutputParams {
-                    response_format: self.config.response_schema.clone(),
+                    response_format: self.rubric.response_schema.clone(),
                     max_output_tokens: Some(JUDGE_MAX_OUTPUT_TOKENS),
                 },
                 ..LlmRequest::default()
@@ -152,13 +132,10 @@ impl Judge for EscalationJudge {
     }
 }
 
-/// Maps the judge's verdict to a routing classification, keeping "the judge declined" and
-/// "the judge was unavailable" distinguishable.
-///
-/// Both route to the efficient tier, but only a decline is evidence about the run, so only a
-/// decline clears a confirmation streak. [`Classification::Ambiguous`] carries the unavailable
-/// case: it argmaxes to nothing, exactly like an empty score set, but the router can tell them
-/// apart.
+/// Maps the judge's verdict to a classification, keeping "declined" and "unavailable"
+/// distinguishable: both stay efficient, but only a decline is evidence, so only a decline
+/// clears a streak. [`Classification::Ambiguous`] carries the unavailable case — it argmaxes
+/// to nothing, exactly like an empty score set, but the caller can tell them apart.
 struct EscalationPolicy {
     capable: String,
 }
@@ -195,19 +172,19 @@ pub(crate) struct ConfirmedJudge {
 impl ConfirmedJudge {
     /// Builds the judge over `judge_target`, scoring `capable` when it escalates.
     ///
-    /// Loads the packaged prompt and schema, so an unusable asset or an unusable `settings`
+    /// Loads the packaged prompt and schema, so an unusable asset or an unusable `config`
     /// value fails here rather than on the first request.
     pub(crate) fn new(
         judge_target: LlmTarget,
         capable: String,
-        settings: EscalationJudgeSettings,
+        config: EscalationJudgeConfig,
     ) -> Result<Self> {
-        settings.validate()?;
-        let config = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-        let confirmations = settings.confirmations;
+        config.validate()?;
+        let rubric = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+        let confirmations = config.confirmations;
         Ok(Self {
             classifier: JudgeClassifier::new(
-                EscalationJudge { config, settings },
+                EscalationJudge { rubric, config },
                 judge_target,
                 EscalationPolicy { capable },
             ),
@@ -359,7 +336,7 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 fn summarize_for_judge(
     messages: &[Message],
     turn: usize,
-    settings: &EscalationJudgeSettings,
+    config: &EscalationJudgeConfig,
 ) -> String {
     let mut anchors: Vec<String> = Vec::new();
     let mut window: Vec<String> = Vec::new();
@@ -383,13 +360,13 @@ fn summarize_for_judge(
             role => window.push(format!(
                 "[{}] {}",
                 role_label(role),
-                truncate_middle(&text, settings.window_message_chars)
+                truncate_middle(&text, config.window_message_chars)
             )),
         }
     }
 
-    if window.len() > settings.recent_turn_window {
-        window.drain(..window.len() - settings.recent_turn_window);
+    if window.len() > config.recent_turn_window {
+        window.drain(..window.len() - config.recent_turn_window);
     }
 
     let header = format!(
@@ -465,8 +442,8 @@ mod tests {
     #[test]
     fn judge_request_is_rubric_plus_summary_under_a_completion_cap() -> Result<()> {
         let judge = EscalationJudge {
-            config: load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
-            settings: EscalationJudgeSettings::default(),
+            rubric: load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
+            config: EscalationJudgeConfig::default(),
         };
 
         let built = judge.build_request(&State::default(), &request_at_turn(None, 4));
@@ -547,12 +524,12 @@ mod tests {
         for i in 0..10 {
             messages.push(Message::text(Role::Assistant, format!("step {i}")));
         }
-        let settings = EscalationJudgeSettings {
+        let config = EscalationJudgeConfig {
             recent_turn_window: 3,
-            ..EscalationJudgeSettings::default()
+            ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 11, &settings);
+        let summary = summarize_for_judge(&messages, 11, &config);
 
         assert!(
             summary.contains("[system] you are a coding agent"),
@@ -584,12 +561,12 @@ mod tests {
                 format!("{i} {}", "x".repeat(2_000)),
             ));
         }
-        let settings = EscalationJudgeSettings {
+        let config = EscalationJudgeConfig {
             window_message_chars: 2_000,
-            ..EscalationJudgeSettings::default()
+            ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 21, &settings);
+        let summary = summarize_for_judge(&messages, 21, &config);
 
         assert!(
             summary.chars().count() <= MAX_REQUEST_CHARS,

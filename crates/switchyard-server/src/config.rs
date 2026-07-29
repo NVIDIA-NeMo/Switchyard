@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libsy::algorithms::{
-    EscalationJudgeSettings, EscalationRouter, LlmTaskClassifier, Noop, Passthrough, Random,
+    EscalationJudgeConfig, EscalationRouter, LlmTaskClassifier, Noop, Passthrough, Random,
     TaskClassifierConfig,
 };
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
@@ -192,7 +192,7 @@ enum RouteConfig {
         strong_target: String,
         weak_target: String,
         #[serde(flatten)]
-        judge_settings: EscalationJudgeSettings,
+        judge_config: EscalationJudgeConfig,
     },
 }
 
@@ -295,7 +295,7 @@ fn build_algorithm(
             judge_target,
             strong_target,
             weak_target,
-            judge_settings,
+            judge_config,
             ..
         } => {
             let judge = resolve_target(route_name, judge_target, targets)?;
@@ -303,11 +303,10 @@ fn build_algorithm(
             let weak = resolve_target(route_name, weak_target, targets)?;
             // The weak model is the efficient tier the judge starts every session on;
             // the strong model is the capable one it escalates to.
-            let algorithm =
-                EscalationRouter::with_settings(weak, strong, judge, judge_settings.clone())
-                    .map_err(|error| {
-                        ServerError::new(format!("escalation route {route_name}: {error}"))
-                    })?;
+            let algorithm = EscalationRouter::new(weak, strong, judge, judge_config.clone())
+                .map_err(|error| {
+                    ServerError::new(format!("escalation route {route_name}: {error}"))
+                })?;
             Ok(Arc::new(algorithm))
         }
     }
