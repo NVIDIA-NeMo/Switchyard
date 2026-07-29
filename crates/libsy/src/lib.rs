@@ -75,6 +75,9 @@
 //! [`algorithms::Random`] provides uniform or weighted random routing.
 //!
 //! [`algorithms::LlmTaskClassifier`] uses one model to classify and route to its selected target.
+//!
+//! [`algorithms::PrefillProbeClassifier`] classifies from prompt hidden-state
+//! features supplied by a transport-independent probe.
 
 mod core;
 pub use core::*;
