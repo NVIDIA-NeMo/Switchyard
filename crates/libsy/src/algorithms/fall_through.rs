@@ -314,20 +314,10 @@ where
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
-        // 4. Post-decision replay, in two passes over the same chain. Every processor sees
-        //    the decision first, so stateful ones bind it; only then is the outbound
-        //    request offered for rewriting, paired with the decision that routed it. The
-        //    order matters: a processor rewriting the request in the second pass sees the
-        //    state every processor settled in the first.
+        // 4. Post-decision replay: every processor sees the decision so stateful ones
+        //    can bind it, and may rewrite the outbound request (e.g. add a tier prompt).
         for processor in &self.processors {
             let event = Event::Decision {
-                request,
-                decision: decision.as_ref(),
-            };
-            processor.process(state, event).await?;
-        }
-        for processor in &self.processors {
-            let event = Event::ModelRequest {
                 request,
                 decision: decision.as_ref(),
             };
@@ -742,11 +732,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processor_observes_request_decision_then_model_request() -> Result<()> {
+    async fn processor_observes_request_then_decision() -> Result<()> {
         use parking_lot::Mutex;
 
         // Records which event kinds it saw, proving the replay order: the inbound
-        // request, then the decision, then the request on its way to the model.
+        // request, then the routing decision (which carries the request to the model).
         struct RecordingProcessor(Arc<Mutex<Vec<&'static str>>>);
 
         #[async_trait]
@@ -755,7 +745,6 @@ mod tests {
                 let kind = match event {
                     Event::Request(_) => "request",
                     Event::Decision { .. } => "decision",
-                    Event::ModelRequest { .. } => "model_request",
                     _ => "other",
                 };
                 self.0.lock().push(kind);
@@ -769,7 +758,7 @@ mod tests {
             .with_classifier(fixed(vec![score("strong", 1.0)]));
         run(router).await?;
 
-        assert_eq!(*seen.lock(), vec!["request", "decision", "model_request"]);
+        assert_eq!(*seen.lock(), vec!["request", "decision"]);
         Ok(())
     }
 

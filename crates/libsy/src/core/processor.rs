@@ -7,26 +7,22 @@ use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
 
 /// An event observed by the algorithm. Events are consumed by [`Processor`] to mutate state.
 ///
-/// The two request-bearing variants borrow the request mutably, so a processor may rewrite
-/// it in place and pass the rewritten request down the chain (see [`Processor::process`]).
-/// The observation-only variants stay immutable.
+/// Request-bearing variants ([`Event::Request`], [`Event::Decision`]) borrow the request
+/// mutably, so a processor may rewrite it in place and the edit propagates to the rest of
+/// the chain and to the model call. The observation-only variants stay immutable.
 pub enum Event<'a> {
     /// The inbound request that begins a turn.
     Request(&'a mut Request),
     /// An out-of-band agentic-stack signal (tool results, budget updates, …).
     Signal(&'a Signals),
     /// A routing decision paired with the request that produced it.
+    ///
+    /// The request is rewritable: a processor may add instructions or notes here that
+    /// are bound to the routing outcome (e.g. a tier-specific system prompt).
     Decision {
-        /// The request classified by the algorithm.
-        request: &'a Request,
-        /// The routing decision produced for `request`.
-        decision: &'a dyn Decision,
-    },
-    /// A request about to be sent to a model, with the decision that routed it.
-    ModelRequest {
-        /// The outbound request, rewritable in place.
+        /// The request, rewritable in place.
         request: &'a mut Request,
-        /// Where the request is headed.
+        /// The routing decision produced for `request`.
         decision: &'a dyn Decision,
     },
     /// A buffered response received back from a model.
@@ -38,9 +34,8 @@ pub enum Event<'a> {
 pub trait Processor<S = ()>: Send + Sync {
     /// Process an event, accumulating facts into `state`.
     ///
-    /// A request-bearing event ([`Event::Request`], [`Event::ModelRequest`]) may also be
-    /// rewritten in place; the edit propagates to the rest of the chain and to the model
-    /// call. Most processors only read it.
+    /// Process an event, accumulating facts into `state`. Request-bearing events
+    /// ([`Event::Request`], [`Event::Decision`]) may also be rewritten in place.
     async fn process(&self, state: &mut S, event: Event<'_>) -> Result<()>;
 }
 
@@ -58,7 +53,6 @@ mod tests {
             Event::Request(_) => "requests",
             Event::Signal(_) => "signals",
             Event::Decision { .. } => "decisions",
-            Event::ModelRequest { .. } => "model_requests",
             Event::ModelResponse(_) => "model_responses",
         }
     }
@@ -116,22 +110,13 @@ mod tests {
             .process(&mut state, Event::Request(&mut req))
             .await?;
         processor
-            .process(
-                &mut state,
-                Event::ModelRequest {
-                    request: &mut req,
-                    decision: &decision,
-                },
-            )
-            .await?;
-        processor
             .process(&mut state, Event::ModelResponse(&response))
             .await?;
         processor
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &req,
+                    request: &mut req,
                     decision: &decision,
                 },
             )
@@ -143,7 +128,6 @@ mod tests {
         assert_eq!(count(&state, "requests"), 1);
         assert_eq!(count(&state, "signals"), 1);
         assert_eq!(count(&state, "decisions"), 1);
-        assert_eq!(count(&state, "model_requests"), 1);
         assert_eq!(count(&state, "model_responses"), 1);
         Ok(())
     }
@@ -171,7 +155,7 @@ mod tests {
     impl Processor for RewritingProcessor {
         async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
             match event {
-                Event::Request(request) | Event::ModelRequest { request, .. } => {
+                Event::Request(request) | Event::Decision { request, .. } => {
                     request.llm_request.model = Some("rewritten".to_string());
                 }
                 _ => {}

@@ -83,10 +83,10 @@ impl SystemPromptProcessor {
 #[async_trait]
 impl<S: Send> Processor<S> for SystemPromptProcessor {
     async fn process(&self, _state: &mut S, event: Event<'_>) -> Result<()> {
-        // The outbound hook carries the decision that routed the request, so the
-        // target is read straight off it — whichever classifier picked it, and
+        // The decision event carries both the routing outcome and the outbound request,
+        // so the target is read straight off it — whichever classifier picked it, and
         // with nothing kept between turns.
-        let Event::ModelRequest { request, decision } = event else {
+        let Event::Decision { request, decision } = event else {
             return Ok(());
         };
         let Some(prompt) = self.prompts.get(decision.selected_model()) else {
@@ -224,7 +224,7 @@ mod tests {
         processor
             .process(
                 &mut (),
-                Event::ModelRequest {
+                Event::Decision {
                     request: &mut request,
                     decision: &RoutedTo(target),
                 },
@@ -278,7 +278,7 @@ mod tests {
         processor
             .process(
                 &mut (),
-                Event::ModelRequest {
+                Event::Decision {
                     request: &mut request,
                     decision: &RoutedTo("strong"),
                 },

@@ -554,12 +554,12 @@ mod tests {
         let classifier: Arc<dyn Classifier> = router;
         let mut state = ();
 
-        let first = request(session("session-1", "agent-a"));
+        let mut first = request(session("session-1", "agent-a"));
         processor
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &first,
+                    request: &mut first,
                     decision: &FixedDecision("model-a"),
                 },
             )
@@ -578,13 +578,13 @@ mod tests {
     async fn decision_without_an_affinity_identity_is_ignored() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
         let mut state = ();
-        let unkeyed = request(Metadata::default());
+        let mut unkeyed = request(Metadata::default());
 
         router
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &unkeyed,
+                    request: &mut unkeyed,
                     decision: &FixedDecision("model-a"),
                 },
             )
@@ -608,7 +608,7 @@ mod tests {
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &second,
+                    request: &mut second,
                     decision: &FixedDecision("model-b"),
                 },
             )
@@ -617,7 +617,7 @@ mod tests {
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &first,
+                    request: &mut first,
                     decision: &FixedDecision("model-a"),
                 },
             )

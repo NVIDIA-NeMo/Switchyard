@@ -99,7 +99,7 @@ struct Noting;
 #[async_trait]
 impl Processor for Noting {
     async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-        if let Event::ModelRequest { request, .. } = event {
+        if let Event::Decision { request, .. } = event {
             append_note(request, NOTE);
         }
         Ok(())
