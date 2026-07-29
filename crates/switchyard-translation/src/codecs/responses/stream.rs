@@ -154,6 +154,15 @@ fn encode_responses_stream(
     event: LlmResponseChunk,
 ) -> Vec<Value> {
     match event {
+        LlmResponseChunk::ProviderEvent {
+            source,
+            raw,
+            normalized: _,
+        } if source == WireFormat::OpenAiResponses.into() => vec![raw],
+        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
+            .into_iter()
+            .flat_map(|event| encode_responses_stream(state, event))
+            .collect(),
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             ensure_responses_created(state)

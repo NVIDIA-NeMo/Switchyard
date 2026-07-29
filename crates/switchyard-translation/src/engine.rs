@@ -18,6 +18,7 @@ use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
 use crate::llm::{AggLlmResponse, LlmRequest};
 use crate::policy::TranslationPolicy;
+use crate::LlmResponseChunk;
 
 /// Encoded translation result with any diagnostics emitted along the way.
 #[derive(Debug)]
@@ -243,6 +244,45 @@ impl TranslationEngine {
             .collect())
     }
 
+    /// Decodes one provider event while retaining the exact source JSON.
+    pub fn decode_stream_event(
+        &self,
+        state: &mut StreamTranslationState,
+        source: impl Into<FormatId>,
+        event: &Value,
+    ) -> Result<LlmResponseChunk> {
+        let source = source.into();
+        let source_codec = self.stream_registry.codec(source.clone())?;
+        state.source = Some(source.clone());
+        Ok(LlmResponseChunk::ProviderEvent {
+            source,
+            raw: event.clone(),
+            normalized: source_codec.decode_event(state, event),
+        })
+    }
+
+    /// Encodes one neutral or preserved stream event for a target provider.
+    ///
+    /// A preserved event is replayed exactly when its source and target formats
+    /// match. Cross-format encoding intentionally uses only its normalized
+    /// events.
+    pub fn encode_stream_event(
+        &self,
+        state: &mut StreamTranslationState,
+        target: impl Into<FormatId>,
+        event: LlmResponseChunk,
+    ) -> Result<Vec<Value>> {
+        let target = target.into();
+        let target_codec = self.stream_registry.codec(target.clone())?;
+        state.target = Some(target.clone());
+        Ok(encode_stream_chunk(
+            state,
+            target_codec.as_ref(),
+            &target,
+            event,
+        ))
+    }
+
     /// Finishes target-provider stream emission after the source stream closes.
     pub fn finish_stream(
         &self,
@@ -252,6 +292,26 @@ impl TranslationEngine {
         let target = target.into();
         let target_codec = self.stream_registry.codec(target)?;
         Ok(target_codec.finish(state))
+    }
+}
+
+fn encode_stream_chunk(
+    state: &mut StreamTranslationState,
+    target_codec: &dyn crate::codecs::stream::StreamCodec,
+    target: &FormatId,
+    event: LlmResponseChunk,
+) -> Vec<Value> {
+    match event {
+        LlmResponseChunk::ProviderEvent {
+            source,
+            raw,
+            normalized: _,
+        } if &source == target => vec![raw],
+        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
+            .into_iter()
+            .flat_map(|event| encode_stream_chunk(state, target_codec, target, event))
+            .collect(),
+        event => target_codec.encode_event(state, event),
     }
 }
 

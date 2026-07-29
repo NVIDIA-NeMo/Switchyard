@@ -8,9 +8,93 @@ use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
+    decode_stream_event_preserving, encode_stream_event,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion.chunk",
+                "model": "gpt-4o",
+                "system_fingerprint": "fp_provider_specific",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "Hi"},
+                    "finish_reason": null
+                }]
+            }),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "type": "response.output_text.delta",
+                "item_id": "item-1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "Hi",
+                "sequence_number": 2,
+                "provider_extension": {"exact": true}
+            }),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Hi"},
+                "provider_extension": {"exact": true}
+            }),
+        ),
+    ];
+
+    for (format, event) in cases {
+        let engine = TranslationEngine::default();
+        let mut state = StreamTranslationState::new(format, format);
+        let preserved = engine.decode_stream_event(&mut state, format, &event)?;
+        let replayed = engine.encode_stream_event(&mut state, format, preserved)?;
+        assert_eq!(replayed, vec![event.clone()]);
+
+        let mut state = StreamTranslationState::new(format, format);
+        let preserved = decode_stream_event_preserving(&mut state, format, &event);
+        let replayed = encode_stream_event(&mut state, format, preserved);
+        assert_eq!(replayed, vec![event]);
+    }
+    Ok(())
+}
+
+#[test]
+fn preserved_cross_format_event_uses_normalized_content() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let event = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "system_fingerprint": "fp_provider_specific",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "Hi"},
+            "finish_reason": null
+        }]
+    });
+
+    let preserved = engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, &event)?;
+    let translated =
+        engine.encode_stream_event(&mut state, WireFormat::AnthropicMessages, preserved)?;
+
+    assert_eq!(translated[2]["delta"]["text"], "Hi");
+    assert!(translated
+        .iter()
+        .all(|event| event.get("system_fingerprint").is_none()));
+    Ok(())
+}
 
 // Verifies an OpenAI text delta opens the expected Anthropic message and content blocks.
 #[test]
