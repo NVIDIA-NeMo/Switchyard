@@ -413,7 +413,7 @@ fn normalize_tool_block(
 }
 
 // Gives colliding raw IDs stable, deterministic suffixes.
-fn mapped_tool_id(
+pub(crate) fn mapped_tool_id(
     raw: &str,
     id_map: &mut BTreeMap<String, String>,
     used_ids: &mut BTreeMap<String, String>,

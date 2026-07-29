@@ -12,7 +12,9 @@ use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::Value;
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 use crate::{
     merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
@@ -39,9 +41,9 @@ pub struct AnthropicNativeBackend {
     target: LlmTarget,
     /// HTTP transport, injectable for deterministic tests.
     transport: Arc<dyn AnthropicTransport>,
-    /// Shared request translator and Anthropic outbound normalizer.
+    /// Shared request translator.
     translation: Arc<TranslationEngine>,
-    /// Translation policy kept explicit so backend behavior is inspectable.
+    /// Canonical outbound encoding policy.
     translation_policy: TranslationPolicy,
 }
 
@@ -74,19 +76,30 @@ impl AnthropicNativeBackend {
             target,
             transport,
             translation: shared_translation_engine(),
-            translation_policy: TranslationPolicy::default(),
+            translation_policy: TranslationPolicy {
+                preservation: PreservationPolicy::Disabled,
+                ..TranslationPolicy::default()
+            },
         })
     }
 
     fn outbound_body(&self, request: &ChatRequest) -> Result<Value> {
         let source = request.request_type();
+        // Native cache annotations are provider-owned nested extensions that
+        // the current IR does not represent, so preserve those requests exactly.
+        let preservation_policy = (source == ChatRequestType::Anthropic
+            && has_anthropic_cache_control(request.body()))
+        .then(TranslationPolicy::default);
+        let policy = preservation_policy
+            .as_ref()
+            .unwrap_or(&self.translation_policy);
         let mut body = self
             .translation
             .translate_request(
                 request_wire_format(source),
                 WireFormat::AnthropicMessages,
                 request.body(),
-                &self.translation_policy,
+                policy,
             )
             .map_err(|error| {
                 SwitchyardError::Backend(format!(
@@ -274,6 +287,29 @@ fn validate_target_format(target: &LlmTarget) -> Result<()> {
             )))
         }
     }
+}
+
+// Detects native cache annotations that require exact same-format replay.
+fn has_anthropic_cache_control(body: &Value) -> bool {
+    body.get("system").is_some_and(blocks_have_cache_control)
+        || body
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message
+                        .get("content")
+                        .is_some_and(blocks_have_cache_control)
+                })
+            })
+}
+
+fn blocks_have_cache_control(value: &Value) -> bool {
+    value.as_array().is_some_and(|blocks| {
+        blocks
+            .iter()
+            .any(|block| block.get("cache_control").is_some())
+    })
 }
 
 fn messages_url(base_url: Option<&str>) -> String {

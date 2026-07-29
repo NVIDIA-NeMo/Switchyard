@@ -91,6 +91,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         request.tool_choice = body
             .get("tool_choice")
             .and_then(decode_responses_tool_choice);
+        request.source_format = Some(WireFormat::OpenAiResponses.into());
         request.extensions.fields = provider_extensions(
             body,
             &[

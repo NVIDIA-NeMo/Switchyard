@@ -669,9 +669,9 @@ fn anthropic_backend_is_anthropic_only() -> Result<()> {
     Ok(())
 }
 
-// Non-streaming Anthropic calls should strip incompatible fields and stamp context.
+// Non-streaming Anthropic calls should use canonical fields and stamp context.
 #[tokio::test]
-async fn anthropic_non_streaming_strips_incompatible_fields_and_records_context() -> Result<()> {
+async fn anthropic_non_streaming_normalizes_fields_and_records_context() -> Result<()> {
     let server = OneShotServer::json(
         200,
         json!({
@@ -691,6 +691,7 @@ async fn anthropic_non_streaming_strips_incompatible_fields_and_records_context(
                 "max_tokens": 128,
                 "messages": [{"role": "user", "content": "hello"}],
                 "reasoning_effort": "high",
+                "thinking": {"type": "enabled", "budget_tokens": 1024},
                 "context_management": {"strategy": "auto"},
                 "made_up_beta_field": {"kept": true},
                 "extra_body": {"caller": "value"},
@@ -732,7 +733,15 @@ async fn anthropic_non_streaming_strips_incompatible_fields_and_records_context(
     assert_eq!(request.body["model"], "target-claude");
     assert_eq!(request.body["messages"][0]["content"], "hello");
     assert!(request.body.get("reasoning_effort").is_none());
-    assert!(request.body.get("context_management").is_none());
+    assert_eq!(
+        request.body["context_management"],
+        json!({"strategy": "auto"})
+    );
+    assert_eq!(
+        request.body["thinking"],
+        json!({"type": "enabled", "budget_tokens": 1024})
+    );
+    assert_eq!(request.body["output_config"], json!({"effort": "high"}));
     assert_eq!(request.body["made_up_beta_field"], json!({"kept": true}));
     assert_eq!(request.body["extra_body"], json!({"caller": "value"}));
     Ok(())
@@ -828,7 +837,7 @@ async fn anthropic_lifts_multiple_interleaved_system_messages_in_order() -> Resu
     Ok(())
 }
 
-// Existing structured Anthropic system prompts should keep their shape when lifted text is added.
+// Structured and message-level system prompts should combine through the request IR.
 #[tokio::test]
 async fn anthropic_lifts_message_level_system_into_existing_system_blocks() -> Result<()> {
     let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
@@ -860,15 +869,55 @@ async fn anthropic_lifts_message_level_system_into_existing_system_blocks() -> R
 
     assert_eq!(
         request.body["system"],
-        json!([
-            {"type": "text", "text": "Existing system."},
-            {"type": "text", "text": "Lifted system.\n\nLifted input text."}
-        ])
+        "Existing system.\n\nLifted system.\n\nLifted input text."
     );
     assert_eq!(
         request.body["messages"],
         json!([{"role": "user", "content": "hello"}])
     );
+    Ok(())
+}
+
+// Native Anthropic cache markers should survive the outbound translation boundary.
+#[tokio::test]
+async fn anthropic_preserves_native_cache_control_blocks() -> Result<()> {
+    let server = OneShotServer::json(200, json!({"id": "msg-test", "content": []}))?;
+    let backend = AnthropicNativeBackend::new(anthropic_target(server.base_url().to_string())?)?;
+    let mut ctx = ProxyContext::new();
+
+    backend
+        .call(
+            &mut ctx,
+            &ChatRequest::anthropic(json!({
+                "model": "client-claude",
+                "max_tokens": 128,
+                "system": [{
+                    "type": "text",
+                    "text": "Stable rules.",
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "hello",
+                        "cache_control": {"type": "ephemeral"}
+                    }]
+                }]
+            })),
+        )
+        .await?;
+    let request = server.captured()?;
+
+    assert_eq!(
+        request.body["system"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+    assert_eq!(
+        request.body["messages"][0]["content"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+    assert_eq!(request.body["model"], "target-claude");
     Ok(())
 }
 

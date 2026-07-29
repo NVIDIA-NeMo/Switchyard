@@ -225,6 +225,8 @@ pub struct LlmRequest {
     pub output: OutputParams,
     pub reasoning: ReasoningParams,
     pub stream: bool,
+    /// Source wire format recorded by the request decoder.
+    pub source_format: Option<FormatId>,
     pub extensions: ProviderExtensions,
     pub preservation: PreservationMetadata,
 }

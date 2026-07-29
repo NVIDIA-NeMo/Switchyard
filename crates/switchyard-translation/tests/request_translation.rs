@@ -5,13 +5,15 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::{json, Value};
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-// Same-format preservation keeps provider extensions while enforcing Anthropic's wire contract.
+// Canonical Anthropic encoding normalizes semantics through the typed request IR.
 #[test]
-fn anthropic_same_format_requests_are_normalized_before_replay() -> TestResult {
+fn anthropic_requests_are_normalized_through_ir() -> TestResult {
     let body = json!({
         "model": "claude",
         "system": "Top-level rules.",
@@ -62,12 +64,16 @@ fn anthropic_same_format_requests_are_normalized_before_replay() -> TestResult {
         ]
     });
 
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
     let output = TranslationEngine::default()
         .translate_request(
             WireFormat::AnthropicMessages,
             WireFormat::AnthropicMessages,
             &body,
-            &TranslationPolicy::default(),
+            &policy,
         )?
         .body;
 
@@ -76,7 +82,9 @@ fn anthropic_same_format_requests_are_normalized_before_replay() -> TestResult {
         "Top-level rules.\n\nSystem rules.\n\nDeveloper rules."
     );
     assert!(output.get("reasoning_effort").is_none());
-    assert!(output.get("context_management").is_none());
+    assert_eq!(output["context_management"], json!({"edits": []}));
+    assert_eq!(output["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(output["output_config"], json!({"effort": "high"}));
     assert_eq!(output["vendor_option"], json!({"preserve": true}));
     assert_eq!(output["messages"].as_array().map(Vec::len), Some(4));
     assert_eq!(output["messages"][1]["content"][0]["id"], "toolu_01_bad_id");
@@ -1029,7 +1037,8 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
             }
         ],
         "max_completion_tokens": 512,
-        "reasoning_effort": "high"
+        "reasoning_effort": "high",
+        "openai_extension": {"source_only": true}
     });
 
     let output = engine
@@ -1046,6 +1055,7 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     assert_eq!(output["max_tokens"], 512);
     assert_eq!(output["thinking"], json!({"type": "adaptive"}));
     assert_eq!(output["output_config"], json!({"effort": "high"}));
+    assert!(output.get("openai_extension").is_none());
     assert_eq!(output["messages"][0]["role"], "user");
     assert_eq!(
         output["messages"][0]["content"][0],

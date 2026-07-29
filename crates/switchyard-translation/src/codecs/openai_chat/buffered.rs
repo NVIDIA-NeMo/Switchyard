@@ -148,6 +148,7 @@ impl FormatCodec for OpenAiChatCodec {
 
         request.tools = decode_openai_tools(body.get("tools"), &mut diagnostics, policy)?;
         request.tool_choice = body.get("tool_choice").map(decode_openai_tool_choice);
+        request.source_format = Some(WireFormat::OpenAiChat.into());
         request.extensions.fields = provider_extensions(
             body,
             &[
