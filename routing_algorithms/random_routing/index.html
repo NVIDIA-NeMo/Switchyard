@@ -810,6 +810,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#experimental-litellm-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Experimental LiteLLM integration
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1173,6 +1184,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#experimental-litellm-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Experimental LiteLLM integration
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1239,6 +1261,14 @@ tier model instead of the routing model.</p>
 </span></code></pre></div>
 <p>The route id (<code>ab-test</code>) is the model id clients select when they want the
 weighted split.</p>
+<h2 id="experimental-litellm-integration">Experimental LiteLLM integration<a class="headerlink" href="#experimental-litellm-integration" title="Permanent link">&para;</a></h2>
+<p>The package's
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c8ca731adec50c948739a71157ce283ed360ea8a/examples/experimental/litellm/README.md">developer guide</a> is the
+canonical documentation for integrating Switchyard with a Dockerized LiteLLM
+gateway. Its source-installable client adapts libsy's dictionary contract and
+demonstrates weighted random routing between model aliases backed by
+OpenRouter. The guide covers setup, application usage, live end-to-end testing,
+and a three-task Harbor smoke benchmark.</p>
 
 
 
