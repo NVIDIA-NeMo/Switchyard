@@ -17,16 +17,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use switchyard_protocol::{AggLlmResponse, LlmRequest, LlmResponse, Message, OutputParams, Role};
-
-mod transcript;
-
-use transcript::{conversation_turn, summarize_for_judge};
+use switchyard_protocol::{
+    AggLlmResponse, ContentBlock, LlmRequest, LlmResponse, Message, OutputParams, Role,
+};
 
 use crate::{
-    algorithms::util::{
-        load_judge_config, AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy,
-    },
+    algorithms::util::{load_judge_config, Judge, JudgeClassifier, JudgeConfig, JudgePolicy},
     algorithms::FallThrough,
     Algorithm, Classification, Classifier, Context, Decision, Driver, Event, LibsyError, LlmTarget,
     LlmTargetSet, Processor, Request, Response, Result, RoutedLlmClient, Score, Scored, State,
@@ -46,6 +42,24 @@ const STREAK_KEY: &str = "escalation_streak";
 /// Session-state key holding the streak this turn's verdict would leave behind, while it
 /// travels from the classifier to [`ConfirmationProcessor`].
 const PENDING_KEY: &str = "escalation_pending_streak";
+
+/// Separator marking where [`truncate_middle`] dropped a message's interior.
+const TRIM_MARKER: &str = " ...[trimmed] ";
+
+/// Suffix marking a transcript cut off by [`MAX_REQUEST_CHARS`].
+const TRUNCATION_SUFFIX: &str = "...<truncated>";
+
+/// Per-message cap for system and developer anchors. Coding-agent harnesses inject very large
+/// boilerplate system prompts carrying no trajectory signal; uncapped they crowd out the window.
+const SYSTEM_CHARS: usize = 1_000;
+
+/// Cap for the first user message — the task statement the judge needs to detect drift, so it
+/// gets the most generous anchor budget.
+const FIRST_USER_CHARS: usize = 2_000;
+
+/// Backstop on the whole assembled transcript, for a pathological single message. The window
+/// caps below normally bind first; when this does bind, the oldest window lines drop.
+const MAX_REQUEST_CHARS: usize = 18_000;
 
 /// Completion budget for one judge reply, covering any reasoning emitted alongside the verdict.
 ///
@@ -194,38 +208,6 @@ impl JudgePolicy for EscalationPolicy {
     }
 }
 
-/// The session latch, labelled with escalation's tiers.
-///
-/// [`AffinityRouter`] cannot know which of its targets is the capable one, so a latched turn
-/// would otherwise route untiered — and after escalation that is every remaining turn.
-struct LatchedTier {
-    affinity: AffinityRouter,
-    capable: String,
-}
-
-#[async_trait]
-impl Processor<State> for LatchedTier {
-    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
-        self.affinity.process(state, event).await
-    }
-}
-
-#[async_trait]
-impl Classifier<State> for LatchedTier {
-    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
-        (selected_model == self.capable).then_some("strong")
-    }
-
-    async fn score(
-        &self,
-        state: &mut State,
-        request: &mut Request,
-        driver: Option<&Driver>,
-    ) -> Result<Scored> {
-        self.affinity.score(state, request, driver).await
-    }
-}
-
 /// Serves the turn on the efficient tier, then judges the result.
 struct EscalationClassifier {
     efficient_target: LlmTarget,
@@ -256,6 +238,13 @@ impl Classifier<State> for EscalationClassifier {
         request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<Scored> {
+        // The streak is the latch. It only reaches the threshold on the turn the judge
+        // escalated, and a latched turn never consults the judge again to clear it, so an
+        // escalated session stays escalated without spending a call to find out.
+        if streak(state) >= self.confirmations {
+            return Ok((decisive(&self.capable), None));
+        }
+
         // A broken composition, not a routing condition: this cannot decide without a model.
         let Some(driver) = driver else {
             return Err(LibsyError::AlgorithmError {
@@ -421,27 +410,16 @@ impl EscalationRouter {
             judge: JudgeClassifier::new(
                 EscalationJudge { config, settings },
                 judge_target,
-                EscalationPolicy {
-                    capable: capable.clone(),
-                },
+                EscalationPolicy { capable },
             ),
             confirmations,
         });
-        // Both latch roles share one `Arc` so the classifier reads what the processor wrote.
-        let latch = Arc::new(LatchedTier {
-            affinity: AffinityRouter::new().with_latch_only([capable.clone()]),
-            capable,
-        });
-
         // The capable target leads the set so `count_tokens_client` prefers its client.
         let targets = LlmTargetSet::new(vec![capable_target, efficient_target]);
-        // The latch classifies first, so an escalated session skips both the judge and the
-        // efficient call it would need.
         let route = FallThrough::<State>::new_with_state(targets)
             .with_name(ALGORITHM_NAME)
             .with_decision_reason(decision_reason)
             .with_processor(Arc::new(ConfirmationProcessor))
-            .with_component(latch)
             .with_classifier(classifier);
         Ok(Self { route })
     }
@@ -467,6 +445,143 @@ impl Algorithm for EscalationRouter {
     }
 }
 
+/// The 1-indexed model invocation the transcript ends on: one per assistant reply, the newest
+/// being the turn under judgement.
+fn conversation_turn(request: &Request) -> usize {
+    request
+        .llm_request
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .count()
+}
+
+/// Flattens a message to plain text, tool calls and tool results included.
+///
+/// Not [`Message::text_content`]: that keeps only text and refusal blocks, erasing exactly the
+/// repeated-command signal the judge's loop detection relies on.
+fn message_text(message: &Message) -> String {
+    let mut parts = Vec::new();
+    collect_text(&message.content, &mut parts);
+    parts.join(" ")
+}
+
+/// Appends the judge-relevant text of each block, descending into tool results.
+fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
+    for block in content {
+        match block {
+            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+                parts.push(text.clone());
+            }
+            ContentBlock::ToolCall(call) => {
+                parts.push(format!("tool_call {}({})", call.name, call.arguments));
+            }
+            ContentBlock::ToolResult(result) => collect_text(&result.content, parts),
+            _ => {}
+        }
+    }
+}
+
+/// Keeps the head and tail of `text` within `limit` characters.
+///
+/// The head gets two thirds: the command or error signature opening a message carries more
+/// signal than its trailing output.
+fn truncate_middle(text: &str, limit: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= limit {
+        return text.to_string();
+    }
+    let keep = limit
+        .saturating_sub(TRIM_MARKER.chars().count())
+        .max(20)
+        .min(chars.len());
+    let head = keep * 2 / 3;
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push_str(TRIM_MARKER);
+    out.extend(chars[chars.len() - tail..].iter());
+    out
+}
+
+/// Renders a compact role-labelled transcript for the judge.
+///
+/// The framing anchors — system/developer messages and the first user message, where harnesses
+/// put the task statement — are kept unconditionally and capped individually; the trailing
+/// window carries recent activity, under a coverage header so the judge can reason about pace
+/// rather than assume it sees everything. Over [`MAX_REQUEST_CHARS`] the oldest window lines go
+/// first: the newest evidence is strictly the most valuable.
+fn summarize_for_judge(
+    messages: &[Message],
+    turn: usize,
+    settings: &EscalationJudgeSettings,
+) -> String {
+    let mut anchors: Vec<String> = Vec::new();
+    let mut window: Vec<String> = Vec::new();
+    let mut first_user_seen = false;
+
+    for message in messages {
+        let text = message_text(message);
+        match message.role {
+            Role::System | Role::Developer => anchors.push(format!(
+                "[{}] {}",
+                role_label(message.role),
+                truncate_middle(&text, SYSTEM_CHARS)
+            )),
+            Role::User if !first_user_seen => {
+                first_user_seen = true;
+                anchors.push(format!(
+                    "[user (task)] {}",
+                    truncate_middle(&text, FIRST_USER_CHARS)
+                ));
+            }
+            role => window.push(format!(
+                "[{}] {}",
+                role_label(role),
+                truncate_middle(&text, settings.window_message_chars)
+            )),
+        }
+    }
+
+    if window.len() > settings.recent_turn_window {
+        window.drain(..window.len() - settings.recent_turn_window);
+    }
+
+    let header = format!(
+        "Conversation turn {turn}; showing the last {} of {} messages after the task framing.",
+        window.len(),
+        messages.len(),
+    );
+    let assemble = |window: &[String]| {
+        std::iter::once(header.as_str())
+            .chain(anchors.iter().map(String::as_str))
+            .chain(window.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut text = assemble(&window);
+    while text.chars().count() > MAX_REQUEST_CHARS && !window.is_empty() {
+        window.remove(0);
+        text = assemble(&window);
+    }
+    if text.chars().count() > MAX_REQUEST_CHARS {
+        let keep = MAX_REQUEST_CHARS.saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
+        text = text.chars().take(keep).collect::<String>() + TRUNCATION_SUFFIX;
+    }
+    text
+}
+
+/// The transcript label for a role.
+fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -475,17 +590,20 @@ mod tests {
     use futures::StreamExt;
     use parking_lot::Mutex;
     use switchyard_protocol::{
-        completion_text, text_response, LlmClientError, LlmRequest, LlmResponseChunk, Message,
-        Metadata, Role,
+        completion_text, text_response, ContentBlock, LlmClientError, LlmRequest, LlmResponseChunk,
+        Message, Metadata, Role, ToolCall, ToolResult,
     };
+
+    use serde_json::json;
 
     use crate::{
         Algorithm, Context, Decision, LlmResponse, LlmTarget, Request, Response, RoutedLlmClient,
     };
 
     use super::{
-        load_judge_config, EscalationJudge, EscalationJudgeSettings, EscalationRouter, Judge,
-        State, JUDGE_MAX_OUTPUT_TOKENS, PROMPT_TEMPLATE, SCHEMA_TEMPLATE,
+        conversation_turn, load_judge_config, message_text, summarize_for_judge, truncate_middle,
+        EscalationJudge, EscalationJudgeSettings, EscalationRouter, Judge, State,
+        JUDGE_MAX_OUTPUT_TOKENS, MAX_REQUEST_CHARS, PROMPT_TEMPLATE, SCHEMA_TEMPLATE,
     };
 
     fn target(name: &str, client: Option<Arc<dyn RoutedLlmClient>>) -> LlmTarget {
@@ -940,5 +1058,123 @@ mod tests {
         );
         assert!(built.llm_request.output.response_format.is_some());
         Ok(())
+    }
+
+    #[test]
+    fn conversation_turn_counts_assistant_replies() {
+        // The transcript handed to the judge ends on the reply being judged, so the count is
+        // the assistant replies present — no lookahead.
+        assert_eq!(conversation_turn(&request_at_turn(None, 1)), 0);
+        assert_eq!(conversation_turn(&request_at_turn(None, 5)), 4);
+    }
+
+    #[test]
+    fn message_text_keeps_tool_calls_and_results() {
+        let call = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "running it".to_string(),
+                },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash".to_string(),
+                    arguments: json!({"cmd": "ls"}),
+                }),
+            ],
+        };
+        let text = message_text(&call);
+        assert!(text.contains("running it"), "{text}");
+        assert!(text.contains(r#"tool_call bash({"cmd":"ls"})"#), "{text}");
+
+        let result = Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "no such file".to_string(),
+                }],
+                is_error: Some(true),
+            })],
+        };
+        assert_eq!(message_text(&result), "no such file");
+    }
+
+    #[test]
+    fn truncate_middle_keeps_head_and_tail() {
+        let text = "a".repeat(40) + &"z".repeat(40);
+        let trimmed = truncate_middle(&text, 50);
+        assert!(trimmed.chars().count() <= 50, "{trimmed}");
+        assert!(trimmed.starts_with('a'));
+        assert!(trimmed.ends_with('z'));
+        assert!(trimmed.contains("[trimmed]"));
+
+        // Under the limit the text is returned untouched.
+        assert_eq!(truncate_middle("short", 50), "short");
+    }
+
+    #[test]
+    fn summary_keeps_anchors_and_the_recent_window() {
+        let mut messages = vec![
+            Message::text(Role::System, "you are a coding agent"),
+            Message::text(Role::User, "fix the failing test"),
+        ];
+        for i in 0..10 {
+            messages.push(Message::text(Role::Assistant, format!("step {i}")));
+        }
+        let settings = EscalationJudgeSettings {
+            recent_turn_window: 3,
+            ..EscalationJudgeSettings::default()
+        };
+
+        let summary = summarize_for_judge(&messages, 10, &settings);
+
+        assert!(
+            summary.contains("[system] you are a coding agent"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("[user (task)] fix the failing test"),
+            "{summary}"
+        );
+        assert!(summary.contains("Conversation turn 10; showing the last 3 of 12 messages"));
+        // Only the newest window entries survive.
+        assert!(summary.contains("step 9"), "{summary}");
+        assert!(summary.contains("step 7"), "{summary}");
+        assert!(!summary.contains("step 6"), "{summary}");
+    }
+
+    #[test]
+    fn summary_drops_oldest_window_lines_under_the_char_cap() {
+        // MAX_REQUEST_CHARS is a backstop, not a dial: at default settings the window caps
+        // bind first (28 x 500 plus anchors sits under it), so reaching it takes an unusually
+        // wide per-message cap. That is the point — it only fires on pathological input.
+        let mut messages = vec![
+            Message::text(Role::System, "framing"),
+            Message::text(Role::User, "task"),
+        ];
+        for i in 0..20 {
+            messages.push(Message::text(
+                Role::Assistant,
+                format!("{i} {}", "x".repeat(2_000)),
+            ));
+        }
+        let settings = EscalationJudgeSettings {
+            window_message_chars: 2_000,
+            ..EscalationJudgeSettings::default()
+        };
+
+        let summary = summarize_for_judge(&messages, 20, &settings);
+
+        assert!(
+            summary.chars().count() <= MAX_REQUEST_CHARS,
+            "{}",
+            summary.chars().count()
+        );
+        // Anchors are never dropped, and the newest activity outlives the oldest.
+        assert!(summary.contains("[system] framing"), "{summary}");
+        assert!(summary.contains("[user (task)] task"), "{summary}");
+        assert!(summary.contains("19 xxx"), "{summary}");
+        assert!(!summary.contains("0 xxx"), "{summary}");
     }
 }
