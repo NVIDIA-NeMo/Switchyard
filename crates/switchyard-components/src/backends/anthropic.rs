@@ -80,24 +80,36 @@ impl AnthropicNativeBackend {
     }
 
     fn outbound_body(&self, request: &ChatRequest) -> Result<Value> {
-        let mut body = match request.request_type() {
-            ChatRequestType::Anthropic => request.body().clone(),
-            source => {
-                self.translation
-                    .translate_request(
-                        request_wire_format(source),
-                        WireFormat::AnthropicMessages,
-                        request.body(),
-                        &self.translation_policy,
-                    )
-                    .map_err(|error| {
-                        SwitchyardError::Backend(format!(
-                            "failed to translate {source:?} request to Anthropic Messages: {error}"
-                        ))
-                    })?
-                    .body
-            }
-        };
+        // Native Anthropic requests are a TRUE passthrough: forward the client's
+        // body verbatim, rewriting only the model id (routing) and merging any
+        // operator-configured `extra_body`. The strips/normalization in the
+        // translated branch below exist for OpenAI/Responses -> Anthropic bodies,
+        // which can carry fields/shapes the Anthropic API rejects. Applying them
+        // to a real Anthropic client (e.g. Claude Code) silently drops valid
+        // Anthropic features — `context_management` (context auto-compaction),
+        // signed thinking blocks, mid-conversation system turns, client tool ids
+        // — which a passthrough must never do.
+        if matches!(request.request_type(), ChatRequestType::Anthropic) {
+            let mut body = request.body().clone();
+            set_json_model(&mut body, self.target.model.as_str());
+            merge_target_extra_body(&mut body, self.target.extra_body.as_ref());
+            return Ok(body);
+        }
+        let mut body = self
+            .translation
+            .translate_request(
+                request_wire_format(request.request_type()),
+                WireFormat::AnthropicMessages,
+                request.body(),
+                &self.translation_policy,
+            )
+            .map_err(|error| {
+                SwitchyardError::Backend(format!(
+                    "failed to translate {:?} request to Anthropic Messages: {error}",
+                    request.request_type()
+                ))
+            })?
+            .body;
         set_json_model(&mut body, self.target.model.as_str());
         strip_anthropic_incompatible_fields(&mut body);
         normalize_anthropic_body(&mut body);

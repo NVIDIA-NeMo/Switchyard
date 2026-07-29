@@ -40,6 +40,9 @@ from switchyard.lib.chat_response import (
 from switchyard.lib.processors.rl_logging_request_processor import RlLoggingRequestProcessor
 from switchyard.lib.processors.rl_logging_response_processor import RlLoggingResponseProcessor
 from switchyard.lib.profiles import (
+    AdvisorConfig,
+    AdvisorPresets,
+    AdvisorProfileConfig,
     ClassifierConfig,
     ContextAwareProfile,
     DeterministicRoutingConfig,
@@ -132,6 +135,10 @@ __all__ = [
     # Chain infrastructure
     "Switchyard",
     "LLMBackend",
+    # Advisor (executor consults a stronger advisor model)
+    "AdvisorConfig",
+    "AdvisorPresets",
+    "AdvisorProfileConfig",
     "StageRouterConfig",
     "StageRouterProfileConfig",
     "ClassifierConfig",
