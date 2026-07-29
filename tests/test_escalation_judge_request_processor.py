@@ -99,7 +99,9 @@ async def test_no_escalate_routes_weak_without_pin() -> None:
 
 
 async def test_escalate_routes_strong_and_latches() -> None:
-    processor, fake, _ = _processor(_verdict_json(True))
+    # Single-verdict latch, stated explicitly: the default now requires a confirmation,
+    # which test_confirmations_require_consecutive_escalates covers.
+    processor, fake, _ = _processor(_verdict_json(True), escalate_confirmations=1)
     ctx = ProxyContext()
 
     await processor.process(ctx, _request())
@@ -279,7 +281,9 @@ async def test_judge_failure_recorded_as_classifier_error() -> None:
 
 
 async def test_markdown_fenced_verdict_is_parsed() -> None:
-    processor, _, _ = _processor("```json\n" + _verdict_json(True) + "\n```")
+    processor, _, _ = _processor(
+        "```json\n" + _verdict_json(True) + "\n```", escalate_confirmations=1,
+    )
     ctx = ProxyContext()
 
     await processor.process(ctx, _request())
@@ -425,6 +429,7 @@ async def test_escalation_latch_isolated_by_deep_key() -> None:
     affinity = SessionAffinity(enabled=True)
     processor, fake, _ = _processor(
         _verdict_json(True), affinity=affinity, session_key_depth=1,
+        escalate_confirmations=1,
     )
 
     def _trial(first_response: str, extra_turns: int = 2) -> ChatRequest:

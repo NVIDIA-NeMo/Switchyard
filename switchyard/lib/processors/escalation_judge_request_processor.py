@@ -123,10 +123,10 @@ class EscalationJudgeConfig(BaseModel):
     """First conversation turn on which the judge runs. Earlier turns have no
     trajectory to judge and always route weak."""
 
-    escalate_confirmations: int = Field(default=1, ge=1)
+    escalate_confirmations: int = Field(default=2, ge=1)
     """Consecutive ``escalate`` verdicts required before the latch fires.
 
-    ``1`` (default) pins on the first escalate verdict. ``2`` requires the
+    ``1`` pins on the first escalate verdict. ``2`` (default) requires the
     judge to confirm on the next judged turn, filtering one-shot eager
     verdicts (a single failed command misread as a pattern) while keeping
     recall on real trouble, which by definition persists across turns. A
@@ -143,12 +143,12 @@ class EscalationJudgeConfig(BaseModel):
     keeps *recurring* is trouble, even when a quiet turn separates the
     flare-ups."""
 
-    recent_turn_window: int = Field(default=14, ge=1)
+    recent_turn_window: int = Field(default=28, ge=1)
     """Trailing messages shown to the judge on top of the anchors. Wider than
     the classifier's default because loop detection needs to see the repeats:
     a cycle longer than the window is invisible."""
 
-    max_request_chars: int = Field(default=12_000, ge=1_000)
+    max_request_chars: int = Field(default=18_000, ge=1_000)
     """Cap on the assembled judge transcript. When exceeded, the *oldest*
     window messages are dropped first — for a trajectory judge the newest
     evidence is strictly the most valuable."""
@@ -162,7 +162,7 @@ class EscalationJudgeConfig(BaseModel):
     """Cap for the first user message — the task statement the judge needs
     for drift detection, so it gets the most generous anchor budget."""
 
-    window_message_chars: int = Field(default=300, ge=50)
+    window_message_chars: int = Field(default=500, ge=50)
     """Per-message cap inside the trailing window. Error signatures and
     command shapes survive this easily; full file dumps do not need to."""
 

@@ -603,8 +603,8 @@ class TestEscalationRouterRouteType:
             c for c in switchyard.iter_components()
             if isinstance(c, EscalationJudgeRequestProcessor)
         )
-        assert judge._config.escalate_confirmations == 1
-        assert judge._config.window_message_chars == 300
+        assert judge._config.escalate_confirmations == 2
+        assert judge._config.window_message_chars == 500
         assert judge._config.dump_verdicts_to_stderr is False
         assert judge._config.max_completion_tokens == 128
         assert judge._config.timeout_s == 5.0
