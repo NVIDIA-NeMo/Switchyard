@@ -73,6 +73,15 @@ pub enum LlmClientError {
         message: String,
     },
 
+    /// The selected model is temporarily unavailable and another target may be tried.
+    #[error("model {model} is unavailable: {message}")]
+    ModelUnavailable {
+        /// Model that could not serve the request.
+        model: String,
+        /// Upstream error message.
+        message: String,
+    },
+
     /// The upstream returned a non-success HTTP response.
     #[error("upstream returned HTTP {status}: {body}")]
     UpstreamHttp {

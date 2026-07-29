@@ -213,6 +213,24 @@ mod tests {
         }
     }
 
+    /// Returns a typed model-availability failure for the selected target.
+    struct ModelUnavailableClient;
+
+    #[async_trait]
+    impl RoutedLlmClient for ModelUnavailableClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+            Err(switchyard_protocol::LlmClientError::ModelUnavailable {
+                model: decision.selected_model().to_string(),
+                message: "model is temporarily unavailable".to_string(),
+            })
+        }
+    }
+
     fn request() -> Request {
         Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
@@ -281,6 +299,35 @@ mod tests {
         );
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].selected_model(), "only/model");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn model_unavailable_error_survives_a_random_run() -> Result<()> {
+        let target = LlmTarget {
+            semantic_name: "busy/model".to_string(),
+            llm_client: Some(Arc::new(ModelUnavailableClient)),
+        };
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(
+            LlmTargetSet::new(vec![target]),
+            None,
+            Some(42),
+        )?);
+
+        let error = algorithm
+            .run(Context::default(), request())
+            .await
+            .err()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "expected a model-unavailable failure".to_string(),
+            })?;
+        assert!(matches!(
+            error,
+            LibsyError::ClientCall {
+                target,
+                source: switchyard_protocol::LlmClientError::ModelUnavailable { model, .. },
+            } if target == "busy/model" && model == "busy/model"
+        ));
         Ok(())
     }
 
