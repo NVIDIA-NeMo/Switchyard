@@ -86,14 +86,26 @@ def _flatten_message(item: Any) -> str:
                 raw_name = _field(function, "name")
                 raw_arguments = _field(function, "arguments")
                 name = raw_name if isinstance(raw_name, str) else ""
-                arguments = raw_arguments if isinstance(raw_arguments, str) else ""
+                arguments = (
+                    raw_arguments
+                    if isinstance(raw_arguments, str)
+                    else _json_text(raw_arguments)
+                    if raw_arguments is not None
+                    else ""
+                )
                 parts.append(f"tool_call {name}({arguments})")
 
     if _field(item, "type") == "function_call":
         raw_name = _field(item, "name")
         raw_arguments = _field(item, "arguments")
         name = raw_name if isinstance(raw_name, str) else ""
-        arguments = raw_arguments if isinstance(raw_arguments, str) else ""
+        arguments = (
+            raw_arguments
+            if isinstance(raw_arguments, str)
+            else _json_text(raw_arguments)
+            if raw_arguments is not None
+            else ""
+        )
         parts.append(f"tool_call {name}({arguments})")
 
     output = _flatten_text(_field(item, "output"))
