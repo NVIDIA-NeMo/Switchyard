@@ -494,7 +494,9 @@ mod tests {
         }
     }
 
-    fn overflow_targets(names: &[&str], overflowing: &[&'static str]) -> LlmTargetSet {
+    /// `target_set`, but the named `overflowing` targets reject every call with a
+    /// context-window error so the retry path can be driven.
+    fn target_set_with_overflow(names: &[&str], overflowing: &[&'static str]) -> LlmTargetSet {
         LlmTargetSet::new(
             names
                 .iter()
@@ -510,8 +512,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_overflowing_target_is_retried_on_one_that_fits() -> Result<()> {
-        let router = FallThrough::<()>::new(overflow_targets(&["weak", "strong"], &["weak"]))
-            .with_classifier(fixed(vec![score("weak", 0.9)]));
+        let router =
+            FallThrough::<()>::new(target_set_with_overflow(&["weak", "strong"], &["weak"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)]));
         let (model, _) = run(router).await?;
         assert_eq!(model, "strong");
         Ok(())
@@ -519,7 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn overflowing_targets_are_retried_until_one_fits() -> Result<()> {
-        let router = FallThrough::<()>::new(overflow_targets(
+        let router = FallThrough::<()>::new(target_set_with_overflow(
             &["weak", "mid", "strong"],
             &["weak", "mid"],
         ))
@@ -532,9 +535,11 @@ mod tests {
     #[tokio::test]
     async fn exhausting_every_target_surfaces_the_client_overflow() -> Result<()> {
         // Only the client error maps to a 400 upstream, so it must survive exhaustion.
-        let router =
-            FallThrough::<()>::new(overflow_targets(&["weak", "strong"], &["weak", "strong"]))
-                .with_classifier(fixed(vec![score("weak", 0.9)]));
+        let router = FallThrough::<()>::new(target_set_with_overflow(
+            &["weak", "strong"],
+            &["weak", "strong"],
+        ))
+        .with_classifier(fixed(vec![score("weak", 0.9)]));
         match run(router).await {
             Ok(_) => panic!("expected an overflow error, got a response"),
             Err(LibsyError::ClientCall {
@@ -564,9 +569,10 @@ mod tests {
         }
 
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let router = FallThrough::<()>::new(overflow_targets(&["weak", "strong"], &["weak"]))
-            .with_classifier(fixed(vec![score("weak", 0.9)]))
-            .with_processor(Arc::new(CountingProcessor(seen.clone())));
+        let router =
+            FallThrough::<()>::new(target_set_with_overflow(&["weak", "strong"], &["weak"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)]))
+                .with_processor(Arc::new(CountingProcessor(seen.clone())));
         let (model, _) = run(router).await?;
         assert_eq!(model, "strong");
         assert_eq!(seen.lock().iter().filter(|e| **e == "request").count(), 1);
