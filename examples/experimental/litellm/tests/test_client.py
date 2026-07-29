@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 import respx
-from openai import AuthenticationError, RateLimitError
+from litellm import AuthenticationError, ModelResponse, RateLimitError
 from switchyard_litellm import LiteLLMSyClient
 
 BASE_URL = "http://gateway.test/v1"
@@ -57,6 +57,30 @@ def gateway_response(model: str = "gpt-5.6-luna") -> dict[str, object]:
     }
 
 
+async def test_call_uses_litellm_async_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_acompletion(**kwargs: object) -> ModelResponse:
+        captured.update(kwargs)
+        return ModelResponse(**gateway_response())
+
+    monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        await client.call(request_body())
+    finally:
+        await client.aclose()
+
+    assert captured["model"] == "openai/fast"
+    assert captured["api_base"] == BASE_URL
+    assert captured["api_key"] == "not-needed"
+    assert captured["num_retries"] == 0
+    assert captured["allowed_openai_params"] == ["reasoning_effort"]
+    assert captured["stream"] is False
+
+
 @respx.mock
 async def test_call_translates_request_and_normalizes_response() -> None:
     route = respx.post(f"{BASE_URL}/chat/completions").mock(
@@ -83,8 +107,9 @@ async def test_call_translates_request_and_normalizes_response() -> None:
         "top_p": 0.9,
         "max_completion_tokens": 64,
         "reasoning_effort": "low",
-        "stream": False,
     }
+    assert sent["model"] == "fast"
+    assert sent["model"] != "openai/fast"
     assert request == original
     assert response == {
         "id": "chatcmpl-test",
@@ -207,13 +232,16 @@ async def test_call_rejects_a_response_without_text() -> None:
         await client.aclose()
 
 
-@respx.mock
-async def test_call_rejects_a_response_without_choices() -> None:
+async def test_call_rejects_a_response_without_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     payload = gateway_response()
     payload["choices"] = []
-    respx.post(f"{BASE_URL}/chat/completions").mock(
-        return_value=httpx.Response(200, json=payload)
-    )
+
+    async def fake_acompletion(**_: object) -> ModelResponse:
+        return ModelResponse(**payload)
+
+    monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
     client = LiteLLMSyClient("fast", base_url=BASE_URL)
     try:
         with pytest.raises(ValueError, match="no choices"):
@@ -223,14 +251,14 @@ async def test_call_rejects_a_response_without_choices() -> None:
 
 
 @respx.mock
-async def test_openai_sdk_errors_propagate() -> None:
+async def test_litellm_errors_propagate() -> None:
     respx.post(f"{BASE_URL}/chat/completions").mock(
         return_value=httpx.Response(
             401,
             json={
                 "error": {
-                    "message": "bad key",
-                    "type": "invalid_request_error",
+                    "message": "Incorrect API key provided",
+                    "type": "authentication_error",
                     "code": "invalid_api_key",
                 }
             },
@@ -245,7 +273,7 @@ async def test_openai_sdk_errors_propagate() -> None:
 
 
 @respx.mock
-async def test_retryable_openai_error_is_not_retried() -> None:
+async def test_retryable_litellm_error_is_not_retried() -> None:
     route = respx.post(f"{BASE_URL}/chat/completions").mock(
         return_value=httpx.Response(
             429,

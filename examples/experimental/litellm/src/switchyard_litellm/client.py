@@ -8,8 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletion
+from litellm import ModelResponse, acompletion
 
 _ROLES = {"system", "developer", "user", "assistant"}
 _STOP_REASONS = {
@@ -139,7 +138,7 @@ def _payload(request: Mapping[str, object], model: str) -> dict[str, Any]:
     return payload
 
 
-def _usage(response: ChatCompletion) -> dict[str, int]:
+def _usage(response: ModelResponse) -> dict[str, int]:
     usage = response.usage
     if usage is None:
         return {}
@@ -159,7 +158,7 @@ def _usage(response: ChatCompletion) -> dict[str, int]:
     return normalized
 
 
-def _response(response: ChatCompletion) -> dict[str, object]:
+def _response(response: ModelResponse) -> dict[str, object]:
     if not response.choices:
         raise ValueError("LiteLLM returned no choices")
     choice = response.choices[0]
@@ -181,7 +180,7 @@ def _response(response: ChatCompletion) -> dict[str, object]:
 
 
 class LiteLLMSyClient:
-    """Call a LiteLLM Chat Completions alias for a libsy target."""
+    """Call a LiteLLM gateway alias for a libsy target."""
 
     def __init__(
         self,
@@ -193,18 +192,22 @@ class LiteLLMSyClient:
         if not model:
             raise ValueError("model must not be empty")
         self.model = model
-        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+        self._base_url = base_url
+        self._api_key = api_key
 
     async def call(
         self,
         sy_request: Mapping[str, object],
     ) -> Mapping[str, object]:
         """Send one normalized, buffered text request through LiteLLM."""
-        completion = await self._client.chat.completions.create(
-            **_payload(sy_request, self.model)
+        response = await acompletion(
+            **_payload(sy_request, f"openai/{self.model}"),
+            api_base=self._base_url,
+            api_key=self._api_key,
+            num_retries=0,
+            allowed_openai_params=["reasoning_effort"],
         )
-        return _response(completion)
+        return _response(cast(ModelResponse, response))
 
     async def aclose(self) -> None:
-        """Close the underlying asynchronous HTTP client."""
-        await self._client.close()
+        """Retain asynchronous lifecycle compatibility without owning a transport."""

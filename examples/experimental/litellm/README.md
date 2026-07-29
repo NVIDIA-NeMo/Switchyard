@@ -10,19 +10,22 @@ point for your own application.
 
 LiteLLM provides the OpenAI-compatible gateway, model aliases, and provider
 boundary. Switchyard makes the routing decision. `LiteLLMSyClient` connects
-Switchyard's normalized libsy requests to the selected LiteLLM alias. Together,
-they let an application keep routing policy in Switchyard while LiteLLM owns
+Switchyard's normalized libsy requests to the selected alias through LiteLLM's
+asynchronous Completion API and the Dockerized gateway. Together, they let an
+application keep routing policy in Switchyard while LiteLLM owns
 provider-specific model access and configuration.
 
 ## Request flow
 
 ```text
 your application → libsy normalized request → Switchyard router
-                 → LiteLLMSyClient → LiteLLM gateway alias → OpenAI model
+                 → LiteLLMSyClient → LiteLLM async Completion API
+                 → Dockerized gateway alias → OpenAI model
 ```
 
-The bundled router selects either `strong` or `fast`; the client sends that
-alias to LiteLLM rather than embedding a provider model ID in application code.
+The bundled router selects either `strong` or `fast`; the client asks LiteLLM's
+Completion API to call that alias through the gateway rather than embedding a
+provider model ID in application code.
 
 ## Quick start
 
@@ -30,6 +33,7 @@ This example uses these pinned gateway aliases and image:
 
 - `strong` maps to `openai/gpt-5.6-sol`.
 - `fast` maps to `openai/gpt-5.6-luna`.
+- The Python client pins `litellm==1.92.0`.
 - The gateway runs `ghcr.io/berriai/litellm:v1.92.0`.
 
 ### Prerequisites
