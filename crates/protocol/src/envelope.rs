@@ -5,13 +5,25 @@
 //! with the original provider payload and correlation [`Metadata`].
 
 use crate::{LlmRequest, LlmResponse, Metadata};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Cross-cutting request context passed through algorithms and LLM clients.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Context {
     /// Caller-specific values propagated through the request.
     pub values: HashMap<String, String>,
+    /// Targets that overflowed their context window on this request.
+    pub excluded_targets: HashSet<String>,
+}
+
+impl Context {
+    pub fn exclude_target(&mut self, target: impl Into<String>) -> bool {
+        self.excluded_targets.insert(target.into())
+    }
+
+    pub fn is_excluded(&self, target: &str) -> bool {
+        self.excluded_targets.contains(target)
+    }
 }
 
 /// Agentic-stack events fed to an algorithm out of band (e.g. tool results, budget

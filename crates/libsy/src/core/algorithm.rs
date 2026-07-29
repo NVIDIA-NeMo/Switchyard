@@ -327,6 +327,19 @@ impl LlmTargetSet {
             })
     }
 
+    /// The named target, or the first still-eligible one when it has been excluded.
+    pub fn resolve_target(&self, name: &str, ctx: &Context) -> Result<LlmTarget> {
+        let target = self.get_target(name)?;
+        if !ctx.is_excluded(&target.semantic_name) {
+            return Ok(target);
+        }
+        self.targets
+            .iter()
+            .find(|t| !ctx.is_excluded(&t.semantic_name))
+            .cloned()
+            .ok_or(LibsyError::AllTargetsExcluded)
+    }
+
     /// The first target's client that can serve `count_tokens` (an Anthropic
     /// upstream), or `None` when no target has one. Used by an algorithm's
     /// [`count_tokens_client`](crate::Algorithm::count_tokens_client).
@@ -464,7 +477,26 @@ pub trait Algorithm: Send + Sync + 'static {
 
     /// Process a request to completion, returning the final [`Response`] and the trace of
     /// [`Decision`]s the algorithm made along the way.
+    ///
+    /// A target that overflows its context window is excluded and the run is retried,
+    /// until one fits or every target has been excluded.
     async fn run(
+        self: Arc<Self>,
+        mut ctx: Context,
+        request: Request,
+    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
+        loop {
+            match self.clone().run_once(ctx.clone(), request.clone()).await {
+                Err(LibsyError::ClientCall {
+                    target,
+                    source: LlmClientError::ContextWindowExceeded { .. },
+                }) if ctx.exclude_target(&target) => continue,
+                result => return result,
+            }
+        }
+    }
+
+    async fn run_once(
         self: Arc<Self>,
         ctx: Context,
         request: Request,
@@ -1429,5 +1461,131 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    /// Overflows for the named targets and echoes for the rest.
+    struct OverflowClient {
+        overflowing: Vec<&'static str>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for OverflowClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, LlmClientError> {
+            let model = decision.selected_model().to_string();
+            if self.overflowing.contains(&model.as_str()) {
+                return Err(LlmClientError::ContextWindowExceeded {
+                    model,
+                    message: "prompt is too long".to_string(),
+                });
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, model)),
+                metadata: None,
+            })
+        }
+    }
+
+    /// Routes to the first target the context has not excluded.
+    struct EligibleAlgo {
+        target_set: LlmTargetSet,
+    }
+
+    #[async_trait]
+    impl Algorithm for EligibleAlgo {
+        fn name(&self) -> &str {
+            "eligible"
+        }
+
+        async fn create_run_task(
+            self: Arc<Self>,
+            ctx: Context,
+            driver: Driver,
+            request: Request,
+        ) -> Result<Response> {
+            let first = self
+                .target_set
+                .targets()
+                .first()
+                .ok_or(LibsyError::NoTargets)?
+                .semantic_name
+                .clone();
+            let target = self.target_set.resolve_target(&first, &ctx)?;
+            let decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                model: target.semantic_name.clone(),
+            });
+            driver
+                .call_llm_target(ctx, &target, request, decision)
+                .await
+        }
+    }
+
+    fn eligible_algo(names: &[&'static str], overflowing: &[&'static str]) -> Arc<dyn Algorithm> {
+        let targets = names
+            .iter()
+            .map(|name| LlmTarget {
+                semantic_name: name.to_string(),
+                llm_client: Some(Arc::new(OverflowClient {
+                    overflowing: overflowing.to_vec(),
+                }) as Arc<dyn RoutedLlmClient>),
+            })
+            .collect();
+        Arc::new(EligibleAlgo {
+            target_set: LlmTargetSet::new(targets),
+        })
+    }
+
+    async fn served_model(algo: Arc<dyn Algorithm>) -> Result<String> {
+        let (_, response) = algo.run(Context::default(), request()).await?;
+        let agg = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|error| LibsyError::external("aggregating response stream", error))?;
+        Ok(completion_text(&agg))
+    }
+
+    #[tokio::test]
+    async fn an_overflowing_target_is_excluded_and_the_run_retries() -> Result<()> {
+        let served = served_model(eligible_algo(&["weak", "strong"], &["weak"])).await?;
+        assert_eq!(served, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_overflowing_target_is_excluded_before_one_serves() -> Result<()> {
+        let algo = eligible_algo(&["weak", "mid", "strong"], &["weak", "mid"]);
+        assert_eq!(served_model(algo).await?, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exhausting_every_target_surfaces_the_overflow() -> Result<()> {
+        let algo = eligible_algo(&["weak", "strong"], &["weak", "strong"]);
+        match algo.run(Context::default(), request()).await {
+            Ok(_) => Err(test_error("expected an overflow error, got a response")),
+            Err(err) => {
+                assert!(err.to_string().contains("context window"));
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_algorithm_that_ignores_exclusions_still_terminates() -> Result<()> {
+        // TestAlgo always picks the first target, so the retry must stop on the repeat.
+        let targets = vec![LlmTarget {
+            semantic_name: "weak".to_string(),
+            llm_client: Some(Arc::new(OverflowClient {
+                overflowing: vec!["weak"],
+            }) as Arc<dyn RoutedLlmClient>),
+        }];
+        let algo = orch(LlmTargetSet::new(targets));
+        assert!(algo.run(Context::default(), request()).await.is_err());
+        Ok(())
     }
 }

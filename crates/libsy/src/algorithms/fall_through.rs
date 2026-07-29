@@ -209,9 +209,9 @@ where
         };
 
         // 3. Resolve the target and publish the decision.
-        let target = self.targets.get_target(&score.target)?;
+        let target = self.targets.resolve_target(&score.target, ctx)?;
         let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
-            selected_model: score.target.clone(),
+            selected_model: target.semantic_name.clone(),
             reasoning: (self.decision_reason)(&self.name, &score),
             tier: maybe_tier,
         });
