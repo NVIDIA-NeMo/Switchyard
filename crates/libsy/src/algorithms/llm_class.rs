@@ -3,7 +3,7 @@
 
 //! Task-level capability routing with a judge-backed classifier.
 //!
-//! The algorithm owns a [`FallThrough`](super::FallThrough) cascade. Its classifier judges the
+//! The algorithm owns a [`FallThrough`] cascade. Its classifier judges the
 //! full inbound request and selects one decisive target. Invalid, abstained, or unavailable judge
 //! output always selects the capable target.
 
@@ -15,7 +15,7 @@ use serde_json::Value;
 use switchyard_protocol::{LlmRequest, Message, OutputParams, Role};
 
 use super::util::{AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
-use super::FallThrough;
+use super::{DefaultTarget, FallThrough};
 use crate::{
     Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTarget, LlmTargetSet,
     Request, Response, Result, RoutedLlmClient, Score, State,
@@ -71,8 +71,31 @@ impl TaskClassifierVerdict {
 /// The judge is responsible for any kind of llm judge based calls
 /// Example: A judge can be a capability classifier, a escalation classifier etc
 /// Builds capability-specific judge requests from shared classifier configuration.
+/// Keeps client instructions, the opening task, and the last `recent_turn_window`
+/// turns after it. A window of `0` keeps the instructions and the task alone.
+///
+/// Selects by reference and clones only what survives — a coding-agent
+/// conversation carries every tool result, so cloning it whole to keep a window
+/// would copy the transcript on each judged turn.
+fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
+    let is_instruction = |message: &Message| matches!(message.role, Role::System | Role::Developer);
+    let mut kept: Vec<&Message> = messages.iter().filter(|m| is_instruction(m)).collect();
+    let Some(task) = messages.iter().position(|m| m.role == Role::User) else {
+        return kept.into_iter().cloned().collect();
+    };
+    kept.push(&messages[task]);
+
+    let tail: Vec<&Message> = messages[task + 1..]
+        .iter()
+        .filter(|m| !is_instruction(m))
+        .collect();
+    kept.extend(&tail[tail.len().saturating_sub(recent_turn_window)..]);
+    kept.into_iter().cloned().collect()
+}
+
 struct CapabilityJudge {
     config: JudgeConfig,
+    recent_turn_window: Option<usize>,
 }
 
 impl Judge for CapabilityJudge {
@@ -81,17 +104,20 @@ impl Judge for CapabilityJudge {
     /// For different judges, the request building logic can be different
     /// To have a single interface for all judges, we may make a common request building logic here.
     fn build_request(&self, _state: &State, request: &Request) -> Request {
-        // For task-based routing, classify only the newest user message with the judge prompt.
-        // For any turn window size setting, use TaskClassifierConfig to define the window size.
-        let mut messages = request
-            .llm_request
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.role == Role::User)
-            .cloned()
-            .into_iter()
-            .collect::<Vec<_>>();
+        // Task-based routing judges the newest user message alone. A configured
+        // window widens that to the surrounding conversation.
+        let mut messages = match self.recent_turn_window {
+            Some(window) => trim_messages(&request.llm_request.messages, window),
+            None => request
+                .llm_request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == Role::User)
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>(),
+        };
         messages.insert(
             0,
             Message::text(Role::System, self.config.system_prompt.clone()),
@@ -147,18 +173,25 @@ impl JudgePolicy for TaskClassifierPolicy {
     type Verdict = TaskClassifierVerdict;
 
     fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
-        // Judge output is untrusted. Anything incomplete, invalid, abstained, or below its
-        // configured confidence or capability threshold routes to the capable target.
-        let target = match verdict {
-            Some(verdict)
-                if verdict.is_valid()
-                    && !verdict.abstain
-                    && verdict.confidence >= self.config.min_confidence
-                    && verdict.p_solve >= self.threshold(verdict) =>
-            {
-                &self.efficient_target
-            }
-            _ => &self.capable_target,
+        // Judge output is untrusted, so only a complete, valid, non-abstained verdict that
+        // clears the configured confidence decides. Anything else is "I could not tell" —
+        // reported as ambiguous so the composition around this classifier chooses the
+        // fallback, rather than this policy silently imposing one. The capable target rides
+        // along as the safe suggestion for a caller that reads ambiguous scores.
+        let Some(verdict) = verdict
+            .filter(|v| v.is_valid() && !v.abstain && v.confidence >= self.config.min_confidence)
+        else {
+            return Classification::Ambiguous(vec![Score {
+                target: self.capable_target.clone(),
+                confidence: 0.0,
+            }]);
+        };
+        // A usable verdict below the capability threshold is still a decision: the judge
+        // does not trust the efficient tier with this task.
+        let target = if verdict.p_solve >= self.threshold(verdict) {
+            &self.efficient_target
+        } else {
+            &self.capable_target
         };
         Classification::Scores(vec![Score {
             target: target.clone(),
@@ -184,6 +217,14 @@ pub struct TaskClassifierConfig {
     /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
     #[serde(default)]
     pub message_hash_fallback: bool,
+    /// Trailing conversation turns the judge sees on top of the client
+    /// instructions and the opening task.
+    ///
+    /// `None` (the default) judges the newest user message alone — the task, with
+    /// no history. `Some(n)` widens that to the client instructions, the opening
+    /// task, and the last `n` turns after it.
+    #[serde(default)]
+    pub recent_turn_window: Option<usize>,
 }
 
 impl TaskClassifierConfig {
@@ -259,6 +300,7 @@ impl LlmTaskClassifier {
             classifier: JudgeClassifier::new(
                 CapabilityJudge {
                     config: judge_config,
+                    recent_turn_window: config.recent_turn_window,
                 },
                 judge_target,
                 TaskClassifierPolicy::new(
@@ -273,6 +315,14 @@ impl LlmTaskClassifier {
 
         // The cascade is an internal detail: callers drive the algorithm, not its parts.
         // Affinity comes first so a retained assignment short-circuits the judge call.
+        //
+        // TODO: bind the assignment on the post-decision hook instead, the way the
+        // per-target system prompt does. Affinity is a fact about the decision, not a
+        // classification, so recording it there would let a pinned session skip the
+        // cascade outright on the next turn. It would also make the pin survive
+        // composition: a cascade that uses this classifier as one member (the stage
+        // router does) currently never runs the affinity wired in here, because only
+        // the inner classifier is consulted.
         let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
         if session_affinity {
             let affinity = if message_hash_fallback {
@@ -286,8 +336,13 @@ impl LlmTaskClassifier {
                 .with_processor(affinity.clone())
                 .with_classifier(affinity);
         }
+        // The judge abstains when it cannot tell; the capable tier catches those turns
+        // rather than letting the cascade come back empty-handed.
+        let capable_fallback = DefaultTarget::new(classifier.capable_target.clone());
         Ok(Self {
-            route: route.with_classifier(classifier.clone()),
+            route: route
+                .with_classifier(classifier.clone())
+                .with_classifier(Arc::new(capable_fallback)),
             classifier,
         })
     }
@@ -398,6 +453,7 @@ mod tests {
             capability_elevated_floor: None,
             session_affinity: false,
             message_hash_fallback: false,
+            recent_turn_window: None,
         }
     }
 
@@ -608,6 +664,7 @@ mod tests {
             TaskClassifierConfig {
                 session_affinity: true,
                 message_hash_fallback: true,
+                recent_turn_window: None,
                 ..test_config(TEST_THRESHOLD)
             },
         )?);
@@ -670,6 +727,7 @@ mod tests {
                 capability_elevated_floor: None,
                 session_affinity: false,
                 message_hash_fallback: false,
+                recent_turn_window: None,
             },
             TaskClassifierConfig {
                 base_threshold: 0.5,
@@ -677,6 +735,7 @@ mod tests {
                 capability_elevated_floor: Some(0.5),
                 session_affinity: false,
                 message_hash_fallback: false,
+                recent_turn_window: None,
             },
             TaskClassifierConfig {
                 base_threshold: 0.5,
@@ -684,6 +743,7 @@ mod tests {
                 capability_elevated_floor: None,
                 session_affinity: false,
                 message_hash_fallback: true,
+                recent_turn_window: None,
             },
         ] {
             assert!(
@@ -696,18 +756,31 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_abstained_verdict_routes_capable() -> Result<()> {
+    fn an_unusable_verdict_abstains() -> Result<()> {
+        // Invalid, abstained, unintelligible, or absent: the judge could not tell,
+        // so it declines to decide and leaves the fallback to whoever composed the
+        // cascade.
         let policy = policy();
-        let invalid_probability = verdict(1.1, 1.0, false);
-        let abstained = verdict(1.0, 1.0, true);
         let invalid_boundary = TaskClassifierVerdict {
             capability_boundary: "unknown".to_string(),
             ..verdict(1.0, 1.0, false)
         };
-        assert_eq!(selected(&policy, Some(&invalid_probability))?, "capable");
-        assert_eq!(selected(&policy, Some(&abstained))?, "capable");
-        assert_eq!(selected(&policy, Some(&invalid_boundary))?, "capable");
-        assert_eq!(selected(&policy, None)?, "capable");
+        let unusable = [
+            Some(verdict(1.1, 1.0, false)),
+            Some(verdict(1.0, 1.0, true)),
+            Some(invalid_boundary),
+            None,
+        ];
+        for verdict in unusable {
+            let classification = policy.to_classification(verdict.as_ref());
+            assert!(matches!(classification, Classification::Ambiguous(_)));
+            assert!(classification.argmax(false)?.is_none());
+            // The capable tier rides along for a caller that reads ambiguous scores.
+            assert_eq!(
+                classification.argmax(true)?.map(|score| score.target),
+                Some("capable".to_string())
+            );
+        }
         Ok(())
     }
 
@@ -737,10 +810,63 @@ mod tests {
         Ok(())
     }
 
+    /// The text of each message a judge with `recent_turn_window` would be sent.
+    /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
+    fn judged_contents(recent_turn_window: usize) -> Result<Vec<String>> {
+        let judge = CapabilityJudge {
+            config: LlmTaskClassifier::load_judge_config()?,
+            recent_turn_window: Some(recent_turn_window),
+        };
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![
+                    Message::text(Role::System, "client instructions"),
+                    Message::text(Role::User, "initial task"),
+                    Message::text(Role::Assistant, "old response"),
+                    Message::text(Role::User, "old follow-up"),
+                    Message::text(Role::Assistant, "recent 1"),
+                    Message::text(Role::User, "recent 2"),
+                ],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+        Ok(judge
+            .build_request(&State::default(), &request)
+            .llm_request
+            .messages
+            .iter()
+            .filter_map(|message| message.text_content("\n"))
+            .collect())
+    }
+
+    #[test]
+    fn a_window_widens_the_judge_to_the_surrounding_conversation() -> Result<()> {
+        // Client instructions and the opening task, plus the last two turns.
+        let contents = judged_contents(2)?;
+        assert!(contents.contains(&"client instructions".to_string()));
+        assert!(contents.contains(&"initial task".to_string()));
+        assert!(contents.contains(&"recent 1".to_string()));
+        assert!(contents.contains(&"recent 2".to_string()));
+        assert!(!contents.contains(&"old response".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_window_keeps_only_the_instructions_and_the_task() -> Result<()> {
+        let contents = judged_contents(0)?;
+        assert!(contents.contains(&"client instructions".to_string()));
+        assert!(contents.contains(&"initial task".to_string()));
+        assert!(!contents.contains(&"recent 2".to_string()));
+        Ok(())
+    }
+
     #[test]
     fn capability_judge_builds_a_structured_request() -> Result<()> {
         let judge = CapabilityJudge {
             config: LlmTaskClassifier::load_judge_config()?,
+            recent_turn_window: None,
         };
         let request = Request {
             llm_request: LlmRequest {
@@ -828,6 +954,7 @@ mod tests {
         let reply = schema_shaped_verdict(schema)?;
         let judge = CapabilityJudge {
             config: config.clone(),
+            recent_turn_window: None,
         };
 
         let verdict = judge.parse(&text_response(None, reply))?;

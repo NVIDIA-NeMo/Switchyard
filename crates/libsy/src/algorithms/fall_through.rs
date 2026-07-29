@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::{Classifier, Event, Processor, Score};
+use crate::core::{Classification, Classifier, Event, Processor, Score};
 use crate::{
     Algorithm, Context, Decision, Driver, LibsyError, LlmClientError, LlmTarget, LlmTargetSet,
     Request, Response, Result, RoutedLlmClient,
@@ -54,7 +54,42 @@ impl Decision for FallThroughDecision {
     }
 }
 
-/// Processor chain → classifier cascade → routed model call. See the [module docs](self).
+/// Terminal classifier for a cascade whose classifiers may all abstain.
+///
+/// A classifier abstains when it cannot decide, which lets the next one try. The
+/// last has no next, so a cascade that could abstain all the way through needs a
+/// decider that never does. Which target that is belongs to whoever assembles the
+/// cascade, not to the classifiers in it.
+pub struct DefaultTarget {
+    target: String,
+}
+
+impl DefaultTarget {
+    /// Close a cascade with `target`.
+    pub fn new(target: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl<S: Send> Classifier<S> for DefaultTarget {
+    async fn score(
+        &self,
+        _state: &mut S,
+        _request: &mut Request,
+        _driver: Option<&Driver>,
+    ) -> Result<Classification> {
+        // Zero confidence: this is a fallback, not a judgement.
+        Ok(Classification::Scores(vec![Score {
+            target: self.target.clone(),
+            confidence: 0.0,
+        }]))
+    }
+}
+
+/// Processor chain → classifier cascade → routed model call. See the module docs.
 ///
 /// The generic state type is shared by every processor and classifier in the composition.
 pub struct FallThrough<S = ()> {
@@ -279,17 +314,24 @@ where
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
-        // 4. Replay the decision to the processors so stateful ones can bind it.
+        // 4. Post-decision replay, in two passes over the same chain. Every processor sees
+        //    the decision first, so stateful ones bind it; only then is the outbound
+        //    request offered for rewriting, paired with the decision that routed it. The
+        //    order matters: a processor rewriting the request in the second pass sees the
+        //    state every processor settled in the first.
         for processor in &self.processors {
-            processor
-                .process(
-                    state,
-                    Event::Decision {
-                        request,
-                        decision: decision.as_ref(),
-                    },
-                )
-                .await?;
+            let event = Event::Decision {
+                request,
+                decision: decision.as_ref(),
+            };
+            processor.process(state, event).await?;
+        }
+        for processor in &self.processors {
+            let event = Event::ModelRequest {
+                request,
+                decision: decision.as_ref(),
+            };
+            processor.process(state, event).await?;
         }
 
         Ok((target, decision))
@@ -700,10 +742,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processor_observes_request_and_decision() -> Result<()> {
+    async fn processor_observes_request_decision_then_model_request() -> Result<()> {
         use parking_lot::Mutex;
 
-        // Records which event kinds it saw, proving the request-then-decision replay.
+        // Records which event kinds it saw, proving the replay order: the inbound
+        // request, then the decision, then the request on its way to the model.
         struct RecordingProcessor(Arc<Mutex<Vec<&'static str>>>);
 
         #[async_trait]
@@ -712,6 +755,7 @@ mod tests {
                 let kind = match event {
                     Event::Request(_) => "request",
                     Event::Decision { .. } => "decision",
+                    Event::ModelRequest { .. } => "model_request",
                     _ => "other",
                 };
                 self.0.lock().push(kind);
@@ -725,7 +769,7 @@ mod tests {
             .with_classifier(fixed(vec![score("strong", 1.0)]));
         run(router).await?;
 
-        assert_eq!(*seen.lock(), vec!["request", "decision"]);
+        assert_eq!(*seen.lock(), vec!["request", "decision", "model_request"]);
         Ok(())
     }
 

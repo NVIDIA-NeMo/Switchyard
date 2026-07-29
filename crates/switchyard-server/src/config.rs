@@ -8,7 +8,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use libsy::algorithms::{LlmTaskClassifier, Noop, Passthrough, Random, TaskClassifierConfig};
+use libsy::algorithms::{
+    LlmTaskClassifier, Noop, Passthrough, Random, StageRouter, StageRouterConfig, TargetPrompts,
+    TaskClassifierConfig,
+};
+use libsy::stage_router::{HandoffNoteConfig, LlmFallback, PickerMode};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde::Deserialize;
 use serde_json::Value;
@@ -191,15 +195,48 @@ enum RouteConfig {
         #[serde(flatten)]
         classifier_config: TaskClassifierConfig,
     },
+    StageRouter {
+        id: String,
+        capable_target: String,
+        efficient_target: String,
+        /// Tier a turn falls back to when the signals are not confident.
+        picker: PickerMode,
+        confidence_threshold: f64,
+        /// Trailing tool results the signals are computed over.
+        #[serde(default)]
+        recent_turn_window: Option<usize>,
+        /// Note handed to the model a signal-driven switch routes to.
+        #[serde(default)]
+        handoff_notes: Option<HandoffNoteConfig>,
+        /// System prompt handed to each tier on every turn it serves.
+        #[serde(default)]
+        capable_system_prompt: Option<String>,
+        #[serde(default)]
+        efficient_system_prompt: Option<String>,
+        /// Capability judge consulted on turns the signals leave undecided.
+        #[serde(default)]
+        classifier: Option<StageClassifierConfig>,
+    },
+}
+
+/// The judge a `stage_router` route falls through to, and how it routes.
+#[derive(Debug, Deserialize)]
+struct StageClassifierConfig {
+    /// Target the judge is called through. Not a routing destination.
+    target: String,
+    #[serde(flatten)]
+    config: TaskClassifierConfig,
 }
 
 impl RouteConfig {
     fn id(&self) -> &str {
         use RouteConfig::*;
         match self {
-            Noop { id } | Random { id, .. } | LlmClassifier { id, .. } | Passthrough { id, .. } => {
-                id
-            }
+            Noop { id }
+            | Random { id, .. }
+            | LlmClassifier { id, .. }
+            | Passthrough { id, .. }
+            | StageRouter { id, .. } => id,
         }
     }
 }
@@ -301,7 +338,65 @@ fn build_algorithm(
                     })?;
             Ok(Arc::new(algorithm))
         }
+        RouteConfig::StageRouter {
+            capable_target,
+            efficient_target,
+            picker,
+            confidence_threshold,
+            recent_turn_window,
+            handoff_notes,
+            capable_system_prompt,
+            efficient_system_prompt,
+            classifier,
+            ..
+        } => {
+            let capable = resolve_target(route_name, capable_target, targets)?;
+            let efficient = resolve_target(route_name, efficient_target, targets)?;
+            let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
+            config.recent_window = *recent_turn_window;
+            config.handoff_notes = handoff_notes.clone();
+            config.tier_prompts = tier_prompts(
+                &capable.semantic_name,
+                capable_system_prompt.as_deref(),
+                &efficient.semantic_name,
+                efficient_system_prompt.as_deref(),
+            );
+            // The judge is called through its own target, so it is not a routing
+            // destination and stays out of the tier pair.
+            config.llm_fallback = classifier
+                .as_ref()
+                .map(|classifier| {
+                    resolve_target(route_name, &classifier.target, targets).map(|judge_target| {
+                        LlmFallback {
+                            judge_target,
+                            config: classifier.config.clone(),
+                        }
+                    })
+                })
+                .transpose()?;
+            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+                ServerError::new(format!("stage_router route {route_name}: {error}"))
+            })?;
+            Ok(Arc::new(algorithm))
+        }
     }
+}
+
+/// Keys each configured system prompt by the target it belongs to.
+fn tier_prompts(
+    capable: &str,
+    capable_prompt: Option<&str>,
+    efficient: &str,
+    efficient_prompt: Option<&str>,
+) -> TargetPrompts {
+    let mut prompts = TargetPrompts::default();
+    if let Some(prompt) = capable_prompt {
+        prompts = prompts.with(capable, prompt);
+    }
+    if let Some(prompt) = efficient_prompt {
+        prompts = prompts.with(efficient, prompt);
+    }
+    prompts
 }
 
 fn resolve_targets<'a>(

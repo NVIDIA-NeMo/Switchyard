@@ -22,8 +22,13 @@ pub enum Event<'a> {
         /// The routing decision produced for `request`.
         decision: &'a dyn Decision,
     },
-    /// A request about to be sent to a model.
-    ModelRequest(&'a mut Request),
+    /// A request about to be sent to a model, with the decision that routed it.
+    ModelRequest {
+        /// The outbound request, rewritable in place.
+        request: &'a mut Request,
+        /// Where the request is headed.
+        decision: &'a dyn Decision,
+    },
     /// A buffered response received back from a model.
     ModelResponse(&'a AggLlmResponse),
 }
@@ -53,7 +58,7 @@ mod tests {
             Event::Request(_) => "requests",
             Event::Signal(_) => "signals",
             Event::Decision { .. } => "decisions",
-            Event::ModelRequest(_) => "model_requests",
+            Event::ModelRequest { .. } => "model_requests",
             Event::ModelResponse(_) => "model_responses",
         }
     }
@@ -111,7 +116,13 @@ mod tests {
             .process(&mut state, Event::Request(&mut req))
             .await?;
         processor
-            .process(&mut state, Event::ModelRequest(&mut req))
+            .process(
+                &mut state,
+                Event::ModelRequest {
+                    request: &mut req,
+                    decision: &decision,
+                },
+            )
             .await?;
         processor
             .process(&mut state, Event::ModelResponse(&response))
@@ -159,8 +170,11 @@ mod tests {
     #[async_trait]
     impl Processor for RewritingProcessor {
         async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
-            if let Event::Request(request) | Event::ModelRequest(request) = event {
-                request.llm_request.model = Some("rewritten".to_string());
+            match event {
+                Event::Request(request) | Event::ModelRequest { request, .. } => {
+                    request.llm_request.model = Some("rewritten".to_string());
+                }
+                _ => {}
             }
             Ok(())
         }

@@ -18,7 +18,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::algorithms::{FallThrough, Random};
-use libsy::stage_router::{PickerMode, StageClassifier};
+use libsy::stage_router::{PickerMode, StageClassifier, StageTargets};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, State as AlgorithmState};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
@@ -405,6 +405,72 @@ fn assert_in_order(haystack: &str, needles: &[&str]) {
     }
 }
 
+/// A critical tool error must reach the stage router's signal scorer, which reads
+/// the decoded conversation. The endpoint records no inbound wire format, so a
+/// scorer that parsed the raw body instead would find nothing and route every turn
+/// as if the conversation had no signals at all.
+#[tokio::test]
+async fn stage_route_escalates_on_a_signal_in_the_conversation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "fatal runtime error: out of memory"},
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/strong"),
+        "a critical error should escalate on the signals alone"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -445,6 +511,24 @@ base_threshold = 0.5
 id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_system_prompt = "diagnose before you edit"
+efficient_system_prompt = "follow the settled plan"
+
+[routes.stage.handoff_notes]
+escalation_note = "the previous model was stalling"
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
 "#,
         base_url = upstream.base_url
     ))?;
@@ -604,8 +688,9 @@ fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<S
         },
     ]);
     let stage: Arc<dyn Algorithm> = Arc::new(
-        FallThrough::<AlgorithmState>::new_with_state(targets)
-            .with_classifier(Arc::new(StageClassifier::new(mode, 0.5))),
+        FallThrough::<AlgorithmState>::new_with_state(targets).with_classifier(Arc::new(
+            StageClassifier::new(StageTargets::new("strong", "weak"), mode, 0.5),
+        )),
     );
     Ok(ServerState::new([("switchyard/stage".to_string(), stage)])?)
 }

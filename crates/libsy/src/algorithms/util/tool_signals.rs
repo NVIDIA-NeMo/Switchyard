@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use switchyard_protocol::{Request, WireFormat};
+use switchyard_protocol::{ContentBlock, Request};
 
 use crate::Result;
 
@@ -331,223 +331,70 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 /// Returns [`ToolSignals::default()`] when the wire format or body is absent or
 /// the messages list is empty — callers can always read `signal.severity`.
 fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
-    let Some(Some(wire_format)) = request.metadata.as_ref().map(|m| m.wire_format) else {
-        return ToolSignals::default();
-    };
-    let Some(body) = request.raw_request.as_ref() else {
-        return ToolSignals::default();
-    };
-    let Some(obj) = body.as_object() else {
-        return ToolSignals::default();
-    };
+    // Read the decoded conversation, not the raw body: every inbound format lands
+    // in the same shape here, so the signals do not depend on knowing which one it
+    // arrived as.
+    let messages = &request.llm_request.messages;
+    let mut tool_texts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
+    let mut compacted = false;
 
-    let (mut signal, entries) = match wire_format {
-        WireFormat::OpenAiChat => {
-            let messages = obj
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (
-                extract_from_messages_openai_chat(messages, recent_window),
-                messages,
-            )
+    for message in messages {
+        for block in &message.content {
+            match block {
+                ContentBlock::ToolCall(call) => {
+                    tool_calls.push(ObservedToolCall {
+                        name: call.name.clone(),
+                        command: command_of(&call.arguments),
+                    });
+                }
+                ContentBlock::ToolResult(result) => {
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(text_of)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !text.is_empty() {
+                        tool_texts.push(text);
+                    }
+                }
+                // Compaction is detected anywhere in the conversation: the summary
+                // stays in the prefix on every later turn, so this self-latches
+                // once it fires.
+                ContentBlock::Text { text } => {
+                    compacted |= text.to_lowercase().contains(COMPACTION_MARKER);
+                }
+                _ => {}
+            }
         }
-        WireFormat::AnthropicMessages => {
-            let messages = obj
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (
-                extract_from_messages_anthropic(messages, recent_window),
-                messages,
-            )
-        }
-        WireFormat::OpenAiResponses => {
-            let items = obj
-                .get("input")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (extract_from_input_responses(items, recent_window), items)
-        }
-    };
+    }
 
-    // Compaction is detected anywhere in the message/item contents (the summary stays
-    // in the prefix on every subsequent turn, so this self-latches once it fires).
-    signal.compacted = entries.iter().any(|m| {
-        m.as_object()
-            .is_some_and(|o| content_has_compaction_marker(o.get("content")))
-    });
+    let mut signal = build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window);
+    signal.compacted = compacted;
     signal
 }
-
-// ─── format-specific extractors ──────────────────────────────────────────────
 
 /// Distinctive preamble Claude Code injects as a user message when it compacts an
 /// overflowed context. Matched case-insensitively; normal task text never contains it.
 const COMPACTION_MARKER: &str = "session is being continued";
 
-/// True when a user-message content (string or text blocks) carries the compaction
-/// summary preamble.
-fn content_has_compaction_marker(content: Option<&Value>) -> bool {
-    match content {
-        Some(Value::String(s)) => s.to_lowercase().contains(COMPACTION_MARKER),
-        Some(Value::Array(blocks)) => blocks.iter().any(|b| {
-            b.as_object()
-                .and_then(|o| o.get("text"))
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.to_lowercase().contains(COMPACTION_MARKER))
-        }),
-        _ => false,
-    }
+/// The shell command a tool call carries, when it has one. Harnesses name the
+/// field `command`; anything else is a tool whose category comes from its name.
+fn command_of(arguments: &Value) -> Option<String> {
+    arguments
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
 }
 
-fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolSignals {
-    let mut tool_texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-
-    for msg in messages {
-        let Some(obj) = msg.as_object() else { continue };
-        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
-        match role {
-            "tool" => {
-                if let Some(text) = content_to_text(obj.get("content")) {
-                    tool_texts.push(text);
-                }
-            }
-            "assistant" => {
-                if let Some(tc_list) = obj.get("tool_calls").and_then(Value::as_array) {
-                    for tc in tc_list {
-                        let Some(fn_obj) = tc
-                            .as_object()
-                            .and_then(|t| t.get("function"))
-                            .and_then(|f| f.as_object())
-                        else {
-                            continue;
-                        };
-                        let Some(name) = fn_obj.get("name").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        // OpenAI Chat encodes `arguments` as a JSON string.
-                        let command = fn_obj
-                            .get("arguments")
-                            .and_then(Value::as_str)
-                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                            .and_then(|v| {
-                                v.get("command")
-                                    .and_then(Value::as_str)
-                                    .map(|s| s.to_lowercase())
-                            });
-                        tool_calls.push(ObservedToolCall {
-                            name: name.to_string(),
-                            command,
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
+/// Text carried by a content block, ignoring the non-textual kinds.
+fn text_of(block: &ContentBlock) -> Option<&str> {
+    match block {
+        ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
+        _ => None,
     }
-
-    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
 }
-
-fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> ToolSignals {
-    let mut tool_texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-
-    for msg in messages {
-        let Some(obj) = msg.as_object() else { continue };
-        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
-        let content = obj.get("content");
-
-        match role {
-            "user" => {
-                if let Some(Value::Array(blocks)) = content {
-                    for block in blocks {
-                        let Some(b) = block.as_object() else { continue };
-                        if b.get("type").and_then(Value::as_str) == Some("tool_result") {
-                            if let Some(text) = content_to_text(b.get("content")) {
-                                tool_texts.push(text);
-                            }
-                        }
-                    }
-                }
-            }
-            "assistant" => {
-                if let Some(Value::Array(blocks)) = content {
-                    for block in blocks {
-                        let Some(b) = block.as_object() else { continue };
-                        if b.get("type").and_then(Value::as_str) == Some("tool_use") {
-                            let Some(name) = b.get("name").and_then(Value::as_str) else {
-                                continue;
-                            };
-                            // Anthropic delivers `input` as a parsed object.
-                            let command = b
-                                .get("input")
-                                .and_then(Value::as_object)
-                                .and_then(|i| i.get("command"))
-                                .and_then(Value::as_str)
-                                .map(|s| s.to_lowercase());
-                            tool_calls.push(ObservedToolCall {
-                                name: name.to_string(),
-                                command,
-                            });
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
-}
-
-fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolSignals {
-    let mut tool_texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let item_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
-
-        match item_type {
-            "function_call_output" => {
-                if let Some(output) = obj.get("output").and_then(Value::as_str) {
-                    tool_texts.push(output.to_string());
-                }
-            }
-            "function_call" => {
-                let Some(name) = obj.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                let command = obj
-                    .get("arguments")
-                    .and_then(Value::as_str)
-                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                    .and_then(|v| {
-                        v.get("command")
-                            .and_then(Value::as_str)
-                            .map(|s| s.to_lowercase())
-                    });
-                tool_calls.push(ObservedToolCall {
-                    name: name.to_string(),
-                    command,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    build_signal(tool_texts, tool_calls, items.len() as u32, recent_window)
-}
-
-// ─── aggregation ─────────────────────────────────────────────────────────────
 
 fn build_signal(
     tool_texts: Vec<String>,
@@ -750,17 +597,20 @@ fn has_nonzero_failure_count(lower: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
-    use switchyard_protocol::Metadata;
+    use switchyard_protocol::{Metadata, WireFormat};
 
-    /// Build a `Request` carrying `body` as its raw payload, tagged with `wire_format`.
+    /// Decodes `body` the way an endpoint would, so these tests assert on the
+    /// bodies a real client sends rather than on hand-built internal shapes.
     fn request_with(wire_format: WireFormat, body: Value) -> Request {
+        let llm_request = switchyard_translation::decode_request(wire_format, &body)
+            .unwrap_or_else(|error| panic!("fixture is not valid {wire_format}: {error}"));
         Request {
+            llm_request,
             raw_request: Some(body),
             metadata: Some(Metadata {
                 wire_format: Some(wire_format),
                 ..Default::default()
             }),
-            ..Default::default()
         }
     }
 

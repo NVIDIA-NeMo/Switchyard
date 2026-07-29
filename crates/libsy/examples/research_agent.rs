@@ -112,6 +112,7 @@ async fn main() -> Result<()> {
             capability_elevated_floor: None,
             session_affinity: false,
             message_hash_fallback: false,
+            recent_turn_window: None,
         },
     )?);
 

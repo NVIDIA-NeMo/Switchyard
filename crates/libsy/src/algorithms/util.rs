@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod affinity;
-pub(crate) mod handoff_notes;
 mod llm_judge;
-pub(crate) mod stage_router;
+pub(crate) mod prompts;
+pub(crate) mod stage;
 mod subagent;
 pub(crate) mod tool_signals;
 
 pub use affinity::AffinityRouter;
 pub(crate) use llm_judge::{Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+pub use prompts::{append_note, SystemPromptProcessor, TargetPrompts};
 pub use subagent::SubagentOverride;
