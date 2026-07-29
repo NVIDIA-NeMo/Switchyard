@@ -5,12 +5,22 @@ import json
 
 import httpx
 import respx
-from example import sy_request
 from switchyard_litellm import LiteLLMSyClient
 
 from switchyard.libsy import LlmTarget, algorithms
 
 BASE_URL = "http://gateway.test/v1"
+
+
+def request_body() -> dict[str, object]:
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Route this request."}],
+            }
+        ]
+    }
 
 
 def gateway_response(model: str) -> dict[str, object]:
@@ -53,8 +63,8 @@ async def test_random_router_can_drive_both_litellm_targets() -> None:
     try:
         strong_router = algorithms.random(targets, weights=[1, 0], seed=42)
         fast_router = algorithms.random(targets, weights=[0, 1], seed=42)
-        strong_decisions, strong_response = await strong_router.run(sy_request())
-        fast_decisions, fast_response = await fast_router.run(sy_request())
+        strong_decisions, strong_response = await strong_router.run(request_body())
+        fast_decisions, fast_response = await fast_router.run(request_body())
     finally:
         await strong_client.aclose()
         await fast_client.aclose()
