@@ -50,6 +50,16 @@ const FIRST_USER_CHARS: usize = 2_000;
 /// caps below normally bind first; when this does bind, the oldest window lines drop.
 const MAX_REQUEST_CHARS: usize = 18_000;
 
+/// Completion budget for one judge reply, covering any reasoning the judge model emits
+/// alongside the verdict.
+///
+/// A runaway guard, not a budget: output tokens cost what they generate, so a generous cap is
+/// nearly free, while a tight one truncates mid-reasoning into unparseable JSON and fails the
+/// judge open on every call. Sized well above the verdict itself — the benchmarked judge's
+/// `reason` ran ~40 tokens at the median and ~136 at its longest — leaving the remainder as
+/// reasoning headroom.
+const JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
+
 /// Ceiling on tracked confirmation streaks, mirroring `AffinityRouter`'s assignment cap.
 const MAX_STREAKS: usize = 4_096;
 
@@ -145,7 +155,7 @@ impl Judge for EscalationJudge {
                 ],
                 output: OutputParams {
                     response_format: self.config.response_schema.clone(),
-                    ..OutputParams::default()
+                    max_output_tokens: Some(JUDGE_MAX_OUTPUT_TOKENS),
                 },
                 ..LlmRequest::default()
             },
@@ -564,8 +574,9 @@ mod tests {
     };
 
     use super::{
-        conversation_turn, message_text, summarize_for_judge, truncate_middle,
-        EscalationJudgeSettings, EscalationRouter, MAX_REQUEST_CHARS,
+        conversation_turn, load_judge_config, message_text, summarize_for_judge, truncate_middle,
+        EscalationJudge, EscalationJudgeSettings, EscalationRouter, Judge, State,
+        JUDGE_MAX_OUTPUT_TOKENS, MAX_REQUEST_CHARS, PROMPT_TEMPLATE, SCHEMA_TEMPLATE,
     };
 
     fn target(name: &str, client: Option<Arc<dyn RoutedLlmClient>>) -> LlmTarget {
@@ -971,6 +982,31 @@ mod tests {
     #[tokio::test]
     async fn schema_and_prompt_load_at_construction() -> crate::Result<()> {
         EscalationRouter::new(target("a", None), target("b", None), target("c", None))?;
+        Ok(())
+    }
+
+    #[test]
+    fn judge_request_is_rubric_plus_summary_under_a_completion_cap() -> crate::Result<()> {
+        let judge = EscalationJudge {
+            config: load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
+            settings: EscalationJudgeSettings::default(),
+        };
+
+        let built = judge.build_request(&State::default(), &request_at_turn(None, 4));
+
+        // Two messages: the rubric as system, the condensed trajectory as user.
+        assert_eq!(built.llm_request.messages.len(), 2);
+        assert_eq!(built.llm_request.messages[0].role, Role::System);
+        assert_eq!(built.llm_request.messages[1].role, Role::User);
+        assert!(built.llm_request.messages[1]
+            .text_content("")
+            .is_some_and(|text| text.contains("Conversation turn 4")));
+        // Bounded output, so a reasoning judge cannot run away mid-verdict.
+        assert_eq!(
+            built.llm_request.output.max_output_tokens,
+            Some(JUDGE_MAX_OUTPUT_TOKENS)
+        );
+        assert!(built.llm_request.output.response_format.is_some());
         Ok(())
     }
 
