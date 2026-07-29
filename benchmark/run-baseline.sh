@@ -248,12 +248,17 @@ merge_claude_closed_book_tools() {
 }
 
 harbor_extra_has_agent_version() {
+    harbor_extra_has_agent_kwarg version
+}
+
+harbor_extra_has_agent_kwarg() {
+    local key="$1"
     local i=0 token next
     while [[ "${i}" -lt "${#HARBOR_EXTRA[@]}" ]]; do
         token="${HARBOR_EXTRA[$i]}"
         if [[ "${token}" == "--ak" || "${token}" == "--agent-kwarg" ]]; then
             next="${HARBOR_EXTRA[$((i + 1))]:-}"
-            [[ "${next}" == version=* ]] && return 0
+            [[ "${next}" == "${key}="* ]] && return 0
             i=$((i + 2))
             continue
         fi
@@ -568,6 +573,10 @@ add_agent_version_kwarg
 
 if [[ -n "${REASONING_EFFORT}" ]]; then
     HARBOR_CMD+=(--ak "reasoning_effort=${REASONING_EFFORT}")
+    # Claude code does not support thinking=true for now, so we use adaptive instead
+    if [[ "${AGENT}" == "claude-code" ]] && ! harbor_extra_has_agent_kwarg thinking; then
+        HARBOR_CMD+=(--ak "thinking=adaptive")
+    fi
 fi
 
 if [[ -n "${N_TASKS}" ]]; then

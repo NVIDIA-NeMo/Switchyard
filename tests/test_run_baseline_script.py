@@ -322,6 +322,7 @@ def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> Non
     assert _option_value(harbor, "--model") == "tb-lite-single-opus-4-7"
     assert "version=2.1.211" in _option_values(harbor, "--ak")
     assert "reasoning_effort=high" in _option_values(harbor, "--ak")
+    assert "thinking=adaptive" in _option_values(harbor, "--ak")
     assert "reasoning:     high" in result.stdout
     assert "harbor_server: http://switchyard:4000" in result.stdout
 
@@ -371,6 +372,7 @@ def test_dry_run_explicit_empty_reasoning_omits_kwarg(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert not any(value.startswith("reasoning_effort=") for value in _option_values(harbor, "--ak"))
+    assert not any(value.startswith("thinking=") for value in _option_values(harbor, "--ak"))
     assert "reasoning:     unset" in result.stdout
 
 
@@ -393,6 +395,33 @@ def test_dry_run_explicit_reasoning_overrides_default(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert "reasoning_effort=medium" in _option_values(harbor, "--ak")
+    assert "thinking=adaptive" in _option_values(harbor, "--ak")
+
+
+def test_dry_run_explicit_claude_thinking_overrides_adaptive_default(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
+
+    result = _run_baseline(
+        tmp_path,
+        "--server-config",
+        str(profile),
+        "--route-model",
+        "tb-lite-random-routing",
+        "--agent",
+        "claude-code",
+        "--reasoning-effort",
+        "high",
+        "--harbor-extra",
+        "--ak",
+        "--harbor-extra",
+        "thinking=disabled",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
+    thinking = [value for value in _option_values(harbor, "--ak") if value.startswith("thinking=")]
+    assert thinking == ["thinking=disabled"]
 
 
 def test_harbor_path_is_required(tmp_path: Path) -> None:
