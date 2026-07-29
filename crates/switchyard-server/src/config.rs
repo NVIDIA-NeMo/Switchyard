@@ -19,6 +19,7 @@ use switchyard_llm_client::{
 use crate::{ServerError, ServerResult, ServerState};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+const MAX_CONFIGURED_RETRIES: u32 = 10;
 
 /// Loads a TOML deployment file and constructs the complete server state.
 pub fn load_server_state(path: impl AsRef<Path>) -> ServerResult<ServerState> {
@@ -212,6 +213,11 @@ fn build_backend(
     if base_url.is_empty() {
         return Err(ServerError::new(format!(
             "llm client {client_name} base_url must not be empty"
+        )));
+    }
+    if config.max_retries > MAX_CONFIGURED_RETRIES {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
     let api_key = config
@@ -569,6 +575,18 @@ target = "weak"
             1,
         );
         assert!(error_message(&invalid).contains("max_retries"));
+    }
+
+    #[test]
+    fn retry_budget_rejects_excessive_values() {
+        let invalid = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nmax_retries = 11",
+            1,
+        );
+        assert!(
+            error_message(&invalid).contains("llm client primary max_retries must be at most 10")
+        );
     }
 
     #[test]
