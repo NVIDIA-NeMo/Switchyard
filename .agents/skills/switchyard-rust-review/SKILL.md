@@ -33,9 +33,9 @@ Use this tone: direct, concise, technically grounded, occasionally pointed but n
 
 ## How to review
 
-Unless explicitly told otherwise, review **only the recently written/modified code** — not the entire codebase. Use `git diff`, `git log`, or ask for the specific files/PR if unclear.
+Unless explicitly told otherwise, review **only the recently written/modified code** — not the entire codebase.
 
-1. Identify the review target with `git status`, `git diff --stat`, and `git diff`.
+1. Identify the review target using `git`
 
 2. Loop: Use the philosophy, rules and rubrics in this file to find an issue. Repeat this step doing multiple passes over the code, keep finding issues and style comments that this skill cares about until you cannot find any more.
 
@@ -52,16 +52,17 @@ Unless explicitly told otherwise, review **only the recently written/modified co
 4. **Right log level.** `info!` is for logs we think end-users will want to see. Routine internal events should be `debug!`. Hot paths are `trace!` or remove. Logging is relatively expensive, it takes a lock on the output channel.
 5. **Don't add `Arc<Mutex<…>>` reflexively.** As long as we are not doing concurrent work on multiple threads, we shouldn't need to synchronize. We rarely need both `Arc` and `Box` because they are both pointers; if both are used there should be a comment justifying it. Owners decide their own synchronization — don't pre-wrap shared state in a constructor.
 6. **Drop unnecessary `.clone()`.** This reduces memory copies. Can we pass a reference, move it, or make it `Copy` instead? Also, `Copy` types don't need `.clone()`.
-7. **Prefer `parking_lot::RwLock` over `tokio::sync::RwLock`** for short critical sections when no `.await` is held across the lock. It is faster and fairer.
-8. **`Drop` for cleanup, not manual unlock paths.** RAII over ad-hoc cleanup. For example, use it when a lock must be released as the value goes out of scope.
-9. **Prefer stdlib/tokio primitives over new dependencies.** Avoid new dependencies if possible.
-10. **Don't change error messages or interfaces just for taste** — but rename when the name actively misleads (`serve` implies long-running server, `Instance` is too generic in a multi-instance system, etc.).
-11. **Call out scope creep.** A PR should do one thing well. Example: "We should focus this PR, it's a bit of a mixture of things." Example 2: "This part seems unrelated to the rest of the PR."
-12. **Async Rust focus**: For async Rust, pay extra attention to locks held across `.await`, blocking work on executor threads, spawned task shutdown/error handling, cancellation behavior, and channel backpressure.
-13. **Stack vs Heap allocation**: Avoid unnecessary heap allocation on all paths.
-14. **FFI:** Preserve Python-visible types, defaults, exceptions, and lifetimes. Do not hold the GIL during blocking or awaited work.
-15. **Streaming:** Preserve event order, termination, partial chunks, usage accounting, and error frames across every supported wire format.
-16. **Boundaries:** Keep protocol types neutral, translation in translation code, LLM calls in clients, and routing behavior in algorithms or server wiring.
+7. **Use `parking_lot::Mutex` instead of `std::sync::Mutex`** because it is faster, uses less memory, and does not have poisoning.
+8. **Prefer `parking_lot::RwLock` over `tokio::sync::RwLock`** for short critical sections when no `.await` is held across the lock. It is faster and fairer.
+9. **`Drop` for cleanup, not manual unlock paths.** RAII over ad-hoc cleanup. For example, use it when a lock must be released as the value goes out of scope.
+10. **Prefer stdlib/tokio primitives over new dependencies.** Avoid new dependencies if possible.
+11. **Don't change error messages or interfaces just for taste** — but rename when the name actively misleads (`serve` implies long-running server, `Instance` is too generic in a multi-instance system, etc.).
+12. **Call out scope creep.** A PR should do one thing well. Example: "We should focus this PR, it's a bit of a mixture of things." Example 2: "This part seems unrelated to the rest of the PR."
+13. **Async Rust focus**: For async Rust, pay extra attention to locks held across `.await`, blocking work on executor threads, spawned task shutdown/error handling, cancellation behavior, and channel backpressure.
+14. **Stack vs Heap allocation**: Avoid unnecessary heap allocation on all paths.
+15. **FFI:** Preserve Python-visible types, defaults, exceptions, and lifetimes. Do not hold the GIL during blocking or awaited work.
+16. **Streaming:** Preserve event order, termination, partial chunks, usage accounting, and error frames across every supported wire format.
+17. **Boundaries:** Keep protocol types neutral, translation in translation code, LLM calls in clients, and routing behavior in algorithms or server wiring.
 
 ## Comment hygiene
 
