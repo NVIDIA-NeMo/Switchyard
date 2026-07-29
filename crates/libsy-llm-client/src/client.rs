@@ -23,7 +23,7 @@ use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
-use crate::metrics::record_upstream_attempt;
+use crate::metrics::{is_retryable_http_status, record_upstream_attempt};
 use crate::raw::RawResponse;
 
 // TODO: Why is this here? What does it do?
@@ -182,7 +182,7 @@ impl TranslatingLlmClient {
         let max_attempts = max_retries + 1;
         let mut attempt = 0_u64;
         loop {
-            let span = tracing::info_span!(
+            let span = tracing::debug_span!(
                 target: "libsy",
                 "libsy.upstream_attempt",
                 model,
@@ -199,6 +199,7 @@ impl TranslatingLlmClient {
                 .send_once(&url, backend, &body, metadata, model, streaming)
                 .instrument(span.clone())
                 .await;
+            // The retained handle updates this same attempt span with its outcome.
             match result {
                 Ok(response) => {
                     span.record("outcome", "success");
@@ -219,6 +220,7 @@ impl TranslatingLlmClient {
 
                     let delay = retry_delay(attempt, failure.retry_after);
                     span.record("retry_delay_ms", duration_millis(delay));
+                    // Close the attempt span before sleeping so backoff is not attempt latency.
                     drop(span);
                     tokio::time::sleep(delay).await;
                     attempt += 1;
@@ -243,10 +245,7 @@ impl TranslatingLlmClient {
         let builder = backend.apply_auth(builder);
 
         let response = match builder.send().await {
-            Ok(response) => {
-                record_upstream_attempt(Some(response.status().as_u16()));
-                response
-            }
+            Ok(response) => response,
             Err(error) => {
                 record_upstream_attempt(None);
                 return Err(AttemptFailure {
@@ -259,13 +258,22 @@ impl TranslatingLlmClient {
         let status = response.status();
         if status.is_success() {
             if streaming {
+                // Streaming body failures happen after the retry boundary.
+                record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming(response));
             }
-            let body = response.bytes().await.map_err(|error| AttemptFailure {
-                error: convert_reqwest_error(error),
-                status: Some(status.as_u16()),
-                retry_after: None,
-            })?;
+            let body = match response.bytes().await {
+                Ok(body) => body,
+                Err(error) => {
+                    record_upstream_attempt(None);
+                    return Err(AttemptFailure {
+                        error: convert_reqwest_error(error),
+                        status: Some(status.as_u16()),
+                        retry_after: None,
+                    });
+                }
+            };
+            record_upstream_attempt(Some(status.as_u16()));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),
@@ -273,11 +281,18 @@ impl TranslatingLlmClient {
         }
 
         let retry_after = retry_after_delay(response.headers());
-        let body = response.text().await.map_err(|error| AttemptFailure {
-            error: convert_reqwest_error(error),
-            status: Some(status.as_u16()),
-            retry_after,
-        })?;
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                record_upstream_attempt(None);
+                return Err(AttemptFailure {
+                    error: convert_reqwest_error(error),
+                    status: Some(status.as_u16()),
+                    retry_after,
+                });
+            }
+        };
+        record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
                 LlmClientError::ContextWindowExceeded {
@@ -547,9 +562,7 @@ impl AttemptFailure {
     fn is_retryable(&self) -> bool {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
-            LlmClientError::UpstreamHttp { status, .. } => {
-                *status == 408 || *status == 429 || *status >= 500
-            }
+            LlmClientError::UpstreamHttp { status, .. } => is_retryable_http_status(*status),
             _ => false,
         }
     }
@@ -1366,7 +1379,7 @@ mod tests {
         };
         assert!(transport.is_retryable());
 
-        for status in [408, 429, 500, 503] {
+        for status in [408, 429, 500, 503, 599] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
@@ -1377,7 +1390,7 @@ mod tests {
             };
             assert!(failure.is_retryable(), "HTTP {status} should retry");
         }
-        for status in [400, 401, 409] {
+        for status in [400, 401, 409, 600] {
             let failure = AttemptFailure {
                 error: LlmClientError::UpstreamHttp {
                     status,
