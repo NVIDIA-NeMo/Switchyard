@@ -358,16 +358,13 @@ impl Classifier<State> for EscalationClassifier {
             .map_err(|e| LibsyError::AlgorithmError {
                 message: format!("failed to aggregate efficient response: {e}"),
             })?;
+        // Append the efficient reply so the judge reads this turn's completed trajectory.
+        let mut judge_request = request.clone();
+        judge_request.llm_request.messages.push(assistant_message(&agg));
         let efficient_response = Response {
             llm_response: LlmResponse::Agg(agg),
             metadata: efficient_response.metadata,
         };
-
-        // Append the efficient reply so the judge reads this turn's completed trajectory.
-        let mut judge_request = request.clone();
-        judge_request.llm_request.messages.push(assistant_message(
-            efficient_response.llm_response.as_agg().unwrap(),
-        ));
 
         let (classification, _) = self
             .judge
