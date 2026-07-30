@@ -311,7 +311,7 @@ impl Classifier<State> for StageClassifier {
         state: &mut State,
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<crate::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
             // No tool activity yet — nothing to score, so fall open to the
@@ -328,10 +328,13 @@ impl Classifier<State> for StageClassifier {
                 "decision_source".to_string(),
                 StateValue::String(DecisionSource::FallOpen.as_str().to_string()),
             );
-            return Ok(Classification::Ambiguous(vec![Score {
-                target: target.to_string(),
-                confidence: 0.0,
-            }]));
+            return Ok((
+                Classification::Ambiguous(vec![Score {
+                    target: target.to_string(),
+                    confidence: 0.0,
+                }]),
+                None,
+            ));
         };
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
@@ -352,10 +355,13 @@ impl Classifier<State> for StageClassifier {
                 );
                 let conf = score.abs();
                 // TODO add the non-target to this score set?
-                Ok(Classification::Scores(vec![Score {
-                    target: target.to_string(),
-                    confidence: conf,
-                }]))
+                Ok((
+                    Classification::Scores(vec![Score {
+                        target: target.to_string(),
+                        confidence: conf,
+                    }]),
+                    None,
+                ))
             }
             PickOutcome::ConsultClassifier {
                 score,
@@ -376,10 +382,13 @@ impl Classifier<State> for StageClassifier {
                 );
                 let conf = score.abs();
                 // TODO add the non-target to this score set?
-                Ok(Classification::Ambiguous(vec![Score {
-                    target: target.to_string(),
-                    confidence: conf,
-                }]))
+                Ok((
+                    Classification::Ambiguous(vec![Score {
+                        target: target.to_string(),
+                        confidence: conf,
+                    }]),
+                    None,
+                ))
             }
         }
     }
@@ -473,7 +482,7 @@ mod tests {
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Ambiguous(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "weak");
@@ -502,7 +511,7 @@ mod tests {
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "strong");
@@ -531,7 +540,7 @@ mod tests {
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "weak");
@@ -549,7 +558,7 @@ mod tests {
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Ambiguous(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "weak");
@@ -575,7 +584,7 @@ mod tests {
         let classification = StageClassifier::new(PickerMode::CapableFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Ambiguous(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "strong");

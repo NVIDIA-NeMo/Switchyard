@@ -95,13 +95,15 @@ impl Classifier<State> for EscalationClassifier {
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<Response>)> {
         // A confirmed session stays capable without paying for another judge call.
         if streak(state) >= self.confirmations {
-            return Ok(decisive(&self.capable));
+            return Ok((decisive(&self.capable), None));
         }
 
-        let classification = self.judge.score(state, request, driver).await?;
+        // The judge is a side consultation, never the turn's answer: the tier it selects is
+        // called by the composition afterwards.
+        let (classification, _) = self.judge.score(state, request, driver).await?;
         // Strict-consecutive: an escalate verdict extends the streak, any decline clears it,
         // and an unavailable judge is no evidence either way. Only an escalate can raise the
         // streak, so the threshold check below doubles as "did this turn escalate".
@@ -117,11 +119,14 @@ impl Classifier<State> for EscalationClassifier {
 
         // Unconditional, so a declined or unavailable judge costs quality risk rather than
         // the turn.
-        Ok(decisive(if next >= self.confirmations {
-            &self.capable
-        } else {
-            &self.efficient
-        }))
+        Ok((
+            decisive(if next >= self.confirmations {
+                &self.capable
+            } else {
+                &self.efficient
+            }),
+            None,
+        ))
     }
 }
 

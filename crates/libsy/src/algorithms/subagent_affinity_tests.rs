@@ -48,11 +48,14 @@ impl Classifier for AlwaysOrchestrator {
         _state: &mut (),
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        Ok(Classification::Scores(vec![Score {
-            confidence: 0.5,
-            target: "orchestrator".to_string(),
-        }]))
+    ) -> Result<(Classification, Option<Response>)> {
+        Ok((
+            Classification::Scores(vec![Score {
+                confidence: 0.5,
+                target: "orchestrator".to_string(),
+            }]),
+            None,
+        ))
     }
 }
 

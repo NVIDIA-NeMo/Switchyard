@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Driver, LibsyError, Result};
+use crate::{Driver, LibsyError, Response, Result};
 use async_trait::async_trait;
 use switchyard_protocol::Request;
 
@@ -88,7 +88,7 @@ pub trait Classifier<S = ()>: Send + Sync {
         state: &mut S,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification>;
+    ) -> Result<(Classification, Option<Response>)>;
 }
 
 #[cfg(test)]
@@ -183,13 +183,16 @@ mod tests {
             state: &mut bool,
             request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
+        ) -> Result<(Classification, Option<Response>)> {
             *state = true;
             let target = request.requested_model().unwrap_or("auto").to_string();
-            Ok(Classification::Scores(vec![Score {
-                target,
-                confidence: 1.0,
-            }]))
+            Ok((
+                Classification::Scores(vec![Score {
+                    target,
+                    confidence: 1.0,
+                }]),
+                None,
+            ))
         }
     }
 
@@ -202,7 +205,7 @@ mod tests {
             metadata: None,
         };
         // A `None` driver is valid: the classifier scored without offloading a model call.
-        let classification = RecordingClassifier
+        let (classification, _) = RecordingClassifier
             .score(&mut state, &mut request, None)
             .await?;
         assert_eq!(
@@ -223,12 +226,15 @@ mod tests {
             _state: &mut (),
             request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
+        ) -> Result<(Classification, Option<Response>)> {
             request.llm_request.model = Some("rewritten".to_string());
-            Ok(Classification::Scores(vec![Score {
-                target: "rewritten".to_string(),
-                confidence: 1.0,
-            }]))
+            Ok((
+                Classification::Scores(vec![Score {
+                    target: "rewritten".to_string(),
+                    confidence: 1.0,
+                }]),
+                None,
+            ))
         }
     }
 

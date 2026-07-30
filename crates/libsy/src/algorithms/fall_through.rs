@@ -146,7 +146,7 @@ where
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (target, decision) = match session_state {
+        let (target, decision, served) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &ctx, &driver, &mut request).await?
@@ -157,9 +157,18 @@ where
             }
         };
 
-        driver
-            .call_llm_target(ctx, &target, request, decision)
-            .await
+        // A classifier that already called a model — because deciding required one, and that
+        // call also answers the turn — hands its response back here, so the turn is not paid
+        // for twice. Nothing reads it on the way out: streamed or buffered, it reaches the
+        // caller untouched.
+        match served {
+            Some(response) => Ok(response),
+            None => {
+                driver
+                    .call_llm_target(ctx, &target, request, decision)
+                    .await
+            }
+        }
     }
 
     /// Returns this request's retained state without holding the registry lock.
@@ -184,7 +193,7 @@ where
         ctx: &Context,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>)> {
+    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -194,11 +203,15 @@ where
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut maybe_score: Option<Score> = None;
         let mut maybe_tier: Option<&'static str> = None;
+        let mut served: Option<Response> = None;
         for classifier in &self.classifiers {
-            let scores = classifier.score(state, request, Some(driver)).await?;
+            let (scores, response) = classifier.score(state, request, Some(driver)).await?;
             maybe_score = scores.argmax(false)?;
             if let Some(s) = maybe_score.as_ref() {
                 maybe_tier = classifier.routing_tier(&s.target);
+                // Only the deciding classifier's response answers the turn; an abstaining
+                // classifier selected nothing for it to be the answer to.
+                served = response;
                 break;
             }
         }
@@ -230,7 +243,7 @@ where
                 .await?;
         }
 
-        Ok((target, decision))
+        Ok((target, decision, served))
     }
 }
 
@@ -351,15 +364,18 @@ mod tests {
             _state: &mut (),
             _request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
-            Ok(Classification::Scores(
-                self.0
-                    .iter()
-                    .map(|s| Score {
-                        confidence: s.confidence,
-                        target: s.target.clone(),
-                    })
-                    .collect(),
+        ) -> Result<(Classification, Option<Response>)> {
+            Ok((
+                Classification::Scores(
+                    self.0
+                        .iter()
+                        .map(|s| Score {
+                            confidence: s.confidence,
+                            target: s.target.clone(),
+                        })
+                        .collect(),
+                ),
+                None,
             ))
         }
     }
@@ -484,9 +500,9 @@ mod tests {
                 _state: &mut (),
                 _request: &mut Request,
                 driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<(Classification, Option<Response>)> {
                 match driver {
-                    Some(_) => Ok(Classification::Scores(vec![score("strong", 1.0)])),
+                    Some(_) => Ok((Classification::Scores(vec![score("strong", 1.0)]), None)),
                     None => Err(test_error("expected a driver")),
                 }
             }
@@ -560,7 +576,7 @@ mod tests {
                 _state: &mut (),
                 request: &mut Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<(Classification, Option<Response>)> {
                 *self.0.lock() = request
                     .llm_request
                     .messages
@@ -571,7 +587,7 @@ mod tests {
                     .llm_request
                     .messages
                     .push(Message::text(Role::User, "classifier"));
-                Ok(Classification::Scores(vec![score("strong", 1.0)]))
+                Ok((Classification::Scores(vec![score("strong", 1.0)]), None))
             }
         }
 
@@ -636,9 +652,9 @@ mod tests {
                 state: &mut TurnState,
                 _request: &mut Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<(Classification, Option<Response>)> {
                 let target = if state.count >= 2 { "strong" } else { "weak" };
-                Ok(Classification::Scores(vec![score(target, 1.0)]))
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
             }
         }
 
