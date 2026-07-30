@@ -11,8 +11,8 @@ custom endpoint requires defining a ``[model_providers.<id>]`` block in
 ``-c`` flags.  We use the second path so the user's existing
 ``config.toml`` is untouched and the proxy is fully self-contained.
 
-The launcher generates a direct OpenAI Chat deployment or accepts an
-explicit Rust server TOML file, then closes the server when Codex exits.
+The launcher generates an internal native deployment and closes the
+server when Codex exits.
 """
 
 import json
@@ -49,7 +49,6 @@ from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.native_server import (
     NativeDeployment,
     NativeServer,
-    deployment_strategy_summary,
     deterministic_deployment,
     passthrough_deployment,
 )
@@ -373,15 +372,10 @@ def launch_codex(
     timeout: float | None,
     codex_args: list[str],
     intake: LaunchIntakeConfig | None = None,
-    routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a native passthrough or configured deployment and run Codex."""
-    deployment = (
-        NativeDeployment.from_path(routing_profiles)
-        if routing_profiles is not None
-        else passthrough_deployment(model=model, api_key=api_key, base_url=base_url)
-    )
+    """Start a native passthrough deployment and run Codex."""
+    deployment = passthrough_deployment(model=model, api_key=api_key, base_url=base_url)
     codex_model_catalog: list[CodexModelCatalogEntry] = [
         (
             model_id,
@@ -390,11 +384,6 @@ def launch_codex(
         )
         for model_id in deployment.models
     ]
-    strategy_summary = (
-        deployment_strategy_summary(routing_profiles, model)
-        if routing_profiles is not None
-        else passthrough_strategy_summary(model)
-    )
     return _run_codex_with_switchyard(
         deployment,
         display_model=model,
@@ -402,7 +391,7 @@ def launch_codex(
         codex_args=codex_args,
         intake=intake,
         codex_model_catalog=codex_model_catalog,
-        strategy_summary=strategy_summary,
+        strategy_summary=passthrough_strategy_summary(model),
     )
 
 

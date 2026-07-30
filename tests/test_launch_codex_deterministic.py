@@ -4,7 +4,7 @@
 """Tests for the deterministic default of ``switchyard launch codex``.
 
 ``launch codex`` defaults to LLM-classifier deterministic routing when
-no ``--model`` or ``--routing-profiles`` is given. The legacy
+no ``--model`` is given. The legacy
 ``--deterministic`` flag has been removed from this subparser; tier
 overrides (``--weak-model``, ``--classifier-model``, ``--profile``,
 ``--classifier-min-confidence``) still tune the default trio.

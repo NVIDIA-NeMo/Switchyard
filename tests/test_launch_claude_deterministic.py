@@ -4,7 +4,7 @@
 """Tests for the deterministic default of ``switchyard launch claude``.
 
 ``launch claude`` defaults to LLM-classifier deterministic routing when
-no ``--model`` or ``--routing-profiles`` is given. The legacy
+no ``--model`` is given. The legacy
 ``--deterministic`` flag has been removed from this subparser; tier
 overrides (``--weak-model``, ``--classifier-model``, ``--profile``,
 ``--classifier-min-confidence``) still tune the default trio.
@@ -246,39 +246,6 @@ class TestDispatch:
 
         # Dry-run prints + returns without SystemExit.
         _cmd_launch_claude(args)
-
-    def test_dry_run_routing_profiles_reports_bundle(
-        self, monkeypatch, tmp_path, capsys,
-    ) -> None:
-        """A ``--routing-profiles`` dry run reports ``route: bundle``, not single."""
-        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
-
-        yaml_path = tmp_path / "routes.yaml"
-        yaml_path.write_text(
-            "routes:\n"
-            "  my-route:\n"
-            "    type: model\n"
-            "    model: openai/gpt-4o-mini\n",
-            encoding="utf-8",
-        )
-
-        parser = _build_parser()
-        args = parser.parse_args([
-            "--routing-profiles", str(yaml_path),
-            "launch", "claude", "--dry-run",
-        ])
-
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "switchyard.cli.launch_command.resolve_launch_connectivity",
-            lambda args, **_kw: ("sk-test", "https://openrouter.ai/api/v1"),
-        )
-
-        _cmd_launch_claude(args)
-
-        out = capsys.readouterr().out
-        assert "route: bundle" in out
-        assert "route: single" not in out
 
     def test_zero_config_non_openrouter_rejects_default_trio(
         self, monkeypatch, tmp_path,

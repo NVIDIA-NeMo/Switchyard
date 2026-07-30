@@ -3,9 +3,9 @@
 
 """Tests for the LLM-classifier default of ``switchyard launch openclaw``.
 
-``launch openclaw`` defaults to LLM-classifier routing when no ``--model``
-or ``--routing-profiles`` is given — same shape as ``launch claude`` /
-``launch codex``. The legacy ``--deterministic`` opt-in flag has been
+``launch openclaw`` defaults to LLM-classifier routing when no ``--model`` is
+given — same shape as ``launch claude`` / ``launch codex``. The legacy
+``--deterministic`` opt-in flag has been
 removed; tier overrides (``--weak-model``, ``--classifier-model``,
 ``--profile``, ``--classifier-min-confidence``) still tune the default trio.
 """
@@ -51,50 +51,6 @@ class TestArgparse:
         assert args.classifier_model == "nvidia/nvidia/nemotron-3-super-v3"
         assert args.profile == "openclaw"
         assert args.classifier_min_confidence == 0.55
-
-
-class TestMutualExclusion:
-    def test_routing_profiles_opts_out_of_classifier(
-        self, monkeypatch, tmp_path,
-    ) -> None:
-        """``--routing-profiles`` opts out of the LLM-classifier default."""
-        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_openclaw
-
-        yaml_path = tmp_path / "routes.yaml"
-        yaml_path.write_text(
-            "defaults:\n"
-            "  api_key: sk-test\n"
-            "  base_url: https://upstream.invalid/v1\n"
-            "  format: openai\n"
-            "routes:\n"
-            "  bench:\n"
-            "    type: model\n"
-            "    target: some/model\n"
-        )
-        parser = _build_parser()
-        args = parser.parse_args([
-            "--routing-profiles", str(yaml_path),
-            "launch", "openclaw",
-            "--dry-run",
-        ])
-
-        def fake_deterministic(**_kwargs):
-            raise AssertionError(
-                "--routing-profiles should opt out of LLM-classifier routing",
-            )
-
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "switchyard.cli.launch_command.resolve_launch_connectivity",
-            lambda args, **_kw: ("sk-test", "https://openrouter.ai/api/v1"),
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher."
-            "launch_openclaw_deterministic_routing",
-            fake_deterministic,
-        )
-        # Dry-run prints + returns without invoking the classifier launcher.
-        _cmd_launch_openclaw(args)
 
 
 class TestDispatch:

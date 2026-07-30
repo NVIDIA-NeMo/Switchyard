@@ -6,9 +6,7 @@
 import argparse
 import logging
 import os
-import tomllib
 from dataclasses import replace
-from pathlib import Path
 from typing import cast
 
 from switchyard.cli.command_utils import (
@@ -105,8 +103,7 @@ def _reject_openrouter_only_default_trio(target: str, base_url: str) -> None:
     ``--classifier-model`` do not help because the strong tier stays
     ``anthropic/claude-opus-4.7``. So when the resolved endpoint is not
     OpenRouter, raise :class:`SystemExit` pointing the user at ``--model``,
-    ``--routing-profiles``, or ``OPENROUTER_API_KEY`` instead of launching a
-    trio that can't work.
+    or ``OPENROUTER_API_KEY`` instead of launching a trio that can't work.
     """
     if _OPENROUTER_URL_MARKER in base_url:
         return
@@ -114,8 +111,7 @@ def _reject_openrouter_only_default_trio(target: str, base_url: str) -> None:
         f"launch {target}: the zero-config default trio "
         f"(anthropic/claude-opus-4.7, moonshotai/kimi-k2.6, "
         f"google/gemini-3.5-flash) is OpenRouter-only, but the resolved "
-        f"endpoint is {base_url!r}. Pass --model, use --routing-profiles, or "
-        f"set OPENROUTER_API_KEY."
+        f"endpoint is {base_url!r}. Pass --model or set OPENROUTER_API_KEY."
     )
 
 
@@ -123,15 +119,13 @@ def _is_deterministic_launch(
     target: str,
     args: argparse.Namespace,
     route: LaunchRouteConfig | None,
-    routing_profiles: str | None,
 ) -> bool:
     """Return ``True`` when the resolved launch will use deterministic routing.
 
     For ``claude`` / ``codex``: deterministic is the implicit default when
     no single-model passthrough (CLI ``--model`` or saved
-    ``configured_route.model``) and no routing-profiles bundle (CLI
-    ``--routing-profiles`` or saved bundle) is in play. Pass
-    ``route=None`` to check before the route is resolved (e.g. inside
+    ``configured_route.model``) is in play. Pass ``route=None`` to check before
+    the route is resolved (e.g. inside
     :func:`launch_requirements_satisfied`); the resolver inspects
     ``args.model`` and the saved single-model config directly.
 
@@ -139,8 +133,6 @@ def _is_deterministic_launch(
     ``--deterministic`` opt-in flag was removed).
     """
     if target not in ("claude", "codex", "openclaw"):
-        return False
-    if routing_profiles:
         return False
     if route is not None:
         return not route.model
@@ -154,46 +146,6 @@ def _is_deterministic_launch(
     return not configured_route.model
 
 
-def _resolve_routing_profiles(args: argparse.Namespace) -> str | None:
-    """Resolve the native Rust server TOML path for a launch."""
-    if args.routing_profiles:
-        return cast(str, args.routing_profiles)
-    if args.model:
-        return None
-    saved = load_user_config().routing_profiles
-    if not saved:
-        return None
-    raise SystemExit(
-        "launch: saved routing profiles use the legacy YAML schema. "
-        "Pass a Rust server TOML file with --routing-profiles."
-    )
-
-
-def _resolve_initial_from_profiles(*, target: str, routing_profiles: str) -> str:
-    """Return the first route ID from a native Rust server TOML file."""
-    try:
-        data = tomllib.loads(Path(routing_profiles).read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise SystemExit(
-            f"launch {target}: could not read native server TOML "
-            f"{routing_profiles!r}: {error}"
-        ) from error
-    routes = data.get("routes")
-    ids: list[str] = []
-    if isinstance(routes, dict):
-        for route in routes.values():
-            if isinstance(route, dict):
-                route_id = route.get("id")
-                if isinstance(route_id, str):
-                    ids.append(route_id)
-    if not ids:
-        raise SystemExit(
-            f"launch {target}: --routing-profiles file has no routes; "
-            f"add at least one route."
-        )
-    return ids[0]
-
-
 def launch_requirements_satisfied(
     args: argparse.Namespace,
     target: str,
@@ -205,7 +157,6 @@ def launch_requirements_satisfied(
         args,
         api_key_env_vars=api_key_env_vars,
     )
-    routing_profiles = getattr(args, "routing_profiles", None)
     target_key = cast(LaunchTarget, target)
     user_config = load_user_config()
     configured_launch = user_config.launch_target(target_key)
@@ -214,17 +165,11 @@ def launch_requirements_satisfied(
     # LLM-classifier routing is self-sufficient: the preset bundle supplies
     # models, profile, classifier — only the primary API key has to come from
     # the user. We land here for claude/codex/openclaw when no --model and no
-    # routing-profiles are configured — the implicit default.
+    # model is configured — the implicit default.
     if _is_deterministic_launch(
-        target=target, args=args, route=None, routing_profiles=routing_profiles,
+        target=target, args=args, route=None,
     ):
         return bool(api_key or launch_credentials.api_key(PRIMARY_TIER))
-    # An explicit server TOML is self-sufficient and its first route becomes
-    # the initial agent model.
-    if routing_profiles:
-        return True
-    if not args.model and user_config.routing_profiles:
-        return True
     has_model = bool(args.model or configured_route.model)
     has_primary_key = bool(api_key or launch_credentials.api_key(PRIMARY_TIER))
     return has_model and has_primary_key
@@ -290,9 +235,8 @@ def route_from_launch_args(
 ) -> LaunchRouteConfig:
     """Merge one-off launch flags onto the configured route.
 
-    The launcher CLI no longer exposes routing-policy flags; routing
-    policies live in native server TOML. We always emit a single-tier
-    route here. Legacy saved random routes are rejected upstream by
+    Launcher options produce either the built-in classifier or a single-tier
+    route. Legacy saved random routes are rejected upstream by
     :func:`_warn_if_legacy_random_config`.
     """
 
@@ -445,25 +389,21 @@ def resolve_launch_intake_config(
 def cmd_launch_claude(args: argparse.Namespace) -> None:
     """Start a proxy and spawn ``claude`` against it.
 
-    Three shapes (deterministic is the default when no flags are given):
+    Two shapes (deterministic is the default when no flags are given):
 
       * ``(no flags)`` — LLM-classifier strong/weak routing using the
         validated coding-agent trio (Claude Opus 4.7 + Nemotron-3 Super
         + DeepSeek V4 Flash classifier). Override individual tiers with
         ``--weak-model`` / ``--classifier-model`` / ``--profile``.
       * ``--model X`` — single-tier passthrough to X.
-      * ``--routing-profiles FILE`` (global flag) — native server TOML.
-        ``--model`` is optional; falls back to the first configured route.
-
-    Random and other multi-chain routing live in the native server schema.
     """
     if getattr(args, "startup_timing", False):
         startup_timing.enable()
     startup_timing.mark("launch invoked")
-    if args.routing_profiles and getattr(args, "smoke", False):
+    if args.routing_profiles:
         raise SystemExit(
-            "launch claude: --smoke and --routing-profiles cannot be combined. "
-            "Pass --model directly to pick the model to smoke-test."
+            "launch claude: --routing-profiles is only supported by "
+            "switchyard serve/configure; use launcher model options instead."
         )
     if args.dry_run and getattr(args, "smoke", False):
         raise SystemExit(
@@ -474,12 +414,6 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
         raise SystemExit(
             "launch claude: --smoke requires --model. "
             "Pass --model directly to pick the model to smoke-test."
-        )
-    if args.routing_profiles and args.model:
-        raise SystemExit(
-            "launch claude: --model and --routing-profiles are mutually exclusive.\n"
-            "Pass --routing-profiles as a global flag before the subcommand:\n"
-            "  switchyard --routing-profiles FILE -- launch claude"
         )
     from switchyard.cli.launchers.claude_code_launcher import (
         launch_claude,
@@ -492,7 +426,6 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     # the intercept CA only lives in the system keystore). No-op elsewhere.
     ensure_system_ssl_trust()
 
-    routing_profiles = _resolve_routing_profiles(args)
     if not args.dry_run and not getattr(args, "smoke", False):
         maybe_bootstrap_launch_config(
             args,
@@ -507,21 +440,13 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     configured_launch = load_user_config().launch_target("claude")
     configured_route = configured_launch.effective_route()
     _warn_if_legacy_random_config(configured_route, target="claude")
-    # CLI --routing-profiles is a clean-slate override: deployment and
-    # default model both come from the TOML. The saved config.json launch
-    # route is ignored so a saved model id that doesn't exist in the new
-    # bundle can't leak through. Gated on the CLI flag specifically — the
-    # saved-bundle fallback path still inherits config.json's launch.<t>.model.
-    if args.routing_profiles:
-        configured_route = LaunchRouteConfig()
     route = route_from_launch_args(args, configured_route)
     # Deterministic LLM-classifier routing is the implicit default for
-    # ``launch claude`` when neither single-model passthrough nor a
-    # routing-profiles bundle is in play.
+    # ``launch claude`` when no single-model passthrough is configured.
     deterministic = _is_deterministic_launch(
-        target="claude", args=args, route=route, routing_profiles=routing_profiles,
+        target="claude", args=args, route=route,
     )
-    if not deterministic and not (routing_profiles and not route.model):
+    if not deterministic:
         require_route_model(route, target="claude")
 
     api_key, base_url = resolve_launch_connectivity(
@@ -600,7 +525,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
-            routing_profiles=routing_profiles,
+            routing_profiles=None,
         ))
         return
 
@@ -646,18 +571,12 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
             rl_log_dir=resolve_rl_log_dir(args),
         ))
 
-    if routing_profiles:
-        initial = _resolve_initial_from_profiles(
-            target="claude",
-            routing_profiles=routing_profiles,
-        )
-    else:
-        primary_connectivity = require_launch_tier_key(
-            target="claude",
-            tier=PRIMARY_TIER,
-            connectivity=primary_connectivity,
-        )
-        initial = require_route_model(route, target="claude")
+    primary_connectivity = require_launch_tier_key(
+        target="claude",
+        tier=PRIMARY_TIER,
+        connectivity=primary_connectivity,
+    )
+    initial = require_route_model(route, target="claude")
     raise SystemExit(launch_claude(
         model=initial,
         base_url=primary_connectivity.base_url or "",
@@ -666,7 +585,6 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
         timeout=args.timeout,
         claude_args=claude_args,
         intake=intake,
-        routing_profiles=routing_profiles,
         rl_log_dir=resolve_rl_log_dir(args),
     ))
 
@@ -675,13 +593,12 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
     """Start a proxy and spawn ``codex`` against it.
 
     Same shape as :func:`cmd_launch_claude`: deterministic is the
-    default when no flags are given; ``--model X`` or
-    ``--routing-profiles FILE`` (global flag) opts out.
+    default when no flags are given, and ``--model X`` opts out.
     """
-    if args.routing_profiles and getattr(args, "smoke", False):
+    if args.routing_profiles:
         raise SystemExit(
-            "launch codex: --smoke and --routing-profiles cannot be combined. "
-            "Pass --model directly to pick the model to smoke-test."
+            "launch codex: --routing-profiles is only supported by "
+            "switchyard serve/configure; use launcher model options instead."
         )
     if args.dry_run and getattr(args, "smoke", False):
         raise SystemExit(
@@ -693,12 +610,6 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             "launch codex: --smoke requires --model. "
             "Pass --model directly to pick the model to smoke-test."
         )
-    if args.routing_profiles and args.model:
-        raise SystemExit(
-            "launch codex: --model and --routing-profiles are mutually exclusive.\n"
-            "Pass --routing-profiles as a global flag before the subcommand:\n"
-            "  switchyard --routing-profiles FILE -- launch codex"
-        )
     from switchyard.cli.launchers.codex_cli_launcher import (
         launch_codex,
         launch_codex_deterministic_routing,
@@ -707,7 +618,6 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
 
     ensure_system_ssl_trust()
 
-    routing_profiles = _resolve_routing_profiles(args)
     if not args.dry_run and not getattr(args, "smoke", False):
         maybe_bootstrap_launch_config(
             args,
@@ -717,16 +627,13 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
     configured_launch = load_user_config().launch_target("codex")
     configured_route = configured_launch.effective_route()
     _warn_if_legacy_random_config(configured_route, target="codex")
-    if args.routing_profiles:
-        configured_route = LaunchRouteConfig()
     route = route_from_launch_args(args, configured_route)
     # Deterministic LLM-classifier routing is the implicit default for
-    # ``launch codex`` when neither single-model passthrough nor a
-    # routing-profiles bundle is in play.
+    # ``launch codex`` when no single-model passthrough is configured.
     deterministic = _is_deterministic_launch(
-        target="codex", args=args, route=route, routing_profiles=routing_profiles,
+        target="codex", args=args, route=route,
     )
-    if not deterministic and not (routing_profiles and not route.model):
+    if not deterministic:
         require_route_model(route, target="codex")
 
     api_key, base_url = resolve_launch_connectivity(
@@ -798,7 +705,7 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
-            routing_profiles=routing_profiles,
+            routing_profiles=None,
         ))
         return
 
@@ -842,18 +749,12 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             rl_log_dir=resolve_rl_log_dir(args),
         ))
 
-    if routing_profiles:
-        initial = _resolve_initial_from_profiles(
-            target="codex",
-            routing_profiles=routing_profiles,
-        )
-    else:
-        primary_connectivity = require_launch_tier_key(
-            target="codex",
-            tier=PRIMARY_TIER,
-            connectivity=primary_connectivity,
-        )
-        initial = require_route_model(route, target="codex")
+    primary_connectivity = require_launch_tier_key(
+        target="codex",
+        tier=PRIMARY_TIER,
+        connectivity=primary_connectivity,
+    )
+    initial = require_route_model(route, target="codex")
     raise SystemExit(launch_codex(
         model=initial,
         base_url=primary_connectivity.base_url or "",
@@ -862,7 +763,6 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
         timeout=args.timeout,
         codex_args=codex_args,
         intake=intake,
-        routing_profiles=routing_profiles,
         rl_log_dir=resolve_rl_log_dir(args),
     ))
 
@@ -871,8 +771,8 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
     """Start a proxy and spawn ``openclaw chat`` against it.
 
     Same shape as :func:`cmd_launch_claude` / :func:`cmd_launch_codex`:
-    LLM-classifier routing by default, or single ``--model`` /
-    ``--routing-profiles FILE`` (global flag) to opt out. The launcher writes a transient
+    LLM-classifier routing by default, or single ``--model`` to opt out.
+    The launcher writes a transient
     ``openclaw.json`` in a tempdir and points OpenClaw at it via
     ``OPENCLAW_STATE_DIR`` / ``OPENCLAW_HOME`` / ``OPENCLAW_CONFIG_PATH``
     — the user's real ``~/.openclaw/`` (sessions, channels, plugins)
@@ -881,10 +781,10 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
     ``--smoke`` dispatches to :func:`verify_openclaw` and exits with its
     return code — same shape as ``launch claude/codex --smoke``.
     """
-    if args.routing_profiles and getattr(args, "smoke", False):
+    if args.routing_profiles:
         raise SystemExit(
-            "launch openclaw: --smoke and --routing-profiles cannot be combined. "
-            "Pass --model directly to pick the model to smoke-test."
+            "launch openclaw: --routing-profiles is only supported by "
+            "switchyard serve/configure; use launcher model options instead."
         )
     if args.dry_run and getattr(args, "smoke", False):
         raise SystemExit(
@@ -896,12 +796,6 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
             "launch openclaw: --smoke requires --model. "
             "Pass --model directly to pick the model to smoke-test."
         )
-    if args.routing_profiles and args.model:
-        raise SystemExit(
-            "launch openclaw: --model and --routing-profiles are mutually exclusive.\n"
-            "Pass --routing-profiles as a global flag before the subcommand:\n"
-            "  switchyard --routing-profiles FILE -- launch openclaw"
-        )
     from switchyard.cli.launchers.launcher_runtime import ensure_system_ssl_trust
     from switchyard.cli.launchers.openclaw_launcher import (
         launch_openclaw,
@@ -910,7 +804,6 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
 
     ensure_system_ssl_trust()
 
-    routing_profiles = _resolve_routing_profiles(args)
     if not args.dry_run and not getattr(args, "smoke", False):
         maybe_bootstrap_launch_config(
             args,
@@ -925,16 +818,13 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
     configured_launch = load_user_config().launch_target("openclaw")
     configured_route = configured_launch.effective_route()
     _warn_if_legacy_random_config(configured_route, target="openclaw")
-    if args.routing_profiles:
-        configured_route = LaunchRouteConfig()
     route = route_from_launch_args(args, configured_route)
     # LLM-classifier routing is the implicit default for ``launch openclaw``
-    # when neither single-model passthrough nor a routing-profiles bundle is
-    # in play.
+    # when no single-model passthrough is configured.
     deterministic = _is_deterministic_launch(
-        target="openclaw", args=args, route=route, routing_profiles=routing_profiles,
+        target="openclaw", args=args, route=route,
     )
-    if not deterministic and not (routing_profiles and not route.model):
+    if not deterministic:
         require_route_model(route, target="openclaw")
 
     api_key, base_url = resolve_launch_connectivity(
@@ -1011,7 +901,7 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
             classifier_model=dry_run_classifier_model,
             profile=dry_run_profile,
             classifier_min_confidence=dry_run_min_confidence,
-            routing_profiles=routing_profiles,
+            routing_profiles=None,
         ))
         return
 
@@ -1055,18 +945,12 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
             rl_log_dir=resolve_rl_log_dir(args),
         ))
 
-    if routing_profiles:
-        initial = _resolve_initial_from_profiles(
-            target="openclaw",
-            routing_profiles=routing_profiles,
-        )
-    else:
-        primary_connectivity = require_launch_tier_key(
-            target="openclaw",
-            tier=PRIMARY_TIER,
-            connectivity=primary_connectivity,
-        )
-        initial = require_route_model(route, target="openclaw")
+    primary_connectivity = require_launch_tier_key(
+        target="openclaw",
+        tier=PRIMARY_TIER,
+        connectivity=primary_connectivity,
+    )
+    initial = require_route_model(route, target="openclaw")
     raise SystemExit(launch_openclaw(
         model=initial,
         base_url=primary_connectivity.base_url or "",
@@ -1075,7 +959,6 @@ def cmd_launch_openclaw(args: argparse.Namespace) -> None:
         timeout=args.timeout,
         openclaw_args=openclaw_args,
         intake=intake,
-        routing_profiles=routing_profiles,
         rl_log_dir=resolve_rl_log_dir(args),
     ))
 
@@ -1087,19 +970,17 @@ def _warn_if_legacy_random_config(
 
     The ``random-routing`` CLI subcommand and ``--routing random`` /
     ``--preset`` / ``--weak-model`` launcher flags were removed; routing
-    policies live in native server TOML files. Saved configs from
-    earlier versions may still declare ``route.type = "random"``; bail
-    with a recovery hint instead of silently launching the wrong shape.
+    profiles are no longer shared with launchers. Saved configs from earlier
+    versions may still declare ``route.type = "random"``; bail with a recovery
+    hint instead of silently launching the wrong shape.
     """
     if route.type != "random":
         return
     raise SystemExit(
         f"launch {target}: saved config has route.type=\"random\" but\n"
         "random-routing CLI flags have been removed. Express your routing\n"
-        "policy as native server TOML and pass it via\n"
-        "  --routing-profiles PATH\n"
-        "or run `switchyard configure` to reset the saved route to single.\n"
-        "See the switchyard-server configuration docs for the TOML schema."
+        "policy with `switchyard serve`, or run `switchyard configure` to\n"
+        "reset the saved launcher route to single."
     )
 
 

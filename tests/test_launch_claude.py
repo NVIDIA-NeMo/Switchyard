@@ -581,10 +581,10 @@ class TestLaunchClaude:
         assert intake.task == "custom-task"
         assert intake.session_id == "sess-cli"
 
-    def test_smoke_with_routing_profiles_errors_clearly(
+    def test_routing_profiles_errors_clearly(
         self, monkeypatch, tmp_path,
     ):
-        """``--smoke --routing-profiles FILE`` is rejected at the CLI level."""
+        """Launchers do not consume the serve/configure routing profile."""
         from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
 
         yaml_path = tmp_path / "bundle.yaml"
@@ -602,11 +602,13 @@ class TestLaunchClaude:
         parser = _build_parser()
         args = parser.parse_args([
             "--routing-profiles", str(yaml_path),
-            "launch", "claude", "--smoke", "--api-key", "sk-test",
+            "launch", "claude", "--api-key", "sk-test",
         ])
         with pytest.raises(SystemExit) as exc_info:
             _cmd_launch_claude(args)
-        assert "--smoke and --routing-profiles cannot be combined" in str(exc_info.value)
+        assert "--routing-profiles is only supported by switchyard serve/configure" in str(
+            exc_info.value
+        )
 
     def test_smoke_without_model_errors_with_helpful_message(
         self, monkeypatch, tmp_path,
@@ -624,63 +626,6 @@ class TestLaunchClaude:
         with pytest.raises(SystemExit) as exc_info:
             _cmd_launch_claude(args)
         assert "--smoke requires --model" in str(exc_info.value)
-
-    def test_routing_profiles_uses_native_toml_routes(
-        self, monkeypatch, tmp_path,
-    ):
-        """A configured launch passes native TOML routes to the Rust server."""
-        captured: dict = {}
-
-        def stub_spawn(deployment, port):
-            captured["deployment"] = deployment
-            return _make_fake_server(started=True)
-
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._find_claude_binary",
-            lambda: "/fake/bin/claude",
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._find_free_port",
-            lambda: 54321,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
-            stub_spawn,
-        )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
-        )
-
-        config_path = tmp_path / "routes.toml"
-        config_path.write_text(
-            'schema_version = 1\n'
-            '[llm_clients.upstream]\n'
-            'format = "openai_chat"\n'
-            'base_url = "https://example.test/v1"\n'
-            '[targets.model]\n'
-            'id = "upstream/model"\n'
-            'llm_client = "upstream"\n'
-            '[routes.primary]\n'
-            'id = "routed/model"\n'
-            'type = "passthrough"\n'
-            'target = "model"\n'
-        )
-
-        launch_claude(
-            model="routed/model",
-            base_url="https://example.invalid/v1",
-            api_key="sk-test",
-            port=None,
-            timeout=None,
-            claude_args=[],
-            routing_profiles=str(config_path),
-        )
-
-        deployment = captured["deployment"]
-        assert deployment.config == config_path
-        assert deployment.models == ("routed/model",)
 
     def test_proxy_never_ready_returns_error(self, monkeypatch):
         fake_server = _make_fake_server(started=False)  # never flips to True
@@ -871,93 +816,9 @@ _MINIMAL_YAML_BUNDLE = (
 )
 
 
-class TestResolveRoutingProfiles:
-    """Precedence rules for the saved-bundle + CLI routing-profile resolution."""
-
-    _BUNDLE = {"routes": {"example/model": {"type": "model"}}}
-
-    def test_cli_value_wins_over_saved(self, monkeypatch, tmp_path):
-        from switchyard.cli.config.user_config import UserConfig, save_user_config
-        from switchyard.cli.launch_command import _resolve_routing_profiles
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        save_user_config(UserConfig(routing_profiles=self._BUNDLE))
-        args = argparse.Namespace(routing_profiles="/cli/path.toml", model=None)
-        assert _resolve_routing_profiles(args) == "/cli/path.toml"
-
-    def test_saved_legacy_bundle_requires_native_toml(
-        self, monkeypatch, tmp_path,
-    ):
-        from switchyard.cli.config.user_config import UserConfig, save_user_config
-        from switchyard.cli.launch_command import _resolve_routing_profiles
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        save_user_config(UserConfig(routing_profiles=self._BUNDLE))
-        args = argparse.Namespace(routing_profiles=None, model=None)
-        with pytest.raises(SystemExit, match="legacy YAML schema"):
-            _resolve_routing_profiles(args)
-
-    def test_model_only_does_not_inject_saved(self, monkeypatch, tmp_path):
-        """`--model X` alone is an explicit opt-in to single-model; saved bundle stays out."""
-        from switchyard.cli.config.user_config import UserConfig, save_user_config
-        from switchyard.cli.launch_command import _resolve_routing_profiles
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        save_user_config(UserConfig(routing_profiles=self._BUNDLE))
-        args = argparse.Namespace(routing_profiles=None, model="some/model")
-        assert _resolve_routing_profiles(args) is None
-
-    def test_cli_value_wins_even_with_model_flag(self, monkeypatch, tmp_path):
-        """`--model X --routing-profiles Y` composes (CLI path wins, saved ignored)."""
-        from switchyard.cli.config.user_config import UserConfig, save_user_config
-        from switchyard.cli.launch_command import _resolve_routing_profiles
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        save_user_config(UserConfig(routing_profiles=self._BUNDLE))
-        args = argparse.Namespace(
-            routing_profiles="/cli/path.toml", model="some/model",
-        )
-        assert _resolve_routing_profiles(args) == "/cli/path.toml"
-
-    def test_returns_none_when_nothing_saved_or_passed(self, monkeypatch, tmp_path):
-        from switchyard.cli.launch_command import _resolve_routing_profiles
-        monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-        args = argparse.Namespace(routing_profiles=None, model=None)
-        assert _resolve_routing_profiles(args) is None
-
-
-class TestResolveInitialFromProfiles:
-    """First declared route is always returned; --model + --routing-profiles is an error."""
-
-    def _write_toml(self, tmp_path):
-        config_path = tmp_path / "routes.toml"
-        config_path.write_text(
-            'schema_version = 1\n'
-            '[routes.primary]\n'
-            'id = "some/route"\n'
-            'type = "passthrough"\n'
-            'target = "upstream"\n'
-        )
-        return str(config_path)
-
-    def test_returns_first_toml_route(self, tmp_path):
-        from switchyard.cli.launch_command import _resolve_initial_from_profiles
-        config_path = self._write_toml(tmp_path)
-        assert (
-            _resolve_initial_from_profiles(target="codex", routing_profiles=config_path)
-            == "some/route"
-        )
-
-    def test_empty_bundle_raises(self, tmp_path):
-        from switchyard.cli.launch_command import _resolve_initial_from_profiles
-        config_path = tmp_path / "empty.toml"
-        config_path.write_text(
-            'schema_version = 1\n[routes.direct]\ntype = "passthrough"\ntarget = "model"\n'
-        )
-        with pytest.raises(SystemExit, match="has no routes"):
-            _resolve_initial_from_profiles(
-                target="codex",
-                routing_profiles=str(config_path),
-            )
-
-    def test_model_and_profiles_mutually_exclusive(self):
-        """Runtime check rejects --model + --routing-profiles together for all launchers."""
+class TestLaunchRoutingProfiles:
+    def test_rejected_for_all_launchers(self):
+        """Routing profiles belong to serve/configure, not native launchers."""
         from switchyard.cli.launch_command import (
             cmd_launch_claude,
             cmd_launch_codex,
@@ -971,13 +832,12 @@ class TestResolveInitialFromProfiles:
             "openclaw": cmd_launch_openclaw,
         }
         for cmd, handler in handlers.items():
-            # --routing-profiles is now global; --model stays on the launcher
             args = parser.parse_args(
-                ["--routing-profiles", "p.yaml", "launch", cmd, "--model", "some/model"]
+                ["--routing-profiles", "p.yaml", "launch", cmd]
             )
             with pytest.raises(SystemExit) as exc:
                 handler(args)
-            assert exc.value.code != 0 or "mutually exclusive" in str(exc.value)
+            assert "only supported by switchyard serve/configure" in str(exc.value)
 
 
 class TestServeRoutingProfilesFallback:

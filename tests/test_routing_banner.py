@@ -4,8 +4,8 @@
 """Tests for the routing-policy banner passed to print_ready_banner at launch.
 
 Verifies the strategy summary helpers directly and that each launcher
-(claude, codex, openclaw) calls the right helper for passthrough,
-routing-profiles, and deterministic modes.
+(claude, codex, openclaw) calls the right helper for passthrough and
+deterministic modes.
 """
 
 import textwrap
@@ -39,15 +39,6 @@ _MODEL_ROUTE_YAML = textwrap.dedent("""\
         type: model
         target: some/model
 """)
-
-_NATIVE_ROUTES_TOML = textwrap.dedent("""\
-    schema_version = 1
-
-    [routes.primary]
-    id = "my_route"
-    type = "noop"
-""")
-
 
 class TestStrategyHelpers:
     def test_passthrough_summary(self):
@@ -135,24 +126,6 @@ class TestCodexRoutingBanner:
             )
         assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
 
-    def test_routing_profiles_banner(self, tmp_path):
-        """A configured launch identifies the first native route."""
-        profiles_path = tmp_path / "routes.toml"
-        profiles_path.write_text(_NATIVE_ROUTES_TOML)
-        captured: dict = {}
-        with _patch_codex_runner(captured):
-            launch_codex(
-                model="my_route",
-                base_url="https://example.com/v1",
-                api_key="key",
-                port=4000,
-                timeout=None,
-                codex_args=[],
-                routing_profiles=str(profiles_path),
-            )
-        assert _captured_strategy(captured) == "routing config: my_route"
-
-
 class TestOpenclawRoutingBanner:
     def test_passthrough_banner(self):
         """launch_openclaw produces passthrough → <model> for single-model launch."""
@@ -168,24 +141,6 @@ class TestOpenclawRoutingBanner:
             )
         assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
 
-    def test_routing_profiles_banner(self, tmp_path):
-        """A configured launch identifies the first native route."""
-        profiles_path = tmp_path / "routes.toml"
-        profiles_path.write_text(_NATIVE_ROUTES_TOML)
-        captured: dict = {}
-        with _patch_openclaw_runner(captured):
-            launch_openclaw(
-                model="my_route",
-                base_url="https://example.com/v1",
-                api_key="key",
-                port=4000,
-                timeout=None,
-                openclaw_args=[],
-                routing_profiles=str(profiles_path),
-            )
-        assert _captured_strategy(captured) == "routing config: my_route"
-
-
 class TestClaudeRoutingBanner:
     def test_passthrough_banner(self):
         """launch_claude produces passthrough → <model> for single-model launch."""
@@ -200,20 +155,3 @@ class TestClaudeRoutingBanner:
                 claude_args=[],
             )
         assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
-
-    def test_routing_profiles_banner(self, tmp_path):
-        """A configured launch identifies the first native route."""
-        profiles_path = tmp_path / "routes.toml"
-        profiles_path.write_text(_NATIVE_ROUTES_TOML)
-        captured: dict = {}
-        with _patch_claude_runner(captured):
-            launch_claude(
-                model="my_route",
-                base_url="https://example.com/v1",
-                api_key="key",
-                port=4000,
-                timeout=None,
-                claude_args=[],
-                routing_profiles=str(profiles_path),
-            )
-        assert _captured_strategy(captured) == "routing config: my_route"

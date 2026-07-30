@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native Rust server lifecycle and deployment generation for launchers."""
+"""Native Rust server lifecycle and configuration generation for launchers."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import tempfile
-import tomllib
 import urllib.request
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -30,28 +29,11 @@ _LAUNCH_API_KEY_PREFIX = "SWITCHYARD_LAUNCH_API_KEY"
 
 @dataclass(frozen=True)
 class NativeDeployment:
-    """Rust server configuration plus credentials resolved by the Python CLI."""
+    """Generated Rust server configuration and its resolved credentials."""
 
-    config: Path | str
+    config: str
     credentials: Mapping[str, str]
     models: tuple[str, ...]
-
-    @classmethod
-    def from_path(cls, path: str | Path) -> NativeDeployment:
-        """Load model IDs from a user-authored Rust server TOML file."""
-        config_path = Path(path)
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        routes = data.get("routes")
-        if not isinstance(routes, dict) or not routes:
-            raise ValueError(f"native server config {config_path} has no routes")
-        models = tuple(
-            route["id"]
-            for route in routes.values()
-            if isinstance(route, dict) and isinstance(route.get("id"), str)
-        )
-        if not models:
-            raise ValueError(f"native server config {config_path} has no route IDs")
-        return cls(config=config_path, credentials={}, models=models)
 
 
 class HttpStatsSource(StatsSource):
@@ -77,20 +59,16 @@ class NativeServer:
     """Hosts a deployment through the PyO3 Rust server binding."""
 
     def __init__(self, deployment: NativeDeployment, port: int | None) -> None:
-        config_path = deployment.config
-        temporary_path: Path | None = None
-        if isinstance(config_path, str):
-            handle = tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix="switchyard-launch-",
-                suffix=".toml",
-                delete=False,
-            )
-            with handle:
-                handle.write(config_path)
-            temporary_path = Path(handle.name)
-            config_path = temporary_path
+        handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="switchyard-launch-",
+            suffix=".toml",
+            delete=False,
+        )
+        with handle:
+            handle.write(deployment.config)
+        config_path = Path(handle.name)
 
         try:
             with _temporary_environment(deployment.credentials):
@@ -98,8 +76,7 @@ class NativeServer:
 
                 self._server = Server(config_path, port=port or 0)
         finally:
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
+            config_path.unlink(missing_ok=True)
 
         self.port: int = self._server.port
         self.base_url: str = self._server.base_url
@@ -175,15 +152,6 @@ def deterministic_deployment(
             if not route.id.startswith("claude-")
         )
     return _render_deployment(targets, routes)
-
-
-def deployment_strategy_summary(path: str | Path, default_model: str) -> str:
-    """Describe the first route in a native server deployment."""
-    try:
-        deployment = NativeDeployment.from_path(path)
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return f"routing config: {default_model}"
-    return f"routing config: {deployment.models[0]}"
 
 
 @dataclass(frozen=True)
@@ -315,7 +283,6 @@ def _temporary_environment(values: Mapping[str, str]) -> Iterator[None]:
 __all__ = [
     "NativeDeployment",
     "NativeServer",
-    "deployment_strategy_summary",
     "deterministic_deployment",
     "passthrough_deployment",
 ]

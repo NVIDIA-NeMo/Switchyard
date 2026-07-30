@@ -586,12 +586,10 @@ class TestLaunchCodex:
         assert "switchyard" in rows[0][0]
         assert captured["env"]["OPENAI_API_KEY"] == "switchyard"
 
-    def test_smoke_with_routing_profiles_errors_clearly(
+    def test_routing_profiles_errors_clearly(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """``--smoke --routing-profiles FILE`` is rejected at the CLI level with a
-        clear error directing the user to pass ``--model`` instead.
-        """
+        """Launchers do not consume the serve/configure routing profile."""
         from switchyard.cli.switchyard_cli import (
             _build_parser,
             _cmd_launch_codex,
@@ -615,11 +613,13 @@ class TestLaunchCodex:
         args = parser.parse_args([
             "--routing-profiles", str(yaml_path),
             "launch", "codex",
-            "--smoke", "--api-key", "sk-test",
+            "--api-key", "sk-test",
         ])
         with pytest.raises(SystemExit) as exc_info:
             _cmd_launch_codex(args)
-        assert "--smoke and --routing-profiles cannot be combined" in str(exc_info.value)
+        assert "--routing-profiles is only supported by switchyard serve/configure" in str(
+            exc_info.value
+        )
 
     def test_smoke_without_model_errors_with_helpful_message(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
@@ -645,64 +645,3 @@ class TestLaunchCodex:
         with pytest.raises(SystemExit) as exc_info:
             _cmd_launch_codex(args)
         assert "--smoke requires --model" in str(exc_info.value)
-
-    def test_routing_profiles_uses_native_toml_routes(
-        self, monkeypatch, tmp_path,
-    ):
-        """A configured launch passes native TOML routes to the Rust server."""
-        captured: dict = {}
-
-        def stub_spawn(deployment, port):
-            captured["deployment"] = deployment
-            return _make_fake_server(started=True)
-
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.codex_cli_launcher._find_codex_binary",
-            lambda: "/fake/bin/codex",
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.codex_cli_launcher._find_free_port",
-            lambda: 54321,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.codex_cli_launcher._start_native_server",
-            stub_spawn,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.codex_cli_launcher._write_codex_model_catalog",
-            lambda _codex_bin, _entries: "/tmp/switchyard-codex-models.json",
-        )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
-        )
-
-        config_path = tmp_path / "routes.toml"
-        config_path.write_text(
-            'schema_version = 1\n'
-            '[llm_clients.upstream]\n'
-            'format = "openai_chat"\n'
-            'base_url = "https://example.test/v1"\n'
-            '[targets.model]\n'
-            'id = "upstream/model"\n'
-            'llm_client = "upstream"\n'
-            '[routes.primary]\n'
-            'id = "routed/model"\n'
-            'type = "passthrough"\n'
-            'target = "model"\n'
-        )
-
-        launch_codex(
-            model="routed/model",
-            base_url="https://example.invalid/v1",
-            api_key="sk-test",
-            port=None,
-            timeout=None,
-            codex_args=[],
-            routing_profiles=str(config_path),
-        )
-
-        deployment = captured["deployment"]
-        assert deployment.config == config_path
-        assert deployment.models == ("routed/model",)

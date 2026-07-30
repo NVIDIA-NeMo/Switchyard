@@ -21,9 +21,8 @@ and state, so we use a transient workspace:
    point openclaw at the transient workspace, leaving the user's real
    ``~/.openclaw/`` (sessions, channels, plugins) untouched.
 
-The launcher generates a direct OpenAI Chat deployment or accepts an
-explicit Rust server TOML file, then removes the transient workspace and
-closes the server when OpenClaw exits.
+The launcher generates an internal native deployment, then removes the
+transient workspace and closes the server when OpenClaw exits.
 """
 
 import json
@@ -56,7 +55,6 @@ from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.native_server import (
     NativeDeployment,
     NativeServer,
-    deployment_strategy_summary,
     deterministic_deployment,
     passthrough_deployment,
 )
@@ -432,15 +430,10 @@ def launch_openclaw(
     timeout: float | None,
     openclaw_args: list[str],
     intake: LaunchIntakeConfig | None = None,
-    routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a native passthrough or configured deployment and run OpenClaw."""
-    deployment = (
-        NativeDeployment.from_path(routing_profiles)
-        if routing_profiles is not None
-        else passthrough_deployment(model=model, api_key=api_key, base_url=base_url)
-    )
+    """Start a native passthrough deployment and run OpenClaw."""
+    deployment = passthrough_deployment(model=model, api_key=api_key, base_url=base_url)
     catalog_entries: list[OpenClawModelCatalogEntry] = [
         (
             model_id,
@@ -449,11 +442,6 @@ def launch_openclaw(
         )
         for model_id in deployment.models
     ]
-    strategy_summary = (
-        deployment_strategy_summary(routing_profiles, model)
-        if routing_profiles is not None
-        else passthrough_strategy_summary(model)
-    )
     return _run_openclaw_with_switchyard(
         deployment,
         display_model=model,
@@ -461,7 +449,7 @@ def launch_openclaw(
         openclaw_args=openclaw_args,
         catalog_entries=catalog_entries,
         intake=intake,
-        strategy_summary=strategy_summary,
+        strategy_summary=passthrough_strategy_summary(model),
     )
 
 

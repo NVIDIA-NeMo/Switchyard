@@ -1,12 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run Claude Code through an in-process native Switchyard server.
-
-The launcher generates a direct OpenAI Chat deployment or accepts an
-explicit Rust server TOML file, configures Claude Code for the loopback
-endpoint, and closes the server when the child exits.
-"""
+"""Run Claude Code through an in-process native Switchyard server."""
 
 import logging
 import os
@@ -35,7 +30,6 @@ from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
 from switchyard.cli.launchers.native_server import (
     NativeDeployment,
     NativeServer,
-    deployment_strategy_summary,
     deterministic_deployment,
     passthrough_deployment,
 )
@@ -264,25 +258,15 @@ def launch_claude(
     timeout: float | None,
     claude_args: list[str],
     intake: LaunchIntakeConfig | None = None,
-    routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a native passthrough or configured deployment and run Claude Code."""
+    """Start a native passthrough deployment and run Claude Code."""
     _quiet_launch_loggers()
-    deployment = (
-        NativeDeployment.from_path(routing_profiles)
-        if routing_profiles is not None
-        else passthrough_deployment(
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            claude_alias=True,
-        )
-    )
-    strategy_summary = (
-        deployment_strategy_summary(routing_profiles, model)
-        if routing_profiles is not None
-        else passthrough_strategy_summary(model)
+    deployment = passthrough_deployment(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        claude_alias=True,
     )
     return _run_claude_with_switchyard(
         deployment,
@@ -290,7 +274,7 @@ def launch_claude(
         port=port,
         claude_args=claude_args,
         intake=intake,
-        strategy_summary=strategy_summary,
+        strategy_summary=passthrough_strategy_summary(model),
     )
 
 

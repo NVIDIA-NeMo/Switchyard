@@ -28,8 +28,6 @@ Examples::
     # --routing-profiles is a global flag (use -- to separate it from the subcommand).
     switchyard --routing-profiles routes.yaml -- serve --port 4000
     switchyard --routing-profiles dev.yaml -- serve --port 4001
-    switchyard --routing-profiles routes.toml -- launch claude
-    switchyard --routing-profiles routes.toml -- launch codex
 
     # Single-model passthrough (--model stays on the launcher subcommand)
     switchyard launch claude --model openai/gpt-5.2
@@ -41,13 +39,13 @@ Examples::
     switchyard verify --model openai/gpt-5.2
 
     # Forwarding args to the launched tool (second -- after the subcommand)
-    switchyard --routing-profiles routes.toml -- launch claude -- --no-auto-approve
+    switchyard launch claude --model openai/gpt-5.2 -- --no-auto-approve
 
 Routing policies that used to be top-level CLI verbs (``passthrough``,
 ``random-routing``) and launcher flags
 (``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
-are expressed in deployment files. ``serve`` retains the Python routing-profile
-YAML schema; launchers pass native server TOML directly to the Rust host.
+are expressed in routing-profile YAML files for ``serve``. Launchers use their
+own model options and host the native Rust server directly.
 """
 
 import argparse
@@ -244,10 +242,8 @@ def _add_launch_deterministic_override_args(parser: argparse.ArgumentParser) -> 
 
     Used by ``launch claude``, ``launch codex``, and ``launch openclaw``,
     where LLM-classifier routing is the implicit default — these flags let
-    users tune the validated TB-Lite trio without writing a full
-    routing-profiles YAML. They have no effect when ``--model X`` or
-    ``--routing-profiles FILE`` opts the launcher out of LLM-classifier
-    routing.
+    users tune the validated TB-Lite trio. They have no effect when
+    ``--model X`` opts the launcher out of LLM-classifier routing.
     """
     parser.add_argument(
         "--weak-model",
@@ -711,9 +707,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Deployment path: routing-profile YAML for serve/configure, native "
-            "server TOML for launch. Separate it from the subcommand with -- "
-            "for clarity: switchyard --routing-profiles routes.toml -- launch claude"
+            "Path to a routing-profiles YAML file for serve/configure. Separate "
+            "it from the subcommand with -- for clarity: "
+            "switchyard --routing-profiles dev.yaml -- serve"
         ),
     )
     parser.add_argument(
@@ -928,12 +924,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "Starts the native server on an OS-assigned loopback port, then "
             "spawns `claude` with ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, "
             "and ANTHROPIC_MODEL preset.  Proxy shuts down when claude exits.\n\n"
-            "Route selection (mutually exclusive — pick one or neither):\n"
+            "Route selection:\n"
             "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a native TOML deployment; "
-            "the first declared route "
-            "is the initial model.\n\n"
+            "is rewritten to model=X. Falls back to the saved configure default.\n\n"
             "With neither flag, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -943,9 +936,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Single-model passthrough: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted. Mutually exclusive with "
-            "--routing-profiles (pass that as a global switchyard flag before "
-            "the subcommand)."
+            "`configure` default when omitted."
         ),
     )
     lc.add_argument(
@@ -986,8 +977,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Smoke-test mode: start the proxy, run one "
             "`claude -p \"<smoke>\" --max-turns 1` round-trip, assert exit 0, "
             "and exit. Replaces the old `switchyard verify claude` subcommand. "
-            "Requires --model; cannot be combined with --routing-profiles or --dry-run "
-            "(use --model directly to pick the model to smoke-test)."
+            "Requires --model; cannot be combined with --dry-run."
         ),
     )
     lc.add_argument(
@@ -1026,12 +1016,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "(/v1/responses); the native server translates that to OpenAI Chat "
             "Completions for the upstream backend.  Proxy shuts down when "
             "codex exits.\n\n"
-            "Route selection (mutually exclusive — pick one or neither):\n"
+            "Route selection:\n"
             "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a native TOML deployment; "
-            "the first declared route "
-            "is the initial model.\n\n"
+            "is rewritten to model=X. Falls back to the saved configure default.\n\n"
             "With neither flag, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1041,9 +1028,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Single-model passthrough: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted. Mutually exclusive with "
-            "--routing-profiles (pass that as a global switchyard flag before "
-            "the subcommand)."
+            "`configure` default when omitted."
         ),
     )
     cx.add_argument(
@@ -1084,8 +1069,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Smoke-test mode: start the proxy, run one "
             "`codex exec \"<smoke>\"` round-trip, assert exit 0, and exit. "
             "Replaces the old `switchyard verify codex` subcommand. "
-            "Requires --model; cannot be combined with --routing-profiles or --dry-run "
-            "(use --model directly to pick the model to smoke-test)."
+            "Requires --model; cannot be combined with --dry-run."
         ),
     )
     cx.add_argument(
@@ -1120,12 +1104,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "(/v1/chat/completions); the proxy translates as needed for "
             "the upstream backend. Proxy and the transient workspace "
             "are torn down when openclaw exits.\n\n"
-            "Route selection (mutually exclusive — pick one or neither):\n"
+            "Route selection:\n"
             "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a native TOML deployment; "
-            "the first declared route "
-            "is the initial model.\n\n"
+            "is rewritten to model=X. Falls back to the saved configure default.\n\n"
             "With neither flag, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1135,9 +1116,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Single-model passthrough: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted. Mutually exclusive with "
-            "--routing-profiles (pass that as a global switchyard flag before "
-            "the subcommand)."
+            "`configure` default when omitted."
         ),
     )
     ow.add_argument(
@@ -1186,8 +1165,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Smoke-test mode: start the proxy, run one openclaw round-trip "
             "(non-interactive, JSON envelope), assert exit 0, and exit. "
             "Replaces the old `switchyard verify openclaw` subcommand. "
-            "Requires --model; cannot be combined with --routing-profiles or --dry-run "
-            "(use --model directly to pick the model to smoke-test)."
+            "Requires --model; cannot be combined with --dry-run."
         ),
     )
     _add_launch_deterministic_override_args(ow)
@@ -1277,7 +1255,7 @@ def main() -> None:
 
     parser = _build_parser()
     # Strip the first '--' separator, allowing the canonical form:
-    #   switchyard --routing-profiles dev.yaml -- launch claude
+    #   switchyard --routing-profiles dev.yaml -- serve
     # The '--' is purely visual — argparse doesn't need it.
     argv = list(sys.argv[1:])
     # Only strip a '--' that precedes the subcommand token; a '--' after it is
