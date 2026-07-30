@@ -31,8 +31,5 @@ tracing.workspace = true
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing"] }
 switchyard-llm-client.workspace = true
-# Decodes the wire-format fixtures the tool-signal tests are written against, so
-# they keep asserting on bodies a real client would send.
-switchyard-translation.workspace = true
 tokio.workspace = true
 tracing-subscriber = "0.3"
