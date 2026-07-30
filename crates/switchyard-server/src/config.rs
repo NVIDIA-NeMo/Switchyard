@@ -3,7 +3,7 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -84,6 +84,9 @@ impl ServerConfig {
             .keys()
             .map(|name| (name.clone(), Vec::new()))
             .collect::<BTreeMap<String, Vec<ModelConfig>>>();
+        // Which targets are consulted as judges rather than served from; they default to
+        // answering without thinking first.
+        let judges = self.judge_targets();
 
         for name in self.llm_clients.keys() {
             validate_value("llm client name", name)?;
@@ -102,7 +105,11 @@ impl ServerConfig {
                 .ok_or_else(|| ServerError::new("validated llm client was not initialized"))?;
             model_configs.push(ModelConfig::new(
                 &target.id,
-                build_backend(&target.llm_client, client_config, &target.extra_body)?,
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.resolved_extra_body(judges.contains(target_name.as_str())),
+                )?,
                 None,
             ));
         }
@@ -116,6 +123,26 @@ impl ServerConfig {
             clients.insert(name, client);
         }
         Ok(clients)
+    }
+
+    /// Target names any route consults as a judge, rather than serves a turn from.
+    ///
+    /// A judge is called for a verdict the router parses, so it is the one role where a
+    /// model thinking out loud costs correctness rather than adding quality.
+    fn judge_targets(&self) -> BTreeSet<&str> {
+        self.routes
+            .values()
+            .filter_map(|route| match route {
+                RouteConfig::LlmClassifier {
+                    classifier_target, ..
+                } => Some(classifier_target.as_str()),
+                RouteConfig::Escalation { judge_target, .. } => Some(judge_target.as_str()),
+                RouteConfig::StageRouter { classifier, .. } => {
+                    classifier.as_ref().map(|judge| judge.target.as_str())
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn build_targets(
@@ -159,6 +186,27 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+}
+
+/// Request-body key carrying provider chat-template controls.
+const CHAT_TEMPLATE_KWARGS: &str = "chat_template_kwargs";
+
+impl TargetConfig {
+    /// The body fields this target adds to every call.
+    ///
+    /// A judge is asked to answer without thinking first: its verdict is a boolean the router
+    /// parses, so thinking buys no routing quality while costing latency on the request path
+    /// of every unlatched turn. Setting `extra_body.chat_template_kwargs` takes that key back,
+    /// so `enable_thinking = true` opts a judge into thinking.
+    fn resolved_extra_body(&self, is_judge: bool) -> BTreeMap<String, Value> {
+        let mut extra_body = self.extra_body.clone();
+        if is_judge {
+            extra_body
+                .entry(CHAT_TEMPLATE_KWARGS.to_string())
+                .or_insert_with(|| serde_json::json!({ "enable_thinking": false }));
+        }
+        extra_body
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -700,6 +748,56 @@ weak_target = "weak"
                 .and_then(|value| value.get("enable_thinking")),
             Some(&json!(false))
         );
+        Ok(())
+    }
+
+    /// Parses `toml` and returns the named target, or an error naming what was missing.
+    fn target_named(toml: &str, wanted: &str) -> ServerResult<TargetConfig> {
+        let config: ServerConfig = toml::from_str(toml)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        config
+            .targets
+            .into_iter()
+            .find_map(|(name, target)| (name == wanted).then_some(target))
+            .ok_or_else(|| ServerError::new(format!("{wanted} target is missing")))
+    }
+
+    /// The `enable_thinking` hint this target would send, if any.
+    fn thinking_hint(target: &TargetConfig, is_judge: bool) -> Option<Value> {
+        target
+            .resolved_extra_body(is_judge)
+            .get(CHAT_TEMPLATE_KWARGS)
+            .and_then(|value| value.get("enable_thinking"))
+            .cloned()
+    }
+
+    #[test]
+    fn a_judge_target_is_asked_not_to_think() -> ServerResult<()> {
+        let config: ServerConfig = toml::from_str(VALID_CONFIG)
+            .map_err(|error| ServerError::new(format!("failed to parse config: {error}")))?;
+        // The routes' judges are found, and no serving tier is mistaken for one.
+        assert!(config.judge_targets().contains("classifier"));
+        assert!(!config.judge_targets().contains("strong"));
+
+        // A judge answers without thinking first; a serving tier keeps whatever its model does.
+        let judge = target_named(VALID_CONFIG, "classifier")?;
+        assert_eq!(thinking_hint(&judge, true), Some(json!(false)));
+        assert_eq!(
+            thinking_hint(&target_named(VALID_CONFIG, "strong")?, false),
+            None
+        );
+
+        // Spelling the key out takes it back, so a judge can be opted into thinking.
+        let thinking_judge = target_named(
+            &VALID_CONFIG.replacen(
+                "llm_client = \"primary\"",
+                "llm_client = \"primary\"\n\
+                 extra_body = { chat_template_kwargs = { enable_thinking = true } }",
+                1,
+            ),
+            "classifier",
+        )?;
+        assert_eq!(thinking_hint(&thinking_judge, true), Some(json!(true)));
         Ok(())
     }
 

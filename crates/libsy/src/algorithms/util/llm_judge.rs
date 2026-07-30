@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use switchyard_protocol::{completion_text, AggLlmResponse, ContentBlock};
+use switchyard_protocol::{completion_text, AggLlmResponse};
 
 use crate::{
     Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request,
@@ -174,41 +174,14 @@ pub(crate) fn load_judge_config(
 }
 
 fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<T> {
-    let completion = completion_text(response);
-    // Reasoning models behind an OpenAI-compatible gateway sometimes return the whole
-    // structured answer in `reasoning_content` and leave `content` null. The decoder keeps
-    // that as a reasoning block, which `completion_text` skips by design, so an unaided
-    // judge would fail open on every call against such a model.
-    let reply = if completion.trim().is_empty() {
-        reasoning_text(response)
-    } else {
-        completion
-    };
     // Providers sometimes wrap otherwise valid JSON in a Markdown fence.
+    let reply = completion_text(response);
     serde_json::from_str(strip_json_fence(reply.trim())).map_err(|err| LibsyError::AlgorithmError {
         message: format!(
             "judge reply did not parse as {}: {err}",
             std::any::type_name::<T>()
         ),
     })
-}
-
-/// The reasoning text of the first output, joined across blocks.
-fn reasoning_text(response: &AggLlmResponse) -> String {
-    response
-        .outputs
-        .first()
-        .map(|output| {
-            output
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<String>()
-        })
-        .unwrap_or_default()
 }
 
 struct JudgeDecision {
@@ -248,7 +221,7 @@ mod tests {
 
     use futures::StreamExt;
     use serde::Deserialize;
-    use switchyard_protocol::{text_request, text_response, LlmClientError, ResponseOutput, Role};
+    use switchyard_protocol::{text_request, text_response, ContentBlock, LlmClientError};
 
     use crate::{LlmResponse, LlmResponseChunk, Response, Score, Step};
 
@@ -307,32 +280,11 @@ mod tests {
         }
     }
 
-    /// A response whose only content is a reasoning block, as some gateways return for
-    /// reasoning models: the answer lands in `reasoning_content` and `content` is null.
-    fn reasoning_only(text: &str) -> AggLlmResponse {
-        AggLlmResponse {
-            outputs: vec![ResponseOutput {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Reasoning {
-                    text: text.to_string(),
-                    signature: None,
-                }],
-                stop_reason: None,
-            }],
-            ..AggLlmResponse::default()
-        }
-    }
-
     #[test]
-    fn verdict_parses_from_reasoning_when_content_is_empty() -> Result<()> {
-        let parsed: TestVerdict = parse_json_verdict(&reasoning_only(VERDICT))?;
-        assert_eq!(parsed, TestVerdict { ok: true });
-        Ok(())
-    }
-
-    #[test]
-    fn text_content_wins_over_reasoning() -> Result<()> {
-        // Both present: the real completion is authoritative, reasoning is only a fallback.
+    fn the_verdict_is_read_from_the_completion() -> Result<()> {
+        // A judge's reasoning is not its answer: only `content` carries the verdict, so a
+        // reply that never reached one — a run truncated mid-thought — is an error rather
+        // than a guess.
         let mut response = text_response(None, VERDICT);
         if let Some(output) = response.outputs.first_mut() {
             output.content.insert(
@@ -345,6 +297,8 @@ mod tests {
         }
         let parsed: TestVerdict = parse_json_verdict(&response)?;
         assert_eq!(parsed, TestVerdict { ok: true });
+
+        assert!(parse_json_verdict::<TestVerdict>(&text_response(None, "still thinking")).is_err());
         Ok(())
     }
 

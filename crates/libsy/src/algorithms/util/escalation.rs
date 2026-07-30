@@ -32,8 +32,12 @@ const FIRST_USER_CHARS: usize = 2_000;
 /// Backstop on the assembled transcript; the per-message caps normally bind first.
 const MAX_REQUEST_CHARS: usize = 18_000;
 
-/// Completion budget for one judge reply, reasoning included. A runaway guard, not a budget:
-/// too tight truncates mid-reasoning into unparseable JSON and fails the judge open.
+/// Completion budget for one judge reply. A runaway guard, not a budget: the benchmarked
+/// verdict runs ~40 tokens, and a cap costs nothing it does not generate.
+///
+/// Headroom this wide is for a judge deliberately opted back into thinking — hosts ask judge
+/// targets to answer without thinking first, but a judge that thinks and is cut off before
+/// answering has no verdict in `content` and fails open on every turn.
 const JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
 
 /// The tuning surface for the trajectory judge.
