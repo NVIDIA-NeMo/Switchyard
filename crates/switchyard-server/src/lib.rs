@@ -7,6 +7,7 @@ pub mod config;
 mod metrics;
 mod response;
 mod sse;
+mod stats;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
@@ -25,7 +26,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
+use libsy::{
+    Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request, RunObservation,
+    RunObserver,
+};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
 use tracing::Level;
@@ -33,6 +37,7 @@ use tracing::Level;
 use switchyard_translation::{decode_request, WireFormat};
 
 use crate::response::into_http_response;
+use crate::stats::{prefix_probe, tracking_enabled_from_env, StatsAccumulator, StatsSnapshot};
 
 /// Default TCP listen backlog used by the Rust server.
 pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
@@ -75,6 +80,8 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 pub struct ServerState {
     routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
     metrics: prometheus::Registry,
+    stats: StatsAccumulator,
+    track_cache_eligibility: bool,
 }
 
 impl ServerState {
@@ -99,6 +106,8 @@ impl ServerState {
         Ok(Self {
             routes: Arc::new(entries),
             metrics,
+            stats: StatsAccumulator::default(),
+            track_cache_eligibility: tracking_enabled_from_env(),
         })
     }
 
@@ -198,6 +207,34 @@ async fn serve(listener: TcpListener, router: Router) -> ServerResult<()> {
 #[derive(Clone, Copy)]
 struct RequestStart(Instant);
 
+/// Maps routed call observations to backend stats, non-routed calls to classifier/judge
+/// stats, and records routing overhead once the algorithm run completes.
+fn stats_observer(stats: StatsAccumulator) -> RunObserver {
+    Arc::new(move |observation| match observation {
+        RunObservation::LlmCall(call) => {
+            let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if call.is_routed {
+                if call.is_success {
+                    stats.record_success(&call.selected_model, latency_ms, call.tier.as_deref());
+                } else {
+                    stats.record_error(&call.selected_model, call.tier.as_deref());
+                }
+            } else if call.is_success {
+                stats.record_classifier_success(
+                    call.selected_model,
+                    call.usage.as_ref().map(usage_metrics::token_usage),
+                    latency_ms,
+                );
+            } else {
+                stats.record_classifier_error(call.selected_model);
+            }
+        }
+        RunObservation::RoutingOverhead(duration) => {
+            stats.record_routing_overhead(duration.as_secs_f64() * 1_000.0);
+        }
+    })
+}
+
 /// Stamps the ingress instant into request extensions. Runs as a router layer,
 /// so it executes before the handlers' `Json` extractor buffers the body —
 /// request-latency measurements therefore include body read and decode.
@@ -216,6 +253,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
+        .route("/v1/stats", get(get_stats))
         .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .fallback(not_found)
@@ -421,24 +459,40 @@ async fn handle_llm_request(
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
+    let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
     let (algorithm, request) = match resolve_route(&state, metadata, body, wire_format) {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let (trace, response) = match algorithm.run(Context::default(), request).await {
+    let observer = stats_observer(state.stats.clone());
+    let (trace, response) = match algorithm
+        .run_observed(Context::default(), request, Some(observer))
+        .await
+    {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };
+
     // Metrics, response body, and routing header all read the same decision, so
     // the model they name can never disagree. An empty trace leaves the body with
     // the id the upstream reported.
     let decision = trace.last();
     let response = if let Some(decision) = decision {
+        let cache_eligible = cache_probe
+            .as_ref()
+            .map(|probe| {
+                state
+                    .stats
+                    .prefix_eligibility(decision.selected_model(), probe)
+            })
+            .unwrap_or(0.0);
         usage_metrics::observe(
             response,
             decision.selected_model(),
             decision.routing_tier(),
             started.0,
+            state.stats,
+            cache_eligible,
         )
     } else {
         response
@@ -660,6 +714,10 @@ fn error_response(
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
     Json(model_list_payload(state.models()))
+}
+
+async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
+    Json(state.stats.snapshot())
 }
 
 async fn health() -> Json<Value> {

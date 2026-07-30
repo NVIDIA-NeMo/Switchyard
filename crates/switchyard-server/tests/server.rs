@@ -189,6 +189,134 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     Ok((upstream, app))
 }
 
+fn empty_token_totals() -> Value {
+    json!({
+        "prompt": 0,
+        "completion": 0,
+        "cached": 0,
+        "cache_creation": 0,
+        "reasoning": 0,
+        "total": 0
+    })
+}
+
+fn empty_cost_estimate() -> Value {
+    json!({
+        "models": {},
+        "total_cost": 0.0,
+        "backend_cost": 0.0,
+        "classifier_cost": 0.0
+    })
+}
+
+#[tokio::test]
+async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let response = send(&app, "GET", "/v1/stats", None).await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()?,
+        json!({
+            "total_requests": 0,
+            "total_errors": 0,
+            "total_tokens": empty_token_totals(),
+            "models": {},
+            "tiers": {},
+            "routing_overhead": {
+                "count": 0,
+                "total_ms": 0.0,
+                "min_ms": 0.0,
+                "max_ms": 0.0,
+                "avg_ms": 0.0,
+                "p50_ms": 0.0,
+                "p99_ms": 0.0
+            },
+            "cost_estimate": empty_cost_estimate(),
+            "classifier": {
+                "total_requests": 0,
+                "total_errors": 0,
+                "total_tokens": empty_token_totals(),
+                "models": {},
+                "cost_estimate": empty_cost_estimate()
+            },
+        })
+    );
+    assert_eq!(
+        send(&app, "GET", "/v1/routing/stats", None).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestResult {
+    let (_upstream, app) = test_app(&[
+        ("switchyard/one", &["gemini-3.5-flash"]),
+        ("switchyard/two", &["model/unknown"]),
+    ])
+    .await?;
+    for route in ["switchyard/one", "switchyard/two"] {
+        assert_eq!(
+            send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": route,
+                    "messages": [{"role": "user", "content": "hello"}]
+                })),
+            )
+            .await?
+            .status,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/one",
+                "messages": [{"role": "user", "content": "fail"}]
+            })),
+        )
+        .await?
+        .status,
+        StatusCode::IM_A_TEAPOT
+    );
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 3);
+    assert_eq!(stats["total_errors"], 1);
+    assert_eq!(
+        stats["total_tokens"],
+        json!({
+            "prompt": 20,
+            "completion": 4,
+            "cached": 14,
+            "cache_creation": 0,
+            "reasoning": 0,
+            "total": 24
+        })
+    );
+    assert_eq!(stats["models"]["gemini-3.5-flash"]["calls"], 1);
+    assert_eq!(stats["models"]["gemini-3.5-flash"]["errors"], 1);
+    assert_eq!(stats["models"]["model/unknown"]["calls"], 1);
+    assert_eq!(stats["routing_overhead"]["count"], 2);
+    assert!(
+        stats["cost_estimate"]["backend_cost"]
+            .as_f64()
+            .unwrap_or(0.0)
+            > 0.0
+    );
+    assert_eq!(
+        stats["cost_estimate"]["models"]["model/unknown"]["total_cost"],
+        0.0
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     const MODEL: &str = "model/metrics-buffered";
@@ -565,6 +693,18 @@ base_threshold = 0.5
     assert_eq!(calls[1]["model"], "model/classifier");
     assert_eq!(calls[2]["model"], "model/weak");
     assert_eq!(calls[3]["model"], "model/weak");
+    drop(calls);
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 3);
+    assert_eq!(stats["models"]["model/weak"]["calls"], 3);
+    assert_eq!(stats["tiers"]["weak"]["calls"], 1);
+    assert_eq!(stats["classifier"]["total_requests"], 1);
+    assert_eq!(
+        stats["classifier"]["models"]["model/classifier"]["calls"],
+        1
+    );
+    assert_eq!(stats["classifier"]["total_tokens"]["prompt"], 10);
     Ok(())
 }
 
@@ -982,6 +1122,17 @@ async fn streaming_success_records_only_final_usage_and_one_latency() -> TestRes
             "unexpected delta for {name}"
         );
     }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 1);
+    assert_eq!(
+        stats["total_tokens"],
+        json!({
+            "prompt": 12, "completion": 5, "cached": 7,
+            "cache_creation": 2, "reasoning": 3, "total": 17
+        })
+    );
+    assert_eq!(stats["models"][MODEL]["model_call_latency"]["count"], 1);
+    assert_eq!(stats["models"][MODEL]["total_latency"]["count"], 1);
     Ok(())
 }
 
@@ -1026,6 +1177,12 @@ async fn streaming_error_records_neither_usage_nor_latency() -> TestResult {
             "{name} changed after a failed stream"
         );
     }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 1);
+    assert_eq!(stats["total_tokens"], empty_token_totals());
+    assert_eq!(stats["models"][MODEL]["calls"], 1);
+    assert_eq!(stats["models"][MODEL]["total_latency"]["count"], 0);
+    assert_eq!(stats["routing_overhead"]["count"], 1);
     Ok(())
 }
 

@@ -1806,6 +1806,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
+ "parking_lot",
  "prometheus",
  "rustls",
  "serde",
