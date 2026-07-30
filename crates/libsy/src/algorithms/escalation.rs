@@ -10,10 +10,15 @@
 //! reaches the threshold on the turn the judge escalated, and a session serving capable never
 //! consults the judge again to clear it.
 //!
-//! The judge picks the tier *before* the turn's model call, so a turn costs one model call and
-//! the target's response — streamed or aggregated — reaches the caller untouched. A judge
-//! failure fails open to the efficient tier and never latches: an outage costs quality risk,
-//! never money.
+//! Each unlatched turn is served on the efficient tier first, and the judge reads the
+//! conversation *including that reply*. Reading it means buffering it, so a streamed reply is
+//! aggregated before the caller sees it. A turn the judge lets stand keeps the reply already in
+//! hand and costs one serving call plus the judge; only the turn that confirms an escalation
+//! discards that reply and pays for the capable tier as well. A latched turn costs one call and
+//! no judge.
+//!
+//! A judge failure fails open to the efficient tier and never latches: an outage costs quality
+//! risk, never money.
 
 use std::sync::Arc;
 
@@ -79,8 +84,8 @@ fn assistant_message(response: &AggLlmResponse) -> Message {
     }
 }
 
-/// Consults the judge until the streak confirms, then serves capable for the rest of the
-/// session. See the [module docs](self).
+/// Serves the turn on the efficient tier, judges that reply, and escalates once the streak
+/// confirms. See the [module docs](self).
 struct EscalationClassifier {
     judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
     capable: LlmTarget,
@@ -201,8 +206,8 @@ impl Classifier<State> for EscalationClassifier {
     }
 }
 
-/// Serves the efficient model until the judge escalates, then pins the session to the
-/// capable model. See the [module docs](self).
+/// Serves the efficient model until the judge's escalate verdicts confirm, then pins the
+/// session to the capable model. See the [module docs](self).
 pub struct EscalationRouter {
     route: FallThrough<State>,
 }

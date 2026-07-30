@@ -44,9 +44,10 @@ const JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct EscalationJudgeConfig {
-    /// Consecutive escalate verdicts required before the latch fires.
-    /// `1` latches on the first verdict; the router's main cost dial.
-    /// `2` or higher requires a session id to accumulate.
+    /// Consecutive escalate verdicts required before a turn moves to the capable tier, which
+    /// is also the turn that latches the session. Any decline clears the streak.
+    /// `1` escalates on the first verdict; the router's main cost dial.
+    /// `2` or higher needs a session id, since the streak is retained per session.
     pub confirmations: u32,
     /// Trailing messages shown on top of the anchors. A loop longer than this is invisible.
     pub recent_turn_window: usize,
@@ -125,11 +126,11 @@ impl Judge for EscalationJudge {
     }
 }
 
-/// Maps the judge's verdict to a classification, keeping "declined" and "unavailable"
-/// distinguishable: both stay efficient, but only a decline is evidence, so only a decline
-/// clears a streak. A decline scores the efficient target rather than abstaining, so the
-/// caller reads the tier to serve straight off the winning score; [`Classification::Ambiguous`]
-/// carries the unavailable case, which names no tier at all.
+/// Maps the judge's verdict to a classification. A verdict names the tier to serve — capable
+/// on escalate, efficient on decline — so the caller reads it straight off the winning score.
+/// [`Classification::Ambiguous`] carries the unavailable case, which names no tier: both a
+/// decline and an outage stay efficient, but only a decline is evidence, so only a decline
+/// clears the streak.
 pub(crate) struct EscalationPolicy {
     capable: String,
     efficient: String,
