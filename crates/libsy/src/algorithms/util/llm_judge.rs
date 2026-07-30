@@ -330,7 +330,7 @@ mod tests {
     fn streamed(chunks: Vec<LlmResponseChunk>) -> Response {
         Response {
             llm_response: LlmResponse::Stream(
-                futures::stream::iter(chunks.into_iter().map(Ok)).boxed(),
+                futures::stream::iter(chunks.into_iter().map(|chunk| Ok(chunk.into()))).boxed(),
             ),
             metadata: None,
         }
@@ -338,7 +338,7 @@ mod tests {
 
     fn streamed_then_failing(chunk: LlmResponseChunk) -> Response {
         let items = futures::stream::iter([
-            Ok(chunk),
+            Ok(chunk.into()),
             Err(LlmClientError::Timeout {
                 source: Box::new(std::io::Error::other("stream died")),
             }),

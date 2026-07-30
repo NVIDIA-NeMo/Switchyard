@@ -223,7 +223,6 @@ fn encode_openai_chat_stream(
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             vec![json!({"error": {"message": message}})]
         }
-        LlmResponseChunk::ProviderEvent { .. } => Vec::new(),
     }
 }
 

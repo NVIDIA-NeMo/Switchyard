@@ -48,7 +48,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::{Driver, LibsyError, Result};
 use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, Request, Response, Usage,
+    LlmResponseStream, LlmResponseStreamEvent, Request, Response, Usage,
 };
 
 const METRICS_SCOPE: &str = "switchyard";
@@ -364,7 +364,7 @@ struct ObservedClientStream {
 }
 
 impl Stream for ObservedClientStream {
-    type Item = std::result::Result<LlmResponseChunk, LlmClientError>;
+    type Item = std::result::Result<LlmResponseStreamEvent, LlmClientError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         match self.stream.as_mut().poll_next(cx) {
@@ -395,32 +395,48 @@ struct ClientStreamObserver {
 }
 
 impl ClientStreamObserver {
-    fn observe(&mut self, item: &std::result::Result<LlmResponseChunk, LlmClientError>) -> bool {
+    fn observe(
+        &mut self,
+        item: &std::result::Result<LlmResponseStreamEvent, LlmClientError>,
+    ) -> bool {
         match item {
-            Ok(LlmResponseChunk::MessageStart { id, model }) => {
-                record_optional(&self.span, "gen_ai.response.id", id.as_deref());
-                record_optional(&self.span, "gen_ai.response.model", model.as_deref());
-            }
-            Ok(LlmResponseChunk::Usage(usage)) => record_gen_ai_usage(&self.span, usage),
-            Ok(LlmResponseChunk::MessageStop { reason }) => {
-                record_finish_reasons(&self.span, reason.iter().cloned());
-            }
-            Ok(LlmResponseChunk::DecodeError { message }) => {
-                record_client_error(&self.span, "response_translation", message);
-                self.terminal = true;
-            }
-            Ok(LlmResponseChunk::StreamError { message }) => {
-                record_client_error(&self.span, "502", message);
-                self.terminal = true;
+            Ok(event) => {
+                for chunk in event.normalized() {
+                    self.observe_chunk(chunk);
+                    if self.terminal {
+                        break;
+                    }
+                }
             }
             Err(error) => {
                 let error_type = llm_client_error_type(error);
                 record_client_error(&self.span, &error_type, error);
                 self.terminal = true;
             }
-            _ => {}
         }
         self.terminal
+    }
+
+    fn observe_chunk(&mut self, chunk: &LlmResponseChunk) {
+        match chunk {
+            LlmResponseChunk::MessageStart { id, model } => {
+                record_optional(&self.span, "gen_ai.response.id", id.as_deref());
+                record_optional(&self.span, "gen_ai.response.model", model.as_deref());
+            }
+            LlmResponseChunk::Usage(usage) => record_gen_ai_usage(&self.span, usage),
+            LlmResponseChunk::MessageStop { reason } => {
+                record_finish_reasons(&self.span, reason.iter().cloned());
+            }
+            LlmResponseChunk::DecodeError { message } => {
+                record_client_error(&self.span, "response_translation", message);
+                self.terminal = true;
+            }
+            LlmResponseChunk::StreamError { message } => {
+                record_client_error(&self.span, "502", message);
+                self.terminal = true;
+            }
+            _ => {}
+        }
     }
 
     fn complete(&mut self) {
