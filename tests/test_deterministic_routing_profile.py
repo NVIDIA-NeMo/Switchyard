@@ -458,10 +458,10 @@ class TestPresetIntegration:
         assert config.weak.model == "moonshotai/kimi-k2.6"
         assert config.classifier.model == "google/gemini-3.5-flash"
 
-    def test_preset_uses_openai_compatible_formats(self) -> None:
-        # OpenRouter's default surface is OpenAI-compatible chat completions.
+    def test_preset_owns_per_tier_formats(self) -> None:
+        # Strong is a Claude model: AUTO probes so cache_control survives.
         config = DeterministicRoutingPresets.coding_agent_default(api_key="nvapi-test")
-        assert config.strong.format is BackendFormat.OPENAI
+        assert config.strong.format is BackendFormat.AUTO
         assert config.weak.format is BackendFormat.OPENAI
         assert config.classifier.format is BackendFormat.OPENAI
 
