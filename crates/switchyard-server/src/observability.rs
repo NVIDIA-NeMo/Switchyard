@@ -47,8 +47,17 @@ pub fn flush_observability() {
 }
 
 pub(crate) fn otlp_enabled(signal: &str) -> bool {
-    if env_var_is_true("OTEL_SDK_DISABLED")
-        || env::var(format!("OTEL_{signal}_EXPORTER")).is_ok_and(|value| value == "none")
+    if env_var_is_true("OTEL_SDK_DISABLED") {
+        return false;
+    }
+    if env::var(format!("OTEL_{signal}_EXPORTER"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some_and(|value| {
+            !value
+                .split(',')
+                .any(|exporter| exporter.trim().eq_ignore_ascii_case("otlp"))
+        })
     {
         return false;
     }

@@ -36,6 +36,7 @@ switchyard-components = { path = "crates/switchyard-components", version = "0.1.
 switchyard-libsy = { path = "crates/libsy", version = "0.1.0" }
 switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.1.0" }
 switchyard-protocol = { path = "crates/protocol", version = "0.1.0" }
+switchyard-server = { path = "crates/switchyard-server", version = "0.1.0" }
 switchyard-translation = { path = "crates/switchyard-translation", version = "0.1.0" }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

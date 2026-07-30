@@ -110,11 +110,9 @@ impl PyServer {
 
 impl PyServer {
     fn close_inner(&mut self, py: Python<'_>, timeout_secs: f64) -> PyResult<()> {
-        if !timeout_secs.is_finite() || timeout_secs < 0.0 {
-            return Err(PyValueError::new_err(
-                "timeout_secs must be a finite non-negative number",
-            ));
-        }
+        let timeout = Duration::try_from_secs_f64(timeout_secs).map_err(|_| {
+            PyValueError::new_err("timeout_secs must be a supported finite non-negative number")
+        })?;
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -123,7 +121,7 @@ impl PyServer {
         };
         let task = self.task.take();
         let result = py.detach(move || {
-            let result = completion.recv_timeout(Duration::from_secs_f64(timeout_secs));
+            let result = completion.recv_timeout(timeout);
             if matches!(result, Err(RecvTimeoutError::Timeout)) {
                 if let Some(task) = task {
                     task.abort();
