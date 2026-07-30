@@ -3,7 +3,14 @@
 
 """Run Rust-owned libsy algorithms with Python-hosted LLM clients."""
 
-from switchyard_rust.libsy import Algorithm, LibsyError, LlmClient, LlmTarget, TaskClassifierConfig
+from switchyard_rust.libsy import (
+    Algorithm,
+    LibsyError,
+    LlmClient,
+    LlmFallback,
+    LlmTarget,
+    TaskClassifierConfig,
+)
 
 from . import algorithms as algorithms
 
@@ -11,6 +18,7 @@ __all__ = [
     "Algorithm",
     "LibsyError",
     "LlmClient",
+    "LlmFallback",
     "LlmTarget",
     "TaskClassifierConfig",
     "algorithms",

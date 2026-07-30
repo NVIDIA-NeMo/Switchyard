@@ -149,6 +149,39 @@ impl PyTaskClassifierConfig {
     }
 }
 
+/// Judge target and policy used when stage-router signals are inconclusive.
+#[pyclass(
+    name = "LlmFallback",
+    module = "switchyard.libsy",
+    frozen,
+    skip_from_py_object
+)]
+struct PyLlmFallback {
+    judge_target: Py<PyLlmTarget>,
+    config: Py<PyTaskClassifierConfig>,
+}
+
+impl PyLlmFallback {
+    fn clone_core(&self, py: Python<'_>) -> PyResult<LlmFallback> {
+        Ok(LlmFallback {
+            judge_target: self.judge_target.bind(py).try_borrow()?.clone_core(py),
+            config: self.config.bind(py).try_borrow()?.clone_core(),
+        })
+    }
+}
+
+#[pymethods]
+impl PyLlmFallback {
+    #[new]
+    #[pyo3(signature = (judge_target, *, config))]
+    fn new(judge_target: Py<PyLlmTarget>, config: Py<PyTaskClassifierConfig>) -> Self {
+        Self {
+            judge_target,
+            config,
+        }
+    }
+}
+
 /// Opaque handle shared by every Rust-owned algorithm exposed to Python.
 #[pyclass(name = "Algorithm", module = "switchyard.libsy", frozen)]
 struct PyAlgorithm {
@@ -279,8 +312,7 @@ fn llm_task_classifier_algorithm(
     only_on_wrong_signal_escalation=true,
     capable_system_prompt=None,
     efficient_system_prompt=None,
-    classifier_target=None,
-    classifier_config=None
+    classifier=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn stage_router_algorithm(
@@ -295,8 +327,7 @@ fn stage_router_algorithm(
     only_on_wrong_signal_escalation: bool,
     capable_system_prompt: Option<String>,
     efficient_system_prompt: Option<String>,
-    classifier_target: Option<Py<PyLlmTarget>>,
-    classifier_config: Option<Py<PyTaskClassifierConfig>>,
+    classifier: Option<Py<PyLlmFallback>>,
 ) -> PyResult<PyAlgorithm> {
     let mode = match picker {
         "capable_first" => PickerMode::CapableFirst,
@@ -334,23 +365,9 @@ fn stage_router_algorithm(
             .tier_prompts
             .with(efficient.semantic_name.clone(), prompt);
     }
-    config.llm_fallback = match (classifier_target, classifier_config) {
-        (Some(target), Some(classifier_config)) => Some(LlmFallback {
-            judge_target: target.bind(py).try_borrow()?.clone_core(py),
-            config: classifier_config.bind(py).try_borrow()?.clone_core(),
-        }),
-        (Some(_), None) => {
-            return Err(PyValueError::new_err(
-                "classifier_target requires classifier_config",
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(PyValueError::new_err(
-                "classifier_config requires classifier_target",
-            ));
-        }
-        (None, None) => None,
-    };
+    config.llm_fallback = classifier
+        .map(|classifier| classifier.bind(py).try_borrow()?.clone_core(py))
+        .transpose()?;
 
     let algorithm = StageRouter::new(capable, efficient, config)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -372,6 +389,7 @@ fn invalid_python_response(error: PyErr) -> LlmClientError {
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let libsy_module = PyModule::new(module.py(), "libsy")?;
     libsy_module.add_class::<PyAlgorithm>()?;
+    libsy_module.add_class::<PyLlmFallback>()?;
     libsy_module.add_class::<PyLlmTarget>()?;
     libsy_module.add_class::<PyTaskClassifierConfig>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;

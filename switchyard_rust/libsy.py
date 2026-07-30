@@ -14,6 +14,7 @@ _EXPORTS = frozenset(
     {
         "Algorithm",
         "LibsyError",
+        "LlmFallback",
         "LlmTarget",
         "TaskClassifierConfig",
         "llm_task_classifier",
@@ -64,6 +65,15 @@ if TYPE_CHECKING:
         ) -> None: ...
 
     @final
+    class LlmFallback:
+        def __init__(
+            self,
+            judge_target: LlmTarget,
+            *,
+            config: TaskClassifierConfig,
+        ) -> None: ...
+
+    @final
     class Algorithm:
         async def run(
             self,
@@ -95,8 +105,7 @@ if TYPE_CHECKING:
         only_on_wrong_signal_escalation: bool = True,
         capable_system_prompt: str | None = None,
         efficient_system_prompt: str | None = None,
-        classifier_target: LlmTarget | None = None,
-        classifier_config: TaskClassifierConfig | None = None,
+        classifier: LlmFallback | None = None,
     ) -> Algorithm: ...
 
 
