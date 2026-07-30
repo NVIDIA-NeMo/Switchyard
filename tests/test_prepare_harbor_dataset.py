@@ -284,6 +284,7 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
     assert manifest["agent_versions"] == {
         "CLAUDE_CODE_VERSION": "2.1.211",
         "CODEX_VERSION": "0.144.5",
+        "HERMES_VERSION": "main",
         "NODE_VERSION": "20.11.1",
         "OPENCODE_VERSION": "1.18.3",
     }
