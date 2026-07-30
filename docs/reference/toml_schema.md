@@ -56,7 +56,14 @@ must exist and be non-empty when the server loads.
 
 ## `[routes.<name>]`
 
-Every route takes `id` and `type`, plus the keys for that type.
+Every route takes the common keys below, plus the keys for its type.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `id` | Yes | — | Public model ID that callers send in requests. |
+| `type` | Yes | — | Routing algorithm for this route. |
+| `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
+| `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
 
 ### `noop`
 

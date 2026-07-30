@@ -21,7 +21,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::RoutedLlmClient;
 
-use crate::{ServerError, ServerResult, ServerState};
+use crate::{ModelCapabilities, ServerError, ServerResult, ServerState};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
@@ -91,12 +91,16 @@ impl ServerConfig {
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), config.id())?;
-            routes.push((
-                config.id().to_string(),
-                build_algorithm(route_name, config, &targets)?,
-            ));
+            let capabilities = config.capabilities();
+            if capabilities.context_window == Some(0) {
+                return Err(ServerError::new(format!(
+                    "route {route_name} context_window must be greater than zero"
+                )));
+            }
+            let algorithm = build_algorithm(route_name, config, &targets)?;
+            routes.push((config.id().to_string(), algorithm, capabilities));
         }
-        ServerState::new(routes)
+        ServerState::new_with_capabilities(routes)
     }
 
     fn build_clients(&self) -> ServerResult<BTreeMap<String, Arc<dyn RoutedLlmClient>>> {
@@ -260,19 +264,35 @@ struct CustomClassifierRouteConfig {
 enum RouteConfig {
     Noop {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
     },
     Random {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
         targets: Vec<String>,
         weights: Option<Vec<f64>>,
         seed: Option<u64>,
     },
     Passthrough {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
         target: String,
     },
     LlmClassifier {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
         classifier_target: String,
         #[serde(default)]
         mode: Option<ClassifierMode>,
@@ -309,6 +329,10 @@ enum RouteConfig {
     },
     StageRouter {
         id: String,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        tool_calling: Option<bool>,
         capable_target: String,
         efficient_target: String,
         /// Tier a turn falls back to when the signals are not confident.
@@ -373,11 +397,45 @@ impl RouteConfig {
     fn id(&self) -> &str {
         use RouteConfig::*;
         match self {
-            Noop { id }
+            Noop { id, .. }
             | Random { id, .. }
             | LlmClassifier { id, .. }
             | Passthrough { id, .. }
             | StageRouter { id, .. } => id,
+        }
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        use RouteConfig::*;
+        match self {
+            Noop {
+                context_window,
+                tool_calling,
+                ..
+            }
+            | Random {
+                context_window,
+                tool_calling,
+                ..
+            }
+            | Passthrough {
+                context_window,
+                tool_calling,
+                ..
+            }
+            | LlmClassifier {
+                context_window,
+                tool_calling,
+                ..
+            }
+            | StageRouter {
+                context_window,
+                tool_calling,
+                ..
+            } => ModelCapabilities {
+                context_window: *context_window,
+                tool_calling: *tool_calling,
+            },
         }
     }
 
@@ -997,6 +1055,12 @@ target = "weak"
         );
         assert!(error_message(&unknown_classifier_field).contains("unknown field"));
 
+        let target_capability = VALID_CONFIG.replace(
+            "llm_client = \"responses\"",
+            "llm_client = \"responses\"\ncontext_window = 1000000",
+        );
+        assert!(error_message(&target_capability).contains("unknown field `context_window`"));
+
         let unknown_algorithm = VALID_CONFIG.replace("type = \"noop\"", "type = \"imaginary\"");
         assert!(error_message(&unknown_algorithm).contains("unknown variant"));
     }
@@ -1089,6 +1153,13 @@ classifier_magic = true
             (
                 VALID_CONFIG.replace("[targets.strong]", "[targets.\" strong \"]"),
                 "target name must be non-empty and have no surrounding whitespace",
+            ),
+            (
+                VALID_CONFIG.replace(
+                    "targets = [\"strong\", \"weak\"]",
+                    "targets = [\"strong\", \"weak\"]\ncontext_window = 0",
+                ),
+                "route random context_window must be greater than zero",
             ),
         ];
 

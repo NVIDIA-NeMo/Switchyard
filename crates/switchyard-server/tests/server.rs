@@ -1102,6 +1102,58 @@ async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
 }
 
 #[tokio::test]
+async fn models_endpoint_reports_declared_route_capabilities_and_null_when_undeclared() -> TestResult
+{
+    const CONFIG: &str = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.shared]
+id = "nvidia/deepseek-ai/deepseek-v4-pro"
+llm_client = "primary"
+
+[routes.declared]
+id = "declared"
+type = "passthrough"
+target = "shared"
+context_window = 1000000
+tool_calling = true
+
+[routes.restricted]
+id = "restricted"
+type = "passthrough"
+target = "shared"
+context_window = 262000
+tool_calling = false
+
+[routes.undeclared]
+id = "undeclared"
+type = "passthrough"
+target = "shared"
+"#;
+    let app = build_switchyard_router(load_test_config(CONFIG)?);
+    let models = send(&app, "GET", "/v1/models", None).await?;
+    assert_eq!(models.status, StatusCode::OK);
+    let body = models.json()?;
+    let data = body["data"].as_array().cloned().unwrap_or_default();
+    let capabilities = data
+        .iter()
+        .filter_map(|entry| entry["id"].as_str().map(|id| (id, &entry["capabilities"])))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(capabilities["declared"]["context_window"], json!(1_000_000));
+    assert_eq!(capabilities["declared"]["tool_calling"], json!(true));
+    assert_eq!(capabilities["restricted"]["context_window"], json!(262_000));
+    assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
+    assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
+    assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+    Ok(())
+}
+
+#[tokio::test]
 async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestResult {
     let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 
