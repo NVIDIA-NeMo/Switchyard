@@ -605,27 +605,6 @@ def test_dry_run_server_config_honors_explicit_harbor_model(tmp_path: Path) -> N
     assert _option_value(harbor, "--model") == "openai/custom-route-label"
 
 
-def test_checked_in_routing_profiles_load(monkeypatch) -> None:
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
-
-    import switchyard.cli.route_bundle as route_bundle
-
-    profiles = {
-        "gpt-5-5-deepseek-gemini.yaml": "switchyard",
-        "gpt-5-5-kimi-gemini.yaml": "switchyard",
-        "tb-lite-llm-classifier-opus-deepseek-gemini.yaml": "switchyard",
-        "tb-lite-llm-classifier-opus-kimi-gemini.yaml": "switchyard",
-        "tb-lite-single-opus-4-7.yaml": "tb-lite-single-opus-4-7",
-        "tb-lite-single-gpt-5-5.yaml": "tb-lite-single-gpt-5-5",
-    }
-    monkeypatch.setattr(route_bundle, "fetch_model_ids", lambda _base_url, _api_key: [])
-    for filename, model in profiles.items():
-        table = route_bundle.load_route_bundle_table(
-            REPO / "benchmark" / "routing-profiles" / filename
-        )
-        assert model in table.registered_models()
-
-
 def test_dry_run_harbor_extra(tmp_path: Path) -> None:
     profile = _write_server_config(tmp_path / "routes.toml")
 

@@ -535,7 +535,6 @@ SERVER_CONFIG_DIR=""
 if [[ -n "${SERVER_CONFIG}" ]]; then
     SERVER_CONFIG_DIR="$(cd "$(dirname "${SERVER_CONFIG}")" && pwd)"
 fi
-CLASSIFIER_PROMPTS_JSON="{}"
 WRAPPER="${RUN_DIR}/run-background.sh"
 HARBOR_JOB_DIR="${RUN_DIR}/jobs/${JOB_NAME}"
 
@@ -764,7 +763,6 @@ MANIFEST_CMD=(python3 "${MANIFEST_HELPER}" write
     --server-port "${PORT}"
     --server-argv-json "$(json_array "${SERVER_CMD[@]}")"
     --server-config-json "${SERVER_CONFIG_JSON}"
-    --classifier-prompts-json "${CLASSIFIER_PROMPTS_JSON}"
     --harbor-server-url "${HARBOR_SERVER_ROOT_URL}"
     --harbor-base-url "${HARBOR_BASE_URL}"
     --upstream-base-url "$([[ "${SWITCHYARD_ENABLED}" -eq 0 ]] && echo "${UPSTREAM_BASE_URL}")"

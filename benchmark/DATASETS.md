@@ -117,7 +117,8 @@ run_manifest.json
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
 
-For Switchyard runs, also inspect `server_metrics_final.prom`.
+For Switchyard runs, also inspect `server_metrics_final.prom` and
+`routing_stats_final.json`.
 
 ## What The Rewriter Changes
 

@@ -82,7 +82,7 @@ For `type: deterministic` routes, the `classifier:` block also accepts:
 | `max_request_chars` | Optional cap on the serialized request summary sent to the classifier before truncation. Defaults to `16000`; minimum `256`. |
 | `recent_turn_window` | Number of trailing conversation turns included alongside the stable system/first-user anchors. Defaults to `4`. |
 
-Benchmark runs started through `benchmark/run-baseline.sh --routing-profiles` record the effective classifier prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` in `run_manifest.json` under `server.classifier_prompts`.
+Benchmark runs started through `benchmark/run-baseline.sh --server-config` copy the server TOML into the run directory and record its path and SHA-256 in `run_manifest.json` under `server.server_config_snapshot` and `server.server_config_snapshot_digest`.
 
 Each route name becomes a model ID on `GET /v1/models`. Clients select a route
 by setting the request's `model` field to that name.
@@ -115,8 +115,9 @@ The Intake sink posts live model-call captures to nemo-platform
 derives queryable token fields from `response.usage` and queryable cost fields
 from top-level `cost_usd`, `cost_input_usd`, `cost_output_usd`, and
 `cost_details`. Switchyard emits cost fields only when the served model has a
-known pricing entry; `routing_stats_final.json` remains the run-level source
-for aggregate routing/model cost estimates. When a session ID is present,
+known pricing entry. `routing_stats_final.json` carries the run-level aggregate
+`/v1/stats` snapshot (per-model and per-tier calls, errors, tokens, and
+latency); it does not include cost estimates. When a session ID is present,
 Switchyard also maps the Intake app/task labels into top-level
 `evaluation_context.dataset_*` and `evaluation_context.test_case_id` for span
 queries while keeping the original labels under `request.switchyard`.
