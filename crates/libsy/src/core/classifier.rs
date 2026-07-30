@@ -42,7 +42,6 @@ impl Classification {
             }
         }
     }
-
 }
 
 /// The highest-confidence score, or `None` when the set is empty (the classifier abstained).
