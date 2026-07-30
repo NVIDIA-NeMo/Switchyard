@@ -9,8 +9,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libsy::algorithms::{
-    LlmTaskClassifier, Noop, Passthrough, Random, StageRouter, StageRouterConfig, TargetPrompts,
-    TaskClassifierConfig,
+    EscalationJudgeConfig, LlmTaskClassifier, Noop, Passthrough, Random, StageRouter,
+    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use libsy::stage_router::{HandoffNoteConfig, LlmFallback, PickerMode};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
@@ -194,6 +194,14 @@ enum RouteConfig {
         weak_target: String,
         #[serde(flatten)]
         classifier_config: TaskClassifierConfig,
+        /// Present to route by escalation instead of up-front classification.
+        ///
+        /// The classifier target becomes a trajectory judge: every unlatched turn is served by
+        /// the weak tier and judged, and the session latches to the strong tier once
+        /// `confirmations` consecutive escalate verdicts accumulate. Absent, the classifier
+        /// picks a tier before the turn's call, as usual.
+        #[serde(default)]
+        escalation: Option<EscalationJudgeConfig>,
     },
     StageRouter {
         id: String,
@@ -325,17 +333,27 @@ fn build_algorithm(
             strong_target,
             weak_target,
             classifier_config,
+            escalation,
             ..
         } => {
             let classifier = resolve_target(route_name, classifier_target, targets)?;
             let strong = resolve_target(route_name, strong_target, targets)?;
             let weak = resolve_target(route_name, weak_target, targets)?;
             // The weak model is the efficient tier; the strong model is the capable one.
-            let algorithm =
-                LlmTaskClassifier::new(classifier, weak, strong, classifier_config.clone())
-                    .map_err(|error| {
-                        ServerError::new(format!("llm_classifier route {route_name}: {error}"))
-                    })?;
+            // With `escalation`, the classifier target judges the weak tier's reply each turn
+            // instead of picking a tier ahead of it.
+            let algorithm = match escalation {
+                Some(judge_config) => LlmTaskClassifier::new_with_escalation(
+                    classifier,
+                    weak,
+                    strong,
+                    judge_config.clone(),
+                ),
+                None => LlmTaskClassifier::new(classifier, weak, strong, classifier_config.clone()),
+            }
+            .map_err(|error| {
+                ServerError::new(format!("llm_classifier route {route_name}: {error}"))
+            })?;
             Ok(Arc::new(algorithm))
         }
         RouteConfig::StageRouter {
@@ -507,6 +525,27 @@ target = "weak"
                 "switchyard/random",
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_escalation_table_switches_the_classifier_route_to_escalation() -> ServerResult<()> {
+        // Present: the classifier target judges the weak tier's reply each turn instead of
+        // picking a tier ahead of it. The route builds either way, so the assertion is that
+        // the knob parses and its settings reach the algorithm's validation.
+        let escalating = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2 }",
+        );
+        server_state_from_toml(&escalating)?;
+
+        // A setting that would starve the judge is rejected here rather than on the first
+        // request, the same as any other unusable route configuration.
+        let starved = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 0 }",
+        );
+        assert!(error_message(&starved).contains("confirmations must be at least 1"));
         Ok(())
     }
 
