@@ -5,12 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import socket
-import subprocess
-import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -31,18 +29,12 @@ def guide_text() -> str:
 
 
 @pytest.fixture(scope="session")
-def rust_server_binary() -> Path:
+async def rust_server_binary() -> Path:
     """Build and return the Rust server binary exercised by the guide."""
-    completed = subprocess.run(
+    returncode, stdout, stderr = await _run_command(
         ["cargo", "build", "--quiet", "--locked", "-p", "switchyard-server"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
     )
-    assert completed.returncode == 0, (
-        f"failed to build switchyard-server:\n{completed.stderr}{completed.stdout}"
-    )
+    assert returncode == 0, f"failed to build switchyard-server:\n{stderr}{stdout}"
     binary = REPO_ROOT / "target" / "debug" / "switchyard-server"
     assert binary.is_file(), f"cargo did not create {binary}"
     return binary
@@ -58,7 +50,7 @@ def _code_blocks(text: str, lang: str) -> list[str]:
     ]
 
 
-def test_rust_server_toml_blocks_validate_with_rust_schema(
+async def test_rust_server_toml_blocks_validate_with_rust_schema(
     guide_text: str,
     rust_server_binary: Path,
     tmp_path: Path,
@@ -79,33 +71,26 @@ def test_rust_server_toml_blocks_validate_with_rust_schema(
     for index, config in enumerate(configs):
         config_path = tmp_path / f"getting-started-{index}.toml"
         config_path.write_text(config)
-        completed = subprocess.run(
+        returncode, stdout, stderr = await _run_command(
             [rust_server_binary, "--config", config_path, "--dry-run"],
-            cwd=REPO_ROOT,
             env=env,
-            capture_output=True,
-            text=True,
-            check=False,
         )
-        assert completed.returncode == 0, (
-            f"TOML block {index} failed Rust schema validation:\n"
-            f"{completed.stderr}{completed.stdout}"
+        assert returncode == 0, (
+            f"TOML block {index} failed Rust schema validation:\n{stderr}{stdout}"
         )
-        assert "server OK: switchyard" in completed.stdout
+        assert "server OK: switchyard" in stdout
 
 
-def test_rust_server_help_advertises_documented_flags(rust_server_binary: Path) -> None:
+async def test_rust_server_help_advertises_documented_flags(
+    rust_server_binary: Path,
+) -> None:
     """Keep the guide's server flags aligned with the Rust CLI."""
-    completed = subprocess.run(
+    returncode, stdout, stderr = await _run_command(
         [rust_server_binary, "--help"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert returncode == 0, stderr
     for flag in ("--config", "--dry-run", "--host", "--port"):
-        assert flag in completed.stdout, f"documented flag {flag} is missing from --help"
+        assert flag in stdout, f"documented flag {flag} is missing from --help"
 
 
 def test_guide_uses_the_rust_server_flow(guide_text: str) -> None:
@@ -142,84 +127,132 @@ type = "noop"
     return config_path
 
 
-def test_rust_server_health_and_models(
+async def test_rust_server_health_and_models(
     rust_server_binary: Path,
     noop_config: Path,
 ) -> None:
     """Start the Rust server and exercise the guide's operational endpoints."""
-    port = _find_free_port()
-    with _serve_in_background(rust_server_binary, noop_config, port):
-        health = httpx.get(
-            f"http://127.0.0.1:{port}/health",
-            timeout=REQUEST_TIMEOUT_S,
-        )
+    async with _serve_in_background(rust_server_binary, noop_config) as client:
+        health = await client.get("/health")
         assert health.status_code == 200
 
-        models = httpx.get(
-            f"http://127.0.0.1:{port}/v1/models",
-            timeout=REQUEST_TIMEOUT_S,
-        )
+        models = await client.get("/v1/models")
         assert models.status_code == 200
         assert any(model["id"] == "switchyard/test" for model in models.json()["data"])
 
 
-def _find_free_port() -> int:
-    """Reserve an available loopback port for the next server process."""
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
+async def _run_command(
+    command: list[str | os.PathLike[str]],
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run a command without blocking the active test event loop."""
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode is None:
+        raise RuntimeError(f"command did not exit: {command}")
+    return (
+        process.returncode,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
 
 
-@contextmanager
-def _serve_in_background(
+async def _read_server_base_url(process: asyncio.subprocess.Process) -> str:
+    """Read the ephemeral address from the Rust server startup banner."""
+    if process.stdout is None:
+        raise RuntimeError("switchyard-server stdout was not captured")
+
+    deadline = asyncio.get_running_loop().time() + STARTUP_TIMEOUT_S
+    output: list[str] = []
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(
+                "switchyard-server did not report its bound address:\n" + "".join(output)
+            )
+        try:
+            raw_line = await asyncio.wait_for(process.stdout.readline(), timeout=remaining)
+        except TimeoutError as error:
+            raise TimeoutError(
+                "switchyard-server did not report its bound address:\n" + "".join(output)
+            ) from error
+        if not raw_line:
+            await process.wait()
+            raise RuntimeError(
+                f"switchyard-server exited early with {process.returncode}:\n"
+                + "".join(output)
+            )
+
+        line = raw_line.decode(errors="replace")
+        output.append(line)
+        if line.startswith("  listening: "):
+            return line.removeprefix("  listening: ").strip()
+
+
+async def _wait_for_proxy_ready(
+    process: asyncio.subprocess.Process,
+    client: httpx.AsyncClient,
+) -> None:
+    """Wait until the server accepts requests or exits."""
+    deadline = asyncio.get_running_loop().time() + STARTUP_TIMEOUT_S
+    while asyncio.get_running_loop().time() < deadline:
+        if process.returncode is not None:
+            raise RuntimeError(
+                f"switchyard-server exited early with {process.returncode}"
+            )
+        try:
+            response = await client.get("/health")
+            if response.status_code == 200:
+                return
+        except httpx.HTTPError:
+            pass
+        await asyncio.sleep(0.1)
+    raise TimeoutError(
+        f"switchyard-server did not become ready within {STARTUP_TIMEOUT_S}s"
+    )
+
+
+@asynccontextmanager
+async def _serve_in_background(
     binary: Path,
     config_path: Path,
-    port: int,
-) -> Iterator[subprocess.Popen[bytes]]:
+) -> AsyncIterator[httpx.AsyncClient]:
     """Run the Rust server until the lifecycle assertion completes."""
-    process = subprocess.Popen(
-        [
-            binary,
-            "--config",
-            config_path,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ],
+    process = await asyncio.create_subprocess_exec(
+        binary,
+        "--config",
+        config_path,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
         cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        deadline = time.monotonic() + STARTUP_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                output = process.stdout.read().decode(errors="replace") if process.stdout else ""
-                raise RuntimeError(
-                    f"switchyard-server exited early with {process.returncode}:\n{output}"
-                )
-            try:
-                response = httpx.get(
-                    f"http://127.0.0.1:{port}/health",
-                    timeout=REQUEST_TIMEOUT_S,
-                )
-                if response.status_code == 200:
-                    break
-            except httpx.HTTPError:
-                time.sleep(0.1)
-        else:
-            raise TimeoutError(
-                f"switchyard-server did not become ready within {STARTUP_TIMEOUT_S}s"
-            )
-        yield process
+        base_url = await _read_server_base_url(process)
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            timeout=REQUEST_TIMEOUT_S,
+        ) as client:
+            await _wait_for_proxy_ready(process, client)
+            yield client
     finally:
-        process.terminate()
+        if process.returncode is None:
+            process.terminate()
         try:
-            process.wait(timeout=TEARDOWN_GRACE_S)
-        except subprocess.TimeoutExpired:
+            await asyncio.wait_for(process.wait(), timeout=TEARDOWN_GRACE_S)
+        except TimeoutError:
             process.kill()
-            process.wait(timeout=TEARDOWN_GRACE_S)
+            await asyncio.wait_for(process.wait(), timeout=TEARDOWN_GRACE_S)
 
 
 # TODO: Add launcher coverage back when launchers are wired to the Rust server.
