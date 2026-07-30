@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_protocol::{LlmRequest, Message, OutputParams, Role};
+use switchyard_protocol::{InstructionBlock, LlmRequest, Message, OutputParams, Role};
 
 use super::util::{AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
 use super::{DefaultTarget, FallThrough};
@@ -95,7 +95,7 @@ impl Judge for CapabilityJudge {
     fn build_request(&self, _state: &State, request: &Request) -> Request {
         // Task-based routing judges the newest user message alone. A configured
         // window widens that to the surrounding conversation.
-        let mut messages = match self.recent_turn_window {
+        let messages = match self.recent_turn_window {
             Some(window) => trim_messages(&request.llm_request.messages, window),
             None => request
                 .llm_request
@@ -107,13 +107,13 @@ impl Judge for CapabilityJudge {
                 .into_iter()
                 .collect::<Vec<_>>(),
         };
-        messages.insert(
-            0,
-            Message::text(Role::System, self.config.system_prompt.clone()),
-        );
         Request {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
+                instructions: vec![InstructionBlock {
+                    role: Role::System,
+                    content: Message::text(Role::System, self.config.system_prompt.clone()).content,
+                }],
                 messages,
                 output: OutputParams {
                     response_format: self.config.response_schema.clone(),
@@ -863,7 +863,13 @@ mod tests {
         let judge_request = judge.build_request(&State::default(), &request);
 
         assert_eq!(judge_request.llm_request.model, request.llm_request.model);
-        assert_eq!(judge_request.llm_request.messages.len(), 2);
+        assert_eq!(judge_request.llm_request.instructions.len(), 1);
+        assert_eq!(judge_request.llm_request.instructions[0].role, Role::System);
+        assert_eq!(
+            judge_request.llm_request.instructions[0].content,
+            Message::text(Role::System, judge.config.system_prompt.clone()).content
+        );
+        assert_eq!(judge_request.llm_request.messages.len(), 1);
         let contents = judge_request
             .llm_request
             .messages
