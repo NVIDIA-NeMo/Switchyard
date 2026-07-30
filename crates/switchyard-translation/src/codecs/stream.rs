@@ -231,17 +231,21 @@ pub(crate) fn mark_replayed_terminal(
 }
 
 /// Decodes one provider stream event and retains its parsed source JSON value.
+///
+/// Takes ownership of `event` so preservation does not deep-copy provider JSON
+/// on the per-event streaming path.
 pub fn decode_stream_event_preserving(
     state: &mut StreamTranslationState,
     source: impl Into<FormatId>,
-    event: &Value,
+    event: Value,
 ) -> LlmResponseChunk {
     let source = source.into();
     state.source = Some(source.clone());
+    let normalized = decode_stream_event(state, source.clone(), &event);
     LlmResponseChunk::ProviderEvent {
-        source: source.clone(),
-        raw: event.clone(),
-        normalized: decode_stream_event(state, source, event),
+        source,
+        raw: event,
+        normalized,
     }
 }
 
