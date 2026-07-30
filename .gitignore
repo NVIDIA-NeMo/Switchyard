@@ -150,6 +150,7 @@ plans/
 
 # Benchmark result directories
 bench_results*/
+soak-results/
 jobs/**/*.*
 pytest-of-*/
 
