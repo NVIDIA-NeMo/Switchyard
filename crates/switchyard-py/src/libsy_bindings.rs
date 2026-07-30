@@ -63,6 +63,7 @@ impl PyLlmTarget {
             llm_client: Some(Arc::new(PythonLlmClient {
                 inner: self.client.clone_ref(py),
             })),
+            max_context_tokens: None,
         }
     }
 }
