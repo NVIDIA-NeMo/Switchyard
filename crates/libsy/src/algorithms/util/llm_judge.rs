@@ -143,16 +143,43 @@ where
     }
 }
 
+/// Builds a [`JudgeConfig`] from a prompt template and a JSON schema template.
+///
+/// `schema_template` must be a `{ "type": "json_schema", "json_schema": { "schema": ... } }`
+/// object; the inner `schema` is substituted into the `{{RESPONSE_SCHEMA}}` placeholder in
+/// `prompt_template`.
+pub(crate) fn load_judge_config(
+    prompt_template: &str,
+    schema_template: &str,
+) -> Result<JudgeConfig> {
+    let response_schema: Value =
+        serde_json::from_str(schema_template).map_err(|error| LibsyError::AlgorithmError {
+            message: format!("response schema is invalid: {error}"),
+        })?;
+    let prompt_schema = response_schema
+        .pointer("/json_schema/schema")
+        .ok_or_else(|| LibsyError::AlgorithmError {
+            message: "response schema has no json_schema.schema".to_string(),
+        })?;
+    let prompt_schema = serde_json::to_string_pretty(prompt_schema).map_err(|error| {
+        LibsyError::AlgorithmError {
+            message: format!("prompt schema could not be rendered: {error}"),
+        }
+    })?;
+    Ok(JudgeConfig {
+        system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
+        response_schema: Some(response_schema),
+    })
+}
+
 fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<T> {
     // Providers sometimes wrap otherwise valid JSON in a Markdown fence.
-    let completion = completion_text(response);
-    serde_json::from_str(strip_json_fence(completion.trim())).map_err(|err| {
-        LibsyError::AlgorithmError {
-            message: format!(
-                "judge reply did not parse as {}: {err}",
-                std::any::type_name::<T>()
-            ),
-        }
+    let reply = completion_text(response);
+    serde_json::from_str(strip_json_fence(reply.trim())).map_err(|err| LibsyError::AlgorithmError {
+        message: format!(
+            "judge reply did not parse as {}: {err}",
+            std::any::type_name::<T>()
+        ),
     })
 }
 
@@ -193,7 +220,7 @@ mod tests {
 
     use futures::StreamExt;
     use serde::Deserialize;
-    use switchyard_protocol::{text_request, text_response, LlmClientError};
+    use switchyard_protocol::{text_request, text_response, ContentBlock, LlmClientError};
 
     use crate::{LlmResponse, LlmResponseChunk, Response, Score, Step};
 
@@ -252,6 +279,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_verdict_is_read_from_the_completion() -> Result<()> {
+        // A judge's reasoning is not its answer: only `content` carries the verdict, so a
+        // reply that never reached one — a run truncated mid-thought — is an error rather
+        // than a guess.
+        let mut response = text_response(None, VERDICT);
+        if let Some(output) = response.outputs.first_mut() {
+            output.content.insert(
+                0,
+                ContentBlock::Reasoning {
+                    text: r#"{"ok":false}"#.to_string(),
+                    signature: None,
+                },
+            );
+        }
+        let parsed: TestVerdict = parse_json_verdict(&response)?;
+        assert_eq!(parsed, TestVerdict { ok: true });
+
+        assert!(parse_json_verdict::<TestVerdict>(&text_response(None, "still thinking")).is_err());
+        Ok(())
+    }
+
     fn buffered(completion: &str) -> Response {
         Response {
             llm_response: LlmResponse::Agg(text_response(None, completion)),
@@ -308,7 +357,7 @@ mod tests {
             classifier.score(&mut state, &mut request, Some(&driver)),
             serve
         );
-        selected(classification?)
+        selected(classification?.0)
     }
 
     #[tokio::test]
