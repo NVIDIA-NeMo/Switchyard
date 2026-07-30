@@ -27,6 +27,13 @@ use crate::{
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
 
+/// Selection output shared by decision-only and response-producing execution.
+struct PreparedRoute {
+    request: Request,
+    target: LlmTarget,
+    decision: Arc<dyn Decision>,
+}
+
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
     /// Target selected by the classifier cascade.
@@ -177,6 +184,34 @@ where
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
+        let prepared = self.prepare_route(&ctx, &driver, request).await?;
+        self.call_with_overflow_fallback(
+            ctx,
+            &driver,
+            prepared.target,
+            prepared.decision,
+            prepared.request,
+        )
+        .await
+    }
+
+    /// Selects and publishes one route without executing its target.
+    pub(crate) async fn select(
+        &self,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        Ok(self.prepare_route(&ctx, &driver, request).await?.decision)
+    }
+
+    /// Runs processors and classifiers through the final pre-call routing boundary.
+    async fn prepare_route(
+        &self,
+        ctx: &Context,
+        driver: &Driver,
+        request: Request,
+    ) -> Result<PreparedRoute> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
@@ -184,16 +219,19 @@ where
         let (target, decision) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
-                self.route(&mut state, &ctx, &driver, &mut request).await?
+                self.route(&mut state, ctx, driver, &mut request).await?
             }
             None => {
                 let mut state = S::default();
-                self.route(&mut state, &ctx, &driver, &mut request).await?
+                self.route(&mut state, ctx, driver, &mut request).await?
             }
         };
 
-        self.call_with_overflow_fallback(ctx, &driver, target, decision, request)
-            .await
+        Ok(PreparedRoute {
+            request,
+            target,
+            decision,
+        })
     }
 
     /// Calls `target`, falling back to the next eligible target whenever one overflows its
@@ -356,6 +394,15 @@ where
     ) -> Result<Response> {
         self.execute(ctx, driver, request).await
     }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        self.select(ctx, driver, request).await
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -516,6 +563,27 @@ mod tests {
     }
 
     // --- tests -------------------------------------------------------------------------
+
+    /// Decision-only selection stops after publishing the prepared route.
+    #[tokio::test]
+    async fn decision_only_selects_without_a_target_client() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::<()>::new(LlmTargetSet::new(vec![LlmTarget {
+                semantic_name: "strong".to_string(),
+                llm_client: None,
+            }]))
+            .with_classifier(fixed(vec![score("strong", 0.9)])),
+        );
+
+        let decision = router.decide(Context::default(), request()).await?;
+
+        assert_eq!(decision.selected_model(), "strong");
+        assert_eq!(
+            decision.reasoning(),
+            Some("fall-through selected strong (confidence 0.900)")
+        );
+        Ok(())
+    }
 
     /// Overflows for the named targets and echoes for the rest.
     struct OverflowClient {

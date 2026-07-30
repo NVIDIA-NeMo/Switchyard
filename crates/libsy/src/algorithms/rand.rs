@@ -171,6 +171,15 @@ impl Algorithm for Random {
     ) -> Result<Response> {
         self.inner.execute(ctx, driver, request).await
     }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn crate::Decision>> {
+        self.inner.select(ctx, driver, request).await
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +278,29 @@ mod tests {
         );
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].selected_model(), "only/model");
+        Ok(())
+    }
+
+    /// Decision-only random routing needs target names but no final clients.
+    #[tokio::test]
+    async fn decision_only_selects_without_a_target_client() -> Result<()> {
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Random::new(
+            LlmTargetSet::new(vec![LlmTarget {
+                semantic_name: "only/model".to_string(),
+                llm_client: None,
+            }]),
+            None,
+            Some(42),
+        )?);
+
+        let decision = algorithm.decide(Context::default(), request()).await?;
+
+        assert_eq!(decision.selected_model(), "only/model");
+        assert_eq!(
+            decision.reasoning(),
+            Some("random routing selected target 'only/model'")
+        );
+        assert_eq!(decision.routing_tier(), None);
         Ok(())
     }
 

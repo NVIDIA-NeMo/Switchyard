@@ -137,5 +137,6 @@ own explicit TOML configuration for LLM clients, targets, and libsy algorithms.
 | Topic | Read |
 |---|---|
 | Known limitations and workarounds for 0.1.0 | [Known Issues](known_issues.md) |
+| Select a configured model in Python without executing it | [libsy Python API](libsy.md) |
 | CLI syntax, flags, resolution rules, and environment variables | [CLI Reference](cli_reference.md) |
 | Context-window overflow retry and fallback behavior | [Context-Window Handling](operations/context_window.md) |

@@ -36,6 +36,7 @@ nav:
   - Operations:
       - Context-Window Handling: operations/context_window.md
   - Reference:
+      - libsy Python API: libsy.md
       - CLI Reference: cli_reference.md
 
 exclude_docs: |

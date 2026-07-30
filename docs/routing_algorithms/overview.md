@@ -158,3 +158,8 @@ constructs LLM clients, targets, and libsy algorithms. It does not load Python
 route bundles. See the
 [Rust server README](../../crates/switchyard-server/README.md) for its supported
 configuration.
+
+Python hosts that need only a model selection can instead use the
+[libsy Python API](../libsy.md). Its `decide()` method runs routing in process
+without exposing another YAML route type or HTTP endpoint, and it does not
+execute the selected final target.

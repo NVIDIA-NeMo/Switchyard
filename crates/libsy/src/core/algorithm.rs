@@ -282,6 +282,46 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// Which model calls a managed algorithm runner may serve.
+#[derive(Clone, Copy)]
+enum CallPolicy {
+    All,
+    AuxiliaryOnly,
+}
+
+/// Serve one offloaded call according to the managed runner's policy.
+#[tracing::instrument(
+    target = "libsy",
+    name = "libsy.client_call",
+    skip_all,
+    fields(
+        algorithm = observability::algorithm_label(&call.get_routed().ctx),
+        selected_model = call.get_decision().selected_model(),
+        outcome = tracing::field::Empty,
+        error = tracing::field::Empty,
+    )
+)]
+async fn serve_call(call: CallLlmRequest, policy: CallPolicy) -> Result<()> {
+    let target = call.get_decision().selected_model().to_string();
+    if matches!(policy, CallPolicy::AuxiliaryOnly) && call.get_decision().is_routed_call() {
+        return call.respond(Err(LibsyError::RoutedCallDuringDecision { target }));
+    }
+
+    let routed = call.get_routed().clone();
+    let client = routed
+        .default_client
+        .clone()
+        .ok_or_else(|| LibsyError::MissingClient {
+            target: target.clone(),
+        })?;
+    let result = client
+        .call(routed.ctx, routed.request, routed.decision)
+        .await
+        .map_err(|source| LibsyError::client_call(target, source));
+    observability::record_client_call(&result);
+    call.respond(result)
+}
+
 /// A named routing target: a `semantic_name` an algorithm routes by, and an optional
 /// [`RoutedLlmClient`] to serve its calls. An algorithm hands a target to
 /// [`Driver::call_llm_target`]; the client rides along as
@@ -379,6 +419,21 @@ pub trait Algorithm: Send + Sync + 'static {
         driver: Driver,
         request: Request,
     ) -> Result<Response>;
+
+    /// Select one target without executing the selected routed call.
+    ///
+    /// Algorithms that support [`decide`](Self::decide) override this task hook
+    /// and may use `driver` for auxiliary non-routed calls.
+    async fn create_decision_task(
+        self: Arc<Self>,
+        _ctx: Context,
+        _driver: Driver,
+        _request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        Err(LibsyError::DecisionUnsupported {
+            algorithm: self.name().to_string(),
+        })
+    }
 
     /// Feed the algorithm agentic-stack events (tool results, budgets, etc.). The
     /// reference algorithms ignore signals; a stateful algorithm updates its own
@@ -484,40 +539,6 @@ pub trait Algorithm: Send + Sync + 'static {
         ctx: Context,
         request: Request,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
-        // Serve one offloaded call with its target's default client. A failed *model*
-        // call is forwarded to the algorithm via `respond`; this errors only on an
-        // infrastructure failure (no default client, or the promise was dropped).
-        // `serve` makes the one API call libsy itself performs, so it gets its
-        // own `libsy.client_call` span.
-        #[tracing::instrument(
-            target = "libsy",
-            name = "libsy.client_call",
-            skip_all,
-            fields(
-                algorithm = observability::algorithm_label(&call.get_routed().ctx),
-                selected_model = call.get_decision().selected_model(),
-                outcome = tracing::field::Empty,
-                error = tracing::field::Empty,
-            )
-        )]
-        async fn serve(call: CallLlmRequest) -> Result<()> {
-            let routed = call.get_routed().clone();
-            let target = routed.decision.selected_model().to_string();
-            let client =
-                routed
-                    .default_client
-                    .clone()
-                    .ok_or_else(|| LibsyError::MissingClient {
-                        target: target.clone(),
-                    })?;
-            let result = client
-                .call(routed.ctx, routed.request, routed.decision)
-                .await
-                .map_err(|source| LibsyError::client_call(target, source));
-            observability::record_client_call(&result);
-            call.respond(result)
-        }
-
         let stream = self.run_stream(ctx, request);
         tokio::pin!(stream);
 
@@ -535,7 +556,9 @@ pub trait Algorithm: Send + Sync + 'static {
                     match step {
                         None => break, // stream has ended, no more steps
                         Some(item) => match item? {
-                            Step::CallLlm(call) => in_flight.push(serve(*call)),
+                            Step::CallLlm(call) => {
+                                in_flight.push(serve_call(*call, CallPolicy::All))
+                            }
                             Step::Decision(decision) => trace.push(decision),
                             Step::ReturnToAgent(response) => {
                                 final_response = Some(*response);
@@ -549,6 +572,71 @@ pub trait Algorithm: Send + Sync + 'static {
         final_response
             .map(|response| (trace, response))
             .ok_or(LibsyError::MissingFinalResponse)
+    }
+
+    /// Select one target and return its routing decision without serving the
+    /// selected final model call.
+    ///
+    /// Auxiliary calls are served when their decision reports
+    /// [`Decision::is_routed_call`] as `false`. A routed call is rejected before
+    /// its default client is accessed.
+    async fn decide(self: Arc<Self>, ctx: Context, request: Request) -> Result<Arc<dyn Decision>> {
+        let mut ctx = ctx;
+        ctx.values.insert(
+            observability::ALGORITHM_KEY.to_string(),
+            self.name().to_string(),
+        );
+        let span = observability::decision_span(self.name(), request.metadata.as_ref());
+        let observed_ctx = ctx.clone();
+        observability::observe_decision(observed_ctx, async move {
+            let driver = Driver::new();
+            let task_driver = driver.clone();
+            let task_ctx = ctx;
+            let stream = task_driver.stream();
+            let handle = tokio::spawn(
+                self.create_decision_task(task_ctx, task_driver, request)
+                    .instrument(tracing::Span::current()),
+            );
+            let _abort_guard = AbortOnDrop(handle.abort_handle());
+            tokio::pin!(stream);
+            tokio::pin!(handle);
+
+            let mut in_flight = futures::stream::FuturesUnordered::new();
+            loop {
+                tokio::select! {
+                    Some(result) = in_flight.next() => result?,
+                    result = &mut handle => {
+                        return match result {
+                            Ok(decision) => decision,
+                            Err(source) => Err(LibsyError::AlgorithmTask { source }),
+                        };
+                    }
+                    step = stream.next() => {
+                        match step {
+                            None => {
+                                return Err(LibsyError::AlgorithmError {
+                                    message: "decision driver stream ended before task".to_string(),
+                                });
+                            }
+                            Some(item) => match item? {
+                                Step::CallLlm(call) => {
+                                    in_flight.push(serve_call(*call, CallPolicy::AuxiliaryOnly));
+                                }
+                                Step::Decision(_) => {}
+                                Step::ReturnToAgent(_) => {
+                                    return Err(LibsyError::AlgorithmError {
+                                        message: "decision driver returned an agent response"
+                                            .to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .instrument(span)
+        .await
     }
 }
 
@@ -1444,5 +1532,365 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    /// An algorithm without a decision task keeps normal execution compatible.
+    struct RunOnlyAlgorithm;
+
+    #[async_trait]
+    impl Algorithm for RunOnlyAlgorithm {
+        fn name(&self) -> &str {
+            "run-only"
+        }
+
+        async fn create_run_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Response> {
+            Err(test_error("normal execution is not used by this test"))
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_returns_typed_unsupported_error_for_run_only_algorithm() -> Result<()> {
+        let result = Arc::new(RunOnlyAlgorithm)
+            .decide(Context::default(), request())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(LibsyError::DecisionUnsupported { algorithm }) if algorithm == "run-only"
+        ));
+        Ok(())
+    }
+
+    /// A routing-only call is safe for the decision runner to serve.
+    struct AuxiliaryDecision {
+        model: String,
+    }
+
+    impl Decision for AuxiliaryDecision {
+        fn selected_model(&self) -> &str {
+            &self.model
+        }
+
+        fn is_routed_call(&self) -> bool {
+            false
+        }
+
+        fn reasoning(&self) -> Option<&str> {
+            Some("routing-only test call")
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// Counts calls so decision tests observe which client was actually invoked.
+    struct CountingClient {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for CountingClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, LlmClientError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
+        }
+    }
+
+    /// Exercises both permitted auxiliary calls and forbidden routed calls.
+    struct DecisionCallAlgorithm {
+        target: LlmTarget,
+        call_is_routed: bool,
+    }
+
+    #[async_trait]
+    impl Algorithm for DecisionCallAlgorithm {
+        fn name(&self) -> &str {
+            "decision-call"
+        }
+
+        async fn create_run_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Response> {
+            Err(test_error("normal execution is not used by this test"))
+        }
+
+        async fn create_decision_task(
+            self: Arc<Self>,
+            ctx: Context,
+            driver: Driver,
+            request: Request,
+        ) -> Result<Arc<dyn Decision>> {
+            let decision: Arc<dyn Decision> = if self.call_is_routed {
+                Arc::new(TestDecision {
+                    model: self.target.semantic_name.clone(),
+                })
+            } else {
+                Arc::new(AuxiliaryDecision {
+                    model: self.target.semantic_name.clone(),
+                })
+            };
+            driver
+                .call_llm_target(ctx.clone(), &self.target, request, decision)
+                .await?;
+            let final_decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                model: "selected".to_string(),
+            });
+            driver.info(ctx, final_decision.clone()).await?;
+            Ok(final_decision)
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_serves_auxiliary_call_and_returns_final_decision() -> Result<()> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let algorithm = Arc::new(DecisionCallAlgorithm {
+            target: LlmTarget {
+                semantic_name: "judge".to_string(),
+                llm_client: Some(Arc::new(CountingClient {
+                    calls: calls.clone(),
+                })),
+            },
+            call_is_routed: false,
+        });
+
+        let decision = algorithm.decide(Context::default(), request()).await?;
+
+        assert_eq!(decision.selected_model(), "selected");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_routed_call_before_invoking_client() -> Result<()> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let algorithm = Arc::new(DecisionCallAlgorithm {
+            target: LlmTarget {
+                semantic_name: "final".to_string(),
+                llm_client: Some(Arc::new(CountingClient {
+                    calls: calls.clone(),
+                })),
+            },
+            call_is_routed: true,
+        });
+
+        let result = algorithm.decide(Context::default(), request()).await;
+
+        assert!(matches!(
+            result,
+            Err(LibsyError::RoutedCallDuringDecision { target }) if target == "final"
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    /// Waits for every auxiliary call to enter, proving the runner serves them concurrently.
+    struct BarrierClient {
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for BarrierClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, LlmClientError> {
+            self.barrier.wait().await;
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    decision.selected_model().to_string(),
+                )),
+                metadata: None,
+            })
+        }
+    }
+
+    /// Offloads two independent auxiliary calls before returning its selection.
+    struct ConcurrentDecisionCalls {
+        target: LlmTarget,
+    }
+
+    #[async_trait]
+    impl Algorithm for ConcurrentDecisionCalls {
+        fn name(&self) -> &str {
+            "concurrent-decision-calls"
+        }
+
+        async fn create_run_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Response> {
+            Err(test_error("normal execution is not used by this test"))
+        }
+
+        async fn create_decision_task(
+            self: Arc<Self>,
+            ctx: Context,
+            driver: Driver,
+            request: Request,
+        ) -> Result<Arc<dyn Decision>> {
+            let first: Arc<dyn Decision> = Arc::new(AuxiliaryDecision {
+                model: self.target.semantic_name.clone(),
+            });
+            let second = first.clone();
+            let (first_result, second_result) = tokio::join!(
+                driver.call_llm_target(ctx.clone(), &self.target, request.clone(), first),
+                driver.call_llm_target(ctx, &self.target, request, second)
+            );
+            first_result?;
+            second_result?;
+            Ok(Arc::new(TestDecision {
+                model: "selected".to_string(),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_serves_multiple_auxiliary_calls_concurrently() -> Result<()> {
+        let algorithm = Arc::new(ConcurrentDecisionCalls {
+            target: LlmTarget {
+                semantic_name: "judge".to_string(),
+                llm_client: Some(Arc::new(BarrierClient {
+                    barrier: Arc::new(tokio::sync::Barrier::new(2)),
+                })),
+            },
+        });
+
+        let decision = tokio::time::timeout(
+            Duration::from_millis(500),
+            algorithm.decide(Context::default(), request()),
+        )
+        .await
+        .map_err(|error| LibsyError::external("waiting for concurrent decision calls", error))??;
+
+        assert_eq!(decision.selected_model(), "selected");
+        Ok(())
+    }
+
+    /// Marks when a pending decision task is dropped by cancellation.
+    struct DecisionDropGuard {
+        dropped: Arc<tokio::sync::Notify>,
+    }
+
+    impl Drop for DecisionDropGuard {
+        fn drop(&mut self) {
+            self.dropped.notify_one();
+        }
+    }
+
+    /// Starts a decision task that only cancellation can finish.
+    struct PendingDecision {
+        started: Arc<tokio::sync::Notify>,
+        dropped: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Algorithm for PendingDecision {
+        fn name(&self) -> &str {
+            "pending-decision"
+        }
+
+        async fn create_run_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Response> {
+            Err(test_error("normal execution is not used by this test"))
+        }
+
+        async fn create_decision_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Arc<dyn Decision>> {
+            let _drop_guard = DecisionDropGuard {
+                dropped: self.dropped.clone(),
+            };
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_decision_cancels_the_algorithm_task() -> Result<()> {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let algorithm = Arc::new(PendingDecision {
+            started: started.clone(),
+            dropped: dropped.clone(),
+        });
+        let handle = tokio::spawn(algorithm.decide(Context::default(), request()));
+
+        started.notified().await;
+        handle.abort();
+        let _ = handle.await;
+        tokio::time::timeout(Duration::from_millis(500), dropped.notified())
+            .await
+            .map_err(|error| LibsyError::external("waiting for decision cancellation", error))?;
+        Ok(())
+    }
+
+    /// Panics from the decision hook so the managed API can translate the join error.
+    struct PanickingDecision;
+
+    #[async_trait]
+    impl Algorithm for PanickingDecision {
+        fn name(&self) -> &str {
+            "panicking-decision"
+        }
+
+        async fn create_run_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Response> {
+            Err(test_error("normal execution is not used by this test"))
+        }
+
+        async fn create_decision_task(
+            self: Arc<Self>,
+            _ctx: Context,
+            _driver: Driver,
+            _request: Request,
+        ) -> Result<Arc<dyn Decision>> {
+            panic!("decision task panic");
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_task_panic_surfaces_as_an_error() -> Result<()> {
+        let result = Arc::new(PanickingDecision)
+            .decide(Context::default(), request())
+            .await;
+
+        assert!(matches!(result, Err(LibsyError::AlgorithmTask { .. })));
+        Ok(())
     }
 }

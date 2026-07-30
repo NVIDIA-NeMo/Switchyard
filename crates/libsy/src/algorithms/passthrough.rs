@@ -20,6 +20,13 @@ impl Passthrough {
     pub fn new(target: LlmTarget) -> Self {
         Passthrough { target }
     }
+
+    /// Build the fixed selection shared by normal and decision-only execution.
+    fn decision(&self) -> Arc<dyn Decision> {
+        Arc::new(PassthroughDecision {
+            model_id: self.target.semantic_name.clone(),
+        })
+    }
 }
 
 pub struct PassthroughDecision {
@@ -59,13 +66,22 @@ impl Algorithm for Passthrough {
         driver: Driver,
         request: Request,
     ) -> Result<Response> {
-        let decision: Arc<dyn Decision> = Arc::new(PassthroughDecision {
-            model_id: self.target.semantic_name.clone(),
-        });
+        let decision = self.decision();
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
             .call_llm_target(ctx, &self.target, request, decision)
             .await
+    }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        _request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        let decision = self.decision();
+        driver.info(ctx, decision.clone()).await?;
+        Ok(decision)
     }
 }
 
@@ -121,6 +137,28 @@ mod tests {
         );
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].selected_model(), MODEL_ID);
+        Ok(())
+    }
+
+    /// Decision-only passthrough selects its clientless target without executing it.
+    #[tokio::test]
+    async fn test_passthrough_decision_only() -> crate::error::Result<()> {
+        const MODEL_ID: &str = "testing/passthrough-decision";
+        let request = Request {
+            llm_request: text_request(Some("auto".to_string()), "hi"),
+            raw_request: None,
+            metadata: None,
+        };
+        let algorithm: Arc<dyn Algorithm> = Arc::new(super::Passthrough::new(LlmTarget {
+            semantic_name: MODEL_ID.to_string(),
+            llm_client: None,
+        }));
+
+        let decision = algorithm.decide(Context::default(), request).await?;
+
+        assert_eq!(decision.selected_model(), MODEL_ID);
+        assert_eq!(decision.reasoning(), None);
+        assert_eq!(decision.routing_tier(), None);
         Ok(())
     }
 }

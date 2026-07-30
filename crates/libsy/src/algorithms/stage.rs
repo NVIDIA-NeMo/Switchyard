@@ -28,8 +28,8 @@ use super::util::stage::{
 use super::util::tool_signals::ToolSignalProcessor;
 use super::{DefaultTarget, FallThrough, LlmTaskClassifier};
 use crate::{
-    Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTarget, LlmTargetSet,
-    Request, Response, Result, RoutedLlmClient, State, DEFAULT_RECENT_WINDOW,
+    Algorithm, Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget,
+    LlmTargetSet, Request, Response, Result, RoutedLlmClient, State, DEFAULT_RECENT_WINDOW,
 };
 
 /// Telemetry name for a router this module assembles.
@@ -42,12 +42,15 @@ const STAGE_ROUTER: &str = "stage_router";
 struct SourceStamp {
     inner: Arc<dyn Classifier<State>>,
     source: DecisionSource,
+    targets: StageTargets,
 }
 
 #[async_trait]
 impl Classifier<State> for SourceStamp {
     fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
-        self.inner.routing_tier(selected_model)
+        self.inner
+            .routing_tier(selected_model)
+            .or_else(|| self.targets.label_for(selected_model))
     }
 
     async fn score(
@@ -155,6 +158,15 @@ impl Algorithm for StageRouter {
     ) -> Result<Response> {
         self.route.execute(ctx, driver, request).await
     }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn Decision>> {
+        self.route.select(ctx, driver, request).await
+    }
 }
 
 /// Wires the cascade the wrapper drives.
@@ -181,7 +193,8 @@ fn build_route(
     // classifier is a constant rather than a per-turn lookup.
     let fall_open = targets.name(config.mode.default_tier()).to_string();
 
-    let mut classifier = StageClassifier::new(targets, config.mode, config.confidence_threshold);
+    let mut classifier =
+        StageClassifier::new(targets.clone(), config.mode, config.confidence_threshold);
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
@@ -205,6 +218,7 @@ fn build_route(
                 fallback.config,
             )?),
             source: DecisionSource::LlmClassifier,
+            targets: targets.clone(),
         }));
     }
     // Nothing behind this, so the turn lands on the picker's default tier —
@@ -212,6 +226,7 @@ fn build_route(
     router = router.with_classifier(Arc::new(SourceStamp {
         inner: Arc::new(DefaultTarget::new(fall_open)),
         source: DecisionSource::FallOpen,
+        targets,
     }));
     // Runs on the post-decision hook, so it applies to the target the cascade
     // settled on, whichever classifier picked it. With no prompts configured it
@@ -281,6 +296,7 @@ mod tests {
         let stamp = SourceStamp {
             inner,
             source: DecisionSource::LlmClassifier,
+            targets: StageTargets::new("strong", "weak"),
         };
         let mut state = State::default();
         stamp
@@ -616,6 +632,61 @@ mod tests {
             judged.contains("fix the build"),
             "the judge should see the opening task: {judged}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_signal_selects_a_clientless_capable_target() -> Result<()> {
+        let router = Arc::new(StageRouter::new(
+            tier_target("strong"),
+            tier_target("weak"),
+            config(),
+        )?);
+
+        let decision = router
+            .decide(Context::default(), turn_request(true))
+            .await?;
+
+        assert_eq!(decision.selected_model(), "strong");
+        assert_eq!(decision.routing_tier(), Some("strong"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_fall_open_preserves_the_efficient_tier() -> Result<()> {
+        let router = Arc::new(StageRouter::new(
+            tier_target("strong"),
+            tier_target("weak"),
+            config(),
+        )?);
+
+        let decision = router
+            .decide(Context::default(), turn_request(false))
+            .await?;
+
+        assert_eq!(decision.selected_model(), "weak");
+        assert_eq!(decision.routing_tier(), Some("weak"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_ambiguous_turn_calls_only_the_judge() -> Result<()> {
+        let client = Arc::new(RecordingClient::default());
+        let router = Arc::new(StageRouter::new(
+            tier_target("strong"),
+            tier_target("weak"),
+            config_with_judge(&client, 0.1),
+        )?);
+
+        let decision = router
+            .decide(Context::default(), turn_request(false))
+            .await?;
+
+        assert_eq!(decision.selected_model(), "strong");
+        assert_eq!(decision.routing_tier(), Some("strong"));
+        let calls = client.calls.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].target, JUDGE);
         Ok(())
     }
 }

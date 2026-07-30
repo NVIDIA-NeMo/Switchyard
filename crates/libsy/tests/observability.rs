@@ -388,6 +388,25 @@ impl Algorithm for SingleCallAlgo {
             .call_llm_target(ctx, &target, request, decision)
             .await
     }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        _request: Request,
+    ) -> switchyard_libsy::Result<Arc<dyn Decision>> {
+        let target = self
+            .target_set
+            .targets()
+            .first()
+            .ok_or(LibsyError::NoTargets)?;
+        let decision: Arc<dyn Decision> = Arc::new(StaticDecision {
+            reasoning: format!("picked '{}'", target.semantic_name),
+            model: target.semantic_name.clone(),
+        });
+        driver.info(ctx, decision.clone()).await?;
+        Ok(decision)
+    }
 }
 
 fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
@@ -424,6 +443,165 @@ fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> Span
         Some(span) => span.clone(),
         None => panic!("no '{name}' span with {field}={value} in {spans:?}"),
     }
+}
+
+#[tokio::test]
+async fn decision_records_only_decision_metrics() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider) = telemetry();
+    const ALGO: &str = "obs-decision-algo";
+    const MODEL: &str = "obs-decision-model";
+    let before = flushed_metrics(exporter, provider);
+    let total_requests_before =
+        u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
+    let total_errors_before =
+        u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
+
+    let decision = algo(ALGO, MODEL, None)
+        .decide(
+            Context::default(),
+            request_with_metadata("obs-decision-session", "obs-decision-correlation"),
+        )
+        .await?;
+    assert_eq!(decision.selected_model(), MODEL);
+
+    let snapshots = flushed_metrics(exporter, provider);
+    let decision_attrs = [("algorithm", ALGO), ("outcome", "ok")];
+    let model_attrs = [("algorithm", ALGO), ("selected_model", MODEL)];
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.decision_runs", &decision_attrs),
+        Some(1)
+    );
+    assert_eq!(
+        f64_histogram_count(
+            &snapshots,
+            "switchyard.decision_duration_ms",
+            &decision_attrs,
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.decisions", &model_attrs),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.runs", &decision_attrs),
+        None
+    );
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.llm_calls",
+            &[
+                ("algorithm", ALGO),
+                ("selected_model", MODEL),
+                ("outcome", "ok"),
+            ],
+        ),
+        None
+    );
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.requests", &[("model", MODEL)]),
+        None
+    );
+    assert_eq!(
+        f64_histogram_count(
+            &snapshots,
+            "switchyard.model_call_latency_ms",
+            &[("model", MODEL)],
+        ),
+        None
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_requests"),
+        Some(total_requests_before)
+    );
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_errors"),
+        Some(total_errors_before)
+    );
+
+    let spans = store.spans();
+    let decision_span = find_span(&spans, "libsy.decide", "algorithm", ALGO);
+    assert_eq!(decision_span.parent, None);
+    assert_eq!(
+        decision_span.fields.get("session_id").map(String::as_str),
+        Some("obs-decision-session")
+    );
+    assert_eq!(
+        decision_span
+            .fields
+            .get("correlation_id")
+            .map(String::as_str),
+        Some("obs-decision-correlation")
+    );
+    assert_eq!(
+        decision_span.fields.get("outcome").map(String::as_str),
+        Some("ok")
+    );
+    assert!(spans.iter().all(|span| span.name != "libsy.run"
+        || span.fields.get("algorithm").map(String::as_str) != Some(ALGO)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_decision_failure_records_error_telemetry() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider) = telemetry();
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.to_string(),
+        llm_client: None,
+    };
+    let router = Arc::new(LlmTaskClassifier::new(
+        target("missing-decision-judge"),
+        target("decision-weak"),
+        target("decision-strong"),
+        TaskClassifierConfig {
+            base_threshold: 0.5,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+            recent_turn_window: None,
+        },
+    )?);
+
+    let result = router
+        .decide(
+            Context::default(),
+            Request {
+                llm_request: text_request(Some("auto".to_string()), "classify without a judge"),
+                raw_request: None,
+                metadata: None,
+            },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(LibsyError::MissingClient { target }) if target == "missing-decision-judge"
+    ));
+    let snapshots = flushed_metrics(exporter, provider);
+    let error_attrs = [("algorithm", "llm_task_classifier"), ("outcome", "error")];
+    assert_eq!(
+        u64_counter_value(&snapshots, "switchyard.decision_runs", &error_attrs),
+        Some(1)
+    );
+    assert_eq!(
+        f64_histogram_count(&snapshots, "switchyard.decision_duration_ms", &error_attrs,),
+        Some(1)
+    );
+    let spans = store.spans();
+    assert!(spans.iter().any(|span| {
+        span.name == "libsy.decide"
+            && span.fields.get("algorithm").map(String::as_str) == Some("llm_task_classifier")
+            && span.fields.get("outcome").map(String::as_str) == Some("error")
+            && span
+                .fields
+                .get("error")
+                .is_some_and(|error| error.contains("missing-decision-judge"))
+    }));
+    Ok(())
 }
 
 #[tokio::test]
@@ -721,6 +899,95 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
                     .is_some_and(|message| message.contains("algorithm run failed"))
         }),
         "no run-failure log for {ALGO} in {events:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_decision_records_judge_work_but_no_routed_call() -> switchyard_libsy::Result<()>
+{
+    let _guard = serialize_test().lock().await;
+    let (_store, exporter, provider) = telemetry();
+    let before = flushed_metrics(exporter, provider);
+    let total_requests_before =
+        u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
+
+    let client = Arc::new(ClassifierClient {
+        classifier_delay: Duration::from_millis(1),
+        routed_delay: Duration::from_millis(1),
+    });
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.to_string(),
+        llm_client: Some(client.clone()),
+    };
+    let targets = LlmTargetSet::new(vec![target("decision-weak"), target("decision-strong")]);
+    let weak = targets.get_target("decision-weak")?;
+    let strong = targets.get_target("decision-strong")?;
+    let router = Arc::new(LlmTaskClassifier::new(
+        target("decision-classifier"),
+        weak,
+        strong,
+        TaskClassifierConfig {
+            base_threshold: 0.5,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+            recent_turn_window: None,
+        },
+    )?);
+
+    let decision = router
+        .decide(
+            Context::default(),
+            Request {
+                llm_request: text_request(Some("auto".to_string()), "classify without serving"),
+                raw_request: None,
+                metadata: None,
+            },
+        )
+        .await?;
+
+    assert_eq!(decision.selected_model(), "decision-weak");
+    assert_eq!(decision.routing_tier(), Some("weak"));
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.decision_runs",
+            &[("algorithm", "llm_task_classifier"), ("outcome", "ok")],
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.llm_calls",
+            &[
+                ("algorithm", ""),
+                ("selected_model", "decision-classifier"),
+                ("outcome", "ok"),
+            ],
+        ),
+        Some(1)
+    );
+    for model in ["decision-classifier", "decision-weak", "decision-strong"] {
+        assert_eq!(
+            u64_counter_value(&snapshots, "switchyard.requests", &[("model", model)]),
+            None
+        );
+        assert_eq!(
+            f64_histogram_count(
+                &snapshots,
+                "switchyard.model_call_latency_ms",
+                &[("model", model)],
+            ),
+            None
+        );
+    }
+    assert_eq!(
+        u64_gauge_value(&snapshots, "switchyard.total_requests"),
+        Some(total_requests_before)
     );
     Ok(())
 }

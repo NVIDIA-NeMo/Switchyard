@@ -262,6 +262,28 @@ struct TaskClassifier {
     capable_target: String,
 }
 
+/// Preserves the task classifier's tier label when its terminal fallback decides.
+struct TaskClassifierFallback {
+    inner: DefaultTarget,
+    tiers: Arc<TaskClassifier>,
+}
+
+#[async_trait]
+impl Classifier<State> for TaskClassifierFallback {
+    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
+        self.tiers.routing_tier(selected_model)
+    }
+
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+    ) -> Result<Classification> {
+        self.inner.score(state, request, driver).await
+    }
+}
+
 /// A task-level capability routing algorithm with an internal fall-through cascade.
 pub struct LlmTaskClassifier {
     route: FallThrough<State>,
@@ -316,7 +338,10 @@ impl LlmTaskClassifier {
         }
         // The judge abstains when it cannot tell; the capable tier catches those turns
         // rather than letting the cascade come back empty-handed.
-        let capable_fallback = DefaultTarget::new(classifier.capable_target.clone());
+        let capable_fallback = TaskClassifierFallback {
+            inner: DefaultTarget::new(classifier.capable_target.clone()),
+            tiers: classifier.clone(),
+        };
         Ok(Self {
             route: route
                 .with_classifier(classifier.clone())
@@ -406,6 +431,15 @@ impl Algorithm for LlmTaskClassifier {
         request: Request,
     ) -> Result<Response> {
         self.route.execute(ctx, driver, request).await
+    }
+
+    async fn create_decision_task(
+        self: Arc<Self>,
+        ctx: Context,
+        driver: Driver,
+        request: Request,
+    ) -> Result<Arc<dyn crate::Decision>> {
+        self.route.select(ctx, driver, request).await
     }
 }
 
@@ -564,6 +598,68 @@ mod tests {
             "Now run the test suite and report the result.",
         ));
         request
+    }
+
+    /// Decision-only classification calls its judge but not the selected target.
+    #[tokio::test]
+    async fn decision_only_calls_the_judge_and_returns_the_efficient_tier() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let router = router(client.clone())?;
+
+        let decision = router
+            .decide(Context::default(), classify_request())
+            .await?;
+
+        assert_eq!(decision.selected_model(), "efficient");
+        assert_eq!(decision.routing_tier(), Some("weak"));
+        assert_eq!(client.calls(), vec!["judge"]);
+        Ok(())
+    }
+
+    /// Decision replay binds session affinity before a decision-only call returns.
+    #[tokio::test]
+    async fn decision_only_reuses_session_affinity_without_a_second_judge_call() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(client.clone()),
+        };
+        let router = Arc::new(LlmTaskClassifier::new(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            TaskClassifierConfig {
+                session_affinity: true,
+                ..test_config(TEST_THRESHOLD)
+            },
+        )?);
+
+        let first = router
+            .clone()
+            .decide(Context::default(), classify_session_request())
+            .await?;
+        let second = router
+            .decide(Context::default(), classify_session_request())
+            .await?;
+
+        assert_eq!(first.selected_model(), "efficient");
+        assert_eq!(second.selected_model(), "efficient");
+        assert_eq!(client.calls(), vec!["judge"]);
+        Ok(())
+    }
+
+    /// Existing judge fail-open policy also applies to decision-only routing.
+    #[tokio::test]
+    async fn decision_only_unreachable_judge_routes_capable() -> Result<()> {
+        let router = router(Arc::new(UnreachableJudgeClient))?;
+
+        let decision = router
+            .decide(Context::default(), classify_request())
+            .await?;
+
+        assert_eq!(decision.selected_model(), "capable");
+        assert_eq!(decision.routing_tier(), Some("strong"));
+        Ok(())
     }
 
     #[tokio::test]

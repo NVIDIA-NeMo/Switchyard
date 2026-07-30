@@ -32,7 +32,7 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::{Meter, ObservableGauge};
@@ -132,6 +132,41 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
     span
 }
 
+/// Span covering one managed decision-only operation.
+///
+/// Correlation fields match [`run_span`], while outcome and error are filled
+/// when the decision task resolves.
+pub(crate) fn decision_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
+    let span = tracing::info_span!(
+        target: TRACING_TARGET,
+        "libsy.decide",
+        algorithm,
+        session_id = tracing::field::Empty,
+        agent_id = tracing::field::Empty,
+        task_id = tracing::field::Empty,
+        correlation_id = tracing::field::Empty,
+        extra_metadata = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        error = tracing::field::Empty,
+    );
+    if let Some(metadata) = metadata {
+        for (field, value) in [
+            ("session_id", &metadata.session_id),
+            ("agent_id", &metadata.agent_id),
+            ("task_id", &metadata.task_id),
+            ("correlation_id", &metadata.correlation_id),
+        ] {
+            if let Some(value) = value {
+                span.record(field, value.as_str());
+            }
+        }
+        if let Some(extra) = &metadata.extra_metadata {
+            span.record("extra_metadata", tracing::field::debug(extra));
+        }
+    }
+    span
+}
+
 /// Runs one algorithm task to completion, recording the run counter, duration
 /// histogram, routing overhead, span outcome, and failure log when it resolves.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
@@ -149,6 +184,22 @@ pub(crate) async fn observe_run(
     if result.is_ok() {
         record_routing_overhead(algorithm, duration, driver.routed_call_duration());
     }
+    result
+}
+
+/// Runs one managed decision operation to completion and records its telemetry.
+pub(crate) async fn observe_decision(
+    ctx: Context,
+    decision: impl Future<Output = Result<Arc<dyn Decision>>>,
+) -> Result<Arc<dyn Decision>> {
+    let started = Instant::now();
+    let result = decision.await;
+    record_decision_run(
+        algorithm_label(&ctx),
+        started.elapsed(),
+        &result,
+        &Span::current(),
+    );
     result
 }
 
@@ -190,6 +241,40 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
         .add(1, &attributes);
     meter
         .f64_histogram("switchyard.run_duration_ms")
+        .build()
+        .record(duration.as_secs_f64() * 1000.0, &attributes);
+}
+
+/// Records the outcome of one decision-only operation.
+fn record_decision_run(
+    algorithm: &str,
+    duration: Duration,
+    result: &Result<Arc<dyn Decision>>,
+    span: &Span,
+) {
+    let outcome = outcome_value(result);
+    span.record("outcome", outcome);
+    if let Err(error) = result {
+        span.record("error", tracing::field::display(error));
+        tracing::warn!(
+            target: TRACING_TARGET,
+            algorithm,
+            error = %error,
+            "algorithm decision failed"
+        );
+    }
+
+    let attributes = [
+        KeyValue::new("algorithm", algorithm.to_string()),
+        KeyValue::new("outcome", outcome),
+    ];
+    let meter = meter();
+    meter
+        .u64_counter("switchyard.decision_runs")
+        .build()
+        .add(1, &attributes);
+    meter
+        .f64_histogram("switchyard.decision_duration_ms")
         .build()
         .record(duration.as_secs_f64() * 1000.0, &attributes);
 }

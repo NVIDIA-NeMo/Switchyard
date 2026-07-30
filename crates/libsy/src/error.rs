@@ -32,6 +32,20 @@ pub enum LibsyError {
         message: String,
     },
 
+    /// The algorithm does not implement decision-only execution.
+    #[error("algorithm {algorithm:?} does not support decision-only execution")]
+    DecisionUnsupported {
+        /// Stable algorithm name.
+        algorithm: String,
+    },
+
+    /// A decision task attempted to execute its selected final target.
+    #[error("decision-only execution rejected routed call to target {target:?}")]
+    RoutedCallDuringDecision {
+        /// Selected target that must not be executed.
+        target: String,
+    },
+
     /// A routed target had no default client for [`crate::Algorithm::run`].
     #[error("target {target:?} has no client to serve the call")]
     MissingClient {
