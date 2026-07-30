@@ -7,8 +7,8 @@ use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    StreamCodec, StreamTranslationState, mark_replayed_terminal, record_source_identity,
-    state_source_is, string_field, target_model_or_source_model,
+    StreamCodec, StreamTranslationState, record_source_identity, state_source_is, string_field,
+    target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
@@ -154,18 +154,6 @@ fn encode_openai_chat_stream(
     event: LlmResponseChunk,
 ) -> Vec<Value> {
     match event {
-        LlmResponseChunk::ProviderEvent {
-            source,
-            raw,
-            normalized,
-        } if source == WireFormat::OpenAiChat.into() => {
-            mark_replayed_terminal(state, &normalized);
-            vec![raw]
-        }
-        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
-            .into_iter()
-            .flat_map(|event| encode_openai_chat_stream(state, event))
-            .collect(),
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             if state.emitted_message_start
@@ -235,6 +223,7 @@ fn encode_openai_chat_stream(
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             vec![json!({"error": {"message": message}})]
         }
+        LlmResponseChunk::ProviderEvent { .. } => Vec::new(),
     }
 }
 
