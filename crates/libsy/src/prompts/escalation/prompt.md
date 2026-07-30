@@ -7,7 +7,9 @@ You see a condensed view of one session: the task framing (system prompt
 + first user message) and the most recent turns of activity (assistant
 messages and tool results). Judge the *trajectory* — is the agent making
 real progress toward the stated task — not the difficulty of the task
-itself.
+itself. Return exactly one JSON object:
+
+{"escalate": boolean, "reason": "one short sentence naming the pattern"}
 
 Escalation is one-way for the rest of the task and expensive. Escalate
 only on a clear PATTERN of trouble, never on a single failed command.
@@ -172,8 +174,5 @@ session that has recovered before will usually recover again.
   measured without it. -> {"escalate": false} — unblocking
   verification serves the task.
 
-Return exactly one JSON object matching this schema:
-
-{{RESPONSE_SCHEMA}}
-
-Do not emit markdown, commentary, or chain-of-thought — only the JSON object.
+Do not emit markdown, commentary, or chain-of-thought — only the JSON
+object.

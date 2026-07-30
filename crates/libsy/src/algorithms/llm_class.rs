@@ -11,11 +11,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use switchyard_protocol::{Decision, LlmRequest, Message, OutputParams, Role};
+use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
 
-use super::util::escalation::{
-    build_judge, conversation_turn, EscalationJudge, EscalationPolicy,
-};
+use super::util::escalation::{build_judge, EscalationJudge, EscalationPolicy};
 use super::util::{
     load_judge_config, AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy,
 };
@@ -296,26 +294,6 @@ fn assistant_message(response: &AggLlmResponse) -> Message {
     }
 }
 
-/// Routing decision for the efficient-tier side call inside the escalation classifier.
-struct EscalationSideCallDecision {
-    model: String,
-}
-
-impl Decision for EscalationSideCallDecision {
-    fn selected_model(&self) -> &str {
-        &self.model
-    }
-    fn is_routed_call(&self) -> bool {
-        false
-    }
-    fn reasoning(&self) -> Option<&str> {
-        Some("escalation classifier: efficient tier")
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 /// Calls the efficient model, judges its response, and latches to capable once the streak
 /// confirms. Returns the efficient response directly when not escalating so the caller does
 /// not pay for a second model call.
@@ -359,13 +337,17 @@ impl Classifier<State> for EscalationClassifier {
         }
 
         // Call efficient model and buffer the response so the judge can read it.
+        // `Classifier::score` takes no `ctx`, so inner calls use Context::default() and their
+        // spans carry algorithm="" rather than the algorithm name. Known gap shared with the
+        // task classifier's judge consultation.
         let efficient_response = driver
             .call_llm_target(
                 Context::default(),
                 &self.efficient,
                 request.clone(),
-                Arc::new(EscalationSideCallDecision {
-                    model: self.efficient.semantic_name.clone(),
+                Arc::new(SimpleDecision {
+                    selected_model: self.efficient.semantic_name.clone(),
+                    reasoning: Some("escalation classifier: efficient tier".into()),
                 }),
             )
             .await?;
@@ -381,12 +363,11 @@ impl Classifier<State> for EscalationClassifier {
             metadata: efficient_response.metadata,
         };
 
-        // Build the judge request with the efficient reply appended so the judge reads this turn.
+        // Append the efficient reply so the judge reads this turn's completed trajectory.
         let mut judge_request = request.clone();
         judge_request.llm_request.messages.push(assistant_message(
             efficient_response.llm_response.as_agg().unwrap(),
         ));
-        let _ = conversation_turn(&judge_request); // used by EscalationJudge internally
 
         let (classification, _) = self
             .judge

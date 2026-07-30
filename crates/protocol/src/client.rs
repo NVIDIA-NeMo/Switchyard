@@ -128,6 +128,27 @@ pub trait Decision: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+/// A minimal [`Decision`] implementation for one-off calls that don't belong to a
+/// named algorithm step — judge side calls, classifier side calls, etc.
+pub struct SimpleDecision {
+    pub selected_model: String,
+    pub reasoning: Option<String>,
+}
+
+impl Decision for SimpleDecision {
+    fn selected_model(&self) -> &str {
+        &self.selected_model
+    }
+
+    fn reasoning(&self) -> Option<&str> {
+        self.reasoning.as_deref()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// Performs the actual model call for a target. This is the one piece of I/O the
 /// library does not own — a host implements it over its own transport (HTTP SDK,
 /// in-process model, mock). It serves a call the stream consumer chose not to
