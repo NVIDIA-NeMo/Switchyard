@@ -1801,7 +1801,7 @@ on the launchers; <code>serve</code> uses <code>--routing-profiles</code>:</p>
 </tr>
 </tbody>
 </table>
-<p>Benchmark runs started through <code>benchmark/run-baseline.sh --routing-profiles</code> record the effective classifier prompt, prompt SHA-256, <code>max_request_chars</code>, and <code>recent_turn_window</code> in <code>run_manifest.json</code> under <code>server.classifier_prompts</code>.</p>
+<p>Benchmark runs started through <code>benchmark/run-baseline.sh --server-config</code> copy the server TOML into the run directory and record its path and SHA-256 in <code>run_manifest.json</code> under <code>server.server_config_snapshot</code> and <code>server.server_config_snapshot_digest</code>.</p>
 <p>Each route name becomes a model ID on <code>GET /v1/models</code>. Clients select a route
 by setting the request's <code>model</code> field to that name.</p>
 <h3 id="intake-sink-serve-and-launchers">Intake sink (serve and launchers)<a class="headerlink" href="#intake-sink-serve-and-launchers" title="Permanent link">&para;</a></h3>
@@ -1871,8 +1871,9 @@ by setting the request's <code>model</code> field to that name.</p>
 derives queryable token fields from <code>response.usage</code> and queryable cost fields
 from top-level <code>cost_usd</code>, <code>cost_input_usd</code>, <code>cost_output_usd</code>, and
 <code>cost_details</code>. Switchyard emits cost fields only when the served model has a
-known pricing entry; <code>routing_stats_final.json</code> remains the run-level source
-for aggregate routing/model cost estimates. When a session ID is present,
+known pricing entry. <code>routing_stats_final.json</code> carries the run-level aggregate
+<code>/v1/stats</code> snapshot (per-model and per-tier calls, errors, tokens, and
+latency); it does not include cost estimates. When a session ID is present,
 Switchyard also maps the Intake app/task labels into top-level
 <code>evaluation_context.dataset_*</code> and <code>evaluation_context.test_case_id</code> for span
 queries while keeping the original labels under <code>request.switchyard</code>.</p>
