@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-nemo-relay-plugin"
+version = "0.1.0"
+description = "Switchyard libsy native dynamic plugin for NeMo Relay"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+futures.workspace = true
+futures-util.workspace = true
+http.workspace = true
+nemo-relay-plugin = { git = "https://github.com/bbednarski9/NeMo-Relay", rev = "4590e7b8828689fdf8632f7625ea0db61ed18e6a" }
+serde.workspace = true
+serde_json.workspace = true
+switchyard-libsy.workspace = true
+switchyard-protocol.workspace = true
+switchyard-translation.workspace = true

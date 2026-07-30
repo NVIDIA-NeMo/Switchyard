@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Switchyard NeMo Relay Plugin",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "algorithm", "targets", "default_targets"],
+  "properties": {
+    "version": {
+      "const": 2,
+      "description": "Library-only Switchyard configuration version."
+    },
+    "priority": {
+      "type": "integer",
+      "default": 0
+    },
+    "max_retries": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 3
+    },
+    "enabled_inbound_profiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["openai_chat", "openai_responses", "anthropic_messages"]
+      }
+    },
+    "algorithm": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "random" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "classifier_target",
+            "weak_target",
+            "strong_target",
+            "base_threshold"
+          ],
+          "properties": {
+            "kind": { "const": "llm_classifier" },
+            "classifier_target": { "type": "string", "minLength": 1 },
+            "weak_target": { "type": "string", "minLength": 1 },
+            "strong_target": { "type": "string", "minLength": 1 },
+            "base_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+            "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "capability_elevated_floor": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "session_affinity": { "type": "boolean", "default": false },
+            "message_hash_fallback": { "type": "boolean", "default": false }
+          }
+        }
+      ]
+    },
+    "targets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "protocol", "base_url"],
+        "properties": {
+          "model": { "type": "string", "minLength": 1 },
+          "protocol": {
+            "enum": ["openai_chat", "openai_responses", "anthropic_messages"]
+          },
+          "endpoint": { "type": "string" },
+          "base_url": {
+            "type": "string",
+            "pattern": "^https?://"
+          },
+          "weight": { "type": "number", "minimum": 0, "default": 1 },
+          "headers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "header_env": {
+            "type": "object",
+            "description": "Maps provider header names to environment-variable names.",
+            "additionalProperties": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "default_targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "openai_chat": { "type": "string" },
+        "openai_responses": { "type": "string" },
+        "anthropic_messages": { "type": "string" }
+      }
+    }
+  }
+}
