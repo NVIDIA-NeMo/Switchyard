@@ -351,7 +351,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 - **Type hints**: throughout. `py.typed` marker present; mypy runs strict.
 - **Async**: async-only. If you need sync, use `asyncio.run()`.
 - **Testing**: `respx` for HTTP mocking, `pytest-mock` for general mocking. `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` needed.
-- **Rust**: do not use `.expect()` in Rust source or tests. Propagate errors with `?`,
+- **Rust**: Panicking calls such as `panic!()`, `unwrap()` and `.except()` are not allowed in production source code. Propagate errors with `?`. They are allowed in tests.
   return typed errors, or match explicitly in tests so failures stay intentional and visible.
 - **Comments**: For Rust changes, add concise comments for module/file intent, public structs/enums,
   public methods, private helpers with non-obvious behavior, and tests that encode important
