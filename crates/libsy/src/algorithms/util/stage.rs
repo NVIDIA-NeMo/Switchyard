@@ -507,7 +507,6 @@ impl Classifier<State> for StageClassifier {
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
                 let conf = score.abs();
-                // TODO add the non-target to this score set?
                 Ok(Classification::Scores(vec![Score {
                     target: target.to_string(),
                     confidence: conf,

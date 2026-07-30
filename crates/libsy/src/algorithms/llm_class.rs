@@ -21,7 +21,6 @@ use crate::{
     Request, Response, Result, RoutedLlmClient, Score, State,
 };
 
-// TODO: As a first implementation, keeping the prompt and schema paths hardcoded. Add a way to dynamically load and parse user passed prompt and schema.
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../prompts/capability-classifier/schema.json");
 /// Telemetry label for this algorithm's spans, metrics, and logs.
@@ -29,9 +28,6 @@ const ALGORITHM_NAME: &str = "llm_task_classifier";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Parsed judge output. Only confidence, abstention, and solve probability affect v0 routing.
-/// These fields are parsed from the judge output and used to route the request.
-/// For supporting a new schema, we need to add a new Verdict struct and parse the new
 struct TaskClassifierVerdict {
     #[serde(rename = "recommended_route")]
     _recommended_route: String,
@@ -57,9 +53,7 @@ impl TaskClassifierVerdict {
             )
     }
 
-    /// Whether this verdict needs the elevated capability threshold.
-    /// When capability boundary is "uncertain", "unsupported", or "unmatched", we need to use the elevated capability threshold to route the request to weak model
-    /// This is to ensure that we are not routing too many requests to the weak model.
+    /// Whether the capability boundary requires the elevated routing threshold.
     fn is_capability_elevated(&self) -> bool {
         matches!(
             self.capability_boundary.as_str(),
@@ -68,9 +62,6 @@ impl TaskClassifierVerdict {
     }
 }
 
-/// The judge is responsible for any kind of llm judge based calls
-/// Example: A judge can be a capability classifier, a escalation classifier etc
-/// Builds capability-specific judge requests from shared classifier configuration.
 /// Keeps client instructions, the opening task, and the last `recent_turn_window`
 /// turns after it. A window of `0` keeps the instructions and the task alone.
 ///
@@ -101,8 +92,6 @@ struct CapabilityJudge {
 impl Judge for CapabilityJudge {
     type Verdict = TaskClassifierVerdict;
 
-    /// For different judges, the request building logic can be different
-    /// To have a single interface for all judges, we may make a common request building logic here.
     fn build_request(&self, _state: &State, request: &Request) -> Request {
         // Task-based routing judges the newest user message alone. A configured
         // window widens that to the surrounding conversation.
@@ -309,16 +298,9 @@ impl LlmTaskClassifier {
             capable_target: capable_target.semantic_name,
         });
 
-        // The cascade is an internal detail: callers drive the algorithm, not its parts.
         // Affinity comes first so a retained assignment short-circuits the judge call.
-        //
-        // TODO: bind the assignment on the post-decision hook instead, the way the
-        // per-target system prompt does. Affinity is a fact about the decision, not a
-        // classification, so recording it there would let a pinned session skip the
-        // cascade outright on the next turn. It would also make the pin survive
-        // composition: a cascade that uses this classifier as one member (the stage
-        // router does) currently never runs the affinity wired in here, because only
-        // the inner classifier is consulted.
+        // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
+        // the affinity processor never fires — only the inner score() is called.
         let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
         if session_affinity {
             let affinity = if message_hash_fallback {
@@ -343,8 +325,6 @@ impl LlmTaskClassifier {
         })
     }
 
-    /// Loads the judge configuration from the packaged prompt and schema.
-    /// TODO: Move towards more generic loading and parsing of config when we multiple prompts and schemas to handle for same algorithm
     fn load_judge_config() -> Result<JudgeConfig> {
         // The response schema is rendered into the prompt and sent as structured-output metadata.
         // One asset therefore defines both the instruction contract and provider enforcement.
