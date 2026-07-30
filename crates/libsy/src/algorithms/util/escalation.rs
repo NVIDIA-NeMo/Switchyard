@@ -127,10 +127,12 @@ impl Judge for EscalationJudge {
 
 /// Maps the judge's verdict to a classification, keeping "declined" and "unavailable"
 /// distinguishable: both stay efficient, but only a decline is evidence, so only a decline
-/// clears a streak. [`Classification::Ambiguous`] carries the unavailable case — it argmaxes
-/// to nothing, exactly like an empty score set, but the caller can tell them apart.
+/// clears a streak. A decline scores the efficient target rather than abstaining, so the
+/// caller reads the tier to serve straight off the winning score; [`Classification::Ambiguous`]
+/// carries the unavailable case, which names no tier at all.
 pub(crate) struct EscalationPolicy {
     capable: String,
+    efficient: String,
 }
 
 impl JudgePolicy for EscalationPolicy {
@@ -142,7 +144,10 @@ impl JudgePolicy for EscalationPolicy {
                 target: self.capable.clone(),
                 confidence: 1.0,
             }]),
-            Some(_) => Classification::Scores(Vec::new()),
+            Some(_) => Classification::Scores(vec![Score {
+                target: self.efficient.clone(),
+                confidence: 1.0,
+            }]),
             None => Classification::Ambiguous(Vec::new()),
         }
     }
@@ -155,6 +160,7 @@ impl JudgePolicy for EscalationPolicy {
 pub(crate) fn build_judge(
     judge_target: LlmTarget,
     capable: String,
+    efficient: String,
     config: EscalationJudgeConfig,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
@@ -162,7 +168,7 @@ pub(crate) fn build_judge(
     Ok(JudgeClassifier::new(
         EscalationJudge { rubric, config },
         judge_target,
-        EscalationPolicy { capable },
+        EscalationPolicy { capable, efficient },
     ))
 }
 

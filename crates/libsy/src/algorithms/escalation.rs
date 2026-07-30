@@ -62,10 +62,6 @@ fn decisive(target: &str) -> Classification {
     }])
 }
 
-fn ambiguous() -> Classification {
-    Classification::Ambiguous(vec![])
-}
-
 /// Names the tier rather than the rule that chose it: an escalating turn is already
 /// distinguishable in the trace by the judge consultation recorded before it.
 fn decision_reason(_name: &str, winner: &Score) -> String {
@@ -166,17 +162,23 @@ impl Classifier<State> for EscalationClassifier {
         let max_class = classification.max_classification()?;
         match max_class {
             Classification::Scores(scores) => {
-                let target = &scores
+                let score_target = &scores
                     .first()
                     .ok_or_else(|| crate::LibsyError::AlgorithmError {
                         message: "judge returned empty scores".into(),
                     })?
                     .target;
-                if target == &self.capable.semantic_name {
+                if score_target == &self.capable.semantic_name {
+                    let next_streak = streak(state) + 1;
                     state
                         .extra
-                        .insert(STREAK_KEY.to_string(), StateValue::Count(streak(state) + 1));
-                    Ok((decisive(&self.capable.semantic_name.clone()), None))
+                        .insert(STREAK_KEY.to_string(), StateValue::Count(next_streak));
+                    let (target, response) = if next_streak >= self.confirmations {
+                        (&self.capable.semantic_name, None)
+                    } else {
+                        (&self.efficient.semantic_name, Some(efficient_response))
+                    };
+                    Ok((decisive(target), response))
                 } else {
                     state
                         .extra
@@ -188,8 +190,12 @@ impl Classifier<State> for EscalationClassifier {
                 }
             }
             Classification::Ambiguous(_) => {
-                // If the judge is ambiguous, we treat it as a decline to escalate.
-                Ok((ambiguous(), None))
+                // If the judge is ambiguous, we treat it as a decline to escalate. Unlike a
+                // real decline it is not evidence about the run, so the streak is left alone.
+                Ok((
+                    decisive(&self.efficient.semantic_name.clone()),
+                    Some(efficient_response),
+                ))
             }
         }
     }
@@ -215,6 +221,7 @@ impl EscalationRouter {
         config: EscalationJudgeConfig,
     ) -> Result<Self> {
         let capable = capable_target.semantic_name.clone();
+        let efficient = efficient_target.semantic_name.clone();
         let confirmations = config.confirmations;
         // Capable first: `count_tokens` passes through to the first target whose client
         // supports it, and the capable tier is the one a caller is asking about. The judge is
@@ -222,7 +229,7 @@ impl EscalationRouter {
         // the set.
         let targets = LlmTargetSet::new(vec![capable_target.clone(), efficient_target.clone()]);
         let classifier = Arc::new(EscalationClassifier {
-            judge: build_judge(judge_target, capable, config)?,
+            judge: build_judge(judge_target, capable, efficient, config)?,
             capable: capable_target,
             efficient: efficient_target,
             confirmations,
@@ -566,16 +573,21 @@ mod tests {
     #[tokio::test]
     async fn one_escalate_verdict_does_not_escalate_at_default_confirmations() -> crate::Result<()>
     {
-        // Default `confirmations` is 2, so a single escalate verdict is not yet confirmation.
+        // Default `confirmations` is 2, so a single escalate verdict is not yet confirmation:
+        // the turn stays on the efficient tier and keeps the reply the judge already read.
         let (router, calls) = instrumented_router([
             ok("4"),                 // efficient
             ok(&verdict_json(true)), // judge: escalate, streak 1 of 2
         ])?;
 
-        let (trace, _) = router.run(Context::default(), request(Some("c1"))).await?;
+        let (trace, response) = router.run(Context::default(), request(Some("c1"))).await?;
 
         assert_eq!(trace[0].selected_model(), "efficient");
+        // An unconfirmed escalation must not re-call the efficient tier: the reply is already
+        // in hand, so the turn costs one serving call plus the judge.
         assert_eq!(*calls.lock(), vec!["efficient", "judge"]);
+        let agg = response.llm_response.as_agg();
+        assert_eq!(agg.map(completion_text).as_deref(), Some("4"));
         Ok(())
     }
 
@@ -583,10 +595,10 @@ mod tests {
     async fn two_consecutive_escalate_verdicts_confirm() -> crate::Result<()> {
         let (router, calls) = instrumented_router([
             ok("4"),                 // efficient (turn 1)
-            ok(&verdict_json(true)), // judge: escalate, streak 1
+            ok(&verdict_json(true)), // judge: escalate, streak 1 — not yet confirmed
             ok("4"),                 // efficient (turn 2)
             ok(&verdict_json(true)), // judge: escalate, streak 2 — confirmed
-            ok("strong answer"),     // capable (turn 2)
+            ok("strong answer"),     // capable re-serves turn 2
             ok("still strong"),      // capable (turn 3 — latched)
         ])?;
 
@@ -599,6 +611,8 @@ mod tests {
         let (trace, _) = router.run(Context::default(), request(Some("c2"))).await?;
 
         assert_eq!(trace[0].selected_model(), "capable");
+        // Only the confirming turn pays for the capable tier; turn 3 is latched and pays for
+        // nothing else.
         assert_eq!(
             *calls.lock(),
             vec![
@@ -640,11 +654,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_unavailable_judge_leaves_the_streak_intact() -> crate::Result<()> {
-        let (router, _calls) = instrumented_router([
+        let (router, calls) = instrumented_router([
             ok("4"),
             ok(&verdict_json(true)), // streak 1
             ok("4"),
-            Reply::Fail, // judge unavailable — no evidence either way
+            Reply::Fail, // judge unavailable — no evidence either way, streak untouched
             ok("4"),
             ok(&verdict_json(true)), // streak 2 — confirmed despite the gap
             ok("strong answer"),     // capable
@@ -659,6 +673,19 @@ mod tests {
         let (trace, _) = router.run(Context::default(), request(Some("c4"))).await?;
 
         assert_eq!(trace[0].selected_model(), "capable");
+        // The outage turn serves efficient and neither breaks nor extends the streak.
+        assert_eq!(
+            *calls.lock(),
+            vec![
+                "efficient",
+                "judge",
+                "efficient",
+                "judge",
+                "efficient",
+                "judge",
+                "capable"
+            ]
+        );
         Ok(())
     }
 
@@ -677,8 +704,9 @@ mod tests {
             .await?;
         router.run(Context::default(), request(None)).await?;
 
-        // No session id means no retained state, so the capable tier is unreachable at
-        // confirmations > 1. Documented behaviour, asserted so it cannot change silently.
+        // No session id means no retained state, so the streak restarts every turn and the
+        // capable tier is unreachable at confirmations > 1. Documented behaviour, asserted so
+        // it cannot change silently.
         assert_eq!(
             *calls.lock(),
             vec!["efficient", "judge", "efficient", "judge"]
