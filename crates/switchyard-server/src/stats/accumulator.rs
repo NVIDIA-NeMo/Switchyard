@@ -134,6 +134,11 @@ impl StatsAccumulator {
         inner.snapshot()
     }
 
+    /// Clears all accumulated stats.
+    pub(crate) fn reset(&self) {
+        *self.lock() = StatsAccumulatorInner::default();
+    }
+
     fn lock(&self) -> MutexGuard<'_, StatsAccumulatorInner> {
         self.inner.lock()
     }
@@ -560,6 +565,24 @@ mod tests {
             snapshot.tiers["strong"].models,
             BTreeSet::from(["model/other".to_string(), "model/strong".to_string()])
         );
+    }
+
+    #[test]
+    fn reset_clears_backend_classifier_and_cache_eligibility_state() {
+        let stats = StatsAccumulator::default();
+        stats.record_success("model/a", 10.0, Some("strong"));
+        stats.record_usage("model/a", usage(10, 5), 15.0, Some("strong"));
+        stats.record_routing_overhead(5.0);
+        stats.record_classifier_success("model/classifier", Some(usage(4, 1)), 2.0);
+        let probe = prefix_probe(&json!({
+            "messages": [{"role": "user", "content": "repeat me"}],
+        }));
+        stats.prefix_eligibility("model/a", &probe);
+
+        stats.reset();
+
+        assert_eq!(stats.snapshot(), StatsSnapshot::default());
+        assert_eq!(stats.prefix_eligibility("model/a", &probe), 0.0);
     }
 
     #[test]

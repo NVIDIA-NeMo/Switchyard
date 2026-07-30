@@ -254,6 +254,7 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
         .route("/v1/stats", get(get_stats))
+        .route("/v1/stats/reset", post(reset_stats))
         .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .fallback(not_found)
@@ -718,6 +719,11 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
     Json(state.stats.snapshot())
+}
+
+async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
+    state.stats.reset();
+    Json(json!({"status": "reset"}))
 }
 
 async fn health() -> Json<Value> {
