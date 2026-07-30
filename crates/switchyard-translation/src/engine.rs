@@ -13,7 +13,7 @@ use crate::codecs::anthropic::AnthropicMessagesCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
 use crate::codecs::stream::{
-    StreamCodecRegistry, StreamTranslationState, mark_replayed_terminal,
+    StreamCodecRegistry, StreamTranslationState, encode_stream_chunk,
 };
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
@@ -298,29 +298,6 @@ impl TranslationEngine {
         let target = target.into();
         let target_codec = self.stream_registry.codec(target)?;
         Ok(target_codec.finish(state))
-    }
-}
-
-fn encode_stream_chunk(
-    state: &mut StreamTranslationState,
-    target_codec: &dyn crate::codecs::stream::StreamCodec,
-    target: &FormatId,
-    event: LlmResponseChunk,
-) -> Vec<Value> {
-    match event {
-        LlmResponseChunk::ProviderEvent {
-            source,
-            raw,
-            normalized,
-        } if &source == target => {
-            mark_replayed_terminal(state, &normalized);
-            vec![raw]
-        }
-        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
-            .into_iter()
-            .flat_map(|event| encode_stream_chunk(state, target_codec, target, event))
-            .collect(),
-        event => target_codec.encode_event(state, event),
     }
 }
 

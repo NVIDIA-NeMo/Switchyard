@@ -230,6 +230,29 @@ pub(crate) fn mark_replayed_terminal(
     }
 }
 
+pub(crate) fn encode_stream_chunk(
+    state: &mut StreamTranslationState,
+    target_codec: &dyn StreamCodec,
+    target: &FormatId,
+    event: LlmResponseChunk,
+) -> Vec<Value> {
+    match event {
+        LlmResponseChunk::ProviderEvent {
+            source,
+            raw,
+            normalized,
+        } if &source == target => {
+            mark_replayed_terminal(state, &normalized);
+            vec![raw]
+        }
+        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
+            .into_iter()
+            .flat_map(|event| encode_stream_chunk(state, target_codec, target, event))
+            .collect(),
+        event => target_codec.encode_event(state, event),
+    }
+}
+
 /// Decodes one provider stream event and retains its parsed source JSON value.
 ///
 /// Takes ownership of `event` so preservation does not deep-copy provider JSON
@@ -255,9 +278,10 @@ pub fn encode_stream_event(
     target: impl Into<FormatId>,
     event: LlmResponseChunk,
 ) -> Vec<Value> {
+    let target = target.into();
     StreamCodecRegistry::with_builtins()
-        .codec(target)
-        .map(|codec| codec.encode_event(state, event))
+        .codec(target.clone())
+        .map(|codec| encode_stream_chunk(state, codec.as_ref(), &target, event))
         .unwrap_or_else(|error| vec![json!({"error": {"message": error.to_string()}})])
 }
 
