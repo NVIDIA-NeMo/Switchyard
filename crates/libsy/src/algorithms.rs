@@ -14,7 +14,7 @@ pub mod rand;
 pub mod stage;
 
 pub use fall_through::{DefaultTarget, FallThrough, FallThroughDecision};
-pub use llm_class::{LlmTaskClassifier, TaskClassifierConfig};
+pub use llm_class::{EscalationJudgeConfig, LlmTaskClassifier, TaskClassifierConfig};
 pub use noop::{Noop, NoopDecision};
 pub use passthrough::{Passthrough, PassthroughDecision};
 pub use rand::{Random, RandomClassifier, RandomDecision};

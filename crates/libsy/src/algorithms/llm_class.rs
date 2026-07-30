@@ -11,15 +11,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use switchyard_protocol::{LlmRequest, Message, OutputParams, Role};
+use switchyard_protocol::{Decision, LlmRequest, Message, OutputParams, Role};
 
+use super::util::escalation::{
+    build_judge, conversation_turn, EscalationJudge, EscalationPolicy,
+};
 use super::util::{
     load_judge_config, AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy,
 };
+pub use super::util::EscalationJudgeConfig;
 use super::{DefaultTarget, FallThrough};
 use crate::{
-    Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTarget, LlmTargetSet,
-    Request, Response, Result, RoutedLlmClient, Score, State,
+    AggLlmResponse, Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmResponse,
+    LlmTarget, LlmTargetSet, Request, Response, Result, RoutedLlmClient, Score, State, StateValue,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
@@ -263,10 +267,172 @@ struct TaskClassifier {
     capable_target: String,
 }
 
+// ── Escalation classifier ──────────────────────────────────────────────────
+
+/// Session-state key holding the consecutive-escalate streak.
+const STREAK_KEY: &str = "escalation_streak";
+
+fn streak(state: &State) -> u32 {
+    match state.extra.get(STREAK_KEY) {
+        Some(StateValue::Count(n)) => *n,
+        _ => 0,
+    }
+}
+
+fn decisive(target: &str) -> Classification {
+    Classification::Scores(vec![Score {
+        target: target.to_string(),
+        confidence: 1.0,
+    }])
+}
+
+fn assistant_message(response: &AggLlmResponse) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: response
+            .first_output()
+            .map(|output| output.content.clone())
+            .unwrap_or_default(),
+    }
+}
+
+/// Routing decision for the efficient-tier side call inside the escalation classifier.
+struct EscalationSideCallDecision {
+    model: String,
+}
+
+impl Decision for EscalationSideCallDecision {
+    fn selected_model(&self) -> &str {
+        &self.model
+    }
+    fn is_routed_call(&self) -> bool {
+        false
+    }
+    fn reasoning(&self) -> Option<&str> {
+        Some("escalation classifier: efficient tier")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Calls the efficient model, judges its response, and latches to capable once the streak
+/// confirms. Returns the efficient response directly when not escalating so the caller does
+/// not pay for a second model call.
+struct EscalationClassifier {
+    judge: JudgeClassifier<EscalationJudge, EscalationPolicy>,
+    capable: LlmTarget,
+    efficient: LlmTarget,
+    /// Consecutive escalate verdicts required to latch.
+    confirmations: u32,
+}
+
+#[async_trait]
+impl Classifier<State> for EscalationClassifier {
+    fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
+        if self.capable.semantic_name == self.efficient.semantic_name {
+            None
+        } else if selected_model == self.capable.semantic_name {
+            Some("strong")
+        } else if selected_model == self.efficient.semantic_name {
+            Some("weak")
+        } else {
+            None
+        }
+    }
+
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: Option<&Driver>,
+    ) -> Result<(Classification, Option<Response>)> {
+        let Some(driver) = driver else {
+            return Err(LibsyError::AlgorithmError {
+                message: "escalation classifier requires a driver".into(),
+            });
+        };
+
+        // A confirmed session stays capable without a judge call.
+        if streak(state) >= self.confirmations {
+            return Ok((decisive(&self.capable.semantic_name), None));
+        }
+
+        // Call efficient model and buffer the response so the judge can read it.
+        let efficient_response = driver
+            .call_llm_target(
+                Context::default(),
+                &self.efficient,
+                request.clone(),
+                Arc::new(EscalationSideCallDecision {
+                    model: self.efficient.semantic_name.clone(),
+                }),
+            )
+            .await?;
+        let agg = efficient_response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|e| LibsyError::AlgorithmError {
+                message: format!("failed to aggregate efficient response: {e}"),
+            })?;
+        let efficient_response = Response {
+            llm_response: LlmResponse::Agg(agg),
+            metadata: efficient_response.metadata,
+        };
+
+        // Build the judge request with the efficient reply appended so the judge reads this turn.
+        let mut judge_request = request.clone();
+        judge_request.llm_request.messages.push(assistant_message(
+            efficient_response.llm_response.as_agg().unwrap(),
+        ));
+        let _ = conversation_turn(&judge_request); // used by EscalationJudge internally
+
+        let (classification, _) = self
+            .judge
+            .score(state, &mut judge_request, Some(driver))
+            .await?;
+
+        // A `Scores` result names the tier; `Ambiguous` (judge unavailable) leaves the streak
+        // alone and stays efficient — an outage should never escalate.
+        let best = classification.argmax(false)?;
+        match best {
+            Some(score) if score.target == self.capable.semantic_name => {
+                let next = streak(state) + 1;
+                state
+                    .extra
+                    .insert(STREAK_KEY.to_string(), StateValue::Count(next));
+                if next >= self.confirmations {
+                    // Streak confirmed: drop the efficient response, caller will serve capable.
+                    Ok((decisive(&self.capable.semantic_name), None))
+                } else {
+                    // Building streak but not yet confirmed: reuse the efficient response.
+                    Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
+                }
+            }
+            Some(_) => {
+                // Decline: clear the streak.
+                state
+                    .extra
+                    .insert(STREAK_KEY.to_string(), StateValue::Count(0));
+                Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
+            }
+            None => {
+                // Judge unavailable: no evidence, leave streak intact, stay efficient.
+                Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
+            }
+        }
+    }
+}
+
 /// A task-level capability routing algorithm with an internal fall-through cascade.
 pub struct LlmTaskClassifier {
     route: FallThrough<State>,
-    classifier: Arc<TaskClassifier>,
+    /// The active classifier — either capability-based or escalation-based.
+    inner: Arc<dyn Classifier<State>>,
+    judge_target: LlmTarget,
+    efficient_target: LlmTarget,
+    capable_target: LlmTarget,
 }
 
 impl LlmTaskClassifier {
@@ -288,16 +454,17 @@ impl LlmTaskClassifier {
                     config: judge_config,
                     recent_turn_window: config.recent_turn_window,
                 },
-                judge_target,
+                judge_target.clone(),
                 TaskClassifierPolicy::new(
                     efficient_target.semantic_name.clone(),
                     capable_target.semantic_name.clone(),
                     config,
                 ),
             ),
-            efficient_target: efficient_target.semantic_name,
-            capable_target: capable_target.semantic_name,
+            efficient_target: efficient_target.semantic_name.clone(),
+            capable_target: capable_target.semantic_name.clone(),
         });
+        let inner: Arc<dyn Classifier<State>> = classifier.clone();
 
         // Affinity comes first so a retained assignment short-circuits the judge call.
         // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
@@ -320,9 +487,52 @@ impl LlmTaskClassifier {
         let capable_fallback = DefaultTarget::new(classifier.capable_target.clone());
         Ok(Self {
             route: route
-                .with_classifier(classifier.clone())
+                .with_classifier(inner.clone())
                 .with_classifier(Arc::new(capable_fallback)),
-            classifier,
+            inner,
+            judge_target,
+            efficient_target,
+            capable_target,
+        })
+    }
+
+    /// Replaces the capability classifier with a trajectory-judge escalation classifier.
+    ///
+    /// Every unlatched turn calls the efficient model, buffers its reply, and consults the
+    /// trajectory judge. Once `config.confirmations` consecutive escalate verdicts accumulate
+    /// the session latches to the capable tier for its remainder. A judge outage always stays
+    /// efficient.
+    ///
+    /// Session-affinity settings from [`TaskClassifierConfig`] are not carried over: the
+    /// escalation latch is the stickiness mechanism and replaces them.
+    pub fn with_escalation(self, config: EscalationJudgeConfig) -> Result<Self> {
+        let capable_name = self.capable_target.semantic_name.clone();
+        let efficient_name = self.efficient_target.semantic_name.clone();
+        let confirmations = config.confirmations;
+        let esc = Arc::new(EscalationClassifier {
+            judge: build_judge(
+                self.judge_target.clone(),
+                capable_name,
+                efficient_name,
+                config,
+            )?,
+            capable: self.capable_target.clone(),
+            efficient: self.efficient_target.clone(),
+            confirmations,
+        });
+        let inner: Arc<dyn Classifier<State>> = esc.clone();
+        let targets = LlmTargetSet::new(vec![
+            self.capable_target.clone(),
+            self.efficient_target.clone(),
+        ]);
+        Ok(Self {
+            route: FallThrough::<State>::new_with_state(targets)
+                .with_name(ALGORITHM_NAME)
+                .with_classifier(esc),
+            inner,
+            judge_target: self.judge_target,
+            efficient_target: self.efficient_target,
+            capable_target: self.capable_target,
         })
     }
 
@@ -359,7 +569,7 @@ impl Classifier<State> for TaskClassifier {
 #[async_trait]
 impl Classifier<State> for LlmTaskClassifier {
     fn routing_tier(&self, selected_model: &str) -> Option<&'static str> {
-        self.classifier.routing_tier(selected_model)
+        self.inner.routing_tier(selected_model)
     }
 
     async fn score(
@@ -368,7 +578,7 @@ impl Classifier<State> for LlmTaskClassifier {
         request: &mut Request,
         driver: Option<&Driver>,
     ) -> Result<(Classification, Option<Response>)> {
-        self.classifier.score(state, request, driver).await
+        self.inner.score(state, request, driver).await
     }
 }
 
@@ -945,6 +1155,124 @@ mod tests {
         assert!(rule_values
             .iter()
             .any(|value| value.as_str() == Some("none")));
+        Ok(())
+    }
+
+    // ── with_escalation tests ──────────────────────────────────────────────
+
+    use std::collections::VecDeque;
+
+    use switchyard_protocol::LlmClientError as ClientError;
+
+    use crate::Decision;
+
+    /// Serves each call with the next queued reply.
+    struct QueuedClient {
+        replies: Mutex<VecDeque<String>>,
+    }
+
+    impl QueuedClient {
+        fn new(replies: impl IntoIterator<Item = &'static str>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: Mutex::new(replies.into_iter().map(String::from).collect()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for QueuedClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            request: Request,
+            _decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, ClientError> {
+            let reply = self
+                .replies
+                .lock()
+                .pop_front()
+                .unwrap_or_else(|| "unexpected call".to_string());
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, reply)),
+                metadata: request.metadata,
+            })
+        }
+    }
+
+    /// Builds a router with escalation enabled (`confirmations=1` latches on the first verdict).
+    fn escalation_router(
+        client: Arc<dyn RoutedLlmClient>,
+        judge_client: Arc<dyn RoutedLlmClient>,
+    ) -> Result<Arc<LlmTaskClassifier>> {
+        let target = |name: &str, c: Arc<dyn RoutedLlmClient>| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(c),
+        };
+        Ok(Arc::new(
+            LlmTaskClassifier::new(
+                target("judge", judge_client),
+                target("efficient", client.clone()),
+                target("capable", client),
+                test_config(TEST_THRESHOLD),
+            )?
+            .with_escalation(EscalationJudgeConfig {
+                confirmations: 1,
+                ..EscalationJudgeConfig::default()
+            })?,
+        ))
+    }
+
+    #[tokio::test]
+    async fn escalation_router_serves_efficient_when_judge_declines() -> Result<()> {
+        // Judge: no escalation. Expect the efficient response to be returned directly.
+        let judge_client = QueuedClient::new([r#"{"escalate":false,"reason":"progressing"}"#]);
+        let model_client = QueuedClient::new(["efficient answer"]);
+        let router = escalation_router(model_client, judge_client)?;
+        let request = classify_request();
+
+        let (trace, response) = router.run(Context::default(), request).await?;
+
+        // The efficient model is the serving target, and the response comes from its call.
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("efficient"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("efficient answer".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_router_upgrades_to_capable_when_judge_escalates() -> Result<()> {
+        // Judge: escalate. After the efficient call, the streak confirms and capable is served.
+        let judge_client = QueuedClient::new([r#"{"escalate":true,"reason":"stuck in a loop"}"#]);
+        // Efficient is called first (by the classifier), then capable is called by FallThrough.
+        let model_client = QueuedClient::new(["efficient draft", "capable answer"]);
+        let router = escalation_router(model_client, judge_client)?;
+        let request = classify_request();
+
+        let (trace, response) = router.run(Context::default(), request).await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("capable answer".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_router_stays_capable_after_latch() -> Result<()> {
+        // First turn: judge escalates and the streak latches.
+        // Second turn: judge is not called again; capable is served directly.
+        let judge_client = QueuedClient::new([r#"{"escalate":true,"reason":"stuck"}"#]);
+        let model_client = QueuedClient::new(["efficient draft", "capable t1", "capable t2"]);
+        let router = escalation_router(model_client, judge_client)?;
+
+        let session_request = classify_session_request();
+        router.clone().run(Context::default(), session_request.clone()).await?;
+        let (trace, _) = router.clone().run(Context::default(), session_request).await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         Ok(())
     }
 }
