@@ -11,8 +11,6 @@ routing-profiles, and deterministic modes.
 import textwrap
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from switchyard.cli.launchers.claude_code_launcher import launch_claude
 from switchyard.cli.launchers.codex_cli_launcher import launch_codex
 from switchyard.cli.launchers.launcher_runtime import (
@@ -40,6 +38,14 @@ _MODEL_ROUTE_YAML = textwrap.dedent("""\
       my_route:
         type: model
         target: some/model
+""")
+
+_NATIVE_ROUTES_TOML = textwrap.dedent("""\
+    schema_version = 1
+
+    [routes.primary]
+    id = "my_route"
+    type = "noop"
 """)
 
 
@@ -114,27 +120,6 @@ def _patch_openclaw_runner(captured: dict):
     )
 
 
-@pytest.fixture(autouse=True)
-def _patch_build_deps(monkeypatch):
-    """Stub out chain-building so tests don't need real API keys or Rust init."""
-    monkeypatch.setattr(
-        "switchyard.cli.launchers.codex_cli_launcher._build_switchyard",
-        lambda *a, **kw: MagicMock(),
-    )
-    monkeypatch.setattr(
-        "switchyard.cli.launchers.claude_code_launcher._build_claude_switchyard",
-        lambda *a, **kw: MagicMock(),
-    )
-    monkeypatch.setattr(
-        "switchyard.cli.launchers.openclaw_launcher._build_switchyard",
-        lambda *a, **kw: MagicMock(),
-    )
-    monkeypatch.setattr(
-        "switchyard.lib.route_table_builders.build_single_model_table",
-        lambda *a, **kw: MagicMock(),
-    )
-
-
 class TestCodexRoutingBanner:
     def test_passthrough_banner(self):
         """launch_codex produces passthrough → <model> for single-model launch."""
@@ -151,17 +136,11 @@ class TestCodexRoutingBanner:
         assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
 
     def test_routing_profiles_banner(self, tmp_path):
-        """launch_codex describes the default route type for routing-profiles launch."""
-        profiles_path = tmp_path / "profiles.yaml"
-        profiles_path.write_text(_STAGE_ROUTER_YAML)
+        """A configured launch identifies the first native route."""
+        profiles_path = tmp_path / "routes.toml"
+        profiles_path.write_text(_NATIVE_ROUTES_TOML)
         captured: dict = {}
-        with (
-            _patch_codex_runner(captured),
-            patch(
-                "switchyard.cli.launchers.codex_cli_launcher.load_route_bundle_table",
-                return_value=MagicMock(items=lambda: [], model_listing_warnings=lambda: []),
-            ),
-        ):
+        with _patch_codex_runner(captured):
             launch_codex(
                 model="my_route",
                 base_url="https://example.com/v1",
@@ -171,7 +150,7 @@ class TestCodexRoutingBanner:
                 codex_args=[],
                 routing_profiles=str(profiles_path),
             )
-        assert _captured_strategy(captured) == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert _captured_strategy(captured) == "routing config: my_route"
 
 
 class TestOpenclawRoutingBanner:
@@ -190,17 +169,11 @@ class TestOpenclawRoutingBanner:
         assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
 
     def test_routing_profiles_banner(self, tmp_path):
-        """launch_openclaw describes the default route type for routing-profiles launch."""
-        profiles_path = tmp_path / "profiles.yaml"
-        profiles_path.write_text(_STAGE_ROUTER_YAML)
+        """A configured launch identifies the first native route."""
+        profiles_path = tmp_path / "routes.toml"
+        profiles_path.write_text(_NATIVE_ROUTES_TOML)
         captured: dict = {}
-        with (
-            _patch_openclaw_runner(captured),
-            patch(
-                "switchyard.cli.launchers.openclaw_launcher.load_route_bundle_table",
-                return_value=MagicMock(items=lambda: [], model_listing_warnings=lambda: []),
-            ),
-        ):
+        with _patch_openclaw_runner(captured):
             launch_openclaw(
                 model="my_route",
                 base_url="https://example.com/v1",
@@ -210,7 +183,7 @@ class TestOpenclawRoutingBanner:
                 openclaw_args=[],
                 routing_profiles=str(profiles_path),
             )
-        assert _captured_strategy(captured) == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert _captured_strategy(captured) == "routing config: my_route"
 
 
 class TestClaudeRoutingBanner:
@@ -229,17 +202,11 @@ class TestClaudeRoutingBanner:
         assert _captured_strategy(captured) == "passthrough → nvidia/moonshotai/kimi-k2.6"
 
     def test_routing_profiles_banner(self, tmp_path):
-        """launch_claude describes the default route type for routing-profiles launch."""
-        profiles_path = tmp_path / "profiles.yaml"
-        profiles_path.write_text(_STAGE_ROUTER_YAML)
+        """A configured launch identifies the first native route."""
+        profiles_path = tmp_path / "routes.toml"
+        profiles_path.write_text(_NATIVE_ROUTES_TOML)
         captured: dict = {}
-        with (
-            _patch_claude_runner(captured),
-            patch(
-                "switchyard.cli.launchers.claude_code_launcher.load_route_bundle_table",
-                return_value=MagicMock(items=lambda: [], model_listing_warnings=lambda: []),
-            ),
-        ):
+        with _patch_claude_runner(captured):
             launch_claude(
                 model="my_route",
                 base_url="https://example.com/v1",
@@ -249,4 +216,4 @@ class TestClaudeRoutingBanner:
                 claude_args=[],
                 routing_profiles=str(profiles_path),
             )
-        assert _captured_strategy(captured) == "stage_router: strong=strong-model/v1, weak=weak-model/v1, llm-classifier=clf-model/v1, confidence_threshold=0.7"
+        assert _captured_strategy(captured) == "routing config: my_route"

@@ -28,8 +28,8 @@ Examples::
     # --routing-profiles is a global flag (use -- to separate it from the subcommand).
     switchyard --routing-profiles routes.yaml -- serve --port 4000
     switchyard --routing-profiles dev.yaml -- serve --port 4001
-    switchyard --routing-profiles profiles.yaml -- launch claude
-    switchyard --routing-profiles profiles.yaml -- launch codex
+    switchyard --routing-profiles routes.toml -- launch claude
+    switchyard --routing-profiles routes.toml -- launch codex
 
     # Single-model passthrough (--model stays on the launcher subcommand)
     switchyard launch claude --model openai/gpt-5.2
@@ -41,13 +41,13 @@ Examples::
     switchyard verify --model openai/gpt-5.2
 
     # Forwarding args to the launched tool (second -- after the subcommand)
-    switchyard --routing-profiles profiles.yaml -- launch claude -- --no-auto-approve
+    switchyard --routing-profiles routes.toml -- launch claude -- --no-auto-approve
 
 Routing policies that used to be top-level CLI verbs (``passthrough``,
 ``random-routing``) and launcher flags
 (``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
-are expressed in routing-profile YAML files. ``serve`` and
-launchers still parse the YAML into profile-backed runtimes.
+are expressed in deployment files. ``serve`` retains the Python routing-profile
+YAML schema; launchers pass native server TOML directly to the Rust host.
 """
 
 import argparse
@@ -711,10 +711,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "Path to a routing-profiles YAML file. Applies to "
-            "serve, launch, and configure (saves it as the default). Separate "
-            "from the subcommand with -- for clarity: "
-            "switchyard --routing-profiles dev.yaml -- launch claude"
+            "Deployment path: routing-profile YAML for serve/configure, native "
+            "server TOML for launch. Separate it from the subcommand with -- "
+            "for clarity: switchyard --routing-profiles routes.toml -- launch claude"
         ),
     )
     parser.add_argument(
@@ -926,17 +925,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "claude",
         help="Launch Claude Code with a proxy (one terminal, one command)",
         description=(
-            "Starts a proxy on an auto-picked free local port, then "
+            "Starts the native server on an OS-assigned loopback port, then "
             "spawns `claude` with ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, "
             "and ANTHROPIC_MODEL preset.  Proxy shuts down when claude exits.\n\n"
             "Route selection (mutually exclusive — pick one or neither):\n"
             "  --model X               single-model passthrough — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, …); the first declared route "
+            "  --routing-profiles PATH serve a native TOML deployment; "
+            "the first declared route "
             "is the initial model.\n\n"
-            "With neither flag, the saved routing bundle from "
-            "`switchyard configure` is used."
+            "With neither flag, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -994,7 +992,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lc.add_argument(
         "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
+        help="Proxy port (default: OS-assigned loopback port)",
     )
     lc.add_argument(
         "--timeout", type=float, default=None,
@@ -1004,7 +1002,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--startup-timing", action="store_true",
         help=(
             "Print a per-stage startup timing breakdown to stderr before "
-            "claude starts (each backend-format probe on its own line). "
+            "claude starts. "
             "Also enabled with SWITCHYARD_STARTUP_TIMING=1."
         ),
     )
@@ -1021,21 +1019,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "codex",
         help="Launch OpenAI Codex CLI with a proxy (one terminal, one command)",
         description=(
-            "Starts a proxy on an auto-picked free local port, then "
+            "Starts the native server on an OS-assigned loopback port, then "
             "spawns `codex` with a transient `switchyard` provider injected "
             "via repeated `-c` flags (no edits to ~/.codex/config.toml).\n\n"
             "Codex talks to the proxy via OpenAI Responses API "
-            "(/v1/responses); the chain translates that to OpenAI Chat "
+            "(/v1/responses); the native server translates that to OpenAI Chat "
             "Completions for the upstream backend.  Proxy shuts down when "
             "codex exits.\n\n"
             "Route selection (mutually exclusive — pick one or neither):\n"
             "  --model X               single-model passthrough — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, …); the first declared route "
+            "  --routing-profiles PATH serve a native TOML deployment; "
+            "the first declared route "
             "is the initial model.\n\n"
-            "With neither flag, the saved routing bundle from "
-            "`switchyard configure` is used."
+            "With neither flag, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1093,7 +1090,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cx.add_argument(
         "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
+        help="Proxy port (default: OS-assigned loopback port)",
     )
     cx.add_argument(
         "--timeout", type=float, default=None,
@@ -1112,7 +1109,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "openclaw",
         help="Launch OpenClaw with a proxy (one terminal, one command)",
         description=(
-            "Starts a proxy on an auto-picked free local port, then "
+            "Starts the native server on an OS-assigned loopback port, then "
             "spawns `openclaw chat` (alias for `openclaw tui --local`) "
             "against a transient OpenClaw "
             "workspace (OPENCLAW_STATE_DIR / OPENCLAW_HOME / "
@@ -1126,11 +1123,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "Route selection (mutually exclusive — pick one or neither):\n"
             "  --model X               single-model passthrough — every request "
             "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, …); the first declared route "
+            "  --routing-profiles PATH serve a native TOML deployment; "
+            "the first declared route "
             "is the initial model.\n\n"
-            "With neither flag, the saved routing bundle from "
-            "`switchyard configure` is used."
+            "With neither flag, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1178,7 +1174,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ow.add_argument(
         "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
+        help="Proxy port (default: OS-assigned loopback port)",
     )
     ow.add_argument(
         "--timeout", type=float, default=None,

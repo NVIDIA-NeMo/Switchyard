@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""One-command ``openclaw`` + V2 proxy supervisor.
-
-Sibling of :mod:`switchyard.cli.launchers.claude_code_launcher` and
-:mod:`switchyard.cli.launchers.codex_cli_launcher`, but spawns the
-`OpenClaw <https://github.com/openclaw/openclaw>`_ personal-agent CLI
-instead of Claude Code / Codex:
-
-* ``switchyard launch openclaw --model <name>`` — single-model
-  passthrough.  Spin up an in-process V2 passthrough proxy on a free
-  local port, wire up an OpenAI Chat backend through the generic
-  ``LlmTarget`` recipe, then spawn ``openclaw chat`` against the proxy.
+"""Run OpenClaw through an in-process native Switchyard server.
 
 Unlike Claude Code (env-var overrides) and Codex (transient ``-c``
 provider overrides), OpenClaw is configured exclusively through its
@@ -31,13 +21,9 @@ and state, so we use a transient workspace:
    point openclaw at the transient workspace, leaving the user's real
    ``~/.openclaw/`` (sessions, channels, plugins) untouched.
 
-OpenClaw's ``openclaw chat`` subcommand (alias for ``openclaw tui
---local``) opens an interactive local terminal UI bound to the embedded
-agent runtime — the right shape for a launcher that wants the user
-dropped into a chat session.  ``openclaw agent`` exists too but is a
-non-interactive one-shot turn (verify uses that one).  When the user
-exits the chat (or hits Ctrl-C), the proxy thread is torn down and the
-transient workspace is removed.
+The launcher generates a direct OpenAI Chat deployment or accepts an
+explicit Rust server TOML file, then removes the transient workspace and
+closes the server when OpenClaw exits.
 """
 
 import json
@@ -46,16 +32,12 @@ import os
 import shutil
 import subprocess
 import tempfile
-import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
 
-import uvicorn
-
 from switchyard.cli.launchers.launch_intake_config import (
     LaunchIntakeConfig,
-    build_launch_capture_processors,
     print_intake_warning,
 )
 from switchyard.cli.launchers.launcher_runtime import (
@@ -66,37 +48,28 @@ from switchyard.cli.launchers.launcher_runtime import (
     passthrough_strategy_summary,
     print_ready_banner,
     print_startup_failure,
-    routing_profiles_strategy_summary,
     silence_launch_loggers,
-    spawn_proxy_thread,
     stdin_is_tty,
-    suppress_uvicorn_stream_handlers,
     wait_for_proxy_ready,
 )
 from switchyard.cli.launchers.live_stats_footer import LiveStatsFooter
+from switchyard.cli.launchers.native_server import (
+    NativeDeployment,
+    NativeServer,
+    deployment_strategy_summary,
+    deterministic_deployment,
+    passthrough_deployment,
+)
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
-from switchyard.cli.route_bundle import (
-    load_route_bundle_table,
-)
-from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
-from switchyard.lib.processors.model_rewrite_request_processor import (
-    ModelRewriteRequestProcessor,
-)
+from switchyard.cli.launchers.session_summary import print_session_summary
 from switchyard.lib.profiles import (
     DeterministicRoutingConfig,
 )
-from switchyard.lib.route_table import ChainRuntime, SwitchyardApp
-from switchyard.lib.route_table_builders import (
-    build_single_model_table,
-    build_tier_passthrough_switchyard,
-)
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.server.shell_tui import ShellTUI
 
 logger = logging.getLogger(__name__)
 
 _READY_TIMEOUT_S = 10.0
-_SHUTDOWN_JOIN_S = 3.0
 _EXIT_BINARY_NOT_FOUND = 127
 _EXIT_SIGINT = 130
 
@@ -118,7 +91,6 @@ _API_KEY_PLACEHOLDER = "switchyard"
 OpenClawModelCatalogEntry: TypeAlias = tuple[str, str, str]
 
 
-_ModelRewriteRequestProcessor = ModelRewriteRequestProcessor
 _find_free_port = find_free_port
 
 
@@ -152,49 +124,6 @@ def _find_openclaw_binary() -> str | None:
 def _wait_ready(port: int, timeout_s: float = _READY_TIMEOUT_S) -> bool:
     """Probe ``GET /health`` until HTTP 200 or timeout."""
     return wait_for_proxy_ready(port, timeout_s=timeout_s)
-
-
-def _build_switchyard(
-    model: str,
-    api_key: str,
-    base_url: str,
-    timeout: float | None,
-    stats: StatsAccumulator,
-    extra_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    """OpenAI Chat Completions translation chain with live stats.
-
-    OpenClaw's ``models.providers.switchyard`` block declares
-    ``api: "openai-completions"``, so the inbound request lands on
-    Switchyard's ``/v1/chat/completions`` endpoint. We pin
-    :class:`BackendFormat.OPENAI` so the chain always translates to
-    OpenAI Chat Completions on the way out — same shape Codex uses (no
-    Anthropic ``/v1/messages`` probe is meaningful here).
-    """
-    return build_tier_passthrough_switchyard(
-        LlmTarget(
-            id="default",
-            model=model,
-            format=BackendFormat.OPENAI,
-            api_key=api_key,
-            base_url=base_url,
-            timeout_secs=timeout,
-        ),
-        stats=stats,
-        enable_stats=True,
-        extra_request_processors=extra_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-
-
-def _spawn_proxy_thread(
-    switchyard: SwitchyardApp, port: int,
-) -> tuple[uvicorn.Server, threading.Thread]:
-    """Run uvicorn in a background daemon thread, return (server, thread)."""
-    return spawn_proxy_thread(
-        switchyard, port, thread_name="launch-openclaw-proxy",
-    )
 
 
 def _qualified_model_id(model_id: str) -> str:
@@ -391,17 +320,24 @@ def _supervise_openclaw(
         return _EXIT_SIGINT
 
 
+def _start_native_server(
+    deployment: NativeDeployment,
+    port: int | None,
+) -> NativeServer:
+    """Start the native server; kept separate for launcher supervision tests."""
+    return NativeServer(deployment, port)
+
+
 def _run_openclaw_with_switchyard(
-    switchyard: SwitchyardApp,
+    deployment: NativeDeployment,
     display_model: str,
     port: int | None,
     openclaw_args: list[str],
-    stats: StatsAccumulator,
     catalog_entries: Sequence[OpenClawModelCatalogEntry],
     intake: LaunchIntakeConfig | None = None,
     strategy_summary: str | None = None,
 ) -> int:
-    """Chain-agnostic supervisor: host ``switchyard`` then spawn openclaw."""
+    """Host a native deployment and run OpenClaw against it."""
     openclaw_bin = _find_openclaw_binary()
     if openclaw_bin is None:
         logger.error(
@@ -412,18 +348,17 @@ def _run_openclaw_with_switchyard(
 
     silence_launch_loggers(local_logger=logger)
     log_path = configure_debug_file_logging(display_model=display_model)
-    resolved_port = port if port is not None else _find_free_port()
+    server = _start_native_server(deployment, port)
+    resolved_port = server.port
+    stats = server.stats
     primary_model_id = _qualified_model_id(display_model)
     workspace = _write_openclaw_workspace(
         port=resolved_port,
         entries=catalog_entries,
         primary_model_id=primary_model_id,
     )
-    server: uvicorn.Server | None = None
-    thread: threading.Thread | None = None
 
     try:
-        server, thread = _spawn_proxy_thread(switchyard, resolved_port)
         if not _wait_ready(resolved_port):
             print_startup_failure(
                 port=resolved_port,
@@ -432,19 +367,16 @@ def _run_openclaw_with_switchyard(
             )
             return 1
 
-        suppress_uvicorn_stream_handlers()
         logger.info("proxy ready on port %d", resolved_port)
         if intake is not None:
             print_intake_warning()
-        from switchyard.lib.route_table import RouteTable
-        table = switchyard if isinstance(switchyard, RouteTable) else None
         print_ready_banner(
             port=resolved_port,
             display_model=display_model,
             log_path=log_path,
             strategy_summary=strategy_summary,
-            profile_routes=table.registered_models() if table is not None else None,
-            default_route=table.default_model() if table is not None else None,
+            profile_routes=list(deployment.models),
+            default_route=display_model,
         )
         if stdin_is_tty():
             banner_pause()
@@ -454,7 +386,6 @@ def _run_openclaw_with_switchyard(
                 stats,
                 display_model,
                 ProxyHealthMonitor(resolved_port),
-                table=table,
                 strategy_label=strategy_summary.split(":")[0].strip() if strategy_summary else None,
             )
             return ShellTUI(
@@ -469,10 +400,8 @@ def _run_openclaw_with_switchyard(
             workspace=workspace, intake=intake,
         )
     finally:
-        if server is not None:
-            server.should_exit = True
-        if thread is not None:
-            thread.join(timeout=_SHUTDOWN_JOIN_S)
+        print_session_summary(stats)
+        server.close()
         _remove_openclaw_workspace(workspace)
 
 
@@ -480,7 +409,7 @@ def _openclaw_catalog_entry_for_registered_model(
     model_id: str,
     primary_model_id: str,
 ) -> OpenClawModelCatalogEntry:
-    """Build an OpenClaw catalog entry for a YAML-registered model id."""
+    """Build an OpenClaw catalog entry for a configured route ID."""
     display = _openclaw_model_display_name(model_id)
     if model_id == primary_model_id:
         return (
@@ -506,82 +435,30 @@ def launch_openclaw(
     routing_profiles: str | None = None,
     rl_log_dir: Path | None = None,
 ) -> int:
-    """Start a passthrough proxy and run ``openclaw chat`` against it.
-
-    Single-model UX — ``model`` seeds the OpenClaw session, while the
-    proxy preserves any model OpenClaw sends later so a client-side
-    ``/model`` selection remains effective.
-
-    When ``routing_profiles`` is given, the launcher builds a
-    :class:`RouteTable` instead of a single chain: ``model`` is
-    registered as a tier passthrough, then every entry from the YAML
-    file is merged on top (including each tier's ``GET /v1/models``
-    catalog hydration). OpenClaw's ``/model`` picker is populated from
-    the merged table via ``agents.defaults.models``, so YAML-declared
-    models appear alongside the launcher-configured one.
-
-    Returns the ``openclaw`` process's exit code (or ``127`` if the
-    binary wasn't found, ``130`` on Ctrl-C).
-    """
-    stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
-    switchyard = _build_switchyard(
-        model,
-        api_key,
-        base_url,
-        timeout,
-        stats,
-        extra_request_processors=intake_request,
-        extra_response_processors=intake_response,
+    """Start a native passthrough or configured deployment and run OpenClaw."""
+    deployment = (
+        NativeDeployment.from_path(routing_profiles)
+        if routing_profiles is not None
+        else passthrough_deployment(model=model, api_key=api_key, base_url=base_url)
     )
     catalog_entries: list[OpenClawModelCatalogEntry] = [
         (
-            model,
-            f"{_openclaw_model_display_name(model)} (Switchyard)",
-            f"Routed through Switchyard to {model}.",
-        ),
-    ]
-    app: SwitchyardApp = build_single_model_table(model, switchyard)
-    if routing_profiles is not None:
-        # Wrap the single chain in a RouteTable so YAML routes
-        # can merge on top. The launcher's `model` registers as a tier
-        # passthrough; YAML entries land alongside (override on id
-        # conflict). OpenClaw's /model picker iterates the catalog, so
-        # YAML-declared models surface there automatically.
-        from switchyard.lib.route_table import RouteTable
-        table = app
-        assert isinstance(table, RouteTable)
-        yaml_table = load_route_bundle_table(
-            routing_profiles,
-            stats_accumulator=stats,
-            pre_routing_request_processors=intake_request,
-            extra_response_processors=intake_response,
+            model_id,
+            f"{_openclaw_model_display_name(model_id)} (Switchyard)",
+            f"Routed through Switchyard to {model_id}.",
         )
-        for sub_model, sub_chain, sub_metadata in yaml_table.items():
-            table.register(sub_model, sub_chain, metadata=sub_metadata)
-        for warning in yaml_table.model_listing_warnings():
-            table.add_model_listing_warning(warning)
-        app = table
-        catalog_seen = {entry[0] for entry in catalog_entries}
-        for model_id in table.registered_models():
-            if model_id in catalog_seen:
-                continue
-            catalog_entries.append(_openclaw_catalog_entry_for_registered_model(
-                model_id=model_id,
-                primary_model_id=model,
-            ))
-            catalog_seen.add(model_id)
+        for model_id in deployment.models
+    ]
     strategy_summary = (
-        routing_profiles_strategy_summary(routing_profiles, model)
+        deployment_strategy_summary(routing_profiles, model)
         if routing_profiles is not None
         else passthrough_strategy_summary(model)
     )
     return _run_openclaw_with_switchyard(
-        app,
+        deployment,
         display_model=model,
         port=port,
         openclaw_args=openclaw_args,
-        stats=stats,
         catalog_entries=catalog_entries,
         intake=intake,
         strategy_summary=strategy_summary,
@@ -639,33 +516,20 @@ def launch_openclaw_deterministic_routing(
 ) -> int:
     """Start a deterministic-routing proxy and run ``openclaw`` against it."""
     from switchyard.cli.model_catalog.model_discovery import fetch_model_ids
-    from switchyard.lib.route_table_builders import (
-        build_deterministic_routing_switchyard,
-        build_deterministic_routing_table,
-        deterministic_routing_virtual_model_id,
-    )
+    from switchyard.lib.route_table_builders import deterministic_routing_virtual_model_id
 
     def _discovery_fn(base_url: str, api_key: str) -> list[str]:
         return fetch_model_ids(base_url, api_key)
 
-    stats = StatsAccumulator()
-    intake_request, intake_response = build_launch_capture_processors(intake, rl_log_dir)
-    switchyard = build_deterministic_routing_switchyard(
-        config,
-        stats,
-        pre_routing_request_processors=intake_request,
-        extra_response_processors=intake_response,
-    )
     routing_model = deterministic_routing_virtual_model_id(config)
-    discovery_fn = None if discovery_disabled else _discovery_fn
-    model_table = build_deterministic_routing_table(
+    discovered_models = (
+        []
+        if discovery_disabled
+        else _discovery_fn(config.strong.base_url or "", config.strong.api_key or "")
+    )
+    deployment = deterministic_deployment(
         config,
-        stats,
-        deterministic_routing_switchyard=switchyard,
-        routing_model=routing_model,
-        discovery_fn=discovery_fn,
-        pre_routing_request_processors=intake_request,
-        extra_response_processors=intake_response,
+        additional_models=discovered_models,
     )
     catalog_entries: list[OpenClawModelCatalogEntry] = [
         _openclaw_catalog_entry_for_deterministic_model(
@@ -678,7 +542,7 @@ def launch_openclaw_deterministic_routing(
         ),
     ]
     catalog_seen = {entry[0] for entry in catalog_entries}
-    for model_id in model_table.registered_models():
+    for model_id in deployment.models:
         if model_id in catalog_seen:
             continue
         catalog_entries.append(_openclaw_catalog_entry_for_deterministic_model(
@@ -691,11 +555,10 @@ def launch_openclaw_deterministic_routing(
     # classifier-driven pick. The catalog still exposes the tier models
     # for manual overrides, mirroring the codex deterministic UX.
     return _run_openclaw_with_switchyard(
-        model_table,
+        deployment,
         display_model=routing_model,
         port=port,
         openclaw_args=openclaw_args,
-        stats=stats,
         catalog_entries=catalog_entries,
         intake=intake,
         strategy_summary=deterministic_strategy_summary(config),

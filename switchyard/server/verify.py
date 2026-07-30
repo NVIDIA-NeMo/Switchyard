@@ -46,19 +46,10 @@ from typing import Any
 import httpx
 import uvicorn
 
-from switchyard.cli.launchers.claude_code_launcher import (
-    _build_claude_switchyard,
-    _find_claude_binary,
-)
-from switchyard.cli.launchers.codex_cli_launcher import (
-    _build_switchyard as _build_codex_switchyard,
-)
+from switchyard.cli.launchers.claude_code_launcher import _find_claude_binary
 from switchyard.cli.launchers.codex_cli_launcher import (
     _find_codex_binary,
     _provider_overrides,
-)
-from switchyard.cli.launchers.openclaw_launcher import (
-    _build_switchyard as _build_openclaw_switchyard,
 )
 from switchyard.cli.launchers.openclaw_launcher import (
     _find_openclaw_binary,
@@ -70,12 +61,89 @@ from switchyard.cli.launchers.openclaw_launcher import (
 from switchyard.lib.backends.backend_format_resolver import (
     probe_anthropic_messages_support,
 )
-from switchyard.lib.route_table import SwitchyardApp
-from switchyard.lib.route_table_builders import build_single_model_table
+from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
+from switchyard.lib.route_table import ChainRuntime, SwitchyardApp
+from switchyard.lib.route_table_builders import (
+    build_single_model_table,
+    build_tier_passthrough_switchyard,
+)
 from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.server.switchyard_app import build_switchyard_app
 
 logger = logging.getLogger(__name__)
+
+
+def _build_verify_switchyard(
+    model: str,
+    api_key: str,
+    base_url: str,
+    timeout: float | None,
+    stats: StatsAccumulator,
+    backend_format: BackendFormat,
+) -> ChainRuntime:
+    """Build the legacy Python chain used only by the standalone verifier."""
+    return build_tier_passthrough_switchyard(
+        LlmTarget(
+            id="default",
+            model=model,
+            format=backend_format,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_secs=timeout,
+        ),
+        stats=stats,
+    )
+
+
+def _build_claude_switchyard(
+    model: str,
+    api_key: str,
+    base_url: str,
+    timeout: float | None,
+    stats: StatsAccumulator,
+) -> ChainRuntime:
+    return _build_verify_switchyard(
+        model,
+        api_key,
+        base_url,
+        timeout,
+        stats,
+        BackendFormat.AUTO,
+    )
+
+
+def _build_codex_switchyard(
+    model: str,
+    api_key: str,
+    base_url: str,
+    timeout: float | None,
+    stats: StatsAccumulator,
+) -> ChainRuntime:
+    return _build_verify_switchyard(
+        model,
+        api_key,
+        base_url,
+        timeout,
+        stats,
+        BackendFormat.AUTO,
+    )
+
+
+def _build_openclaw_switchyard(
+    model: str,
+    api_key: str,
+    base_url: str,
+    timeout: float | None,
+    stats: StatsAccumulator,
+) -> ChainRuntime:
+    return _build_verify_switchyard(
+        model,
+        api_key,
+        base_url,
+        timeout,
+        stats,
+        BackendFormat.OPENAI,
+    )
 
 # ---------------------------------------------------------------------------
 # Constants

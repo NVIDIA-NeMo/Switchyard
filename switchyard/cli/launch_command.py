@@ -6,9 +6,10 @@
 import argparse
 import logging
 import os
+import tomllib
 from dataclasses import replace
-from importlib import import_module
-from typing import Protocol, cast
+from pathlib import Path
+from typing import cast
 
 from switchyard.cli.command_utils import (
     is_interactive_terminal,
@@ -44,15 +45,6 @@ from switchyard.lib.profiles.random_routing import (
 from switchyard.server.server_util import load_secrets, resolve_rl_log_dir
 
 logger = logging.getLogger(__name__)
-
-
-class _YamlModule(Protocol):
-    def safe_dump(
-        self,
-        data: object,
-        stream: object,
-        sort_keys: bool = ...,
-    ) -> object: ...
 
 
 def _api_key_prompt_default_source(
@@ -162,44 +154,8 @@ def _is_deterministic_launch(
     return not configured_route.model
 
 
-_SAVED_BUNDLE_TEMPFILES: list[str] = []
-
-
-def _materialize_saved_bundle(bundle: dict[str, object]) -> str:
-    """Re-serialize a saved bundle dict to a YAML tempfile and return its path.
-
-    The launcher's downstream API takes a YAML path; saved bundles are
-    stored as parsed dicts in ``config.json``. The tempfile is retained
-    for the process lifetime so the launcher's per-request reads keep
-    working without re-materializing each time.
-    """
-    import tempfile
-
-    yaml = cast(_YamlModule, import_module("yaml"))
-    fd = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yaml", delete=False, prefix="switchyard-routes-",
-    )
-    try:
-        yaml.safe_dump(bundle, fd, sort_keys=False)
-    finally:
-        fd.close()
-    _SAVED_BUNDLE_TEMPFILES.append(fd.name)
-    return fd.name
-
-
 def _resolve_routing_profiles(args: argparse.Namespace) -> str | None:
-    """Resolve the routing-profile YAML path for a launch.
-
-    Precedence:
-        CLI ``--routing-profiles PATH``  >  saved parsed bundle in
-        ``UserConfig.routing_profiles`` (only when no ``--model`` is on
-        the CLI).
-
-    Passing ``--model X`` alone is an explicit opt-in to a single-model
-    launch; the saved bundle is *not* injected on top. When the fallback
-    fires we re-serialize the saved bundle to a tempfile (the launcher
-    API takes a path).
-    """
+    """Resolve the native Rust server TOML path for a launch."""
     if args.routing_profiles:
         return cast(str, args.routing_profiles)
     if args.model:
@@ -207,17 +163,29 @@ def _resolve_routing_profiles(args: argparse.Namespace) -> str | None:
     saved = load_user_config().routing_profiles
     if not saved:
         return None
-    return _materialize_saved_bundle(saved)
+    raise SystemExit(
+        "launch: saved routing profiles use the legacy YAML schema. "
+        "Pass a Rust server TOML file with --routing-profiles."
+    )
 
 
 def _resolve_initial_from_profiles(*, target: str, routing_profiles: str) -> str:
-    """Return the first route key from *routing_profiles*."""
-    from switchyard.cli.route_bundle import (
-        parse_routing_profiles_file,
-        routing_profile_model_ids,
-    )
-
-    ids = routing_profile_model_ids(parse_routing_profiles_file(routing_profiles))
+    """Return the first route ID from a native Rust server TOML file."""
+    try:
+        data = tomllib.loads(Path(routing_profiles).read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise SystemExit(
+            f"launch {target}: could not read native server TOML "
+            f"{routing_profiles!r}: {error}"
+        ) from error
+    routes = data.get("routes")
+    ids: list[str] = []
+    if isinstance(routes, dict):
+        for route in routes.values():
+            if isinstance(route, dict):
+                route_id = route.get("id")
+                if isinstance(route_id, str):
+                    ids.append(route_id)
     if not ids:
         raise SystemExit(
             f"launch {target}: --routing-profiles file has no routes; "
@@ -251,11 +219,8 @@ def launch_requirements_satisfied(
         target=target, args=args, route=None, routing_profiles=routing_profiles,
     ):
         return bool(api_key or launch_credentials.api_key(PRIMARY_TIER))
-    # --routing-profiles (CLI flag or saved top-level bundle) is self-sufficient:
-    # the YAML carries every chain's credentials and the first route becomes
-    # the initial agent model. The saved bundle is only consulted when no
-    # --model is on the CLI (passing --model X is an explicit opt-in to a
-    # single-model launch).
+    # An explicit server TOML is self-sufficient and its first route becomes
+    # the initial agent model.
     if routing_profiles:
         return True
     if not args.model and user_config.routing_profiles:
@@ -326,7 +291,7 @@ def route_from_launch_args(
     """Merge one-off launch flags onto the configured route.
 
     The launcher CLI no longer exposes routing-policy flags; routing
-    policies live in routing-profile YAML. We always emit a single-tier
+    policies live in native server TOML. We always emit a single-tier
     route here. Legacy saved random routes are rejected upstream by
     :func:`_warn_if_legacy_random_config`.
     """
@@ -487,10 +452,10 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
         + DeepSeek V4 Flash classifier). Override individual tiers with
         ``--weak-model`` / ``--classifier-model`` / ``--profile``.
       * ``--model X`` — single-tier passthrough to X.
-      * ``--routing-profiles FILE`` (global flag) — YAML-driven multi-chain table.
-        ``--model`` is optional; falls back to the first YAML route.
+      * ``--routing-profiles FILE`` (global flag) — native server TOML.
+        ``--model`` is optional; falls back to the first configured route.
 
-    Random and other multi-chain routing live in the YAML schema.
+    Random and other multi-chain routing live in the native server schema.
     """
     if getattr(args, "startup_timing", False):
         startup_timing.enable()
@@ -542,8 +507,8 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     configured_launch = load_user_config().launch_target("claude")
     configured_route = configured_launch.effective_route()
     _warn_if_legacy_random_config(configured_route, target="claude")
-    # CLI --routing-profiles is a clean-slate override: route bundle and
-    # default model both come from the CLI YAML. The saved config.json launch
+    # CLI --routing-profiles is a clean-slate override: deployment and
+    # default model both come from the TOML. The saved config.json launch
     # route is ignored so a saved model id that doesn't exist in the new
     # bundle can't leak through. Gated on the CLI flag specifically — the
     # saved-bundle fallback path still inherits config.json's launch.<t>.model.
@@ -1122,7 +1087,7 @@ def _warn_if_legacy_random_config(
 
     The ``random-routing`` CLI subcommand and ``--routing random`` /
     ``--preset`` / ``--weak-model`` launcher flags were removed; routing
-    policies live in routing-profile YAML files. Saved configs from
+    policies live in native server TOML files. Saved configs from
     earlier versions may still declare ``route.type = "random"``; bail
     with a recovery hint instead of silently launching the wrong shape.
     """
@@ -1131,10 +1096,10 @@ def _warn_if_legacy_random_config(
     raise SystemExit(
         f"launch {target}: saved config has route.type=\"random\" but\n"
         "random-routing CLI flags have been removed. Express your routing\n"
-        "policy as a routing-profile YAML and pass it via\n"
+        "policy as native server TOML and pass it via\n"
         "  --routing-profiles PATH\n"
         "or run `switchyard configure` to reset the saved route to single.\n"
-        "See `switchyard serve --help` and the docs for the YAML schema."
+        "See the switchyard-server configuration docs for the TOML schema."
     )
 
 

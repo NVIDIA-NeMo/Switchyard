@@ -5,8 +5,8 @@
 
 Exercises the public ``launch_openclaw`` entry, the transient JSON5
 config builder, the env-var injection contract, and the ``openclaw``
-binary lookup. Real uvicorn and ``subprocess.run`` are mocked —
-these tests don't start a server or spawn a child process.
+binary lookup. The native server and ``subprocess.run`` are mocked, so
+these tests do not spawn a child process.
 
 Mirrors :mod:`tests.test_launch_codex`; the per-launch transient
 workspace replaces codex's ``-c`` provider overrides.
@@ -29,51 +29,12 @@ from switchyard.cli.launchers.openclaw_launcher import (
     _build_openclaw_config,
     _find_free_port,
     _find_openclaw_binary,
-    _ModelRewriteRequestProcessor,
     _openclaw_command,
     _openclaw_env,
     _qualified_model_id,
     _write_openclaw_workspace,
     launch_openclaw,
 )
-from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.route_table import RouteTable
-from switchyard_rust.core import ChatRequest
-
-# ---------------------------------------------------------------------------
-# _ModelRewriteRequestProcessor
-# ---------------------------------------------------------------------------
-
-
-class TestModelRewriteRequestProcessor:
-    """OpenClaw clients only send Chat-Completions requests, but the
-    processor is type-agnostic — exercise all three inbound shapes for
-    parity with the claude/codex tests.
-    """
-
-    async def test_rewrites_openai_chat_request(self):
-        proc = _ModelRewriteRequestProcessor("nvidia/moonshotai/kimi-k2.5")
-        req = ChatRequest.openai_chat({"model": "gpt-4o", "messages": []})
-        out = await proc.process(ProxyContext(), req)
-        assert out is req
-        assert req.body["model"] == "nvidia/moonshotai/kimi-k2.5"
-
-    async def test_rewrites_responses_request(self):
-        proc = _ModelRewriteRequestProcessor("target-model")
-        req = ChatRequest.openai_responses({"model": "gpt-5.2", "input": "hi"})
-        await proc.process(ProxyContext(), req)
-        assert req.body["model"] == "target-model"
-
-    async def test_rewrites_anthropic_request(self):
-        proc = _ModelRewriteRequestProcessor("target-model")
-        req = ChatRequest.anthropic({
-            "model": "claude-sonnet-4-5",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 100,
-        })
-        await proc.process(ProxyContext(), req)
-        assert req.body["model"] == "target-model"
-
 
 # ---------------------------------------------------------------------------
 # _find_openclaw_binary
@@ -328,18 +289,24 @@ class TestOpenclawCommand:
 
 
 def _make_fake_server(started: bool = True) -> MagicMock:
-    """uvicorn.Server stand-in that reports started immediately."""
+    """Native server stand-in with empty HTTP-backed stats."""
     server = MagicMock()
     server.started = started
     server.should_exit = False
+    server.port = 54321
+    server.base_url = "http://127.0.0.1:54321"
+    server.stats.snapshot_sync.return_value = {}
+    server.close.side_effect = lambda: setattr(server, "should_exit", True)
     return server
 
 
-def _stub_spawn_proxy(server: MagicMock):
-    """Return a function that mimics _spawn_proxy_thread's (server, thread) tuple."""
-    def _inner(switchyard, port):
-        thread = MagicMock()
-        return server, thread
+def _stub_native_server(server: MagicMock):
+    """Return a function that starts the supplied native server stand-in."""
+    def _inner(deployment, port):
+        if port is not None:
+            server.port = port
+            server.base_url = f"http://127.0.0.1:{port}"
+        return server
     return _inner
 
 
@@ -373,8 +340,8 @@ class TestLaunchOpenclaw:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
         monkeypatch.setattr(
             "switchyard.cli.launchers.openclaw_launcher.tempfile.mkdtemp",
@@ -444,13 +411,13 @@ class TestLaunchOpenclaw:
 
         captured: dict = {}
 
-        def stub_spawn(switchyard, port):
+        def stub_spawn(deployment, port):
             captured["port"] = port
-            thread = MagicMock()
-            return fake_server, thread
+            fake_server.port = port
+            return fake_server
 
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
             stub_spawn,
         )
         monkeypatch.setattr(
@@ -487,7 +454,7 @@ class TestLaunchOpenclaw:
         def _should_not_spawn(*args, **kwargs):
             raise AssertionError("proxy spawned despite missing binary")
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
             _should_not_spawn,
         )
 
@@ -509,8 +476,8 @@ class TestLaunchOpenclaw:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
         monkeypatch.setattr(
             "switchyard.cli.launchers.openclaw_launcher.tempfile.mkdtemp",
@@ -625,8 +592,8 @@ class TestLaunchOpenclaw:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
         monkeypatch.setattr(
             "switchyard.cli.launchers.openclaw_launcher.tempfile.mkdtemp",
@@ -649,71 +616,6 @@ class TestLaunchOpenclaw:
         )
         assert exit_code == 1
         assert fake_server.should_exit is True
-
-    def test_uses_openai_translation_chain(self, monkeypatch, tmp_path):
-        """OpenClaw speaks OpenAI Chat Completions → backend is an
-        OpenAI-native backend behind the stats wrapper.
-        """
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-        from switchyard.lib.processors.stats_response_processor_accumulator import (
-            StatsResponseProcessor,
-        )
-
-        model = "nvidia/moonshotai/kimi-k2.5"
-        captured_switchyard: dict = {}
-
-        def stub_spawn(app, port):
-            assert isinstance(app, RouteTable)
-            chain = app.lookup_switchyard(model)
-            captured_switchyard["app"] = app
-            captured_switchyard["switchyard"] = chain
-            captured_switchyard["backend"] = next(
-                component
-                for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
-            )
-            return _make_fake_server(started=True), MagicMock()
-
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._find_openclaw_binary",
-            lambda: "/fake/bin/openclaw",
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._find_free_port",
-            lambda: 54321,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
-            stub_spawn,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher.tempfile.mkdtemp",
-            lambda prefix: str(tmp_path / "ws-chain"),
-        )
-        (tmp_path / "ws-chain").mkdir()
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
-        )
-
-        launch_openclaw(
-            model=model,
-            base_url="https://inference-api.nvidia.com/v1",
-            api_key="sk-test",
-            port=None, timeout=None, openclaw_args=[],
-        )
-        table = captured_switchyard["app"]
-        assert table.registered_models() == [model]
-        assert table.default_model() == model
-        assert isinstance(captured_switchyard["backend"], StatsLlmBackend)
-        assert [
-            item.value
-            for item in captured_switchyard["backend"].supported_request_types
-        ] == ["openai_chat"]
-        assert any(
-            isinstance(component, StatsResponseProcessor)
-            for component in captured_switchyard["switchyard"].iter_components()
-        )
 
     def test_tty_mode_wraps_openclaw_with_stats_footer(self, monkeypatch, tmp_path):
         """Interactive OpenClaw launches should get the Switchyard footer."""
@@ -738,8 +640,8 @@ class TestLaunchOpenclaw:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(_make_fake_server(started=True)),
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
+            _stub_native_server(_make_fake_server(started=True)),
         )
         monkeypatch.setattr(
             "switchyard.cli.launchers.openclaw_launcher.stdin_is_tty",
@@ -816,20 +718,15 @@ class TestLaunchOpenclaw:
             _cmd_launch_openclaw(args)
         assert "--smoke requires --model" in str(exc_info.value)
 
-    def test_routing_profiles_merges_extras_on_top_of_launcher_table(
+    def test_routing_profiles_uses_native_toml_routes(
         self, monkeypatch, tmp_path,
     ):
-        """`--routing-profiles` adds YAML routes on top of the launcher's chain.
+        """A configured launch passes native TOML routes to the Rust server."""
+        captured: dict = {}
 
-        The launcher registers its ``--model`` chain under ``model``; every
-        YAML entry is merged on top via
-        :meth:`RouteTable.register`. YAML wins on id conflict.
-        """
-        captured_switchyard: dict = {}
-
-        def stub_spawn(switchyard, port):
-            captured_switchyard["app"] = switchyard
-            return _make_fake_server(started=True), MagicMock()
+        def stub_spawn(deployment, port):
+            captured["deployment"] = deployment
+            return _make_fake_server(started=True)
 
         monkeypatch.setattr(
             "switchyard.cli.launchers.openclaw_launcher._find_openclaw_binary",
@@ -840,7 +737,7 @@ class TestLaunchOpenclaw:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.openclaw_launcher._spawn_proxy_thread",
+            "switchyard.cli.launchers.openclaw_launcher._start_native_server",
             stub_spawn,
         )
         monkeypatch.setattr(
@@ -854,52 +751,44 @@ class TestLaunchOpenclaw:
             lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
         )
 
-        yaml_path = tmp_path / "extras.yaml"
-        yaml_path.write_text(
-            "routes:\n"
-            "  extras/yaml-only:\n"
-            "    type: model\n"
-            "    target:\n"
-            "      model: extras/yaml-only\n"
-            "      api_key: sk-yaml\n"
-            "      base_url: https://yaml.example/v1\n"
-            "  primary/model:\n"
-            "    type: model\n"
-            "    target:\n"
-            "      model: primary/model\n"
-            "      api_key: sk-yaml-override\n"
-            "      base_url: https://yaml-override.example/v1\n"
+        config_path = tmp_path / "routes.toml"
+        config_path.write_text(
+            'schema_version = 1\n'
+            '[llm_clients.upstream]\n'
+            'format = "openai_chat"\n'
+            'base_url = "https://example.test/v1"\n'
+            '[targets.model]\n'
+            'id = "upstream/model"\n'
+            'llm_client = "upstream"\n'
+            '[routes.primary]\n'
+            'id = "routed/model"\n'
+            'type = "passthrough"\n'
+            'target = "model"\n'
         )
 
         def capture_run(cmd, env, check):
             config_path = Path(env["OPENCLAW_CONFIG_PATH"])
-            captured_switchyard["config"] = json.loads(config_path.read_text())
+            captured["config"] = json.loads(config_path.read_text())
             return subprocess.CompletedProcess(cmd, returncode=0)
 
         monkeypatch.setattr(subprocess, "run", capture_run)
 
         launch_openclaw(
-            model="primary/model",
+            model="routed/model",
             base_url="https://example.invalid/v1",
             api_key="sk-test",
             port=None,
             timeout=None,
             openclaw_args=[],
-            routing_profiles=str(yaml_path),
+            routing_profiles=str(config_path),
         )
 
-        table = captured_switchyard["app"]
-        assert isinstance(table, RouteTable)
-        assert table.registered_models() == [
-            "primary/model",
-            "extras/yaml-only",
-        ]
-        assert table.default_model() == "primary/model"
-        # The YAML-registered model lands in the openclaw.json catalog too.
-        config = captured_switchyard["config"]
+        deployment = captured["deployment"]
+        assert deployment.config == config_path
+        assert deployment.models == ("routed/model",)
+        config = captured["config"]
         catalog_ids = [
             entry["id"]
             for entry in config["models"]["providers"]["switchyard"]["models"]
         ]
-        assert "primary/model" in catalog_ids
-        assert "extras/yaml-only" in catalog_ids
+        assert catalog_ids == ["routed/model"]

@@ -3,9 +3,8 @@
 
 """Tests for ``switchyard.cli.launchers.claude_code_launcher``.
 
-Exercises the public ``launch_claude`` entry, the private model-rewrite
-request processor, and the ``claude`` binary lookup. Real uvicorn and
-``subprocess.run`` are mocked — these tests don't start a server or
+Exercises the public ``launch_claude`` entry and ``claude`` binary lookup.
+The native server and ``subprocess.run`` are mocked, so these tests do not
 spawn a child process.
 """
 
@@ -27,23 +26,16 @@ from switchyard.cli.launchers.claude_code_launcher import (
     _find_claude_binary,
     _find_free_port,
     _make_footer_fn,
-    _ModelRewriteRequestProcessor,
     _print_ready_banner,
     launch_claude,
 )
 from switchyard.cli.launchers.launch_intake_config import LaunchIntakeConfig
 from switchyard.lib.backends.llm_target import LlmTarget
-from switchyard.lib.processors.model_rewrite_request_processor import (
-    ModelRewriteRequestProcessor,
-)
 from switchyard.lib.profiles.random_routing import RandomRoutingConfig
-from switchyard.lib.proxy_context import ProxyContext
-from switchyard.lib.route_table import RouteTable
 from switchyard.lib.route_table_builders import (
     random_routing_virtual_model_id,
 )
 from switchyard.lib.stats_accumulator import StatsAccumulator
-from switchyard_rust.core import ChatRequest
 
 
 def test_random_routing_virtual_model_id_is_client_neutral() -> None:
@@ -198,38 +190,6 @@ def test_main_forwards_harness_args_after_separator(monkeypatch, tmp_path) -> No
 
 
 # ---------------------------------------------------------------------------
-# _ModelRewriteRequestProcessor
-# ---------------------------------------------------------------------------
-
-
-class TestModelRewriteRequestProcessor:
-    """Processor must rewrite ``body['model']`` for every ChatRequest subclass."""
-
-    async def test_rewrites_anthropic_request(self):
-        proc = _ModelRewriteRequestProcessor("nvidia/moonshotai/kimi-k2.5")
-        req = ChatRequest.anthropic({
-            "model": "claude-sonnet-4-5",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 100,
-        })
-        out = await proc.process(ProxyContext(), req)
-        assert out is req
-        assert req.body["model"] == "nvidia/moonshotai/kimi-k2.5"
-
-    async def test_rewrites_openai_chat_request(self):
-        proc = _ModelRewriteRequestProcessor("target-model")
-        req = ChatRequest.openai_chat({"model": "gpt-4o", "messages": []})
-        await proc.process(ProxyContext(), req)
-        assert req.body["model"] == "target-model"
-
-    async def test_rewrites_responses_request(self):
-        proc = _ModelRewriteRequestProcessor("target-model")
-        req = ChatRequest.openai_responses({"model": "gpt-4o", "input": "hi"})
-        await proc.process(ProxyContext(), req)
-        assert req.body["model"] == "target-model"
-
-
-# ---------------------------------------------------------------------------
 # _find_claude_binary
 # ---------------------------------------------------------------------------
 
@@ -282,18 +242,24 @@ class TestFindFreePort:
 
 
 def _make_fake_server(started: bool = True) -> MagicMock:
-    """uvicorn.Server stand-in that reports started immediately."""
+    """Native server stand-in with empty HTTP-backed stats."""
     server = MagicMock()
     server.started = started
     server.should_exit = False
+    server.port = 54321
+    server.base_url = "http://127.0.0.1:54321"
+    server.stats.snapshot_sync.return_value = {}
+    server.close.side_effect = lambda: setattr(server, "should_exit", True)
     return server
 
 
-def _stub_spawn_proxy(server: MagicMock):
-    """Return a function that mimics _spawn_proxy_thread's (server, thread) tuple."""
-    def _inner(switchyard, port):
-        thread = MagicMock()
-        return server, thread
+def _stub_native_server(server: MagicMock):
+    """Return a function that starts the supplied native server stand-in."""
+    def _inner(deployment, port):
+        if port is not None:
+            server.port = port
+            server.base_url = f"http://127.0.0.1:{port}"
+        return server
     return _inner
 
 
@@ -338,8 +304,8 @@ class TestLaunchClaude:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
 
         captured: dict = {}
@@ -397,8 +363,8 @@ class TestLaunchClaude:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
         monkeypatch.setattr(
             "switchyard.lib.processors.intake_client._build_sdk_client",
@@ -457,13 +423,13 @@ class TestLaunchClaude:
 
         captured: dict = {}
 
-        def stub_spawn(switchyard, port):
+        def stub_spawn(deployment, port):
             captured["port"] = port
-            thread = MagicMock()
-            return fake_server, thread
+            fake_server.port = port
+            return fake_server
 
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
             stub_spawn,
         )
         monkeypatch.setattr(
@@ -485,11 +451,11 @@ class TestLaunchClaude:
             lambda: None,
         )
 
-        # If we reach _spawn_proxy_thread, we failed to short-circuit
+        # If we reach _start_native_server, we failed to short-circuit
         def _should_not_spawn(*args, **kwargs):
             raise AssertionError("proxy spawned despite missing binary")
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
             _should_not_spawn,
         )
 
@@ -511,8 +477,8 @@ class TestLaunchClaude:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
 
         def raise_sigint(cmd, env, check):
@@ -615,123 +581,6 @@ class TestLaunchClaude:
         assert intake.task == "custom-task"
         assert intake.session_id == "sess-cli"
 
-    def test_selects_native_backend_when_probe_true(self, monkeypatch):
-        """Probe returning True -> chain stats-wraps an Anthropic-native backend."""
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-
-        monkeypatch.setattr(
-            "switchyard.lib.backends.backend_format_resolver."
-            "probe_anthropic_messages_support_sync",
-            lambda **_: True,
-        )
-
-        model = "aws/anthropic/bedrock-claude-opus-4-6"
-        captured_switchyard: dict = {}
-
-        def stub_spawn(app, port):
-            assert isinstance(app, RouteTable)
-            chain = app.lookup_switchyard(model)
-            captured_switchyard["app"] = app
-            captured_switchyard["switchyard"] = chain
-            captured_switchyard["backend"] = next(
-                component
-                for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
-            )
-            fake_server = _make_fake_server(started=True)
-            return fake_server, MagicMock()
-
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._find_claude_binary",
-            lambda: "/fake/bin/claude",
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._find_free_port",
-            lambda: 54321,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
-            stub_spawn,
-        )
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
-        )
-
-        launch_claude(
-            model=model,
-            base_url="https://inference-api.nvidia.com/v1",
-            api_key="sk-test",
-            port=None, timeout=None, claude_args=[],
-        )
-        table = captured_switchyard["app"]
-        assert table.registered_models() == [f"claude-{model}", model]
-        assert table.default_model() == model
-        assert table.lookup_switchyard(f"claude-{model}") is table.lookup_switchyard(model)
-        backend = captured_switchyard["backend"]
-        assert isinstance(backend, StatsLlmBackend)
-        assert [item.value for item in backend.supported_request_types] == ["anthropic"]
-        assert not any(
-            isinstance(component, ModelRewriteRequestProcessor)
-            for component in captured_switchyard["switchyard"].iter_components()
-        )
-
-    def test_selects_translated_backend_when_probe_false(self, monkeypatch):
-        """Probe returning False -> chain stats-wraps an OpenAI-native backend."""
-        from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
-        # Default autouse fixture already sets probe to False; no override needed.
-
-        model = "nvidia/moonshotai/kimi-k2.5"
-        captured_switchyard: dict = {}
-
-        def stub_spawn(app, port):
-            assert isinstance(app, RouteTable)
-            chain = app.lookup_switchyard(model)
-            captured_switchyard["app"] = app
-            captured_switchyard["switchyard"] = chain
-            captured_switchyard["backend"] = next(
-                component
-                for component in chain.iter_components()
-                if isinstance(component, StatsLlmBackend)
-            )
-            fake_server = _make_fake_server(started=True)
-            return fake_server, MagicMock()
-
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._find_claude_binary",
-            lambda: "/fake/bin/claude",
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._find_free_port",
-            lambda: 54321,
-        )
-        monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
-            stub_spawn,
-        )
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
-        )
-
-        launch_claude(
-            model=model,
-            base_url="https://inference-api.nvidia.com/v1",
-            api_key="sk-test",
-            port=None, timeout=None, claude_args=[],
-        )
-        table = captured_switchyard["app"]
-        assert table.registered_models() == [f"claude-{model}", model]
-        assert table.default_model() == model
-        assert table.lookup_switchyard(f"claude-{model}") is table.lookup_switchyard(model)
-        backend = captured_switchyard["backend"]
-        assert isinstance(backend, StatsLlmBackend)
-        assert [item.value for item in backend.supported_request_types] == ["openai_chat"]
-        assert not any(
-            isinstance(component, ModelRewriteRequestProcessor)
-            for component in captured_switchyard["switchyard"].iter_components()
-        )
-
     def test_smoke_with_routing_profiles_errors_clearly(
         self, monkeypatch, tmp_path,
     ):
@@ -776,21 +625,15 @@ class TestLaunchClaude:
             _cmd_launch_claude(args)
         assert "--smoke requires --model" in str(exc_info.value)
 
-    def test_routing_profiles_merges_extras_on_top_of_launcher_table(
+    def test_routing_profiles_uses_native_toml_routes(
         self, monkeypatch, tmp_path,
     ):
-        """`--routing-profiles` adds YAML routes on top of the launcher's chain.
+        """A configured launch passes native TOML routes to the Rust server."""
+        captured: dict = {}
 
-        The launcher registers its own ``--model`` chain under ``model``;
-        every YAML entry is merged on top via
-        :meth:`RouteTable.register`. YAML wins on id conflict.
-        """
-        captured_switchyard: dict = {}
-
-        def stub_spawn(switchyard, port):
-            captured_switchyard["app"] = switchyard
-            fake_server = _make_fake_server(started=True)
-            return fake_server, MagicMock()
+        def stub_spawn(deployment, port):
+            captured["deployment"] = deployment
+            return _make_fake_server(started=True)
 
         monkeypatch.setattr(
             "switchyard.cli.launchers.claude_code_launcher._find_claude_binary",
@@ -801,7 +644,7 @@ class TestLaunchClaude:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
             stub_spawn,
         )
         monkeypatch.setattr(
@@ -810,55 +653,34 @@ class TestLaunchClaude:
             lambda cmd, env, check: subprocess.CompletedProcess(cmd, returncode=0),
         )
 
-        yaml_path = tmp_path / "extras.yaml"
-        yaml_path.write_text(
-            "routes:\n"
-            "  extras/yaml-only:\n"
-            "    type: model\n"
-            "    target:\n"
-            "      model: extras/yaml-only\n"
-            "      api_key: sk-yaml\n"
-            "      base_url: https://yaml.example/v1\n"
-            "  primary/model:\n"
-            "    type: model\n"
-            "    target:\n"
-            "      model: primary/model\n"
-            "      api_key: sk-yaml-override\n"
-            "      base_url: https://yaml-override.example/v1\n"
+        config_path = tmp_path / "routes.toml"
+        config_path.write_text(
+            'schema_version = 1\n'
+            '[llm_clients.upstream]\n'
+            'format = "openai_chat"\n'
+            'base_url = "https://example.test/v1"\n'
+            '[targets.model]\n'
+            'id = "upstream/model"\n'
+            'llm_client = "upstream"\n'
+            '[routes.primary]\n'
+            'id = "routed/model"\n'
+            'type = "passthrough"\n'
+            'target = "model"\n'
         )
 
         launch_claude(
-            model="primary/model",
+            model="routed/model",
             base_url="https://example.invalid/v1",
             api_key="sk-test",
             port=None,
             timeout=None,
             claude_args=[],
-            routing_profiles=str(yaml_path),
+            routing_profiles=str(config_path),
         )
 
-        table = captured_switchyard["app"]
-        assert isinstance(table, RouteTable)
-
-        # Launcher registers `primary/model`; YAML overrides it in place and
-        # adds `extras/yaml-only`. The claude launcher also exposes each
-        # non-prefixed id under a `claude-` alias (same chain object) so
-        # Claude Code's gateway-discovery filter accepts the full listing.
-        # Aliases come right before their originals in iteration order.
-        assert table.registered_models() == [
-            "claude-primary/model",
-            "primary/model",
-            "claude-extras/yaml-only",
-            "extras/yaml-only",
-        ]
-        # Alias and original resolve to the same chain object.
-        assert table.default_model() == "primary/model"
-        assert table.lookup_switchyard("claude-extras/yaml-only") is table.lookup_switchyard(
-            "extras/yaml-only"
-        )
-        assert table.lookup_switchyard("claude-primary/model") is table.lookup_switchyard(
-            "primary/model"
-        )
+        deployment = captured["deployment"]
+        assert deployment.config == config_path
+        assert deployment.models == ("routed/model",)
 
     def test_proxy_never_ready_returns_error(self, monkeypatch):
         fake_server = _make_fake_server(started=False)  # never flips to True
@@ -872,8 +694,8 @@ class TestLaunchClaude:
             lambda: 54321,
         )
         monkeypatch.setattr(
-            "switchyard.cli.launchers.claude_code_launcher._spawn_proxy_thread",
-            _stub_spawn_proxy(fake_server),
+            "switchyard.cli.launchers.claude_code_launcher._start_native_server",
+            _stub_native_server(fake_server),
         )
         # Override the autouse _wait_ready mock to simulate a timeout.
         monkeypatch.setattr(
@@ -1059,25 +881,19 @@ class TestResolveRoutingProfiles:
         from switchyard.cli.launch_command import _resolve_routing_profiles
         monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
         save_user_config(UserConfig(routing_profiles=self._BUNDLE))
-        args = argparse.Namespace(routing_profiles="/cli/path.yaml", model=None)
-        assert _resolve_routing_profiles(args) == "/cli/path.yaml"
+        args = argparse.Namespace(routing_profiles="/cli/path.toml", model=None)
+        assert _resolve_routing_profiles(args) == "/cli/path.toml"
 
-    def test_saved_bundle_materialized_to_yaml_tempfile(
+    def test_saved_legacy_bundle_requires_native_toml(
         self, monkeypatch, tmp_path,
     ):
-        """The saved dict is re-serialized to a tempfile path the launcher reads."""
-        import yaml
-
         from switchyard.cli.config.user_config import UserConfig, save_user_config
         from switchyard.cli.launch_command import _resolve_routing_profiles
         monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
         save_user_config(UserConfig(routing_profiles=self._BUNDLE))
         args = argparse.Namespace(routing_profiles=None, model=None)
-        resolved = _resolve_routing_profiles(args)
-        assert resolved is not None
-        materialized = Path(resolved)
-        assert materialized.exists()
-        assert yaml.safe_load(materialized.read_text()) == self._BUNDLE
+        with pytest.raises(SystemExit, match="legacy YAML schema"):
+            _resolve_routing_profiles(args)
 
     def test_model_only_does_not_inject_saved(self, monkeypatch, tmp_path):
         """`--model X` alone is an explicit opt-in to single-model; saved bundle stays out."""
@@ -1095,9 +911,9 @@ class TestResolveRoutingProfiles:
         monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
         save_user_config(UserConfig(routing_profiles=self._BUNDLE))
         args = argparse.Namespace(
-            routing_profiles="/cli/path.yaml", model="some/model",
+            routing_profiles="/cli/path.toml", model="some/model",
         )
-        assert _resolve_routing_profiles(args) == "/cli/path.yaml"
+        assert _resolve_routing_profiles(args) == "/cli/path.toml"
 
     def test_returns_none_when_nothing_saved_or_passed(self, monkeypatch, tmp_path):
         from switchyard.cli.launch_command import _resolve_routing_profiles
@@ -1109,35 +925,36 @@ class TestResolveRoutingProfiles:
 class TestResolveInitialFromProfiles:
     """First declared route is always returned; --model + --routing-profiles is an error."""
 
-    def _write_yaml(self, tmp_path):
-        yaml_path = tmp_path / "profiles.yaml"
-        yaml_path.write_text(
-            "routes:\n"
-            "  some/route:\n"
-            "    type: model\n"
-            "    target:\n"
-            "      model: some/upstream\n"
-            "      api_key: sk-test\n"
-            "      base_url: https://example.invalid/v1\n"
+    def _write_toml(self, tmp_path):
+        config_path = tmp_path / "routes.toml"
+        config_path.write_text(
+            'schema_version = 1\n'
+            '[routes.primary]\n'
+            'id = "some/route"\n'
+            'type = "passthrough"\n'
+            'target = "upstream"\n'
         )
-        return str(yaml_path)
+        return str(config_path)
 
-    def test_returns_first_yaml_route(self, tmp_path):
+    def test_returns_first_toml_route(self, tmp_path):
         from switchyard.cli.launch_command import _resolve_initial_from_profiles
-        yaml_path = self._write_yaml(tmp_path)
+        config_path = self._write_toml(tmp_path)
         assert (
-            _resolve_initial_from_profiles(target="codex", routing_profiles=yaml_path)
+            _resolve_initial_from_profiles(target="codex", routing_profiles=config_path)
             == "some/route"
         )
 
     def test_empty_bundle_raises(self, tmp_path):
         from switchyard.cli.launch_command import _resolve_initial_from_profiles
-        yaml_path = tmp_path / "empty.yaml"
-        yaml_path.write_text("routes:\n  direct:\n    type: model\n    target: some/model\n")
-        assert (
-            _resolve_initial_from_profiles(target="codex", routing_profiles=str(yaml_path))
-            == "direct"
+        config_path = tmp_path / "empty.toml"
+        config_path.write_text(
+            'schema_version = 1\n[routes.direct]\ntype = "passthrough"\ntarget = "model"\n'
         )
+        with pytest.raises(SystemExit, match="has no routes"):
+            _resolve_initial_from_profiles(
+                target="codex",
+                routing_profiles=str(config_path),
+            )
 
     def test_model_and_profiles_mutually_exclusive(self):
         """Runtime check rejects --model + --routing-profiles together for all launchers."""
