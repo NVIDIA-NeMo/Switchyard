@@ -21,7 +21,6 @@ nav:
       - Getting Started: getting_started.md
       - Known Issues in 0.1.0: known_issues.md
   - Guides:
-      - Agent Launchers: guides/agent_launchers.md
       - Skill Distillation: skill_distillation.md
   - Concepts:
       - Core Concepts: core_concepts.md

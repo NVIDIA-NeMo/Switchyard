@@ -48,10 +48,8 @@ formats select an endpoint directly and do not run capability probes.
 | `ANTHROPIC` | Always sends to `/v1/messages`. No probe. | You know the upstream is Anthropic-native (Anthropic API, NIM Claude routes). |
 | `RESPONSES` | Always sends to `/v1/responses`. No probe. | You know the upstream supports the OpenAI Responses API. Fails on NIM / non-OpenAI upstreams. |
 | `OPENAI` | Always sends to `/v1/chat/completions`. No probe. | You know the upstream is OpenAI-compatible (NIM, OpenRouter, etc). Safe universal choice. |
-| `AUTO` | Probes at startup, picks best format (see below). | Upstream is unknown or varies across deployments. Used by Claude Code and Codex launchers. OpenClaw is intentionally pinned to `OPENAI`. |
-| *(omitted)* | Defaults to `OPENAI` — no probe, no fast-path. Silently uses Chat Completions, which is wrong for Anthropic/Bedrock models. Always set `format:` explicitly. |  |
-Claude Code and Codex launchers use `AUTO` for their single-model targets.
-OpenClaw is intentionally pinned to `OPENAI` for its equivalent target.
+| `AUTO` | Probes at startup and picks the best format. | The upstream is unknown or varies across deployments. |
+| *(omitted)* | Defaults to `OPENAI` with no probe. | Always set `format:` explicitly when the upstream is not OpenAI-compatible. |
 
 ### AUTO Decision Tree
 
@@ -88,16 +86,12 @@ upstream format.
 > probes and makes the upstream contract clear. Use `AUTO` when provider
 > capabilities are unknown or vary across deployments.
 >
-> **`AUTO` costs startup latency.** Each probe is a live request to the upstream
-> made before the agent starts, so a slow endpoint adds a round-trip per probe
-> (up to three, tried in order). This is the main reason a launch that uses
-> `AUTO` (Claude Code, Codex) starts slower than one pinned to an explicit
-> format. Set `format:` explicitly to remove the probing entirely. To see the
-> per-probe cost of a launch, run it with `--startup-timing` (or
-> `SWITCHYARD_STARTUP_TIMING=1`), which prints each probe on its own line.
+> **`AUTO` costs startup latency.** Each probe is a live request to the upstream,
+> so a slow endpoint adds a round-trip per probe, with up to three tried in
+> order. Set `format:` explicitly to remove probing.
+
 ## Related Documentation
 
 - [Getting Started](getting_started.md): install Switchyard and run a first request
-- [Agent Launchers](guides/agent_launchers.md): run coding agents through a local proxy
 - [Routing Overview](routing_algorithms/overview.md): choose and configure a routing strategy
 - [CLI Reference](cli_reference.md): configure and operate Switchyard from the command line

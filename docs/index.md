@@ -13,11 +13,10 @@ split across model tiers, or selected by routing policy.
 | Area | What Switchyard provides |
 |---|---|
 | Client ingress | OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses compatible endpoints. |
-| Agent launchers | One-command local proxies for Claude Code, Codex, and OpenClaw. |
 | Format translation | Request and response translation between supported wire formats. |
 | Routing policies | Random splits, LLM classifier routing with optional session affinity, signal-driven stage-router routing, and YAML route bundles. |
 | Operations | Request/token statistics and context-window fallback behavior. |
-| Deployment options | Local coding-agent proxy, shared HTTP service, or embedded Python runtime. |
+| Deployment options | Local or shared HTTP service, or embedded Python runtime. |
 
 At a high level, Switchyard keeps client integrations separate from model
 providers and routing policy:
@@ -34,7 +33,6 @@ For system context and request lifecycle diagrams, see
 ```bash
 pip install "nemo-switchyard[cli,server]"
 switchyard configure
-switchyard launch claude
 ```
 
 For source installs, non-interactive configuration, and a curl sanity check, use
@@ -43,12 +41,6 @@ For source installs, non-interactive configuration, and a curl sanity check, use
 ## Main Workflows
 
 <div class="grid cards" markdown>
-
-- **Run coding agents**
-
-    Launch Claude Code, Codex, or OpenClaw through a local Switchyard proxy.
-
-    [Agent Launchers](guides/agent_launchers.md)
 
 - **Configure routing**
 
@@ -107,10 +99,9 @@ and clients select one with the request's `model` field:
 switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
-The same bundle can drive a launcher or be saved as the default:
+The same bundle can be saved as the default:
 
 ```bash
-switchyard --routing-profiles routes.yaml -- launch claude
 switchyard --routing-profiles routes.yaml -- configure --target provider \
   --provider openrouter --api-key "$OPENROUTER_API_KEY" \
   --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
@@ -119,7 +110,7 @@ switchyard --routing-profiles routes.yaml -- configure --target provider \
 Non-interactive `configure` does not read provider credentials from the routing
 bundle; pass `--api-key` explicitly when persisting the bundle for CI.
 
-Route types, launcher use, and persistence are covered in
+Route types and persistence are covered in
 [Routing Overview](routing_algorithms/overview.md). The Rust server uses its
 own explicit TOML configuration for LLM clients, targets, and libsy algorithms.
 

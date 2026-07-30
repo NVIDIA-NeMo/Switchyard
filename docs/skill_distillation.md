@@ -1,14 +1,14 @@
 # Skill Distillation
 
-Skill distillation turns agent sessions into a reusable skill for the same
-kind of work. The model is not retrained. Switchyard saves the session history,
-uses it to update a `SKILL.md`, and makes the active skill available to later
-agent launches for the same namespace.
+Skill distillation is intended to turn agent sessions into a reusable skill for
+the same kind of work without retraining the model. The workflow will save
+session history, use it to update a `SKILL.md`, and make the active skill
+available to later agent runs for the same namespace.
 
-The current release adds the saved configuration and the Rust contracts that
+The current release provides saved configuration and the Rust contracts that
 later implementations will share. It does not yet save session files, run
 distillation, update skills, import external runs, validate results, or mount
-skills into launched agents.
+skills into agent runtimes.
 
 ## Configure It
 
@@ -22,8 +22,8 @@ switchyard configure --show
 One namespace identifies one skill that improves over time. Keep using the same
 namespace when more sessions or trajectories should contribute to that skill;
 choose a different namespace when you want a separate skill. A namespace is not
-a session ID. In the automatic workflow, Switchyard will generate a separate
-internal session ID for each launcher run.
+a session ID. The future automatic workflow will generate a separate internal
+session ID for each captured run.
 
 The namespace is stored in the user config and can be updated without provider
 credentials. To remove it:
@@ -34,39 +34,37 @@ switchyard configure --disable-skill-distillation
 
 ## Intended Workflow
 
-Once launcher support lands, the flow should be automatic:
+A future host integration should automate this flow:
 
 ```text
-configure a namespace
-run an agent through switchyard launch
+select a namespace
+capture a completed agent session
 save the session under that namespace
 distill when the session ends
 create or update the namespace's active SKILL.md
-load that active skill in the next launch for the same namespace
+load that active skill in the next run for the same namespace
 ```
 
 If no skill exists yet, the first distilled session creates one. Later sessions
 update the existing skill and keep enough history to inspect or roll back the
 change.
 
-Skill distillation is namespace-based. The namespace is saved user
-configuration, not a per-request header. A future request may be recorded as
-part of a saved session, but a single HTTP request should not change which skill
-is being learned or used.
+Skill distillation is namespace-based. A namespace identifies one skill that
+improves over time; it is not a session ID or per-request header. A future
+request may be recorded as part of a saved session, but a single HTTP request
+should not change which skill is being learned or used.
 
 ## Session Ownership
 
-The user configures only the namespace. In the automatic workflow, Switchyard
-will own session capture and the session lifecycle. Each `switchyard launch`
-will generate a separate session ID, record completed model turns as they pass
-through the local proxy, and finalize the project-local session record when the
-launched agent exits. The user will not provide a session ID, choose a storage
-path, or run a separate recorder.
+The host runtime should generate a separate session ID, record completed model
+turns, and finalize the project-local session record when the agent exits. The
+user should choose only the namespace, not a session ID, storage path, or
+separate recorder.
 
 The capture backend is an internal implementation detail. The initial
 implementation will use a Switchyard-managed project-local store; a later
 trajectory source or storage backend can replace or supplement it without
-changing the configuration or launcher workflow.
+changing the Rust contracts or host workflow.
 
 ## Config
 
@@ -102,7 +100,7 @@ executable files.
 
 Skill generation should happen after sessions finish, not during normal model
 request handling. Switchyard owns the session-to-skill lifecycle, including
-capture, distillation, validation, history, and launch-time skill loading. It
+capture, distillation, validation, history, and run-time skill loading. It
 should not turn every request into a memory update.
 
 The automatic workflow still needs guardrails. Every skill update should record
@@ -158,7 +156,7 @@ steps run.
 `SkillEvidenceId` is not a second session tracker. A session ID groups requests
 and turns while an agent is running. A `SkillEvidenceId` identifies the
 completed run after Switchyard saves it for distillation. The initial workflow
-will create one evidence record for each completed launcher session. Switchyard
+will create one evidence record for each completed captured session. Switchyard
 keeps this ID stable within the namespace. The Rust contract uses it to reject
 duplicate inputs in one distillation request and to record which evidence a
 skill candidate used. The code that creates an evidence record reuses a safe

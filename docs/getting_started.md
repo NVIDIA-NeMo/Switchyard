@@ -113,8 +113,6 @@ curl http://localhost:4000/v1/chat/completions \
   -d '{"model":"switchyard","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-<!-- TODO: Add agent launchers back when they are wired to the Rust server. -->
-
 ## Routing algorithms
 
 ### Choose a route type
@@ -180,4 +178,4 @@ export SWITCHYARD_TELEMETRY_OPT_OUT=1
 - [`switchyard-translation`](../crates/switchyard-translation/README.md):
   request, response, and stream translation
 
-<!-- TODO: Restore architecture, CLI, launcher, and routing links when those pages are Rust-first. -->
+<!-- TODO: Restore architecture, CLI, and routing links when those pages are Rust-first. -->

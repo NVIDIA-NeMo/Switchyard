@@ -1,17 +1,17 @@
 # CLI Reference
 
-This page is the canonical reference for every `switchyard` subcommand. It mirrors the output of `switchyard --help` and `switchyard <verb> --help`. If you spot drift, file a docs ticket. Tutorials and recipes live in [Getting Started](getting_started.md); this page is reference material only.
+This page is the canonical reference for the documented `switchyard`
+subcommands. It mirrors the relevant output of `switchyard --help` and
+`switchyard <verb> --help`. Tutorials and recipes live in
+[Getting Started](getting_started.md); this page is reference material only.
 
 ## Verbs at a glance
 
 | Verb | Audience | What it does |
 |---|---|---|
 | [`serve`](#switchyard-serve) | Ops | Long-running proxy server. Serve a YAML route bundle selected with the global `--routing-profiles` flag. |
-| [`launch claude`](#switchyard-launch-claude) | Dev | Spawns Claude Code against a local proxy. Auto-picks a free port, sets `ANTHROPIC_*` env vars, tears the proxy down when Claude exits. `--smoke` runs a one-shot harness round-trip and exits. |
-| [`launch codex`](#switchyard-launch-codex) | Dev | Spawns OpenAI Codex CLI against a local proxy and injects a transient `switchyard` provider via repeated `-c` flags. `--smoke` runs a one-shot Codex round-trip. |
-| [`launch openclaw`](#switchyard-launch-openclaw) | Dev | Spawns `openclaw chat` against a local proxy using a transient `openclaw.json`; the user's OpenClaw configuration is untouched. `--smoke` runs a one-shot agent turn. |
-| [`configure`](#switchyard-configure) | Both | Persists user-level defaults under `~/.config/switchyard/` (provider credentials, per-launcher model defaults, saved routing-profile path). With `--show`, also prints resolved provider, API-key source, and harness binary paths (and optional `GET /models` probe via `--check`). With `--list-models`, also prints a ranked / searchable list of the backend's models. |
-| [`verify`](#switchyard-verify) | Ops | Sequenced pass/fail checklist for proxy + backend only. K8s readiness probe / CI install gate. No harness binary required. For harness-driven smoke tests, see `launch {claude,codex,openclaw} --smoke`. |
+| [`configure`](#switchyard-configure) | Both | Persists provider credentials, a saved routing-profile path, and skill-distillation settings under `~/.config/switchyard/`. With `--show`, also prints a redacted resolution snapshot. With `--list-models`, prints a searchable list of backend models. |
+| [`verify`](#switchyard-verify) | Ops | Sequenced pass/fail checklist for the proxy and backend. Suitable for a readiness probe or CI install gate. |
 
 ## Global flags
 
@@ -20,13 +20,14 @@ These apply to the top-level `switchyard` command, before any verb.
 | Flag | Purpose |
 |---|---|
 | `--version` | Print the installed Switchyard version (`switchyard X.Y.Z`) and exit. Reads the version from the installed package metadata. |
-| `--routing-profiles PATH` / `-c PATH` | [Routing](#routing) bundle applied to `serve`, `launch`, and `configure`. Pass before the verb; separate with `--` for clarity. |
-| `--enable-rl-logging` | Write local [RL trace logs](#rl-trace-logging) (one `message_history` JSON file per turn) for `launch` and `serve` route-bundle sessions. Pass before the verb: `switchyard --enable-rl-logging launch claude`. |
+| `--routing-profiles PATH` / `-c PATH` | [Routing](#routing) bundle applied to `serve` and `configure`. Pass before the verb; separate with `--` for clarity. |
+| `--enable-rl-logging` | Write local [RL trace logs](#rl-trace-logging), one `message_history` JSON file per turn, for `serve` route-bundle sessions. |
 | `--rl-log-dir DIR` | Output directory for `--enable-rl-logging` traces (default: `./rl_data`). No effect without `--enable-rl-logging`. |
 
 ## Cross-cutting flag families
 
-Most flags appear on more than one verb. Definitions live here so the per-verb sections can stay short.
+Most flags appear on more than one verb. Definitions live here so the per-verb
+sections can stay short.
 
 ### Credentials and endpoint
 
@@ -34,7 +35,7 @@ Most flags appear on more than one verb. Definitions live here so the per-verb s
 |---|---|
 | `--api-key VALUE` | API key for the backend. Resolves through the [API-key waterfall](#api-key-resolution). |
 | `--base-url URL` | Backend base URL. Resolves through the [base-URL waterfall](#base-url-resolution). |
-| `--provider ID` | Provider id for saved configuration (default: `openrouter`). Used by `configure` (setup, `--show`, and `--list-models`). |
+| `--provider ID` | Provider id for saved configuration (default: `openrouter`). Used by `configure` setup, `--show`, and `--list-models`. |
 
 ### Backend format selection
 
@@ -55,24 +56,17 @@ upstream requests. Configuration files use these lowercase values:
 3. Probe `/v1/responses`; use `responses` when supported.
 4. Fall back to `openai` (`/v1/chat/completions`).
 
-Single-model Claude Code and Codex launches use `auto`. OpenClaw is pinned to
-`openai`. Prefer an explicit format when the upstream contract is known so
-startup does not require capability probes.
+Prefer an explicit format when the upstream contract is known so startup does
+not require capability probes.
 
 ### Routing
 
-Routing policies live in routing-profile YAML files. Two flags drive routing
-on the launchers; `serve` uses `--routing-profiles`:
+Routing policies live in routing-profile YAML files. `serve` uses the global
+`--routing-profiles` flag:
 
 | Flag | Purpose |
 |---|---|
-| `--model ID` | Single-model passthrough. Every request is rewritten to `model=ID` and forwarded to `--base-url`. |
 | `--routing-profiles PATH` | Path to a routing-profile YAML bundle. Each entry under `routes:` builds its own chain. Public route types are `model`, `random_routing`, `stage_router`, `escalation_router`, and `deterministic`. Falls back to the path persisted by `switchyard --routing-profiles PATH -- configure` when omitted. |
-
-On the launchers, the two flags are mutually exclusive: pass one or the other, not both.
-
-- `--model ID`: single-model passthrough. Any model id from `GET /v1/models` is accepted; every request is rewritten to `model=ID` and forwarded upstream.
-- `--routing-profiles PATH`: loads a multi-chain YAML bundle; the first declared route becomes the initial model.
 
 For `type: deterministic` routes, the `classifier:` block also accepts:
 
@@ -87,11 +81,15 @@ Benchmark runs started through `benchmark/run-baseline.sh --server-config` copy 
 Each route name becomes a model ID on `GET /v1/models`. Clients select a route
 by setting the request's `model` field to that name.
 
-### Intake sink (serve and launchers)
+### Intake sink (serve)
 
-`serve` and launchers share the same Intake sink connection flags. `serve` wires intake processors into every route in the loaded bundle; requests still opt in with `store=true` or `x-switchyard-intake-enabled=true`. Launchers also inject those opt-in headers into the spawned client.
+`serve` wires intake processors into every route in the loaded bundle. Requests
+still opt in with `store=true` or `x-switchyard-intake-enabled=true`.
 
-> **Note:** Switchyard has two independent ways to capture training data. The **Intake sink** (this section) posts live captures to nemo-platform. **`--enable-rl-logging`** (a [global flag](#global-flags)) writes local `message_history` JSON traces for `launch` and `serve` route-bundle sessions. See [RL trace logging](#rl-trace-logging). Either, both, or neither may be enabled.
+> **Note:** Switchyard has two independent ways to capture training data. The
+> **Intake sink** posts live captures to nemo-platform.
+> **`--enable-rl-logging`** writes local `message_history` JSON traces for
+> `serve` route-bundle sessions. Either, both, or neither may be enabled.
 
 | Flag | Purpose |
 |---|---|
@@ -99,16 +97,7 @@ by setting the request's `model` field to that name.
 | `--intake-base-url URL` | Override intake base URL. |
 | `--intake-workspace NAME` | Override workspace for Intake records. |
 | `--intake-api-key VALUE` | Override bearer token. Disables the SDK's transparent refresh. |
-| `--intake-target-url URL` | Post flat per-request telemetry to this full URL (a data-lake posting endpoint) instead of chat-completions ingest. Defaults to `$SWITCHYARD_INTAKE_TARGET_URL`. |
-
-Launchers additionally accept context fields stamped into each ingested request:
-
-| Flag | Purpose |
-|---|---|
-| `--intake-app NAME` | App name stamped into the chat-completions ingest metadata. |
-| `--intake-task NAME` | Task name stamped into the chat-completions ingest metadata (default: `developer-session`). |
-| `--intake-session-id ID` | Session id stamped on every ingested request. |
-| `--intake-user-id ID` | Anonymous user id stamped on every ingested request. Defaults to the stable per-machine id at `~/.switchyard/user_id`. |
+| `--intake-target-url URL` | Post flat per-request telemetry to this full URL instead of chat-completions ingest. Defaults to `$SWITCHYARD_INTAKE_TARGET_URL`. |
 
 The Intake sink posts live model-call captures to nemo-platform
 `/apis/intake/v2/workspaces/{workspace}/ingest/chat-completions`. That endpoint
@@ -124,31 +113,38 @@ queries while keeping the original labels under `request.switchyard`.
 
 Set `--intake-target-url` to a full posting URL to send captures to a different
 store instead. Switchyard then posts a flat, top-level, type-prefixed document
-(`s_` string, `l_` long, `f_` float, `b_` bool, `text_` debug — one indexable
-field per metric) to that URL, unauthenticated, rather than the nested
-nemo-platform payload. Unset, it uses the nemo-platform ingest above.
+(`s_` string, `l_` long, `f_` float, `b_` bool, `text_` debug) to that URL,
+unauthenticated, rather than the nested nemo-platform payload.
 
 ### RL trace logging
 
-`--enable-rl-logging` attaches a response-side logger to the proxy chain of any
-`launch` session or `serve --routing-profiles` bundle. Each completed turn
-(streaming or not) is written to its own JSON file under `--rl-log-dir`
-(default `./rl_data`), named `{timestamp}_trace_{id}_{id}.json`. The schema
-matches the pre-1.0 trace format:
+`--enable-rl-logging` attaches a response-side logger to the proxy chain of a
+`serve --routing-profiles` bundle. Each completed turn, streaming or not, is
+written to its own JSON file under `--rl-log-dir` (default `./rl_data`), named
+`{timestamp}_trace_{id}_{id}.json`. The schema matches the pre-1.0 trace format:
 
 ```json
 {
   "uuid": "…",
-  "messages": [ … full request history …, {"role": "assistant", "content": "…", "tool_calls": […]} ],
-  "tools": [ {"id": "…", "description": "…", "inputSchema": {"jsonSchema": { … }}} ],
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "…",
+      "tool_calls": []
+    }
+  ],
+  "tools": [],
   "tool_choice": "auto",
-  "token_count": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+  "token_count": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
   "is_valid": true
 }
 ```
 
-Turns without an assistant choice (e.g. upstream errors) are skipped. The flag
-works on `launch` and on `serve` with a route bundle.
+Turns without an assistant choice, such as upstream errors, are skipped.
 
 ### Transport (server verbs)
 
@@ -163,16 +159,16 @@ works on `launch` and on `serve` with a route bundle.
 
 ### API-key resolution
 
-Launcher and verify flows resolve the API key in this order, stopping at the
-first non-empty value:
+Verification resolves the API key in this order, stopping at the first
+non-empty value:
 
 1. `--api-key` on the CLI
 2. `$OPENROUTER_API_KEY`
 3. `$NVIDIA_API_KEY`
 4. `$OPENAI_API_KEY`
-5. `$ANTHROPIC_API_KEY` (Claude/OpenClaw launchers and verify only)
-6. `~/.config/switchyard/credentials.json` → the provider entry written by `configure` (launchers only)
-7. `secrets/secrets.json` → first provider section with `api_key` set, with `openrouter` then `nvidia` checked first
+5. `$ANTHROPIC_API_KEY`
+6. `secrets/secrets.json` → first provider section with `api_key` set, with
+   `openrouter` then `nvidia` checked first
 
 For OpenRouter, set `OPENROUTER_API_KEY`; `OPENROUTER_BASE_URL` is optional
 because the built-in default is `https://openrouter.ai/api/v1`.
@@ -182,10 +178,8 @@ because the built-in default is `https://openrouter.ai/api/v1`.
 1. `--base-url` on the CLI
 2. The base URL matching the selected environment credential:
    `$OPENROUTER_BASE_URL`, `$NVIDIA_BASE_URL`, or `$OPENAI_BASE_URL`
-3. `~/.config/switchyard/config.json` → the selected provider written by
-   `configure` (launchers only)
-4. `secrets/secrets.json` → same section traversal as the API key
-5. Default: OpenRouter (`https://openrouter.ai/api/v1`)
+3. `secrets/secrets.json` → same section traversal as the API key
+4. Default: OpenRouter (`https://openrouter.ai/api/v1`)
 
 ### `secrets.json` format
 
@@ -208,7 +202,9 @@ because the built-in default is `https://openrouter.ai/api/v1`.
 Serve a long-running proxy from a YAML route bundle. Each entry under `routes:`
 builds a runnable chain and is exposed as a model on `GET /v1/models`.
 
-The server exposes the OpenAI Chat Completions (`/v1/chat/completions`), Anthropic Messages (`/v1/messages`), and OpenAI Responses (`/v1/responses`) APIs on the same host and port.
+The server exposes the OpenAI Chat Completions (`/v1/chat/completions`),
+Anthropic Messages (`/v1/messages`), and OpenAI Responses (`/v1/responses`)
+APIs on the same host and port.
 
 **Synopsis**
 
@@ -228,189 +224,47 @@ switchyard [--routing-profiles PATH] serve
 | `--host`, `--port`/`-p`, `--reload` | [Transport](#transport-server-verbs). |
 | `--inbound FORMAT` | Backwards-compatible no-op; all request APIs are always registered. |
 | `--workers` / `-w` | uvicorn worker count. |
-| `--routing-log-file PATH` | Append one JSONL routing record per request (task, session, actual model, tier, token and cache usage) to PATH. Also exposes `GET /v1/routing/session-stats?session_id=...`. |
-| `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-target-url` | [Intake sink](#intake-sink-serve-and-launchers). |
+| `--routing-log-file PATH` | Append one JSONL routing record per request to `PATH`. Also exposes `GET /v1/routing/session-stats?session_id=...`. |
+| `--intake-enabled` / `--enable-intake`, `--intake-base-url`, `--intake-workspace`, `--intake-api-key`, `--intake-target-url` | [Intake sink](#intake-sink-serve). |
 
 **Notes**
 
-- `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`, `GET /v1/models`, and `GET /health`. There is no flag to expose just one request API.
+- `serve` always registers `POST /v1/chat/completions`, `POST /v1/messages`,
+  `POST /v1/responses`, `GET /v1/models`, and `GET /health`.
 - `GET /v1/stats` and `GET /v1/routing/stats` expose route statistics.
-- `--inbound` is retained as a compatibility no-op; all supported request APIs are always registered.
+- `--inbound` is retained as a compatibility no-op.
 
 **Examples**
 
 ```bash
-# Route bundle on port 4000
 switchyard --routing-profiles routes.yaml -- serve --port 4000
 
-# Persist a bundle for later runs; no-TTY configure requires explicit provider credentials
 switchyard --routing-profiles routes.yaml -- configure --target provider \
   --provider openrouter --api-key "$OPENROUTER_API_KEY" \
   --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 switchyard serve --port 4000
 
-# Multi-worker uvicorn
 SWITCHYARD_WORKERS=4 switchyard --routing-profiles routes.yaml -- serve
-```
-
-## `switchyard launch claude`
-
-Start a proxy on a free local port, spawn `claude` against it, and tear the proxy down when Claude exits.
-
-**Synopsis**
-
-```text
-switchyard [--routing-profiles PATH] launch claude [--model ID]
-                         [--base-url URL] [--api-key VALUE]
-                         [--port PORT] [--timeout SECONDS]
-                         [--intake-enabled [INTAKE OVERRIDES]]
-                         [--reconfigure] [--dry-run] [--smoke]
-                         [--no-tui] [--no-model-discovery]
-                         [-- CLAUDE_ARGS...]
-```
-
-When neither CLI routing flag is passed, `launch claude` uses a saved routing bundle
-first, then a saved `claude.model` as single-model passthrough. The built-in
-LLM-as-classifier route is the default only when neither a bundle nor a single-model
-default is resolved.
-
-**Flags**
-
-| Flag | Source |
-|---|---|
-| `--model`, `--routing-profiles` | [Routing](#routing). |
-| `--api-key`, `--base-url` | [Credentials](#credentials-and-endpoint). |
-| `--weak-model`, `--classifier-model`, `--profile`, `--classifier-min-confidence` | Tier overrides for the built-in LLM-as-classifier route. They are ignored when route resolution selects an explicit or saved bundle or single model. |
-| `--intake-enabled` and overrides | [Intake sink](#intake-sink-serve-and-launchers). |
-| `--port PORT` | Proxy port (default: auto-pick free port). |
-| `--timeout SECONDS` | Request timeout for the backend LLM client. |
-| `--reconfigure` | Run Claude setup before launching, even if defaults already exist. |
-| `--dry-run` | Print resolved launch settings without starting the proxy or Claude. |
-| `--smoke` | Start the proxy, run one `claude -p "<smoke>" --max-turns 1` round-trip, assert exit `0`, and exit. Requires `--model`; cannot be combined with `--routing-profiles`. |
-| `--no-tui` | First-run setup: use plain prompts instead of the TUI selector. |
-| `--no-model-discovery` | First-run setup: skip `GET /models` and type the model manually. |
-| `CLAUDE_ARGS` | Anything after `--` is forwarded verbatim to `claude`. |
-
-**Env vars set on the spawned `claude` process**
-
-- `ANTHROPIC_BASE_URL`: pointed at the local proxy
-- `ANTHROPIC_AUTH_TOKEN`: opaque placeholder; skips Console OAuth
-- `ANTHROPIC_API_KEY`: set to `""` to silence the auth-conflict warning
-- `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`: pre-selected so Claude's `/model` picker shows your model
-- `ANTHROPIC_CUSTOM_MODEL_OPTION`: registers the model in Claude Code's custom model UI entry
-- `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`: tells Claude Code to call `GET /v1/models` on the proxy so the full registered route list appears in the picker
-
-**Examples**
-
-```bash
-# Single-model passthrough
-switchyard launch claude --model openai/gpt-4o-mini
-
-# Use a routing bundle
-switchyard --routing-profiles ~/.config/switchyard/profiles.yaml -- launch claude
-
-# One-shot smoke test
-switchyard launch claude --smoke --model openai/gpt-4o-mini
-
-# Forward args to the underlying claude binary
-switchyard launch claude --model openai/gpt-4o-mini -- --version
-```
-
-## `switchyard launch codex`
-
-Start a proxy and spawn OpenAI Codex CLI against it. Codex talks to the proxy via
-the OpenAI Responses API (`/v1/responses`). For single-model launches,
-Switchyard probes the upstream and uses native Anthropic Messages, OpenAI
-Responses, or Chat Completions according to the provider's capabilities.
-
-**Synopsis**
-
-```text
-switchyard [--routing-profiles PATH] launch codex [--model ID]
-                        [--base-url URL] [--api-key VALUE]
-                        [--port PORT] [--timeout SECONDS]
-                        [--intake-enabled [INTAKE OVERRIDES]]
-                        [--reconfigure] [--dry-run] [--smoke]
-                        [--no-tui] [--no-model-discovery]
-                        [-- CODEX_ARGS...]
-```
-
-When neither CLI routing flag is passed, `launch codex` uses a saved routing bundle
-first, then a saved `codex.model` as single-model passthrough. The built-in
-LLM-as-classifier route is the default only when neither a bundle nor a single-model
-default is resolved. `--weak-model`, `--classifier-model`, `--profile`, and
-`--classifier-min-confidence` tune only that built-in route. `CODEX_ARGS` are forwarded
-verbatim to `codex`.
-
-**Provider override on the spawned `codex` process**
-
-`launch codex` injects a transient `switchyard` provider into Codex via repeated `-c` flags. No edits to `~/.codex/config.toml` are required.
-
-**Examples**
-
-```bash
-switchyard launch codex --model openai/gpt-4o-mini
-switchyard --routing-profiles routes.yaml -- launch codex
-switchyard launch codex --smoke --model openai/gpt-4o-mini
-switchyard launch codex --model openai/gpt-4o-mini -- exec "explain this file"
-```
-
-## `switchyard launch openclaw`
-
-For [OpenClaw](https://github.com/openclaw/openclaw). OpenClaw talks to the proxy via OpenAI Chat Completions (`/v1/chat/completions`); the chain translates as needed for the upstream backend.
-
-**Synopsis**
-
-```text
-switchyard [--routing-profiles PATH] launch openclaw [--model ID]
-                           [--base-url URL] [--api-key VALUE]
-                           [--port PORT] [--timeout SECONDS]
-                           [--intake-enabled [INTAKE OVERRIDES]]
-                           [--reconfigure] [--dry-run] [--smoke]
-                           [--no-tui] [--no-model-discovery]
-                           [-- OPENCLAW_ARGS...]
-```
-
-When neither CLI routing flag is passed, `launch openclaw` uses a saved routing bundle
-first, then a saved `openclaw.model` as single-model passthrough. The built-in
-LLM-as-classifier route is the default only when neither a bundle nor a single-model
-default is resolved. `--weak-model`, `--classifier-model`, `--profile`, and
-`--classifier-min-confidence` tune only that built-in route.
-
-The launcher spawns `openclaw chat`, an alias for `openclaw tui --local`, which is OpenClaw's interactive local terminal UI bound to the embedded agent runtime. `OPENCLAW_ARGS` are forwarded after `chat`, so pass `chat`-compatible flags (`--message`, `--thinking`, `--session`, etc.). `openclaw agent` is a non-interactive one-shot turn and is used only by the `--smoke` path.
-
-**Provider override on the spawned `openclaw` process**
-
-`launch openclaw` writes a transient `openclaw.json` to a temporary directory and points OpenClaw at it via `OPENCLAW_STATE_DIR` / `OPENCLAW_HOME` / `OPENCLAW_CONFIG_PATH`. The transient config declares a `models.providers.switchyard` block with `api: "openai-completions"`, `baseUrl` pointing at the proxy, and `apiKey: "${SWITCHYARD_API_KEY}"` (the launcher sets `SWITCHYARD_API_KEY=switchyard`, an opaque placeholder; the proxy ignores inbound auth). The user's real `~/.openclaw/` (sessions, channels, plugins) is **untouched** for the duration of the launch.
-
-The tempdir is removed when `openclaw` exits, including on Ctrl-C.
-
-**Examples**
-
-```bash
-switchyard launch openclaw --model openai/gpt-4o-mini
-switchyard --routing-profiles routes.yaml -- launch openclaw
-switchyard launch openclaw --smoke --model openai/gpt-4o-mini
-switchyard launch openclaw --model openai/gpt-4o-mini -- --message "Hello"
 ```
 
 ## `switchyard configure`
 
-Persist user-level Switchyard defaults under `~/.config/switchyard/`. Credentials are stored separately from non-secret config, with owner-only file permissions.
-Skill distillation config also lives in `~/.config/switchyard/config.json` under `skill_distillation` and can be updated without configuring provider credentials.
+Persist user-level Switchyard defaults under `~/.config/switchyard/`.
+Credentials are stored separately from non-secret config, with owner-only file
+permissions. Skill-distillation config also lives in
+`~/.config/switchyard/config.json`.
 
 **Synopsis**
 
 ```text
-switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --reset | --list-models]
-                     [--target {all,provider,claude,codex,openclaw}]
+switchyard [--routing-profiles PATH] configure
+                     [--show [--check] [--json] | --reset | --list-models]
+                     [--target provider]
                      [--query SUBSTRING] [--limit N]
                      [--provider ID]
                      [--base-url URL] [--api-key VALUE]
-                     [--claude-model ID]   [--claude-base-url URL]   [--claude-api-key VALUE]
-                     [--codex-model ID]    [--codex-base-url URL]    [--codex-api-key VALUE]
-                     [--openclaw-model ID] [--openclaw-base-url URL] [--openclaw-api-key VALUE]
-                     [--skill-distillation NAMESPACE] [--disable-skill-distillation]
+                     [--skill-distillation NAMESPACE]
+                     [--disable-skill-distillation]
                      [--no-model-discovery] [--no-tui]
 ```
 
@@ -418,35 +272,31 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 
 | Flag | What it does |
 |---|---|
-| _(none)_ | Interactive setup. Prompts for any missing default; runs the model-discovery TUI unless `--no-model-discovery`. |
-| `--show` | Print the redacted saved config plus a resolution snapshot: resolved provider, base URL, API-key source, saved Claude / Codex defaults, routing-profile summary, and paths to the `claude` and `codex` harness binaries. Pair with `--check` for a live `GET /models` probe, or `--json` to emit only the raw redacted JSON snapshot. |
+| _(none)_ | Interactive setup. Prompts for missing provider defaults and runs model discovery unless `--no-model-discovery`. |
+| `--show` | Print the redacted saved config plus a provider, base-URL, and API-key resolution snapshot. Pair with `--check` for a live `GET /models` probe, or `--json` for the raw redacted JSON snapshot. |
 | `--reset` | Delete persisted user config and credentials. |
-| `--list-models` | Fetch `GET /models` from the resolved provider and print a ranked, searchable list. Pair with `--target {claude,codex}` for launcher-targeted ranking, `--query` to filter by substring, `--limit` to cap results. |
+| `--list-models` | Fetch `GET /models` from the resolved provider. Pair with `--query` to filter by substring and `--limit` to cap results. |
 
 **Configuration knobs**
 
 | Flag | Purpose |
 |---|---|
-| `--target` | For setup: which defaults to write (`all` (default), `provider`, `claude`, `codex`, or `openclaw`). For `--list-models`: ranking target (`all`, `claude`, `codex`, or `openclaw`; `provider` is accepted and treated as `all`). |
-| `--provider`, `--base-url`, `--api-key` | Provider-level defaults applied to every launcher. Also act as one-off overrides for `--show` (changes the row that's used to resolve "base URL source" and "API key source") and for the `--list-models` discovery call. |
-| `--claude-*` / `--codex-*` / `--openclaw-*` | Per-launcher overrides on top of the provider defaults. |
-| `--routing-profiles PATH` | Global flag; pass before `configure`. Parses the YAML at `PATH` and stores the parsed bundle inline in `~/.config/switchyard/config.json`. Subsequent `serve` and `launch` runs use this when no `--routing-profiles` is on the CLI. Pass an empty string to clear. |
-| `--skill-distillation NAMESPACE` | Save a namespace for one skill that improves over time. Many sessions or trajectories can contribute to it; the namespace is not a session ID. This release stores only the namespace; session saving, distillation, and launch-time skill loading are separate implementation work. |
-| `--disable-skill-distillation` | Remove the saved skill distillation config. Cannot be combined with `--skill-distillation`. |
+| `--target provider` | Save provider-level defaults without requiring model-specific settings. |
+| `--provider`, `--base-url`, `--api-key` | Provider-level defaults and one-off overrides for `--show` and `--list-models`. |
+| `--routing-profiles PATH` | Global flag; pass before `configure`. Parses the YAML at `PATH` and stores the parsed bundle inline in `~/.config/switchyard/config.json`. Subsequent `serve` runs use it when no path is supplied. Pass an empty string to clear. |
+| `--skill-distillation NAMESPACE` | Save a namespace for one skill that improves over time. Many sessions or trajectories can contribute to it; the namespace is not a session ID. |
+| `--disable-skill-distillation` | Remove the saved skill-distillation config. Cannot be combined with `--skill-distillation`. |
 | `--query` / `-q SUBSTRING` | With `--list-models`, case-insensitive substring filter. |
 | `--limit N` | With `--list-models`, cap on the number of models printed (default: 50; pass `0` for unlimited). |
-| `--no-model-discovery` | Skip `GET /models` and rely on explicit or existing model values during interactive setup. |
+| `--no-model-discovery` | Skip `GET /models` and rely on existing provider values during interactive setup. |
 | `--no-tui` | Use plain text prompts instead of the TUI selector. |
-| `--check` | With `--show`, call `GET /models` against the resolved provider and report pass/fail in the output. |
+| `--check` | With `--show`, call `GET /models` against the resolved provider and report pass/fail. |
 
 > **Saved bundles keep `${VAR}` references literal.** A saved routing-profile
-> bundle stores `${OPENROUTER_API_KEY}` (and any other `${VAR}`) verbatim. The
-> referenced environment variables must therefore
-> be present in the environment at `serve` / `launch` time; on another machine or
-> shell, export them again or Switchyard aborts with
-> `missing environment variable(s): NAME`.
+> bundle stores `${OPENROUTER_API_KEY}` and other `${VAR}` references verbatim.
+> Export them before running `serve`.
 
-**Skill distillation config**
+**Skill-distillation config**
 
 ```json
 {
@@ -456,71 +306,46 @@ switchyard [--routing-profiles PATH] configure [--show [--check] [--json] | --re
 }
 ```
 
-Namespaces must be a single safe path component: letters, numbers, dot, underscore, and hyphen only.
-One namespace identifies one skill that improves over time, and many sessions or trajectories can contribute to it. Use a different namespace when you want a separate skill. A namespace is not a session ID; each future launcher run will receive its own internal session ID.
-The top-level key is omitted when skill distillation is not configured. `namespace` is the only supported key today; any extra manually edited keys are rejected instead of being treated as inactive future options.
+Namespaces must be a single safe path component: letters, numbers, dot,
+underscore, and hyphen only. One namespace identifies one skill that improves
+over time, and many sessions or trajectories can contribute to it.
 
 **Examples**
 
 ```bash
-# First-run interactive setup
 switchyard configure
 
-# Save a routing bundle as the default for serve + launchers
 switchyard --routing-profiles routes.yaml -- configure --target provider \
   --provider openrouter --api-key "$OPENROUTER_API_KEY" \
   --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
 
-# Inspect what's stored, plus resolved provider / key source / harness paths
 switchyard configure --show
-
-# Inspect plus live GET /models probe
 switchyard configure --show --check
-
-# Raw redacted JSON, e.g. for tooling
 switchyard configure --show --json
 
-# One-off override for a probe (without persisting anything)
-switchyard configure --show --provider openrouter --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.ai/api/v1 --check
+switchyard configure --list-models --query gpt
+switchyard configure --list-models --limit 0 --provider openrouter \
+  --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1
 
-# Browse the backend's models
-switchyard configure --list-models --target claude --query gpt
-switchyard configure --list-models --limit 0 --provider openrouter --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.ai/api/v1
-
-# Set just the Claude default model non-interactively
-switchyard configure --target claude --claude-model openai/gpt-4o-mini --no-tui
-
-# Non-interactive / CI: save provider credentials only (no launcher models required)
-switchyard configure --target provider --provider openrouter \
-  --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.ai/api/v1 \
-  --no-tui --no-model-discovery
-
-# Save a skill distillation namespace without provider credentials
 switchyard configure --skill-distillation tooluniverse-trialqa
-
-# Remove the skill distillation namespace without touching provider credentials
 switchyard configure --disable-skill-distillation
-
-# Wipe everything
 switchyard configure --reset
 ```
 
 !!! note "Non-interactive / CI usage"
-    **`--target all` (the default) requires launcher models in no-TTY mode.** Without a
-    TTY or `--claude-model` / `--codex-model` / `--openclaw-model`, the command exits with
-    `No Claude model configured or discovered`. Pass `--target provider` to save only
-    provider credentials, or supply explicit `--claude-model` / `--codex-model` / `--openclaw-model` values.
+    Pass `--target provider` to save provider credentials without requiring
+    model-specific settings.
 
-    **`configure` requires an explicit `--api-key` flag.** It does not read `OPENROUTER_API_KEY`
-    (or any other `*_API_KEY` environment variable) and does not read `api_key` from a
-    routing-profile bundle (`--routing-profiles`). Always pass `--api-key` when running
-    non-interactively.
+    **`configure` requires an explicit `--api-key` flag.** It does not read
+    `OPENROUTER_API_KEY` or another `*_API_KEY` environment variable, and it
+    does not read `api_key` from a routing-profile bundle.
 
 ## `switchyard verify`
 
-Sequenced pass/fail checklist that confirms a Switchyard install works end-to-end against a real backend, without spawning a harness binary. Fast (~1–3s on a healthy stack); suitable for K8s readiness probes and pre-deployment smoke tests.
-
-For harness-driven smoke tests (proxy + spawn `claude` / `codex` / `openclaw` once with a fixed prompt), use [`launch claude --smoke`](#switchyard-launch-claude) / [`launch codex --smoke`](#switchyard-launch-codex) / [`launch openclaw --smoke`](#switchyard-launch-openclaw) instead.
+Sequenced pass/fail checklist that confirms a Switchyard install works
+end-to-end against a real backend. It is suitable for readiness probes and
+pre-deployment smoke tests.
 
 **Synopsis**
 
@@ -531,14 +356,14 @@ switchyard verify [--model ID] [--base-url URL] [--api-key VALUE]
 
 **Example model**
 
-`openai/gpt-4o-mini` is a portable OpenRouter example. Pass `--model` when
-your provider uses a different model ID.
+`openai/gpt-4o-mini` is a portable OpenRouter example. Pass `--model` when your
+provider uses a different model ID.
 
 **Checklist**
 
 1. Resolve credentials (CLI → env → `secrets.json`).
 2. Reach the backend via `GET /models`.
-3. Probe `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` support (informational; informs `BackendFormat.AUTO`).
+3. Probe `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` support.
 4. Start a proxy on a free port.
 5. Round-trip a chat completion through the chain.
 6. Tear the proxy down.
@@ -546,29 +371,31 @@ your provider uses a different model ID.
 **Exit codes**
 
 - `0`: every step passed.
-- Non-zero: first failing step; the error message names the source it tried and what to fix.
+- Non-zero: first failing step; the error message names the source it tried and
+  what to fix.
 
 **Examples**
 
 ```bash
 switchyard verify
 switchyard verify --model openai/gpt-4o-mini
-switchyard verify --api-key "$OPENROUTER_API_KEY" --base-url https://openrouter.ai/api/v1
+switchyard verify --api-key "$OPENROUTER_API_KEY" \
+  --base-url https://openrouter.ai/api/v1
 ```
 
 ## Environment variables
 
 | Variable | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Backend credentials. Resolved in this order by launchers and `verify`; `ANTHROPIC_API_KEY` is only consulted where Anthropic input is supported. |
+| `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Backend credentials resolved by `verify`. |
 | `OPENROUTER_BASE_URL`, `NVIDIA_BASE_URL`, `OPENAI_BASE_URL` | Backend base URL overrides paired with the selected provider credential. |
-| `OPENAI_API_BASE` | Legacy alias for `OPENAI_BASE_URL`. Consulted as a last fallback when neither `--base-url` nor `OPENAI_BASE_URL` is set. Prefer `OPENAI_BASE_URL` for new configurations. |
-| `SWITCHYARD_INTAKE_ENABLED` | Boolean equivalent of `--intake-enabled` / `--enable-intake`. Set to `1` or `true` to enable the intake sink without a CLI flag. Precedence: CLI flag first, then this env var. |
-| `SWITCHYARD_INTAKE_TARGET_URL` | Full posting URL for the alternate flat-document intake sink (paired with `--intake-target-url`). Precedence: CLI flag first, then this env var. |
+| `OPENAI_API_BASE` | Legacy alias for `OPENAI_BASE_URL`. Prefer `OPENAI_BASE_URL` for new configurations. |
+| `SWITCHYARD_INTAKE_ENABLED` | Boolean equivalent of `--intake-enabled` / `--enable-intake`. |
+| `SWITCHYARD_INTAKE_TARGET_URL` | Full posting URL for the alternate flat-document intake sink. |
 | `SWITCHYARD_WORKERS` | Default uvicorn worker count for `serve`. |
-| `SWITCHYARD_TELEMETRY_OPT_OUT` | Disable the `X-Switchyard-Version` telemetry header on outbound calls. `NEMO_SWITCHYARD_TELEMETRY_OPT_OUT` is honored for backwards compatibility. |
-| `SWITCHYARD_INTAKE_BASE_URL`, `SWITCHYARD_INTAKE_WORKSPACE`, `SWITCHYARD_INTAKE_API_KEY`, `SWITCHYARD_INTAKE_APP`, `SWITCHYARD_INTAKE_TASK`, `SWITCHYARD_SESSION_ID`, `SWITCHYARD_USER_ID` | Intake-sink overrides for CI / headless runs. Precedence: the matching CLI flag (e.g. `--intake-user-id`) first, then the env var, then any persisted / SDK default (e.g. `~/.switchyard/user_id`). |
-| `NMP_ACCESS_TOKEN` | Fallback bearer token for the intake sink when the NMP SDK config is not present. |
+| `SWITCHYARD_TELEMETRY_OPT_OUT` | Disable the `X-Switchyard-Version` telemetry header on outbound calls. |
+| `SWITCHYARD_INTAKE_BASE_URL`, `SWITCHYARD_INTAKE_WORKSPACE`, `SWITCHYARD_INTAKE_API_KEY`, `SWITCHYARD_INTAKE_APP`, `SWITCHYARD_INTAKE_TASK`, `SWITCHYARD_SESSION_ID`, `SWITCHYARD_USER_ID` | Intake-sink overrides for CI and headless runs. |
+| `NMP_ACCESS_TOKEN` | Fallback bearer token for the Intake sink when the NMP SDK config is not present. |
 
 ## See also
 

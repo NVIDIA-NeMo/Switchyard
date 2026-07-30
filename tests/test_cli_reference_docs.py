@@ -14,6 +14,17 @@ from switchyard.cli.switchyard_cli import _build_parser
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_REFERENCE = REPO_ROOT / "docs" / "cli_reference.md"
 _MARKDOWN = MarkdownIt()
+_AGENT_SPECIFIC_CONFIGURE_OPTIONS = {
+    "--claude-api-key",
+    "--claude-base-url",
+    "--claude-model",
+    "--codex-api-key",
+    "--codex-base-url",
+    "--codex-model",
+    "--openclaw-api-key",
+    "--openclaw-base-url",
+    "--openclaw-model",
+}
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
@@ -52,8 +63,7 @@ def _long_options(parser: argparse.ArgumentParser) -> set[str]:
 def test_cli_reference_documents_every_serve_flag() -> None:
     parser = _build_parser()
     serve = _subparsers(parser)["serve"]
-    doc = CLI_REFERENCE.read_text()
-    serve_section = _markdown_section(doc, "switchyard serve")
+    serve_section = _markdown_section(CLI_REFERENCE.read_text(), "switchyard serve")
 
     expected = _long_options(serve) | {"--routing-profiles"}
     missing = sorted(flag for flag in expected if flag not in serve_section)
@@ -63,13 +73,17 @@ def test_cli_reference_documents_every_serve_flag() -> None:
     )
 
 
-def test_cli_reference_documents_every_configure_flag() -> None:
+def test_cli_reference_documents_supported_configure_flags() -> None:
     parser = _build_parser()
     configure = _subparsers(parser)["configure"]
-    doc = CLI_REFERENCE.read_text()
-    configure_section = _markdown_section(doc, "switchyard configure")
+    configure_section = _markdown_section(
+        CLI_REFERENCE.read_text(),
+        "switchyard configure",
+    )
 
-    expected = _long_options(configure) | {"--routing-profiles"}
+    expected = (
+        _long_options(configure) - _AGENT_SPECIFIC_CONFIGURE_OPTIONS
+    ) | {"--routing-profiles"}
     missing = sorted(flag for flag in expected if flag not in configure_section)
 
     assert not missing, (
@@ -119,20 +133,16 @@ def test_cli_reference_marks_serve_inbound_as_noop() -> None:
     assert "compat" in serve_section
 
 
-def test_cli_reference_documents_shared_intake_flags_once() -> None:
+def test_cli_reference_documents_serve_intake_flags_once() -> None:
     doc = CLI_REFERENCE.read_text()
 
-    assert "### Intake sink (serve and launchers)" in doc
-    assert "### Intake sink (serve)" not in doc
-    assert "### Intake sink (launchers)" not in doc
-    assert "### Intake sink (launchers only)" not in doc
+    assert "### Intake sink (serve)" in doc
     assert "`--intake-enabled`" in doc
     assert "`--enable-intake`" in doc
     assert doc.count("`--intake-base-url URL`") == 1
     assert doc.count("`--intake-workspace NAME`") == 1
     assert doc.count("`--intake-api-key VALUE`") == 1
     assert doc.count("`--intake-target-url URL`") == 1
-    assert "`--intake-app NAME`" in doc
 
 
 def _public_cli_doc_paths() -> list[Path]:
@@ -167,20 +177,8 @@ def _has_stale_routing_profiles(line: str) -> bool:
     for index, word in enumerate(words):
         if word != "switchyard" or index + 2 >= len(words):
             continue
-        subcommand = words[index + 1]
-        if subcommand in {"serve", "configure"} and "--routing-profiles" in words[index + 2:]:
-            return True
-        if subcommand == "launch" and index + 3 < len(words):
-            if "--routing-profiles" in words[index + 3:]:
-                return True
-    return False
-
-
-def _has_launcher_preset(line: str) -> bool:
-    words = _command_words(line)
-    for index, word in enumerate(words):
-        if word == "switchyard" and words[index + 1:index + 2] == ["launch"]:
-            if "--preset" in words[index + 3:]:
+        if words[index + 1] in {"serve", "configure"}:
+            if "--routing-profiles" in words[index + 2:]:
                 return True
     return False
 
@@ -206,7 +204,6 @@ def _matching_markdown_lines(predicate: Callable[[str], bool]) -> list[str]:
 def test_cli_docs_do_not_use_stale_flag_placements() -> None:
     stale_checks = {
         "--routing-profiles must be a global switchyard flag": _has_stale_routing_profiles,
-        "--preset is no longer a launcher flag": _has_launcher_preset,
         "serve does not accept --api-key": _has_serve_api_key,
     }
 
@@ -217,3 +214,6 @@ def test_cli_docs_do_not_use_stale_flag_placements() -> None:
             failures.append(reason + ":\n" + "\n".join(matches))
 
     assert not failures, "\n\n".join(failures)
+
+
+# TODO: Add agent-specific command-reference coverage when that documentation returns.

@@ -54,7 +54,7 @@ switchyard/
 │   │   ├── processors/            # RequestProcessor / ResponseProcessor implementations
 │   │   ├── factories/             # MiddlewareFactory implementations + configs
 │   │   └── endpoints/             # FastAPI endpoint wrappers (require [server])
-│   ├── cli/                       # CLI entry point + launchers (requires [cli])
+│   ├── cli/                       # CLI entry point (requires [cli])
 │   └── server/                    # FastAPI app factory + verify helpers (requires [server])
 ├── crates/
 │   ├── switchyard-translation/     # Rust request/response/stream translation engine

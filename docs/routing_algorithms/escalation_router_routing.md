@@ -104,12 +104,6 @@ Run the route as a standalone proxy:
 switchyard --routing-profiles routes.yaml -- serve --port 4000
 ```
 
-Or use the same bundle with an agent launcher:
-
-```bash
-switchyard --routing-profiles routes.yaml -- launch claude
-```
-
 The route ID (`agent-escalation`) is the model ID clients select to use the
 router. The strong and weak model IDs are also registered as direct
 passthrough choices. The judge is internal to the route and is not exposed as

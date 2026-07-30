@@ -23,7 +23,7 @@ pip install nemo-switchyard
 
 **Does NOT include:**
 - FastAPI / Uvicorn (server)
-- prompt-toolkit (CLI launcher)
+- prompt-toolkit (interactive command-line UI)
 
 **Use case:** Library users, middleware plugins, embedded integrations.
 
@@ -44,24 +44,19 @@ pip install nemo-switchyard[server]
 
 **Use case:** Deploying Switchyard as a service, e2e proxy operations.
 
-### `[cli]` — Claude Code Launcher
+### `[cli]` — Command-Line Tools
 
-Add terminal UI support for the `switchyard launch claude` command:
+Add prompt-toolkit support for interactive command-line workflows:
 
 ```bash
 pip install nemo-switchyard[cli]
 ```
 
-**Adds:**
-- prompt-toolkit (terminal UI framework for the interactive launch TUI)
-
-**Use case:** Running Claude Code with Switchyard routing.
-
 ## Combined Extras
 
 ### Full Installation
 
-All optional dependencies for complete feature set:
+Install all optional dependencies:
 
 ```bash
 pip install nemo-switchyard[all]
@@ -76,12 +71,12 @@ Equivalent to: `nemo-switchyard[server,cli,tracing,intake,affinity-redis]`
 pip install nemo-switchyard                  # Core only
 ```
 
-**Proxy server without launcher:**
+**Proxy server:**
 ```bash
 pip install nemo-switchyard[server]
 ```
 
-**Full Claude Code integration:**
+**Command-line tools:**
 ```bash
 pip install nemo-switchyard[cli]             # Includes core
 ```
@@ -105,7 +100,7 @@ pip install nemo-switchyard[all]
 | Extra | Size | Purpose |
 |-------|------|---------|
 | `[server]` | ~50 MB | HTTP proxy (FastAPI + Uvicorn) |
-| `[cli]` | ~5 MB | Terminal UI (prompt-toolkit) |
+| `[cli]` | ~5 MB | Interactive terminal UI (prompt-toolkit) |
 
 ## Embedding in Your Own Application
 
@@ -141,16 +136,11 @@ from switchyard.server.switchyard_app import build_switchyard_app   # needs [ser
 
 ### Import Error: "No module named 'prompt_toolkit'"
 
-You're trying to run the CLI launcher without the `[cli]` extra:
+You're using an interactive command-line workflow without the `[cli]` extra:
 
 ```bash
 # Install CLI support
 pip install nemo-switchyard[cli]
-```
-
-```python
-from switchyard import Switchyard                                  # OK (core)
-from switchyard.cli.launchers.claude_code_launcher import launch_claude  # needs [cli]
 ```
 
 ## Development

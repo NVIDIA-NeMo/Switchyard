@@ -90,6 +90,5 @@ Python route bundles. See the
 
 - [Getting Started](getting_started.md) to install and send a first request.
 - [Routing Overview](routing_algorithms/overview.md) to choose and tune a strategy.
-- [Agent Launchers](guides/agent_launchers.md) to run Claude Code, Codex, or OpenClaw.
 - [Architecture](architecture.md) to see a request travel end to end.
 - [CLI Reference](cli_reference.md) for flags and environment variables.
