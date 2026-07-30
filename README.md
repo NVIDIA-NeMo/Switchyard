@@ -26,6 +26,37 @@ algorithm you write yourself.
 
 ## Quick Start
 
+### Install prerequisites
+
+You need Git, a native build toolchain, and Rust with Cargo. On Ubuntu or WSL:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential curl git
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+The Rust installer includes `rustc`, Cargo, and `rustup`. On macOS or native
+Windows, follow the [official Rust installation instructions](https://rust-lang.org/tools/install/).
+
+Install `uv` for the repository's Python-based tooling and CI checks. It is not
+required to build or run the Rust server:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+If either installer updates your shell configuration, restart the shell before
+continuing. Verify that the tools are available:
+
+```bash
+git --version
+rustc --version
+cargo --version
+uv --version
+```
+
 ### Build the Rust server from source
 
 ```bash
@@ -35,13 +66,14 @@ cargo build --locked --release -p switchyard-server
 ./target/release/switchyard-server --help
 ```
 
-The repository pins the required Rust toolchain in `rust-toolchain.toml`.
-Prebuilt Rust binaries are not published yet.
+The repository pins Rust `1.96.1` in `rust-toolchain.toml`; `rustup` selects and
+installs it automatically when you run Cargo from the repository. Prebuilt Rust
+binaries are not published yet.
 
 ### Run the server
 
 The `switchyard-server` binary reads an explicit TOML configuration for LLM
-clients, targets, and routes. Create `routes.toml` with a passthrough route:
+clients, targets, and routes. Create `routes.toml` with an LLM-classifier route:
 
 ```toml
 schema_version = 1
@@ -51,15 +83,25 @@ format = "openai_chat"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
-[targets.fast]
+[targets.weak]
 id = "openai/gpt-4o-mini"
 llm_client = "openrouter"
 
-[routes.fast]
+[targets.strong]
+id = "openai/gpt-4o"
+llm_client = "openrouter"
+
+[routes.smart]
 id = "switchyard"
-type = "passthrough"
-target = "fast"
+type = "llm_classifier"
+classifier_target = "weak"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
 ```
+
+The weak model classifies each request, then serves requests above the threshold
+itself and sends the rest to the strong model.
 
 Export the provider credential, validate the configuration without binding a
 socket, then start the server:
@@ -120,11 +162,6 @@ The server exposes:
 
 Configured upstream clients support the same formats. The OpenAI Chat format
 also works with compatible servers such as vLLM, NVIDIA NIM, Ollama, and Azure.
-
-## Requirements
-
-- Rust `1.96.1`; `rust-toolchain.toml` selects it automatically when using `rustup`
-- Credentials for the configured upstream, when required
 
 ## Community
 

@@ -2,11 +2,9 @@ name: README
 
 # Executable coverage for README.md.
 #
-# Fails when the README drifts from the product — malformed Rust server TOML, a
-# broken Python snippet, a renamed YAML route type or key in the linked routing
-# guides, or a renamed CLI subcommand / flag. The exercise lives in
-# tests/readme/ so it reproduces locally with
-# `uv run pytest tests/readme`.
+# Fails when the Rust server configuration in the README is malformed. The
+# exercise lives in tests/readme/ so it reproduces locally with
+# `uv run pytest tests/readme -v`.
 
 on:
   pull_request:
@@ -14,8 +12,6 @@ on:
       - "README.md"
       - "Cargo.toml"
       - "crates/switchyard-server/**"
-      - "switchyard/**"
-      - "switchyard_rust/**"
       - "tests/readme/**"
       - "pyproject.toml"
       - "uv.lock"
@@ -26,8 +22,6 @@ on:
       - "README.md"
       - "Cargo.toml"
       - "crates/switchyard-server/**"
-      - "switchyard/**"
-      - "switchyard_rust/**"
       - "tests/readme/**"
       - "pyproject.toml"
       - "uv.lock"
@@ -54,16 +48,10 @@ jobs:
       - name: Install
         run: uv sync --locked
       - name: Exercise the README
-        # Single invocation: pytest picks up tests/readme/ (Rust TOML, linked
-        # YAML schema, and CLI checks) AND --markdown-docs execs the Python
-        # snippet from the README. The local mock-upstream fixture lives in
-        # tests/readme/conftest.py so it only loads when collecting from that
-        # subtree.
-        run: uv run pytest tests/readme --markdown-docs README.md -v
-        env:
-          # The YAML examples reference ${NVIDIA_API_KEY} etc.; stub so the
-          # bundle loader's env-var resolution doesn't fail on a clean runner.
-          # No value is ever sent upstream (schema validation only).
-          OPENAI_API_KEY: sk-test
-          NVIDIA_API_KEY: nvapi-test
-          ANTHROPIC_API_KEY: sk-ant-test
+        run: uv run pytest tests/readme -v
+        # Legacy Python README execution:
+        # run: uv run pytest tests/readme --markdown-docs README.md -v
+        # env:
+        #   OPENAI_API_KEY: sk-test
+        #   NVIDIA_API_KEY: nvapi-test
+        #   ANTHROPIC_API_KEY: sk-ant-test

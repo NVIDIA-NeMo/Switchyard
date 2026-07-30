@@ -1,38 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Executable coverage for ``README.md``.
-
-Companion to ``tests/getting_started/``. Four guards:
-
-* the "Use as a Python library" snippet executes (via ``--markdown-docs`` +
-  the local mock-upstream fixture in ``conftest.py``);
-* the Rust server TOML example parses with the expected top-level shape;
-* linked routing-guide examples validate against the legacy route-bundle schema;
-* every CLI subcommand / flag the README names still exists.
-"""
+"""Executable coverage for the README.md."""
 
 from __future__ import annotations
 
-import argparse
-import tomllib
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
-import yaml as pyyaml
 from markdown_it import MarkdownIt
-
-from switchyard.cli import route_bundle as rb
-from switchyard.cli.switchyard_cli import _build_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPO_ROOT / "README.md"
-ROUTING_DOC_PATHS = (
-    REPO_ROOT / "docs" / "routing_algorithms" / "overview.md",
-    REPO_ROOT / "docs" / "routing_algorithms" / "random_routing.md",
-    REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.md",
-    REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.md",
-)
 
 
 @pytest.fixture(scope="module")
@@ -51,78 +32,13 @@ def _code_blocks(text: str, lang: str) -> list[str]:
     ]
 
 
-def test_python_snippet_tripwire(readme_text: str) -> None:
-    # Guards the shape the conftest's passthrough-profile→local-mock fixture depends on,
-    # plus the dict-access fix (call() returns a dict, not an object with `.body`).
-    assert (
-        "from switchyard import ChatRequest, PassthroughProfileConfig, ProfileSwitchyard"
-        in readme_text
-    ), (
-        "README Python snippet's imports moved — update conftest.py."
-    )
-    assert "ProfileSwitchyard(PassthroughProfileConfig(" in readme_text, (
-        "README snippet no longer builds a passthrough profile — update the "
-        "markdown-docs fixture in conftest.py."
-    )
-    assert 'response["choices"][0]["message"]["content"]' in readme_text, (
-        "README snippet's response access changed. `Switchyard.call()` returns "
-        "a JSON-compatible dict — `response.body` would raise AttributeError."
-    )
-
-
-def _validate_route_blocks(text: str, source: Path) -> int:
-    # Schema/key validation, not a full chain build: building documented routes
-    # is NOT hermetic — `passthrough` with `discover: true` does a live catalog
-    # fetch. The schema layer (route type + per-type key allowlist) is what we
-    # can check offline, and it catches the likeliest drift: a renamed `type:`
-    # or a key that no longer exists on that type.
-    blocks = _code_blocks(text, "yaml")
-    validated_routes = 0
-    for idx, block in enumerate(blocks):
-        payload = pyyaml.safe_load(block)
-        if not isinstance(payload, dict) or "routes" not in payload:
-            continue
-        try:
-            bundle = rb._validate_route_bundle_dict(payload)
-        except rb.RouteBundleConfigError as exc:
-            raise AssertionError(
-                f"YAML block {idx} in {source} failed bundle schema "
-                f"validation: {exc}\n\nBlock:\n{block}"
-            ) from exc
-        for model_id, route_raw in bundle.routes.items():
-            route = rb._normalize_route(model_id, route_raw)
-            try:
-                route_type = rb._route_type(model_id, route)
-                rb._validate_route_keys(model_id, route, route_type)
-            except rb.RouteBundleConfigError as exc:
-                raise AssertionError(
-                    f"YAML block {idx} route {model_id!r} in {source} failed "
-                    f"schema validation: {exc}\n\nBlock:\n{block}"
-                ) from exc
-            validated_routes += 1
-    return validated_routes
-
-
-def test_route_block_validation_rejects_invalid_bundle_defaults() -> None:
-    text = """```yaml
-defaults:
-  unsupported: true
-routes:
-  gpt-4o:
-    type: model
-    model: gpt-4o
-```
-"""
-    with pytest.raises(AssertionError, match="unknown key.*defaults: unsupported"):
-        _validate_route_blocks(text, Path("example.md"))
-
-
-def test_rust_server_toml_blocks_in_readme_parse(
+def test_rust_server_toml_blocks_validate_with_rust_schema(
     readme_text: str,
+    tmp_path: Path,
 ) -> None:
     blocks = _code_blocks(readme_text, "toml")
     server_configs = [
-        tomllib.loads(block)
+        block
         for block in blocks
         if "schema_version" in block
         and "[llm_clients." in block
@@ -130,50 +46,40 @@ def test_rust_server_toml_blocks_in_readme_parse(
         and "[routes." in block
     ]
 
-    assert server_configs, "no README TOML block parsed as a Rust server config"
-    for config in server_configs:
-        assert config["schema_version"] == 1
-        assert config["llm_clients"]
-        assert config["targets"]
-        assert config["routes"]
+    assert server_configs, "no README TOML block found for the Rust server"
 
-
-def test_canonical_routing_docs_validate_against_the_route_bundle_schema() -> None:
-    validated_routes = sum(
-        _validate_route_blocks(path.read_text(), path) for path in ROUTING_DOC_PATHS
-    )
-
-    assert validated_routes >= len(ROUTING_DOC_PATHS)
-
-
-def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
-    action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    return action.choices  # type: ignore[return-value]
-
-
-def test_cli_parser_exposes_every_subcommand_the_readme_names() -> None:
-    parser = _build_parser()
-    subs = _subparsers(parser)
-    for cmd in ("serve", "launch", "configure"):
-        assert cmd in subs, f"top-level `switchyard {cmd}` is documented but missing"
-        assert subs[cmd].format_help().strip()
-
-    launch_subs = _subparsers(subs["launch"])
-    for target in ("claude", "codex", "openclaw"):
-        assert target in launch_subs, (
-            f"`switchyard launch {target}` is documented but missing"
+    env = os.environ.copy()
+    env["OPENROUTER_API_KEY"] = "readme-test-key"
+    for index, config in enumerate(server_configs):
+        config_path = tmp_path / f"readme-server-{index}.toml"
+        config_path.write_text(config)
+        # Dry-run uses the production Rust loader for schema and reference validation.
+        result = subprocess.run(
+            [
+                "cargo",
+                "run",
+                "--quiet",
+                "--locked",
+                "-p",
+                "switchyard-server",
+                "--",
+                "--config",
+                str(config_path),
+                "--dry-run",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"README TOML block {index} failed Rust schema validation:\n"
+            f"{result.stderr}{result.stdout}"
         )
 
-
-def test_cli_parser_advertises_documented_flags() -> None:
-    parser = _build_parser()
-    subs = _subparsers(parser)
-    # --routing-profiles is a global switchyard flag now, not on serve
-    assert "--routing-profiles" in parser.format_help()
-    assert "--port" in subs["serve"].format_help()
-
-    claude_help = _subparsers(subs["launch"])["claude"].format_help()
-    for flag in ("--base-url", "--model"):
-        assert flag in claude_help, (
-            f"`launch claude {flag}` documented but missing from --help"
-        )
+# TODO: Add Python snippet tripwire test back in when we have a Python snippet to test.
+# TODO: Add route block validation test back in when we document YAML route bundles.
+# TODO: Add routing docs schema test back in when the README links those guides.
+# TODO: Add CLI subcommand test back in when the README documents Python CLI commands.
+# TODO: Add CLI flag test back in when the README documents Python CLI flags.
