@@ -10,8 +10,6 @@ use parking_lot::{Mutex, MutexGuard};
 use serde::Serialize;
 
 use super::cache_eligibility::PrefixProbe;
-use super::cost::{estimate_cost, CostEstimate};
-use super::round6;
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
 
@@ -174,15 +172,11 @@ impl StatsAccumulatorInner {
 
     fn snapshot(&self) -> StatsSnapshot {
         let (models, total_tokens) = build_model_snapshots(&self.by_model, self.total_requests);
-        let mut cost_estimate = estimate_cost(&models);
         let classifier = build_classifier_snapshot(
             &self.by_classifier,
             self.classifier_requests,
             self.classifier_errors,
         );
-        cost_estimate.classifier_cost = classifier.cost_estimate.total_cost;
-        cost_estimate.total_cost =
-            round6(cost_estimate.backend_cost + cost_estimate.classifier_cost);
         StatsSnapshot {
             total_requests: self.total_requests,
             total_errors: self.total_errors,
@@ -190,7 +184,6 @@ impl StatsAccumulatorInner {
             models,
             tiers: tier_snapshots(&self.by_tier, total_tokens.total, self.total_requests),
             routing_overhead: self.routing_overhead.snapshot(),
-            cost_estimate,
             classifier,
         }
     }
@@ -319,7 +312,6 @@ pub(crate) struct StatsSnapshot {
     pub models: BTreeMap<String, ModelStatsSnapshot>,
     pub tiers: BTreeMap<String, TierStatsSnapshot>,
     pub routing_overhead: LatencyHistogramSnapshot,
-    pub cost_estimate: CostEstimate,
     pub classifier: ClassifierStatsSnapshot,
 }
 
@@ -329,7 +321,6 @@ pub(crate) struct ClassifierStatsSnapshot {
     pub total_errors: u64,
     pub total_tokens: TokenTotals,
     pub models: BTreeMap<String, ModelStatsSnapshot>,
-    pub cost_estimate: CostEstimate,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -441,13 +432,11 @@ fn build_classifier_snapshot(
     total_errors: u64,
 ) -> ClassifierStatsSnapshot {
     let (models, total_tokens) = build_model_snapshots(models, total_requests);
-    let cost_estimate = estimate_cost(&models);
     ClassifierStatsSnapshot {
         total_requests,
         total_errors,
         total_tokens,
         models,
-        cost_estimate,
     }
 }
 
@@ -559,7 +548,6 @@ mod tests {
         assert_eq!(snapshot.routing_overhead.p99_ms, 10.0);
         assert_eq!(snapshot.classifier.total_requests, 1);
         assert_eq!(snapshot.classifier.total_tokens.prompt, 1_000_000);
-        assert_eq!(snapshot.cost_estimate.classifier_cost, 1.5);
 
         stats.record_success("model/strong", 1.0, Some("weak"));
         stats.record_success("model/other", 1.0, Some("strong"));

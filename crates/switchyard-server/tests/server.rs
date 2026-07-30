@@ -200,15 +200,6 @@ fn empty_token_totals() -> Value {
     })
 }
 
-fn empty_cost_estimate() -> Value {
-    json!({
-        "models": {},
-        "total_cost": 0.0,
-        "backend_cost": 0.0,
-        "classifier_cost": 0.0
-    })
-}
-
 #[tokio::test]
 async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
@@ -231,13 +222,11 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
                 "p50_ms": 0.0,
                 "p99_ms": 0.0
             },
-            "cost_estimate": empty_cost_estimate(),
             "classifier": {
                 "total_requests": 0,
                 "total_errors": 0,
                 "total_tokens": empty_token_totals(),
                 "models": {},
-                "cost_estimate": empty_cost_estimate()
             },
         })
     );
@@ -304,16 +293,6 @@ async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestRes
     assert_eq!(stats["models"]["gemini-3.5-flash"]["errors"], 1);
     assert_eq!(stats["models"]["model/unknown"]["calls"], 1);
     assert_eq!(stats["routing_overhead"]["count"], 2);
-    assert!(
-        stats["cost_estimate"]["backend_cost"]
-            .as_f64()
-            .unwrap_or(0.0)
-            > 0.0
-    );
-    assert_eq!(
-        stats["cost_estimate"]["models"]["model/unknown"]["total_cost"],
-        0.0
-    );
     Ok(())
 }
 
