@@ -351,7 +351,7 @@ impl Classifier<State> for TaskClassifier {
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<Response>)> {
         self.classifier.score(state, request, driver).await
     }
 }
@@ -367,7 +367,7 @@ impl Classifier<State> for LlmTaskClassifier {
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<Response>)> {
         self.classifier.score(state, request, driver).await
     }
 }

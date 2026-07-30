@@ -17,7 +17,7 @@
 
 use async_trait::async_trait;
 
-use crate::{Classification, Classifier, Driver, Metadata, Request, Result, Score};
+use crate::{Classification, Classifier, Driver, Metadata, Request, Response, Result, Score};
 
 /// Scores a fixed worker target for delegated sub-agent work; abstains otherwise.
 pub struct SubagentOverride {
@@ -47,21 +47,24 @@ where
         _state: &mut S,
         request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<Response>)> {
         // Delegated *work* only. A harness maintenance turn (e.g. Codex `compact`) carries
         // sub-agent lineage but is not delegated work, so it abstains and routes normally.
         let is_delegated_work = request
             .metadata
             .as_ref()
             .is_some_and(Metadata::is_subagent_work);
-        Ok(Classification::Scores(if is_delegated_work {
-            vec![Score {
-                confidence: 1.0,
-                target: self.worker.clone(),
-            }]
-        } else {
-            Vec::new()
-        }))
+        Ok((
+            Classification::Scores(if is_delegated_work {
+                vec![Score {
+                    confidence: 1.0,
+                    target: self.worker.clone(),
+                }]
+            } else {
+                Vec::new()
+            }),
+            None,
+        ))
     }
 }
 
@@ -94,7 +97,7 @@ mod tests {
         let classification = SubagentOverride::new("worker")
             .score(&mut state, &mut request(headers), None)
             .await?;
-        Ok(classification.argmax(false)?.map(|score| score.target))
+        Ok(classification.0.argmax(false)?.map(|score| score.target))
     }
 
     #[tokio::test]
@@ -146,7 +149,7 @@ mod tests {
                 None,
             )
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].confidence, 1.0);

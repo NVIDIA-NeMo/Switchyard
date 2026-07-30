@@ -180,18 +180,21 @@ where
         _state: &mut S,
         request: &mut Request,
         _driver: Option<&crate::Driver>,
-    ) -> crate::Result<Classification> {
+    ) -> crate::Result<(Classification, Option<crate::Response>)> {
         let Some(key) = self.affinity_key(request) else {
-            return Ok(Classification::Scores(Vec::new()));
+            return Ok((Classification::Scores(Vec::new()), None));
         };
         let assigned = self.assignments.lock().get(&key).cloned();
-        Ok(Classification::Scores(match assigned {
-            Some(target) => vec![Score {
-                confidence: 1.0,
-                target,
-            }],
-            None => Vec::new(),
-        }))
+        Ok((
+            Classification::Scores(match assigned {
+                Some(target) => vec![Score {
+                    confidence: 1.0,
+                    target,
+                }],
+                None => Vec::new(),
+            }),
+            None,
+        ))
     }
 }
 
@@ -309,7 +312,7 @@ mod tests {
         state: &mut (),
         request: &mut Request,
     ) -> Result<Vec<Score>, BoxErr> {
-        match classifier.score(state, request, None).await? {
+        match classifier.score(state, request, None).await?.0 {
             Classification::Scores(scores) => Ok(scores),
             Classification::Ambiguous(_) => Err("affinity never returns ambiguous scores".into()),
         }

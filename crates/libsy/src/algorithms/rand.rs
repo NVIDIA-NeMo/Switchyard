@@ -111,11 +111,14 @@ where
         _state: &mut S,
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        Ok(Classification::Scores(vec![Score {
-            confidence: 1.0,
-            target: self.select_target(),
-        }]))
+    ) -> Result<(Classification, Option<Response>)> {
+        Ok((
+            Classification::Scores(vec![Score {
+                confidence: 1.0,
+                target: self.select_target(),
+            }]),
+            None,
+        ))
     }
 }
 
@@ -378,6 +381,7 @@ mod tests {
         let retained = affinity
             .score(&mut state, &mut request, None)
             .await?
+            .0
             .argmax(false)?;
         assert_eq!(
             retained.map(|score| score.target),

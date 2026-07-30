@@ -15,8 +15,8 @@ use serde_json::Value;
 use switchyard_protocol::{completion_text, AggLlmResponse};
 
 use crate::{
-    Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request, Result,
-    State,
+    Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request,
+    Response, Result, State,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -128,7 +128,7 @@ where
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<Response>)> {
         // A missing driver is a broken composition, not an unavailable judge.
         let Some(driver) = driver else {
             return Err(LibsyError::AlgorithmError {
@@ -139,7 +139,8 @@ where
             });
         };
         let verdict = self.verdict(state, request, driver).await;
-        Ok(self.policy.to_classification(verdict.as_ref()))
+        // A judge consultation is a side call, never the turn's answer.
+        Ok((self.policy.to_classification(verdict.as_ref()), None))
     }
 }
 

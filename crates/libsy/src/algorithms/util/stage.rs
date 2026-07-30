@@ -484,12 +484,12 @@ impl Classifier<State> for StageClassifier {
         state: &mut State,
         request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<crate::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
-            return Ok(Self::abstain(state));
+            return Ok((Self::abstain(state), None));
         };
 
         let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
@@ -507,12 +507,15 @@ impl Classifier<State> for StageClassifier {
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
                 let conf = score.abs();
-                Ok(Classification::Scores(vec![Score {
-                    target: target.to_string(),
-                    confidence: conf,
-                }]))
+                Ok((
+                    Classification::Scores(vec![Score {
+                        target: target.to_string(),
+                        confidence: conf,
+                    }]),
+                    None,
+                ))
             }
-            PickOutcome::ConsultClassifier { .. } => Ok(Self::abstain(state)),
+            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(state), None)),
         }
     }
 }
@@ -616,7 +619,7 @@ mod tests {
         let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        assert!(classification.argmax(false)?.is_none());
+        assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
             state.extra.get(DECISION_SOURCE_KEY),
             Some(StateValue::String(source)) if source == "ambiguous"
@@ -635,7 +638,7 @@ mod tests {
         let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "strong");
@@ -664,7 +667,7 @@ mod tests {
         let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        match classification {
+        match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
                 assert_eq!(scores[0].target, "weak");
@@ -682,7 +685,7 @@ mod tests {
         let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        assert!(classification.argmax(false)?.is_none());
+        assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
             state.extra.get(DECISION_SOURCE_KEY),
             Some(StateValue::String(source)) if source == "ambiguous"
@@ -841,7 +844,7 @@ mod tests {
             .score(&mut state, &mut request, None)
             .await?;
 
-        assert!(matches!(classification, Classification::Ambiguous(_)));
+        assert!(matches!(classification.0, Classification::Ambiguous(_)));
         assert_eq!(trailing_text(&request), Some("hi".to_string()));
         Ok(())
     }

@@ -55,13 +55,13 @@ impl Classifier<State> for SourceStamp {
         state: &mut State,
         request: &mut Request,
         driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        let classification = self.inner.score(state, request, driver).await?;
+    ) -> Result<(Classification, Option<Response>)> {
+        let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if matches!(&classification, Classification::Scores(scores) if !scores.is_empty()) {
             record_decision_source(state, self.source);
         }
-        Ok(classification)
+        Ok((classification, served))
     }
 }
 
@@ -254,11 +254,14 @@ mod tests {
             _state: &mut State,
             _request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
-            Ok(Classification::Scores(vec![crate::Score {
-                target: self.0.to_string(),
-                confidence: 1.0,
-            }]))
+        ) -> Result<(Classification, Option<Response>)> {
+            Ok((
+                Classification::Scores(vec![crate::Score {
+                    target: self.0.to_string(),
+                    confidence: 1.0,
+                }]),
+                None,
+            ))
         }
     }
 
@@ -272,8 +275,8 @@ mod tests {
             _state: &mut State,
             _request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
-            Ok(Classification::Ambiguous(vec![]))
+        ) -> Result<(Classification, Option<Response>)> {
+            Ok((Classification::Ambiguous(vec![]), None))
         }
     }
 

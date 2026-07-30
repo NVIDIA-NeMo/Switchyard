@@ -90,12 +90,15 @@ impl<S: Send> Classifier<S> for DefaultTarget {
         _state: &mut S,
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
+    ) -> Result<(Classification, Option<Response>)> {
         // Zero confidence: this is a fallback, not a judgement.
-        Ok(Classification::Scores(vec![Score {
-            target: self.target.clone(),
-            confidence: 0.0,
-        }]))
+        Ok((
+            Classification::Scores(vec![Score {
+                target: self.target.clone(),
+                confidence: 0.0,
+            }]),
+            None,
+        ))
     }
 }
 
@@ -204,7 +207,7 @@ where
             ctx.exclude_target(target);
         }
         let session_state = self.session_state(&request);
-        let (target, decision) = match session_state {
+        let (target, decision, served) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &ctx, &driver, &mut request).await?
@@ -215,48 +218,25 @@ where
             }
         };
 
-        self.call_with_overflow_fallback(
-            ctx,
-            &driver,
-            target,
-            decision,
-            request,
-            session.as_deref(),
-        )
-        .await
-    }
-
-    fn eligible_targets(&self, ctx: &Context) -> usize {
-        self.targets
-            .targets()
-            .iter()
-            .filter(|t| !ctx.is_excluded(&t.semantic_name))
-            .count()
-    }
-
-    fn evicted_in_session(&self, session: Option<&str>) -> Vec<String> {
-        let Some(session) = session else {
-            return Vec::new();
-        };
-        self.session_evictions
-            .lock()
-            .get(session)
-            .map(|targets| targets.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    fn record_eviction(&self, session: Option<&str>, target: &str) {
-        let Some(session) = session else { return };
-        let mut sessions = self.session_evictions.lock();
-        if sessions.len() >= MAX_EVICTION_SESSIONS && !sessions.contains_key(session) {
-            if let Some(oldest) = sessions.keys().next().cloned() {
-                sessions.remove(&oldest);
+        // A classifier that already called a model — because deciding required one, and that
+        // call also answers the turn — hands its response back here, so the turn is not paid
+        // for twice. There is no outbound call left to overflow, so the fallback is skipped.
+        // Nothing reads it on the way out: streamed or buffered, it reaches the caller
+        // untouched.
+        match served {
+            Some(response) => Ok(response),
+            None => {
+                self.call_with_overflow_fallback(
+                    ctx,
+                    &driver,
+                    target,
+                    decision,
+                    request,
+                    session.as_deref(),
+                )
+                .await
             }
         }
-        sessions
-            .entry(session.to_string())
-            .or_default()
-            .insert(target.to_string());
     }
 
     /// Calls `target`, falling back to the next eligible target whenever one overflows its
@@ -332,7 +312,7 @@ where
         ctx: &Context,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>)> {
+    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -342,11 +322,15 @@ where
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut maybe_score: Option<Score> = None;
         let mut deciding: Option<&Arc<dyn Classifier<S>>> = None;
+        let mut served: Option<Response> = None;
         for classifier in &self.classifiers {
-            let scores = classifier.score(state, request, Some(driver)).await?;
+            let (scores, response) = classifier.score(state, request, Some(driver)).await?;
             maybe_score = scores.argmax(false)?;
             if maybe_score.is_some() {
                 deciding = Some(classifier);
+                // Only the deciding classifier's response answers the turn; an abstaining
+                // classifier selected nothing for it to be the answer to.
+                served = response;
                 break;
             }
         }
@@ -384,7 +368,7 @@ where
             processor.process(state, event).await?;
         }
 
-        Ok((target, decision))
+        Ok((target, decision, served))
     }
 }
 
@@ -515,15 +499,18 @@ mod tests {
             _state: &mut (),
             _request: &mut Request,
             _driver: Option<&Driver>,
-        ) -> Result<Classification> {
-            Ok(Classification::Scores(
-                self.0
-                    .iter()
-                    .map(|s| Score {
-                        confidence: s.confidence,
-                        target: s.target.clone(),
-                    })
-                    .collect(),
+        ) -> Result<(Classification, Option<Response>)> {
+            Ok((
+                Classification::Scores(
+                    self.0
+                        .iter()
+                        .map(|s| Score {
+                            confidence: s.confidence,
+                            target: s.target.clone(),
+                        })
+                        .collect(),
+                ),
+                None,
             ))
         }
     }
@@ -872,9 +859,9 @@ mod tests {
                 _state: &mut (),
                 _request: &mut Request,
                 driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<(Classification, Option<Response>)> {
                 match driver {
-                    Some(_) => Ok(Classification::Scores(vec![score("strong", 1.0)])),
+                    Some(_) => Ok((Classification::Scores(vec![score("strong", 1.0)]), None)),
                     None => Err(test_error("expected a driver")),
                 }
             }
@@ -949,7 +936,7 @@ mod tests {
                 _state: &mut (),
                 request: &mut Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<(Classification, Option<Response>)> {
                 *self.0.lock() = request
                     .llm_request
                     .messages
@@ -960,7 +947,7 @@ mod tests {
                     .llm_request
                     .messages
                     .push(Message::text(Role::User, "classifier"));
-                Ok(Classification::Scores(vec![score("strong", 1.0)]))
+                Ok((Classification::Scores(vec![score("strong", 1.0)]), None))
             }
         }
 
@@ -1025,9 +1012,9 @@ mod tests {
                 state: &mut TurnState,
                 _request: &mut Request,
                 _driver: Option<&Driver>,
-            ) -> Result<Classification> {
+            ) -> Result<(Classification, Option<Response>)> {
                 let target = if state.count >= 2 { "strong" } else { "weak" };
-                Ok(Classification::Scores(vec![score(target, 1.0)]))
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
             }
         }
 

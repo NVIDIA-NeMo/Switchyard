@@ -87,8 +87,8 @@ impl Classifier for Abstains {
         _state: &mut (),
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        Ok(Classification::Ambiguous(Vec::new()))
+    ) -> Result<(Classification, Option<Response>)> {
+        Ok((Classification::Ambiguous(Vec::new()), None))
     }
 }
 
