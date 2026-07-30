@@ -173,7 +173,11 @@ pub(crate) fn build_judge(
     ))
 }
 
-/// The 1-indexed model invocation this request represents: one past each assistant reply.
+/// The 1-indexed model invocation the transcript ends on: one per assistant reply.
+///
+/// The judge reads the turn *including* the reply it is judging, so the newest assistant
+/// message is this turn — no `+ 1`. Counting the caller's request instead would report the
+/// turn after the one under judgement.
 ///
 /// libsy receives messages already normalized by `switchyard-protocol`, so unlike the
 /// wire-format-aware Python equivalent this needs no per-format branching.
@@ -184,7 +188,6 @@ fn conversation_turn(request: &Request) -> usize {
         .iter()
         .filter(|message| message.role == Role::Assistant)
         .count()
-        + 1
 }
 
 /// Flattens a message to plain text, tool calls and tool results included.
@@ -357,7 +360,13 @@ mod tests {
             config: EscalationJudgeConfig::default(),
         };
 
-        let built = judge.build_request(&State::default(), &request_at_turn(None, 4));
+        // As the classifier calls it: the turn's reply is already on the transcript.
+        let mut judged = request_at_turn(None, 4);
+        judged
+            .llm_request
+            .messages
+            .push(Message::text(Role::Assistant, "this turn's reply"));
+        let built = judge.build_request(&State::default(), &judged);
 
         // Two messages: the rubric as system, the condensed trajectory as user.
         assert_eq!(built.llm_request.messages.len(), 2);
@@ -377,8 +386,16 @@ mod tests {
 
     #[test]
     fn conversation_turn_counts_assistant_replies() {
-        assert_eq!(conversation_turn(&request_at_turn(None, 1)), 1);
-        assert_eq!(conversation_turn(&request_at_turn(None, 5)), 5);
+        // The judge is handed the transcript with this turn's reply already appended, which
+        // is the shape asserted here: a request entering turn N plus its reply *is* turn N.
+        for turn in [1, 5] {
+            let mut judged = request_at_turn(None, turn);
+            judged
+                .llm_request
+                .messages
+                .push(Message::text(Role::Assistant, "this turn's reply"));
+            assert_eq!(conversation_turn(&judged), turn);
+        }
     }
 
     #[test]
