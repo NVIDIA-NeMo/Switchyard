@@ -1,0 +1,10 @@
+FROM python:PYVERSION-slim-bookworm
+
+RUN apt-get update && apt-get install -y \
+    git curl ca-certificates build-essential \
+    libffi-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv==0.7.12
+
+WORKDIR /repo

@@ -1,0 +1,28 @@
+%%{init: {'theme': 'base', 'themeVariables': {'background':'#ffffff','primaryColor':'#ffffff','primaryBorderColor':'#a0a0a0','primaryTextColor':'#1f2937','lineColor':'#9ca3af','fontFamily':'Inter, system-ui, sans-serif','fontSize':'15px'}}}%%
+flowchart TB
+    A([Candidate JSON]):::input
+
+    A --> S[Gold-plan synth<br/>Opus 4.6 + PR diff + description]:::gold
+    A --> B[Convert to Harbor task]
+
+    B --> C[Planner A writes plan<br/>Opus 4.6, full agent trial]
+    B --> D[Planner B writes plan<br/>Haiku 4.5, full agent trial]
+    C --> E[Sonnet 4.6 implements plan A]
+    D --> F[Sonnet 4.6 implements plan B]
+    E --> G[Score F2P/P2P, delta = A - B]
+    F --> G
+
+    S --> H([Candidate JSON<br/>+ gold_plan<br/>+ planning_scores]):::pass
+    G --> H
+
+    subgraph Later["Downstream tagging: simple follow-on"]
+        direction TB
+        I[Inspect distribution<br/>across all scored candidates] --> J[Pick thresholds from clusters]
+        J --> K[Tag planning_task: true/false]
+    end
+
+    H -.-> I
+
+    classDef input fill:#eef4ff,stroke:#6b8ec4,color:#1f2d4a
+    classDef pass fill:#ecf7ec,stroke:#5aa96d,color:#1f4b2a
+    classDef gold fill:#fdf0c4,stroke:#c4a23a,color:#5b4400

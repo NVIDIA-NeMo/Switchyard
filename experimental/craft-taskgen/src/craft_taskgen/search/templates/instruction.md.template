@@ -1,0 +1,41 @@
+# Search Task
+
+{instruction}
+
+## Environment
+
+The repository is checked out at `/code/`.
+
+## REQUIRED: Write Answer File
+
+**You MUST write your answer to `/app/answer.json` before you finish.** This is the only output that gets scored. If you do not write this file, you will receive a score of 0.
+
+Use this exact JSON schema:
+
+```json
+{
+  "files": ["path/to/file1.py", "path/to/file2.py"],
+  "functions": ["module.submodule.function_name", "module.ClassName.method"],
+  "explanation": "Brief explanation of how these files and functions relate to the question."
+}
+```
+
+### Field rules
+
+- **files**: Paths relative to `/code/` (e.g., `src/client.py`, not `/code/src/client.py`)
+- **functions**: Fully qualified names (e.g., `httpx._client.Client.get`)
+- **explanation**: 2-4 sentences explaining your findings
+
+### Example
+
+If the question were "How does the HTTP client handle retries?", a valid answer might be:
+
+```json
+{
+  "files": ["src/client.py", "src/retry.py"],
+  "functions": ["src.client.HttpClient.request", "src.retry.RetryPolicy.should_retry"],
+  "explanation": "HttpClient.request delegates retry decisions to RetryPolicy.should_retry, which checks the status code and attempt count. The retry loop is in request() itself."
+}
+```
+
+Write the file with: `echo '{ ... }' > /app/answer.json` or any equivalent method. **Do this as your final step.**

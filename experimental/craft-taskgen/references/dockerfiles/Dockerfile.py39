@@ -1,0 +1,10 @@
+FROM python:3.9-slim-bookworm@sha256:03dee9ce00747bb5390e7b4ad00307b4dbc7790f7da77cc3581f93cfa99a6363
+
+RUN apt-get update && apt-get install -y \
+    git curl ca-certificates build-essential \
+    libffi-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv==0.7.12
+
+WORKDIR /repo
