@@ -456,34 +456,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../guides/agent_launchers/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent Launchers
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../skill_distillation/" class="md-nav__link">
         
   
@@ -1306,23 +1278,13 @@ formats select an endpoint directly and do not run capability probes.</p>
 </tr>
 <tr>
 <td><code>AUTO</code></td>
-<td>Probes at startup, picks best format (see below).</td>
-<td>Upstream is unknown or varies across deployments. Used by Claude Code and Codex launchers. OpenClaw is intentionally pinned to <code>OPENAI</code>.</td>
+<td>Probes at startup and picks the best format.</td>
+<td>The upstream is unknown or varies across deployments.</td>
 </tr>
 <tr>
 <td><em>(omitted)</em></td>
-<td>Defaults to <code>OPENAI</code> — no probe, no fast-path. Silently uses Chat Completions, which is wrong for Anthropic/Bedrock models. Always set <code>format:</code> explicitly.</td>
-<td></td>
-</tr>
-<tr>
-<td>Claude Code and Codex launchers use <code>AUTO</code> for their single-model targets.</td>
-<td></td>
-<td></td>
-</tr>
-<tr>
-<td>OpenClaw is intentionally pinned to <code>OPENAI</code> for its equivalent target.</td>
-<td></td>
-<td></td>
+<td>Defaults to <code>OPENAI</code> with no probe.</td>
+<td>Always set <code>format:</code> explicitly when the upstream is not OpenAI-compatible.</td>
 </tr>
 </tbody>
 </table>
@@ -1356,18 +1318,13 @@ upstream format.</p>
 <p>Prefer an explicit format for controlled deployments. It skips capability
 probes and makes the upstream contract clear. Use <code>AUTO</code> when provider
 capabilities are unknown or vary across deployments.</p>
-<p><strong><code>AUTO</code> costs startup latency.</strong> Each probe is a live request to the upstream
-made before the agent starts, so a slow endpoint adds a round-trip per probe
-(up to three, tried in order). This is the main reason a launch that uses
-<code>AUTO</code> (Claude Code, Codex) starts slower than one pinned to an explicit
-format. Set <code>format:</code> explicitly to remove the probing entirely. To see the
-per-probe cost of a launch, run it with <code>--startup-timing</code> (or
-<code>SWITCHYARD_STARTUP_TIMING=1</code>), which prints each probe on its own line.</p>
+<p><strong><code>AUTO</code> costs startup latency.</strong> Each probe is a live request to the upstream,
+so a slow endpoint adds a round-trip per probe, with up to three tried in
+order. Set <code>format:</code> explicitly to remove probing.</p>
 </blockquote>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a>: install Switchyard and run a first request</li>
-<li><a href="../guides/agent_launchers/">Agent Launchers</a>: run coding agents through a local proxy</li>
 <li><a href="../routing_algorithms/overview/">Routing Overview</a>: choose and configure a routing strategy</li>
 <li><a href="../cli_reference/">CLI Reference</a>: configure and operate Switchyard from the command line</li>
 </ul>

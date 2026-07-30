@@ -601,34 +601,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../guides/agent_launchers/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent Launchers
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../skill_distillation/" class="md-nav__link">
         
   
@@ -1400,8 +1372,6 @@ Responses API can connect. The route <code>id</code> is the model name clients u
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;switchyard&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
 </span></code></pre></div>
-<!-- TODO: Add agent launchers back when they are wired to the Rust server. -->
-
 <h2 id="routing-algorithms">Routing algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h2>
 <h3 id="choose-a-route-type">Choose a route type<a class="headerlink" href="#choose-a-route-type" title="Permanent link">&para;</a></h3>
 <p>This guide uses <code>llm_classifier</code>, which asks a classifier target whether each
@@ -1435,7 +1405,7 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <p>A single TOML file can declare multiple routes. The table key, such as
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
-<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9e90ee5b92ec7a668e087f9256b36fd6deffc8a/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/510b7bb823a41ddc5f67d1ecd1514cc08d29c21b/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <!-- TODO: Restore routing-guide links after those pages use the Rust TOML schema. -->
 
@@ -1461,16 +1431,16 @@ release attribution. No request or response content is included. To disable:</p>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9e90ee5b92ec7a668e087f9256b36fd6deffc8a/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/510b7bb823a41ddc5f67d1ecd1514cc08d29c21b/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9e90ee5b92ec7a668e087f9256b36fd6deffc8a/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed routing algorithms in a
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/510b7bb823a41ddc5f67d1ecd1514cc08d29c21b/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed routing algorithms in a
   Rust application</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9e90ee5b92ec7a668e087f9256b36fd6deffc8a/crates/protocol/README.md"><code>switchyard-protocol</code></a>: provider-neutral
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/510b7bb823a41ddc5f67d1ecd1514cc08d29c21b/crates/protocol/README.md"><code>switchyard-protocol</code></a>: provider-neutral
   request, response, and streaming types</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9e90ee5b92ec7a668e087f9256b36fd6deffc8a/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/510b7bb823a41ddc5f67d1ecd1514cc08d29c21b/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
-<!-- TODO: Restore architecture, CLI, launcher, and routing links when those pages are Rust-first. -->
+<!-- TODO: Restore architecture, CLI, and routing links when those pages are Rust-first. -->
 
 
 

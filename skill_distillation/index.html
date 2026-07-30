@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../guides/agent_launchers/">
+        <link rel="prev" href="../known_issues/">
       
       
         <link rel="next" href="../core_concepts/">
@@ -450,34 +450,6 @@
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../guides/agent_launchers/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent Launchers
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
             
               
                 
@@ -1282,14 +1254,14 @@
 
 
 <h1 id="skill-distillation">Skill Distillation<a class="headerlink" href="#skill-distillation" title="Permanent link">&para;</a></h1>
-<p>Skill distillation turns agent sessions into a reusable skill for the same
-kind of work. The model is not retrained. Switchyard saves the session history,
-uses it to update a <code>SKILL.md</code>, and makes the active skill available to later
-agent launches for the same namespace.</p>
-<p>The current release adds the saved configuration and the Rust contracts that
+<p>Skill distillation is intended to turn agent sessions into a reusable skill for
+the same kind of work without retraining the model. The workflow will save
+session history, use it to update a <code>SKILL.md</code>, and make the active skill
+available to later agent runs for the same namespace.</p>
+<p>The current release provides saved configuration and the Rust contracts that
 later implementations will share. It does not yet save session files, run
 distillation, update skills, import external runs, validate results, or mount
-skills into launched agents.</p>
+skills into agent runtimes.</p>
 <h2 id="configure-it">Configure It<a class="headerlink" href="#configure-it" title="Permanent link">&para;</a></h2>
 <p>Choose a short namespace for the task or workflow you want the skill to learn:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--skill-distillation<span class="w"> </span>tooluniverse-trialqa
@@ -1298,39 +1270,37 @@ skills into launched agents.</p>
 <p>One namespace identifies one skill that improves over time. Keep using the same
 namespace when more sessions or trajectories should contribute to that skill;
 choose a different namespace when you want a separate skill. A namespace is not
-a session ID. In the automatic workflow, Switchyard will generate a separate
-internal session ID for each launcher run.</p>
+a session ID. The future automatic workflow will generate a separate internal
+session ID for each captured run.</p>
 <p>The namespace is stored in the user config and can be updated without provider
 credentials. To remove it:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--disable-skill-distillation
 </span></code></pre></div>
 <h2 id="intended-workflow">Intended Workflow<a class="headerlink" href="#intended-workflow" title="Permanent link">&para;</a></h2>
-<p>Once launcher support lands, the flow should be automatic:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>configure a namespace
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>run an agent through switchyard launch
+<p>A future host integration should automate this flow:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>select a namespace
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>capture a completed agent session
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>save the session under that namespace
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>distill when the session ends
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>create or update the namespace&#39;s active SKILL.md
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>load that active skill in the next launch for the same namespace
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>load that active skill in the next run for the same namespace
 </span></code></pre></div>
 <p>If no skill exists yet, the first distilled session creates one. Later sessions
 update the existing skill and keep enough history to inspect or roll back the
 change.</p>
-<p>Skill distillation is namespace-based. The namespace is saved user
-configuration, not a per-request header. A future request may be recorded as
-part of a saved session, but a single HTTP request should not change which skill
-is being learned or used.</p>
+<p>Skill distillation is namespace-based. A namespace identifies one skill that
+improves over time; it is not a session ID or per-request header. A future
+request may be recorded as part of a saved session, but a single HTTP request
+should not change which skill is being learned or used.</p>
 <h2 id="session-ownership">Session Ownership<a class="headerlink" href="#session-ownership" title="Permanent link">&para;</a></h2>
-<p>The user configures only the namespace. In the automatic workflow, Switchyard
-will own session capture and the session lifecycle. Each <code>switchyard launch</code>
-will generate a separate session ID, record completed model turns as they pass
-through the local proxy, and finalize the project-local session record when the
-launched agent exits. The user will not provide a session ID, choose a storage
-path, or run a separate recorder.</p>
+<p>The host runtime should generate a separate session ID, record completed model
+turns, and finalize the project-local session record when the agent exits. The
+user should choose only the namespace, not a session ID, storage path, or
+separate recorder.</p>
 <p>The capture backend is an internal implementation detail. The initial
 implementation will use a Switchyard-managed project-local store; a later
 trajectory source or storage backend can replace or supplement it without
-changing the configuration or launcher workflow.</p>
+changing the Rust contracts or host workflow.</p>
 <h2 id="config">Config<a class="headerlink" href="#config" title="Permanent link">&para;</a></h2>
 <p>Skill distillation config is stored in <code>~/.config/switchyard/config.json</code> under
 the top-level <code>skill_distillation</code> key:</p>
@@ -1368,7 +1338,7 @@ write <code>SKILL.md</code> and human-readable reports, not generated Python or 
 executable files.</p>
 <p>Skill generation should happen after sessions finish, not during normal model
 request handling. Switchyard owns the session-to-skill lifecycle, including
-capture, distillation, validation, history, and launch-time skill loading. It
+capture, distillation, validation, history, and run-time skill loading. It
 should not turn every request into a memory update.</p>
 <p>The automatic workflow still needs guardrails. Every skill update should record
 which sessions supported it, keep the previous active skill available for
@@ -1414,7 +1384,7 @@ steps run.</p>
 <p><code>SkillEvidenceId</code> is not a second session tracker. A session ID groups requests
 and turns while an agent is running. A <code>SkillEvidenceId</code> identifies the
 completed run after Switchyard saves it for distillation. The initial workflow
-will create one evidence record for each completed launcher session. Switchyard
+will create one evidence record for each completed captured session. Switchyard
 keeps this ID stable within the namespace. The Rust contract uses it to reject
 duplicate inputs in one distillation request and to record which evidence a
 skill candidate used. The code that creates an evidence record reuses a safe

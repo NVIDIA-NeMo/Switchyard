@@ -569,34 +569,6 @@
   
   
     <li class="md-nav__item">
-      <a href="guides/agent_launchers/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent Launchers
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="skill_distillation/" class="md-nav__link">
         
   
@@ -1276,10 +1248,6 @@ split across model tiers, or selected by routing policy.</p>
 <td>OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses compatible endpoints.</td>
 </tr>
 <tr>
-<td>Agent launchers</td>
-<td>One-command local proxies for Claude Code, Codex, and OpenClaw.</td>
-</tr>
-<tr>
 <td>Format translation</td>
 <td>Request and response translation between supported wire formats.</td>
 </tr>
@@ -1293,7 +1261,7 @@ split across model tiers, or selected by routing policy.</p>
 </tr>
 <tr>
 <td>Deployment options</td>
-<td>Local coding-agent proxy, shared HTTP service, or embedded Python runtime.</td>
+<td>Local or shared HTTP service, or embedded Python runtime.</td>
 </tr>
 </tbody>
 </table>
@@ -1306,18 +1274,12 @@ providers and routing policy:</p>
 <h2 id="first-run">First Run<a class="headerlink" href="#first-run" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;nemo-switchyard[cli,server]&quot;</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>switchyard<span class="w"> </span>configure
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude
 </span></code></pre></div>
 <p>For source installs, non-interactive configuration, and a curl sanity check, use
 <a href="getting_started/">Getting Started</a>.</p>
 <h2 id="main-workflows">Main Workflows<a class="headerlink" href="#main-workflows" title="Permanent link">&para;</a></h2>
 <div class="grid cards">
 <ul>
-<li>
-<p><strong>Run coding agents</strong></p>
-<p>Launch Claude Code, Codex, or OpenClaw through a local Switchyard proxy.</p>
-<p><a href="guides/agent_launchers/">Agent Launchers</a></p>
-</li>
 <li>
 <p><strong>Configure routing</strong></p>
 <p>Pick between fixed splits, classifier routing, and stage-router routing, with
@@ -1364,15 +1326,14 @@ together.</p>
 and clients select one with the request's <code>model</code> field:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
-<p>The same bundle can drive a launcher or be saved as the default:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
+<p>The same bundle can be saved as the default:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
 </span></code></pre></div>
 <p>Non-interactive <code>configure</code> does not read provider credentials from the routing
 bundle; pass <code>--api-key</code> explicitly when persisting the bundle for CI.</p>
-<p>Route types, launcher use, and persistence are covered in
+<p>Route types and persistence are covered in
 <a href="routing_algorithms/overview/">Routing Overview</a>. The Rust server uses its
 own explicit TOML configuration for LLM clients, targets, and libsy algorithms.</p>
 <h2 id="routing-reference">Routing Reference<a class="headerlink" href="#routing-reference" title="Permanent link">&para;</a></h2>

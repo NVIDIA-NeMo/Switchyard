@@ -456,34 +456,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guides/agent_launchers/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent Launchers
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../skill_distillation/" class="md-nav__link">
         
   
@@ -1391,9 +1363,6 @@ without clearing an existing confirmation streak.</p>
 <p>Run the route as a standalone proxy:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
-<p>Or use the same bundle with an agent launcher:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
-</span></code></pre></div>
 <p>The route ID (<code>agent-escalation</code>) is the model ID clients select to use the
 router. The strong and weak model IDs are also registered as direct
 passthrough choices. The judge is internal to the route and is not exposed as
@@ -1516,7 +1485,7 @@ a client-selectable model.</p>
 </table>
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
 <p>Read the standard routing stats endpoint:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/routing/stats
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/routing/stats
 </span></code></pre></div>
 <p>The snapshot reports per-model calls, tokens, latency, and cost for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket so
