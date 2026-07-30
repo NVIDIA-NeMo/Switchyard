@@ -170,22 +170,6 @@ where
         self.classifiers.push(classifier);
         self
     }
-    /// Registers one dual-role component in *both* the processor chain and the classifier
-    /// cascade.
-    ///
-    /// A component that writes state as a [`Processor`] and reads it back as a
-    /// [`Classifier`] — such as [`AffinityRouter`](crate::algorithms::AffinityRouter) —
-    /// shares that state through the instance, so both roles must be the same `Arc`.
-    /// Registering the two separately is easy to half-wire: omit the processor and the
-    /// classifier silently never sees an assignment. This registers both at once.
-    pub fn with_component<T>(self, component: Arc<T>) -> Self
-    where
-        T: Processor<S> + Classifier<S> + 'static,
-    {
-        self.with_processor(component.clone())
-            .with_classifier(component)
-    }
-
     /// Executes the processor/classifier/target-call sequence for wrappers and the trait entrypoint.
     pub(crate) async fn execute(
         &self,
@@ -447,10 +431,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algorithms::{append_note, SystemPromptProcessor, TargetPrompts};
     use crate::core::Classification;
 
     use switchyard_protocol::{
-        completion_text, text_response, LlmRequest, Message, Metadata, Role,
+        completion_text, text_request, text_response, LlmRequest, Message, Metadata, Role,
     };
 
     use crate::{LlmResponse, LlmTarget, RoutedLlmClient};
@@ -509,6 +494,59 @@ mod tests {
         }
     }
 
+    const CAPABLE_PROMPT: &str = "diagnose before you edit";
+    const EFFICIENT_PROMPT: &str = "follow the settled plan";
+    const NOTE: &str = "the previous model was stalling";
+
+    /// One model call as the prompt and note tests observe it.
+    #[derive(Clone, Debug, Default)]
+    struct RecordedCall {
+        target: String,
+        messages: Vec<String>,
+        instructions: Vec<String>,
+    }
+
+    /// Captures the prompt-bearing request that reached the selected target.
+    #[derive(Default)]
+    struct RecordingPromptClient(Mutex<Option<RecordedCall>>);
+
+    #[async_trait]
+    impl RoutedLlmClient for RecordingPromptClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+            *self.0.lock() = Some(RecordedCall {
+                target: decision.selected_model().to_string(),
+                messages: request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.text_content("|"))
+                    .collect(),
+                instructions: request
+                    .llm_request
+                    .instructions
+                    .iter()
+                    .filter_map(|block| block.content.iter().find_map(text_of))
+                    .collect(),
+            });
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
+                metadata: None,
+            })
+        }
+    }
+
+    fn text_of(block: &switchyard_protocol::ContentBlock) -> Option<String> {
+        match block {
+            switchyard_protocol::ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        }
+    }
+
     /// A target set whose targets all serve via [`EchoClient`].
     fn target_set(names: &[&str]) -> LlmTargetSet {
         LlmTargetSet::new(
@@ -520,6 +558,57 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    fn prompt_targets(client: &Arc<RecordingPromptClient>, names: &[&str]) -> LlmTargetSet {
+        LlmTargetSet::new(
+            names
+                .iter()
+                .map(|name| LlmTarget {
+                    semantic_name: (*name).to_string(),
+                    llm_client: Some(client.clone() as Arc<dyn RoutedLlmClient>),
+                })
+                .collect(),
+        )
+    }
+
+    fn target_prompts() -> TargetPrompts {
+        TargetPrompts::default()
+            .with("capable", CAPABLE_PROMPT)
+            .with("efficient", EFFICIENT_PROMPT)
+    }
+
+    /// Routes one turn on a prompt test cascade and returns the recorded model call.
+    async fn routed_prompt_call(
+        client: &Arc<RecordingPromptClient>,
+        router: FallThrough,
+    ) -> Result<RecordedCall> {
+        Arc::new(router)
+            .run(
+                Context::default(),
+                Request {
+                    llm_request: text_request(Some("auto".to_string()), "fix the build"),
+                    raw_request: None,
+                    metadata: None,
+                },
+            )
+            .await?;
+        let call = client.0.lock().take();
+        match call {
+            Some(call) => Ok(call),
+            None => panic!("the model was never called"),
+        }
+    }
+
+    /// A prompt cascade that always routes to `target`.
+    fn prompt_router(
+        client: &Arc<RecordingPromptClient>,
+        target: &str,
+        prompts: TargetPrompts,
+    ) -> FallThrough {
+        FallThrough::new(prompt_targets(client, &["capable", "efficient"]))
+            .with_processor(Arc::new(SystemPromptProcessor::new(prompts)))
+            .with_classifier(Arc::new(DefaultTarget::new(target)))
     }
 
     /// A classifier that emits fixed scores (empty = abstain).
@@ -606,6 +695,94 @@ mod tests {
     }
 
     // --- tests -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn each_target_gets_its_own_prompt() -> Result<()> {
+        for (target, expected) in [("capable", CAPABLE_PROMPT), ("efficient", EFFICIENT_PROMPT)] {
+            let client = Arc::new(RecordingPromptClient::default());
+            let call =
+                routed_prompt_call(&client, prompt_router(&client, target, target_prompts()))
+                    .await?;
+            assert_eq!(call.target, target);
+            assert_eq!(call.instructions, vec![expected.to_string()]);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_target_with_no_prompt_is_left_untouched() -> Result<()> {
+        let client = Arc::new(RecordingPromptClient::default());
+        let only_capable = TargetPrompts::default().with("capable", CAPABLE_PROMPT);
+
+        let call =
+            routed_prompt_call(&client, prompt_router(&client, "efficient", only_capable)).await?;
+
+        assert!(
+            call.instructions.is_empty(),
+            "one target's prompt must not leak onto another: {:?}",
+            call.instructions
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_prompt_follows_the_target_whichever_classifier_picked_it() -> Result<()> {
+        // The first classifier abstains, so the second decides; the prompt follows the
+        // target the cascade settled on rather than the classifier that named it.
+        struct Abstains;
+
+        #[async_trait]
+        impl Classifier for Abstains {
+            async fn score(
+                &self,
+                _state: &mut (),
+                _request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<(Classification, Option<Response>)> {
+                Ok((Classification::Ambiguous(Vec::new()), None))
+            }
+        }
+
+        let client = Arc::new(RecordingPromptClient::default());
+        let router = FallThrough::new(prompt_targets(&client, &["capable", "efficient"]))
+            .with_processor(Arc::new(SystemPromptProcessor::new(target_prompts())))
+            .with_classifier(Arc::new(Abstains))
+            .with_classifier(Arc::new(DefaultTarget::new("capable")));
+
+        let call = routed_prompt_call(&client, router).await?;
+
+        assert_eq!(call.target, "capable");
+        assert_eq!(call.instructions, vec![CAPABLE_PROMPT.to_string()]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_note_reaches_the_model_in_the_conversation() -> Result<()> {
+        // Appends a note to every outbound request, the way a router would on a turn it
+        // wants to explain.
+        struct Noting;
+
+        #[async_trait]
+        impl Processor for Noting {
+            async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
+                if let Event::Decision { request, .. } = event {
+                    append_note(request, NOTE);
+                }
+                Ok(())
+            }
+        }
+
+        let client = Arc::new(RecordingPromptClient::default());
+        let router = FallThrough::new(prompt_targets(&client, &["capable", "efficient"]))
+            .with_processor(Arc::new(Noting))
+            .with_classifier(Arc::new(DefaultTarget::new("capable")));
+
+        let call = routed_prompt_call(&client, router).await?;
+
+        assert_eq!(call.messages, vec![format!("fix the build|{NOTE}")]);
+        assert!(call.instructions.is_empty(), "a note is not an instruction");
+        Ok(())
+    }
 
     /// Overflows for the named targets and echoes for the rest, recording every call.
     struct OverflowClient {

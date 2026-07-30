@@ -13,7 +13,7 @@ pub mod passthrough;
 pub mod rand;
 pub mod stage;
 
-pub use fall_through::{DefaultTarget, FallThrough, FallThroughDecision};
+pub(crate) use fall_through::{DefaultTarget, FallThrough};
 pub use llm_class::{LlmTaskClassifier, TaskClassifierConfig};
 pub use noop::{Noop, NoopDecision};
 pub use passthrough::{Passthrough, PassthroughDecision};
