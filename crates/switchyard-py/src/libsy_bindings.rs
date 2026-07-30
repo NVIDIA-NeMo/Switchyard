@@ -188,7 +188,7 @@ fn random_algorithm(
 }
 
 /// Construct task-level LLM classifier routing.
-#[pyfunction(name = "llm_classifier")]
+#[pyfunction(name = "llm_task_classifier")]
 #[pyo3(signature = (
     judge_target,
     efficient_target,
@@ -202,7 +202,7 @@ fn random_algorithm(
     recent_turn_window=None
 ))]
 #[allow(clippy::too_many_arguments)]
-fn llm_classifier_algorithm(
+fn llm_task_classifier_algorithm(
     py: Python<'_>,
     judge_target: Py<PyLlmTarget>,
     efficient_target: Py<PyLlmTarget>,
@@ -359,7 +359,10 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmTarget>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
-    libsy_module.add_function(wrap_pyfunction!(llm_classifier_algorithm, &libsy_module)?)?;
+    libsy_module.add_function(wrap_pyfunction!(
+        llm_task_classifier_algorithm,
+        &libsy_module
+    )?)?;
     libsy_module.add_function(wrap_pyfunction!(stage_router_algorithm, &libsy_module)?)?;
     libsy_module.add("LibsyError", module.getattr("LibsyError")?)?;
     module.add_submodule(&libsy_module)?;

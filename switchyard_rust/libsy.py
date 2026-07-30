@@ -15,7 +15,7 @@ _EXPORTS = frozenset(
         "Algorithm",
         "LibsyError",
         "LlmTarget",
-        "llm_classifier",
+        "llm_task_classifier",
         "noop",
         "random",
         "stage_router",
@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 
     def random(targets: Sequence[LlmTarget]) -> Algorithm: ...
 
-    def llm_classifier(
+    def llm_task_classifier(
         judge_target: LlmTarget,
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
