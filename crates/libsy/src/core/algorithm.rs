@@ -295,6 +295,8 @@ pub struct LlmTarget {
     /// The client that serves this target's calls by default, or `None` (then the
     /// stream consumer must serve them).
     pub llm_client: Option<Arc<dyn RoutedLlmClient>>,
+    /// Context window in tokens. `None` means unconstrained.
+    pub max_context_tokens: Option<usize>,
 }
 
 /// The set of targets an algorithm may route among. An algorithm is constructed
@@ -658,6 +660,7 @@ mod tests {
             .map(|(name, has_client)| LlmTarget {
                 semantic_name: name.to_string(),
                 llm_client: has_client.then(|| Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
+                max_context_tokens: None,
             })
             .collect();
         LlmTargetSet::new(targets)
@@ -699,6 +702,7 @@ mod tests {
         let target = LlmTarget {
             semantic_name: "stream/model".to_string(),
             llm_client: Some(Arc::new(StreamingClient { chunks }) as Arc<dyn RoutedLlmClient>),
+            max_context_tokens: None,
         };
         orch(LlmTargetSet::new(vec![target]))
     }
@@ -930,6 +934,7 @@ mod tests {
             llm_client: Some(Arc::new(BarrierClient {
                 barrier: barrier.clone(),
             })),
+            max_context_tokens: None,
         }]);
         // One shared algorithm driven by many concurrent requests.
         let algo = orch(targets);
@@ -1298,8 +1303,10 @@ mod tests {
             llm_client: Some(Arc::new(GatedEchoClient {
                 gate: started.clone(),
             })),
+            max_context_tokens: None,
         };
         let loser = LlmTarget {
+            max_context_tokens: None,
             semantic_name: "loser".to_string(),
             llm_client: Some(Arc::new(LoserClient {
                 started,
@@ -1414,6 +1421,7 @@ mod tests {
 
         let all_started = Arc::new(tokio::sync::Notify::new());
         let target = LlmTarget {
+            max_context_tokens: None,
             semantic_name: "pending".to_string(),
             llm_client: Some(Arc::new(EnterThenPend {
                 started: Arc::new(AtomicUsize::new(0)),

@@ -173,6 +173,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
                     .map(|model| LlmTarget {
                         semantic_name: (*model).to_string(),
                         llm_client: Some(Arc::clone(&client)),
+                        max_context_tokens: None,
                     })
                     .collect(),
             );
@@ -597,10 +598,12 @@ fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<S
         LlmTarget {
             semantic_name: "strong".to_string(),
             llm_client: Some(strong),
+            max_context_tokens: None,
         },
         LlmTarget {
             semantic_name: "weak".to_string(),
             llm_client: Some(weak),
+            max_context_tokens: None,
         },
     ]);
     let stage: Arc<dyn Algorithm> = Arc::new(

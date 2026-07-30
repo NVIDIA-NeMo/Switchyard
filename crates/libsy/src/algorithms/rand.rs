@@ -225,6 +225,7 @@ mod tests {
             .map(|name| LlmTarget {
                 semantic_name: (*name).to_string(),
                 llm_client: Some(Arc::new(EchoClient)),
+                max_context_tokens: None,
             })
             .collect();
         LlmTargetSet::new(targets)

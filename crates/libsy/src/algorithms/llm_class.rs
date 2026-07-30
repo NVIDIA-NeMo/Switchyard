@@ -491,6 +491,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
+            max_context_tokens: None,
         };
         Ok(Arc::new(LlmTaskClassifier::new(
             target("judge"),
@@ -570,6 +571,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
+            max_context_tokens: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(
             target("judge"),
@@ -600,6 +602,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
+            max_context_tokens: None,
         };
         let router = Arc::new(LlmTaskClassifier::new(
             target("judge"),
@@ -650,6 +653,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: None,
+            max_context_tokens: None,
         };
         for bad in [1.5, -0.1, f64::NAN, f64::INFINITY] {
             assert!(

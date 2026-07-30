@@ -412,6 +412,7 @@ fn algo(name: &str, model: &str, client: Option<Arc<dyn RoutedLlmClient>>) -> Ar
         target_set: LlmTargetSet::new(vec![LlmTarget {
             semantic_name: model.to_string(),
             llm_client: client,
+            max_context_tokens: None,
         }]),
     })
 }
@@ -740,6 +741,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
         llm_client: Some(client.clone()),
+        max_context_tokens: None,
     };
     let targets = LlmTargetSet::new(vec![target("weak"), target("strong")]);
     let weak = targets.get_target("weak")?;

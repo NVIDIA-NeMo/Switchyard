@@ -63,6 +63,7 @@ fn targets() -> LlmTargetSet {
             .map(|name| LlmTarget {
                 semantic_name: (*name).to_string(),
                 llm_client: Some(Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
+                max_context_tokens: None,
             })
             .collect(),
     )

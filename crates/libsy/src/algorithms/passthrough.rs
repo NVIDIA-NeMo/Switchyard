@@ -108,6 +108,7 @@ mod tests {
         let algorithm: Arc<dyn Algorithm> = Arc::new(super::Passthrough::new(LlmTarget {
             semantic_name: MODEL_ID.to_string(),
             llm_client: Some(Arc::new(EchoClient)),
+            max_context_tokens: None,
         }));
         let (trace, response) = algorithm.run(Context::default(), request).await?;
 

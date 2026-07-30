@@ -24,6 +24,7 @@ use crate::{
     Algorithm, Context, Decision, Driver, LibsyError, LlmClientError, LlmTarget, LlmTargetSet,
     Request, Response, Result, RoutedLlmClient,
 };
+use switchyard_protocol::ContentBlock;
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
 
@@ -175,6 +176,14 @@ where
         request: Request,
     ) -> Result<Response> {
         loop {
+            if exceeds_window(&target, &request) && ctx.exclude_target(&target.semantic_name) {
+                if let Ok(next) = self.targets.resolve_target(&target.semantic_name, &ctx) {
+                    decision = self.fallback_decision(&target, &next);
+                    target = next;
+                    driver.info(ctx.clone(), decision.clone()).await?;
+                    continue;
+                }
+            }
             let result = driver
                 .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
                 .await;
@@ -296,6 +305,27 @@ where
     }
 }
 
+/// Rough estimate at four characters per token.
+fn estimated_tokens(request: &Request) -> usize {
+    let text: usize = request
+        .llm_request
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .map(|block| match block {
+            ContentBlock::Text { text } | ContentBlock::Reasoning { text, .. } => text.len(),
+            _ => 0,
+        })
+        .sum();
+    text / 4
+}
+
+fn exceeds_window(target: &LlmTarget, request: &Request) -> bool {
+    target
+        .max_context_tokens
+        .is_some_and(|window| estimated_tokens(request) > window)
+}
+
 fn default_decision_reason(_name: &str, winner: &Score) -> String {
     format!(
         "fall-through selected {} (confidence {:.3})",
@@ -398,6 +428,7 @@ mod tests {
                 .map(|name| LlmTarget {
                     semantic_name: name.to_string(),
                     llm_client: Some(Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
+                    max_context_tokens: None,
                 })
                 .collect(),
         )
@@ -523,9 +554,62 @@ mod tests {
                     llm_client: Some(Arc::new(OverflowClient {
                         overflowing: overflowing.to_vec(),
                     }) as Arc<dyn RoutedLlmClient>),
+                    max_context_tokens: None,
                 })
                 .collect(),
         )
+    }
+
+    fn sized_targets(specs: &[(&str, Option<usize>)]) -> LlmTargetSet {
+        LlmTargetSet::new(
+            specs
+                .iter()
+                .map(|(name, window)| LlmTarget {
+                    semantic_name: name.to_string(),
+                    llm_client: Some(Arc::new(EchoClient) as Arc<dyn RoutedLlmClient>),
+                    max_context_tokens: *window,
+                })
+                .collect(),
+        )
+    }
+
+    fn request_of(chars: usize) -> Request {
+        let mut r = request();
+        r.llm_request.messages = vec![Message::text(Role::User, "w".repeat(chars))];
+        r
+    }
+
+    #[tokio::test]
+    async fn a_target_too_small_for_the_request_is_skipped() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::<()>::new(sized_targets(&[("weak", Some(1_000)), ("strong", None)]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        let (model, _) = run_request(&router, request_of(40_000)).await?;
+        assert_eq!(model, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_request_that_fits_uses_the_selected_target() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::<()>::new(sized_targets(&[("weak", Some(1_000)), ("strong", None)]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        let (model, _) = run_request(&router, request_of(400)).await?;
+        assert_eq!(model, "weak");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_target_big_enough_still_makes_the_call() -> Result<()> {
+        let router = Arc::new(
+            FallThrough::<()>::new(sized_targets(&[("weak", Some(10)), ("strong", Some(10))]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        let (model, _) = run_request(&router, request_of(40_000)).await?;
+        assert_eq!(model, "strong");
+        Ok(())
     }
 
     #[tokio::test]
@@ -780,6 +864,7 @@ mod tests {
         let targets = LlmTargetSet::new(vec![LlmTarget {
             semantic_name: "strong".to_string(),
             llm_client: Some(Arc::new(CapturingClient(seen_by_model.clone()))),
+            max_context_tokens: None,
         }]);
         let router = FallThrough::new(targets)
             .with_processor(Arc::new(Appender("first")))

@@ -239,6 +239,7 @@ mod tests {
             LlmTarget {
                 semantic_name: "judge".to_string(),
                 llm_client: None,
+                max_context_tokens: None,
             },
             TestPolicy,
         )

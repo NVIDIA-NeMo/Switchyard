@@ -59,6 +59,7 @@ fn targets() -> LlmTargetSet {
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
         llm_client: Some(client.clone()),
+        max_context_tokens: None,
     };
     LlmTargetSet::new(vec![target(CLASSIFIER), target(STRONG), target(WEAK)])
 }

@@ -129,6 +129,7 @@ impl ServerConfig {
                     LlmTarget {
                         semantic_name: config.id.clone(),
                         llm_client: Some(Arc::clone(client)),
+                        max_context_tokens: config.max_context_tokens,
                     },
                 ))
             })
@@ -153,6 +154,8 @@ struct LlmClientConfig {
 struct TargetConfig {
     id: String,
     llm_client: String,
+    #[serde(default)]
+    max_context_tokens: Option<usize>,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
 }

@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
     let targets = LlmTargetSet::new(vec![LlmTarget {
         semantic_name: "stream/model".to_string(),
         llm_client: None,
+        max_context_tokens: None,
     }]);
     let algo: Arc<dyn Algorithm> = Arc::new(Random::new(targets, None, None)?);
 

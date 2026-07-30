@@ -432,6 +432,7 @@ async fn main() -> Result<()> {
             .map(|model| LlmTarget {
                 semantic_name: model.to_string(),
                 llm_client: Some(client.clone()),
+                max_context_tokens: None,
             })
             .collect(),
     );
@@ -537,6 +538,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
+            max_context_tokens: None,
         };
         let mut targets: Vec<LlmTarget> = candidates.iter().map(|n| target(n)).collect();
         targets.push(target(judge));
@@ -560,6 +562,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
+            max_context_tokens: None,
         };
         let mut targets: Vec<LlmTarget> = candidates.iter().map(|n| target(n)).collect();
         targets.push(target(judge));
@@ -728,6 +731,7 @@ mod tests {
         let target = |name: &str| LlmTarget {
             semantic_name: name.to_string(),
             llm_client: Some(client.clone()),
+            max_context_tokens: None,
         };
         let algo = EnsembleOrchAlgo::new(
             vec!["a/model".to_string(), "b/model".to_string()],
