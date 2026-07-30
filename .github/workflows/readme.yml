@@ -2,15 +2,18 @@ name: README
 
 # Executable coverage for README.md.
 #
-# Fails when the README drifts from the product — a broken Python snippet, a
-# renamed YAML route type or key, or a renamed CLI subcommand / flag. The
-# exercise lives in tests/readme/ so it reproduces locally with
+# Fails when the README drifts from the product — malformed Rust server TOML, a
+# broken Python snippet, a renamed YAML route type or key in the linked routing
+# guides, or a renamed CLI subcommand / flag. The exercise lives in
+# tests/readme/ so it reproduces locally with
 # `uv run pytest tests/readme`.
 
 on:
   pull_request:
     paths:
       - "README.md"
+      - "Cargo.toml"
+      - "crates/switchyard-server/**"
       - "switchyard/**"
       - "switchyard_rust/**"
       - "tests/readme/**"
@@ -21,6 +24,8 @@ on:
     branches: [main]
     paths:
       - "README.md"
+      - "Cargo.toml"
+      - "crates/switchyard-server/**"
       - "switchyard/**"
       - "switchyard_rust/**"
       - "tests/readme/**"
@@ -49,10 +54,11 @@ jobs:
       - name: Install
         run: uv sync --locked
       - name: Exercise the README
-        # Single invocation: pytest picks up tests/readme/ (YAML schema + CLI
-        # checks) AND --markdown-docs execs the Python snippet from the README.
-        # The local mock-upstream fixture lives in tests/readme/conftest.py so
-        # it only loads when collecting from that subtree.
+        # Single invocation: pytest picks up tests/readme/ (Rust TOML, linked
+        # YAML schema, and CLI checks) AND --markdown-docs execs the Python
+        # snippet from the README. The local mock-upstream fixture lives in
+        # tests/readme/conftest.py so it only loads when collecting from that
+        # subtree.
         run: uv run pytest tests/readme --markdown-docs README.md -v
         env:
           # The YAML examples reference ${NVIDIA_API_KEY} etc.; stub so the

@@ -3,17 +3,19 @@
 
 """Executable coverage for ``README.md``.
 
-Companion to ``tests/getting_started/``. Three guards:
+Companion to ``tests/getting_started/``. Four guards:
 
 * the "Use as a Python library" snippet executes (via ``--markdown-docs`` +
   the local mock-upstream fixture in ``conftest.py``);
-* README and routing-guide examples validate against the route-bundle schema;
+* the Rust server TOML example parses with the expected top-level shape;
+* linked routing-guide examples validate against the legacy route-bundle schema;
 * every CLI subcommand / flag the README names still exists.
 """
 
 from __future__ import annotations
 
 import argparse
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -115,12 +117,25 @@ routes:
         _validate_route_blocks(text, Path("example.md"))
 
 
-def test_all_yaml_route_blocks_in_readme_validate_against_the_schema(
+def test_rust_server_toml_blocks_in_readme_parse(
     readme_text: str,
 ) -> None:
-    assert _validate_route_blocks(readme_text, README_PATH), (
-        "no README yaml block parsed as a route bundle"
-    )
+    blocks = _code_blocks(readme_text, "toml")
+    server_configs = [
+        tomllib.loads(block)
+        for block in blocks
+        if "schema_version" in block
+        and "[llm_clients." in block
+        and "[targets." in block
+        and "[routes." in block
+    ]
+
+    assert server_configs, "no README TOML block parsed as a Rust server config"
+    for config in server_configs:
+        assert config["schema_version"] == 1
+        assert config["llm_clients"]
+        assert config["targets"]
+        assert config["routes"]
 
 
 def test_canonical_routing_docs_validate_against_the_route_bundle_schema() -> None:
