@@ -182,7 +182,7 @@ Then run the three-task smoke benchmark in the foreground:
 SWITCHYARD_DOCKER_NETWORK=switchyard-litellm \
 bash benchmark/run-baseline.sh \
   --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --routing-profiles examples/experimental/litellm/benchmark-route.yaml \
+  --server-config examples/experimental/litellm/benchmark-route.toml \
   --task-list-file examples/experimental/litellm/benchmark-tasks.txt \
   --model litellm-random \
   --agent codex \
@@ -224,7 +224,7 @@ PATH="$CODEX_SHIM_DIR:$PATH" \
 SWITCHYARD_DOCKER_NETWORK=switchyard-litellm \
 bash benchmark/run-baseline.sh \
   --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --routing-profiles examples/experimental/litellm/benchmark-route.yaml \
+  --server-config examples/experimental/litellm/benchmark-route.toml \
   --task-list-file examples/experimental/litellm/benchmark-tasks.txt \
   --model litellm-random \
   --agent codex \
