@@ -9,9 +9,12 @@
 //! (its `argmax`); the [`Decision`] is published and then replayed to the processors so
 //! stateful ones (latch, affinity) can bind it.
 //!
-//! The default `FallThrough<()>` has no state. Stateful compositions share one private state
-//! value across turns with the same session ID. Requests without a session ID use unretained
-//! per-run state.
+//! The default `FallThrough<()>` carries no composition state. Stateful compositions share one
+//! private state value across turns with the same session ID. Requests without a session ID use
+//! unretained per-run state.
+//!
+//! Every composition retains one thing regardless: a target that overflows its context window is
+//! remembered for the rest of its session and skipped on later turns.
 
 use std::{
     collections::{HashMap, HashSet},
