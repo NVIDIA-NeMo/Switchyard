@@ -8,7 +8,6 @@ use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
-    decode_stream_event_preserving, encode_stream_event,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -58,19 +57,14 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
         let mut state = StreamTranslationState::new(format, format);
         let preserved = engine.decode_stream_event(&mut state, format, event.clone())?;
         let replayed = engine.encode_stream_event(&mut state, format, preserved)?;
-        assert_eq!(replayed, vec![event.clone()]);
-
-        let mut state = StreamTranslationState::new(format, format);
-        let preserved = decode_stream_event_preserving(&mut state, format, event.clone());
-        let replayed = encode_stream_event(&mut state, format, preserved);
         assert_eq!(replayed, vec![event]);
     }
     Ok(())
 }
 
 // Replay emits the preserved event without running the encoder, so the encoder never sees the
-// stop it would normally record. Both replay paths must still leave the stream marked finished
-// or `finish_stream` synthesizes a terminal the client already received.
+// stop it would normally record. Replay must still leave the stream marked finished or
+// `finish_stream` synthesizes a terminal the client already received.
 #[test]
 fn replayed_terminal_event_suppresses_synthesized_finish() -> TestResult {
     let cases = [
@@ -119,18 +113,6 @@ fn replayed_terminal_event_suppresses_synthesized_finish() -> TestResult {
         assert!(
             engine.finish_stream(&mut state, format)?.is_empty(),
             "{format:?} engine replay already delivered a terminal event",
-        );
-
-        let mut state = StreamTranslationState::new(format, format);
-        let mut replayed = Vec::new();
-        for event in &events {
-            let preserved = decode_stream_event_preserving(&mut state, format, event.clone());
-            replayed.extend(encode_stream_event(&mut state, format, preserved));
-        }
-        assert_eq!(replayed, events, "{format:?} codec replay");
-        assert!(
-            engine.finish_stream(&mut state, format)?.is_empty(),
-            "{format:?} codec replay already delivered a terminal event",
         );
     }
     Ok(())
