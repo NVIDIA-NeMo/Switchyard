@@ -10,6 +10,7 @@ mod fall_through;
 pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
+pub mod prefill_probe;
 pub mod rand;
 pub mod stage;
 
@@ -17,6 +18,10 @@ pub use fall_through::{DefaultTarget, FallThrough, FallThroughDecision};
 pub use llm_class::{LlmTaskClassifier, TaskClassifierConfig};
 pub use noop::{Noop, NoopDecision};
 pub use passthrough::{Passthrough, PassthroughDecision};
+pub use prefill_probe::{
+    PrefillFeatures, PrefillProbe, PrefillProbeClassifier, PrefillProbeClassifierConfig,
+    DEFAULT_PREFILL_PROBE_CACHE_CAPACITY,
+};
 pub use rand::{Random, RandomClassifier, RandomDecision};
 pub use stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use util::{
