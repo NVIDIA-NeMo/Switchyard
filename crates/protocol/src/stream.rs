@@ -172,14 +172,21 @@ fn push_checked_chunk(
 /// additionally retains the parsed source JSON value, so a same-format round trip replays that
 /// value rather than the original bytes: SSE framing, whitespace, and object key order are not
 /// preserved. Normalized children stay available to algorithms and cross-format encoders.
+///
+/// `ProviderEvent` is intentionally a transport envelope rather than provider-neutral content.
+/// It lives in the protocol crate because [`LlmResponseStream`] crosses the host/algorithm
+/// boundary. Algorithms consume its normalized children; only `switchyard-translation`
+/// interprets its source format and raw value for replay. This mirrors
+/// [`PreservationMetadata`](crate::PreservationMetadata) for buffered bodies without making
+/// provider fields part of the semantic IR.
 /// `switchyard-translation` re-exports this type as `ConversationStreamEvent`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
     /// One preserved provider event paired with the neutral events decoded from it.
     ProviderEvent {
-        /// Provider format that produced `raw`.
+        /// Opaque source-format identity used by the translation layer.
         source: FormatId,
-        /// Source event as a parsed JSON value.
+        /// Opaque parsed source event retained for translation-layer replay.
         raw: Value,
         /// Provider-neutral events decoded from `raw`, in source order.
         normalized: Vec<LlmResponseChunk>,
