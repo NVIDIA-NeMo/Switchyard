@@ -230,27 +230,25 @@ pub(crate) fn mark_replayed_terminal(
     }
 }
 
-pub(crate) fn encode_stream_chunk(
+pub(crate) fn encode_response_stream_event(
     state: &mut StreamTranslationState,
     target_codec: &dyn StreamCodec,
     target: &FormatId,
-    event: LlmResponseChunk,
+    event: crate::LlmResponseStreamEvent,
 ) -> Vec<Value> {
-    match event {
-        LlmResponseChunk::ProviderEvent {
-            source,
-            raw,
-            normalized,
-        } if &source == target => {
+    let (preservation, normalized) = event.into_parts();
+    if let Some(preservation) = preservation {
+        let (source, raw) = preservation.into_parts();
+        if &source == target {
             mark_replayed_terminal(state, &normalized);
-            vec![raw]
+            return vec![raw];
         }
-        LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
-            .into_iter()
-            .flat_map(|event| encode_stream_chunk(state, target_codec, target, event))
-            .collect(),
-        event => target_codec.encode_event(state, event),
     }
+
+    normalized
+        .into_iter()
+        .flat_map(|chunk| target_codec.encode_event(state, chunk))
+        .collect()
 }
 
 /// Encodes one neutral stream event with the built-in codec registry.
@@ -259,10 +257,9 @@ pub fn encode_stream_event(
     target: impl Into<FormatId>,
     event: LlmResponseChunk,
 ) -> Vec<Value> {
-    let target = target.into();
     StreamCodecRegistry::with_builtins()
-        .codec(target.clone())
-        .map(|codec| encode_stream_chunk(state, codec.as_ref(), &target, event))
+        .codec(target)
+        .map(|codec| codec.encode_event(state, event))
         .unwrap_or_else(|error| vec![json!({"error": {"message": error.to_string()}})])
 }
 

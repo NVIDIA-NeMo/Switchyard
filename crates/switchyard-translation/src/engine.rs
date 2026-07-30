@@ -13,14 +13,14 @@ use crate::codecs::anthropic::AnthropicMessagesCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
 use crate::codecs::stream::{
-    StreamCodecRegistry, StreamTranslationState, encode_stream_chunk,
+    StreamCodecRegistry, StreamTranslationState, encode_response_stream_event,
 };
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
 use crate::llm::{AggLlmResponse, LlmRequest};
 use crate::policy::TranslationPolicy;
-use crate::LlmResponseChunk;
+use crate::LlmResponseStreamEvent;
 
 /// Encoded translation result with any diagnostics emitted along the way.
 #[derive(Debug)]
@@ -255,16 +255,12 @@ impl TranslationEngine {
         state: &mut StreamTranslationState,
         source: impl Into<FormatId>,
         event: Value,
-    ) -> Result<LlmResponseChunk> {
+    ) -> Result<LlmResponseStreamEvent> {
         let source = source.into();
         let source_codec = self.stream_registry.codec(source.clone())?;
         state.source = Some(source.clone());
         let normalized = source_codec.decode_event(state, &event);
-        Ok(LlmResponseChunk::ProviderEvent {
-            source,
-            raw: event,
-            normalized,
-        })
+        Ok(LlmResponseStreamEvent::preserved(source, event, normalized))
     }
 
     /// Encodes one neutral or preserved stream event for a target provider.
@@ -276,12 +272,12 @@ impl TranslationEngine {
         &self,
         state: &mut StreamTranslationState,
         target: impl Into<FormatId>,
-        event: LlmResponseChunk,
+        event: LlmResponseStreamEvent,
     ) -> Result<Vec<Value>> {
         let target = target.into();
         let target_codec = self.stream_registry.codec(target.clone())?;
         state.target = Some(target.clone());
-        Ok(encode_stream_chunk(
+        Ok(encode_response_stream_event(
             state,
             target_codec.as_ref(),
             &target,

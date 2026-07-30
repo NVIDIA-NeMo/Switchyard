@@ -180,7 +180,6 @@ fn encode_responses_stream(
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             vec![json!({"type": "error", "message": message})]
         }
-        LlmResponseChunk::ProviderEvent { .. } => Vec::new(),
     }
 }
 

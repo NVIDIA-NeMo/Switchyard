@@ -40,7 +40,8 @@ use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
 };
 use switchyard_protocol::{
-    LlmClientError, LlmResponseChunk, StopReason, text_request, text_response,
+    LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
+    text_response,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -758,16 +759,16 @@ impl RoutedLlmClient for StreamingUsageClient {
             cache: Usage::cache_details(Some(8), None),
             ..Usage::default()
         };
-        let chunks = vec![
-            Ok(LlmResponseChunk::MessageStart {
+        let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
+            LlmResponseChunk::MessageStart {
                 id: Some("obs-stream-response".to_string()),
                 model: Some(decision.selected_model().to_string()),
-            }),
-            Ok(LlmResponseChunk::Usage(usage)),
-            Ok(LlmResponseChunk::MessageStop {
+            },
+            LlmResponseChunk::Usage(usage),
+            LlmResponseChunk::MessageStop {
                 reason: Some("end_turn".to_string()),
-            }),
-        ];
+            },
+        ]))];
         Ok(Response {
             llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter(chunks))),
             metadata: None,

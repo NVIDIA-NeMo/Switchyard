@@ -17,10 +17,13 @@ use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use tracing::Instrument;
 
-/// The request/response protocol types, re-exported from [`switchyard_protocol`].
-/// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered response;
-/// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
-/// (a live [`LlmResponseStream`] or the terminal aggregate).
+/// The request/response protocol types come from [`switchyard_protocol`].
+/// [`switchyard_protocol::LlmRequest`] is the normalized request;
+/// [`switchyard_protocol::AggLlmResponse`] is the buffered response;
+/// [`switchyard_protocol::LlmResponseChunk`] is normalized streaming content;
+/// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
+/// [`switchyard_protocol::LlmResponse`] carries either a live
+/// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{
     Context, Decision, LlmClientError, Request, Response, RoutedLlmClient, Signals, Usage,
 };
@@ -971,7 +974,13 @@ mod tests {
             _request: Request,
             _decision: Arc<dyn Decision>,
         ) -> std::result::Result<Response, LlmClientError> {
-            let stream = futures::stream::iter(self.chunks.clone().into_iter().map(Ok)).boxed();
+            let stream = futures::stream::iter(
+                self.chunks
+                    .clone()
+                    .into_iter()
+                    .map(|chunk| Ok(chunk.into())),
+            )
+            .boxed();
             Ok(Response {
                 llm_response: LlmResponse::Stream(stream),
                 metadata: None,

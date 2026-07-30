@@ -184,7 +184,6 @@ fn encode_anthropic_stream(
         LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
             vec![json!({"type": "error", "error": {"message": message}})]
         }
-        LlmResponseChunk::ProviderEvent { .. } => Vec::new(),
     }
 }
 
