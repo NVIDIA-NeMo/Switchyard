@@ -9,7 +9,11 @@ use async_trait::async_trait;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
-use switchyard_libsy::algorithms::{Noop, Random};
+use switchyard_libsy::algorithms::{
+    LlmFallback, LlmTaskClassifier, Noop, Random, StageRouter, StageRouterConfig,
+    TaskClassifierConfig,
+};
+use switchyard_libsy::stage_router::{HandoffNoteConfig, PickerMode};
 use switchyard_libsy::{
     AggLlmResponse, Algorithm, Context, Decision, LibsyError as RustLibsyError, LlmClientError,
     LlmResponse, LlmTarget, LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
@@ -183,6 +187,160 @@ fn random_algorithm(
     Ok(PyAlgorithm::new(Arc::new(algorithm)))
 }
 
+/// Construct task-level LLM classifier routing.
+#[pyfunction(name = "llm_classifier")]
+#[pyo3(signature = (
+    judge_target,
+    efficient_target,
+    capable_target,
+    *,
+    base_threshold,
+    min_confidence=0.0,
+    capability_elevated_floor=None,
+    session_affinity=false,
+    message_hash_fallback=false,
+    recent_turn_window=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn llm_classifier_algorithm(
+    py: Python<'_>,
+    judge_target: Py<PyLlmTarget>,
+    efficient_target: Py<PyLlmTarget>,
+    capable_target: Py<PyLlmTarget>,
+    base_threshold: f64,
+    min_confidence: f64,
+    capability_elevated_floor: Option<f64>,
+    session_affinity: bool,
+    message_hash_fallback: bool,
+    recent_turn_window: Option<usize>,
+) -> PyResult<PyAlgorithm> {
+    let config = TaskClassifierConfig {
+        base_threshold,
+        min_confidence,
+        capability_elevated_floor,
+        session_affinity,
+        message_hash_fallback,
+        recent_turn_window,
+    };
+    let algorithm = LlmTaskClassifier::new(
+        judge_target.bind(py).try_borrow()?.clone_core(py),
+        efficient_target.bind(py).try_borrow()?.clone_core(py),
+        capable_target.bind(py).try_borrow()?.clone_core(py),
+        config,
+    )
+    .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(PyAlgorithm::new(Arc::new(algorithm)))
+}
+
+/// Construct signal-driven stage routing with an optional LLM classifier fallback.
+#[pyfunction(name = "stage_router")]
+#[pyo3(signature = (
+    capable_target,
+    efficient_target,
+    *,
+    picker,
+    confidence_threshold,
+    recent_window=None,
+    escalation_note=None,
+    deescalation_note=None,
+    only_on_wrong_signal_escalation=true,
+    capable_system_prompt=None,
+    efficient_system_prompt=None,
+    classifier_target=None,
+    classifier_base_threshold=None,
+    classifier_min_confidence=0.0,
+    classifier_capability_elevated_floor=None,
+    classifier_session_affinity=false,
+    classifier_message_hash_fallback=false,
+    classifier_recent_turn_window=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn stage_router_algorithm(
+    py: Python<'_>,
+    capable_target: Py<PyLlmTarget>,
+    efficient_target: Py<PyLlmTarget>,
+    picker: &str,
+    confidence_threshold: f64,
+    recent_window: Option<usize>,
+    escalation_note: Option<String>,
+    deescalation_note: Option<String>,
+    only_on_wrong_signal_escalation: bool,
+    capable_system_prompt: Option<String>,
+    efficient_system_prompt: Option<String>,
+    classifier_target: Option<Py<PyLlmTarget>>,
+    classifier_base_threshold: Option<f64>,
+    classifier_min_confidence: f64,
+    classifier_capability_elevated_floor: Option<f64>,
+    classifier_session_affinity: bool,
+    classifier_message_hash_fallback: bool,
+    classifier_recent_turn_window: Option<usize>,
+) -> PyResult<PyAlgorithm> {
+    let mode = match picker {
+        "capable_first" => PickerMode::CapableFirst,
+        "efficient_first" => PickerMode::EfficientFirst,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "picker must be 'capable_first' or 'efficient_first', got {other:?}"
+            )));
+        }
+    };
+    let capable = capable_target.bind(py).try_borrow()?.clone_core(py);
+    let efficient = efficient_target.bind(py).try_borrow()?.clone_core(py);
+    let mut config = StageRouterConfig::new(mode, confidence_threshold);
+    config.recent_window = recent_window;
+    config.handoff_notes = match (escalation_note, deescalation_note) {
+        (Some(escalation), deescalation) => Some(HandoffNoteConfig::new(
+            escalation,
+            deescalation,
+            only_on_wrong_signal_escalation,
+        )),
+        (None, Some(_)) => {
+            return Err(PyValueError::new_err(
+                "deescalation_note requires escalation_note",
+            ));
+        }
+        (None, None) => None,
+    };
+    if let Some(prompt) = capable_system_prompt {
+        config.tier_prompts = config
+            .tier_prompts
+            .with(capable.semantic_name.clone(), prompt);
+    }
+    if let Some(prompt) = efficient_system_prompt {
+        config.tier_prompts = config
+            .tier_prompts
+            .with(efficient.semantic_name.clone(), prompt);
+    }
+    config.llm_fallback = match (classifier_target, classifier_base_threshold) {
+        (Some(target), Some(base_threshold)) => Some(LlmFallback {
+            judge_target: target.bind(py).try_borrow()?.clone_core(py),
+            config: TaskClassifierConfig {
+                base_threshold,
+                min_confidence: classifier_min_confidence,
+                capability_elevated_floor: classifier_capability_elevated_floor,
+                session_affinity: classifier_session_affinity,
+                message_hash_fallback: classifier_message_hash_fallback,
+                recent_turn_window: classifier_recent_turn_window,
+            },
+        }),
+        (Some(_), None) => {
+            return Err(PyValueError::new_err(
+                "classifier_target requires classifier_base_threshold",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(PyValueError::new_err(
+                "classifier_base_threshold requires classifier_target",
+            ));
+        }
+        (None, None) => None,
+    };
+
+    let algorithm = StageRouter::new(capable, efficient, config)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(PyAlgorithm::new(Arc::new(algorithm)))
+}
+
 fn other_python_error(error: PyErr) -> LlmClientError {
     LlmClientError::Ffi {
         source: Box::new(error),
@@ -201,6 +359,8 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     libsy_module.add_class::<PyLlmTarget>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
+    libsy_module.add_function(wrap_pyfunction!(llm_classifier_algorithm, &libsy_module)?)?;
+    libsy_module.add_function(wrap_pyfunction!(stage_router_algorithm, &libsy_module)?)?;
     libsy_module.add("LibsyError", module.getattr("LibsyError")?)?;
     module.add_submodule(&libsy_module)?;
     Ok(())
