@@ -32,8 +32,6 @@ pub enum Event<'a> {
 /// Collects events as the algorithm runs and mutates the composition's state.
 #[async_trait]
 pub trait Processor<S = ()>: Send + Sync {
-    /// Process an event, accumulating facts into `state`.
-    ///
     /// Process an event, accumulating facts into `state`. Request-bearing events
     /// ([`Event::Request`], [`Event::Decision`]) may also be rewritten in place.
     async fn process(&self, state: &mut S, event: Event<'_>) -> Result<()>;

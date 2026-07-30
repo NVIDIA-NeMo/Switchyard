@@ -70,10 +70,10 @@ pub struct LlmFallback {
     /// Target the judge model is called through. It is not a routing
     /// destination, so it does not belong in the router's target set.
     pub judge_target: LlmTarget,
-    /// How the judge routes, exactly as the standalone capability route takes it.
-    /// Its `recent_turn_window` is worth setting to this router's
-    /// `recent_window`, so the judge reads the same span of the conversation the
-    /// signal scorer scored.
+    /// Judge configuration. `recent_turn_window` is worth setting to this router's
+    /// `recent_window` so the judge reads the same span the signal scorer scored.
+    /// Note: `session_affinity` and `message_hash_fallback` have no effect here —
+    /// the judge runs as a cascade classifier, not a standalone algorithm.
     pub config: TaskClassifierConfig,
 }
 
