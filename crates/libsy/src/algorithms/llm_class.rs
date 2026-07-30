@@ -411,9 +411,6 @@ pub struct LlmTaskClassifier {
     route: FallThrough<State>,
     /// The active classifier — either capability-based or escalation-based.
     inner: Arc<dyn Classifier<State>>,
-    judge_target: LlmTarget,
-    efficient_target: LlmTarget,
-    capable_target: LlmTarget,
 }
 
 impl LlmTaskClassifier {
@@ -471,49 +468,38 @@ impl LlmTaskClassifier {
                 .with_classifier(inner.clone())
                 .with_classifier(Arc::new(capable_fallback)),
             inner,
-            judge_target,
-            efficient_target,
-            capable_target,
         })
     }
 
-    /// Replaces the capability classifier with a trajectory-judge escalation classifier.
+    /// Constructs an escalation variant that calls the efficient model each turn, judges its
+    /// response, and latches to the capable tier once the streak confirms.
     ///
     /// Every unlatched turn calls the efficient model, buffers its reply, and consults the
     /// trajectory judge. Once `config.confirmations` consecutive escalate verdicts accumulate
     /// the session latches to the capable tier for its remainder. A judge outage always stays
     /// efficient.
-    ///
-    /// Session-affinity settings from [`TaskClassifierConfig`] are not carried over: the
-    /// escalation latch is the stickiness mechanism and replaces them.
-    pub fn with_escalation(self, config: EscalationJudgeConfig) -> Result<Self> {
-        let capable_name = self.capable_target.semantic_name.clone();
-        let efficient_name = self.efficient_target.semantic_name.clone();
+    pub fn new_with_escalation(
+        judge_target: LlmTarget,
+        efficient_target: LlmTarget,
+        capable_target: LlmTarget,
+        config: EscalationJudgeConfig,
+    ) -> Result<Self> {
+        let capable_name = capable_target.semantic_name.clone();
+        let efficient_name = efficient_target.semantic_name.clone();
         let confirmations = config.confirmations;
         let esc = Arc::new(EscalationClassifier {
-            judge: build_judge(
-                self.judge_target.clone(),
-                capable_name,
-                efficient_name,
-                config,
-            )?,
-            capable: self.capable_target.clone(),
-            efficient: self.efficient_target.clone(),
+            judge: build_judge(judge_target, capable_name, efficient_name, config)?,
+            capable: capable_target.clone(),
+            efficient: efficient_target.clone(),
             confirmations,
         });
         let inner: Arc<dyn Classifier<State>> = esc.clone();
-        let targets = LlmTargetSet::new(vec![
-            self.capable_target.clone(),
-            self.efficient_target.clone(),
-        ]);
+        let targets = LlmTargetSet::new(vec![capable_target, efficient_target]);
         Ok(Self {
             route: FallThrough::<State>::new_with_state(targets)
                 .with_name(ALGORITHM_NAME)
                 .with_classifier(esc),
             inner,
-            judge_target: self.judge_target,
-            efficient_target: self.efficient_target,
-            capable_target: self.capable_target,
         })
     }
 
@@ -1189,18 +1175,15 @@ mod tests {
             semantic_name: name.to_string(),
             llm_client: Some(c),
         };
-        Ok(Arc::new(
-            LlmTaskClassifier::new(
-                target("judge", judge_client),
-                target("efficient", client.clone()),
-                target("capable", client),
-                test_config(TEST_THRESHOLD),
-            )?
-            .with_escalation(EscalationJudgeConfig {
+        Ok(Arc::new(LlmTaskClassifier::new_with_escalation(
+            target("judge", judge_client),
+            target("efficient", client.clone()),
+            target("capable", client),
+            EscalationJudgeConfig {
                 confirmations: 1,
                 ..EscalationJudgeConfig::default()
-            })?,
-        ))
+            },
+        )?))
     }
 
     #[tokio::test]
