@@ -15,6 +15,7 @@ _EXPORTS = frozenset(
         "Algorithm",
         "LibsyError",
         "LlmTarget",
+        "TaskClassifierConfig",
         "llm_task_classifier",
         "noop",
         "random",
@@ -50,6 +51,19 @@ if TYPE_CHECKING:
         def name(self) -> str: ...
 
     @final
+    class TaskClassifierConfig:
+        def __init__(
+            self,
+            base_threshold: float,
+            *,
+            min_confidence: float = 0.0,
+            capability_elevated_floor: float | None = None,
+            session_affinity: bool = False,
+            message_hash_fallback: bool = False,
+            recent_turn_window: int | None = None,
+        ) -> None: ...
+
+    @final
     class Algorithm:
         async def run(
             self,
@@ -66,12 +80,7 @@ if TYPE_CHECKING:
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
         *,
-        base_threshold: float,
-        min_confidence: float = 0.0,
-        capability_elevated_floor: float | None = None,
-        session_affinity: bool = False,
-        message_hash_fallback: bool = False,
-        recent_turn_window: int | None = None,
+        config: TaskClassifierConfig,
     ) -> Algorithm: ...
 
     def stage_router(
@@ -87,12 +96,7 @@ if TYPE_CHECKING:
         capable_system_prompt: str | None = None,
         efficient_system_prompt: str | None = None,
         classifier_target: LlmTarget | None = None,
-        classifier_base_threshold: float | None = None,
-        classifier_min_confidence: float = 0.0,
-        classifier_capability_elevated_floor: float | None = None,
-        classifier_session_affinity: bool = False,
-        classifier_message_hash_fallback: bool = False,
-        classifier_recent_turn_window: int | None = None,
+        classifier_config: TaskClassifierConfig | None = None,
     ) -> Algorithm: ...
 
 

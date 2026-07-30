@@ -97,6 +97,58 @@ impl PyLlmTarget {
     }
 }
 
+/// Classifier thresholds shared by standalone and stage-router classifiers.
+#[pyclass(
+    name = "TaskClassifierConfig",
+    module = "switchyard.libsy",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+struct PyTaskClassifierConfig {
+    inner: TaskClassifierConfig,
+}
+
+impl PyTaskClassifierConfig {
+    fn clone_core(&self) -> TaskClassifierConfig {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyTaskClassifierConfig {
+    #[new]
+    #[pyo3(signature = (
+        base_threshold,
+        *,
+        min_confidence=0.0,
+        capability_elevated_floor=None,
+        session_affinity=false,
+        message_hash_fallback=false,
+        recent_turn_window=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        base_threshold: f64,
+        min_confidence: f64,
+        capability_elevated_floor: Option<f64>,
+        session_affinity: bool,
+        message_hash_fallback: bool,
+        recent_turn_window: Option<usize>,
+    ) -> Self {
+        Self {
+            inner: TaskClassifierConfig {
+                base_threshold,
+                min_confidence,
+                capability_elevated_floor,
+                session_affinity,
+                message_hash_fallback,
+                recent_turn_window,
+            },
+        }
+    }
+}
+
 /// Opaque handle shared by every Rust-owned algorithm exposed to Python.
 #[pyclass(name = "Algorithm", module = "switchyard.libsy", frozen)]
 struct PyAlgorithm {
@@ -194,39 +246,20 @@ fn random_algorithm(
     efficient_target,
     capable_target,
     *,
-    base_threshold,
-    min_confidence=0.0,
-    capability_elevated_floor=None,
-    session_affinity=false,
-    message_hash_fallback=false,
-    recent_turn_window=None
+    config
 ))]
-#[allow(clippy::too_many_arguments)]
 fn llm_task_classifier_algorithm(
     py: Python<'_>,
     judge_target: Py<PyLlmTarget>,
     efficient_target: Py<PyLlmTarget>,
     capable_target: Py<PyLlmTarget>,
-    base_threshold: f64,
-    min_confidence: f64,
-    capability_elevated_floor: Option<f64>,
-    session_affinity: bool,
-    message_hash_fallback: bool,
-    recent_turn_window: Option<usize>,
+    config: Py<PyTaskClassifierConfig>,
 ) -> PyResult<PyAlgorithm> {
-    let config = TaskClassifierConfig {
-        base_threshold,
-        min_confidence,
-        capability_elevated_floor,
-        session_affinity,
-        message_hash_fallback,
-        recent_turn_window,
-    };
     let algorithm = LlmTaskClassifier::new(
         judge_target.bind(py).try_borrow()?.clone_core(py),
         efficient_target.bind(py).try_borrow()?.clone_core(py),
         capable_target.bind(py).try_borrow()?.clone_core(py),
-        config,
+        config.bind(py).try_borrow()?.clone_core(),
     )
     .map_err(|error| PyValueError::new_err(error.to_string()))?;
     Ok(PyAlgorithm::new(Arc::new(algorithm)))
@@ -247,12 +280,7 @@ fn llm_task_classifier_algorithm(
     capable_system_prompt=None,
     efficient_system_prompt=None,
     classifier_target=None,
-    classifier_base_threshold=None,
-    classifier_min_confidence=0.0,
-    classifier_capability_elevated_floor=None,
-    classifier_session_affinity=false,
-    classifier_message_hash_fallback=false,
-    classifier_recent_turn_window=None
+    classifier_config=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn stage_router_algorithm(
@@ -268,12 +296,7 @@ fn stage_router_algorithm(
     capable_system_prompt: Option<String>,
     efficient_system_prompt: Option<String>,
     classifier_target: Option<Py<PyLlmTarget>>,
-    classifier_base_threshold: Option<f64>,
-    classifier_min_confidence: f64,
-    classifier_capability_elevated_floor: Option<f64>,
-    classifier_session_affinity: bool,
-    classifier_message_hash_fallback: bool,
-    classifier_recent_turn_window: Option<usize>,
+    classifier_config: Option<Py<PyTaskClassifierConfig>>,
 ) -> PyResult<PyAlgorithm> {
     let mode = match picker {
         "capable_first" => PickerMode::CapableFirst,
@@ -311,26 +334,19 @@ fn stage_router_algorithm(
             .tier_prompts
             .with(efficient.semantic_name.clone(), prompt);
     }
-    config.llm_fallback = match (classifier_target, classifier_base_threshold) {
-        (Some(target), Some(base_threshold)) => Some(LlmFallback {
+    config.llm_fallback = match (classifier_target, classifier_config) {
+        (Some(target), Some(classifier_config)) => Some(LlmFallback {
             judge_target: target.bind(py).try_borrow()?.clone_core(py),
-            config: TaskClassifierConfig {
-                base_threshold,
-                min_confidence: classifier_min_confidence,
-                capability_elevated_floor: classifier_capability_elevated_floor,
-                session_affinity: classifier_session_affinity,
-                message_hash_fallback: classifier_message_hash_fallback,
-                recent_turn_window: classifier_recent_turn_window,
-            },
+            config: classifier_config.bind(py).try_borrow()?.clone_core(),
         }),
         (Some(_), None) => {
             return Err(PyValueError::new_err(
-                "classifier_target requires classifier_base_threshold",
+                "classifier_target requires classifier_config",
             ));
         }
         (None, Some(_)) => {
             return Err(PyValueError::new_err(
-                "classifier_base_threshold requires classifier_target",
+                "classifier_config requires classifier_target",
             ));
         }
         (None, None) => None,
@@ -357,6 +373,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let libsy_module = PyModule::new(module.py(), "libsy")?;
     libsy_module.add_class::<PyAlgorithm>()?;
     libsy_module.add_class::<PyLlmTarget>()?;
+    libsy_module.add_class::<PyTaskClassifierConfig>()?;
     libsy_module.add_function(wrap_pyfunction!(noop_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(random_algorithm, &libsy_module)?)?;
     libsy_module.add_function(wrap_pyfunction!(
