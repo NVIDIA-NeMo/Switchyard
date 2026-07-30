@@ -42,6 +42,17 @@ impl Classification {
             }
         }
     }
+
+    /// The top-scoring [`Score`]s, or an empty set when the classifier abstained (an empty set).
+    pub fn max_classification(&self) -> Result<Classification> {
+        let max = self.argmax(true)?;
+        match self {
+            Classification::Scores(_) => Ok(Classification::Scores(max.into_iter().collect())),
+            Classification::Ambiguous(_) => {
+                Ok(Classification::Ambiguous(max.into_iter().collect()))
+            }
+        }
+    }
 }
 
 /// The highest-confidence score, or `None` when the set is empty (the classifier abstained).
