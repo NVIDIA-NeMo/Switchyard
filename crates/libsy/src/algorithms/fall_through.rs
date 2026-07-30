@@ -30,7 +30,8 @@ use crate::{
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
 
-/// Bounds the eviction cache on a long-running server.
+/// Matches the cap the Python stack uses. Dropping a live session's entry costs one
+/// rediscovered overflow, so the victim choice does not need to be exact.
 const MAX_EVICTION_SESSIONS: usize = 1_024;
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
@@ -192,6 +193,11 @@ where
         let session = session_id(&request);
         let mut ctx = ctx;
         for target in self.evicted_in_session(session.as_deref()) {
+            // Never seed the pool empty: a later turn may be small enough to serve, and the
+            // caller should get the upstream's answer rather than a routing error.
+            if self.eligible_targets(&ctx) <= 1 {
+                break;
+            }
             ctx.exclude_target(target);
         }
         let session_state = self.session_state(&request);
@@ -215,6 +221,14 @@ where
             session.as_deref(),
         )
         .await
+    }
+
+    fn eligible_targets(&self, ctx: &Context) -> usize {
+        self.targets
+            .targets()
+            .iter()
+            .filter(|t| !ctx.is_excluded(&t.semantic_name))
+            .count()
     }
 
     fn evicted_in_session(&self, session: Option<&str>) -> Vec<String> {
@@ -301,15 +315,10 @@ where
     /// Returns this request's retained state without holding the registry lock.
     fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<S>>> {
         let states = self.session_states.as_ref()?;
-        let session_id = request
-            .metadata
-            .as_ref()?
-            .session_id
-            .as_deref()
-            .filter(|session_id| !session_id.is_empty())?;
+        let session_id = session_id(request)?;
         let mut states = states.lock();
         let state = states
-            .entry(session_id.to_string())
+            .entry(session_id)
             .or_insert_with(|| Arc::new(AsyncMutex::new(S::default())));
         Some(Arc::clone(state))
     }
@@ -679,6 +688,28 @@ mod tests {
         });
         run_request(&router, other).await?;
         assert_eq!(calls.lock().iter().filter(|m| *m == "weak").count(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_turn_after_full_exhaustion_still_reaches_upstream() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let router = Arc::new(
+            FallThrough::<()>::new(counting_overflow_targets(
+                &["weak", "strong"],
+                &["weak", "strong"],
+                calls.clone(),
+            ))
+            .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        let first = run_turn(&router).await;
+        assert!(first.is_err());
+        calls.lock().clear();
+        match run_turn(&router).await {
+            Err(LibsyError::ClientCall { .. }) => {}
+            Err(other) => panic!("turn 2 gave {other:?}, calls={:?}", calls.lock()),
+            Ok(_) => panic!("expected an error"),
+        }
         Ok(())
     }
 
