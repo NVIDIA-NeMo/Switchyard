@@ -31,7 +31,7 @@ use crate::{
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
 
 /// Bounds the eviction cache on a long-running server.
-const MAX_EVICTION_SESSIONS: usize = 10_000;
+const MAX_EVICTION_SESSIONS: usize = 1_024;
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
