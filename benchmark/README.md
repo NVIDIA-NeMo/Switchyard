@@ -307,7 +307,8 @@ fall-open behavior.
 
 ## Docker Image Notes
 
-Baseline runs build `switchyard-baseline:local` from `benchmark/switchyard-server.Dockerfile`.
+Baseline runs build `switchyard-baseline:local` from
+`benchmark/switchyard-rust-server.Dockerfile`.
 The default is to rebuild before each run so the container matches the current checkout.
 
 To reuse an already built image:

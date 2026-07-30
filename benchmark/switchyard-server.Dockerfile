@@ -2,22 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ARG RUST_VERSION=1.96.1
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM rust:${RUST_VERSION}-bookworm
+
+COPY --from=ghcr.io/astral-sh/uv:0.9.17 /uv /uvx /usr/local/bin/
 
 WORKDIR /opt/switchyard
+# Hosted runtimes can override the container UID, so keep Python and package imports
+# independent of root's home and the copied source tree.
+ENV PATH="/opt/switchyard/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/switchyard/.venv \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
-COPY Cargo.toml Cargo.lock ./
+COPY pyproject.toml uv.lock README.md Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY switchyard ./switchyard
+COPY switchyard_rust ./switchyard_rust
 
-RUN cargo build --locked --release -p switchyard-server
+RUN uv sync --frozen --no-dev --extra server --extra cli --no-editable
 
-FROM debian:bookworm-slim
-
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /opt/switchyard/target/release/switchyard-server \
-    /usr/local/bin/switchyard-server
-
-ENTRYPOINT ["switchyard-server"]
+ENTRYPOINT ["switchyard"]
