@@ -29,3 +29,4 @@ standalone `switchyard-server` binary.
 - [`switchyard-libsy`](../crates/libsy/README.md): embeddable routing algorithms
 - [`switchyard-protocol`](../crates/protocol/README.md): provider-neutral API types
 - [`switchyard-translation`](../crates/switchyard-translation/README.md): protocol translation
+- [`switchyard-nemo-relay-plugin`](../crates/switchyard-nemo-relay-plugin/README.md): in-process NeMo Relay routing
