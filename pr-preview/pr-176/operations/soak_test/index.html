@@ -1027,6 +1027,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rehearse-against-a-mock-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rehearse against a mock backend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#raw-throughput-with-vegeta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw throughput with vegeta
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#run-the-48-hour-test" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1213,6 +1235,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rehearse-against-a-mock-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rehearse against a mock backend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#raw-throughput-with-vegeta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw throughput with vegeta
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#run-the-48-hour-test" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1309,37 +1353,65 @@ not suspend or restart and has enough disk space for the server log.</p>
 release, then run it directly:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-soak
 </span></code></pre></div>
+<h2 id="rehearse-against-a-mock-backend">Rehearse against a mock backend<a class="headerlink" href="#rehearse-against-a-mock-backend" title="Permanent link">&para;</a></h2>
+<p>Rehearse the soak with no live-provider credentials or cost by running
+<a href="https://github.com/vidaiUK/VidaiMock">VidaiMock</a> — an Apache-2.0 mock LLM server that speaks the
+OpenAI, Anthropic, and Responses wire formats with realistic streaming — as the backend behind
+<code>switchyard-server</code>. <code>scripts/soak-rehearsal.sh</code> starts the mock, points a passthrough
+<code>switchyard-server</code> at it, waits for both to report healthy, and runs the soak against the local
+stack:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Requires the vidaimock binary on PATH (github.com/vidaiUK/VidaiMock/releases) and release builds</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># of switchyard-server and switchyard-soak.</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>scripts/soak-rehearsal.sh<span class="w"> </span>--duration<span class="w"> </span>5m<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">8</span><span class="w"> </span>--invalid-canary-interval<span class="w"> </span><span class="m">0</span>
+</span></code></pre></div>
+<p>Disable the invalid-request canary (<code>--invalid-canary-interval 0</code>) against a mock backend: the
+canary checks that invalid input is rejected with HTTP 400, which a permissive mock does not do.</p>
+<p>To rehearse the failure gates, degrade the backend and confirm the soak fails closed. For example,
+raise the mock's latency past the request timeout and every request times out:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">MOCK_LATENCY_MS</span><span class="o">=</span><span class="m">2500</span><span class="w"> </span>scripts/soak-rehearsal.sh<span class="w"> </span>--duration<span class="w"> </span>30s<span class="w"> </span>--request-timeout<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--invalid-canary-interval<span class="w"> </span><span class="m">0</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># Soak FAIL: ... error_rate=100.0000% ...  (error_kinds: timeout), exit 1</span>
+</span></code></pre></div>
+<h2 id="raw-throughput-with-vegeta">Raw throughput with vegeta<a class="headerlink" href="#raw-throughput-with-vegeta" title="Permanent link">&para;</a></h2>
+<p>The soak test is closed-loop and validates every response body and stream. For a quick open-loop
+capacity figure — a fixed request rate, HTTP status only — <a href="https://github.com/tsenart/vegeta">vegeta</a>
+is a useful companion. It does not validate response bodies or streaming, so it complements the soak
+rather than replacing it.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;POST http://127.0.0.1:4000/v1/chat/completions\nContent-Type: application/json\n@body.json\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>targets.txt
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;RELEASE_MODEL_ID&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;ping&quot;}],&quot;max_tokens&quot;:8}&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>body.json
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>vegeta<span class="w"> </span>attack<span class="w"> </span>-targets<span class="o">=</span>targets.txt<span class="w"> </span>-rate<span class="o">=</span><span class="m">100</span><span class="w"> </span>-duration<span class="o">=</span>30s<span class="w"> </span><span class="p">|</span><span class="w"> </span>vegeta<span class="w"> </span>report
+</span></code></pre></div>
 <h2 id="run-the-48-hour-test">Run the 48-hour test<a class="headerlink" href="#run-the-48-hour-test" title="Permanent link">&para;</a></h2>
 <p>Choose concurrency from the release capacity plan. Increase it in short
 rehearsals until you find the highest expected steady load that remains below
 the backend's rate limit. Use that load for the 48-hour run. An overload test
 that spends most of its time throttled does not measure release stability.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--duration<span class="w"> </span>48h<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--server-pid<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SOAK_SERVER_PID</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span>--max-rss-growth-mib<span class="w"> </span><span class="m">512</span>
 </span></code></pre></div>
 <p>The runner keeps 16 requests in flight until the test ends. This can generate
 large usage charges against a metered backend. Use a dedicated test deployment,
 estimate the request volume first with a short run, and get approval for any
 paid-provider cost.</p>
 <p>Use a five-minute rehearsal to confirm the route and result files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--base-url<span class="w"> </span>http://127.0.0.1:4000<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--duration<span class="w"> </span>5m<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--concurrency<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--report-interval<span class="w"> </span><span class="m">10</span>
 </span></code></pre></div>
 <p>If the Switchyard endpoint requires a bearer token, pass the environment
 variable name instead of putting the token on the command line:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_SOAK_TOKEN</span><span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>./target/release/switchyard-soak<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--api-key-env<span class="w"> </span>SWITCHYARD_SOAK_TOKEN<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--model<span class="w"> </span>RELEASE_MODEL_ID
 </span></code></pre></div>
 <h2 id="pass-criteria">Pass criteria<a class="headerlink" href="#pass-criteria" title="Permanent link">&para;</a></h2>
 <p>The command exits with status 0 only when:</p>
