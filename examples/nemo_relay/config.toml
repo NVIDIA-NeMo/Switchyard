@@ -1,0 +1,5 @@
+# NeMo Relay agent config for the Switchyard library-mode quickstart.
+# Place at .nemo-relay/config.toml in the project you launch from.
+
+[agents.claude]
+command = "claude"
