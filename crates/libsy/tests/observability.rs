@@ -620,6 +620,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
     let stream = algo(ALGO, MODEL, None).run_stream(
         Context::default(),
         request_with_metadata("obs-session-2", "obs-corr-2"),
+        None,
     );
     tokio::pin!(stream);
 

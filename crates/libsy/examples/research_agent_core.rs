@@ -68,7 +68,10 @@ impl ResearchAgent {
                 raw_request: None,
                 metadata: None,
             };
-            let stream = self.algo.clone().run_stream(Context::default(), request);
+            let stream = self
+                .algo
+                .clone()
+                .run_stream(Context::default(), request, None);
             tokio::pin!(stream);
             while let Some(update) = stream.next().await {
                 match update? {

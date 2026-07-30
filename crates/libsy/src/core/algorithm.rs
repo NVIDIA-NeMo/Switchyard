@@ -479,12 +479,8 @@ pub trait Algorithm: Send + Sync + 'static {
     /// Process a request to completion, returning a stream of [`Step`]s.
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
-    fn run_stream(self: Arc<Self>, ctx: Context, request: Request) -> StepStream {
-        self.run_stream_observed(ctx, request, None)
-    }
-
-    /// Process a request to completion while reporting each model call to `observer`.
-    fn run_stream_observed(
+    /// Report each model call to `observer`.
+    fn run_stream(
         self: Arc<Self>,
         ctx: Context,
         request: Request,
@@ -593,7 +589,7 @@ pub trait Algorithm: Send + Sync + 'static {
             call.respond(result)
         }
 
-        let stream = self.run_stream_observed(ctx, request, observer);
+        let stream = self.run_stream(ctx, request, observer);
         tokio::pin!(stream);
 
         let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
@@ -867,8 +863,11 @@ mod tests {
     async fn run_offloads_via_promise_then_returns_to_agent() -> Result<()> {
         // A client-less target -> its call is offloaded via a promise the
         // orchestrator surfaces as a `CallLlm` step for us to fulfill.
-        let stream =
-            orch(target_set(&[("offload/model", false)])).run_stream(Context::default(), request());
+        let stream = orch(target_set(&[("offload/model", false)])).run_stream(
+            Context::default(),
+            request(),
+            None,
+        );
         tokio::pin!(stream);
 
         let mut saw_call = false;
@@ -915,8 +914,11 @@ mod tests {
     async fn client_backed_target_offloads_with_a_default_client() -> Result<()> {
         // Every call now offloads to the stream; a client-backed target rides its
         // client along as `default_client` so the consumer can serve it by default.
-        let stream =
-            orch(target_set(&[("direct/model", true)])).run_stream(Context::default(), request());
+        let stream = orch(target_set(&[("direct/model", true)])).run_stream(
+            Context::default(),
+            request(),
+            None,
+        );
         tokio::pin!(stream);
 
         let mut final_completion = None;
@@ -1069,8 +1071,11 @@ mod tests {
         // A client-less target offloads its call; we fulfill the promise with an
         // Err, which must flow back through `call_llm_target` into the algorithm and
         // out as an error step — not a response.
-        let stream =
-            orch(target_set(&[("offload/model", false)])).run_stream(Context::default(), request());
+        let stream = orch(target_set(&[("offload/model", false)])).run_stream(
+            Context::default(),
+            request(),
+            None,
+        );
         tokio::pin!(stream);
 
         let mut saw_error = false;
@@ -1144,7 +1149,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let stream = algo.run_stream(Context::default(), request());
+        let stream = algo.run_stream(Context::default(), request(), None);
         started_rx
             .recv()
             .await
@@ -1182,7 +1187,7 @@ mod tests {
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        let stream = algo.run_stream(Context::default(), request());
+        let stream = algo.run_stream(Context::default(), request(), None);
         tokio::pin!(stream);
 
         let mut saw_error = false;
