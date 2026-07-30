@@ -56,12 +56,12 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
     for (format, event) in cases {
         let engine = TranslationEngine::default();
         let mut state = StreamTranslationState::new(format, format);
-        let preserved = engine.decode_stream_event(&mut state, format, &event)?;
+        let preserved = engine.decode_stream_event(&mut state, format, event.clone())?;
         let replayed = engine.encode_stream_event(&mut state, format, preserved)?;
         assert_eq!(replayed, vec![event.clone()]);
 
         let mut state = StreamTranslationState::new(format, format);
-        let preserved = decode_stream_event_preserving(&mut state, format, &event);
+        let preserved = decode_stream_event_preserving(&mut state, format, event.clone());
         let replayed = encode_stream_event(&mut state, format, preserved);
         assert_eq!(replayed, vec![event]);
     }
@@ -112,7 +112,7 @@ fn replayed_terminal_event_suppresses_synthesized_finish() -> TestResult {
         let mut state = StreamTranslationState::new(format, format);
         let mut replayed = Vec::new();
         for event in &events {
-            let preserved = engine.decode_stream_event(&mut state, format, event)?;
+            let preserved = engine.decode_stream_event(&mut state, format, event.clone())?;
             replayed.extend(engine.encode_stream_event(&mut state, format, preserved)?);
         }
         assert_eq!(replayed, events, "{format:?} engine replay");
@@ -124,7 +124,7 @@ fn replayed_terminal_event_suppresses_synthesized_finish() -> TestResult {
         let mut state = StreamTranslationState::new(format, format);
         let mut replayed = Vec::new();
         for event in &events {
-            let preserved = decode_stream_event_preserving(&mut state, format, event);
+            let preserved = decode_stream_event_preserving(&mut state, format, event.clone());
             replayed.extend(encode_stream_event(&mut state, format, preserved));
         }
         assert_eq!(replayed, events, "{format:?} codec replay");
@@ -153,7 +153,7 @@ fn preserved_cross_format_event_uses_normalized_content() -> TestResult {
         }]
     });
 
-    let preserved = engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, &event)?;
+    let preserved = engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, event)?;
     let translated =
         engine.encode_stream_event(&mut state, WireFormat::AnthropicMessages, preserved)?;
 

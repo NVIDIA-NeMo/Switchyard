@@ -247,19 +247,23 @@ impl TranslationEngine {
     }
 
     /// Decodes one provider event while retaining its parsed source JSON value.
+    ///
+    /// Takes ownership of `event` so preservation does not deep-copy provider JSON
+    /// on the per-event streaming path.
     pub fn decode_stream_event(
         &self,
         state: &mut StreamTranslationState,
         source: impl Into<FormatId>,
-        event: &Value,
+        event: Value,
     ) -> Result<LlmResponseChunk> {
         let source = source.into();
         let source_codec = self.stream_registry.codec(source.clone())?;
         state.source = Some(source.clone());
+        let normalized = source_codec.decode_event(state, &event);
         Ok(LlmResponseChunk::ProviderEvent {
             source,
-            raw: event.clone(),
-            normalized: source_codec.decode_event(state, event),
+            raw: event,
+            normalized,
         })
     }
 
