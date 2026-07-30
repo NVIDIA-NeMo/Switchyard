@@ -519,7 +519,10 @@ mod tests {
             calls[0].messages
         );
         assert!(
-            calls[1].messages.last().is_some_and(|t| t.ends_with(ESCALATION)),
+            calls[1]
+                .messages
+                .last()
+                .is_some_and(|t| t.ends_with(ESCALATION)),
             "escalating turn should carry the note last: {:?}",
             calls[1].messages
         );
@@ -570,7 +573,12 @@ mod tests {
         assert_eq!(routed[0].target, "strong");
         assert_eq!(routed[1].target, "weak");
         assert_eq!(
-            client.calls.lock().iter().filter(|c| c.target == JUDGE).count(),
+            client
+                .calls
+                .lock()
+                .iter()
+                .filter(|c| c.target == JUDGE)
+                .count(),
             2,
             "each undecided turn is its own question"
         );

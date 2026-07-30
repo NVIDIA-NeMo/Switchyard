@@ -601,7 +601,10 @@ mod tests {
 
     fn with_messages(messages: Vec<Message>) -> Request {
         Request {
-            llm_request: LlmRequest { messages, ..LlmRequest::default() },
+            llm_request: LlmRequest {
+                messages,
+                ..LlmRequest::default()
+            },
             raw_request: None,
             metadata: None,
         }
@@ -637,7 +640,9 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: String::new(),
-                content: vec![ContentBlock::Text { text: text.to_string() }],
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }],
                 is_error: None,
             })],
         }
@@ -748,19 +753,14 @@ mod tests {
 
     #[test]
     fn extract_anthropic_tool_results() {
-        let request = with_messages(vec![
-            tr("Traceback (most recent call last):\n  ValueError"),
-        ]);
+        let request = with_messages(vec![tr("Traceback (most recent call last):\n  ValueError")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, HARD);
     }
 
     #[test]
     fn extract_responses_api_tool_results() {
-        let request = with_messages(vec![
-            tc("Write"),
-            tr("file written successfully"),
-        ]);
+        let request = with_messages(vec![tc("Write"), tr("file written successfully")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
@@ -771,12 +771,18 @@ mod tests {
         // 5 writes + 1 edit at the end → the default window (3) should see
         // the last 3 calls: 1 edit + 2 writes (not all 6 calls).
         let request = with_messages(vec![
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Edit"),  tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Edit"),
+            tr("ok"),
         ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 5);
@@ -791,12 +797,18 @@ mod tests {
         // With recent_window=3 → recent_writes=2, recent_edits=1.
         // With recent_window=6 → recent_writes=5, recent_edits=1 (all calls).
         let request = with_messages(vec![
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Write"), tr("ok"),
-            tc("Edit"),  tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Edit"),
+            tr("ok"),
         ]);
         let narrow = extract_tool_signals_with_window(&request, 3);
         assert_eq!(narrow.recent_write_count, 2);
@@ -829,9 +841,7 @@ mod tests {
     #[test]
     fn bash_heredoc_counts_as_write() {
         // Claude Code's pattern on TB 2.0 — write a scratch file via heredoc.
-        let request = with_messages(vec![
-            bash("cat > /tmp/test.py <<'EOF'\nprint(1)\nEOF"),
-        ]);
+        let request = with_messages(vec![bash("cat > /tmp/test.py <<'EOF'\nprint(1)\nEOF")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.write_count, 1,
@@ -842,9 +852,7 @@ mod tests {
 
     #[test]
     fn bash_sed_inplace_counts_as_edit() {
-        let request = with_messages(vec![
-            bash("sed -i 's/foo/bar/g' /app/file.py"),
-        ]);
+        let request = with_messages(vec![bash("sed -i 's/foo/bar/g' /app/file.py")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.edit_count, 1,
@@ -856,10 +864,7 @@ mod tests {
     #[test]
     fn bash_non_mutating_does_not_count() {
         // ls, cat, grep — should not increment either counter.
-        let request = with_messages(vec![
-            bash("ls -la /app"),
-            bash("cat /app/main.py"),
-        ]);
+        let request = with_messages(vec![bash("ls -la /app"), bash("cat /app/main.py")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 0);
         assert_eq!(sig.edit_count, 0);
@@ -922,9 +927,7 @@ mod tests {
     #[test]
     fn anthropic_bash_heredoc_extracts_command() {
         // Anthropic format: tool_use.input is an object, not a JSON string.
-        let request = with_messages(vec![
-            bash("cat > /tmp/foo.txt << 'EOF'\nhi\nEOF"),
-        ]);
+        let request = with_messages(vec![bash("cat > /tmp/foo.txt << 'EOF'\nhi\nEOF")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.write_count, 1,
@@ -934,9 +937,7 @@ mod tests {
 
     #[test]
     fn recent_window_falls_back_to_full_history_when_short() {
-        let request = with_messages(vec![
-            tc("Write"),
-        ]);
+        let request = with_messages(vec![tc("Write")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.recent_write_count, 1);
         assert_eq!(sig.recent_edit_count, 0);
@@ -944,10 +945,7 @@ mod tests {
 
     #[test]
     fn clean_tool_result_has_zero_severity_and_non_empty_streak() {
-        let request = with_messages(vec![
-            tr("output ok"),
-            tr("another ok"),
-        ]);
+        let request = with_messages(vec![tr("output ok"), tr("another ok")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.no_error_streak, 2);
@@ -1022,11 +1020,16 @@ mod tests {
     fn pure_bash_streak_counts_trailing_other() {
         // 5 trailing non-classified Bash calls → streak == 5.
         let request = with_messages(vec![
-            bash("make"),         tr("ok"),
-            bash("./configure"),  tr("ok"),
-            bash("make install"), tr("ok"),
-            bash("./run.sh"),     tr("ok"),
-            bash("./test"),       tr("ok"),
+            bash("make"),
+            tr("ok"),
+            bash("./configure"),
+            tr("ok"),
+            bash("make install"),
+            tr("ok"),
+            bash("./run.sh"),
+            tr("ok"),
+            bash("./test"),
+            tr("ok"),
         ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.pure_bash_streak, 5);
@@ -1036,10 +1039,7 @@ mod tests {
 
     #[test]
     fn pure_bash_streak_resets_on_write() {
-        let request = with_messages(vec![
-            bash("make"), tr("ok"),
-            tc("Write"),  tr("ok"),
-        ]);
+        let request = with_messages(vec![bash("make"), tr("ok"), tc("Write"), tr("ok")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.pure_bash_streak, 0);
         assert_eq!(sig.write_count, 1);
@@ -1049,10 +1049,14 @@ mod tests {
     fn recent_window_tracks_todowrite_and_read() {
         // Final 3 tool calls: TodoWrite, Read, TodoWrite.
         let request = with_messages(vec![
-            bash("make"),      tr("ok"),
-            tc("TodoWrite"),   tr("ok"),
-            tc("Read"),        tr("ok"),
-            tc("TodoWrite"),   tr("ok"),
+            bash("make"),
+            tr("ok"),
+            tc("TodoWrite"),
+            tr("ok"),
+            tc("Read"),
+            tr("ok"),
+            tc("TodoWrite"),
+            tr("ok"),
         ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.todowrite_count, 2);
