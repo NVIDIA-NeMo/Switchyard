@@ -244,7 +244,7 @@ impl TranslationEngine {
             .collect())
     }
 
-    /// Decodes one provider event while retaining the exact source JSON.
+    /// Decodes one provider event while retaining its parsed source JSON value.
     pub fn decode_stream_event(
         &self,
         state: &mut StreamTranslationState,
@@ -263,9 +263,9 @@ impl TranslationEngine {
 
     /// Encodes one neutral or preserved stream event for a target provider.
     ///
-    /// A preserved event is replayed exactly when its source and target formats
-    /// match. Cross-format encoding intentionally uses only its normalized
-    /// events.
+    /// A preserved event replays its retained JSON value unchanged when its
+    /// source and target formats match. Cross-format encoding intentionally
+    /// uses only its normalized events.
     pub fn encode_stream_event(
         &self,
         state: &mut StreamTranslationState,

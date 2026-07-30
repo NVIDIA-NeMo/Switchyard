@@ -215,7 +215,7 @@ pub fn decode_stream_event(
         })
 }
 
-/// Decodes one provider stream event and retains its exact source JSON.
+/// Decodes one provider stream event and retains its parsed source JSON value.
 pub fn decode_stream_event_preserving(
     state: &mut StreamTranslationState,
     source: impl Into<FormatId>,

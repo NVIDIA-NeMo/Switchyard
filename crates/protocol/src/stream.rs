@@ -159,16 +159,17 @@ fn push_checked_chunk(
 /// One streaming event carried between a host and an algorithm.
 ///
 /// Normalized variants expose provider-neutral meaning. [`ProviderEvent`](Self::ProviderEvent)
-/// additionally retains exact source JSON for a lossless same-format round trip while keeping
-/// normalized children available to algorithms and cross-format encoders.
+/// additionally retains the parsed source JSON value, so a same-format round trip replays that
+/// value rather than the original bytes: SSE framing, whitespace, and object key order are not
+/// preserved. Normalized children stay available to algorithms and cross-format encoders.
 /// `switchyard-translation` re-exports this type as `ConversationStreamEvent`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
-    /// One exact provider event paired with the neutral events decoded from it.
+    /// One preserved provider event paired with the neutral events decoded from it.
     ProviderEvent {
         /// Provider format that produced `raw`.
         source: FormatId,
-        /// Exact parsed provider event.
+        /// Source event as a parsed JSON value.
         raw: Value,
         /// Provider-neutral events decoded from `raw`, in source order.
         normalized: Vec<LlmResponseChunk>,
