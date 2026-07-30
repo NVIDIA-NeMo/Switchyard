@@ -42,6 +42,7 @@ const RESERVED_HEADERS: &[&str] = &[
     "cookie",
     "set-cookie",
     "x-api-key",
+    "anthropic-beta",
     "anthropic-version",
     "content-type",
 ];
