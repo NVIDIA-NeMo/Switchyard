@@ -215,6 +215,21 @@ pub fn decode_stream_event(
         })
 }
 
+// Replaying a preserved event emits its retained JSON without running the encoder, so the
+// terminal bookkeeping the encoder would have done has to happen here. Without it `finish`
+// still believes the stream is unterminated and synthesizes a second terminal sequence.
+pub(crate) fn mark_replayed_terminal(
+    state: &mut StreamTranslationState,
+    normalized: &[LlmResponseChunk],
+) {
+    if normalized
+        .iter()
+        .any(|event| matches!(event, LlmResponseChunk::MessageStop { .. }))
+    {
+        state.finished = true;
+    }
+}
+
 /// Decodes one provider stream event and retains its parsed source JSON value.
 pub fn decode_stream_event_preserving(
     state: &mut StreamTranslationState,

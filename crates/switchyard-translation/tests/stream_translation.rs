@@ -68,6 +68,74 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
     Ok(())
 }
 
+// Replay emits the preserved event without running the encoder, so the encoder never sees the
+// stop it would normally record. Both replay paths must still leave the stream marked finished
+// or `finish_stream` synthesizes a terminal the client already received.
+#[test]
+fn replayed_terminal_event_suppresses_synthesized_finish() -> TestResult {
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            vec![
+                json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion.chunk",
+                    "model": "gpt-4o",
+                    "choices": [{"index": 0, "delta": {"content": "Hi"}, "finish_reason": null}]
+                }),
+                json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion.chunk",
+                    "model": "gpt-4o",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                }),
+            ],
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type": "message_start", "message": {"id": "msg_1", "model": "claude"}}),
+                json!({"type": "message_stop"}),
+            ],
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                json!({"type": "response.created", "response": {"id": "resp_1", "model": "gpt-4o"}}),
+                json!({"type": "response.completed", "response": {"id": "resp_1", "model": "gpt-4o"}}),
+            ],
+        ),
+    ];
+
+    let engine = TranslationEngine::default();
+    for (format, events) in cases {
+        let mut state = StreamTranslationState::new(format, format);
+        let mut replayed = Vec::new();
+        for event in &events {
+            let preserved = engine.decode_stream_event(&mut state, format, event)?;
+            replayed.extend(engine.encode_stream_event(&mut state, format, preserved)?);
+        }
+        assert_eq!(replayed, events, "{format:?} engine replay");
+        assert!(
+            engine.finish_stream(&mut state, format)?.is_empty(),
+            "{format:?} engine replay already delivered a terminal event",
+        );
+
+        let mut state = StreamTranslationState::new(format, format);
+        let mut replayed = Vec::new();
+        for event in &events {
+            let preserved = decode_stream_event_preserving(&mut state, format, event);
+            replayed.extend(encode_stream_event(&mut state, format, preserved));
+        }
+        assert_eq!(replayed, events, "{format:?} codec replay");
+        assert!(
+            engine.finish_stream(&mut state, format)?.is_empty(),
+            "{format:?} codec replay already delivered a terminal event",
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn preserved_cross_format_event_uses_normalized_content() -> TestResult {
     let engine = TranslationEngine::default();

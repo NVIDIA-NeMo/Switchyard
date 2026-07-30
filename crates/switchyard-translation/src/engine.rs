@@ -12,7 +12,9 @@ use crate::codecs::FormatCodec;
 use crate::codecs::anthropic::AnthropicMessagesCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
-use crate::codecs::stream::{StreamCodecRegistry, StreamTranslationState};
+use crate::codecs::stream::{
+    StreamCodecRegistry, StreamTranslationState, mark_replayed_terminal,
+};
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
@@ -305,8 +307,11 @@ fn encode_stream_chunk(
         LlmResponseChunk::ProviderEvent {
             source,
             raw,
-            normalized: _,
-        } if &source == target => vec![raw],
+            normalized,
+        } if &source == target => {
+            mark_replayed_terminal(state, &normalized);
+            vec![raw]
+        }
         LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
             .into_iter()
             .flat_map(|event| encode_stream_chunk(state, target_codec, target, event))
