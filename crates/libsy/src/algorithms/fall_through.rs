@@ -239,6 +239,39 @@ where
         }
     }
 
+    fn eligible_targets(&self, ctx: &Context) -> usize {
+        self.targets
+            .targets()
+            .iter()
+            .filter(|t| !ctx.is_excluded(&t.semantic_name))
+            .count()
+    }
+
+    fn evicted_in_session(&self, session: Option<&str>) -> Vec<String> {
+        let Some(session) = session else {
+            return Vec::new();
+        };
+        self.session_evictions
+            .lock()
+            .get(session)
+            .map(|targets| targets.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn record_eviction(&self, session: Option<&str>, target: &str) {
+        let Some(session) = session else { return };
+        let mut sessions = self.session_evictions.lock();
+        if sessions.len() >= MAX_EVICTION_SESSIONS && !sessions.contains_key(session) {
+            if let Some(oldest) = sessions.keys().next().cloned() {
+                sessions.remove(&oldest);
+            }
+        }
+        sessions
+            .entry(session.to_string())
+            .or_default()
+            .insert(target.to_string());
+    }
+
     /// Calls `target`, falling back to the next eligible target whenever one overflows its
     /// context window, until a call succeeds or every target has been tried.
     ///

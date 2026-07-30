@@ -358,7 +358,8 @@ mod tests {
             classifier.score(&mut state, &mut request, Some(&driver)),
             serve
         );
-        selected(classification?)
+        let (classification, _) = classification?;
+        selected(classification)
     }
 
     #[tokio::test]
