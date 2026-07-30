@@ -15,8 +15,8 @@
 //! - An [`Algorithm`] is the optimization *algorithm*. Its
 //!   [`create_run_task`](Algorithm::create_run_task) runs once per request
 //!   and makes as many model calls as it needs — via [`Driver::call_llm_target`], which look
-//!   like ordinary calls — publishes its [`Decision`](switchyard_protocol::Decision)s with [`Driver::info`], and
-//!   returns the final [`Response`](switchyard_protocol::Response). The provided
+//!   like ordinary calls — publishes its [`Decision`]s with [`Driver::info`], and
+//!   concludes on the winning target with [`Driver::final_decision`]. The provided
 //!   [`run_stream`](Algorithm::run_stream) drives that on its own task and hands
 //!   back a stream of [`Step`]s; [`run`](Algorithm::run) runs
 //!   it to completion with the targets' default clients.
@@ -28,7 +28,13 @@
 //!
 //! ## Running a request
 //!
-//! Hold the algorithm as `Arc<dyn Algorithm>` and call one of two provided methods:
+//! Hold the algorithm as `Arc<dyn Algorithm>` and call one of four provided methods. They
+//! vary on two axes: who serves the model calls, and whether the *final* call is made.
+//!
+//! | | libsy serves the calls | you serve the calls |
+//! |---|---|---|
+//! | serve the final call | [`run`](Algorithm::run) | [`run_stream`](Algorithm::run_stream) |
+//! | hand the final call back | [`decide`](Algorithm::decide) | [`run_decision_only_stream`](Algorithm::run_decision_only_stream) |
 //!
 //! - [`run`](Algorithm::run) — run to completion, serving each
 //!   offloaded call via its [`RoutedRequest::default_client`], and return the decision
@@ -42,6 +48,20 @@
 //!   [`Step::ReturnToAgent`] carrying the final response. The step stream is bounded,
 //!   so pulling it paces the algorithm one step at a time — an "ask, don't call" mode
 //!   that lets a host that owns its transport keep control of every call.
+//! - [`decide`](Algorithm::decide) — stop before *committing* to the final call: return
+//!   the routing [`Decision`], the [`Request`] to serve it with, and the selected model's
+//!   [`Response`] when the algorithm already called it. Model calls the decision itself
+//!   needs are still made, so which of those you get depends on how the algorithm
+//!   decides: judging the request leaves `None` (the call is yours to make), while
+//!   analyzing a response leaves `Some` (reuse it, or call again — your tradeoff).
+//!   [`run_decision_only_stream`](Algorithm::run_decision_only_stream) is the streamed
+//!   form, ending in [`DecisionOnlyStep::ReturnToAgent`]. Only that final call is left
+//!   unmade: the decision still binds retained state — session affinity latches — exactly
+//!   as under [`run`](Algorithm::run).
+//!
+//! An algorithm does not branch on the mode: it is fixed by the entry point, recorded on
+//! the [`Driver`], and applied by [`Driver::final_decision`], so concluding there is
+//! enough to support all four.
 //!
 //! ## Concurrency
 //!
@@ -78,8 +98,9 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallLlmRequest, Driver, LlmCallObservation, LlmTarget, LlmTargetSet, RoutedRequest,
-    RunObservation, RunObserver, Step, StepStream,
+    Algorithm, CallLlmRequest, DecisionOnlyStep, DecisionOnlyStepStream, Driver,
+    LlmCallObservation, LlmTarget, LlmTargetSet, ResponseOrDecision, RoutedRequest, RunObservation,
+    RunObserver, Step, StepStream,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::processor::{Event, Processor};

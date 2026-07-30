@@ -114,12 +114,22 @@ the id it calls — they can differ (`"strong"` → `"openai/gpt-4o"`) or coinci
 
 ## Running a request
 
-Hold the algorithm as `Arc<dyn Algorithm>` and choose one of two entry points:
+Hold the algorithm as `Arc<dyn Algorithm>` and pick an entry point. They vary on two
+independent axes: **who serves the model calls**, and **whether the final call is made at
+all**.
+
+|  | libsy serves the calls | you serve the calls |
+|---|---|---|
+| **serve the final call** | `run` | `run_stream` |
+| **hand the final call back** | `decide` | `run_decision_only_stream` |
 
 ```rust
 // run: libsy drives the request to completion, serving each call with the target's
 // client, and returns (trace, response). Errors if a routed target has no client.
 let (trace, response) = algo.clone().run(Context::default(), req).await?;
+
+// decide: same, but stops one step short — see "Deciding without calling" below.
+let (trace, decided) = algo.clone().decide(Context::default(), req).await?;
 
 // run_stream: "ask, don't call" — you drive the stream and make the calls.
 let stream = algo.clone().run_stream(Context::default(), req);
@@ -192,6 +202,67 @@ while let Some(step) = stream.next().await {
 }
 ```
 
+## Deciding without calling (`decide`)
+
+Sometimes you want the routing answer, not the completion — you have your own transport,
+a cache to check first, or a proxy that will forward the request itself. `decide` runs the
+algorithm normally and stops one step short: instead of a `Response` you get the
+**decision, the request to serve it with, and any response already obtained**.
+
+"One step short" means libsy stops *committing* to the call, not that no model was called.
+Deciding routinely costs model calls of its own and those still happen — so whether the
+selected model has already been called depends on how the algorithm decides:
+
+- **Deciding from the request** — a judge scores the prompt and picks a tier. The judge is
+  called; the selected model is not. `response` is `None`.
+- **Deciding from a response** — the algorithm needs the model's *output* to decide, so it
+  calls one and analyzes the answer (escalate if it looks weak, keep it if it doesn't).
+  That call already happened, and `response` is `Some` — the selected model's answer.
+
+The routed call is the only thing left unmade. The decision still binds whatever state the
+algorithm retains — session affinity latches, and later turns follow that assignment
+whether or not you served this one — exactly as under `run`. Read `decide` as "route this
+turn, I will serve it myself", not "what would you do if I asked".
+
+```rust
+let (trace, (decision, request, response)) = algo.clone().decide(Context::default(), req).await?;
+println!("route to {}", decision.selected_model());
+
+match response {
+    // The selected model has already answered — deciding needed its output. Use this
+    // response as-is, or drop it and call `decision.selected_model()` again; both are
+    // valid, it is your cost/latency tradeoff.
+    Some(response) => { /* use it, or re-call */ }
+    // Not called yet: serve `request` against `decision.selected_model()` yourself.
+    None => { /* your call */ }
+}
+```
+
+Either way `response`, when present, corresponds to `decision` — it is that target's
+answer to `request`, not some intermediate the algorithm discarded.
+
+`run_decision_only_stream` is the "you serve the calls" form: the same `CallLlm` /
+`Decision` steps as `run_stream`, ending in `DecisionOnlyStep::ReturnToAgent` carrying that
+same triple.
+
+An algorithm does not branch on any of this. The mode is fixed by the entry point, recorded
+on the `Driver`, and applied by `Driver::final_decision` — so an algorithm that ends on
+`final_decision` supports all four entry points without mentioning them:
+
+```rust
+// the last thing create_run_task does: conclude on the winning target
+driver.final_decision(ctx, &target, request, decision, &mut already_served).await
+```
+
+`already_served` is an `Option<Response>` the algorithm may have picked up on the way (a
+classifier whose deciding call also answered the turn hands it back through
+`Classifier::score`). It is borrowed, not moved, because `Response` is not `Clone` —
+`final_decision` takes it only on the branch that consumes it.
+
+An algorithm that answers without routing — `Noop`, or one that builds a `Response`
+directly rather than concluding through `final_decision` — has no route to hand back, so
+`decide` on it fails with `LibsyError::AlgorithmError`.
+
 ## Building an algorithm (`Algorithm`)
 
 Implement `Algorithm` to add a strategy. You write `create_run_task` — one call per
@@ -206,11 +277,13 @@ pub trait Algorithm: Send + Sync + 'static {
     fn name(&self) -> &str;
     // `self: Arc<Self>` (not `&mut`): one algorithm serves requests concurrently — use
     // interior mutability for state. Offload calls/decisions on `driver`.
+    // Ends on `driver.final_decision(..)`, which yields `Response` or `Decision` according
+    // to the run's mode — so one implementation serves every entry point.
     async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
-        -> switchyard_libsy::Result<Response>;
+        -> switchyard_libsy::Result<ResponseOrDecision>;
     async fn process_signals(self: Arc<Self>, signals: Signals)
         -> switchyard_libsy::Result<()>;
-    // provided: run(ctx, request) -> (trace, response), run_stream(ctx, request) -> Stream<Step>
+    // provided: run / decide -> (trace, ..), run_stream / run_decision_only_stream -> Stream<..>
 }
 
 pub trait Decision: Send + Sync {

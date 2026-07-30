@@ -83,7 +83,11 @@ impl ResearchAgent {
                 metadata: None,
             };
 
-            let (_trace, response) = self.algo.clone().run(Context::default(), request).await?;
+            let (_trace, response) = self
+                .algo
+                .clone()
+                .run(Context::default(), request, None)
+                .await?;
             let aggregate = response
                 .llm_response
                 .into_agg()

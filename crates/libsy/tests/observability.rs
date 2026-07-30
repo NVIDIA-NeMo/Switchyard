@@ -33,14 +33,12 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Step,
-    TaskClassifierConfig,
+    Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, ResponseOrDecision,
+    Step, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
-};
-use switchyard_protocol::{
-    LlmClientError, LlmResponseChunk, StopReason, text_request, text_response,
+    Context, Decision, LlmClientError, LlmResponse, LlmResponseChunk, Metadata, Request, Response,
+    RoutedLlmClient, StopReason, Usage, text_request, text_response,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -408,7 +406,7 @@ impl Algorithm for SingleCallAlgo {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> switchyard_libsy::Result<Response> {
+    ) -> switchyard_libsy::Result<ResponseOrDecision> {
         let target = self
             .target_set
             .targets()
@@ -421,7 +419,7 @@ impl Algorithm for SingleCallAlgo {
         });
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
-            .call_llm_target(ctx, &target, request, decision)
+            .final_decision(ctx, &target, request, decision, &mut None)
             .await
     }
 }
@@ -528,7 +526,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     request.llm_request.output.response_format = Some(json!({"type": "json_schema"}));
     request.llm_request.reasoning.effort = Some("high".to_string());
     let (trace, _response) = algo(ALGO, MODEL, Some(client))
-        .run(Context::default(), request)
+        .run(Context::default(), request, None)
         .await?;
     assert_eq!(trace.len(), 1);
 
@@ -801,7 +799,7 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     let mut request = request_with_metadata("obs-stream-session", "obs-stream-corr");
     request.llm_request.stream = true;
     let (_, response) = algo(ALGO, MODEL, Some(client))
-        .run(Context::default(), request)
+        .run(Context::default(), request, None)
         .await?;
     let LlmResponse::Stream(mut stream) = response.llm_response else {
         return Err(test_error("expected a streamed response"));
@@ -848,7 +846,7 @@ async fn dropped_stream_records_cancelled_outcome() -> switchyard_libsy::Result<
     let mut request = request_with_metadata("obs-cancelled-session", "obs-cancelled-corr");
     request.llm_request.stream = true;
     let (_, response) = algo(ALGO, MODEL, Some(client))
-        .run(Context::default(), request)
+        .run(Context::default(), request, None)
         .await?;
     let LlmResponse::Stream(stream) = response.llm_response else {
         return Err(test_error("expected a streamed response"));
@@ -878,6 +876,7 @@ async fn typed_client_failure_records_semantic_error_type() {
     .run(
         Context::default(),
         request_with_metadata("obs-timeout-session", "obs-timeout-corr"),
+        None,
     )
     .await;
     assert!(matches!(
@@ -1061,6 +1060,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
                 raw_request: None,
                 metadata: None,
             },
+            None,
         )
         .await?;
 
@@ -1121,6 +1121,80 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     assert!(
         (60..200).contains(&overhead),
         "expected roughly the classifier's 60ms, got {overhead}ms"
+    );
+    Ok(())
+}
+
+/// Concludes with a served response whatever mode it is run in — the terminal a
+/// decision-only run has no way to deliver.
+struct AlwaysRespondsAlgo {
+    name: String,
+}
+
+#[async_trait]
+impl Algorithm for AlwaysRespondsAlgo {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn create_run_task(
+        self: Arc<Self>,
+        _ctx: Context,
+        _driver: Driver,
+        _request: Request,
+    ) -> switchyard_libsy::Result<ResponseOrDecision> {
+        Ok(ResponseOrDecision::Response(Box::new(Response {
+            llm_response: LlmResponse::Agg(text_response(None, "answer")),
+            metadata: None,
+        })))
+    }
+}
+
+#[tokio::test]
+async fn a_run_the_caller_receives_as_an_error_is_metered_as_one() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    const ALGO: &str = "obs-mode-mismatch-algo";
+    let _before = flushed_metrics(exporter, provider);
+
+    let algorithm: Arc<dyn Algorithm> = Arc::new(AlwaysRespondsAlgo {
+        name: ALGO.to_string(),
+    });
+    // A response terminal under `decide`: the caller receives an error...
+    let result = algorithm
+        .decide(
+            Context::default(),
+            request_with_metadata("obs-session-4", "obs-corr-4"),
+            None,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "decide must reject a terminal it cannot deliver"
+    );
+
+    // ...so the run counts as a failure, not a success with a stray latency sample.
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.runs",
+            &[("algorithm", ALGO), ("outcome", "error")]
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.runs",
+            &[("algorithm", ALGO), ("outcome", "ok")]
+        ),
+        None
+    );
+    let span = find_span(&store.spans(), "libsy.run", "algorithm", ALGO);
+    assert_eq!(
+        span.fields.get("outcome").map(String::as_str),
+        Some("error")
     );
     Ok(())
 }

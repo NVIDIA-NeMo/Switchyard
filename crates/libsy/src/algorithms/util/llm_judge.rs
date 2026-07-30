@@ -346,7 +346,7 @@ mod tests {
     /// Serves the single offloaded judge call with `reply`. The stream is taken first
     /// because the driver refuses to publish a step until a consumer exists.
     async fn score_served_with(reply: Result<Response>) -> Result<String> {
-        let driver = Driver::new();
+        let driver = Driver::new(false);
         let mut steps = Box::pin(driver.stream());
         let classifier = classifier();
         let mut state = State::default();

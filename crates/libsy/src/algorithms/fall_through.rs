@@ -22,7 +22,10 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, Driver, LlmTarget, LlmTargetSet, SessionEvictions};
+use crate::core::algorithm::{
+    self, Algorithm, Driver, LlmTarget, LlmTargetSet, ResponseOrDecision, SessionEvictions,
+    call_llm_with_overflow_fallback,
+};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::{LibsyError, Result};
@@ -169,7 +172,7 @@ where
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
@@ -198,19 +201,28 @@ where
         // for twice. There is no outbound call left to overflow, so the fallback is skipped.
         // Nothing reads it on the way out: streamed or buffered, it reaches the caller
         // untouched.
+        // Fixed for the whole run by the entry point that started it.
+        let decision_only = driver.decision_only();
         match served {
-            Some(response) => Ok(response),
-            None => {
-                algorithm::call_llm_with_overflow_fallback(
+            Some(response) if !decision_only => {
+                Ok(ResponseOrDecision::Response(Box::new(response)))
+            }
+            // Everything else concludes through the fallback: it lends the response to each
+            // attempt and takes it only when one concludes, so a retry still has it.
+            served => {
+                call_llm_with_overflow_fallback(
                     ctx,
                     &driver,
                     &self.targets,
                     target,
                     decision,
                     request,
+                    served,
                     session.as_deref(),
                     &self.session_evictions,
                     |from, to| self.fallback_decision(from, to),
+                    // This call is the answer the cascade returns, so it concludes the run.
+                    true,
                 )
                 .await
             }
@@ -277,9 +289,11 @@ where
             });
         };
 
-        // 3. Resolve the target and publish the decision. When an excluded target sends
-        //    the request elsewhere, the tier and reasoning describe where it actually went.
-        let target = self.targets.resolve_target(&score.target, ctx)?;
+        // 3. Resolve the target and publish the decision.
+        let target = match served {
+            Some(_) => self.targets.get_target(&score.target)?,
+            None => self.targets.resolve_target(&score.target, ctx)?,
+        };
         let reasoning = if target.semantic_name == score.target {
             (self.decision_reason)(&self.name, &score)
         } else {
@@ -344,7 +358,7 @@ where
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         self.execute(ctx, driver, request).await
     }
 }
@@ -511,6 +525,7 @@ mod tests {
                     raw_request: None,
                     metadata: None,
                 },
+                None,
             )
             .await?;
         let call = client.0.lock().take();
@@ -557,6 +572,38 @@ mod tests {
         }
     }
 
+    /// A classifier whose decision *is* a model call: it answers the turn while deciding
+    /// it, and hands that response back alongside its score.
+    struct AnswersWhileDeciding {
+        target: String,
+        completion: &'static str,
+    }
+
+    #[async_trait]
+    impl Classifier for AnswersWhileDeciding {
+        async fn score(
+            &self,
+            _state: &mut (),
+            _request: &mut Request,
+            _driver: Option<&Driver>,
+        ) -> Result<(Classification, Option<Response>)> {
+            Ok((
+                Classification::Scores(vec![score(&self.target, 1.0)]),
+                Some(Response {
+                    llm_response: LlmResponse::Agg(text_response(None, self.completion)),
+                    metadata: None,
+                }),
+            ))
+        }
+    }
+
+    fn answers_while_deciding(target: &str, completion: &'static str) -> Arc<dyn Classifier> {
+        Arc::new(AnswersWhileDeciding {
+            target: target.to_string(),
+            completion,
+        })
+    }
+
     fn score(target: &str, confidence: f64) -> Score {
         Score {
             confidence,
@@ -591,7 +638,10 @@ mod tests {
     where
         S: Default + Send + 'static,
     {
-        let (trace, response) = router.clone().run(Context::default(), request).await?;
+        let (trace, response) = router
+            .clone()
+            .run(Context::default(), request, None)
+            .await?;
         let text = response
             .llm_response
             .into_agg()
@@ -912,7 +962,7 @@ mod tests {
         );
         let mut ctx = Context::default();
         ctx.exclude_target("weak");
-        let (trace, response) = router.run(ctx, request()).await?;
+        let (trace, response) = router.run(ctx, request(), None).await?;
         let text = response
             .llm_response
             .into_agg()
@@ -1181,6 +1231,112 @@ mod tests {
         assert_eq!(second_session, "weak");
         assert_eq!(anonymous1, "weak");
         assert_eq!(anonymous2, "weak");
+        Ok(())
+    }
+
+    // --- a classifier that answers the turn while deciding it ---------------------------
+
+    #[tokio::test]
+    async fn a_classifier_response_answers_the_turn_without_a_second_call() -> Result<()> {
+        // `EchoClient` echoes the target name, so a completion that is not "strong" proves
+        // the routed target was never called and the turn was not paid for twice.
+        let router: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::new(target_set(&["strong"]))
+                .with_classifier(answers_while_deciding("strong", "answered while deciding")),
+        );
+
+        let (trace, response) = router.run(Context::default(), request(), None).await?;
+
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("answered while deciding".to_string())
+        );
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("strong"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_decision_only_run_hands_back_the_classifier_response_with_the_route() -> Result<()> {
+        // The same turn under `decide`: the response the classifier already obtained rides
+        // along with the route rather than being returned on its own.
+        let router: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::new(target_set(&["strong"]))
+                .with_classifier(answers_while_deciding("strong", "answered while deciding")),
+        );
+
+        let (_, (decision, request, response)) =
+            router.decide(Context::default(), request(), None).await?;
+
+        assert_eq!(decision.selected_model(), "strong");
+        assert_eq!(request.requested_model(), Some("auto"));
+        let response = response.ok_or_else(|| test_error("expected the classifier response"))?;
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("answered while deciding".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_classifier_response_keeps_the_target_it_was_answered_by() -> Result<()> {
+        // The scored target is excluded, so ordinary routing would substitute another one.
+        // The classifier has already answered from the target it scored, though, and
+        // substituting here would hand the caller one target's answer under another's name.
+        let router: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::new(target_set(&["weak", "strong"]))
+                .with_classifier(answers_while_deciding("weak", "weak answered")),
+        );
+        let mut ctx = Context::default();
+        ctx.exclude_target("weak");
+
+        let (_, (decision, _, response)) = router.decide(ctx, request(), None).await?;
+
+        assert_eq!(decision.selected_model(), "weak");
+        let response = response.ok_or_else(|| test_error("expected the classifier response"))?;
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("weak answered".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_served_turn_publishes_the_target_that_answered_it() -> Result<()> {
+        // The same substitution under `run`: nothing is returned to the caller but the
+        // answer, so the published decision is all that names the model behind it — cost
+        // and stats key off it.
+        let router = Arc::new(
+            FallThrough::new(target_set(&["weak", "strong"]))
+                .with_classifier(answers_while_deciding("weak", "weak answered")),
+        );
+        let mut ctx = Context::default();
+        ctx.exclude_target("weak");
+
+        let (trace, response) = router.run(ctx, request(), None).await?;
+
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("weak"));
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("weak answered".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_decision_only_run_without_a_classifier_response_carries_none() -> Result<()> {
+        // The ordinary cascade: nothing was called before the routing decision, so there is
+        // no response to hand back with it.
+        let router: Arc<dyn Algorithm> = Arc::new(
+            FallThrough::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("strong", 1.0)])),
+        );
+
+        let (trace, (decision, _, response)) =
+            router.decide(Context::default(), request(), None).await?;
+
+        assert_eq!(decision.selected_model(), "strong");
+        assert!(response.is_none());
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("strong"));
         Ok(())
     }
 }

@@ -32,6 +32,21 @@ use crate::{DriverError, LibsyError, Result, observability};
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
+/// A boxed, `Send` stream of [`DecisionOnlyStep`]s — the output of
+/// [`Algorithm::run_decision_only_stream`]. The decision-only counterpart of
+/// [`StepStream`]: it ends on a route to serve rather than on a served answer.
+pub type DecisionOnlyStepStream = Pin<Box<dyn Stream<Item = Result<DecisionOnlyStep>> + Send>>;
+
+/// Either step stream, as produced by [`Algorithm::run_stream_inner`].
+///
+/// The two run modes share one implementation, so the variant is fixed by the
+/// `decision_only` flag the run was started with rather than chosen per step.
+pub enum AnyStepStream {
+    /// A served run: every call is performed and the stream ends with an answer.
+    Step(StepStream),
+    /// A decision-only run: the stream ends with the route for the caller to serve.
+    DecisionOnly(DecisionOnlyStepStream),
+}
 
 /// One completed model call observed at the algorithm offload boundary.
 #[derive(Clone, Debug)]
@@ -146,21 +161,33 @@ pub struct Driver {
     // How long the call that served this run took. We need this to calculate routing overhead.
     routed_call: Arc<Mutex<Option<Duration>>>,
     observer: Option<RunObserver>,
+    // Whether this run concludes with a handoff instead of serving its final call.
+    decision_only: bool,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
-    /// [`run_stream`](Algorithm::run_stream).
-    pub(crate) fn new() -> Self {
-        Self::with_observer(None)
+    /// [`run_stream`](Algorithm::run_stream), which fixes the run's `decision_only` mode.
+    pub(crate) fn new(decision_only: bool) -> Self {
+        Self::with_observer(decision_only, None)
     }
 
-    fn with_observer(observer: Option<RunObserver>) -> Self {
+    fn with_observer(decision_only: bool, observer: Option<RunObserver>) -> Self {
         Self {
             driver: TypeErasedDriver::new(),
             routed_call: Arc::new(Mutex::new(None)),
             observer,
+            decision_only,
         }
+    }
+
+    /// Whether this run concludes with a handoff rather than serving its final call.
+    ///
+    /// Fixed for the whole run by the entry point that started it, and applied by
+    /// [`final_decision`](Self::final_decision). An algorithm reads it only when the mode
+    /// changes what it does *before* concluding.
+    pub fn decision_only(&self) -> bool {
+        self.decision_only
     }
 
     /// How long the call that served this run took, if one has succeeded.
@@ -263,6 +290,33 @@ impl Driver {
         .await
     }
 
+    /// Conclude a run on `decision`: either serve the final call here, or hand it back.
+    pub async fn final_decision(
+        &self,
+        ctx: Context,
+        target: &LlmTarget,
+        request: Request,
+        decision: Arc<dyn Decision>,
+        response: &mut Option<Response>,
+    ) -> Result<ResponseOrDecision> {
+        if self.decision_only() {
+            Ok(ResponseOrDecision::Decision((
+                decision,
+                Box::new(request),
+                response.take().map(Box::new),
+            )))
+        } else {
+            let res = match response.take() {
+                Some(res) => res,
+                None => {
+                    self.call_llm_target(ctx.clone(), target, request, decision.clone())
+                        .await?
+                }
+            };
+            Ok(ResponseOrDecision::Response(Box::new(res)))
+        }
+    }
+
     /// Publish a routing [`Decision`] as a [`Step::Decision`] on the stream.
     /// Each successfully published decision is counted and logged with its
     /// reasoning; a decision the stream never accepted is not recorded.
@@ -275,9 +329,13 @@ impl Driver {
     /// Emit the terminal step: [`Step::ReturnToAgent`] on `Ok`, or an `Err` stream
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
-    pub(crate) async fn finish(&self, ctx: Context, result: Result<Response>) -> Result<()> {
+    pub(crate) async fn finish(
+        &self,
+        ctx: Context,
+        result: Result<ResponseOrDecision>,
+    ) -> Result<()> {
         match result {
-            Ok(response) => self.driver.done(ctx, response).await,
+            Ok(terminal) => self.driver.done(ctx, terminal).await,
             Err(err) => self.driver.fail(ctx, err).await,
         }
     }
@@ -297,23 +355,93 @@ impl Driver {
                     }
                     .into()
                 }),
-            DriverStep::Done(payload) => payload
-                .downcast::<Response>()
-                .map(Step::ReturnToAgent)
+            // The run task rejects a terminal its mode cannot deliver before publishing it
+            // (see `check_response_type`), so the mismatch arm is a decode-boundary guard.
+            DriverStep::Done(payload) => match payload.downcast::<ResponseOrDecision>() {
+                Ok(terminal) => match *terminal {
+                    ResponseOrDecision::Response(response) => Ok(Step::ReturnToAgent(response)),
+                    ResponseOrDecision::Decision(_) => Err(LibsyError::AlgorithmError {
+                        message: DECISION_IN_SERVED_RUN.to_string(),
+                    }),
+                },
+                Err(_) => Err(DriverError::TypeMismatch {
+                    expected: "ResponseOrDecision",
+                }
+                .into()),
+            },
+        })
+    }
+
+    pub(crate) fn decision_only_stream(
+        &self,
+    ) -> impl Stream<Item = Result<DecisionOnlyStep>> + use<> {
+        self.driver.stream().map(|item| match item? {
+            DriverStep::Request(req) => Ok(DecisionOnlyStep::CallLlm(Box::new(
+                CallLlmRequest::new(req),
+            ))),
+            DriverStep::Info(payload) => payload
+                .downcast::<Arc<dyn Decision>>()
+                .map(|decision| DecisionOnlyStep::Decision(*decision))
                 .map_err(|_| {
                     DriverError::TypeMismatch {
-                        expected: "Response",
+                        expected: "Arc<dyn Decision>",
                     }
                     .into()
                 }),
+            // The run task rejects a terminal its mode cannot deliver before publishing it
+            // (see `check_response_type`), so the mismatch arm is a decode-boundary guard.
+            DriverStep::Done(payload) => match payload.downcast::<ResponseOrDecision>() {
+                Ok(terminal) => match *terminal {
+                    ResponseOrDecision::Response(_) => Err(LibsyError::AlgorithmError {
+                        message: RESPONSE_IN_DECISION_ONLY_RUN.to_string(),
+                    }),
+                    ResponseOrDecision::Decision((decision, request, response)) => Ok(
+                        DecisionOnlyStep::ReturnToAgent((decision, request, response)),
+                    ),
+                },
+                Err(_) => Err(DriverError::TypeMismatch {
+                    expected: "ResponseOrDecision",
+                }
+                .into()),
+            },
         })
     }
 }
 
 impl Default for Driver {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
+}
+
+/// What an algorithm concludes a run with
+pub enum ResponseOrDecision {
+    /// A served run's answer to the request.
+    Response(Box<Response>),
+    /// A decision-only run's route for the caller to serve — the [`DecidedCall`].
+    Decision((Arc<dyn Decision>, Box<Request>, Option<Box<Response>>)),
+}
+
+/// A terminal a decision-only run cannot hand back: it has no route to the agent.
+const RESPONSE_IN_DECISION_ONLY_RUN: &str =
+    "algorithm returned a response result, which the decision-only step stream cannot serve";
+/// A terminal a served run cannot hand back: its caller expects an answer, not a route.
+const DECISION_IN_SERVED_RUN: &str =
+    "algorithm returned a decision-only result, which the step stream cannot serve";
+
+/// Check the return variant matches the run mode
+fn check_response_type(
+    terminal: ResponseOrDecision,
+    decision_only: bool,
+) -> Result<ResponseOrDecision> {
+    let message = match (&terminal, decision_only) {
+        (ResponseOrDecision::Response(_), true) => RESPONSE_IN_DECISION_ONLY_RUN,
+        (ResponseOrDecision::Decision(_), false) => DECISION_IN_SERVED_RUN,
+        _ => return Ok(terminal),
+    };
+    Err(LibsyError::AlgorithmError {
+        message: message.to_string(),
+    })
 }
 
 /// One item in the stream returned by `Driver::stream` / [`Algorithm::run_stream`].
@@ -327,6 +455,176 @@ pub enum Step {
     Decision(Arc<dyn Decision>),
     /// The algorithm finished with its final response — the last step of a run.
     ReturnToAgent(Box<Response>),
+}
+
+/// One item in the stream returned by [`Algorithm::run_decision_only_stream`].
+pub enum DecisionOnlyStep {
+    /// The algorithm needs this model call performed. The host serves it (optionally
+    /// via [`RoutedRequest::default_client`]) and fulfills it with
+    /// [`CallLlmRequest::respond`]. Boxed: it is by far the largest variant.
+    CallLlm(Box<CallLlmRequest>),
+    /// A routing decision the algorithm made, published via [`Driver::info`] as it
+    /// happens (rather than collected into a trace returned at the end).
+    Decision(Arc<dyn Decision>),
+    /// The algorithm finished with its final decision
+    ReturnToAgent(DecidedCall),
+}
+
+/// The final routing decision of a decision-only run: the decision to act on, the request
+/// to serve it with, and that call's response when the algorithm already made it.
+pub type DecidedCall = (Arc<dyn Decision>, Box<Request>, Option<Box<Response>>);
+
+/// One step of a run as the driving loop sees it.
+///
+/// [`Step`] and [`DecisionOnlyStep`] differ only in what their terminal variant carries, so
+/// both convert into this and one loop can drive either.
+enum StepKind {
+    CallLlm(Box<CallLlmRequest>),
+    Decision(Arc<dyn Decision>),
+    Terminal(ResponseOrDecision),
+}
+
+impl From<Step> for StepKind {
+    fn from(step: Step) -> Self {
+        match step {
+            Step::CallLlm(call) => StepKind::CallLlm(call),
+            Step::Decision(decision) => StepKind::Decision(decision),
+            Step::ReturnToAgent(response) => {
+                StepKind::Terminal(ResponseOrDecision::Response(response))
+            }
+        }
+    }
+}
+
+impl From<DecisionOnlyStep> for StepKind {
+    fn from(step: DecisionOnlyStep) -> Self {
+        match step {
+            DecisionOnlyStep::CallLlm(call) => StepKind::CallLlm(call),
+            DecisionOnlyStep::Decision(decision) => StepKind::Decision(decision),
+            DecisionOnlyStep::ReturnToAgent(decided) => {
+                StepKind::Terminal(ResponseOrDecision::Decision(decided))
+            }
+        }
+    }
+}
+
+/// Drive a step stream to completion: serve every offloaded call with its target's default
+/// client, collect the decisions published along the way, and return the terminal step.
+///
+/// Generic over the step shape so the served-response and decision-only runs share one
+/// loop; the [`StepKind`] conversion normalizes their terminal steps into a
+/// [`ResponseOrDecision`].
+async fn drive<T: Into<StepKind>>(
+    stream: impl Stream<Item = Result<T>>,
+) -> Result<(Vec<Arc<dyn Decision>>, ResponseOrDecision)> {
+    // Serve one offloaded call with its target's default client. A failed *model*
+    // call is forwarded to the algorithm via `respond`; this errors only on an
+    // infrastructure failure (no default client, or the promise was dropped).
+    // `serve` makes the one API call libsy itself performs, so it gets its
+    // own `libsy.client_call` span.
+    #[tracing::instrument(
+        target = "libsy",
+        name = "libsy.client_call",
+        skip_all,
+        fields(
+            algorithm = observability::algorithm_label(&call.get_routed().ctx),
+            switchyard.algorithm = observability::algorithm_label(&call.get_routed().ctx),
+            switchyard.routing.tier = tracing::field::Empty,
+            selected_model = call.get_decision().selected_model(),
+            otel.kind = "client",
+            otel.name = %format_args!("chat {}", call.get_decision().selected_model()),
+            openinference.span.kind = "LLM",
+            gen_ai.operation.name = "chat",
+            gen_ai.request.model = call.get_decision().selected_model(),
+            gen_ai.request.stream = tracing::field::Empty,
+            gen_ai.request.temperature = tracing::field::Empty,
+            gen_ai.request.top_p = tracing::field::Empty,
+            gen_ai.request.top_k = tracing::field::Empty,
+            gen_ai.request.max_tokens = tracing::field::Empty,
+            gen_ai.request.reasoning.level = tracing::field::Empty,
+            gen_ai.output.type = tracing::field::Empty,
+            gen_ai.conversation.id = tracing::field::Empty,
+            server.address = tracing::field::Empty,
+            server.port = tracing::field::Empty,
+            gen_ai.response.id = tracing::field::Empty,
+            gen_ai.response.model = tracing::field::Empty,
+            gen_ai.usage.input_tokens = tracing::field::Empty,
+            gen_ai.usage.output_tokens = tracing::field::Empty,
+            gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+            gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
+            gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            error = tracing::field::Empty,
+        )
+    )]
+    async fn serve(call: CallLlmRequest) -> Result<()> {
+        let span = tracing::Span::current();
+        observability::record_gen_ai_request(&span, &call.get_routed().request.llm_request);
+        if let Some(tier) = call.get_decision().routing_tier() {
+            span.record("switchyard.routing.tier", tier);
+        }
+        if let Some(session_id) = call
+            .get_routed()
+            .request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_id.as_deref())
+        {
+            span.record("gen_ai.conversation.id", session_id);
+        }
+        let routed = call.get_routed().clone();
+        let target = routed.decision.selected_model().to_string();
+        let client = routed
+            .default_client
+            .clone()
+            .ok_or_else(|| LibsyError::MissingClient {
+                target: target.clone(),
+            })?;
+        let result = client
+            .call(routed.ctx, routed.request, routed.decision)
+            .await
+            .map_err(|source| LibsyError::client_call(target, source));
+        let result = observability::observe_client_call(result);
+        // An algorithm may abandon a call it no longer needs. In that case we just return ok.
+        // TODO Ideally we would signal the caller so that the actual client request can be canceld
+        match call.respond(result) {
+            Err(LibsyError::Driver(DriverError::ResponseDropped)) => Ok(()),
+            result => result,
+        }
+    }
+
+    tokio::pin!(stream);
+
+    let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
+    let mut in_flight = futures::stream::FuturesUnordered::new();
+    let mut terminal: Option<ResponseOrDecision> = None;
+
+    loop {
+        tokio::select! {
+            Some(result) = in_flight.next() => match result {
+                Ok(()) => {}, // CallLlm completed successfully
+                Err(err) => return Err(err), // CallLlm failed, propagate the error
+            },
+            step = stream.next() => {
+                match step {
+                    None => break, // stream has ended, no more steps
+                    Some(item) => match item?.into() {
+                        StepKind::CallLlm(call) => in_flight.push(serve(*call)),
+                        StepKind::Decision(decision) => trace.push(decision),
+                        StepKind::Terminal(step) => {
+                            terminal = Some(step);
+                            break;
+                        }
+                    }
+                }
+            },
+        }
+    }
+    terminal
+        .map(|terminal| (trace, terminal))
+        .ok_or(LibsyError::MissingFinalResponse)
 }
 
 /// Abort guard
@@ -490,6 +788,15 @@ pub(crate) fn exclude_evicted(
 /// caller's request-side work and retained state still see exactly one turn.
 /// `fallback_decision` builds the [`Decision`] published for a `from -> to` hop, and each
 /// overflow is recorded against `session` so later turns skip that target outright.
+///
+/// Set `final_decision` only when this call's answer is the one returned to the agent: it
+/// concludes the run through [`Driver::final_decision`], which honours decision-only mode.
+/// A side call — a judge or classifier consultation — passes `false` and is always served,
+/// even on a decision-only run, because deciding is what it is for.
+///
+/// `response` carries a response the caller already obtained; on a decision-only run it is
+/// handed back with the decision instead of `target` being called. It is meaningful only
+/// alongside `final_decision`; a side call has no answer to hand back and passes `None`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_llm_with_overflow_fallback(
     mut ctx: Context,
@@ -498,14 +805,33 @@ pub(crate) async fn call_llm_with_overflow_fallback(
     mut target: LlmTarget,
     mut decision: Arc<dyn Decision>,
     request: Request,
+    mut response: Option<Response>,
     session: Option<&str>,
     evictions: &SessionEvictions,
     fallback_decision: impl Fn(&LlmTarget, &LlmTarget) -> Arc<dyn Decision>,
-) -> Result<Response> {
+    final_decision: bool,
+) -> Result<ResponseOrDecision> {
     loop {
-        let result = driver
-            .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
-            .await;
+        // The response stays owned here and is only lent to each attempt: `Response` is
+        // not `Clone`, so moving it in would leave the next attempt with nothing.
+        // `final_decision` takes it only when it concludes the run.
+        let result = match final_decision {
+            true => {
+                driver
+                    .final_decision(
+                        ctx.clone(),
+                        &target,
+                        request.clone(),
+                        decision.clone(),
+                        &mut response,
+                    )
+                    .await
+            }
+            false => driver
+                .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
+                .await
+                .map(|r| ResponseOrDecision::Response(Box::new(r))),
+        };
         let Err(error) = result else { return result };
         let LibsyError::ClientCall {
             target: failed,
@@ -528,6 +854,218 @@ pub(crate) async fn call_llm_with_overflow_fallback(
         driver.info(ctx.clone(), decision.clone()).await?;
     }
 }
+struct AlgoInner<A: Algorithm + ?Sized> {
+    algo: Arc<A>,
+}
+impl<A: Algorithm + ?Sized> AlgoInner<A> {
+    fn new(algo: Arc<A>) -> Self {
+        Self { algo }
+    }
+    /// Process a request to completion, returning a stream of [`Step`]s.
+    /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
+    /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
+    /// Report each model call to `observer`.
+    fn run_stream_inner(
+        &self,
+        ctx: Context,
+        request: Request,
+        decision_only: bool,
+        observer: Option<RunObserver>,
+    ) -> AnyStepStream {
+        // Stamp the algorithm's telemetry label into the request context; the
+        // context rides on every driver call, so its telemetry is attributed.
+        let mut ctx = ctx;
+        ctx.values.insert(
+            observability::ALGORITHM_KEY.to_string(),
+            self.algo.name().to_string(),
+        );
+        let driver = Driver::with_observer(decision_only, observer);
+        let task_driver = driver.clone();
+        let task_ctx = ctx.clone();
+        // Take the consumer stream before the task starts: the driver refuses to publish a
+        // step until a consumer exists. The two shapes read the same driver, so exactly one
+        // of them may be taken. Boxing here erases the two opaque stream types to the one
+        // the variant holds.
+        let steps = if decision_only {
+            AnyStepStream::DecisionOnly(Box::pin(task_driver.decision_only_stream()))
+        } else {
+            AnyStepStream::Step(Box::pin(task_driver.stream()))
+        };
+        // One `libsy.run` span covers the whole algorithm task; the driver's
+        // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
+        // contextual parenting.
+        let span = observability::run_span(self.algo.name(), &request);
+        let observed_driver = task_driver.clone();
+        let algo_task = self
+            .algo
+            .clone()
+            .create_run_task(task_ctx.clone(), task_driver, request);
+        let handle = tokio::spawn(
+            async move {
+                observability::observe_run(task_ctx.clone(), observed_driver, async move {
+                    //let terminal = self.algo.clone().create_run_task(task_ctx, task_driver, request).await?;
+                    let terminal = algo_task.await?;
+                    check_response_type(terminal, decision_only)
+                })
+                .await
+            }
+            .instrument(span),
+        );
+        // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
+        let abort_guard = AbortOnDrop(handle.abort_handle());
+
+        let finish_driver = driver.clone();
+        let finish_ctx = ctx;
+
+        // awaits create_run_task append terminal to driver and appends err to step stream
+        fn tail<T: Send + 'static>(
+            handle: tokio::task::JoinHandle<Result<ResponseOrDecision>>,
+            driver: Driver,
+            ctx: Context,
+        ) -> impl Stream<Item = Result<T>> + Send {
+            futures::stream::once(async move {
+                let result = match handle.await {
+                    Ok(response) => response,
+                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
+                };
+                driver.finish(ctx, result).await
+            })
+            .filter_map(|finish_result| async move { finish_result.err().map(Err) })
+        }
+
+        // merge step stream and tail
+        fn merge<T: Send + 'static>(
+            steps: impl Stream<Item = Result<T>> + Send + 'static,
+            tail: impl Stream<Item = Result<T>> + Send + 'static,
+            guard: AbortOnDrop,
+        ) -> Pin<Box<dyn Stream<Item = Result<T>> + Send>> {
+            Box::pin(futures::stream::select(steps, tail).map(move |step| {
+                // link abort guard to stream
+                let _keep_alive = &guard;
+                step
+            }))
+        }
+
+        match steps {
+            AnyStepStream::Step(steps) => AnyStepStream::Step(merge(
+                steps,
+                tail(handle, finish_driver, finish_ctx),
+                abort_guard,
+            )),
+            AnyStepStream::DecisionOnly(steps) => AnyStepStream::DecisionOnly(merge(
+                steps,
+                tail(handle, finish_driver, finish_ctx),
+                abort_guard,
+            )),
+        }
+    }
+
+    /// Process a request to completion, returning a stream of [`Step`]s.
+    fn run_stream(
+        &self,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> StepStream {
+        match self.run_stream_inner(ctx, request, false, observer) {
+            AnyStepStream::Step(stream) => stream,
+            AnyStepStream::DecisionOnly(_) => futures::stream::once(async move {
+                Err(LibsyError::AlgorithmError {
+                    message: "run_stream_inner with decision_only=false should return StepStream"
+                        .to_string(),
+                })
+            })
+            .boxed(),
+        }
+    }
+
+    /// Process a request up to its final routing decision as [`DecisionOnlyStep`]s.
+    fn run_decision_only_stream(
+        &self,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> DecisionOnlyStepStream {
+        match self.run_stream_inner(ctx, request, true, observer) {
+            AnyStepStream::DecisionOnly(stream) => stream,
+            AnyStepStream::Step(_) => futures::stream::once(async move {
+                Err(LibsyError::AlgorithmError {
+                    message: "run_stream_inner with decision_only=true should return \
+                                  DecisionOnlyStepStream"
+                        .to_string(),
+                })
+            })
+            .boxed(),
+        }
+    }
+
+    /// Process a request to completion, serving every offloaded call, and return the
+    /// terminal [`ResponseOrDecision`] plus the trace of [`Decision`]s made along the way.
+    ///
+    /// Both stream shapes drive identically — only their terminal step differs, and the
+    /// shared driving loop normalizes that — so this is one match over the two.
+    async fn run_inner(
+        &self,
+        ctx: Context,
+        request: Request,
+        decision_only: bool,
+        observer: Option<RunObserver>,
+    ) -> Result<(Vec<Arc<dyn Decision>>, ResponseOrDecision)> {
+        match decision_only {
+            true => drive(self.run_decision_only_stream(ctx, request, observer)).await,
+            false => drive(self.run_stream(ctx, request, observer)).await,
+        }
+    }
+
+    /// Process a request to completion, returning the final [`Response`] and the trace of
+    /// [`Decision`]s the algorithm made along the way.
+    async fn run(
+        &self,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
+        self.run_observed(ctx, request, observer).await
+    }
+
+    /// Process a request to completion while reporting each model call to `observer`.
+    async fn run_observed(
+        &self,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
+        let (trace, response) = self.run_inner(ctx, request, false, observer).await?;
+        match response {
+            ResponseOrDecision::Response(response) => Ok((trace, *response)),
+            ResponseOrDecision::Decision(_) => Err(LibsyError::AlgorithmError {
+                message: DECISION_IN_SERVED_RUN.to_string(),
+            }),
+        }
+    }
+
+    /// Process a request up to its final routing decision *without* serving that call:
+    /// returns the decision, the request to serve it with, and any response the algorithm
+    /// already obtained, plus the trace of decisions made along the way.
+    ///
+    /// Only the routed call is left unmade: the decision still binds the algorithm's
+    /// retained state — session affinity latches this session to the target it chose —
+    /// exactly as a served run would. Deciding commits to a route, it does not preview one.
+    async fn decide(
+        &self,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<(Vec<Arc<dyn Decision>>, DecidedCall)> {
+        let (trace, response) = self.run_inner(ctx, request, true, observer).await?;
+        match response {
+            ResponseOrDecision::Decision(decided) => Ok((trace, decided)),
+            ResponseOrDecision::Response(_) => Err(LibsyError::AlgorithmError {
+                message: RESPONSE_IN_DECISION_ONLY_RUN.to_string(),
+            }),
+        }
+    }
+}
 
 /// An optimization strategy. Implement [`create_run_task`](Self::create_run_task);
 /// callers drive it with the provided [`run`](Self::run) (serve calls, get the answer)
@@ -543,7 +1081,8 @@ pub trait Algorithm: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
-    /// publish [`Decision`]s with [`Driver::info`], and return the final [`Response`].
+    /// publish [`Decision`]s with [`Driver::info`], and conclude on the winning target with
+    /// [`Driver::final_decision`].
     /// The method an algorithm implements; [`run`](Self::run) / [`run_stream`](Self::run_stream)
     /// drive it. `ctx` carries the request's cross-cutting values (today: the
     /// algorithm's telemetry label in [`Context::values`]).
@@ -552,7 +1091,7 @@ pub trait Algorithm: Send + Sync + 'static {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response>;
+    ) -> Result<ResponseOrDecision>;
 
     /// Feed the algorithm agentic-stack events (tool results, budgets, etc.). The
     /// reference algorithms ignore signals; a stateful algorithm updates its own
@@ -596,189 +1135,50 @@ pub trait Algorithm: Send + Sync + 'static {
     }
 
     /// Process a request to completion, returning a stream of [`Step`]s.
-    /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
-    /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
-    /// Report each model call to `observer`.
     fn run_stream(
         self: Arc<Self>,
         ctx: Context,
         request: Request,
         observer: Option<RunObserver>,
     ) -> StepStream {
-        // Stamp the algorithm's telemetry label into the request context; the
-        // context rides on every driver call, so its telemetry is attributed.
-        let mut ctx = ctx;
-        ctx.values.insert(
-            observability::ALGORITHM_KEY.to_string(),
-            self.name().to_string(),
-        );
-        let driver = Driver::with_observer(observer);
-        let task_driver = driver.clone();
-        let task_ctx = ctx.clone();
-        let stream = task_driver.stream();
-        // One `libsy.run` span covers the whole algorithm task; the driver's
-        // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
-        // contextual parenting.
-        let span = observability::run_span(self.name(), &request);
-        let observed_driver = task_driver.clone();
-        let handle = tokio::spawn(
-            async move {
-                observability::observe_run(
-                    task_ctx.clone(),
-                    observed_driver,
-                    self.create_run_task(task_ctx, task_driver, request),
-                )
-                .await
-            }
-            .instrument(span),
-        );
-        // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
-        let abort_guard = AbortOnDrop(handle.abort_handle());
+        AlgoInner::new(self).run_stream(ctx, request, observer)
+    }
 
-        let finish_driver = driver.clone();
-        let finish_ctx = ctx;
-        let tail: StepStream = Box::pin(
-            futures::stream::once(async move {
-                let result = match handle.await {
-                    Ok(response) => response,
-                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
-                };
-                finish_driver.finish(finish_ctx, result).await
-            })
-            .filter_map(|finish_result| async move { finish_result.err().map(Err) }),
-        );
-
-        let stream: StepStream = Box::pin(stream);
-        Box::pin(futures::stream::select(stream, tail).map(move |step| {
-            // link abort guard to stream
-            let _keep_alive = &abort_guard;
-            step
-        }))
+    /// Process a request up to its final routing decision as [`DecisionOnlyStep`]s.
+    fn run_decision_only_stream(
+        self: Arc<Self>,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> DecisionOnlyStepStream {
+        AlgoInner::new(self).run_decision_only_stream(ctx, request, observer)
     }
 
     /// Process a request to completion, returning the final [`Response`] and the trace of
     /// [`Decision`]s the algorithm made along the way.
-    ///
     async fn run(
-        self: Arc<Self>,
-        ctx: Context,
-        request: Request,
-    ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
-        self.run_observed(ctx, request, None).await
-    }
-
-    /// Process a request to completion while reporting each model call to `observer`.
-    async fn run_observed(
         self: Arc<Self>,
         ctx: Context,
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<(Vec<Arc<dyn Decision>>, Response)> {
-        // Serve one offloaded call with its target's default client. A failed *model*
-        // call is forwarded to the algorithm via `respond`; this errors only on an
-        // infrastructure failure (no default client, or the promise was dropped).
-        // `serve` makes the one API call libsy itself performs, so it gets its
-        // own `libsy.client_call` span.
-        #[tracing::instrument(
-            target = "libsy",
-            name = "libsy.client_call",
-            skip_all,
-            fields(
-                algorithm = observability::algorithm_label(&call.get_routed().ctx),
-                switchyard.algorithm = observability::algorithm_label(&call.get_routed().ctx),
-                switchyard.routing.tier = tracing::field::Empty,
-                selected_model = call.get_decision().selected_model(),
-                otel.kind = "client",
-                otel.name = %format_args!("chat {}", call.get_decision().selected_model()),
-                openinference.span.kind = "LLM",
-                gen_ai.operation.name = "chat",
-                gen_ai.request.model = call.get_decision().selected_model(),
-                gen_ai.request.stream = tracing::field::Empty,
-                gen_ai.request.temperature = tracing::field::Empty,
-                gen_ai.request.top_p = tracing::field::Empty,
-                gen_ai.request.top_k = tracing::field::Empty,
-                gen_ai.request.max_tokens = tracing::field::Empty,
-                gen_ai.request.reasoning.level = tracing::field::Empty,
-                gen_ai.output.type = tracing::field::Empty,
-                gen_ai.conversation.id = tracing::field::Empty,
-                server.address = tracing::field::Empty,
-                server.port = tracing::field::Empty,
-                gen_ai.response.id = tracing::field::Empty,
-                gen_ai.response.model = tracing::field::Empty,
-                gen_ai.usage.input_tokens = tracing::field::Empty,
-                gen_ai.usage.output_tokens = tracing::field::Empty,
-                gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
-                gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
-                gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
-                outcome = tracing::field::Empty,
-                otel.status_code = tracing::field::Empty,
-                error.type = tracing::field::Empty,
-                error = tracing::field::Empty,
-            )
-        )]
-        async fn serve(call: CallLlmRequest) -> Result<()> {
-            let span = tracing::Span::current();
-            observability::record_gen_ai_request(&span, &call.get_routed().request.llm_request);
-            if let Some(tier) = call.get_decision().routing_tier() {
-                span.record("switchyard.routing.tier", tier);
-            }
-            if let Some(session_id) = call
-                .get_routed()
-                .request
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.session_id.as_deref())
-            {
-                span.record("gen_ai.conversation.id", session_id);
-            }
-            let routed = call.get_routed().clone();
-            let target = routed.decision.selected_model().to_string();
-            let client =
-                routed
-                    .default_client
-                    .clone()
-                    .ok_or_else(|| LibsyError::MissingClient {
-                        target: target.clone(),
-                    })?;
-            let result = client
-                .call(routed.ctx, routed.request, routed.decision)
-                .await
-                .map_err(|source| LibsyError::client_call(target, source));
-            let result = observability::observe_client_call(result);
-            call.respond(result)
-        }
+        AlgoInner::new(self).run(ctx, request, observer).await
+    }
 
-        let stream = self.run_stream(ctx, request, observer);
-        tokio::pin!(stream);
-
-        let mut trace: Vec<Arc<dyn Decision>> = Vec::new();
-        let mut in_flight = futures::stream::FuturesUnordered::new();
-        let mut final_response: Option<Response> = None;
-
-        loop {
-            tokio::select! {
-                Some(result) = in_flight.next() => match result {
-                    Ok(()) => {}, // CallLlm completed successfully
-                    Err(err) => return Err(err), // CallLlm failed, propagate the error
-                },
-                step = stream.next() => {
-                    match step {
-                        None => break, // stream has ended, no more steps
-                        Some(item) => match item? {
-                            Step::CallLlm(call) => in_flight.push(serve(*call)),
-                            Step::Decision(decision) => trace.push(decision),
-                            Step::ReturnToAgent(response) => {
-                                final_response = Some(*response);
-                                break;
-                            }
-                        }
-                    }
-                },
-            }
-        }
-        final_response
-            .map(|response| (trace, response))
-            .ok_or(LibsyError::MissingFinalResponse)
+    /// Process a request up to its final routing decision *without* serving that call:
+    /// returns the decision, the request to serve it with, and any response the algorithm
+    /// already obtained, plus the trace of decisions made along the way.
+    ///
+    /// Only the routed call is left unmade: the decision still binds the algorithm's
+    /// retained state — session affinity latches this session to the target it chose —
+    /// exactly as a served run would. Deciding commits to a route, it does not preview one.
+    async fn decide(
+        self: Arc<Self>,
+        ctx: Context,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<(Vec<Arc<dyn Decision>>, DecidedCall)> {
+        AlgoInner::new(self).decide(ctx, request, observer).await
     }
 }
 
@@ -853,7 +1253,7 @@ mod tests {
             ctx: Context,
             driver: Driver,
             request: Request,
-        ) -> Result<Response> {
+        ) -> Result<ResponseOrDecision> {
             let target = self
                 .target_set
                 .targets()
@@ -865,7 +1265,7 @@ mod tests {
             });
             driver.info(ctx.clone(), decision.clone()).await?;
             driver
-                .call_llm_target(ctx, &target, request, decision)
+                .final_decision(ctx, &target, request, decision, &mut None)
                 .await
         }
     }
@@ -901,7 +1301,7 @@ mod tests {
         let observed = observations.clone();
         let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
         let (_, response) = orch(target_set(&[("direct/model", true)]))
-            .run_observed(Context::default(), request(), Some(observer))
+            .run(Context::default(), request(), Some(observer))
             .await?;
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
@@ -984,7 +1384,7 @@ mod tests {
                 reason: Some("stop".to_string()),
             },
         ]);
-        let (trace, response) = orch.run(Context::default(), request()).await?;
+        let (trace, response) = orch.run(Context::default(), request(), None).await?;
         // `run` handed back the live stream; the caller folds it to a buffered aggregate.
         let agg = response
             .llm_response
@@ -1010,7 +1410,7 @@ mod tests {
                 message: "upstream exploded".to_string(),
             },
         ]);
-        let (_, response) = orch.run(Context::default(), request()).await?;
+        let (_, response) = orch.run(Context::default(), request(), None).await?;
         match response.llm_response.into_agg().await {
             Ok(_) => panic!("expected a mid-stream error, got an aggregate"),
             Err(err) => {
@@ -1124,7 +1524,7 @@ mod tests {
         // Every target has a client, so run serves every call via the
         // default client and returns the trace + final response.
         let (trace, response) = orch(target_set(&[("direct/model", true)]))
-            .run(Context::default(), request())
+            .run(Context::default(), request(), None)
             .await?;
         // TestAlgo calls the first target; EchoClient echoes its name.
         assert_eq!(
@@ -1140,11 +1540,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concluding_through_final_decision_honours_the_run_mode() -> Result<()> {
+        // `TestAlgo` never mentions the mode: it just ends on `Driver::final_decision`.
+        // That alone is enough to support both entry points — `run` gets the served
+        // response, `decide` gets the route with the call left unmade.
+        let algo = orch(target_set(&[("direct/model", true)]));
+
+        let (_, response) = algo
+            .clone()
+            .run(Context::default(), request(), None)
+            .await?;
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "direct/model"
+        );
+
+        let (_, (decision, _, served)) = algo.decide(Context::default(), request(), None).await?;
+        assert_eq!(decision.selected_model(), "direct/model");
+        assert!(served.is_none(), "the final call was handed back, not made");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decide_errors_when_the_algorithm_cannot_hand_the_call_back() -> Result<()> {
+        // `Noop` answers without ever routing a call, so it builds its response directly
+        // instead of concluding through `final_decision` — it has no route to hand back.
+        // The mismatch is caught where the terminal payload is decoded, so `decide` never
+        // sees a response to mislabel.
+        let algo: Arc<dyn Algorithm> = Arc::new(crate::Noop {});
+        let error = algo
+            .decide(Context::default(), request(), None)
+            .await
+            .err()
+            .ok_or_else(|| test_error("expected a decision-only mismatch"))?;
+        assert!(matches!(
+            error,
+            LibsyError::AlgorithmError { message } if message.contains("decision-only step stream")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_driver_reports_the_mode_the_run_was_started_in() -> Result<()> {
+        // The mode is fixed by the entry point and read back by the algorithm, so a
+        // composition cannot disagree with the stream shape it is being driven as.
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct ModeRecording(Arc<AtomicBool>);
+
+        #[async_trait]
+        impl Algorithm for ModeRecording {
+            fn name(&self) -> &str {
+                "mode_recording"
+            }
+
+            async fn create_run_task(
+                self: Arc<Self>,
+                _ctx: Context,
+                driver: Driver,
+                _request: Request,
+            ) -> Result<ResponseOrDecision> {
+                self.0.store(driver.decision_only(), Ordering::SeqCst);
+                Err(test_error("stop after recording the mode"))
+            }
+        }
+
+        for expected in [false, true] {
+            let seen = Arc::new(AtomicBool::new(!expected));
+            let algo: Arc<dyn Algorithm> = Arc::new(ModeRecording(seen.clone()));
+            // Both entry points fail here by design; only the recorded mode matters.
+            let _ = AlgoInner::new(algo)
+                .run_inner(Context::default(), request(), expected, None)
+                .await;
+            assert_eq!(seen.load(Ordering::SeqCst), expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concluding_with_an_answer_already_obtained_does_not_call_again() -> Result<()> {
+        // The target has no client, so any outbound call fails: the run can only succeed by
+        // concluding on the response the algorithm already had.
+        struct ConcludesWithServedAnswer(LlmTargetSet);
+
+        #[async_trait]
+        impl Algorithm for ConcludesWithServedAnswer {
+            fn name(&self) -> &str {
+                "concludes-with-served-answer"
+            }
+
+            async fn create_run_task(
+                self: Arc<Self>,
+                ctx: Context,
+                driver: Driver,
+                request: Request,
+            ) -> Result<ResponseOrDecision> {
+                let target = self.0.get_target("offload/model")?;
+                let decision: Arc<dyn Decision> = Arc::new(TestDecision {
+                    model: target.semantic_name.clone(),
+                });
+                let mut served = Some(Response {
+                    llm_response: LlmResponse::Agg(text_response(None, "already answered")),
+                    metadata: None,
+                });
+                driver
+                    .final_decision(ctx, &target, request, decision, &mut served)
+                    .await
+            }
+        }
+
+        let algo: Arc<dyn Algorithm> = Arc::new(ConcludesWithServedAnswer(target_set(&[(
+            "offload/model",
+            false,
+        )])));
+        let (_trace, response) = algo.run(Context::default(), request(), None).await?;
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "already answered"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn run_errors_when_a_target_lacks_a_client() -> Result<()> {
         // A client-less target has no default client to serve its offloaded call, so
         // driving it to completion errors.
         let error = orch(target_set(&[("offload/model", false)]))
-            .run(Context::default(), request())
+            .run(Context::default(), request(), None)
             .await
             .err()
             .ok_or_else(|| test_error("expected a missing-client error"))?;
@@ -1204,7 +1734,7 @@ mod tests {
         for _ in 0..N {
             let algo = algo.clone();
             handles.push(tokio::spawn(async move {
-                algo.run(Context::default(), request())
+                algo.run(Context::default(), request(), None)
                     .await
                     .map(|(_, response)| {
                         response
@@ -1294,7 +1824,7 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response> {
+            ) -> Result<ResponseOrDecision> {
                 let _guard = DropGuard(self.dropped.clone());
                 let _ = self.started.send(());
                 // Await forever without ever touching the driver.
@@ -1342,7 +1872,7 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response> {
+            ) -> Result<ResponseOrDecision> {
                 panic!("boom");
             }
         }
@@ -1383,13 +1913,13 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response> {
+            ) -> Result<ResponseOrDecision> {
                 panic!("boom");
             }
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        match algo.run(Context::default(), request()).await {
+        match algo.run(Context::default(), request(), None).await {
             Ok(_) => Err(test_error(
                 "expected run to surface the algorithm panic as an error",
             )),
@@ -1431,7 +1961,7 @@ mod tests {
                 _ctx: Context,
                 _driver: Driver,
                 _request: Request,
-            ) -> Result<Response> {
+            ) -> Result<ResponseOrDecision> {
                 let _guard = DropGuard(self.dropped.clone());
                 let _ = self.started.send(());
                 // Hang forever without ever touching the driver, so only cancellation
@@ -1450,7 +1980,8 @@ mod tests {
 
         // Drive `run` on its own task, wait until the algorithm task is up, then cancel
         // `run` — dropping its future (and the `run_stream` stream it holds).
-        let run_task = tokio::spawn(async move { algo.run(Context::default(), request()).await });
+        let run_task =
+            tokio::spawn(async move { algo.run(Context::default(), request(), None).await });
         started_rx
             .recv()
             .await
@@ -1528,6 +2059,8 @@ mod tests {
     struct Hedge {
         winner: LlmTarget,
         loser: LlmTarget,
+        /// Work the algorithm does after the race, before it concludes.
+        post_select_delay: Option<std::time::Duration>,
     }
 
     #[async_trait]
@@ -1541,7 +2074,7 @@ mod tests {
             ctx: Context,
             driver: Driver,
             request: Request,
-        ) -> Result<Response> {
+        ) -> Result<ResponseOrDecision> {
             let dec_w: Arc<dyn Decision> = Arc::new(TestDecision {
                 model: self.winner.semantic_name.clone(),
             });
@@ -1551,16 +2084,29 @@ mod tests {
             let win = driver.call_llm_target(ctx.clone(), &self.winner, request.clone(), dec_w);
             let lose = driver.call_llm_target(ctx, &self.loser, request, dec_l);
             // First to resolve wins; `select!` drops the losing future (and its promise).
-            tokio::select! {
+            let winner = tokio::select! {
                 res = win => res,
                 res = lose => res,
+            };
+            if let Some(delay) = self.post_select_delay {
+                tokio::time::sleep(delay).await;
             }
+            Ok(ResponseOrDecision::Response(Box::new(winner?)))
         }
     }
 
     /// Builds a hedging algo whose winner is gated behind the loser starting, and whose
     /// loser finishes after `loser_delay` (or never, when `None`).
     fn hedge(loser_delay: Option<std::time::Duration>) -> Arc<dyn Algorithm> {
+        hedge_concluding_after(loser_delay, None)
+    }
+
+    /// A hedge that keeps working for `post_select_delay` after the race, so a late loser
+    /// resolves into its dropped promise while the run is still in progress.
+    fn hedge_concluding_after(
+        loser_delay: Option<std::time::Duration>,
+        post_select_delay: Option<std::time::Duration>,
+    ) -> Arc<dyn Algorithm> {
         let started = Arc::new(tokio::sync::Notify::new());
         let winner = LlmTarget {
             semantic_name: "winner".to_string(),
@@ -1575,7 +2121,11 @@ mod tests {
                 delay: loser_delay,
             })),
         };
-        Arc::new(Hedge { winner, loser })
+        Arc::new(Hedge {
+            winner,
+            loser,
+            post_select_delay,
+        })
     }
 
     #[tokio::test]
@@ -1583,8 +2133,31 @@ mod tests {
         // The loser responds 50ms after the winner has already won. `run` must return the
         // winner, not the loser's `respond`-to-a-dropped-receiver error.
         let (_trace, response) = hedge(Some(std::time::Duration::from_millis(50)))
-            .run(Context::default(), request())
+            .run(Context::default(), request(), None)
             .await?;
+        assert_eq!(
+            response
+                .llm_response
+                .as_agg()
+                .map(completion_text)
+                .unwrap_or_default(),
+            "winner"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_late_loser_resolving_into_a_dropped_promise_does_not_fail_the_run() -> Result<()> {
+        // Abandoning a call is how an algorithm hedges, so the response the loser resolves
+        // into a dropped promise is discarded rather than failing a run the winner already
+        // answered. Unlike the test above, this hedge keeps working after the race, so that
+        // discarded response reaches the consumer well before the terminal step instead of
+        // racing it.
+        let algorithm = hedge_concluding_after(
+            Some(std::time::Duration::from_millis(20)),
+            Some(std::time::Duration::from_millis(200)),
+        );
+        let (_trace, response) = algorithm.run(Context::default(), request(), None).await?;
         assert_eq!(
             response
                 .llm_response
@@ -1600,7 +2173,7 @@ mod tests {
     async fn run_returns_the_winner_without_hanging_on_a_pending_loser() -> Result<()> {
         // The loser never resolves. `run` must return the winner promptly, not hang
         // waiting for the in-flight loser.
-        let run = hedge(None).run(Context::default(), request());
+        let run = hedge(None).run(Context::default(), request(), None);
         let (_trace, response) = tokio::time::timeout(std::time::Duration::from_secs(1), run)
             .await
             .map_err(|error| LibsyError::external("waiting for pending loser", error))??;
@@ -1665,7 +2238,7 @@ mod tests {
                 ctx: Context,
                 driver: Driver,
                 request: Request,
-            ) -> Result<Response> {
+            ) -> Result<ResponseOrDecision> {
                 let offloads = futures::future::join_all((0..self.n).map(|i| {
                     let decision: Arc<dyn Decision> = Arc::new(TestDecision {
                         model: format!("m{i}"),
@@ -1698,7 +2271,7 @@ mod tests {
 
         // With the cap gone, `run` keeps polling the stream even with N calls in flight, so
         // the terminal error surfaces promptly instead of hanging.
-        let run = algo.run(Context::default(), request());
+        let run = algo.run(Context::default(), request(), None);
         let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
             .await
             .map_err(|error| {

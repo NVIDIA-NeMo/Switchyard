@@ -16,7 +16,7 @@ use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::rngs::StdRng;
 
 use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
-use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
+use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet, ResponseOrDecision};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
@@ -171,7 +171,7 @@ impl Algorithm for Random {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         self.inner.execute(ctx, driver, request).await
     }
 }
@@ -183,10 +183,9 @@ mod tests {
 
     use switchyard_protocol::{Metadata, completion_text, text_request, text_response};
 
-    use crate::DriverError;
     use crate::algorithms::util::affinity::AffinityRouter;
-    use crate::core::algorithm::LlmTarget;
-    use switchyard_protocol::{Decision, LlmResponse, Request, RoutedLlmClient, Signals};
+    use crate::{DriverError, LlmTarget};
+    use switchyard_protocol::{Decision, LlmResponse, Request, Response, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
     struct EchoClient;
@@ -247,7 +246,10 @@ mod tests {
     async fn selected_models(algorithm: Arc<dyn Algorithm>, count: usize) -> Result<Vec<String>> {
         let mut selected = Vec::with_capacity(count);
         for _ in 0..count {
-            let (_, response) = algorithm.clone().run(Context::default(), request()).await?;
+            let (_, response) = algorithm
+                .clone()
+                .run(Context::default(), request(), None)
+                .await?;
             selected.push(
                 response
                     .llm_response
@@ -262,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn single_target_is_always_selected_and_called() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, response) = algorithm.run(Context::default(), request()).await?;
+        let (trace, response) = algorithm.run(Context::default(), request(), None).await?;
 
         assert_eq!(
             response
@@ -283,7 +285,10 @@ mod tests {
         let algorithm = shared_algorithm(&names)?;
 
         for _ in 0..50 {
-            let (trace, response) = algorithm.clone().run(Context::default(), request()).await?;
+            let (trace, response) = algorithm
+                .clone()
+                .run(Context::default(), request(), None)
+                .await?;
             let selected = response
                 .llm_response
                 .as_agg()
@@ -304,7 +309,10 @@ mod tests {
         let mut seen = HashSet::new();
 
         for _ in 0..100 {
-            let (_, response) = algorithm.clone().run(Context::default(), request()).await?;
+            let (_, response) = algorithm
+                .clone()
+                .run(Context::default(), request(), None)
+                .await?;
             seen.insert(
                 response
                     .llm_response
@@ -370,7 +378,7 @@ mod tests {
 
         let (_, first) = algorithm
             .clone()
-            .run(Context::default(), request_for_session("session-1"))
+            .run(Context::default(), request_for_session("session-1"), None)
             .await?;
         let selected = first
             .llm_response
@@ -391,7 +399,7 @@ mod tests {
         );
 
         let (_, second) = algorithm
-            .run(Context::default(), request_for_session("session-1"))
+            .run(Context::default(), request_for_session("session-1"), None)
             .await?;
         assert_eq!(
             second
@@ -444,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn decision_is_inspectable_and_downcasts() -> Result<()> {
         let algorithm = shared_algorithm(&["only/model"])?;
-        let (trace, _) = algorithm.run(Context::default(), request()).await?;
+        let (trace, _) = algorithm.run(Context::default(), request(), None).await?;
         let decision = &trace[0];
 
         assert_eq!(decision.selected_model(), "only/model");

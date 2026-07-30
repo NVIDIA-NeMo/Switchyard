@@ -11,7 +11,7 @@ use switchyard_protocol::{
 };
 
 use crate::Result;
-use crate::core::algorithm::{Algorithm, Driver};
+use crate::core::algorithm::{Algorithm, Driver, ResponseOrDecision};
 use switchyard_protocol::{Context, Decision};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
@@ -46,7 +46,7 @@ impl Algorithm for Noop {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         let model = request
             .requested_model()
             .unwrap_or("switchyard/noop")
@@ -68,11 +68,12 @@ impl Algorithm for Noop {
             }],
             ..Default::default()
         });
+        // No target and no model call, so there is no final decision to hand back.
         let response = Response {
             llm_response,
             metadata: request.metadata.clone(),
         };
-        Ok(response)
+        Ok(ResponseOrDecision::Response(Box::new(response)))
     }
 }
 
@@ -96,7 +97,7 @@ mod tests {
         };
 
         let a: Arc<dyn Algorithm> = Arc::new(Noop {});
-        let (decisions, response) = a.run(Context::default(), request).await?;
+        let (decisions, response) = a.run(Context::default(), request, None).await?;
         let Some(decision) = decisions.first() else {
             panic!("Expected exactly one Decision");
         };

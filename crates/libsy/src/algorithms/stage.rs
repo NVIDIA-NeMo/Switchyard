@@ -27,7 +27,7 @@ use super::util::stage::{
     record_decision_source,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet, ResponseOrDecision};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -153,7 +153,7 @@ impl Algorithm for StageRouter {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         self.route.execute(ctx, driver, request).await
     }
 }
@@ -512,8 +512,11 @@ mod tests {
         let router = recording_router(client.clone(), config_with_notes())?;
         let ctx = Context::default();
 
-        router.clone().run(ctx.clone(), turn_request(false)).await?;
-        router.run(ctx, turn_request(true)).await?;
+        router
+            .clone()
+            .run(ctx.clone(), turn_request(false), None)
+            .await?;
+        router.run(ctx, turn_request(true), None).await?;
 
         let calls = client.routed();
         assert_eq!(calls[0].target, "weak");
@@ -539,7 +542,9 @@ mod tests {
         let client = Arc::new(RecordingClient::default());
         let router = recording_router(client.clone(), config_with_judge(&client, 0.1))?;
 
-        router.run(Context::default(), turn_request(false)).await?;
+        router
+            .run(Context::default(), turn_request(false), None)
+            .await?;
 
         assert!(
             client.calls.lock().iter().any(|c| c.target == JUDGE),
@@ -554,7 +559,9 @@ mod tests {
         let client = Arc::new(RecordingClient::default());
         let router = recording_router(client.clone(), config_with_judge(&client, 0.9))?;
 
-        router.run(Context::default(), turn_request(true)).await?;
+        router
+            .run(Context::default(), turn_request(true), None)
+            .await?;
 
         assert!(
             !client.calls.lock().iter().any(|c| c.target == JUDGE),
@@ -570,9 +577,12 @@ mod tests {
         let router = recording_router(client.clone(), config_with_judge(&client, 0.1))?;
         let ctx = Context::default();
 
-        router.clone().run(ctx.clone(), turn_request(false)).await?;
+        router
+            .clone()
+            .run(ctx.clone(), turn_request(false), None)
+            .await?;
         *client.judge_p_solve.lock() = 0.9;
-        router.run(ctx, turn_request(false)).await?;
+        router.run(ctx, turn_request(false), None).await?;
 
         let routed = client.routed();
         assert_eq!(routed[0].target, "strong");
@@ -595,7 +605,9 @@ mod tests {
         let client = Arc::new(RecordingClient::default());
         let router = recording_router(client.clone(), config_with_judge(&client, 42.0))?;
 
-        router.run(Context::default(), turn_request(false)).await?;
+        router
+            .run(Context::default(), turn_request(false), None)
+            .await?;
 
         assert_eq!(client.routed()[0].target, "weak");
         Ok(())
@@ -606,7 +618,9 @@ mod tests {
         let client = Arc::new(RecordingClient::default());
         let router = recording_router(client.clone(), config_with_judge(&client, 0.9))?;
 
-        router.run(Context::default(), turn_request(false)).await?;
+        router
+            .run(Context::default(), turn_request(false), None)
+            .await?;
 
         let judged = client
             .calls

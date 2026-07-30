@@ -104,7 +104,7 @@ fn router() -> Arc<FallThrough> {
 async fn turn(router: &Arc<FallThrough>, headers: &[(&str, &str)]) -> Result<String> {
     let (_, response) = router
         .clone()
-        .run(Context::default(), request(headers))
+        .run(Context::default(), request(headers), None)
         .await?;
     Ok(response
         .llm_response

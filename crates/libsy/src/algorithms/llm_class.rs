@@ -17,7 +17,7 @@ use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::affinity::AffinityRouter;
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
 use super::util::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet, ResponseOrDecision};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
@@ -560,7 +560,7 @@ impl Algorithm for LlmTaskClassifier {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         self.route.execute(ctx, driver, request).await
     }
 }
@@ -577,7 +577,8 @@ mod tests {
         LlmClientError, Metadata, completion_text, text_request, text_response,
     };
 
-    use crate::core::algorithm::Algorithm;
+    use crate::{Algorithm, DecisionOnlyStep, RunObservation, RunObserver};
+    use futures::StreamExt;
     use switchyard_protocol::{Context, LlmResponse, Response, RoutedLlmClient};
 
     const TEST_THRESHOLD: f64 = 0.5;
@@ -723,11 +724,161 @@ mod tests {
         request
     }
 
+    // --- decision-only runs -------------------------------------------------------------
+    //
+    // The classifier must consult the judge to decide at all, so these exercise a route
+    // whose decision costs an intermediate model call. What decision-only changes is the
+    // *final* call: it is handed back rather than served.
+
+    #[tokio::test]
+    async fn decide_makes_the_judge_call_but_not_the_routed_one() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let router = router(client.clone())?;
+
+        let (trace, (decision, request, response)) = router
+            .decide(Context::default(), classify_request(), None)
+            .await?;
+
+        // The judge is still called — deciding requires it — but the routed target is not:
+        // that call is precisely what the caller is being handed.
+        assert_eq!(client.calls(), vec!["judge"]);
+        assert_eq!(decision.selected_model(), "efficient");
+        assert_eq!(trace.last().map(|d| d.selected_model()), Some("efficient"));
+        // The handed-back request is the one the target should be served with; libsy never
+        // overwrites the agent's inbound model name.
+        assert_eq!(request.requested_model(), Some("auto"));
+        // Nothing served the final call, so there is no response to carry.
+        assert!(response.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deciding_reports_the_call_it_made_to_the_observer() -> Result<()> {
+        // The judge call is paid for on a decide run, so it has to reach the observer that
+        // feeds stats. The routed call does not: it never happened here, and reporting it
+        // is the caller's job once they serve it.
+        let client = Arc::new(PerRequestClient::default());
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = observations.clone();
+        let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
+
+        router(client.clone())?
+            .decide(Context::default(), classify_request(), Some(observer))
+            .await?;
+
+        assert_eq!(client.calls(), vec!["judge"]);
+        let observations = observations.lock();
+        let calls: Vec<_> = observations
+            .iter()
+            .filter_map(|observation| match observation {
+                RunObservation::LlmCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].selected_model, "judge");
+        // A judge consultation is routing overhead, not the routed call.
+        assert!(!calls[0].is_routed);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_and_decide_agree_on_the_route_but_not_on_serving_it() -> Result<()> {
+        // Same algorithm, same request: `run` serves the routed call, `decide` stops one
+        // step short. The routing decision itself must be identical.
+        let run_client = Arc::new(PerRequestClient::default());
+        let (_, served) = router(run_client.clone())?
+            .run(Context::default(), classify_request(), None)
+            .await?;
+
+        let decide_client = Arc::new(PerRequestClient::default());
+        let (_, (decision, _, _)) = router(decide_client.clone())?
+            .decide(Context::default(), classify_request(), None)
+            .await?;
+
+        assert_eq!(run_client.calls(), vec!["judge", "efficient"]);
+        assert_eq!(decide_client.calls(), vec!["judge"]);
+        assert_eq!(
+            served.llm_response.as_agg().map(completion_text),
+            Some("answer from efficient".to_string())
+        );
+        assert_eq!(decision.selected_model(), "efficient");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decision_only_stream_offloads_the_judge_call_then_hands_back_the_route() -> Result<()>
+    {
+        // Driving the stream by hand: the judge call arrives as a `CallLlm` step we serve
+        // ourselves, and the run ends with the route instead of a response.
+        let client = Arc::new(PerRequestClient::default());
+        let stream = router(client.clone())?.run_decision_only_stream(
+            Context::default(),
+            classify_request(),
+            None,
+        );
+        tokio::pin!(stream);
+
+        let mut offloaded = Vec::new();
+        let mut published = Vec::new();
+        let mut decided = None;
+        while let Some(step) = stream.next().await {
+            match step? {
+                DecisionOnlyStep::CallLlm(call) => {
+                    let routed = call.get_routed().clone();
+                    let target = routed.decision.selected_model().to_string();
+                    offloaded.push(target.clone());
+                    let target_client = routed.default_client.clone().ok_or_else(|| {
+                        LibsyError::AlgorithmError {
+                            message: "expected a default client".to_string(),
+                        }
+                    })?;
+                    let result = target_client
+                        .call(routed.ctx, routed.request, routed.decision)
+                        .await
+                        .map_err(|error| LibsyError::client_call(target, error));
+                    call.respond(result)?;
+                }
+                DecisionOnlyStep::Decision(decision) => {
+                    published.push(decision.selected_model().to_string())
+                }
+                DecisionOnlyStep::ReturnToAgent(route) => decided = Some(route),
+            }
+        }
+
+        // Only the judge was offloaded; the routed call never reached the stream.
+        assert_eq!(offloaded, vec!["judge"]);
+        assert_eq!(published, vec!["efficient"]);
+        let (decision, _, response) = decided.ok_or_else(|| LibsyError::AlgorithmError {
+            message: "no ReturnToAgent step".to_string(),
+        })?;
+        assert_eq!(decision.selected_model(), "efficient");
+        assert!(response.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_decision_only_run_survives_an_unreachable_judge() -> Result<()> {
+        // The judge failing is a routing outcome, not a run failure: the cascade falls open
+        // to capable, and decision-only still hands that route back.
+        let router = router(Arc::new(UnreachableJudgeClient))?;
+
+        let (_, (decision, _, response)) = router
+            .decide(Context::default(), classify_request(), None)
+            .await?;
+
+        assert_eq!(decision.selected_model(), "capable");
+        assert!(response.is_none());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn an_unreachable_judge_routes_capable_instead_of_failing_the_request() -> Result<()> {
         let router = router(Arc::new(UnreachableJudgeClient))?;
 
-        let (trace, response) = router.run(Context::default(), classify_request()).await?;
+        let (trace, response) = router
+            .run(Context::default(), classify_request(), None)
+            .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(
@@ -743,8 +894,14 @@ mod tests {
         let router = router(client.clone())?;
         let request = classify_request;
 
-        router.clone().run(Context::default(), request()).await?;
-        router.clone().run(Context::default(), request()).await?;
+        router
+            .clone()
+            .run(Context::default(), request(), None)
+            .await?;
+        router
+            .clone()
+            .run(Context::default(), request(), None)
+            .await?;
 
         assert_eq!(
             client.calls(),
@@ -772,11 +929,11 @@ mod tests {
 
         router
             .clone()
-            .run(Context::default(), classify_session_request())
+            .run(Context::default(), classify_session_request(), None)
             .await?;
         router
             .clone()
-            .run(Context::default(), classify_session_request())
+            .run(Context::default(), classify_session_request(), None)
             .await?;
 
         assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
@@ -804,11 +961,11 @@ mod tests {
 
         router
             .clone()
-            .run(Context::default(), classify_request())
+            .run(Context::default(), classify_request(), None)
             .await?;
         router
             .clone()
-            .run(Context::default(), classify_follow_up_request())
+            .run(Context::default(), classify_follow_up_request(), None)
             .await?;
 
         assert_eq!(client.calls(), vec!["judge", "efficient", "efficient"]);
@@ -1194,7 +1351,7 @@ mod tests {
         let router = escalation_router(model_client, judge_client)?;
         let request = classify_request();
 
-        let (trace, response) = router.run(Context::default(), request).await?;
+        let (trace, response) = router.run(Context::default(), request, None).await?;
 
         // The efficient model is the serving target, and the response comes from its call.
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("efficient"));
@@ -1214,7 +1371,7 @@ mod tests {
         let router = escalation_router(model_client, judge_client)?;
         let request = classify_request();
 
-        let (trace, response) = router.run(Context::default(), request).await?;
+        let (trace, response) = router.run(Context::default(), request, None).await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         assert_eq!(
@@ -1235,11 +1392,11 @@ mod tests {
         let session_request = classify_session_request();
         router
             .clone()
-            .run(Context::default(), session_request.clone())
+            .run(Context::default(), session_request.clone(), None)
             .await?;
         let (trace, _) = router
             .clone()
-            .run(Context::default(), session_request)
+            .run(Context::default(), session_request, None)
             .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));

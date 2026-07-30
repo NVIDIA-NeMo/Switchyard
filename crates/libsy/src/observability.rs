@@ -152,11 +152,11 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 /// histogram, routing overhead, span outcome, and failure log when it resolves.
 /// Executes inside the `libsy.run` span its caller instruments the task with.
 /// `driver` is the run's own, holding the duration of the call that served it.
-pub(crate) async fn observe_run(
+pub(crate) async fn observe_run<T>(
     ctx: Context,
     driver: Driver,
-    run: impl Future<Output = Result<Response>>,
-) -> Result<Response> {
+    run: impl Future<Output = Result<T>>,
+) -> Result<T> {
     let started = Instant::now();
     let result = run.await;
     let duration = started.elapsed();
@@ -447,7 +447,7 @@ fn record_client_error(span: &Span, error_type: &str, error: &dyn std::fmt::Disp
 /// Records the end of one algorithm run: the run counter and duration
 /// histogram, the `outcome`/`error` fields on `span`, and a warn log when the
 /// run failed.
-fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, span: &Span) {
+fn record_run<T>(algorithm: &str, duration: Duration, result: &Result<T>, span: &Span) {
     let outcome = outcome_value(result);
     span.record("outcome", outcome);
     if let Err(error) = result {

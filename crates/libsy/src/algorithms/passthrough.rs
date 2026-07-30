@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use switchyard_protocol::{Request, Response};
+use switchyard_protocol::Request;
 
 use crate::Result;
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, ResponseOrDecision};
 use switchyard_protocol::{Context, Decision, RoutedLlmClient};
 
 /// See module comment
@@ -60,13 +60,13 @@ impl Algorithm for Passthrough {
         ctx: Context,
         driver: Driver,
         request: Request,
-    ) -> Result<Response> {
+    ) -> Result<ResponseOrDecision> {
         let decision: Arc<dyn Decision> = Arc::new(PassthroughDecision {
             model_id: self.target.semantic_name.clone(),
         });
         driver.info(ctx.clone(), decision.clone()).await?;
         driver
-            .call_llm_target(ctx, &self.target, request, decision)
+            .final_decision(ctx, &self.target, request, decision, &mut None)
             .await
     }
 }
@@ -113,7 +113,7 @@ mod tests {
             semantic_name: MODEL_ID.to_string(),
             llm_client: Some(Arc::new(EchoClient)),
         }));
-        let (trace, response) = algorithm.run(Context::default(), request).await?;
+        let (trace, response) = algorithm.run(Context::default(), request, None).await?;
 
         assert_eq!(
             response
