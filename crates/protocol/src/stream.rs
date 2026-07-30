@@ -88,6 +88,50 @@ impl LlmResponse {
     }
 }
 
+impl AggLlmResponse {
+    /// Converts a fully-buffered response into a synthetic chunk stream.
+    ///
+    /// Useful when a caller had to buffer the response (e.g. to judge it) but the
+    /// downstream expects `LlmResponse::Stream` — for instance when `stream: true` was
+    /// requested and the algorithm had to aggregate before it could return.
+    pub fn into_stream(self) -> LlmResponseStream {
+        let mut chunks: Vec<LlmResponseChunk> = Vec::new();
+        chunks.push(LlmResponseChunk::MessageStart {
+            id: self.id,
+            model: self.model,
+        });
+        for (index, output) in self.outputs.into_iter().enumerate() {
+            for block in output.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        chunks.push(LlmResponseChunk::TextDelta { index, text });
+                    }
+                    ContentBlock::Reasoning { text, .. } => {
+                        chunks.push(LlmResponseChunk::ReasoningDelta { index, text });
+                    }
+                    ContentBlock::ToolCall(tool) => {
+                        let args = serde_json::to_string(&tool.arguments).unwrap_or_default();
+                        chunks.push(LlmResponseChunk::ToolCallDelta {
+                            index,
+                            id: Some(tool.id),
+                            name: Some(tool.name),
+                            arguments_delta: Some(args),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            chunks.push(LlmResponseChunk::MessageStop {
+                reason: output.stop_reason.and_then(|r| {
+                    serde_json::to_value(r).ok().and_then(|v| v.as_str().map(String::from))
+                }),
+            });
+        }
+        chunks.push(LlmResponseChunk::Usage(self.usage));
+        Box::pin(futures::stream::iter(chunks.into_iter().map(Ok)))
+    }
+}
+
 /// One provider-neutral streaming event — the normalized counterpart to
 /// [`AggLlmResponse`](crate::AggLlmResponse), sitting between stream decoders and
 /// encoders. `switchyard-translation` re-exports it as `ConversationStreamEvent`.

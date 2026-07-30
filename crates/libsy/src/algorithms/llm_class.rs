@@ -362,7 +362,7 @@ impl Classifier<State> for EscalationClassifier {
         let mut judge_request = request.clone();
         judge_request.llm_request.messages.push(assistant_message(&agg));
         let efficient_response = Response {
-            llm_response: LlmResponse::Agg(agg),
+            llm_response: LlmResponse::Stream(agg.into_stream()),
             metadata: efficient_response.metadata,
         };
 
