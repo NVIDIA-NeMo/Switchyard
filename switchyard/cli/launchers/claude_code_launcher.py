@@ -278,6 +278,23 @@ def launch_claude(
     )
 
 
+def launch_claude_config(
+    config: Path,
+    model: str,
+    port: int | None,
+    claude_args: list[str],
+    intake: LaunchIntakeConfig | None = None,
+) -> int:
+    """Run Claude Code against an explicit native server TOML deployment."""
+    _quiet_launch_loggers()
+    return _run_claude_with_switchyard(
+        NativeDeployment(config=config, credentials={}, models=(model,)),
+        display_model=model,
+        port=port,
+        claude_args=claude_args,
+        intake=intake,
+        strategy_summary=f"config → {config.name}",
+    )
 
 
 def launch_claude_deterministic_routing(

@@ -10,6 +10,7 @@ import tomllib
 
 from switchyard.cli.launchers.launcher_runtime import wait_for_proxy_ready
 from switchyard.cli.launchers.native_server import (
+    NativeDeployment,
     NativeServer,
     deterministic_deployment,
     passthrough_deployment,
@@ -36,6 +37,29 @@ def test_passthrough_deployment_runs_and_restores_credentials(monkeypatch) -> No
         server.close()
 
     assert "SWITCHYARD_LAUNCH_API_KEY_0" not in os.environ
+
+
+def test_native_server_uses_explicit_config_path(tmp_path) -> None:
+    generated = passthrough_deployment(
+        model="openrouter/free",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="test-key",
+    )
+    assert isinstance(generated.config, str)
+    config_path = tmp_path / "deployment.toml"
+    config_path.write_text(generated.config)
+    deployment = NativeDeployment(
+        config=config_path,
+        credentials=generated.credentials,
+        models=generated.models,
+    )
+
+    server = NativeServer(deployment, port=None)
+    try:
+        assert wait_for_proxy_ready(server.port, timeout_s=2.0)
+        assert config_path.exists()
+    finally:
+        server.close()
 
 
 def test_deterministic_deployment_maps_routes_to_native_toml() -> None:

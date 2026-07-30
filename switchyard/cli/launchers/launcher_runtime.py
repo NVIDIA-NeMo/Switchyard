@@ -395,7 +395,7 @@ def print_ready_banner(
         "",
         f"  {dim('proxy')}     {cyan(base)}",
         f"  {dim('models')}    {dim(f'curl -s {base}/v1/models')}",
-        f"  {dim('stats')}     {dim(f'curl -s {base}/v1/routing/stats | python3 -m json.tool')}",
+        f"  {dim('stats')}     {dim(f'curl -s {base}/v1/stats | python3 -m json.tool')}",
     ]
     if log_path is not None:
         lines.append(f"  {dim('debug')}     {dim(str(log_path))}")

@@ -29,9 +29,9 @@ _LAUNCH_API_KEY_PREFIX = "SWITCHYARD_LAUNCH_API_KEY"
 
 @dataclass(frozen=True)
 class NativeDeployment:
-    """Generated Rust server configuration and its resolved credentials."""
+    """Rust server configuration and credentials needed during construction."""
 
-    config: str
+    config: str | Path
     credentials: Mapping[str, str]
     models: tuple[str, ...]
 
@@ -59,16 +59,22 @@ class NativeServer:
     """Hosts a deployment through the PyO3 Rust server binding."""
 
     def __init__(self, deployment: NativeDeployment, port: int | None) -> None:
-        handle = tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            prefix="switchyard-launch-",
-            suffix=".toml",
-            delete=False,
-        )
-        with handle:
-            handle.write(deployment.config)
-        config_path = Path(handle.name)
+        config = deployment.config
+        if isinstance(config, str):
+            generated_config = True
+            handle = tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix="switchyard-launch-",
+                suffix=".toml",
+                delete=False,
+            )
+            with handle:
+                handle.write(config)
+            config_path = Path(handle.name)
+        else:
+            generated_config = False
+            config_path = config.expanduser()
 
         try:
             with _temporary_environment(deployment.credentials):
@@ -76,7 +82,8 @@ class NativeServer:
 
                 self._server = Server(config_path, port=port or 0)
         finally:
-            config_path.unlink(missing_ok=True)
+            if generated_config:
+                config_path.unlink(missing_ok=True)
 
         self.port: int = self._server.port
         self.base_url: str = self._server.base_url

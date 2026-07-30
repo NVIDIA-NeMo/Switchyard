@@ -395,6 +395,29 @@ def launch_codex(
     )
 
 
+def launch_codex_config(
+    config: Path,
+    model: str,
+    port: int | None,
+    codex_args: list[str],
+    intake: LaunchIntakeConfig | None = None,
+) -> int:
+    """Run Codex against an explicit native server TOML deployment."""
+    deployment = NativeDeployment(config=config, credentials={}, models=(model,))
+    catalog = [(
+        model,
+        f"{_codex_model_display_name(model)} (Switchyard)",
+        f"Route from {config.name}.",
+    )]
+    return _run_codex_with_switchyard(
+        deployment,
+        display_model=model,
+        port=port,
+        codex_args=codex_args,
+        intake=intake,
+        codex_model_catalog=catalog,
+        strategy_summary=f"config → {config.name}",
+    )
 
 
 def _codex_catalog_entry_for_deterministic_model(

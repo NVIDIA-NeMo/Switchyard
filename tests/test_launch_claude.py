@@ -581,6 +581,39 @@ class TestLaunchClaude:
         assert intake.task == "custom-task"
         assert intake.session_id == "sess-cli"
 
+    def test_cmd_launch_claude_uses_explicit_native_config(self, monkeypatch, tmp_path):
+        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_claude
+
+        config_path = tmp_path / "deployment.toml"
+        captured: dict = {}
+
+        def fake_launch(**kwargs):
+            captured.update(kwargs)
+            return 0
+
+        monkeypatch.setattr(
+            "switchyard.cli.launchers.claude_code_launcher.launch_claude_config",
+            fake_launch,
+        )
+        args = _build_parser().parse_args([
+            "launch", "claude",
+            "--config", str(config_path),
+            "--model", "route-id",
+            "--", "--version",
+        ])
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_launch_claude(args)
+
+        assert exc_info.value.code == 0
+        assert captured == {
+            "config": config_path,
+            "model": "route-id",
+            "port": None,
+            "claude_args": ["--version"],
+            "intake": None,
+        }
+
     def test_routing_profiles_errors_clearly(
         self, monkeypatch, tmp_path,
     ):
@@ -677,7 +710,7 @@ class TestPrintReadyBanner:
         _print_ready_banner(46385, "azure/anthropic/claude-opus-4-6")
         err = capsys.readouterr().err
         assert "http://127.0.0.1:46385" in err
-        assert "curl -s http://127.0.0.1:46385/v1/routing/stats" in err
+        assert "curl -s http://127.0.0.1:46385/v1/stats" in err
         assert "azure/anthropic/claude-opus-4-6" in err
 
     def test_writes_to_stderr_not_stdout(self, capsys):

@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 from switchyard.cli.command_utils import (
@@ -43,6 +44,45 @@ from switchyard.lib.profiles.random_routing import (
 from switchyard.server.server_util import load_secrets, resolve_rl_log_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _config_launch_path(args: argparse.Namespace, target: str) -> Path | None:
+    """Validate and resolve an explicit native launcher deployment."""
+    config = getattr(args, "config", None)
+    if config is None:
+        return None
+    if not args.model:
+        raise SystemExit(f"launch {target}: --config requires --model.")
+
+    incompatible = [
+        name
+        for name, selected in (
+            ("--base-url", args.base_url is not None),
+            ("--api-key", args.api_key is not None),
+            ("--timeout", args.timeout is not None),
+            ("--weak-model", getattr(args, "weak_model", None) is not None),
+            ("--classifier-model", getattr(args, "classifier_model", None) is not None),
+            ("--profile", getattr(args, "profile", None) is not None),
+            (
+                "--classifier-min-confidence",
+                getattr(args, "classifier_min_confidence", None) is not None,
+            ),
+            ("--dry-run", bool(args.dry_run)),
+            ("--smoke", bool(getattr(args, "smoke", False))),
+            ("--reconfigure", bool(getattr(args, "reconfigure", False))),
+            (
+                "--no-model-discovery",
+                bool(getattr(args, "no_model_discovery", False)),
+            ),
+        )
+        if selected
+    ]
+    if incompatible:
+        raise SystemExit(
+            f"launch {target}: --config cannot be combined with "
+            f"{', '.join(incompatible)}."
+        )
+    return Path(config).expanduser()
 
 
 def _api_key_prompt_default_source(
@@ -405,6 +445,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
             "launch claude: --routing-profiles is only supported by "
             "switchyard serve/configure; use launcher model options instead."
         )
+    config_path = _config_launch_path(args, "claude")
     if args.dry_run and getattr(args, "smoke", False):
         raise SystemExit(
             "launch claude: --smoke and --dry-run cannot be combined. "
@@ -417,6 +458,7 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
         )
     from switchyard.cli.launchers.claude_code_launcher import (
         launch_claude,
+        launch_claude_config,
         launch_claude_deterministic_routing,
     )
     from switchyard.cli.launchers.launcher_runtime import ensure_system_ssl_trust
@@ -425,6 +467,18 @@ def cmd_launch_claude(args: argparse.Namespace) -> None:
     # behind a corporate SSL intercept (Python httpx uses certifi by default;
     # the intercept CA only lives in the system keystore). No-op elsewhere.
     ensure_system_ssl_trust()
+
+    if config_path is not None:
+        intake = resolve_launch_intake_config(
+            args, target="claude", default_app="claude-code-switchyard",
+        )
+        raise SystemExit(launch_claude_config(
+            config=config_path,
+            model=args.model,
+            port=args.port,
+            claude_args=strip_forwarded_args(args.claude_args),
+            intake=intake,
+        ))
 
     if not args.dry_run and not getattr(args, "smoke", False):
         maybe_bootstrap_launch_config(
@@ -600,6 +654,7 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             "launch codex: --routing-profiles is only supported by "
             "switchyard serve/configure; use launcher model options instead."
         )
+    config_path = _config_launch_path(args, "codex")
     if args.dry_run and getattr(args, "smoke", False):
         raise SystemExit(
             "launch codex: --smoke and --dry-run cannot be combined. "
@@ -612,11 +667,24 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
         )
     from switchyard.cli.launchers.codex_cli_launcher import (
         launch_codex,
+        launch_codex_config,
         launch_codex_deterministic_routing,
     )
     from switchyard.cli.launchers.launcher_runtime import ensure_system_ssl_trust
 
     ensure_system_ssl_trust()
+
+    if config_path is not None:
+        intake = resolve_launch_intake_config(
+            args, target="codex", default_app="codex-switchyard",
+        )
+        raise SystemExit(launch_codex_config(
+            config=config_path,
+            model=args.model,
+            port=args.port,
+            codex_args=strip_forwarded_args(args.codex_args),
+            intake=intake,
+        ))
 
     if not args.dry_run and not getattr(args, "smoke", False):
         maybe_bootstrap_launch_config(

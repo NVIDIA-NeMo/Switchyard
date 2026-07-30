@@ -454,6 +454,39 @@ class TestLaunchCodex:
         # Handler stripped the '--' before forwarding.
         assert captured["codex_args"] == ["exec", "hi"]
 
+    def test_cmd_launch_codex_uses_explicit_native_config(self, monkeypatch, tmp_path):
+        from switchyard.cli.switchyard_cli import _build_parser, _cmd_launch_codex
+
+        config_path = tmp_path / "deployment.toml"
+        captured: dict = {}
+
+        def fake_launch(**kwargs):
+            captured.update(kwargs)
+            return 0
+
+        monkeypatch.setattr(
+            "switchyard.cli.launchers.codex_cli_launcher.launch_codex_config",
+            fake_launch,
+        )
+        args = _build_parser().parse_args([
+            "launch", "codex",
+            "--config", str(config_path),
+            "--model", "route-id",
+            "--", "exec", "hi",
+        ])
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cmd_launch_codex(args)
+
+        assert exc_info.value.code == 0
+        assert captured == {
+            "config": config_path,
+            "model": "route-id",
+            "port": None,
+            "codex_args": ["exec", "hi"],
+            "intake": None,
+        }
+
     def test_no_flags_dispatches_to_deterministic(self, monkeypatch, tmp_path):
         """No ``--model``, no ``--routing-profiles`` → deterministic default.
 

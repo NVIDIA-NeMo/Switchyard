@@ -926,8 +926,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "and ANTHROPIC_MODEL preset.  Proxy shuts down when claude exits.\n\n"
             "Route selection:\n"
             "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n\n"
-            "With neither flag, built-in LLM-classifier routing is used."
+            "is rewritten to model=X. Falls back to the saved configure default.\n"
+            "  --config FILE --model X host a native TOML deployment and select "
+            "route X.\n\n"
+            "With neither option, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -936,8 +938,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Single-model passthrough: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted."
+            "`configure` default when omitted. Required with --config "
+            "to select the initial route."
         ),
+    )
+    lc.add_argument(
+        "--config", type=str, default=None, metavar="PATH",
+        help="Native Rust server TOML deployment; requires --model.",
     )
     lc.add_argument(
         "--base-url", type=str, default=None,
@@ -1018,8 +1025,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "codex exits.\n\n"
             "Route selection:\n"
             "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n\n"
-            "With neither flag, built-in LLM-classifier routing is used."
+            "is rewritten to model=X. Falls back to the saved configure default.\n"
+            "  --config FILE --model X host a native TOML deployment and select "
+            "route X.\n\n"
+            "With neither option, built-in LLM-classifier routing is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1028,8 +1037,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Single-model passthrough: model id from GET /v1/models "
             "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted."
+            "`configure` default when omitted. Required with --config "
+            "to select the initial route."
         ),
+    )
+    cx.add_argument(
+        "--config", type=str, default=None, metavar="PATH",
+        help="Native Rust server TOML deployment; requires --model.",
     )
     cx.add_argument(
         "--base-url", type=str, default=None,
