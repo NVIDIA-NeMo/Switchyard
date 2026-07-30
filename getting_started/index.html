@@ -438,10 +438,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#path-a-server-mode" class="md-nav__link">
+  <a href="#server-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Path A: Server mode
+        Server mode
       
     </span>
   </a>
@@ -449,26 +449,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#path-b-agent-launcher" class="md-nav__link">
+  <a href="#routing-algorithms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Path B: Agent launcher
+        Routing algorithms
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#routing-profiles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Routing profiles
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Routing profiles">
+    <nav class="md-nav" aria-label="Routing algorithms">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -484,17 +473,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#path-c-python-library" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Path C: Python library
-      
-    </span>
-  </a>
   
 </li>
       
@@ -1257,10 +1235,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#path-a-server-mode" class="md-nav__link">
+  <a href="#server-mode" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Path A: Server mode
+        Server mode
       
     </span>
   </a>
@@ -1268,26 +1246,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#path-b-agent-launcher" class="md-nav__link">
+  <a href="#routing-algorithms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Path B: Agent launcher
+        Routing algorithms
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#routing-profiles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Routing profiles
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Routing profiles">
+    <nav class="md-nav" aria-label="Routing algorithms">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1303,17 +1270,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#path-c-python-library" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Path C: Python library
-      
-    </span>
-  </a>
   
 </li>
       
@@ -1362,108 +1318,94 @@
 <h1 id="getting-started-with-switchyard">Getting Started with Switchyard<a class="headerlink" href="#getting-started-with-switchyard" title="Permanent link">&para;</a></h1>
 <h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Python 3.12 or later</li>
-<li>macOS, Linux, or Windows</li>
+<li>Git, a native build toolchain, and Rust with Cargo</li>
 <li>An API key for OpenRouter, OpenAI, Anthropic, or another OpenAI-compatible endpoint.
   To use OpenRouter, create an account at <a href="https://openrouter.ai/">openrouter.ai</a>
   and generate a key from the <a href="https://openrouter.ai/keys">OpenRouter keys page</a>.</li>
 </ul>
+<p>On Ubuntu or WSL, install the build prerequisites and Rust with <code>rustup</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>apt-get<span class="w"> </span>update
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>build-essential<span class="w"> </span>curl<span class="w"> </span>git
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>curl<span class="w"> </span>--proto<span class="w"> </span><span class="s1">&#39;=https&#39;</span><span class="w"> </span>--tlsv1.2<span class="w"> </span>-sSf<span class="w"> </span>https://sh.rustup.rs<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">source</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.cargo/env&quot;</span>
+</span></code></pre></div>
+<p>On macOS or native Windows, follow the
+<a href="https://rust-lang.org/tools/install/">official Rust installation instructions</a>.
+The Rust installer includes <code>rustc</code>, Cargo, and <code>rustup</code>.</p>
+<p>Install <code>uv</code> for the repository's Python-based tooling and CI checks. It is not
+required to build or run the Rust server:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>curl<span class="w"> </span>-LsSf<span class="w"> </span>https://astral.sh/uv/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
+</span></code></pre></div>
+<p>If either installer updates your shell configuration, restart the shell before
+continuing. Verify the tools:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>--version
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rustc<span class="w"> </span>--version
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>cargo<span class="w"> </span>--version
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>uv<span class="w"> </span>--version
+</span></code></pre></div>
 <h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;nemo-switchyard[cli,server]&quot;</span>
+<p>Build the Rust server from source:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nb">cd</span><span class="w"> </span>Switchyard
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--locked<span class="w"> </span>--release<span class="w"> </span>-p<span class="w"> </span>switchyard-server
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>./target/release/switchyard-server<span class="w"> </span>--help
 </span></code></pre></div>
+<p>The repository pins Rust <code>1.96.1</code> in <code>rust-toolchain.toml</code>; <code>rustup</code> selects and
+installs it automatically when Cargo runs from the repository. Prebuilt Rust
+binaries are not published yet.</p>
 <h2 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h2>
-<p>Interactive setup saves your provider credentials and routing bundle to
-<code>~/.config/switchyard/</code>. All paths below pick them up automatically at runtime.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>configure
+<p>The Rust server reads an explicit TOML file. It does not use the legacy Python
+CLI's saved configuration or YAML routing profiles.</p>
+<p>Create <code>routes.toml</code> with an LLM-classifier route:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">[llm_clients.openrouter]</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENROUTER_API_KEY&quot;</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="k">[targets.weak]</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="k">[targets.strong]</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o&quot;</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
 </span></code></pre></div>
-<p>Or non-interactively with a routing-profile YAML:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>cat<span class="w"> </span>&gt;<span class="w"> </span>routes.yaml<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="s">defaults:</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="s">  api_key: ${OPENROUTER_API_KEY}</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="s">  base_url: https://openrouter.ai/api/v1</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="s">  format: openai</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="s">routes:</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="s">  smart:</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="s">    type: random_routing</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="s">    strong:</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="s">      model: openai/gpt-4o</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="s">    weak:</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="s">      model: openai/gpt-4o-mini</span>
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="s">    strong_probability: 0.3</span>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="s">    fallback_target_on_evict: strong</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="s">EOF</span>
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
+<p><code>format</code> selects the upstream protocol and must be <code>openai_chat</code>,
+<code>openai_responses</code>, or <code>anthropic_messages</code>. <code>api_key_env</code> names the environment
+variable the server reads; the secret does not belong in the TOML file.</p>
+<h2 id="server-mode">Server mode<a class="headerlink" href="#server-mode" title="Permanent link">&para;</a></h2>
+<p>Export the provider credential, validate the configuration without binding a
+socket, then start the release binary:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
-<p><code>api_key</code> inside the route bundle is used when Switchyard serves or launches the
-bundle. <code>configure --no-tui</code> still requires provider credentials as explicit
-flags, so CI setup should pass <code>--api-key</code> even when the YAML contains
-<code>${OPENROUTER_API_KEY}</code>.</p>
-<blockquote>
-<p><strong>Format default and caching.</strong> Omitting <code>format:</code> from a tier silently defaults to <code>OPENAI</code> (Chat Completions) — not <code>AUTO</code>. For Claude/Anthropic/Bedrock tiers this is wrong: set <code>format: anthropic</code> explicitly. The native <code>/v1/messages</code> path preserves <code>cache_control</code>, which is what enables prompt caching. <code>format: openai</code> routes Claude through OpenAI-format translation that strips <code>cache_control</code>: the request still succeeds, but caching silently never engages and you pay full input price. Always use <code>format: openai</code> for NIM/non-Claude models and <code>format: anthropic</code> for Claude and Bedrock models. Use <code>format: auto</code> only when the upstream is genuinely unknown.</p>
-</blockquote>
-<p>Inspect what was saved:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w">          </span><span class="c1"># redacted snapshot</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w"> </span>--check<span class="w">  </span><span class="c1"># also probes GET /models</span>
+<p>Any client that speaks OpenAI Chat Completions, Anthropic Messages, or OpenAI
+Responses API can connect. The route <code>id</code> is the model name clients use.</p>
+<p>In another terminal:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>curl<span class="w"> </span>http://localhost:4000/health
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>curl<span class="w"> </span>http://localhost:4000/v1/models
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;switchyard&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
 </span></code></pre></div>
-<hr />
-<h2 id="path-a-server-mode">Path A: Server mode<a class="headerlink" href="#path-a-server-mode" title="Permanent link">&para;</a></h2>
-<p>Serves the saved routing bundle as a long-running proxy. Any client that speaks
-OpenAI Chat Completions, Anthropic Messages, or OpenAI Responses API can connect.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>switchyard<span class="w"> </span>serve
-</span></code></pre></div>
-<p>Test with curl:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;: &quot;smart&quot;, &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;hello&quot;}]}&#39;</span>
-</span></code></pre></div>
-<p><strong>CI pattern:</strong> run configure in your environment setup with explicit provider
-credentials:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--<span class="w"> </span>configure<span class="w"> </span>--target<span class="w"> </span>provider<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--provider<span class="w"> </span>openrouter<span class="w"> </span>--api-key<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--base-url<span class="w"> </span>https://openrouter.ai/api/v1<span class="w"> </span>--no-tui<span class="w"> </span>--no-model-discovery
-</span></code></pre></div>
-<p>Then run <code>switchyard serve</code> in your service start step. No flags needed at serve
-time.</p>
-<blockquote>
-<p><strong>Override (dev / one-off work):</strong> pass <code>--routing-profiles</code> to use a different
-bundle for a session without overwriting your saved config:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>dev.yaml<span class="w"> </span>--<span class="w"> </span>serve<span class="w"> </span>--port<span class="w"> </span><span class="m">4001</span>
-</span></code></pre></div></p>
-</blockquote>
-<hr />
-<h2 id="path-b-agent-launcher">Path B: Agent launcher<a class="headerlink" href="#path-b-agent-launcher" title="Permanent link">&para;</a></h2>
-<p>Starts a proxy and spawns a coding agent against it in one command. The proxy
-shuts down when the agent exits. The live stats footer shows per-tier token usage.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w">      </span><span class="c1"># Claude Code</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w">       </span><span class="c1"># Codex CLI</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>openclaw<span class="w">    </span><span class="c1"># OpenClaw</span>
-</span></code></pre></div>
-<p>Each launcher reads the routing bundle and provider credentials saved by
-<code>switchyard configure</code>. See <a href="../guides/agent_launchers/">Agent Launchers</a> for
-supported harness versions, model requirements, and Claude Code <code>/model</code> picker
-aliasing.</p>
-<blockquote>
-<p><strong>Override (dev / one-off work):</strong> pass <code>--routing-profiles</code> (global switchyard
-flag) or <code>--model</code> (launcher flag) to use a different bundle or single model for
-a session without changing your saved config (the two are mutually exclusive):
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>switchyard<span class="w"> </span>--routing-profiles<span class="w"> </span>dev.yaml<span class="w"> </span>--<span class="w"> </span>launch<span class="w"> </span>claude
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>openai/gpt-4o
-</span></code></pre></div></p>
-</blockquote>
-<hr />
-<h2 id="routing-profiles">Routing profiles<a class="headerlink" href="#routing-profiles" title="Permanent link">&para;</a></h2>
-<p>All route types work with both <a href="#path-a-server-mode">Path A</a> and
-<a href="#path-b-agent-launcher">Path B</a>. Declare a type in your YAML, run the
-non-interactive configure command above, then <code>serve</code> or <code>launch</code> as above.</p>
+<!-- TODO: Add agent launchers back when they are wired to the Rust server. -->
+
+<h2 id="routing-algorithms">Routing algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h2>
 <h3 id="choose-a-route-type">Choose a route type<a class="headerlink" href="#choose-a-route-type" title="Permanent link">&para;</a></h3>
-<p>This guide used <code>random_routing</code> so you can get a working proxy quickly. Choose
-another route type when the routing decision needs different inputs:</p>
+<p>This guide uses <code>llm_classifier</code>, which asks a classifier target whether each
+request should use the weak or strong target. The Rust server also supports:</p>
 <table>
 <thead>
 <tr>
@@ -1474,98 +1416,61 @@ another route type when the routing decision needs different inputs:</p>
 </thead>
 <tbody>
 <tr>
-<td><a href="../routing_algorithms/random_routing/">Random Routing</a></td>
-<td>You need a fixed strong/weak split for A/B tests or baselines.</td>
-<td><code>random_routing</code></td>
+<td>Random</td>
+<td>You need a weighted split for A/B tests or baselines.</td>
+<td><code>random</code></td>
 </tr>
 <tr>
-<td><a href="../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a></td>
-<td>Request content should decide whether to use <code>weak</code> or <code>strong</code>.</td>
-<td><code>deterministic</code></td>
+<td>LLM classifier</td>
+<td>Request content should decide whether to use the weak or strong target.</td>
+<td><code>llm_classifier</code></td>
 </tr>
 <tr>
-<td><a href="../routing_algorithms/stage_router_routing/">Stage-Router Routing</a></td>
-<td>Tool-result and progress signals should route most turns without an extra classifier call.</td>
+<td>Stage router</td>
+<td>Tool-result and progress signals should select an efficient or capable target.</td>
 <td><code>stage_router</code></td>
 </tr>
 </tbody>
 </table>
-<p>LLM classifier routes can also enable
-<a href="../routing_algorithms/sticky_routing/">Session Affinity (Sticky Routing)</a> to pin
-multi-turn conversations to one tier.</p>
-<p>A single YAML file can declare multiple routes. Each route becomes a model id on
-<code>GET /v1/models</code>; the first declared route is the launcher's initial model. See
-<a href="../routing_algorithms/overview/">Routing Overview</a> for route selection and the
-strategy-specific pages for full examples and tuning notes.</p>
-<hr />
-<h2 id="path-c-python-library">Path C: Python library<a class="headerlink" href="#path-c-python-library" title="Permanent link">&para;</a></h2>
-<p>Embed Switchyard directly in your application without a separate proxy process:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChatRequest</span><span class="p">,</span> <span class="n">PassthroughProfileConfig</span><span class="p">,</span> <span class="n">ProfileSwitchyard</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">switchyard</span> <span class="o">=</span> <span class="n">ProfileSwitchyard</span><span class="p">(</span><span class="n">PassthroughProfileConfig</span><span class="p">(</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>  <span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span><span class="p">,</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">())</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">chat</span><span class="p">(</span><span class="n">user_message</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>    <span class="n">request</span> <span class="o">=</span> <span class="n">ChatRequest</span><span class="o">.</span><span class="n">openai_chat</span><span class="p">({</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>        <span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="s2">&quot;openai/gpt-4o&quot;</span><span class="p">,</span>
-</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>        <span class="s2">&quot;messages&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">user_message</span><span class="p">}],</span>
-</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>    <span class="p">})</span>
-</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>    <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">switchyard</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
-</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>    <span class="k">return</span> <span class="n">response</span><span class="p">[</span><span class="s2">&quot;choices&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;message&quot;</span><span class="p">][</span><span class="s2">&quot;content&quot;</span><span class="p">]</span>
-</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>
-</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="nb">print</span><span class="p">(</span><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">chat</span><span class="p">(</span><span class="s2">&quot;What is 2+2?&quot;</span><span class="p">)))</span>
-</span></code></pre></div>
-<p>To host the chain as an HTTP server:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">uvicorn</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard</span><span class="w"> </span><span class="kn">import</span> <span class="n">PassthroughProfileConfig</span><span class="p">,</span> <span class="n">ProfileSwitchyard</span><span class="p">,</span> <span class="n">build_switchyard_app</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">switchyard</span> <span class="o">=</span> <span class="n">ProfileSwitchyard</span><span class="p">(</span><span class="n">PassthroughProfileConfig</span><span class="p">(</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span><span class="p">,</span>  <span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span><span class="p">,</span>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">())</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">uvicorn</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">build_switchyard_app</span><span class="p">(</span><span class="n">switchyard</span><span class="p">),</span> <span class="n">port</span><span class="o">=</span><span class="mi">4000</span><span class="p">)</span>
-</span></code></pre></div>
-<hr />
+<p>A single TOML file can declare multiple routes. The table key, such as
+<code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
+model on <code>GET /v1/models</code>.</p>
+<p>See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74324f194235e189baa2a003de85a8338909bb25/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+the complete TOML schema, route options, TLS, and metrics.</p>
+<!-- TODO: Restore routing-guide links after those pages use the Rust TOML schema. -->
+
+<!-- TODO: Add Python library usage back when the supported Rust-backed API is finalized. -->
+
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <p><strong>No API key / auth error</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>switchyard<span class="w"> </span>configure<span class="w">          </span><span class="c1"># re-run interactive setup to update credentials</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>switchyard<span class="w"> </span>configure<span class="w"> </span>--show<span class="w">   </span><span class="c1"># confirm what key source is in use</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">test</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;key is set&quot;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;key is missing&quot;</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
 </span></code></pre></div>
-<p>For launchers and verification, you can pass <code>--api-key</code> directly. For <code>serve</code>, put credentials in the routing-profile YAML or saved config.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--api-key<span class="w"> </span>sk-...
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>switchyard<span class="w"> </span>verify<span class="w"> </span>--api-key<span class="w"> </span>sk-...
-</span></code></pre></div>
+<p>Confirm that <code>api_key_env</code> in <code>routes.toml</code> names the environment variable you
+exported. The dry run validates the schema, environment lookup, target
+references, and route construction without starting the server.</p>
 <p><strong>Connection refused</strong></p>
 <p>Check health: <code>curl http://localhost:4000/health</code></p>
 <p><strong>Telemetry header opt-out</strong></p>
 <p>Switchyard adds an <code>X-Switchyard-Version</code> header to outbound LLM calls for
 release attribution. No request or response content is included. To disable:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_TELEMETRY_OPT_OUT</span><span class="o">=</span><span class="m">1</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SWITCHYARD_TELEMETRY_OPT_OUT</span><span class="o">=</span><span class="m">1</span>
 </span></code></pre></div>
-<p><strong>Development setup</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="nb">cd</span><span class="w"> </span>Switchyard
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>uv<span class="w"> </span>sync
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="nb">source</span><span class="w"> </span>.venv/bin/activate
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>uv<span class="w"> </span>run<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-v
-</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>uv<span class="w"> </span>run<span class="w"> </span>ruff<span class="w"> </span>check<span class="w"> </span>.
-</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>uv<span class="w"> </span>run<span class="w"> </span>mypy<span class="w"> </span>switchyard
-</span></code></pre></div>
+<!-- TODO: Add contributor setup back when the documented workflow is Rust-first. -->
+
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../cli_reference/">CLI Reference</a>: full flag reference for every verb</li>
-<li><a href="../guides/agent_launchers/">Agent Launchers</a>: Claude Code, Codex, and OpenClaw launcher details</li>
-<li><a href="../architecture/">Architecture</a>: system context and end-to-end request flow</li>
-<li><a href="../routing_algorithms/overview/">Routing Overview</a>: choose the right routing strategy</li>
-<li><a href="../routing_algorithms/random_routing/">Random Routing</a>: fixed strong/weak split routing</li>
-<li><a href="../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a>: classifier-driven strong/weak routing</li>
-<li><a href="../routing_algorithms/stage_router_routing/">Stage-Router Routing</a>: picker layers, signal dimensions, calibration</li>
-<li><a href="../routing_algorithms/sticky_routing/">Sticky Routing</a>: conversation-level route affinity</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74324f194235e189baa2a003de85a8338909bb25/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+  routing algorithms, TLS, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74324f194235e189baa2a003de85a8338909bb25/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed routing algorithms in a
+  Rust application</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74324f194235e189baa2a003de85a8338909bb25/crates/protocol/README.md"><code>switchyard-protocol</code></a>: provider-neutral
+  request, response, and streaming types</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/74324f194235e189baa2a003de85a8338909bb25/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+  request, response, and stream translation</li>
 </ul>
+<!-- TODO: Restore architecture, CLI, launcher, and routing links when those pages are Rust-first. -->
 
 
 
