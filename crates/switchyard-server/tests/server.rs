@@ -297,6 +297,40 @@ async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestRes
 }
 
 #[tokio::test]
+async fn stats_reset_returns_confirmation_and_clears_all_stats() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "hello"}]
+            })),
+        )
+        .await?
+        .status,
+        StatusCode::OK
+    );
+
+    let reset = send(&app, "POST", "/v1/stats/reset", None).await?;
+    assert_eq!(reset.status, StatusCode::OK);
+    assert_eq!(reset.json()?, json!({"status": "reset"}));
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 0);
+    assert_eq!(stats["total_errors"], 0);
+    assert_eq!(stats["total_tokens"], empty_token_totals());
+    assert_eq!(stats["models"], json!({}));
+    assert_eq!(stats["tiers"], json!({}));
+    assert_eq!(stats["routing_overhead"]["count"], 0);
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(stats["classifier"]["models"], json!({}));
+    Ok(())
+}
+
+#[tokio::test]
 async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     const MODEL: &str = "model/metrics-buffered";
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;

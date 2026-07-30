@@ -40,10 +40,18 @@ fn initialize() -> Result<Metrics, String> {
         .with_registry(registry.clone())
         .build()
         .map_err(|error| format!("failed to initialize Prometheus metrics: {error}"))?;
-    let provider = SdkMeterProvider::builder()
+    let mut builder = SdkMeterProvider::builder()
         .with_reader(exporter)
         .with_view(routing_overhead_buckets)
-        .build();
+        .with_resource(crate::observability::resource());
+    if crate::observability::otlp_enabled("METRICS") {
+        let exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .build()
+            .map_err(|error| format!("failed to initialize OTLP metric exporter: {error}"))?;
+        builder = builder.with_periodic_exporter(exporter);
+    }
+    let provider = builder.build();
     global::set_meter_provider(provider.clone());
     libsy::initialize_metrics();
     global::meter("switchyard")
@@ -55,6 +63,14 @@ fn initialize() -> Result<Metrics, String> {
         registry,
         _provider: provider,
     })
+}
+
+pub(crate) fn flush() {
+    if let Some(Ok(metrics)) = METRICS.get() {
+        if let Err(error) = metrics._provider.force_flush() {
+            tracing::warn!(error = %error, "failed to flush OpenTelemetry metrics");
+        }
+    }
 }
 
 fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {
