@@ -369,6 +369,58 @@ impl RoutedLlmClient for ClassifierClient {
     }
 }
 
+enum JudgeOutcome {
+    CallFailure,
+    Reply(&'static str),
+    StreamDecodeFailure,
+}
+
+/// Returns one configured judge outcome and serves the selected target normally.
+struct JudgeClient {
+    outcome: JudgeOutcome,
+}
+
+#[async_trait]
+impl RoutedLlmClient for JudgeClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        _request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, LlmClientError> {
+        if decision.is_routed_call() {
+            return Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    Some(decision.selected_model().to_string()),
+                    "routed response",
+                )),
+                metadata: None,
+            });
+        }
+        match &self.outcome {
+            JudgeOutcome::CallFailure => Err(LlmClientError::UpstreamHttp {
+                status: 500,
+                body: "server error".to_string(),
+            }),
+            JudgeOutcome::Reply(text) => Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, *text)),
+                metadata: None,
+            }),
+            JudgeOutcome::StreamDecodeFailure => Ok(Response {
+                llm_response: LlmResponse::Stream(
+                    futures::stream::iter([Ok(LlmResponseStreamEvent::new(vec![
+                        LlmResponseChunk::DecodeError {
+                            message: "bad judge chunk".to_string(),
+                        },
+                    ]))])
+                    .boxed(),
+                ),
+                metadata: None,
+            }),
+        }
+    }
+}
+
 #[async_trait]
 impl RoutedLlmClient for UsageClient {
     async fn call(
@@ -451,6 +503,38 @@ fn algo(name: &str, model: &str, client: Option<Arc<dyn RoutedLlmClient>>) -> Ar
             llm_client: client,
         }]),
     })
+}
+
+fn classifier_router(
+    judge_model: &str,
+    efficient_model: &str,
+    capable_model: &str,
+    client: Arc<dyn RoutedLlmClient>,
+) -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.to_string(),
+        llm_client: Some(client.clone()),
+    };
+    let targets = LlmTargetSet::new(vec![target(efficient_model), target(capable_model)]);
+    Ok(Arc::new(LlmTaskClassifier::new(
+        LlmClassifierConfig::Capability {
+            judge_target: target(judge_model),
+            efficient_target: targets.get_target(efficient_model)?,
+            capable_target: targets.get_target(capable_model)?,
+            config: TaskClassifierConfig {
+                base_threshold: 0.5,
+                ..TaskClassifierConfig::default()
+            },
+        },
+    )?))
+}
+
+fn classifier_request() -> Request {
+    Request {
+        llm_request: text_request(Some("auto".to_string()), "classify this"),
+        raw_request: None,
+        metadata: None,
+    }
 }
 
 fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> SpanRecord {
@@ -1032,34 +1116,10 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let client = Arc::new(ClassifierClient {
         classifier_delay: Duration::from_millis(60),
         routed_delay: Duration::from_millis(200),
-    });
-    let target = |name: &str| LlmTarget {
-        semantic_name: name.to_string(),
-        llm_client: Some(client.clone()),
-    };
-    let targets = LlmTargetSet::new(vec![target("weak"), target("strong")]);
-    let weak = targets.get_target("weak")?;
-    let strong = targets.get_target("strong")?;
-    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-        judge_target: target("classifier"),
-        efficient_target: weak,
-        capable_target: strong,
-        config: TaskClassifierConfig {
-            base_threshold: 0.5,
-            ..TaskClassifierConfig::default()
-        },
-    })?);
+    }) as Arc<dyn RoutedLlmClient>;
+    let router = classifier_router("classifier", "weak", "strong", client)?;
 
-    let (trace, _response) = router
-        .run(
-            Context::default(),
-            Request {
-                llm_request: text_request(Some("auto".to_string()), "classify this"),
-                raw_request: None,
-                metadata: None,
-            },
-        )
-        .await?;
+    let (trace, _response) = router.run(Context::default(), classifier_request()).await?;
 
     assert_eq!(
         trace.last().and_then(|decision| decision.routing_tier()),
@@ -1119,5 +1179,62 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         (60..200).contains(&overhead),
         "expected roughly the classifier's 60ms, got {overhead}ms"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_store, exporter, provider, _, _) = telemetry();
+
+    let cases = [
+        ("fo-call", JudgeOutcome::CallFailure, Some("upstream_5xx")),
+        (
+            "fo-parse",
+            JudgeOutcome::Reply("not json at all"),
+            Some("parse_error"),
+        ),
+        (
+            "fo-stream-decode",
+            JudgeOutcome::StreamDecodeFailure,
+            Some("invalid_response"),
+        ),
+        (
+            "fo-valid",
+            JudgeOutcome::Reply(
+                r#"{"recommended_route":"strong","p_solve":0.3,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"CAP-1","crux":"hard task"}"#,
+            ),
+            None,
+        ),
+    ];
+
+    for (judge_model, outcome, expected_reason) in cases {
+        let client = Arc::new(JudgeClient { outcome }) as Arc<dyn RoutedLlmClient>;
+        classifier_router(judge_model, "fo-weak", "fo-strong", client)?
+            .run(Context::default(), classifier_request())
+            .await?;
+
+        let snapshots = flushed_metrics(exporter, provider);
+        match expected_reason {
+            Some(reason) => assert_eq!(
+                u64_counter_value(
+                    &snapshots,
+                    "switchyard.classifier_fail_open",
+                    &[("reason", reason), ("judge_model", judge_model)],
+                ),
+                Some(1),
+                "case {reason} did not count the fail-open"
+            ),
+            None => assert_eq!(
+                u64_counter_value(
+                    &snapshots,
+                    "switchyard.classifier_fail_open",
+                    &[("judge_model", judge_model)],
+                ),
+                None,
+                "a valid verdict was counted as a fail-open"
+            ),
+        }
+    }
     Ok(())
 }

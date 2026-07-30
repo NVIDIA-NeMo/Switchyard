@@ -148,12 +148,17 @@ Routed-call compatibility metrics are:
 | `switchyard_reasoning_tokens_total` | counter | `model`, optional `tier` | Reasoning output tokens |
 | `switchyard_total_latency_ms` | histogram | `model`, optional `tier` | Full-turn latency for successful routed responses |
 | `switchyard_routing_overhead_ms` | histogram | `algorithm` | Algorithm run time minus the call that served it |
+| `switchyard_classifier_fail_open_total` | counter | `judge_model`, `reason` | Judge failures that made a classifier route without a verdict |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
 | `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
 
 The `tier` label is `strong` or `weak` for a distinguishable built-in LLM-classifier decision and
 is omitted for untiered algorithms. Classifier calls are excluded from these families.
+
+`switchyard_classifier_fail_open_total` counts requests that still reached a target after the
+judge call failed. `judge_model` names the configured judge target, and `reason` is one of eight
+fixed error categories.
 
 `switchyard_total_latency_ms` observes an aggregate when it becomes available or a stream when it
 ends cleanly. Its clock starts in a router-wide middleware, before the request body is read and

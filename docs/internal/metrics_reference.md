@@ -59,6 +59,16 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 |---|---|---|
 | `switchyard_routing_overhead_ms{algorithm}` | histogram | Algorithm run time minus the final routed model call. Includes classifier calls, target resolution, and decision publication; runs with no final routed call are not recorded. |
 
+## Classifier fail-open counter
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `switchyard_classifier_fail_open_total{judge_model,reason}` | counter | Judge failures that made a classifier route without a verdict. The caller's request can still succeed on the fallback target. |
+
+`judge_model` is the configured judge target. `reason` is one of `timeout`, `transport`,
+`upstream_5xx`, `upstream_non_5xx`, `invalid_response`, `parse_error`, `client_error`, or
+`call_error`. The labels never include request or response text.
+
 ## Outcome counters for error-rate ratios
 
 The `outcome` label takes exactly three values:
@@ -141,6 +151,8 @@ into label space.
 | `le` | The configured histogram bucket boundaries. | Histogram buckets |
 | `algorithm` | One stable value per configured algorithm. | Routing-overhead histogram |
 | `tier` | Small enumerated set, optional. | Per-endpoint counters and histograms on algorithms that supply it |
+| `judge_model` | One per configured judge target. | Classifier fail-open counter |
+| `reason` | Exactly 8 fixed error categories. | Classifier fail-open counter |
 
 ## Triage cheatsheet
 
@@ -149,4 +161,5 @@ into label space.
 | `model="<unknown>"` rows appear | A routed-call observation did not include a selected model. |
 | All counters at 0 after warm-up | Server just started with no traffic, or the scraper is hitting the wrong port. |
 | `switchyard_routing_overhead_ms_count` stuck at `0` | No successful algorithm run has recorded a final routed model call. |
+| `switchyard_classifier_fail_open_total` rising | The judge target is failing or returning a response the classifier cannot parse. Check `judge_model` and `reason`. |
 | `switchyard_client_responses_total{outcome="retryable_error"}` rising | Either the upstream is genuinely flaky, or retries are exhausting; compare client responses with retryable upstream attempts. |

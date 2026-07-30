@@ -22,7 +22,7 @@ use crate::core::algorithm::{Driver, LlmTarget};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Context, Decision, Request, Response};
+use switchyard_protocol::{Context, Decision, LlmClientError, Request, Response};
 
 /// Builds the classifier-specific message view presented to a structured judge.
 pub(crate) trait ClassifierInput: Send + Sync {
@@ -215,7 +215,7 @@ where
     /// A judge is an optimization, not a dependency: failing the caller's request because the
     /// judge is down would be worse than routing without it, so every failure — transport,
     /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
-    /// fail-closed branch. A closed driver stream is folded too; the algorithm's next driver
+    /// fallback branch. A closed driver stream is folded too; the algorithm's next driver
     /// call surfaces it, so nothing is masked.
     async fn verdict(
         &self,
@@ -224,14 +224,6 @@ where
         driver: &Driver,
     ) -> Option<J::Verdict> {
         let judge_model = self.target.semantic_name.as_str();
-        let warn = |error: &dyn std::fmt::Display| {
-            tracing::warn!(
-                target: "libsy",
-                judge_model,
-                error = %error,
-                "judge verdict unavailable; routing without one"
-            );
-        };
 
         let response = driver
             .call_llm_target(
@@ -243,18 +235,54 @@ where
                 }),
             )
             .await
-            .inspect_err(|error| warn(error))
+            .inspect_err(|error| report_fail_open(judge_model, error, libsy_error_reason(error)))
             .ok()?;
         let aggregate = response
             .llm_response
             .into_agg()
             .await
-            .inspect_err(|error| warn(error))
+            .inspect_err(|error| report_fail_open(judge_model, error, client_error_reason(error)))
             .ok()?;
         self.judge
             .parse(&aggregate)
-            .inspect_err(|error| warn(error))
+            .inspect_err(|error| report_fail_open(judge_model, error, "parse_error"))
             .ok()
+    }
+}
+
+/// Logs and counts a judge failure with a bounded label that excludes message content.
+fn report_fail_open(judge_model: &str, error: &dyn std::fmt::Display, reason: &'static str) {
+    tracing::warn!(
+        target: "libsy",
+        judge_model,
+        reason,
+        error = %error,
+        "judge verdict unavailable; routing without one"
+    );
+    crate::observability::record_classifier_fail_open(judge_model, reason);
+}
+
+/// Returns a bounded reason for a judge call that failed at the libsy layer.
+fn libsy_error_reason(error: &LibsyError) -> &'static str {
+    match error {
+        LibsyError::ClientCall { source, .. } => client_error_reason(source),
+        _ => "call_error",
+    }
+}
+
+/// Returns a bounded reason from the error kind and HTTP status only.
+fn client_error_reason(error: &LlmClientError) -> &'static str {
+    match error {
+        LlmClientError::Timeout { .. } => "timeout",
+        LlmClientError::Transport { .. } => "transport",
+        LlmClientError::UpstreamHttp { status, .. } if (500..=599).contains(status) => {
+            "upstream_5xx"
+        }
+        LlmClientError::UpstreamHttp { .. } => "upstream_non_5xx",
+        LlmClientError::InvalidResponse { .. } | LlmClientError::ResponseTranslation(_) => {
+            "invalid_response"
+        }
+        _ => "client_error",
     }
 }
 
@@ -542,6 +570,56 @@ mod tests {
         );
         assert_eq!(score_served_with(Err(error)).await?, "no-verdict");
         Ok(())
+    }
+
+    #[test]
+    fn client_errors_map_to_bounded_fail_open_reasons() {
+        let cases = vec![
+            (
+                LlmClientError::Timeout {
+                    source: "deadline exceeded".into(),
+                },
+                "timeout",
+            ),
+            (
+                LlmClientError::Transport {
+                    source: "connection refused".into(),
+                },
+                "transport",
+            ),
+            (
+                LlmClientError::UpstreamHttp {
+                    status: 500,
+                    body: "server error".to_string(),
+                },
+                "upstream_5xx",
+            ),
+            (
+                LlmClientError::UpstreamHttp {
+                    status: 302,
+                    body: "redirect".to_string(),
+                },
+                "upstream_non_5xx",
+            ),
+            (
+                LlmClientError::InvalidResponse {
+                    source: "invalid JSON".into(),
+                },
+                "invalid_response",
+            ),
+            (
+                LlmClientError::General("unexpected client failure".to_string()),
+                "client_error",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(client_error_reason(&error), expected);
+        }
+
+        let error = LibsyError::AlgorithmError {
+            message: "driver failed".to_string(),
+        };
+        assert_eq!(libsy_error_reason(&error), "call_error");
     }
 
     #[tokio::test]
