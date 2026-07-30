@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    StreamCodec, StreamTranslationState, record_source_identity,
+    StreamCodec, StreamTranslationState, mark_replayed_terminal, record_source_identity,
     target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
@@ -157,8 +157,11 @@ fn encode_responses_stream(
         LlmResponseChunk::ProviderEvent {
             source,
             raw,
-            normalized: _,
-        } if source == WireFormat::OpenAiResponses.into() => vec![raw],
+            normalized,
+        } if source == WireFormat::OpenAiResponses.into() => {
+            mark_replayed_terminal(state, &normalized);
+            vec![raw]
+        }
         LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
             .into_iter()
             .flat_map(|event| encode_responses_stream(state, event))
@@ -194,6 +197,9 @@ fn encode_responses_stream(
 
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = ensure_responses_created(state);
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index

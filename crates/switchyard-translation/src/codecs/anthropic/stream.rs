@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    StreamCodec, StreamTranslationState, record_source_identity,
+    StreamCodec, StreamTranslationState, mark_replayed_terminal, record_source_identity,
     target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
@@ -129,8 +129,11 @@ fn encode_anthropic_stream(
         LlmResponseChunk::ProviderEvent {
             source,
             raw,
-            normalized: _,
-        } if source == WireFormat::AnthropicMessages.into() => vec![raw],
+            normalized,
+        } if source == WireFormat::AnthropicMessages.into() => {
+            mark_replayed_terminal(state, &normalized);
+            vec![raw]
+        }
         LlmResponseChunk::ProviderEvent { normalized, .. } => normalized
             .into_iter()
             .flat_map(|event| encode_anthropic_stream(state, event))
@@ -198,6 +201,9 @@ fn encode_anthropic_stream(
 
 // Emits any missing Anthropic terminal events and closes open content blocks.
 fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     if !state.emitted_message_start {
         out.extend(encode_anthropic_stream(
