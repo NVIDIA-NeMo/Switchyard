@@ -5,6 +5,7 @@
 
 pub mod config;
 mod metrics;
+mod observability;
 mod response;
 mod sse;
 mod stats;
@@ -13,6 +14,7 @@ mod usage_metrics;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +40,8 @@ use switchyard_translation::{decode_request, WireFormat};
 
 use crate::response::into_http_response;
 use crate::stats::{prefix_probe, tracking_enabled_from_env, StatsAccumulator, StatsSnapshot};
+
+pub use observability::{flush_observability, initialize_observability};
 
 /// Default TCP listen backlog used by the Rust server.
 pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
@@ -156,22 +160,60 @@ pub async fn run_server(state: ServerState, options: ServerRunOptions) -> Server
         return Ok(());
     }
 
-    let listener = bind_tcp_listener(options.addr, options.backlog)?;
-    let bound_addr = listener.local_addr().map_err(server_io_error)?;
-    let server_options = ServerRunOptions {
-        addr: bound_addr,
-        ..options
-    };
-    eprintln!("{}", startup_banner(&server_options, &state));
-    let router = build_switchyard_router(state);
-    if let Some(tls) = server_options.tls {
-        serve_tls(listener, router, tls).await
-    } else {
-        serve(listener, router).await
+    let server = BoundServer::bind(state, options)?;
+    eprintln!("{}", server.startup_banner());
+    server.serve(shutdown_signal()).await
+}
+
+/// A configured server with its listening socket already bound.
+pub struct BoundServer {
+    listener: TcpListener,
+    router: Router,
+    options: ServerRunOptions,
+    state: ServerState,
+}
+
+impl BoundServer {
+    /// Binds the configured address and prepares the HTTP router.
+    pub fn bind(state: ServerState, options: ServerRunOptions) -> ServerResult<Self> {
+        let listener = bind_tcp_listener(options.addr, options.backlog)?;
+        let addr = listener.local_addr().map_err(server_io_error)?;
+        Ok(Self {
+            listener,
+            router: build_switchyard_router(state.clone()),
+            options: ServerRunOptions { addr, ..options },
+            state,
+        })
+    }
+
+    /// Returns the actual bound address, including an OS-selected port.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.options.addr
+    }
+
+    /// Serves requests until the supplied shutdown future resolves.
+    pub async fn serve(
+        self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+    ) -> ServerResult<()> {
+        if let Some(tls) = self.options.tls {
+            serve_tls(self.listener, self.router, tls, shutdown).await
+        } else {
+            serve(self.listener, self.router, shutdown).await
+        }
+    }
+
+    fn startup_banner(&self) -> String {
+        startup_banner(&self.options, &self.state)
     }
 }
 
-async fn serve_tls(listener: TcpListener, router: Router, tls: TlsOptions) -> ServerResult<()> {
+async fn serve_tls(
+    listener: TcpListener,
+    router: Router,
+    tls: TlsOptions,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> ServerResult<()> {
     if let Err(error) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
         tracing::debug!(?error, "TLS crypto provider was already installed");
     }
@@ -183,7 +225,7 @@ async fn serve_tls(listener: TcpListener, router: Router, tls: TlsOptions) -> Se
 
     let shutdown_handle = handle.clone();
     tokio::spawn(async move {
-        shutdown_signal().await;
+        shutdown.await;
         shutdown_handle.graceful_shutdown(Some(Duration::from_secs(2)));
     });
 
@@ -196,9 +238,13 @@ async fn serve_tls(listener: TcpListener, router: Router, tls: TlsOptions) -> Se
         .map_err(server_io_error)
 }
 
-async fn serve(listener: TcpListener, router: Router) -> ServerResult<()> {
+async fn serve(
+    listener: TcpListener,
+    router: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> ServerResult<()> {
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(server_io_error)
 }

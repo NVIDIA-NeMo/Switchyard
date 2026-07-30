@@ -20,10 +20,11 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 clap = { version = "4", features = ["derive", "env"] }
 futures-util.workspace = true
 libsy = { package = "switchyard-libsy", path = "../libsy" }
-opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "reqwest-rustls", "trace"] }
 opentelemetry-prometheus = "0.32"
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics"] }
 parking_lot.workspace = true
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 prometheus = "0.14"
 serde.workspace = true
 toml = "1.1"
@@ -32,6 +33,7 @@ serde_json.workspace = true
 switchyard-translation.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
