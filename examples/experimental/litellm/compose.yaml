@@ -1,0 +1,26 @@
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.92.0
+    command:
+      - --config
+      - /app/config.yaml
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY}
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+networks:
+  default:
+    name: ${LITELLM_NETWORK:-switchyard-litellm}

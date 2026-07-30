@@ -5,10 +5,15 @@
 
 use opentelemetry::{global, KeyValue};
 
+pub(crate) const fn is_retryable_http_status(status: u16) -> bool {
+    status == 408 || status == 429 || (status >= 500 && status <= 599)
+}
+
 pub const fn http_outcome_label(status: Option<u16>) -> &'static str {
     match status {
         Some(200..=299) => "success",
-        Some(429 | 500 | 504) | None => "retryable_error",
+        Some(status) if is_retryable_http_status(status) => "retryable_error",
+        None => "retryable_error",
         Some(_) => "other_error",
     }
 }
@@ -52,4 +57,22 @@ pub(crate) fn record_upstream_attempt(status: Option<u16>) {
                 KeyValue::new("code", http_status_code_label(status)),
             ],
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outcome_labels_match_the_retry_policy() {
+        for status in [408, 429, 500, 502, 599] {
+            assert!(is_retryable_http_status(status));
+            assert_eq!(http_outcome_label(Some(status)), "retryable_error");
+        }
+        for status in [400, 409, 499, 600] {
+            assert!(!is_retryable_http_status(status));
+            assert_eq!(http_outcome_label(Some(status)), "other_error");
+        }
+        assert_eq!(http_outcome_label(None), "retryable_error");
+    }
 }

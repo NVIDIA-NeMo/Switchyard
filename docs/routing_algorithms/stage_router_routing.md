@@ -188,101 +188,109 @@ well in stage-router as it does alone.
 
 ## Route configuration
 
-```yaml
-defaults:
-  base_url: https://openrouter.ai/api/v1
-  api_key: ${OPENROUTER_API_KEY}
-  format: openai
+```toml
+schema_version = 1
 
-routes:
-  smart-stage-router:
-    type: stage_router
-    picker: capable_first
-    confidence_threshold: 0.5
-    signal_recent_window: 3
-    fallback_target_on_evict: strong
-    strong:
-      id: strong
-      model: openai/gpt-4o
-    weak:
-      id: weak
-      model: openai/gpt-4o-mini
-    enable_stats: true
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.strong]
+id = "openai/gpt-4o"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "openai/gpt-4o-mini"
+llm_client = "openrouter"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3          # optional, defaults to 3
 ```
 
-Save the file as `routes.yaml` and start it with:
+Save as `routes.toml` and start the server:
 
 ```bash
-switchyard --routing-profiles routes.yaml -- serve --port 4000
+switchyard-server --config routes.toml --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
-If you omit `confidence_threshold`, the config default of `0.5` applies; the
-example sets it explicitly.
 
-`fallback_target_on_evict` is required and must reference one of the
-declared target ids. See [Context-Window Handling](../operations/context_window.md) for
-exception types and error envelopes.
+### Optional: handoff notes
 
-### Optional: add an LLM classifier
+Add a `[routes.stage.handoff_notes]` section to pass a contextual note to the
+model the router switches to. The escalation note is sent to the capable tier on
+a signal-driven escalation; the de-escalation note is sent back to the efficient
+tier when a settled signal drops the turn there.
 
-By default the router uses tool signals only. If you want a model to break the
-tie on low-confidence turns, add a `classifier:` block and set
+```toml
+[routes.stage.handoff_notes]
+escalation_note = "the previous model was stalling; pick up the diagnosis"
+# deescalation_note = "..."          # optional
+# only_on_wrong_signal_escalation = true  # default; set false to always send
+```
+
+### Optional: per-tier system prompts
+
+```toml
+[routes.stage]
+# ...
+capable_system_prompt = "diagnose before you edit"
+efficient_system_prompt = "follow the settled plan"
+```
+
+### Optional: LLM classifier fallback
+
+By default the router uses tool signals only. To break ties on low-confidence
+turns with a model call, add a `[routes.stage.classifier]` block and set
 `confidence_threshold` above `0.0`. The classifier is consulted only for turns
 that fall below the threshold:
 
-```yaml
-    classifier:
-      model: openai/gpt-4o-mini
-      api_key: ${OPENROUTER_API_KEY}   # prefer a separate key/quota in production
-      base_url: https://openrouter.ai/api/v1
-      timeout_secs: 30.0
-      recent_turn_window: 3
+```toml
+[routes.stage.classifier]
+target = "strong"          # target the judge is called through (not a routing destination)
+base_threshold = 0.5       # p_solve floor to route efficient; below this → capable
+min_confidence = 0.7       # judge confidence floor; below this → abstain
+recent_turn_window = 3     # conversation span the judge sees
 ```
 
-Give the classifier its own credential or quota bucket where you can. Sharing
+Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn
 and can cause sustained 429s at scale.
 
-The same route bundle works with the launchers.
-
 ## Observability
 
-### Per-tier token / cost stats (standard)
+Each response carries two routing headers:
 
-```bash
-curl http://localhost:4000/v1/stats
-```
+| Header | Content |
+|---|---|
+| `x-model-router-selected-model` | The model ID the turn was routed to. |
+| `x-model-router-rationale` | Human-readable routing reason (e.g. `stage_router selected weak (confidence 0.612)`). |
 
-Returns the stats snapshot: per-model calls, tokens, latency, and cost, bucketed
-by served model, each tagged with a `capable` or `efficient` `tier`. Batch
-harnesses usually capture this same snapshot to a file (see below).
+### Decision sources
 
-### Decision-source metadata (stage-router-specific)
-
-The route counts why each turn was routed the way it was under
-`routing_decisions.stage_router` in the stats JSON:
+The `decision_source` recorded internally for each turn explains why the routing
+went the way it did. It appears in per-tier metrics tagged on the decision:
 
 | Source | When |
 |---|---|
 | `override` | A critical-error severity (or a context-compaction marker) forced the capable tier. |
-| `tests_passed` | A settled run — a recent test pass with a recent write and no windowed error — dropped the turn to the efficient tier. |
+| `tests_passed` | A settled run — a recent test pass with a recent write and no windowed error — landed the turn on the efficient tier. |
 | `dimensions` | The corroborative scorer crossed `confidence_threshold` and picked the tier by the sign of the score. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a verdict. |
-| `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured, so the default tier was used. |
-| `no_signal` | The request arrived before any tool-result history existed. |
-
-To capture a snapshot for a batch run, redirect the endpoint to a file:
-
-```bash
-curl -s http://localhost:4000/v1/stats > routing_stats_final.json
-```
+| `fall_open` | The signals were ambiguous and the classifier failed or wasn't configured; the default tier was used. |
 
 ## When *not* to use stage-router
 
 - **Single-model deployments.** Use a `model` route instead.
 - **Probabilistic A/B splits.** Use
-  [Random Routing](random_routing.md) (`type: random_routing`).
+  [Random Routing](random_routing.md) (`type = "random"`).
   The stage-router's signals are wasted on a fixed traffic ratio.
 - **No tool-result history.** Stage-router needs meaningful tool-call traffic to
   populate the tool-result signal. For pure chat-completion workloads every

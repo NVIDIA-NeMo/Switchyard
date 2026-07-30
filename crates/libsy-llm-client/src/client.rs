@@ -5,11 +5,13 @@
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::RequestBuilder;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use switchyard_protocol::{
     Context, Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
@@ -17,10 +19,11 @@ use switchyard_translation::{
     decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
     encode_request, encode_stream, WireFormat,
 };
+use tracing::Instrument;
 
 use crate::backend::Backend;
 use crate::error::{LlmClientError, Result};
-use crate::metrics::record_upstream_attempt;
+use crate::metrics::{is_retryable_http_status, record_upstream_attempt};
 use crate::raw::RawResponse;
 
 // TODO: Why is this here? What does it do?
@@ -42,6 +45,10 @@ const RESERVED_HEADERS: &[&str] = &[
     "anthropic-version",
     "content-type",
 ];
+
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
+const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// How one model is served: the `default_backend` used when the request does not
 /// pin a wire format, plus any `other_backends` reachable over additional formats.
@@ -137,23 +144,24 @@ impl TranslatingLlmClient {
 
     /// Encode `llm_request` (its model restamped to `model`) for `wire_format`,
     /// POST it to `url` with the request's forwarded headers plus the backend's
-    /// static headers and auth, and return the successful upstream response and
-    /// whether the request asked for a streamed body. A non-success status maps
-    /// to a typed error — a 400 is classified as a context-window overflow via
-    /// the backend's provider rules. Shared by
+    /// static headers and auth, and return the successful upstream response. A
+    /// buffered response is fully collected within the retry boundary; a streamed
+    /// response is returned as soon as its successful headers arrive. A non-success
+    /// status maps to a typed error — a 400 is classified as a context-window
+    /// overflow via the backend's provider rules. Shared by
     /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
     /// backend's completion URL and decodes a response) and
     /// [`count_tokens`](RoutedLlmClient::count_tokens) (which POSTs to the
     /// `count_tokens` URL and returns the raw JSON).
     async fn send_encoded(
         &self,
-        url: String,
         backend: &Backend,
         wire_format: WireFormat,
         mut llm_request: LlmRequest,
         metadata: Option<&Metadata>,
         model: &str,
-    ) -> Result<(reqwest::Response, bool)> {
+        endpoint: UpstreamEndpoint,
+    ) -> Result<EncodedResponse> {
         // The resolved name is the upstream model id (per the crate contract).
         llm_request.model = Some(model.to_string());
         let mut body = encode_request(&llm_request, wire_format)
@@ -162,46 +170,146 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, model);
-        let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        merge_extra_body(&mut body, backend.extra_body());
+        if matches!(backend, Backend::OpenAiChat(_)) {
+            ensure_openai_stream_usage(&mut body);
+        }
+        let streaming = endpoint.allows_streaming()
+            && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        let url = endpoint.url(backend);
 
-        let builder = self.client.post(url).json(&body);
+        let max_retries = u64::from(backend.max_retries());
+        let max_attempts = max_retries + 1;
+        let mut attempt = 0_u64;
+        loop {
+            let span = tracing::debug_span!(
+                target: "libsy",
+                "libsy.upstream_attempt",
+                model,
+                wire_format = %wire_format,
+                attempt = attempt + 1,
+                max_attempts,
+                retry = attempt > 0,
+                outcome = tracing::field::Empty,
+                status_code = tracing::field::Empty,
+                will_retry = tracing::field::Empty,
+                retry_delay_ms = tracing::field::Empty,
+            );
+            let result = self
+                .send_once(&url, backend, &body, metadata, model, streaming)
+                .instrument(span.clone())
+                .await;
+            // The retained handle updates this same attempt span with its outcome.
+            match result {
+                Ok(response) => {
+                    span.record("outcome", "success");
+                    span.record("status_code", response.status());
+                    span.record("will_retry", false);
+                    return Ok(response);
+                }
+                Err(failure) => {
+                    let will_retry = attempt < max_retries && failure.is_retryable();
+                    span.record("outcome", "error");
+                    if let Some(status) = failure.status {
+                        span.record("status_code", status);
+                    }
+                    span.record("will_retry", will_retry);
+                    if !will_retry {
+                        return Err(failure.error);
+                    }
+
+                    let delay = retry_delay(attempt, failure.retry_after);
+                    span.record("retry_delay_ms", duration_millis(delay));
+                    // Close the attempt span before sleeping so backoff is not attempt latency.
+                    drop(span);
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    // Performs one HTTP attempt and retains the retry metadata alongside any error.
+    async fn send_once(
+        &self,
+        url: &str,
+        backend: &Backend,
+        body: &Value,
+        metadata: Option<&Metadata>,
+        model: &str,
+        streaming: bool,
+    ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+        let builder = self.client.post(url).json(body);
         let builder = forward_metadata_headers(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let http_response = match builder.send().await {
-            Ok(response) => {
-                record_upstream_attempt(Some(response.status().as_u16()));
-                response
-            }
+        let response = match builder.send().await {
+            Ok(response) => response,
             Err(error) => {
                 record_upstream_attempt(None);
-                return Err(convert_reqwest_error(error));
-            }
-        };
-        let status = http_response.status();
-        if !status.is_success() {
-            let body = match http_response.text().await {
-                Ok(body) => body,
-                Err(error) if error.is_timeout() => {
-                    return Err(LlmClientError::Timeout {
-                        source: Box::new(error),
-                    })
-                }
-                Err(error) => format!("<failed to read error body: {error}>"),
-            };
-            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
-                return Err(LlmClientError::ContextWindowExceeded {
-                    model: model.to_string(),
-                    message: body,
+                return Err(AttemptFailure {
+                    error: convert_reqwest_error(error),
+                    status: None,
+                    retry_after: None,
                 });
             }
-            return Err(LlmClientError::UpstreamHttp {
+        };
+        let status = response.status();
+        if status.is_success() {
+            if streaming {
+                // Streaming body failures happen after the retry boundary.
+                record_upstream_attempt(Some(status.as_u16()));
+                return Ok(EncodedResponse::Streaming(response));
+            }
+            let body = match response.bytes().await {
+                Ok(body) => body,
+                Err(error) => {
+                    record_upstream_attempt(None);
+                    return Err(AttemptFailure {
+                        error: convert_reqwest_error(error),
+                        status: Some(status.as_u16()),
+                        retry_after: None,
+                    });
+                }
+            };
+            record_upstream_attempt(Some(status.as_u16()));
+            return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
-                body,
+                body: body.to_vec(),
             });
         }
-        Ok((http_response, streaming))
+
+        let retry_after = retry_after_delay(response.headers());
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                record_upstream_attempt(None);
+                return Err(AttemptFailure {
+                    error: convert_reqwest_error(error),
+                    status: Some(status.as_u16()),
+                    retry_after,
+                });
+            }
+        };
+        record_upstream_attempt(Some(status.as_u16()));
+        let error =
+            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
+                LlmClientError::ContextWindowExceeded {
+                    model: model.to_string(),
+                    message: body,
+                }
+            } else {
+                LlmClientError::UpstreamHttp {
+                    status: status.as_u16(),
+                    body,
+                }
+            };
+        Err(AttemptFailure {
+            error,
+            status: Some(status.as_u16()),
+            retry_after,
+        })
     }
 
     /// Calls the backend for `model_name` (or the request's own model), over the
@@ -248,43 +356,45 @@ impl TranslatingLlmClient {
                     message: format!("model {model:?} has no backend for format {wire_format}"),
                 })?;
 
-        let (http_response, streaming) = self
+        let http_response = self
             .send_encoded(
-                backend.url(),
                 backend,
                 wire_format,
                 llm_request,
                 metadata.as_ref(),
                 &model,
+                UpstreamEndpoint::Completion,
             )
             .await?;
 
-        let llm_response = if streaming {
-            // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
-            // transport-agnostic and lives in `switchyard-translation`.
-            let bytes = http_response.bytes_stream().map(|chunk| {
-                chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                    if error.is_timeout() {
-                        LlmClientError::Timeout {
-                            source: Box::new(error),
+        let llm_response = match http_response {
+            EncodedResponse::Streaming(http_response) => {
+                // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
+                // transport-agnostic and lives in `switchyard-translation`.
+                let bytes = http_response.bytes_stream().map(|chunk| {
+                    chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
+                        if error.is_timeout() {
+                            LlmClientError::Timeout {
+                                source: Box::new(error),
+                            }
+                        } else {
+                            LlmClientError::Transport {
+                                source: Box::new(error),
+                            }
                         }
-                    } else {
-                        LlmClientError::Transport {
-                            source: Box::new(error),
-                        }
-                    }
-                })
-            });
-            let chunks = decode_stream(bytes, wire_format)?;
-            LlmResponse::Stream(chunks)
-        } else {
-            let body = http_response
-                .json::<Value>()
-                .await
-                .map_err(convert_reqwest_error)?;
-            let agg = decode_aggregated_response(&body, wire_format)
-                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-            LlmResponse::Agg(agg)
+                    })
+                });
+                let chunks = decode_stream(bytes, wire_format)?;
+                LlmResponse::Stream(chunks)
+            }
+            EncodedResponse::Buffered { body, .. } => {
+                let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
+                    LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
+                })?;
+                let agg = decode_aggregated_response(&body, wire_format)
+                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+                LlmResponse::Agg(agg)
+            }
         };
 
         Ok(Response {
@@ -383,38 +493,120 @@ impl RoutedLlmClient for TranslatingLlmClient {
             metadata,
             ..
         } = request;
-        let (http_response, _) = self
+        let http_response = self
             .send_encoded(
-                backend.count_tokens_url(),
                 backend,
                 WireFormat::AnthropicMessages,
                 llm_request,
                 metadata.as_ref(),
                 model,
+                UpstreamEndpoint::CountTokens,
             )
             .await?;
-        let text = http_response.text().await.map_err(convert_reqwest_error)?;
-        serde_json::from_str(&text).map_err(|error| LlmClientError::InvalidResponse {
+        let body = match http_response {
+            EncodedResponse::Buffered { body, .. } => body,
+            EncodedResponse::Streaming(_) => {
+                return Err(LlmClientError::InvalidRequest {
+                    message: "count_tokens does not support streaming requests".to_string(),
+                })
+            }
+        };
+        serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
             source: Box::new(error),
         })
     }
 }
 
+#[derive(Clone, Copy)]
+enum UpstreamEndpoint {
+    Completion,
+    CountTokens,
+}
+
+impl UpstreamEndpoint {
+    fn url(self, backend: &Backend) -> String {
+        match self {
+            UpstreamEndpoint::Completion => backend.url(),
+            UpstreamEndpoint::CountTokens => backend.count_tokens_url(),
+        }
+    }
+
+    fn allows_streaming(self) -> bool {
+        matches!(self, UpstreamEndpoint::Completion)
+    }
+}
+
+enum EncodedResponse {
+    Buffered { status: u16, body: Vec<u8> },
+    Streaming(reqwest::Response),
+}
+
+impl EncodedResponse {
+    fn status(&self) -> u16 {
+        match self {
+            EncodedResponse::Buffered { status, .. } => *status,
+            EncodedResponse::Streaming(response) => response.status().as_u16(),
+        }
+    }
+}
+
+// The typed error decides retry eligibility; status and Retry-After feed
+// attempt telemetry and delay selection.
+struct AttemptFailure {
+    error: LlmClientError,
+    status: Option<u16>,
+    retry_after: Option<Duration>,
+}
+
+impl AttemptFailure {
+    fn is_retryable(&self) -> bool {
+        match &self.error {
+            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
+            LlmClientError::UpstreamHttp { status, .. } => is_retryable_http_status(*status),
+            _ => false,
+        }
+    }
+}
+
+// Uses Retry-After when supplied, capped so an upstream cannot stall a request indefinitely.
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
+    let delay = if let Ok(seconds) = value.parse::<u64>() {
+        Duration::from_secs(seconds)
+    } else {
+        let retry_at = httpdate::parse_http_date(value).ok()?;
+        retry_at
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO)
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
+}
+
+fn retry_delay(retry_number: u64, retry_after: Option<Duration>) -> Duration {
+    // Retry-After wins; otherwise double 250 ms up to the two-second cap.
+    retry_after.unwrap_or_else(|| {
+        let multiplier = 1_u32 << retry_number.min(3);
+        INITIAL_RETRY_DELAY
+            .saturating_mul(multiplier)
+            .min(MAX_RETRY_BACKOFF)
+    })
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
-    // `Response::json` labels body collection and JSON parsing failures as
-    // decode errors; only the latter is a translation failure.
+    // Reqwest labels truncated or otherwise unreadable response bodies as decode
+    // errors, so distinguish them from serde JSON failures at the call site.
     if error.is_timeout() {
         LlmClientError::Timeout {
             source: Box::new(error),
         }
-    } else if error.is_body() {
-        LlmClientError::Transport {
-            source: Box::new(error),
+    } else if error.is_builder() {
+        LlmClientError::Configuration {
+            message: format!("failed to build upstream request: {error}"),
         }
-    } else if error.is_decode()
-        && std::error::Error::source(&error).is_some_and(|source| source.is::<serde_json::Error>())
-    {
-        LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
     } else {
         LlmClientError::Transport {
             source: Box::new(error),
@@ -454,6 +646,39 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+// Applies target defaults without overriding fields supplied by the caller.
+fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    for (key, value) in extra_body {
+        object.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+// Requests streamed Chat usage by default while preserving an explicit caller choice.
+fn ensure_openai_stream_usage(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if object.get("stream").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+
+    match object.get_mut("stream_options") {
+        Some(Value::Object(options)) => {
+            options
+                .entry("include_usage".to_string())
+                .or_insert(Value::Bool(true));
+        }
+        _ => {
+            let mut options = Map::new();
+            options.insert("include_usage".to_string(), Value::Bool(true));
+            object.insert("stream_options".to_string(), Value::Object(options));
+        }
+    }
+}
+
 // Case-insensitive membership test against RESERVED_HEADERS.
 fn is_reserved_header(name: &str) -> bool {
     RESERVED_HEADERS
@@ -466,6 +691,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
     use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::thread::JoinHandle;
 
     use serde_json::json;
@@ -481,6 +708,15 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
             extra_headers: BTreeMap::new(),
+            extra_body: BTreeMap::new(),
+            max_retries: 0,
+        }
+    }
+
+    fn config_with_retries(base_url: &str, max_retries: u32) -> HttpBackendConfig {
+        HttpBackendConfig {
+            max_retries,
+            ..config(base_url)
         }
     }
 
@@ -493,29 +729,76 @@ mod tests {
         )]
     }
 
+    fn chat_map_with_extra_body(
+        base_url: &str,
+        extra_body: BTreeMap<String, Value>,
+    ) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.extra_body = extra_body;
+        vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(config_with_retries(base_url, max_retries)),
+            None,
+        )]
+    }
+
+    fn chat_success_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-1",
+            "model": "gpt",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "recovered"},
+                "finish_reason": "stop"
+            }],
+            "usage": {}
+        }))
+    }
+
     fn truncated_response_server(
         content_type: &str,
         body: &str,
     ) -> std::io::Result<(String, JoinHandle<std::io::Result<()>>)> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let address = listener.local_addr()?;
-        let response = format!(
+        response_sequence_server(vec![format!(
             "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len() + 100
-        );
+        )])
+    }
+
+    fn response_sequence_server(
+        responses: Vec<String>,
+    ) -> std::io::Result<(String, JoinHandle<std::io::Result<()>>)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept()?;
-            let mut request = [0_u8; 1024];
-            if stream.read(&mut request)? == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "client closed before sending a request",
-                ));
+            for response in responses {
+                let (mut stream, _) = listener.accept()?;
+                let mut request = [0_u8; 1024];
+                if stream.read(&mut request)? == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "client closed before sending a request",
+                    ));
+                }
+                stream.write_all(response.as_bytes())?;
             }
-            stream.write_all(response.as_bytes())
+            Ok(())
         });
         Ok((format!("http://{address}/v1"), handle))
+    }
+
+    fn raw_chat_success_response() -> String {
+        let body = r#"{"id":"chatcmpl-1","model":"gpt","choices":[{"index":0,"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}],"usage":{}}"#;
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
     }
 
     fn request_for(model: Option<&str>, stream: bool) -> Request {
@@ -672,12 +955,18 @@ mod tests {
     async fn invalid_json_is_a_response_translation_error(
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw("not json", "application/json"))
+            .respond_with(move |_: &wiremock::Request| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_raw("not json", "application/json")
+            })
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
             .await
@@ -690,6 +979,7 @@ mod tests {
             LlmClientError::ResponseTranslation(message)
                 if message.contains("invalid upstream JSON")
         ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
@@ -721,11 +1011,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_body_transport_failures_are_retried(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let truncated_responses = [
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: 102\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\nbad",
+        ];
+
+        for truncated in truncated_responses {
+            let (base_url, server) =
+                response_sequence_server(vec![truncated.to_string(), raw_chat_success_response()])?;
+            let client = TranslatingLlmClient::new(&chat_map_with_retries(&base_url, 1))?;
+            let response = client
+                .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+                .await?;
+            server
+                .join()
+                .map_err(|_| std::io::Error::other("response server thread panicked"))??;
+
+            assert_eq!(
+                completion_text(&response.llm_response.into_agg().await?),
+                "recovered"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn streaming_body_io_failure_preserves_transport_error(
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
         let (base_url, server) = truncated_response_server("text/event-stream", body)?;
-        let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
+        let client = TranslatingLlmClient::new(&chat_map_with_retries(&base_url, 2))?;
         let response = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), true), None)
             .await?;
@@ -772,14 +1091,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extra_body_adds_defaults_without_overriding_the_request(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "gpt",
+                "max_tokens": 7,
+                "service_tier": "priority"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([
+            ("max_tokens".to_string(), json!(999)),
+            ("service_tier".to_string(), json!("priority")),
+        ]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 7
+        });
+
+        client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn streaming_openai_chat_aggregates(
     ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n\
              data: [DONE]\n\n";
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "stream": true,
+                "stream_options": {"include_usage": true}
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
             .mount(&server)
             .await;
@@ -792,6 +1166,46 @@ mod tests {
         assert!(matches!(response.llm_response, LlmResponse::Stream(_)));
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hello world");
+        assert_eq!(agg.usage.input_tokens, Some(1));
+        assert_eq!(agg.usage.output_tokens, Some(2));
+        assert_eq!(agg.usage.total_tokens, Some(3));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streaming_openai_chat_preserves_usage_opt_out(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "stream": true,
+                "stream_options": {"include_usage": false}
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "stream_options": {"include_usage": false}
+        });
+
+        let response = client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        assert!(matches!(response, RawResponse::Stream(_)));
         Ok(())
     }
 
@@ -817,6 +1231,213 @@ mod tests {
             LlmClientError::UpstreamHttp { status: 500, .. }
         ));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn retryable_http_failure_recovers_within_budget(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                if observed_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                        .insert_header("retry-after", "0")
+                        .set_body_string("temporarily unavailable")
+                } else {
+                    chat_success_response()
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
+        let response = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await?;
+        let agg = response.llm_response.into_agg().await?;
+
+        assert_eq!(completion_text(&agg), "recovered");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deterministic_http_failure_is_not_retried(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(401).set_body_string("invalid key")
+            })
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected an upstream error");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp {
+                status: 401,
+                body
+            } if body == "invalid key"
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_returns_the_final_upstream_error(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = observed_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                ResponseTemplate::new(500)
+                    .insert_header("retry-after", "0")
+                    .set_body_string(format!("attempt {attempt}"))
+            })
+            .mount(&server)
+            .await;
+
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 2))?;
+        let Err(error) = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected retry exhaustion");
+        };
+
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp {
+                status: 500,
+                body
+            } if body == "attempt 3"
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timeout_is_retried_before_a_response_is_returned(
+    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                if observed_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(200).set_delay(Duration::from_millis(500))
+                } else {
+                    chat_success_response()
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let mut client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
+        client.client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()?;
+        let response = client
+            .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
+            .await?;
+
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "recovered"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_error_classes_are_explicit() {
+        let transport = AttemptFailure {
+            error: LlmClientError::Transport {
+                source: std::io::Error::other("disconnected").into(),
+            },
+            status: None,
+            retry_after: None,
+        };
+        assert!(transport.is_retryable());
+
+        for status in [408, 429, 500, 503, 599] {
+            let failure = AttemptFailure {
+                error: LlmClientError::UpstreamHttp {
+                    status,
+                    body: String::new(),
+                },
+                status: Some(status),
+                retry_after: None,
+            };
+            assert!(failure.is_retryable(), "HTTP {status} should retry");
+        }
+        for status in [400, 401, 409, 600] {
+            let failure = AttemptFailure {
+                error: LlmClientError::UpstreamHttp {
+                    status,
+                    body: String::new(),
+                },
+                status: Some(status),
+                retry_after: None,
+            };
+            assert!(!failure.is_retryable(), "HTTP {status} should fail fast");
+        }
+
+        let configuration = AttemptFailure {
+            error: LlmClientError::Configuration {
+                message: "invalid header".to_string(),
+            },
+            status: None,
+            retry_after: None,
+        };
+        assert!(!configuration.is_retryable());
+
+        let context_window = AttemptFailure {
+            error: LlmClientError::ContextWindowExceeded {
+                model: "gpt".to_string(),
+                message: "too long".to_string(),
+            },
+            status: Some(400),
+            retry_after: None,
+        };
+        assert!(!context_window.is_retryable());
+    }
+
+    #[test]
+    fn retry_after_supports_seconds_and_http_dates() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, reqwest::header::HeaderValue::from_static("3"));
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(3)));
+
+        let retry_at = SystemTime::now() + Duration::from_secs(2);
+        let value = httpdate::fmt_http_date(retry_at);
+        let Ok(value) = reqwest::header::HeaderValue::from_str(&value) else {
+            panic!("formatted HTTP date should be a valid header");
+        };
+        headers.insert(RETRY_AFTER, value);
+        let Some(delay) = retry_after_delay(&headers) else {
+            panic!("HTTP date should produce a retry delay");
+        };
+        assert!(delay <= Duration::from_secs(2));
     }
 
     #[tokio::test]

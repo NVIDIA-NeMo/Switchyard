@@ -12,10 +12,12 @@ schema_version = 1
 format = "openai_chat"
 base_url = "https://example.com/v1"
 api_key_env = "API_KEY"
+max_retries = 2
 
 [targets.model_a]
 id = "model/a"
 llm_client = "example"
+extra_body = { service_tier = "priority" }
 
 [targets.model_b]
 id = "model/b"
@@ -67,6 +69,10 @@ Each target references an entry under `llm_clients`. All configured clients use
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
 `llm_classifier`, and `escalation`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
+Target-level `extra_body` values are shallow-merged into the upstream request when
+the request does not already contain that key.
+`max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
+responses.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.
@@ -126,6 +132,7 @@ Routed-call compatibility metrics are:
 | `switchyard_cache_creation_tokens_total` | counter | `model`, optional `tier` | Cache-creation input tokens |
 | `switchyard_reasoning_tokens_total` | counter | `model`, optional `tier` | Reasoning output tokens |
 | `switchyard_total_latency_ms` | histogram | `model`, optional `tier` | Full-turn latency for successful routed responses |
+| `switchyard_routing_overhead_ms` | histogram | `algorithm` | Algorithm run time minus the call that served it |
 | `switchyard_client_responses_total` | counter | `outcome` | Final LLM-route responses |
 | `switchyard_upstream_attempts_total` | counter | `outcome`, `code` | Actual upstream HTTP attempts |
 | `switchyard_router_retry_recovered_total` | counter | none | Retry recoveries (currently always zero) |
@@ -140,5 +147,17 @@ measurement. It still excludes connection accept and TLS handshake, which hyper 
 the server sees the request. The Rust server exports this metric as a histogram, while the Python
 server exports its counterpart as a summary; this matches the existing histogram/summary difference
 for model-call latency.
+
+`switchyard_routing_overhead_ms` is what routing cost on top of the model call: the algorithm's run
+time minus the call that served the request. Classifier calls are not subtracted, so an
+LLM-classifier route reports its classification time here while `passthrough` and `random` report
+the sub-millisecond cost of picking a target. It carries only `algorithm`, since the number
+describes the router and not the target it chose, and a run that served nothing records nothing. Its
+buckets start at 0.1 ms via a view in the server; the SDK defaults start at 5 ms.
+
+Both clocks stop when the routed call resolves, which for a streamed response is when the stream
+handle arrives rather than when the stream ends, so SSE relay time is in neither term. The Python
+summary of the same name measures its total through stream completion, making its streaming values
+mostly generation time.
 
 See [CONFIGURATION.md](CONFIGURATION.md) to add an LLM client, target, or algorithm.

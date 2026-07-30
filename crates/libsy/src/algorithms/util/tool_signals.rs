@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use switchyard_protocol::{Request, WireFormat};
+use switchyard_protocol::{ContentBlock, Request};
 
 use crate::Result;
 
@@ -331,223 +331,70 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 /// Returns [`ToolSignals::default()`] when the wire format or body is absent or
 /// the messages list is empty — callers can always read `signal.severity`.
 fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
-    let Some(Some(wire_format)) = request.metadata.as_ref().map(|m| m.wire_format) else {
-        return ToolSignals::default();
-    };
-    let Some(body) = request.raw_request.as_ref() else {
-        return ToolSignals::default();
-    };
-    let Some(obj) = body.as_object() else {
-        return ToolSignals::default();
-    };
+    // Read the decoded conversation, not the raw body: every inbound format lands
+    // in the same shape here, so the signals do not depend on knowing which one it
+    // arrived as.
+    let messages = &request.llm_request.messages;
+    let mut tool_texts: Vec<String> = Vec::new();
+    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
+    let mut compacted = false;
 
-    let (mut signal, entries) = match wire_format {
-        WireFormat::OpenAiChat => {
-            let messages = obj
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (
-                extract_from_messages_openai_chat(messages, recent_window),
-                messages,
-            )
+    for message in messages {
+        for block in &message.content {
+            match block {
+                ContentBlock::ToolCall(call) => {
+                    tool_calls.push(ObservedToolCall {
+                        name: call.name.clone(),
+                        command: command_of(&call.arguments),
+                    });
+                }
+                ContentBlock::ToolResult(result) => {
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(text_of)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !text.is_empty() {
+                        tool_texts.push(text);
+                    }
+                }
+                // Compaction is detected anywhere in the conversation: the summary
+                // stays in the prefix on every later turn, so this self-latches
+                // once it fires.
+                ContentBlock::Text { text } => {
+                    compacted |= text.to_lowercase().contains(COMPACTION_MARKER);
+                }
+                _ => {}
+            }
         }
-        WireFormat::AnthropicMessages => {
-            let messages = obj
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (
-                extract_from_messages_anthropic(messages, recent_window),
-                messages,
-            )
-        }
-        WireFormat::OpenAiResponses => {
-            let items = obj
-                .get("input")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            (extract_from_input_responses(items, recent_window), items)
-        }
-    };
+    }
 
-    // Compaction is detected anywhere in the message/item contents (the summary stays
-    // in the prefix on every subsequent turn, so this self-latches once it fires).
-    signal.compacted = entries.iter().any(|m| {
-        m.as_object()
-            .is_some_and(|o| content_has_compaction_marker(o.get("content")))
-    });
+    let mut signal = build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window);
+    signal.compacted = compacted;
     signal
 }
-
-// ─── format-specific extractors ──────────────────────────────────────────────
 
 /// Distinctive preamble Claude Code injects as a user message when it compacts an
 /// overflowed context. Matched case-insensitively; normal task text never contains it.
 const COMPACTION_MARKER: &str = "session is being continued";
 
-/// True when a user-message content (string or text blocks) carries the compaction
-/// summary preamble.
-fn content_has_compaction_marker(content: Option<&Value>) -> bool {
-    match content {
-        Some(Value::String(s)) => s.to_lowercase().contains(COMPACTION_MARKER),
-        Some(Value::Array(blocks)) => blocks.iter().any(|b| {
-            b.as_object()
-                .and_then(|o| o.get("text"))
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.to_lowercase().contains(COMPACTION_MARKER))
-        }),
-        _ => false,
-    }
+/// The shell command a tool call carries, when it has one. Harnesses name the
+/// field `command`; anything else is a tool whose category comes from its name.
+fn command_of(arguments: &Value) -> Option<String> {
+    arguments
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
 }
 
-fn extract_from_messages_openai_chat(messages: &[Value], recent_window: usize) -> ToolSignals {
-    let mut tool_texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-
-    for msg in messages {
-        let Some(obj) = msg.as_object() else { continue };
-        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
-        match role {
-            "tool" => {
-                if let Some(text) = content_to_text(obj.get("content")) {
-                    tool_texts.push(text);
-                }
-            }
-            "assistant" => {
-                if let Some(tc_list) = obj.get("tool_calls").and_then(Value::as_array) {
-                    for tc in tc_list {
-                        let Some(fn_obj) = tc
-                            .as_object()
-                            .and_then(|t| t.get("function"))
-                            .and_then(|f| f.as_object())
-                        else {
-                            continue;
-                        };
-                        let Some(name) = fn_obj.get("name").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        // OpenAI Chat encodes `arguments` as a JSON string.
-                        let command = fn_obj
-                            .get("arguments")
-                            .and_then(Value::as_str)
-                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                            .and_then(|v| {
-                                v.get("command")
-                                    .and_then(Value::as_str)
-                                    .map(|s| s.to_lowercase())
-                            });
-                        tool_calls.push(ObservedToolCall {
-                            name: name.to_string(),
-                            command,
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
+/// Text carried by a content block, ignoring the non-textual kinds.
+fn text_of(block: &ContentBlock) -> Option<&str> {
+    match block {
+        ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
+        _ => None,
     }
-
-    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
 }
-
-fn extract_from_messages_anthropic(messages: &[Value], recent_window: usize) -> ToolSignals {
-    let mut tool_texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-
-    for msg in messages {
-        let Some(obj) = msg.as_object() else { continue };
-        let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
-        let content = obj.get("content");
-
-        match role {
-            "user" => {
-                if let Some(Value::Array(blocks)) = content {
-                    for block in blocks {
-                        let Some(b) = block.as_object() else { continue };
-                        if b.get("type").and_then(Value::as_str) == Some("tool_result") {
-                            if let Some(text) = content_to_text(b.get("content")) {
-                                tool_texts.push(text);
-                            }
-                        }
-                    }
-                }
-            }
-            "assistant" => {
-                if let Some(Value::Array(blocks)) = content {
-                    for block in blocks {
-                        let Some(b) = block.as_object() else { continue };
-                        if b.get("type").and_then(Value::as_str) == Some("tool_use") {
-                            let Some(name) = b.get("name").and_then(Value::as_str) else {
-                                continue;
-                            };
-                            // Anthropic delivers `input` as a parsed object.
-                            let command = b
-                                .get("input")
-                                .and_then(Value::as_object)
-                                .and_then(|i| i.get("command"))
-                                .and_then(Value::as_str)
-                                .map(|s| s.to_lowercase());
-                            tool_calls.push(ObservedToolCall {
-                                name: name.to_string(),
-                                command,
-                            });
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    build_signal(tool_texts, tool_calls, messages.len() as u32, recent_window)
-}
-
-fn extract_from_input_responses(items: &[Value], recent_window: usize) -> ToolSignals {
-    let mut tool_texts: Vec<String> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        let item_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
-
-        match item_type {
-            "function_call_output" => {
-                if let Some(output) = obj.get("output").and_then(Value::as_str) {
-                    tool_texts.push(output.to_string());
-                }
-            }
-            "function_call" => {
-                let Some(name) = obj.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                let command = obj
-                    .get("arguments")
-                    .and_then(Value::as_str)
-                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                    .and_then(|v| {
-                        v.get("command")
-                            .and_then(Value::as_str)
-                            .map(|s| s.to_lowercase())
-                    });
-                tool_calls.push(ObservedToolCall {
-                    name: name.to_string(),
-                    command,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    build_signal(tool_texts, tool_calls, items.len() as u32, recent_window)
-}
-
-// ─── aggregation ─────────────────────────────────────────────────────────────
 
 fn build_signal(
     tool_texts: Vec<String>,
@@ -750,30 +597,55 @@ fn has_nonzero_failure_count(lower: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
-    use switchyard_protocol::Metadata;
+    use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult};
 
-    /// Build a `Request` carrying `body` as its raw payload, tagged with `wire_format`.
-    fn request_with(wire_format: WireFormat, body: Value) -> Request {
+    fn with_messages(messages: Vec<Message>) -> Request {
         Request {
-            raw_request: Some(body),
-            metadata: Some(Metadata {
-                wire_format: Some(wire_format),
-                ..Default::default()
-            }),
-            ..Default::default()
+            llm_request: LlmRequest {
+                messages,
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
         }
     }
 
-    fn openai_chat_request(body: Value) -> Request {
-        request_with(WireFormat::OpenAiChat, body)
+    // assistant message with a single named tool call
+    fn tc(name: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: String::new(),
+                name: name.to_string(),
+                arguments: json!({}),
+            })],
+        }
     }
 
-    fn anthropic_request(body: Value) -> Request {
-        request_with(WireFormat::AnthropicMessages, body)
+    // assistant Bash message carrying `command`
+    fn bash(command: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: String::new(),
+                name: "Bash".to_string(),
+                arguments: json!({"command": command}),
+            })],
+        }
     }
 
-    fn openai_responses_request(body: Value) -> Request {
-        request_with(WireFormat::OpenAiResponses, body)
+    // a tool result message (goes in a user-role message, as in Anthropic's normalised form)
+    fn tr(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: String::new(),
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }],
+                is_error: None,
+            })],
+        }
     }
 
     #[test]
@@ -855,14 +727,11 @@ mod tests {
     #[test]
     fn severity_is_windowed_over_recent_results() {
         // An error two results back, then two clean results.
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "tool", "tool_call_id": "1",
-                 "content": "Traceback (most recent call last):\n  ValueError"},
-                {"role": "tool", "tool_call_id": "2", "content": "ok"},
-                {"role": "tool", "tool_call_id": "3", "content": "ok"},
-            ]
-        }));
+        let request = with_messages(vec![
+            tr("Traceback (most recent call last):\n  ValueError"),
+            tr("ok"),
+            tr("ok"),
+        ]);
         // window covers the error → severity persists (max over the window)
         assert_eq!(extract_tool_signals_with_window(&request, 3).severity, HARD);
         // window of 1 sees only the last (clean) result → severity has decayed out
@@ -871,13 +740,11 @@ mod tests {
 
     #[test]
     fn extract_openai_chat_tool_results() {
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "user", "content": "do something"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Edit"}}]},
-                {"role": "tool", "tool_call_id": "1", "content": "Traceback (most recent call last):\n  ValueError"},
-            ]
-        }));
+        let request = with_messages(vec![
+            Message::text(Role::User, "do something"),
+            tc("Edit"),
+            tr("Traceback (most recent call last):\n  ValueError"),
+        ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, HARD);
         assert_eq!(sig.edit_count, 1);
@@ -886,27 +753,14 @@ mod tests {
 
     #[test]
     fn extract_anthropic_tool_results() {
-        let request = anthropic_request(json!({
-            "messages": [
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "1",
-                     "content": "Traceback (most recent call last):\n  ValueError"}
-                ]},
-            ]
-        }));
+        let request = with_messages(vec![tr("Traceback (most recent call last):\n  ValueError")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, HARD);
     }
 
     #[test]
     fn extract_responses_api_tool_results() {
-        let request = openai_responses_request(json!({
-            "input": [
-                {"type": "function_call", "name": "Write"},
-                {"type": "function_call_output", "call_id": "1",
-                 "output": "file written successfully"},
-            ]
-        }));
+        let request = with_messages(vec![tc("Write"), tr("file written successfully")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
@@ -916,22 +770,20 @@ mod tests {
     fn recent_window_counts_only_last_default_window_tool_calls() {
         // 5 writes + 1 edit at the end → the default window (3) should see
         // the last 3 calls: 1 edit + 2 writes (not all 6 calls).
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Edit"}}]},
-                {"role": "tool", "content": "ok"},
-            ]
-        }));
+        let request = with_messages(vec![
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Edit"),
+            tr("ok"),
+        ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 5);
         assert_eq!(sig.edit_count, 1);
@@ -944,22 +796,20 @@ mod tests {
         // Same six tool calls (1 edit at the end, 5 writes before).
         // With recent_window=3 → recent_writes=2, recent_edits=1.
         // With recent_window=6 → recent_writes=5, recent_edits=1 (all calls).
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Edit"}}]},
-                {"role": "tool", "content": "ok"},
-            ]
-        }));
+        let request = with_messages(vec![
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Write"),
+            tr("ok"),
+            tc("Edit"),
+            tr("ok"),
+        ]);
         let narrow = extract_tool_signals_with_window(&request, 3);
         assert_eq!(narrow.recent_write_count, 2);
         assert_eq!(narrow.recent_edit_count, 1);
@@ -972,39 +822,26 @@ mod tests {
     #[test]
     fn compaction_marker_sets_compacted() {
         // The compaction summary is a user message carrying Claude Code's preamble.
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "user", "content": "This session is being continued from a previous conversation that ran out of context."},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}}]},
-            ]
-        }));
+        let request = with_messages(vec![
+            Message::text(Role::User, "This session is being continued from a previous conversation that ran out of context."),
+            bash("ls"),
+        ]);
         assert!(ToolSignals::from_request(&request, None).compacted);
     }
 
     #[test]
     fn no_compaction_marker_stays_uncompacted() {
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "user", "content": "Write a script that parses the log file."},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}}]},
-            ]
-        }));
+        let request = with_messages(vec![
+            Message::text(Role::User, "Write a script that parses the log file."),
+            bash("ls"),
+        ]);
         assert!(!ToolSignals::from_request(&request, None).compacted);
     }
 
     #[test]
     fn bash_heredoc_counts_as_write() {
         // Claude Code's pattern on TB 2.0 — write a scratch file via heredoc.
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{
-                    "function": {
-                        "name": "Bash",
-                        "arguments": "{\"command\": \"cat > /tmp/test.py <<'EOF'\\nprint(1)\\nEOF\"}"
-                    }
-                }]},
-            ]
-        }));
+        let request = with_messages(vec![bash("cat > /tmp/test.py <<'EOF'\nprint(1)\nEOF")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.write_count, 1,
@@ -1015,16 +852,7 @@ mod tests {
 
     #[test]
     fn bash_sed_inplace_counts_as_edit() {
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{
-                    "function": {
-                        "name": "Bash",
-                        "arguments": "{\"command\": \"sed -i 's/foo/bar/g' /app/file.py\"}"
-                    }
-                }]},
-            ]
-        }));
+        let request = with_messages(vec![bash("sed -i 's/foo/bar/g' /app/file.py")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.edit_count, 1,
@@ -1036,16 +864,7 @@ mod tests {
     #[test]
     fn bash_non_mutating_does_not_count() {
         // ls, cat, grep — should not increment either counter.
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{
-                    "function": {"name": "Bash", "arguments": "{\"command\": \"ls -la /app\"}"}
-                }]},
-                {"role": "assistant", "tool_calls": [{
-                    "function": {"name": "Bash", "arguments": "{\"command\": \"cat /app/main.py\"}"}
-                }]},
-            ]
-        }));
+        let request = with_messages(vec![bash("ls -la /app"), bash("cat /app/main.py")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.write_count, 0);
         assert_eq!(sig.edit_count, 0);
@@ -1108,14 +927,7 @@ mod tests {
     #[test]
     fn anthropic_bash_heredoc_extracts_command() {
         // Anthropic format: tool_use.input is an object, not a JSON string.
-        let request = anthropic_request(json!({
-            "messages": [
-                {"role": "assistant", "content": [
-                    {"type": "tool_use", "name": "Bash",
-                     "input": {"command": "cat > /tmp/foo.txt << 'EOF'\nhi\nEOF"}}
-                ]},
-            ]
-        }));
+        let request = with_messages(vec![bash("cat > /tmp/foo.txt << 'EOF'\nhi\nEOF")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(
             sig.write_count, 1,
@@ -1125,11 +937,7 @@ mod tests {
 
     #[test]
     fn recent_window_falls_back_to_full_history_when_short() {
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-            ]
-        }));
+        let request = with_messages(vec![tc("Write")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.recent_write_count, 1);
         assert_eq!(sig.recent_edit_count, 0);
@@ -1137,12 +945,7 @@ mod tests {
 
     #[test]
     fn clean_tool_result_has_zero_severity_and_non_empty_streak() {
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "tool", "tool_call_id": "1", "content": "output ok"},
-                {"role": "tool", "tool_call_id": "2", "content": "another ok"},
-            ]
-        }));
+        let request = with_messages(vec![tr("output ok"), tr("another ok")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.no_error_streak, 2);
@@ -1216,25 +1019,18 @@ mod tests {
     #[test]
     fn pure_bash_streak_counts_trailing_other() {
         // 5 trailing non-classified Bash calls → streak == 5.
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"make\"}"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"./configure\"}"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"make install\"}"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"./run.sh\"}"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"./test\"}"}}]},
-                {"role": "tool", "content": "ok"},
-            ]
-        }));
+        let request = with_messages(vec![
+            bash("make"),
+            tr("ok"),
+            bash("./configure"),
+            tr("ok"),
+            bash("make install"),
+            tr("ok"),
+            bash("./run.sh"),
+            tr("ok"),
+            bash("./test"),
+            tr("ok"),
+        ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.pure_bash_streak, 5);
         assert_eq!(sig.write_count, 0);
@@ -1243,15 +1039,7 @@ mod tests {
 
     #[test]
     fn pure_bash_streak_resets_on_write() {
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"make\"}"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Write"}}]},
-                {"role": "tool", "content": "ok"},
-            ]
-        }));
+        let request = with_messages(vec![bash("make"), tr("ok"), tc("Write"), tr("ok")]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.pure_bash_streak, 0);
         assert_eq!(sig.write_count, 1);
@@ -1260,19 +1048,16 @@ mod tests {
     #[test]
     fn recent_window_tracks_todowrite_and_read() {
         // Final 3 tool calls: TodoWrite, Read, TodoWrite.
-        let request = openai_chat_request(json!({
-            "messages": [
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Bash",
-                    "arguments": "{\"command\": \"make\"}"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "TodoWrite"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "Read"}}]},
-                {"role": "tool", "content": "ok"},
-                {"role": "assistant", "tool_calls": [{"function": {"name": "TodoWrite"}}]},
-                {"role": "tool", "content": "ok"},
-            ]
-        }));
+        let request = with_messages(vec![
+            bash("make"),
+            tr("ok"),
+            tc("TodoWrite"),
+            tr("ok"),
+            tc("Read"),
+            tr("ok"),
+            tc("TodoWrite"),
+            tr("ok"),
+        ]);
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.todowrite_count, 2);
         assert_eq!(sig.recent_todowrite_count, 2);

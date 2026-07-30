@@ -1750,12 +1750,14 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-util",
+ "httpdate",
  "opentelemetry",
  "reqwest",
  "serde_json",
  "switchyard-protocol",
  "switchyard-translation",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 

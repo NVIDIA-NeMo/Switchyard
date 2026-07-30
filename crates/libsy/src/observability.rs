@@ -39,7 +39,7 @@ use opentelemetry::metrics::{Meter, ObservableGauge};
 use opentelemetry::{global, KeyValue};
 use tracing::Span;
 
-use crate::{Context, Decision, Metadata, Response, Result};
+use crate::{Context, Decision, Driver, Metadata, Response, Result};
 
 const METRICS_SCOPE: &str = "switchyard";
 const TRACING_TARGET: &str = "libsy";
@@ -133,20 +133,22 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
 }
 
 /// Runs one algorithm task to completion, recording the run counter, duration
-/// histogram, span outcome, and failure log when it resolves. Executes inside
-/// the `libsy.run` span its caller instruments the task with.
+/// histogram, routing overhead, span outcome, and failure log when it resolves.
+/// Executes inside the `libsy.run` span its caller instruments the task with.
+/// `driver` is the run's own, holding the duration of the call that served it.
 pub(crate) async fn observe_run(
     ctx: Context,
+    driver: Driver,
     run: impl Future<Output = Result<Response>>,
 ) -> Result<Response> {
     let started = Instant::now();
     let result = run.await;
-    record_run(
-        algorithm_label(&ctx),
-        started.elapsed(),
-        &result,
-        &Span::current(),
-    );
+    let duration = started.elapsed();
+    let algorithm = algorithm_label(&ctx);
+    record_run(algorithm, duration, &result, &Span::current());
+    if result.is_ok() {
+        record_routing_overhead(algorithm, duration, driver.routed_call_duration());
+    }
     result
 }
 
@@ -190,6 +192,25 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
         .f64_histogram("switchyard.run_duration_ms")
         .build()
         .record(duration.as_secs_f64() * 1000.0, &attributes);
+}
+
+/// Records what routing cost on top of the call that served the run: classifier
+/// calls, target resolution, decision publishing. A run with no routed call has
+/// nothing to subtract, so it records nothing.
+fn record_routing_overhead(algorithm: &str, run: Duration, routed_call: Option<Duration>) {
+    let Some(routed_call) = routed_call else {
+        return;
+    };
+    // Saturating: the two clocks start a moment apart, so a run that is all
+    // routed call can come out fractionally negative.
+    let overhead_ms = run.saturating_sub(routed_call).as_secs_f64() * 1000.0;
+    meter()
+        .f64_histogram("switchyard.routing_overhead_ms")
+        .build()
+        .record(
+            overhead_ms,
+            &[KeyValue::new("algorithm", algorithm.to_string())],
+        );
 }
 
 /// Records the resolution of one offloaded model call: the call counter and

@@ -58,3 +58,13 @@ switchyard --routing-profiles routes.yaml -- serve --port 4000
 
 The route id (`ab-test`) is the model id clients select when they want the
 weighted split.
+
+## Experimental LiteLLM integration
+
+The package's
+[developer guide](../../examples/experimental/litellm/README.md) is the
+canonical documentation for integrating Switchyard with a Dockerized LiteLLM
+gateway. Its source-installable client adapts libsy's dictionary contract and
+demonstrates weighted random routing between model aliases backed by
+OpenRouter. The guide covers setup, application usage, live end-to-end testing,
+and a three-task Harbor smoke benchmark.
