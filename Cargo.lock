@@ -1877,6 +1877,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-soak"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "futures-util",
+ "parking_lot",
+ "rand 0.8.7",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "switchyard-translation"
 version = "0.1.0"
 dependencies = [
