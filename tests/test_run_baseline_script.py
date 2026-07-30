@@ -62,6 +62,50 @@ exit 2
     return harbor
 
 
+def _write_fake_docker(bin_dir: Path) -> Path:
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ -n \"${FAKE_DOCKER_LOG:-}\" ]]; then\n"
+        "    printf '%s\\n' \"$*\" >> \"${FAKE_DOCKER_LOG}\"\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    docker.chmod(0o755)
+    return docker
+
+
+def _write_fake_curl(bin_dir: Path) -> Path:
+    curl = bin_dir / "curl"
+    curl.write_text(
+        """
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+url=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o) output="$2"; shift 2 ;;
+        *) url="$1"; shift ;;
+    esac
+done
+case "${url}" in
+    */health) body='{"status":"ok"}' ;;
+    */metrics) body='switchyard_total_requests 2' ;;
+    */v1/stats) body='{"total_requests":2,"total_errors":0,"models":{"strong":{"calls":2}}}' ;;
+    *) exit 22 ;;
+esac
+if [[ -n "${output}" ]]; then
+    printf '%s\\n' "${body}" > "${output}"
+else
+    printf '%s\\n' "${body}"
+fi
+""".lstrip()
+    )
+    curl.chmod(0o755)
+    return curl
+
+
 def _write_fake_harbor_patch(tmp_path: Path) -> Path:
     patch_file = tmp_path / "fake-harbor-agent-patches.diff"
     patch_file.write_text(
@@ -106,10 +150,14 @@ def _run_baseline(
     *args: str,
     env: dict[str, str] | None = None,
     include_dataset: bool = True,
+    fake_server: bool = False,
 ):
     fake_bin = tmp_path / "default-bin"
     fake_bin.mkdir(exist_ok=True)
     _write_fake_harbor(fake_bin)
+    if fake_server:
+        _write_fake_docker(fake_bin)
+        _write_fake_curl(fake_bin)
     fake_patch = _write_fake_harbor_patch(tmp_path)
     fake_harbor_python = _write_fake_harbor_python(tmp_path)
     base_path = env.get("PATH", os.environ["PATH"]) if env else os.environ["PATH"]
@@ -489,6 +537,32 @@ def test_dry_run_server_config_uses_rust_switchyard_server(tmp_path: Path) -> No
     assert _option_value(harbor, "--model") == "openai/tb-lite-random-routing"
     assert "server_config:" in result.stdout
     assert "route_model:   tb-lite-random-routing" in result.stdout
+
+
+def test_foreground_server_run_collects_rust_stats_endpoint(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
+    docker_log = tmp_path / "docker.log"
+
+    result = _run_baseline(
+        tmp_path,
+        "--server-config",
+        str(profile),
+        "--route-model",
+        "tb-lite-random-routing",
+        "--foreground",
+        fake_server=True,
+        env={"FAKE_DOCKER_LOG": str(docker_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    run_dir = next((tmp_path / "out").glob("baseline-serve-serve-*"))
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    stats = json.loads((run_dir / "routing_stats_final.json").read_text())
+
+    assert stats["total_requests"] == 2
+    assert manifest["outcomes"]["routing_stats_json_status"] == "present"
+    assert manifest["outcomes"]["server_metrics_prom_status"] == "present"
+    assert "--env NVIDIA_API_KEY" in docker_log.read_text()
 
 
 def test_dry_run_route_model_alias_uses_rust_switchyard_server(tmp_path: Path) -> None:

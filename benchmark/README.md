@@ -273,6 +273,7 @@ run_manifest.json
 server.log
 harbor.log
 server_metrics_final.prom
+routing_stats_final.json
 jobs/<job-name>/result.json
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
@@ -281,12 +282,11 @@ The manifest records the command, git state, Harbor patch provenance, local data
 server config, direct-upstream metadata when Switchyard is disabled, book-mode settings, agent
 version pins, log paths, and final Harbor status.
 
-`server_metrics_final.prom` is the final `/metrics` snapshot. It includes aggregate route counts by
-model and tier plus model-call token counters when buffered usage is available. It does not include
-task/trial attribution, cache token fields, or token usage for streaming responses. Until the Rust
-server exposes an equivalent per-request surface, `routing_stats_final.json`,
-`routing_requests.jsonl`, and `routing_stats_by_task.json` are not produced; the manifest marks
-the routing-stats JSON as `not-requested`.
+`server_metrics_final.prom` is the final `/metrics` snapshot. `routing_stats_final.json` is the
+final aggregate `/v1/stats` snapshot, including model and tier calls, errors, tokens, and latency.
+Neither artifact provides task or trial attribution. The runner writes them only after Harbor exits
+and while the Rust server is still reachable; otherwise the manifest records them as missing.
+`routing_requests.jsonl` and `routing_stats_by_task.json` are not produced by the Rust server.
 
 ### Replay Stage-Router Scores
 

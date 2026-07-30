@@ -475,6 +475,7 @@ if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
     fi
     SERVER_HEALTH_URL="${SERVER_ROOT_URL}/health"
     SERVER_METRICS_URL="${SERVER_ROOT_URL}/metrics"
+    SERVER_STATS_URL="${SERVER_ROOT_URL}/v1/stats"
 
     if [[ -z "${HARBOR_SERVER_URL}" ]]; then
         HARBOR_SERVER_URL="http://${SWITCHYARD_DOCKER_SERVICE_NAME}:${PORT}"
@@ -491,6 +492,7 @@ else
     SERVER_ROOT_URL=""
     SERVER_HEALTH_URL=""
     SERVER_METRICS_URL=""
+    SERVER_STATS_URL=""
     HARBOR_BASE_URL="${UPSTREAM_BASE_URL}"
     if [[ "${HARBOR_BASE_URL}" == */v1 ]]; then
         HARBOR_SERVER_ROOT_URL="${HARBOR_BASE_URL%/v1}"
@@ -791,7 +793,7 @@ MANIFEST_CMD=(python3 "${MANIFEST_HELPER}" write
     --server-metrics-prom "${SERVER_METRICS_PROM}"
     --server-metrics-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)"
     --routing-stats-json "${ROUTING_STATS_JSON}"
-    --routing-stats-status "not-requested")
+    --routing-stats-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)")
 if [[ -n "${HARBOR_PATH}" ]]; then
     MANIFEST_CMD+=(--harbor-path "${HARBOR_PATH}")
 fi
@@ -821,6 +823,7 @@ SERVER_ROOT_URL=$(q "${SERVER_ROOT_URL}")
 HARBOR_SERVER_ROOT_URL=$(q "${HARBOR_SERVER_ROOT_URL}")
 SERVER_HEALTH_URL=$(q "${SERVER_HEALTH_URL}")
 SERVER_METRICS_URL=$(q "${SERVER_METRICS_URL}")
+SERVER_STATS_URL=$(q "${SERVER_STATS_URL}")
 HARBOR_BASE_URL=$(q "${HARBOR_BASE_URL}")
 MANIFEST_PATH=$(q "${MANIFEST_PATH}")
 RUN_DIR=$(q "${RUN_DIR}")
@@ -828,6 +831,7 @@ REPO_ROOT=$(q "${REPO_ROOT}")
 SERVER_LOG=$(q "${SERVER_LOG}")
 HARBOR_LOG=$(q "${HARBOR_LOG}")
 SERVER_METRICS_PROM=$(q "${SERVER_METRICS_PROM}")
+ROUTING_STATS_JSON=$(q "${ROUTING_STATS_JSON}")
 HARBOR_JOB_DIR=$(q "${HARBOR_JOB_DIR}")
 SKIP_HEALTH_CHECK=$(q "${SKIP_HEALTH_CHECK}")
 BOOK_MODE=$(q "${BOOK_MODE}")
@@ -896,6 +900,7 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
         --env PYTHONHASHSEED=0 \\
         --env LC_ALL=C.UTF-8 \\
         --env OPENAI_API_KEY \\
+        --env NVIDIA_API_KEY \\
         --env OPENROUTER_API_KEY \\
         --env UPSTREAM_API_KEY \\
         --env ANTHROPIC_API_KEY \\
@@ -1034,11 +1039,17 @@ FINALIZE_CMD=(python3 benchmark/run_manifest.py finalize \\
     --harbor-job-dir "\${HARBOR_JOB_DIR}")
 if [[ "\${SERVER_ENABLED}" == "1" ]]; then
     if curl -fsS "\${SERVER_METRICS_URL}" -o "\${SERVER_METRICS_PROM}" >/dev/null 2>&1; then
-        echo "Captured aggregate Rust server metrics; per-task routing stats are not collected yet"
+        echo "Captured aggregate Rust server metrics"
     else
         echo "WARNING: Rust server metrics could not be collected from \${SERVER_METRICS_URL}" >&2
     fi
     FINALIZE_CMD+=(--server-metrics "\${SERVER_METRICS_PROM}")
+    if curl -fsS "\${SERVER_STATS_URL}" -o "\${ROUTING_STATS_JSON}" >/dev/null 2>&1; then
+        echo "Captured aggregate Rust server routing stats"
+    else
+        echo "WARNING: Rust server stats could not be collected from \${SERVER_STATS_URL}" >&2
+    fi
+    FINALIZE_CMD+=(--routing-stats "\${ROUTING_STATS_JSON}")
 fi
 "\${FINALIZE_CMD[@]}" || true
 
