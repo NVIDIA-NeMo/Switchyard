@@ -145,7 +145,7 @@ class TranslationEngine:
         target: str | ChatRequestType,
         response: ChatResponse,
         *,
-        original_body: Mapping[str, Any] | None = None,
+        served_model: str | None = None,
     ) -> ChatResponse:
         """Return a ChatResponse wrapper in the target wire format."""
         source = _response_format(response)
@@ -155,7 +155,7 @@ class TranslationEngine:
         if _is_streaming_response(response):
             return _wrap_streaming_response(
                 target_format,
-                self._translate_response_stream(source, target_format, response, original_body),
+                self._translate_response_stream(source, target_format, response, served_model),
             )
         return _wrap_response(
             target_format,
@@ -166,10 +166,12 @@ class TranslationEngine:
         self,
         request: ChatRequest,
         response: ChatResponse,
+        *,
+        served_model: str | None = None,
     ) -> TranslatedResponse:
         """Translate a backend response to the original client's wire format."""
         if _is_streaming_response(response):
-            return self.stream_for_request(request, response)
+            return self.stream_for_request(request, response, served_model=served_model)
         source = _response_format(response)
         target = _request_format(request)
         if source == target:
@@ -183,6 +185,8 @@ class TranslationEngine:
         self,
         request: ChatRequest,
         response: ChatResponse,
+        *,
+        served_model: str | None = None,
     ) -> TranslatedStream:
         """Translate a backend stream to the original client's stream contract."""
         source = _response_format(response)
@@ -191,7 +195,7 @@ class TranslationEngine:
             return cast("TranslatedStream", _response_stream(response))
         return cast(
             "TranslatedStream",
-            self._translate_response_stream(source, target, response, getattr(request, "body", None)),
+            self._translate_response_stream(source, target, response, served_model),
         )
 
     async def translate(
@@ -200,9 +204,13 @@ class TranslationEngine:
         request: ChatRequest,
         response: ChatResponse,
     ) -> TranslatedResponse:
-        """Implement Switchyard's terminal TranslationEngine role."""
-        _ = ctx
-        return self.response_for_request(request, response)
+        """Implement Switchyard's terminal TranslationEngine role.
+
+        The served model comes from the routing context, never from a request
+        body: routers rewrite the model on their own copy of the request, so the
+        request reaching this role can still name the route the client addressed.
+        """
+        return self.response_for_request(request, response, served_model=ctx.selected_model)
 
     async def translate_stream(
         self,
@@ -244,13 +252,13 @@ class TranslationEngine:
         source: _NativeFormat,
         target: _NativeFormat,
         response: ChatResponse,
-        original_body: Mapping[str, Any] | object | None,
+        served_model: str | None,
     ) -> AsyncGenerator[Any, None]:
         return self.translate_stream(
             source,
             target,
             _response_stream(response),
-            model=_model_from_body(original_body),
+            model=served_model,
             output=_stream_wire_output_for_target(target),
         )
 
@@ -367,14 +375,6 @@ def _stream_wire_output_for_target(target: _NativeFormat) -> _StreamOutput:
     if target == "openai_responses":
         return "responses_sse"
     return "objects"
-
-
-def _model_from_body(body: Mapping[str, Any] | object | None) -> str | None:
-    if isinstance(body, Mapping):
-        model = body.get("model")
-        if isinstance(model, str) and model:
-            return model
-    return None
 
 
 def _response_body(response: ChatResponse) -> Any:

@@ -2,60 +2,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unified CLI entry point for the ``Switchyard`` server.
+"""Switchyard command-line entry point."""
 
-Exposed as the ``switchyard`` console script.
-
-Subcommands:
-    serve           Serve a routing-profile bundle.
-    launch claude   Spawn Claude Code against a proxy. Single model
-                    (``--model``) or full routing via ``--routing-profiles``.
-                    Pair with ``--smoke`` to run a one-shot harness round-trip
-                    and exit (replaces the old ``verify claude``).
-    launch codex    Spawn OpenAI Codex CLI against a proxy. Same shape as
-                    ``launch claude``, including ``--smoke``.
-    launch openclaw Spawn OpenClaw against a proxy via a transient
-                    ``openclaw.json`` workspace. Same shape as
-                    ``launch claude``, including ``--smoke``.
-    verify          Run the proxy + backend e2e checklist (no harness binary).
-    configure       Interactive setup wizard for saved defaults. ``--show``
-                    (optionally with ``--check`` for a live ``GET /models``
-                    probe), ``--reset``, and ``--list-models`` are mutually-
-                    exclusive introspection modes.
-
-Examples::
-
-    # --routing-profiles is a global flag (use -- to separate it from the subcommand).
-    switchyard --routing-profiles routes.yaml -- serve --port 4000
-    switchyard --routing-profiles dev.yaml -- serve --port 4001
-    switchyard --routing-profiles profiles.yaml -- launch claude
-    switchyard --routing-profiles profiles.yaml -- launch codex
-
-    # Single-model passthrough (--model stays on the launcher subcommand)
-    switchyard launch claude --model openai/gpt-5.2
-    switchyard launch claude --smoke --model openai/gpt-5.2
-    switchyard launch codex  --model openai/gpt-5.2
-    switchyard launch codex  --smoke --model openai/gpt-5.2
-    switchyard launch openclaw --model openai/gpt-5.2
-    switchyard launch openclaw --smoke --model openai/gpt-5.2
-    switchyard verify --model openai/gpt-5.2
-
-    # Forwarding args to the launched tool (second -- after the subcommand)
-    switchyard --routing-profiles profiles.yaml -- launch claude -- --no-auto-approve
-
-Routing policies that used to be top-level CLI verbs (``passthrough``,
-``random-routing``) and launcher flags
-(``--routing``, ``--weak-model``, ``--strong-probability``, ``--preset``)
-are expressed in routing-profile YAML files. ``serve`` and
-launchers still parse the YAML into profile-backed runtimes.
-"""
+from __future__ import annotations
 
 import argparse
 import logging
 import os
-import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from inspect import signature
 from typing import Any
@@ -63,42 +17,25 @@ from typing import Any
 from switchyard.cli.command_utils import (
     quiet_dependency_loggers as _quiet_dependency_loggers,
 )
-from switchyard.cli.config.user_config import (
-    DEFAULT_OPENROUTER_BASE_URL,
-    DEFAULT_PROVIDER,
-    DEFAULT_SECRETS_SECTION_PRIORITY,
-    UserConfigError,
-    resolve_provider_connectivity,
-)
-from switchyard.cli.configure_command import (
-    cmd_configure,
-)
-from switchyard.cli.configure_request import ConfigureRequest
 from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launch_command import (
     cmd_launch_claude,
     cmd_launch_codex,
     cmd_launch_openclaw,
 )
-from switchyard.cli.route_bundle import (
-    RouteBundleConfigError,
-    load_route_bundle_table,
-)
+from switchyard.cli.route_bundle import RouteBundleConfigError, load_route_bundle_table
 from switchyard.lib.config import IntakeSinkConfig
 from switchyard.lib.processors.intake_request_processor import IntakeRequestProcessor
 from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 from switchyard.lib.processors.rl_logging_response_processor import build_rl_logging_processors
 from switchyard.server.server_util import (
-    DEFAULT_SECRETS_FILE,
     add_transport_args,
     build_and_serve,
-    load_secrets,
     resolve_rl_log_dir,
 )
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_OPENROUTER_BASE_URL = DEFAULT_OPENROUTER_BASE_URL
 _CANONICAL_INTAKE_ENABLE_FLAG = "--intake-enabled"
 _DEPRECATED_INTAKE_ENABLE_FLAG = "--enable-intake"
 _ARGPARSE_ACTION_SUPPORTS_DEPRECATED = (
@@ -107,7 +44,7 @@ _ARGPARSE_ACTION_SUPPORTS_DEPRECATED = (
 
 
 class _IntakeEnabledAction(argparse.Action):
-    """Store the normalized Intake enable flag and warn on the deprecated alias."""
+    """Normalize the Intake flag and warn on its deprecated alias."""
 
     def __init__(
         self,
@@ -156,15 +93,22 @@ class _IntakeEnabledAction(argparse.Action):
         setattr(namespace, self.dest, True)
 
 
-def _add_intake_enabled_arg(parser: argparse.ArgumentParser, help_text: str) -> None:
+def _add_intake_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         _CANONICAL_INTAKE_ENABLE_FLAG,
         _DEPRECATED_INTAKE_ENABLE_FLAG,
         dest="intake_enabled",
         default=False,
         action=_IntakeEnabledAction,
-        help=f"{help_text} Deprecated alias: {_DEPRECATED_INTAKE_ENABLE_FLAG}.",
+        help=(
+            "Enable Intake for requests that opt in with store=true or "
+            "x-switchyard-intake-enabled=true."
+        ),
     )
+    parser.add_argument("--intake-base-url", default=None)
+    parser.add_argument("--intake-workspace", default=None)
+    parser.add_argument("--intake-api-key", default=None)
+    parser.add_argument("--intake-target-url", default=None)
 
 
 def _resolve_intake_config(args: argparse.Namespace) -> IntakeSinkConfig | None:
@@ -185,507 +129,55 @@ def _resolve_intake_processors(
     intake = _resolve_intake_config(args)
     if intake is None:
         return [], []
-    return (
-        [IntakeRequestProcessor()],
-        [IntakeResponseProcessor(intake)],
-    )
-
-
-def _add_intake_args(parser: argparse.ArgumentParser) -> None:
-    _add_intake_enabled_arg(
-        parser,
-        help_text=(
-            "Enable the Intake sink; requests still opt in with store=true "
-            "or x-switchyard-intake-enabled=true"
-        ),
-    )
-    _add_common_intake_args(parser)
-
-
-def _add_common_intake_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--intake-base-url", type=str, default=None,
-        help=(
-            "Override the intake base URL (default: read from nmp config "
-            "or $SWITCHYARD_INTAKE_BASE_URL)."
-        ),
-    )
-    parser.add_argument(
-        "--intake-workspace", type=str, default=None,
-        help=(
-            "Override the workspace for intake entries (default: "
-            "$SWITCHYARD_INTAKE_WORKSPACE, then the NMP SDK config)."
-        ),
-    )
-    parser.add_argument(
-        "--intake-api-key", type=str, default=None,
-        help=(
-            "Override the bearer token (default: read from nmp config — "
-            "with refresh — or fall back to $SWITCHYARD_INTAKE_API_KEY / "
-            "$NMP_ACCESS_TOKEN). Setting this opts out of the SDK's "
-            "config-based bootstrap and disables transparent refresh."
-        ),
-    )
-    parser.add_argument(
-        "--intake-target-url", type=str, default=None,
-        help=(
-            "Post flat per-request telemetry to this full URL (a data-lake "
-            "posting endpoint) instead of nemo-platform chat-completions "
-            "ingest. Defaults to $SWITCHYARD_INTAKE_TARGET_URL."
-        ),
-    )
-
-
-_DETERMINISTIC_PROFILE_CHOICES = ("general", "coding_agent", "openclaw")
-
-
-def _add_launch_deterministic_override_args(parser: argparse.ArgumentParser) -> None:
-    """Attach the deterministic-trio override knobs to a ``launch`` subparser.
-
-    Used by ``launch claude``, ``launch codex``, and ``launch openclaw``,
-    where LLM-classifier routing is the implicit default — these flags let
-    users tune the validated TB-Lite trio without writing a full
-    routing-profiles YAML. They have no effect when ``--model X`` or
-    ``--routing-profiles FILE`` opts the launcher out of LLM-classifier
-    routing.
-    """
-    parser.add_argument(
-        "--weak-model",
-        type=str,
-        default=None,
-        help=(
-            "Override the weak-tier model id of the default deterministic "
-            "trio. Defaults to moonshotai/kimi-k2.6."
-        ),
-    )
-    parser.add_argument(
-        "--classifier-model",
-        type=str,
-        default=None,
-        help=(
-            "Override the classifier LLM. Defaults to "
-            "google/gemini-3.5-flash (cheap + fast)."
-        ),
-    )
-    parser.add_argument(
-        "--profile",
-        type=str,
-        default=None,
-        choices=_DETERMINISTIC_PROFILE_CHOICES,
-        help=(
-            "Classifier profile. Defaults to coding_agent "
-            "(SIMPLE+MEDIUM→weak, COMPLEX/REASONING→strong, "
-            "tool-planning escalation, high-confidence LLM alignment)."
-        ),
-    )
-    parser.add_argument(
-        "--classifier-min-confidence",
-        type=float,
-        default=None,
-        help=(
-            "Tier-selector confidence floor in [0.0, 1.0]. Below this "
-            "the classifier's decision falls back to the strong tier "
-            "(fail safer, not cheaper). Defaults to 0.0 — honor every "
-            "non-abstain classification."
-        ),
-    )
-
-
-def _add_launch_intake_args(parser: argparse.ArgumentParser) -> None:
-    """
-    Attach ``--intake-enabled`` + companion args to a ``launch`` subparser.
-    """
-    _add_intake_enabled_arg(
-        parser,
-        help_text=(
-            "Wire intake into both the in-process proxy and the spawned "
-            "client. Uses the NMP SDK's configured credentials by default "
-            "(run `nmp auth login --base-url {INTAKE_BASE_URL}` "
-            "once). Override with --intake-base-url / --intake-api-key for "
-            "headless or CI use."
-        ),
-    )
-    _add_common_intake_args(parser)
-    parser.add_argument(
-        "--intake-app", type=str, default=None,
-        help=(
-            "App name for entry context (default: $SWITCHYARD_INTAKE_APP, "
-            "then a launcher-specific default)."
-        ),
-    )
-    parser.add_argument(
-        "--intake-task", type=str, default=None,
-        help=(
-            "Task name for entry context (default: $SWITCHYARD_INTAKE_TASK, "
-            "then 'developer-session')."
-        ),
-    )
-    parser.add_argument(
-        "--intake-session-id", type=str, default=None,
-        help=(
-            "Session id stamped on every entry. Defaults to "
-            "$SWITCHYARD_SESSION_ID, then '<target>-<unix-ms>-<rand>'."
-        ),
-    )
-    parser.add_argument(
-        "--intake-user-id", type=str, default=None,
-        help=(
-            "Anonymous user id stamped on every entry. Defaults to "
-            "$SWITCHYARD_USER_ID, then the stable per-machine id at "
-            "~/.switchyard/user_id (created on first use)."
-        ),
-    )
-
-
-def _cmd_configure(args: argparse.Namespace) -> None:
-    cmd_configure(ConfigureRequest.from_namespace(args))
-
-
-def _cmd_launch_claude(args: argparse.Namespace) -> None:
-    cmd_launch_claude(args)
-
-
-def _cmd_launch_codex(args: argparse.Namespace) -> None:
-    cmd_launch_codex(args)
-
-
-def _cmd_launch_openclaw(args: argparse.Namespace) -> None:
-    cmd_launch_openclaw(args)
-
-
-# ---------------------------------------------------------------------------
-# Subcommand: serve
-# ---------------------------------------------------------------------------
+    return [IntakeRequestProcessor()], [IntakeResponseProcessor(intake)]
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
-    """Serve a routing-profile bundle."""
-    from switchyard.cli.config.user_config import load_user_config
-    from switchyard.cli.route_bundle import build_route_bundle_table
+    """Serve an explicit routing-profile bundle."""
 
-    routing_profiles = args.routing_profiles
-    # Intake sink + local RL trace logging both attach as chain processors;
-    # combine them so a single serve invocation can run either or both.
     intake_request, intake_response = _resolve_intake_processors(args)
     rl_request, rl_response = build_rl_logging_processors(resolve_rl_log_dir(args))
     request_processors = [*intake_request, *rl_request]
     response_processors = [*intake_response, *rl_response]
-    if getattr(args, "routing_log_file", None):
+    if args.routing_log_file:
         from switchyard.lib.processors.routing_log_response_processor import (
             RoutingLogResponseProcessor,
         )
 
         response_processors.append(RoutingLogResponseProcessor(args.routing_log_file))
-    if routing_profiles:
-        table = load_route_bundle_table(
-            routing_profiles,
-            pre_routing_request_processors=request_processors,
-            extra_response_processors=response_processors,
-        )
-        source = routing_profiles
-    else:
-        saved = load_user_config().routing_profiles
-        if not saved:
-            raise SystemExit(
-                "serve: no routing-profiles given. Pass --routing-profiles "
-                "PATH or run `switchyard --routing-profiles PATH configure` "
-                "to save one."
-            )
-        # Saved bundles are stored as parsed dicts, so we can skip the
-        # YAML parse step and feed them straight into the dict-driven
-        # entrypoint. Env-var references inside the dict expand inside
-        # build_route_bundle_table on each run.
-        table = build_route_bundle_table(
-            saved,
-            pre_routing_request_processors=request_processors,
-            extra_response_processors=response_processors,
-        )
-        source = f"<saved bundle, {len(table.registered_models())} route(s)>"
+
+    table = load_route_bundle_table(
+        args.routing_profiles,
+        pre_routing_request_processors=request_processors,
+        extra_response_processors=response_processors,
+    )
     logger.info(
         "Switchyard route bundle loaded %d route(s) from %s",
         len(table.registered_models()),
-        source,
+        args.routing_profiles,
     )
     strategy_summary: str | None = None
     default_model = table.default_model()
-    if routing_profiles and default_model:
-        from switchyard.cli.launchers.launcher_runtime import routing_profiles_strategy_summary
-        try:
-            strategy_summary = routing_profiles_strategy_summary(
-                routing_profiles[0], default_model,
-            )
-        except Exception:
-            pass
-    build_and_serve(args, table, inbound_default="both", strategy_summary=strategy_summary)
+    if default_model:
+        from switchyard.cli.launchers.launcher_runtime import (
+            routing_profiles_strategy_summary,
+        )
 
-
-# ---------------------------------------------------------------------------
-# Subcommand: verify {proxy,claude,codex}
-# ---------------------------------------------------------------------------
-
-
-# Default verify model.  Matches ``tests/offline_production_tests/conftest.py``
-# (NVIDIA inference-api) so a user with secrets/secrets.json wired up can
-# run ``switchyard verify proxy`` with no args at all and get a
-# meaningful pass/fail.
-_DEFAULT_VERIFY_MODEL = "openai/gpt-5.2"
-
-# Env vars and secrets-section priority verified by ``verify``.  Same
-# resolution order as :func:`_resolve_verify_credentials` uses through
-# ``resolve_provider_connectivity`` — kept as module constants so the
-# diagnostic helper can iterate them in the same order without importing
-# private helper internals.
-_VERIFY_API_KEY_ENV_VARS: tuple[str, ...] = (
-    "OPENROUTER_API_KEY",
-    "NVIDIA_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-)
-_VERIFY_BASE_URL_ENV_VARS: tuple[str, ...] = (
-    "OPENROUTER_BASE_URL",
-    "NVIDIA_BASE_URL",
-    "OPENAI_BASE_URL",
-)
-_VERIFY_SECRETS_PRIORITY: tuple[str, ...] = DEFAULT_SECRETS_SECTION_PRIORITY
-
-
-@dataclass
-class _CredentialAttempt:
-    """One row of the credential-resolution diagnostic.
-
-    ``label`` is a stable short token (``"--api-key"`` /
-    ``"$OPENROUTER_API_KEY"`` / ``"secrets.json[openrouter]"``) suitable for
-    both the user-facing error table and the ``key_source`` label
-    forwarded into :func:`verify_proxy` (which surfaces it in
-    step 1's success line and step 2's 401 hint).
-
-    ``status`` is the human-readable verdict for that source:
-    ``"not provided"``, ``"set (32 chars)"``, ``"file not found"``,
-    ``"missing 'api_key' field"``, etc.
-
-    ``has_value`` is True iff the source produced a non-empty key.
-    The first :class:`_CredentialAttempt` with ``has_value=True`` is
-    the resolved key — same waterfall as
-    :func:`resolve_provider_connectivity`.
-    """
-
-    label: str
-    status: str
-    has_value: bool
-
-
-def _redact_status(value: str | None) -> str:
-    """Render an env-var / secrets-field value as a status string.
-
-    ``None`` ⇒ ``"not set"``.  Empty string ⇒ ``"empty (0 chars)"`` so
-    the user notices an env var that was set but exported as empty
-    (a common subtle bug).  Otherwise ``"set (N chars)"`` — the char
-    count helps the user spot truncation without exposing the secret.
-    """
-    if value is None:
-        return "not set"
-    if not value:
-        return "empty (0 chars)"
-    return f"set ({len(value)} chars)"
-
-
-def _diagnose_credential_resolution(
-    args: argparse.Namespace,
-) -> tuple[str | None, str | None, str | None, list[_CredentialAttempt]]:
-    """Walk the same waterfall as ``_resolve_verify_credentials`` but
-    record every source we touched along the way.
-
-    Returns ``(api_key, base_url, key_source, attempts)``:
-
-    * ``api_key`` / ``base_url`` — same values
-      :func:`resolve_provider_connectivity` would return.
-    * ``key_source`` — the ``label`` of the first attempt whose
-      ``has_value`` is True, or ``None`` when nothing produced a key.
-    * ``attempts`` — every source we considered, in resolution order.
-      Always non-empty.  Used to build the tabulated error message
-      when no source produced a key.
-
-    The walk *parallels* :func:`resolve_provider_connectivity` rather
-    than wrapping it because the underlying helper has no notion of
-    "which source won".  Duplication here is bounded (one waterfall, six sources)
-    and the diagnostic UX is the whole point of the wrapper.
-    """
-    attempts: list[_CredentialAttempt] = []
-    resolved_key: str | None = None
-    key_source: str | None = None
-
-    def _record(label: str, value: str | None, status: str) -> None:
-        """Append a row to ``attempts`` and pin the resolved key on
-        the first non-empty value.  ``status`` is overridable so
-        secrets-file rows can carry per-section context (file
-        missing vs. field missing vs. set).
-        """
-        nonlocal resolved_key, key_source
-        has_value = bool(value)
-        attempts.append(_CredentialAttempt(label, status, has_value))
-        if has_value and resolved_key is None:
-            resolved_key = value
-            key_source = label
-
-    # 1. --api-key
-    cli_key = args.api_key
-    _record(
-        "--api-key",
-        cli_key,
-        "provided" if cli_key else "not provided",
+        strategy_summary = routing_profiles_strategy_summary(
+            args.routing_profiles,
+            default_model,
+        )
+    build_and_serve(
+        args,
+        table,
+        inbound_default="both",
+        strategy_summary=strategy_summary,
     )
-
-    # 2. env vars (in order)
-    for env_var in _VERIFY_API_KEY_ENV_VARS:
-        env_value = os.environ.get(env_var)
-        _record(f"${env_var}", env_value, _redact_status(env_value))
-
-    # 3. secrets.json — break down failure modes so the user knows
-    # whether the file is missing, the section is missing, or the
-    # field is missing.  Each is a different fix.
-    secrets_path = DEFAULT_SECRETS_FILE
-    if not secrets_path.exists():
-        for section_name in _VERIFY_SECRETS_PRIORITY:
-            _record(
-                f"secrets.json[{section_name}.api_key]",
-                None,
-                f"file not found ({secrets_path})",
-            )
-    else:
-        secrets = load_secrets()
-        for section_name in _VERIFY_SECRETS_PRIORITY:
-            section_body = secrets.get(section_name)
-            label = f"secrets.json[{section_name}.api_key]"
-            # ``SecretsFile`` types every section as a Mapping, so the
-            # only structural failures we surface are "section missing"
-            # and "section present but no api_key field".  A malformed
-            # JSON file would have crashed in :func:`load_secrets`
-            # already, so we don't double-check the section's type here.
-            if section_body is None:
-                _record(label, None, f"section '{section_name}' missing")
-                continue
-            value = section_body.get("api_key")
-            if not isinstance(value, str):
-                _record(label, None, "field missing")
-                continue
-            _record(label, value, _redact_status(value))
-
-    # base_url has its own waterfall, but verify's error story doesn't need
-    # a per-source breakdown. Resolve it with the same provider-aware pairing
-    # as launch/configure so mixed provider env vars do not get mismatched.
-    connectivity = resolve_provider_connectivity(
-        cli_api_key=args.api_key,
-        cli_base_url=args.base_url,
-        api_key_env_vars=_VERIFY_API_KEY_ENV_VARS,
-        base_url_env_vars=_VERIFY_BASE_URL_ENV_VARS,
-        secrets=load_secrets() if DEFAULT_SECRETS_FILE.exists() else None,
-        secrets_section_priority=_VERIFY_SECRETS_PRIORITY,
-    )
-
-    return resolved_key, connectivity.base_url, key_source, attempts
-
-
-def _format_credential_failure(attempts: list[_CredentialAttempt]) -> str:
-    """Render the multi-line tabulated diagnostic for the no-key case.
-
-    Goal: the user sees, at a glance, *every* source verify checked
-    and *what was wrong with each one*, plus a concrete "to fix:"
-    pointer for the most common case.  Aligning the labels makes the
-    table scannable in dark-mode terminals where the eye is doing
-    column scanning, not word reading.
-    """
-    width = max(len(a.label) for a in attempts) + 2
-    lines = [
-        "verify: no API key resolved.  Tried:",
-    ]
-    for attempt in attempts:
-        lines.append(f"  {attempt.label.ljust(width)}{attempt.status}")
-    lines.append("")
-    lines.append(
-        "To fix, set ONE of the above sources.  Most common:",
-    )
-    lines.append(
-        "  export OPENROUTER_API_KEY=sk-...   "
-        "# (or any other env var listed above)",
-    )
-    lines.append(
-        "  cp secrets/secrets.template.json secrets/secrets.json   "
-        "# then edit it",
-    )
-    return "\n".join(lines)
-
-
-def _resolve_verify_credentials(
-    args: argparse.Namespace,
-) -> tuple[str, str, str | None]:
-    """Common credential resolution for all three ``verify`` modes.
-
-    Mirrors :func:`_cmd_launch_claude` / :func:`_cmd_launch_codex`:
-    ``--api-key`` / ``OPENROUTER_API_KEY`` / ``NVIDIA_API_KEY`` /
-    ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` / secrets.json waterfall;
-    ``--base-url`` / ``OPENROUTER_BASE_URL`` / ``NVIDIA_BASE_URL`` /
-    ``OPENAI_BASE_URL`` waterfall; defaults to OpenRouter when the user
-    didn't supply one.
-
-    Unlike the launchers, this helper raises ``SystemExit`` with a
-    *tabulated* error rather than warning + injecting a ``"dummy"``
-    placeholder.  Verify is *the* command that confirms credential
-    resolution works — silently masking a missing key would defeat
-    the whole purpose, and a generic "set one of these" hint makes
-    the user check every source instead of pointing them at the one
-    they actually broke.
-
-    Returns ``(api_key, base_url, key_source)`` where ``key_source``
-    is the human label of the source that produced the key (e.g.
-    ``"$OPENROUTER_API_KEY"``).  Forwarded to the verify orchestrators
-    so the credential-step's success line and the backend-reach
-    step's 401 hint can name the source by hand.
-    """
-    api_key, base_url, key_source, attempts = (
-        _diagnose_credential_resolution(args)
-    )
-    resolved_base_url = base_url or _DEFAULT_OPENROUTER_BASE_URL
-    if not api_key:
-        raise SystemExit(_format_credential_failure(attempts))
-    return api_key, resolved_base_url, key_source
-
-
-def _cmd_verify(args: argparse.Namespace) -> None:
-    """Run the proxy-only verify checklist.
-
-    Harness-driven verify modes (``verify claude`` / ``verify codex``)
-    moved to ``launch claude --smoke`` / ``launch codex --smoke``;
-    ``verify`` is now the leaf for the proxy-only checklist that K8s
-    readiness probes and CI install gates rely on.
-    """
-    from switchyard.server.verify import verify_proxy
-
-    api_key, base_url, key_source = _resolve_verify_credentials(args)
-    raise SystemExit(verify_proxy(
-        model=args.model,
-        base_url=base_url,
-        api_key=api_key,
-        port=args.port,
-        timeout=args.timeout,
-        key_source=key_source,
-    ))
-
-
-# ---------------------------------------------------------------------------
-# Argument parser construction
-# ---------------------------------------------------------------------------
 
 
 def _switchyard_version() -> str:
-    """Resolve the installed Switchyard version for ``--version``.
+    """Resolve the installed distribution version."""
 
-    Reads the version from the installed package metadata (ultimately the
-    ``version`` field in ``pyproject.toml``), matching the runtime lookup in
-    ``intake_payload_builder``. Falls back to the static ``__version__``
-    constant when the package is not installed (e.g. running from a source
-    checkout that was never built), which the release tooling keeps in sync
-    with ``pyproject.toml``.
-    """
     try:
         return version("nemo-switchyard")
     except PackageNotFoundError:
@@ -694,624 +186,95 @@ def _switchyard_version() -> str:
         return __version__
 
 
+def _add_launch_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    launch = subparsers.add_parser(
+        "launch",
+        help="Launch a coding agent through the native server",
+    )
+    launch_sub = launch.add_subparsers(dest="launch_target", help="Agent to launch")
+    launcher_parsers = (
+        ("claude", "Launch Claude Code", "claude_args", cmd_launch_claude),
+        ("codex", "Launch Codex CLI", "codex_args", cmd_launch_codex),
+        ("openclaw", "Launch OpenClaw", "openclaw_args", cmd_launch_openclaw),
+    )
+    for name, help_text, args_dest, command in launcher_parsers:
+        agent = launch_sub.add_parser(name, help=help_text)
+        agent.add_argument("--model", required=True, help="Route ID from the deployment.")
+        agent.add_argument(
+            "--config",
+            metavar="PATH",
+            help="TOML deployment (default: packaged OpenRouter deployment).",
+        )
+        agent.add_argument(
+            args_dest,
+            nargs=argparse.REMAINDER,
+            help="Arguments forwarded to the coding agent after --.",
+        )
+        agent.set_defaults(func=command)
+
+    def _launch_help(args: argparse.Namespace) -> None:  # noqa: ARG001
+        launch.print_help()
+        raise SystemExit(1)
+
+    launch.set_defaults(func=_launch_help)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="switchyard",
-        description="Switchyard — chain-based LLM proxy server CLI",
+        description="Switchyard LLM proxy",
     )
     parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {_switchyard_version()}",
-        help="Print the installed Switchyard version and exit.",
     )
-    parser.add_argument(
-        "--routing-profiles", "-c",
-        dest="routing_profiles",
-        default=None,
-        metavar="PATH",
-        help=(
-            "Path to a routing-profiles YAML file. Applies to "
-            "serve, launch, and configure (saves it as the default). Separate "
-            "from the subcommand with -- for clarity: "
-            "switchyard --routing-profiles dev.yaml -- launch claude"
-        ),
-    )
-    parser.add_argument(
-        "--enable-rl-logging",
-        dest="enable_rl_logging",
-        action="store_true",
-        help=(
-            "Write per-turn RL training traces (message_history JSON, one "
-            "file per request/response pair) for `launch` sessions. Global "
-            "flag — place it before the subcommand, e.g. "
-            "switchyard --enable-rl-logging launch claude."
-        ),
-    )
-    parser.add_argument(
-        "--rl-log-dir",
-        dest="rl_log_dir",
-        default="./rl_data",
-        metavar="DIR",
-        help=(
-            "Directory for RL trace logs (default: ./rl_data). Only takes "
-            "effect with --enable-rl-logging."
-        ),
-    )
-    subparsers = parser.add_subparsers(dest="command", help="Server mode")
+    subparsers = parser.add_subparsers(dest="command")
 
-    # -- serve --
-    serve = subparsers.add_parser(
-        "serve",
-        help="Serve a routing-profile bundle",
-        description=(
-            "Serve a routing-profile YAML bundle selected with the global "
-            "--routing-profiles option."
-        ),
+    serve = subparsers.add_parser("serve", help="Serve a routing-profile bundle")
+    serve.add_argument(
+        "--routing-profiles",
+        "-c",
+        required=True,
+        metavar="PATH",
+        help="Routing-profile YAML bundle.",
     )
+    serve.add_argument("--enable-rl-logging", action="store_true")
+    serve.add_argument("--rl-log-dir", default="./rl_data", metavar="DIR")
     add_transport_args(serve)
     _add_intake_args(serve)
+    serve.add_argument("--routing-log-file", default=None, metavar="PATH")
     serve.add_argument(
-        "--routing-log-file",
-        dest="routing_log_file",
-        default=None,
-        metavar="PATH",
-        help=(
-            "Append one JSONL routing record per request (task, session, "
-            "selected model, tier, token usage) to PATH."
-        ),
-    )
-    serve.add_argument(
-        "--workers", "-w", type=int,
+        "--workers",
+        "-w",
+        type=int,
         default=int(os.environ.get("SWITCHYARD_WORKERS", "1")),
-        help="Number of uvicorn worker processes (default: 1, or SWITCHYARD_WORKERS env var)",
     )
     serve.set_defaults(func=_cmd_serve)
 
-    # -- configure --
-    cfg = subparsers.add_parser(
-        "configure",
-        help="Store default provider credentials and launch models",
-        description=(
-            "Persist user-level Switchyard defaults under "
-            "~/.config/switchyard. Credentials are stored separately "
-            "from non-secret config with owner-only file permissions."
-        ),
-    )
-    cfg_mode = cfg.add_mutually_exclusive_group()
-    cfg_mode.add_argument(
-        "--show", action="store_true",
-        help=(
-            "Print the redacted user config plus resolved provider, API-key "
-            "source, and harness binary paths. Pair with --check for a live "
-            "GET /models probe."
-        ),
-    )
-    cfg_mode.add_argument(
-        "--reset", action="store_true",
-        help="Delete persisted user config and credentials",
-    )
-    cfg_mode.add_argument(
-        "--list-models", action="store_true", dest="list_models",
-        help=(
-            "Fetch GET /models from the resolved provider and print a "
-            "ranked, searchable list. Combine with --target / --query / "
-            "--limit."
-        ),
-    )
-    cfg.add_argument(
-        "--json", action="store_true",
-        help="With --show, print the raw redacted JSON snapshot",
-    )
-    cfg.add_argument(
-        "--target", type=str, default="all",
-        choices=("all", "provider", "claude", "codex", "openclaw"),
-        help=(
-            "Which defaults to configure: provider credentials only, "
-            "Claude Code, Codex, OpenClaw, or all (default: all)"
-        ),
-    )
-    cfg.add_argument(
-        "--provider", type=str, default=None,
-        help=f"Provider id to configure (default: the saved default_provider, "
-        f"or {DEFAULT_PROVIDER} if none is saved)",
-    )
-    cfg.add_argument(
-        "--base-url", type=str, default=None,
-        help=(
-            "Backend base URL to save (default: "
-            f"{_DEFAULT_OPENROUTER_BASE_URL})"
-        ),
-    )
-    cfg.add_argument(
-        "--api-key", type=str, default=None,
-        help="API key to save. Omit in an interactive terminal to be prompted.",
-    )
-    cfg.add_argument(
-        "--claude-model", type=str, default=None,
-        help="Claude Code default model. Omit to select from GET /models.",
-    )
-    cfg.add_argument(
-        "--claude-base-url", type=str, default=None,
-        help="Claude Code model endpoint override. Omit to use the default base URL.",
-    )
-    cfg.add_argument(
-        "--claude-api-key", type=str, default=None,
-        help="Claude Code model API-key override. Omit to use the default API key.",
-    )
-    cfg.add_argument(
-        "--codex-model", type=str, default=None,
-        help="Codex default model. Omit to select from GET /models.",
-    )
-    cfg.add_argument(
-        "--codex-base-url", type=str, default=None,
-        help="Codex model endpoint override. Omit to use the default base URL.",
-    )
-    cfg.add_argument(
-        "--codex-api-key", type=str, default=None,
-        help="Codex model API-key override. Omit to use the default API key.",
-    )
-    cfg.add_argument(
-        "--openclaw-model", type=str, default=None,
-        help="OpenClaw default model. Omit to select from GET /models.",
-    )
-    cfg.add_argument(
-        "--openclaw-base-url", type=str, default=None,
-        help="OpenClaw model endpoint override. Omit to use the default base URL.",
-    )
-    cfg.add_argument(
-        "--openclaw-api-key", type=str, default=None,
-        help="OpenClaw model API-key override. Omit to use the default API key.",
-    )
-    cfg_mode.add_argument(
-        "--skill-distillation",
-        metavar="NAMESPACE",
-        default=None,
-        help=(
-            "Save a namespace for one skill that improves over time. Many "
-            "sessions or trajectories can contribute to it; the namespace is "
-            "not a session ID. Use a safe local path component (for example: "
-            "tooluniverse-trialqa)."
-        ),
-    )
-    cfg_mode.add_argument(
-        "--disable-skill-distillation",
-        action="store_true",
-        help="Remove saved skill distillation config.",
-    )
-    cfg.add_argument(
-        "--no-model-discovery", action="store_true",
-        help="Skip GET /models and rely on explicit or existing model values",
-    )
-    cfg.add_argument(
-        "--no-tui", action="store_true",
-        help="Use plain text prompts instead of the interactive terminal selector",
-    )
-    cfg.add_argument(
-        "--query", "-q", type=str, default=None,
-        help=(
-            "With --list-models, case-insensitive substring filter applied "
-            "to the result set."
-        ),
-    )
-    cfg.add_argument(
-        "--limit", type=int, default=50,
-        help=(
-            "With --list-models, cap on the number of models printed "
-            "(default: 50; pass 0 for unlimited)."
-        ),
-    )
-    cfg.add_argument(
-        "--check", action="store_true",
-        help=(
-            "With --show, also call GET /models on the resolved provider "
-            "and report pass/fail."
-        ),
-    )
-    cfg.set_defaults(func=_cmd_configure)
-
-    # -- launch --
-    launch = subparsers.add_parser(
-        "launch",
-        help="Start proxy + spawn a CLI tool in one command (ollama-style UX)",
-        description=(
-            "Start a proxy and spawn a CLI tool pointed at it in the same "
-            "terminal, tear it down when the tool exits."
-        ),
-    )
-    launch_sub = launch.add_subparsers(dest="launch_target", help="Tool to launch")
-
-    # -- launch claude --
-    lc = launch_sub.add_parser(
-        "claude",
-        help="Launch Claude Code with a proxy (one terminal, one command)",
-        description=(
-            "Starts a proxy on an auto-picked free local port, then "
-            "spawns `claude` with ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, "
-            "and ANTHROPIC_MODEL preset.  Proxy shuts down when claude exits.\n\n"
-            "Route selection (mutually exclusive — pick one or neither):\n"
-            "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, …); the first declared route "
-            "is the initial model.\n\n"
-            "With neither flag, the saved routing bundle from "
-            "`switchyard configure` is used."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    lc.add_argument(
-        "--model", type=str, default=None,
-        help=(
-            "Single-model passthrough: model id from GET /v1/models "
-            "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted. Mutually exclusive with "
-            "--routing-profiles (pass that as a global switchyard flag before "
-            "the subcommand)."
-        ),
-    )
-    lc.add_argument(
-        "--base-url", type=str, default=None,
-        help=(
-            "Backend base URL (default: "
-            f"{_DEFAULT_OPENROUTER_BASE_URL}, or OPENROUTER_BASE_URL / "
-            "NVIDIA_BASE_URL / "
-            "OPENAI_BASE_URL env var)."
-        ),
-    )
-    lc.add_argument(
-        "--api-key", type=str, default=None,
-        help=(
-            "API key (falls back to OPENROUTER_API_KEY, NVIDIA_API_KEY, OPENAI_API_KEY, "
-            "user config, secrets.json)"
-        ),
-    )
-    lc.add_argument(
-        "--no-model-discovery", action="store_true",
-        help="First-run setup: skip GET /models and type the model manually",
-    )
-    lc.add_argument(
-        "--no-tui", action="store_true",
-        help="First-run setup: use plain text prompts instead of the TUI selector",
-    )
-    lc.add_argument(
-        "--reconfigure", action="store_true",
-        help="Run Claude setup before launching, even if defaults already exist",
-    )
-    lc.add_argument(
-        "--dry-run", action="store_true",
-        help="Print resolved launch settings without starting the proxy or Claude",
-    )
-    lc.add_argument(
-        "--smoke", action="store_true",
-        help=(
-            "Smoke-test mode: start the proxy, run one "
-            "`claude -p \"<smoke>\" --max-turns 1` round-trip, assert exit 0, "
-            "and exit. Replaces the old `switchyard verify claude` subcommand. "
-            "Requires --model; cannot be combined with --routing-profiles or --dry-run "
-            "(use --model directly to pick the model to smoke-test)."
-        ),
-    )
-    lc.add_argument(
-        "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
-    )
-    lc.add_argument(
-        "--timeout", type=float, default=None,
-        help="Request timeout in seconds for the backend LLM client",
-    )
-    lc.add_argument(
-        "--startup-timing", action="store_true",
-        help=(
-            "Print a per-stage startup timing breakdown to stderr before "
-            "claude starts (each backend-format probe on its own line). "
-            "Also enabled with SWITCHYARD_STARTUP_TIMING=1."
-        ),
-    )
-    _add_launch_deterministic_override_args(lc)
-    _add_launch_intake_args(lc)
-    lc.add_argument(
-        "claude_args", nargs=argparse.REMAINDER,
-        help="Args forwarded to claude (prefix with `--`, e.g. `-- --version`)",
-    )
-    lc.set_defaults(func=_cmd_launch_claude)
-
-    # -- launch codex --
-    cx = launch_sub.add_parser(
-        "codex",
-        help="Launch OpenAI Codex CLI with a proxy (one terminal, one command)",
-        description=(
-            "Starts a proxy on an auto-picked free local port, then "
-            "spawns `codex` with a transient `switchyard` provider injected "
-            "via repeated `-c` flags (no edits to ~/.codex/config.toml).\n\n"
-            "Codex talks to the proxy via OpenAI Responses API "
-            "(/v1/responses); the chain translates that to OpenAI Chat "
-            "Completions for the upstream backend.  Proxy shuts down when "
-            "codex exits.\n\n"
-            "Route selection (mutually exclusive — pick one or neither):\n"
-            "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, …); the first declared route "
-            "is the initial model.\n\n"
-            "With neither flag, the saved routing bundle from "
-            "`switchyard configure` is used."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    cx.add_argument(
-        "--model", type=str, default=None,
-        help=(
-            "Single-model passthrough: model id from GET /v1/models "
-            "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted. Mutually exclusive with "
-            "--routing-profiles (pass that as a global switchyard flag before "
-            "the subcommand)."
-        ),
-    )
-    cx.add_argument(
-        "--base-url", type=str, default=None,
-        help=(
-            "Backend base URL (default: "
-            f"{_DEFAULT_OPENROUTER_BASE_URL}, or OPENROUTER_BASE_URL / "
-            "NVIDIA_BASE_URL / "
-            "OPENAI_BASE_URL env var)."
-        ),
-    )
-    cx.add_argument(
-        "--api-key", type=str, default=None,
-        help=(
-            "API key (falls back to OPENROUTER_API_KEY, NVIDIA_API_KEY, OPENAI_API_KEY, "
-            "user config, secrets.json)"
-        ),
-    )
-    cx.add_argument(
-        "--no-model-discovery", action="store_true",
-        help="First-run setup: skip GET /models and type the model manually",
-    )
-    cx.add_argument(
-        "--no-tui", action="store_true",
-        help="First-run setup: use plain text prompts instead of the TUI selector",
-    )
-    cx.add_argument(
-        "--reconfigure", action="store_true",
-        help="Run Codex setup before launching, even if defaults already exist",
-    )
-    cx.add_argument(
-        "--dry-run", action="store_true",
-        help="Print resolved launch settings without starting the proxy or Codex",
-    )
-    cx.add_argument(
-        "--smoke", action="store_true",
-        help=(
-            "Smoke-test mode: start the proxy, run one "
-            "`codex exec \"<smoke>\"` round-trip, assert exit 0, and exit. "
-            "Replaces the old `switchyard verify codex` subcommand. "
-            "Requires --model; cannot be combined with --routing-profiles or --dry-run "
-            "(use --model directly to pick the model to smoke-test)."
-        ),
-    )
-    cx.add_argument(
-        "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
-    )
-    cx.add_argument(
-        "--timeout", type=float, default=None,
-        help="Request timeout in seconds for the backend LLM client",
-    )
-    _add_launch_deterministic_override_args(cx)
-    _add_launch_intake_args(cx)
-    cx.add_argument(
-        "codex_args", nargs=argparse.REMAINDER,
-        help="Args forwarded to codex (prefix with `--`, e.g. `-- exec \"hi\"`)",
-    )
-    cx.set_defaults(func=_cmd_launch_codex)
-
-    # -- launch openclaw --
-    ow = launch_sub.add_parser(
-        "openclaw",
-        help="Launch OpenClaw with a proxy (one terminal, one command)",
-        description=(
-            "Starts a proxy on an auto-picked free local port, then "
-            "spawns `openclaw chat` (alias for `openclaw tui --local`) "
-            "against a transient OpenClaw "
-            "workspace (OPENCLAW_STATE_DIR / OPENCLAW_HOME / "
-            "OPENCLAW_CONFIG_PATH point at a tempdir) — the user's "
-            "real ~/.openclaw/ (sessions, channels, plugins) is "
-            "untouched.\n\n"
-            "OpenClaw talks to the proxy via OpenAI Chat Completions "
-            "(/v1/chat/completions); the proxy translates as needed for "
-            "the upstream backend. Proxy and the transient workspace "
-            "are torn down when openclaw exits.\n\n"
-            "Route selection (mutually exclusive — pick one or neither):\n"
-            "  --model X               single-model passthrough — every request "
-            "is rewritten to model=X. Falls back to the saved configure default.\n"
-            "  --routing-profiles PATH serve a YAML bundle of routes (random, "
-            "stage_router, …); the first declared route "
-            "is the initial model.\n\n"
-            "With neither flag, the saved routing bundle from "
-            "`switchyard configure` is used."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    ow.add_argument(
-        "--model", type=str, default=None,
-        help=(
-            "Single-model passthrough: model id from GET /v1/models "
-            "(e.g. openai/gpt-5.2). Falls back to the saved "
-            "`configure` default when omitted. Mutually exclusive with "
-            "--routing-profiles (pass that as a global switchyard flag before "
-            "the subcommand)."
-        ),
-    )
-    ow.add_argument(
-        "--base-url", type=str, default=None,
-        help=(
-            "Backend base URL (default: "
-            f"{_DEFAULT_OPENROUTER_BASE_URL}, or OPENROUTER_BASE_URL / "
-            "NVIDIA_BASE_URL / "
-            "OPENAI_BASE_URL env var)."
-        ),
-    )
-    ow.add_argument(
-        "--api-key", type=str, default=None,
-        help=(
-            "API key (falls back to OPENROUTER_API_KEY, NVIDIA_API_KEY, OPENAI_API_KEY, "
-            "user config, secrets.json)"
-        ),
-    )
-    ow.add_argument(
-        "--no-model-discovery", action="store_true",
-        help="First-run setup: skip GET /models and type the model manually",
-    )
-    ow.add_argument(
-        "--no-tui", action="store_true",
-        help="First-run setup: use plain text prompts instead of the TUI selector",
-    )
-    ow.add_argument(
-        "--reconfigure", action="store_true",
-        help="Run OpenClaw setup before launching, even if defaults already exist",
-    )
-    ow.add_argument(
-        "--dry-run", action="store_true",
-        help="Print resolved launch settings without starting the proxy or OpenClaw",
-    )
-    ow.add_argument(
-        "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
-    )
-    ow.add_argument(
-        "--timeout", type=float, default=None,
-        help="Request timeout in seconds for the backend LLM client",
-    )
-    ow.add_argument(
-        "--smoke", action="store_true",
-        help=(
-            "Smoke-test mode: start the proxy, run one openclaw round-trip "
-            "(non-interactive, JSON envelope), assert exit 0, and exit. "
-            "Replaces the old `switchyard verify openclaw` subcommand. "
-            "Requires --model; cannot be combined with --routing-profiles or --dry-run "
-            "(use --model directly to pick the model to smoke-test)."
-        ),
-    )
-    _add_launch_deterministic_override_args(ow)
-    _add_launch_intake_args(ow)
-    ow.add_argument(
-        "openclaw_args", nargs=argparse.REMAINDER,
-        help=(
-            "Args forwarded to `openclaw chat` "
-            "(prefix with `--`, e.g. `-- --message 'hi' --thinking high`)"
-        ),
-    )
-    ow.set_defaults(func=_cmd_launch_openclaw)
-
-    def _launch_help(args: argparse.Namespace) -> None:  # noqa: ARG001
-        launch.print_help()
-        raise SystemExit(1)
-    launch.set_defaults(func=_launch_help)
-
-    # -- verify --
-    verify = subparsers.add_parser(
-        "verify",
-        help="Run the proxy + backend e2e checklist (smoke test for users)",
-        description=(
-            "Run the proxy-only checklist:\n"
-            "  1. Resolve credentials\n"
-            "  2. Reach backend (GET /models)\n"
-            "  3. Probe /v1/messages support (informational)\n"
-            "  4. Start proxy on a free port\n"
-            "  5. Round-trip a chat completion through the chain\n"
-            "  6. Tear down proxy\n\n"
-            "Fast (~1-3s on a healthy stack), no extra dependencies. "
-            "Suitable for K8s readiness probes and pre-deployment "
-            "smoke tests.  For harness-driven smoke tests (spawn "
-            "claude/codex/openclaw against the proxy), use "
-            "`launch {claude,codex,openclaw} --smoke`."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    verify.add_argument(
-        "--model", type=str, default=_DEFAULT_VERIFY_MODEL,
-        help=(
-            "Model to verify against the backend (default: "
-            f"{_DEFAULT_VERIFY_MODEL}, matches the e2e test default)."
-        ),
-    )
-    verify.add_argument(
-        "--base-url", type=str, default=None,
-        help=(
-            "Backend base URL (default: "
-            f"{_DEFAULT_OPENROUTER_BASE_URL}, or OPENROUTER_BASE_URL / "
-            "NVIDIA_BASE_URL / OPENAI_BASE_URL env var)."
-        ),
-    )
-    verify.add_argument(
-        "--api-key", type=str, default=None,
-        help=(
-            "API key (falls back to OPENROUTER_API_KEY, NVIDIA_API_KEY, "
-            "OPENAI_API_KEY, secrets.json). No 'dummy' placeholder fallback "
-            "— verify fails fast on a missing key by design."
-        ),
-    )
-    verify.add_argument(
-        "--port", type=int, default=None,
-        help="Proxy port (default: auto-pick free port)",
-    )
-    verify.add_argument(
-        "--timeout", type=float, default=None,
-        help="Request timeout in seconds for the backend LLM client",
-    )
-    verify.set_defaults(func=_cmd_verify)
-
+    _add_launch_parser(subparsers)
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
-    """Switchyard server CLI."""
+    """Run the Switchyard CLI."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     _quiet_dependency_loggers()
-
     parser = _build_parser()
-    # Strip the first '--' separator, allowing the canonical form:
-    #   switchyard --routing-profiles dev.yaml -- launch claude
-    # The '--' is purely visual — argparse doesn't need it.
-    argv = list(sys.argv[1:])
-    # Only strip a '--' that precedes the subcommand token; a '--' after it is
-    # the harness separator (e.g. `launch claude ... -- --version`) and must
-    # survive so forwarded args reach the launcher instead of tripping argparse.
-    # Read the subcommand names off the parser so this can't drift as
-    # subcommands are added.
-    subparsers_action = next(
-        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
-    )
-    subcommands = set(subparsers_action.choices)
-    sep_idx = argv.index("--") if "--" in argv else len(argv)
-    cmd_idx = next((i for i, t in enumerate(argv) if t in subcommands), len(argv))
-    if sep_idx < cmd_idx:
-        argv.pop(sep_idx)
-    args = parser.parse_args(argv)
-
+    args = parser.parse_args()
     if not hasattr(args, "func"):
         parser.print_help()
         raise SystemExit(1)
-
     try:
         args.func(args)
     except RouteBundleConfigError as exc:
-        # Route-bundle misconfiguration is normal user error, not a crash:
-        # surface the dedicated message as a one-line CLI diagnostic with a
-        # non-zero exit instead of letting it propagate as a raw traceback.
         raise SystemExit(f"error: invalid route bundle: {exc}") from exc
-    except UserConfigError as exc:
-        raise SystemExit(f"error: invalid user config: {exc}") from exc
 
 
 if __name__ == "__main__":

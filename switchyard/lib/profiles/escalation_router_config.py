@@ -42,11 +42,14 @@ class EscalationRouterConfig(BaseModel):
         judge_min_turn: First conversation turn on which the judge runs.
         judge_escalate_confirmations: Consecutive escalate verdicts required
             before the strong latch fires (``1`` pins on the first verdict).
+            Defaults to the benchmarked configuration, which reached an
+            equal-or-better solve rate while latching roughly a third as
+            often as ``1`` — the router's main cost lever.
             The confirmation streak is tracked per process: with multiple
             workers and no session-sticky load balancing, verdicts for one
             conversation can land on different workers and take longer to
-            accumulate. Keep ``1`` (the default) on multi-worker deployments,
-            or route conversations sticky to a worker.
+            accumulate. Set ``1`` on multi-worker deployments, or route
+            conversations sticky to a worker.
         judge_confirmation_window: Judged turns an escalate verdict stays
             live for confirmation; ``N > 1`` tolerates up to ``N - 1``
             intervening declines (recurring intermittent trouble confirms).
@@ -71,7 +74,8 @@ class EscalationRouterConfig(BaseModel):
         judge_system_prompt: Optional judge prompt override. ``None`` uses the
             built-in prompt.
         judge_timeout_s: Per-call judge timeout (seconds); the judge fails
-            open to the weak tier at timeout.
+            open to the weak tier at timeout. Defaults to the benchmarked
+            value. A judge target's own ``timeout_secs`` wins over this.
         session_key_depth: ``0`` (default) keys conversations on system +
             first user message (the shared Rust session key). ``N > 0``
             extends the key with the first ``N`` post-first-user messages so
@@ -104,16 +108,16 @@ class EscalationRouterConfig(BaseModel):
     judge: LlmTarget
     fallback_target_on_evict: str
     judge_min_turn: int = Field(default=3, ge=1)
-    judge_escalate_confirmations: int = Field(default=1, ge=1)
+    judge_escalate_confirmations: int = Field(default=2, ge=1)
     judge_confirmation_window: int = Field(default=1, ge=1)
     judge_disable_reasoning: bool = True
     judge_max_completion_tokens: int | None = Field(default=None, ge=16)
     judge_dump_verdicts: bool = False
-    judge_recent_turn_window: int = Field(default=14, ge=1)
-    judge_window_message_chars: int = Field(default=300, ge=50)
-    judge_max_request_chars: int = Field(default=12_000, ge=1_000)
+    judge_recent_turn_window: int = Field(default=28, ge=1)
+    judge_window_message_chars: int = Field(default=500, ge=50)
+    judge_max_request_chars: int = Field(default=18_000, ge=1_000)
     judge_system_prompt: str | None = Field(default=None, min_length=1)
-    judge_timeout_s: float = Field(default=5.0, gt=0.0)
+    judge_timeout_s: float = Field(default=30.0, gt=0.0)
     session_key_depth: int = Field(default=0, ge=0)
     tier_timeout_s: float | None = Field(
         default=DEFAULT_DETERMINISTIC_TIER_TIMEOUT_S,

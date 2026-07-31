@@ -17,9 +17,8 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
-use libsy::algorithms::{FallThrough, Random};
-use libsy::stage_router::{PickerMode, StageClassifier};
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, State as AlgorithmState};
+use libsy::algorithms::Random;
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_server::config::load_server_state;
@@ -153,6 +152,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
         api_key: Some("test-key".to_string()),
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        max_retries: 0,
     });
     let target_models = routes
         .iter()
@@ -186,6 +186,147 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     let upstream = MockUpstream::start().await?;
     let app = build_switchyard_router(random_state(&upstream.base_url, routes)?);
     Ok((upstream, app))
+}
+
+fn empty_token_totals() -> Value {
+    json!({
+        "prompt": 0,
+        "completion": 0,
+        "cached": 0,
+        "cache_creation": 0,
+        "reasoning": 0,
+        "total": 0
+    })
+}
+
+#[tokio::test]
+async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let response = send(&app, "GET", "/v1/stats", None).await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.json()?,
+        json!({
+            "total_requests": 0,
+            "total_errors": 0,
+            "total_tokens": empty_token_totals(),
+            "models": {},
+            "tiers": {},
+            "routing_overhead": {
+                "count": 0,
+                "total_ms": 0.0,
+                "min_ms": 0.0,
+                "max_ms": 0.0,
+                "avg_ms": 0.0,
+                "p50_ms": 0.0,
+                "p99_ms": 0.0
+            },
+            "classifier": {
+                "total_requests": 0,
+                "total_errors": 0,
+                "total_tokens": empty_token_totals(),
+                "models": {},
+            },
+        })
+    );
+    assert_eq!(
+        send(&app, "GET", "/v1/routing/stats", None).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_accumulates_buffered_success_error_and_shared_routes() -> TestResult {
+    let (_upstream, app) = test_app(&[
+        ("switchyard/one", &["gemini-3.5-flash"]),
+        ("switchyard/two", &["model/unknown"]),
+    ])
+    .await?;
+    for route in ["switchyard/one", "switchyard/two"] {
+        assert_eq!(
+            send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": route,
+                    "messages": [{"role": "user", "content": "hello"}]
+                })),
+            )
+            .await?
+            .status,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/one",
+                "messages": [{"role": "user", "content": "fail"}]
+            })),
+        )
+        .await?
+        .status,
+        StatusCode::IM_A_TEAPOT
+    );
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 3);
+    assert_eq!(stats["total_errors"], 1);
+    assert_eq!(
+        stats["total_tokens"],
+        json!({
+            "prompt": 20,
+            "completion": 4,
+            "cached": 14,
+            "cache_creation": 0,
+            "reasoning": 0,
+            "total": 24
+        })
+    );
+    assert_eq!(stats["models"]["gemini-3.5-flash"]["calls"], 1);
+    assert_eq!(stats["models"]["gemini-3.5-flash"]["errors"], 1);
+    assert_eq!(stats["models"]["model/unknown"]["calls"], 1);
+    assert_eq!(stats["routing_overhead"]["count"], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_reset_returns_confirmation_and_clears_all_stats() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "hello"}]
+            })),
+        )
+        .await?
+        .status,
+        StatusCode::OK
+    );
+
+    let reset = send(&app, "POST", "/v1/stats/reset", None).await?;
+    assert_eq!(reset.status, StatusCode::OK);
+    assert_eq!(reset.json()?, json!({"status": "reset"}));
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 0);
+    assert_eq!(stats["total_errors"], 0);
+    assert_eq!(stats["total_tokens"], empty_token_totals());
+    assert_eq!(stats["models"], json!({}));
+    assert_eq!(stats["tiers"], json!({}));
+    assert_eq!(stats["routing_overhead"]["count"], 0);
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(stats["classifier"]["models"], json!({}));
+    Ok(())
 }
 
 #[tokio::test]
@@ -404,6 +545,72 @@ fn assert_in_order(haystack: &str, needles: &[&str]) {
     }
 }
 
+/// A critical tool error must reach the stage router's signal scorer, which reads
+/// the decoded conversation. The endpoint records no inbound wire format, so a
+/// scorer that parsed the raw body instead would find nothing and route every turn
+/// as if the conversation had no signals at all.
+#[tokio::test]
+async fn stage_route_escalates_on_a_signal_in_the_conversation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "fatal runtime error: out of memory"},
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/strong"),
+        "a critical error should escalate on the signals alone"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -444,6 +651,24 @@ base_threshold = 0.5
 id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_system_prompt = "diagnose before you edit"
+efficient_system_prompt = "follow the settled plan"
+
+[routes.stage.handoff_notes]
+escalation_note = "the previous model was stalling"
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
 "#,
         base_url = upstream.base_url
     ))?;
@@ -480,6 +705,18 @@ target = "weak"
     assert_eq!(calls[1]["model"], "model/classifier");
     assert_eq!(calls[2]["model"], "model/weak");
     assert_eq!(calls[3]["model"], "model/weak");
+    drop(calls);
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 3);
+    assert_eq!(stats["models"]["model/weak"]["calls"], 3);
+    assert_eq!(stats["tiers"]["weak"]["calls"], 1);
+    assert_eq!(stats["classifier"]["total_requests"], 1);
+    assert_eq!(
+        stats["classifier"]["models"]["model/classifier"]["calls"],
+        1
+    );
+    assert_eq!(stats["classifier"]["total_tokens"]["prompt"], 10);
     Ok(())
 }
 
@@ -568,76 +805,6 @@ targets = ["weak"]
         response.json()?["error"]["code"],
         "count_tokens_unsupported"
     );
-    Ok(())
-}
-
-// Build a stage_router (FallThrough) with an Anthropic `strong` tier and an
-// OpenAI `weak` tier, both pointed at the mock upstream, and register it.
-fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<ServerState> {
-    let cfg = |url: &str| HttpBackendConfig {
-        base_url: url.to_string(),
-        api_key: Some("k".to_string()),
-        extra_headers: BTreeMap::new(),
-        extra_body: BTreeMap::new(),
-    };
-    let strong: Arc<dyn RoutedLlmClient> =
-        Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
-            "strong",
-            Backend::Anthropic(cfg(&upstream.base_url)),
-            None,
-        )])?);
-    let weak: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
-        "weak",
-        Backend::OpenAiChat(cfg(&upstream.base_url)),
-        None,
-    )])?);
-    let targets = LlmTargetSet::new(vec![
-        LlmTarget {
-            semantic_name: "strong".to_string(),
-            llm_client: Some(strong),
-        },
-        LlmTarget {
-            semantic_name: "weak".to_string(),
-            llm_client: Some(weak),
-        },
-    ]);
-    let stage: Arc<dyn Algorithm> = Arc::new(
-        FallThrough::<AlgorithmState>::new_with_state(targets)
-            .with_classifier(Arc::new(StageClassifier::new(mode, 0.5))),
-    );
-    Ok(ServerState::new([("switchyard/stage".to_string(), stage)])?)
-}
-
-/// `count_tokens` is a **direct passthrough**, not a routed call, so on a stage
-/// router it goes straight to the Anthropic (`strong`) tier — bypassing the
-/// classifier cascade. This is exactly what makes it work where a completion
-/// can't: a signal-less request (as `count_tokens` always is) gives the
-/// `StageClassifier` nothing to score, so a *completion* on this bare stage
-/// router abstains — but `count_tokens` still succeeds.
-#[tokio::test]
-async fn count_tokens_on_a_stage_router_passes_through_to_the_anthropic_tier() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(stage_router_state(&upstream, PickerMode::EfficientFirst)?);
-    let body = json!({
-        "model": "switchyard/stage",
-        "messages": [{"role": "user", "content": "hi"}]
-    });
-
-    // A completion routes → the bare StageClassifier abstains on a signal-less
-    // request → error.
-    let completion = send(&app, "POST", "/v1/messages", Some(body.clone())).await?;
-    assert!(completion.text()?.contains("abstained"));
-
-    // count_tokens does NOT route — it passes through to the strong (Anthropic)
-    // tier and succeeds.
-    let count = send(&app, "POST", "/v1/messages/count_tokens", Some(body)).await?;
-    assert_eq!(count.status, StatusCode::OK);
-    assert_eq!(count.json()?["input_tokens"], 7);
-
-    // The forwarded call went to count_tokens with the strong tier's model id.
-    let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["model"], "strong");
     Ok(())
 }
 
@@ -757,6 +924,9 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
                 .and_then(|value| value.to_str().ok()),
             Some("model/a")
         );
+        // The body names the model that answered, not the route id the caller
+        // addressed, so it agrees with the routing header above.
+        assert_eq!(response.json()?["model"], "model/a");
     }
 
     let calls = upstream.calls.lock().await;
@@ -785,6 +955,64 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     assert!(response.text()?.contains("hello"));
     assert!(response.text()?.contains("data: [DONE]"));
     Ok(())
+}
+
+// SWITCH-922: every streaming codec must report the routed target, not the route
+// id the caller addressed — the route id is meaningless to anything reading the
+// trajectory (a Bench UI, a spend log, the client's own display).
+#[tokio::test]
+async fn streamed_response_model_names_the_served_model_not_the_route() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    // Each case names the JSON pointer to the model on that format's first event.
+    let cases = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            }),
+            vec!["model"],
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true
+            }),
+            vec!["message", "model"],
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hi", "stream": true}),
+            vec!["response", "model"],
+        ),
+    ];
+
+    for (path, body, pointer) in cases {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+
+        let first = first_sse_event(response.text()?)
+            .ok_or_else(|| format!("{path} produced no SSE data frames"))?;
+        let model = pointer
+            .iter()
+            .try_fold(&first, |value, key| value.get(key))
+            .and_then(Value::as_str);
+        assert_eq!(model, Some("model/a"), "{path}");
+    }
+    Ok(())
+}
+
+// Returns the first `data:` frame of an SSE body as JSON, skipping `[DONE]`.
+fn first_sse_event(body: &str) -> Option<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .find_map(|data| serde_json::from_str(data).ok())
 }
 
 #[tokio::test]
@@ -834,6 +1062,17 @@ async fn streaming_success_records_only_final_usage_and_one_latency() -> TestRes
             "unexpected delta for {name}"
         );
     }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 1);
+    assert_eq!(
+        stats["total_tokens"],
+        json!({
+            "prompt": 12, "completion": 5, "cached": 7,
+            "cache_creation": 2, "reasoning": 3, "total": 17
+        })
+    );
+    assert_eq!(stats["models"][MODEL]["model_call_latency"]["count"], 1);
+    assert_eq!(stats["models"][MODEL]["total_latency"]["count"], 1);
     Ok(())
 }
 
@@ -878,6 +1117,12 @@ async fn streaming_error_records_neither_usage_nor_latency() -> TestResult {
             "{name} changed after a failed stream"
         );
     }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["total_requests"], 1);
+    assert_eq!(stats["total_tokens"], empty_token_totals());
+    assert_eq!(stats["models"][MODEL]["calls"], 1);
+    assert_eq!(stats["models"][MODEL]["total_latency"]["count"], 0);
+    assert_eq!(stats["routing_overhead"]["count"], 1);
     Ok(())
 }
 

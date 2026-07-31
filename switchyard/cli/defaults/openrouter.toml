@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.classifier]
+id = "google/gemini-3.5-flash"
+llm_client = "openrouter"
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "moonshotai/kimi-k2.7-code"
+llm_client = "openrouter"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+min_confidence = 0.0
+session_affinity = true
+message_hash_fallback = true

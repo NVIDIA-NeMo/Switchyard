@@ -180,18 +180,21 @@ where
         _state: &mut S,
         request: &mut Request,
         _driver: Option<&crate::Driver>,
-    ) -> crate::Result<Classification> {
+    ) -> crate::Result<(Classification, Option<crate::Response>)> {
         let Some(key) = self.affinity_key(request) else {
-            return Ok(Classification::Scores(Vec::new()));
+            return Ok((Classification::Scores(Vec::new()), None));
         };
         let assigned = self.assignments.lock().get(&key).cloned();
-        Ok(Classification::Scores(match assigned {
-            Some(target) => vec![Score {
-                confidence: 1.0,
-                target,
-            }],
-            None => Vec::new(),
-        }))
+        Ok((
+            Classification::Scores(match assigned {
+                Some(target) => vec![Score {
+                    confidence: 1.0,
+                    target,
+                }],
+                None => Vec::new(),
+            }),
+            None,
+        ))
     }
 }
 
@@ -309,7 +312,7 @@ mod tests {
         state: &mut (),
         request: &mut Request,
     ) -> Result<Vec<Score>, BoxErr> {
-        match classifier.score(state, request, None).await? {
+        match classifier.score(state, request, None).await?.0 {
             Classification::Scores(scores) => Ok(scores),
             Classification::Ambiguous(_) => Err("affinity never returns ambiguous scores".into()),
         }
@@ -554,12 +557,12 @@ mod tests {
         let classifier: Arc<dyn Classifier> = router;
         let mut state = ();
 
-        let first = request(session("session-1", "agent-a"));
+        let mut first = request(session("session-1", "agent-a"));
         processor
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &first,
+                    request: &mut first,
                     decision: &FixedDecision("model-a"),
                 },
             )
@@ -578,13 +581,13 @@ mod tests {
     async fn decision_without_an_affinity_identity_is_ignored() -> Result<(), BoxErr> {
         let router = AffinityRouter::new();
         let mut state = ();
-        let unkeyed = request(Metadata::default());
+        let mut unkeyed = request(Metadata::default());
 
         router
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &unkeyed,
+                    request: &mut unkeyed,
                     decision: &FixedDecision("model-a"),
                 },
             )
@@ -608,7 +611,7 @@ mod tests {
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &second,
+                    request: &mut second,
                     decision: &FixedDecision("model-b"),
                 },
             )
@@ -617,7 +620,7 @@ mod tests {
             .process(
                 &mut state,
                 Event::Decision {
-                    request: &first,
+                    request: &mut first,
                     decision: &FixedDecision("model-a"),
                 },
             )

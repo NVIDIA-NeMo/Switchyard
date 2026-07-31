@@ -8,15 +8,22 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use libsy::algorithms::{LlmTaskClassifier, Noop, Passthrough, Random, TaskClassifierConfig};
+use libsy::algorithms::{
+    LlmTaskClassifier, Noop, Passthrough, Random, StageRouter, StageRouterConfig, TargetPrompts,
+    TaskClassifierConfig,
+};
+use libsy::stage_router::{HandoffNoteConfig, LlmFallback, PickerMode};
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+use switchyard_llm_client::{
+    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient, DEFAULT_MAX_RETRIES,
+};
 
 use crate::{ServerError, ServerResult, ServerState};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+const MAX_CONFIGURED_RETRIES: u32 = 10;
 
 /// Loads a TOML deployment file and constructs the complete server state.
 pub fn load_server_state(path: impl AsRef<Path>) -> ServerResult<ServerState> {
@@ -141,6 +148,8 @@ struct LlmClientConfig {
     api_key_env: Option<String>,
     #[serde(default)]
     extra_headers: BTreeMap<String, String>,
+    #[serde(default = "default_max_retries")]
+    max_retries: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,15 +195,48 @@ enum RouteConfig {
         #[serde(flatten)]
         classifier_config: TaskClassifierConfig,
     },
+    StageRouter {
+        id: String,
+        capable_target: String,
+        efficient_target: String,
+        /// Tier a turn falls back to when the signals are not confident.
+        picker: PickerMode,
+        confidence_threshold: f64,
+        /// Trailing tool results the signals are computed over.
+        #[serde(default)]
+        recent_turn_window: Option<usize>,
+        /// Note handed to the model a signal-driven switch routes to.
+        #[serde(default)]
+        handoff_notes: Option<HandoffNoteConfig>,
+        /// System prompt handed to each tier on every turn it serves.
+        #[serde(default)]
+        capable_system_prompt: Option<String>,
+        #[serde(default)]
+        efficient_system_prompt: Option<String>,
+        /// Capability judge consulted on turns the signals leave undecided.
+        #[serde(default)]
+        classifier: Option<StageClassifierConfig>,
+    },
+}
+
+/// The judge a `stage_router` route falls through to, and how it routes.
+#[derive(Debug, Deserialize)]
+struct StageClassifierConfig {
+    /// Target the judge is called through. Not a routing destination.
+    target: String,
+    #[serde(flatten)]
+    config: TaskClassifierConfig,
 }
 
 impl RouteConfig {
     fn id(&self) -> &str {
         use RouteConfig::*;
         match self {
-            Noop { id } | Random { id, .. } | LlmClassifier { id, .. } | Passthrough { id, .. } => {
-                id
-            }
+            Noop { id }
+            | Random { id, .. }
+            | LlmClassifier { id, .. }
+            | Passthrough { id, .. }
+            | StageRouter { id, .. } => id,
         }
     }
 }
@@ -208,6 +250,11 @@ fn build_backend(
     if base_url.is_empty() {
         return Err(ServerError::new(format!(
             "llm client {client_name} base_url must not be empty"
+        )));
+    }
+    if config.max_retries > MAX_CONFIGURED_RETRIES {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
     let api_key = config
@@ -237,12 +284,17 @@ fn build_backend(
         api_key,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        max_retries: config.max_retries,
     };
     Ok(match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
         ClientFormat::OpenAiResponses => Backend::OpenAiResponses(http),
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
     })
+}
+
+const fn default_max_retries() -> u32 {
+    DEFAULT_MAX_RETRIES
 }
 
 fn build_algorithm(
@@ -286,7 +338,65 @@ fn build_algorithm(
                     })?;
             Ok(Arc::new(algorithm))
         }
+        RouteConfig::StageRouter {
+            capable_target,
+            efficient_target,
+            picker,
+            confidence_threshold,
+            recent_turn_window,
+            handoff_notes,
+            capable_system_prompt,
+            efficient_system_prompt,
+            classifier,
+            ..
+        } => {
+            let capable = resolve_target(route_name, capable_target, targets)?;
+            let efficient = resolve_target(route_name, efficient_target, targets)?;
+            let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
+            config.recent_window = *recent_turn_window;
+            config.handoff_notes = handoff_notes.clone();
+            config.tier_prompts = tier_prompts(
+                &capable.semantic_name,
+                capable_system_prompt.as_deref(),
+                &efficient.semantic_name,
+                efficient_system_prompt.as_deref(),
+            );
+            // The judge is called through its own target, so it is not a routing
+            // destination and stays out of the tier pair.
+            config.llm_fallback = classifier
+                .as_ref()
+                .map(|classifier| {
+                    resolve_target(route_name, &classifier.target, targets).map(|judge_target| {
+                        LlmFallback {
+                            judge_target,
+                            config: classifier.config.clone(),
+                        }
+                    })
+                })
+                .transpose()?;
+            let algorithm = StageRouter::new(capable, efficient, config).map_err(|error| {
+                ServerError::new(format!("stage_router route {route_name}: {error}"))
+            })?;
+            Ok(Arc::new(algorithm))
+        }
     }
+}
+
+/// Keys each configured system prompt by the target it belongs to.
+fn tier_prompts(
+    capable: &str,
+    capable_prompt: Option<&str>,
+    efficient: &str,
+    efficient_prompt: Option<&str>,
+) -> TargetPrompts {
+    let mut prompts = TargetPrompts::default();
+    if let Some(prompt) = capable_prompt {
+        prompts = prompts.with(capable, prompt);
+    }
+    if let Some(prompt) = efficient_prompt {
+        prompts = prompts.with(efficient, prompt);
+    }
+    prompts
 }
 
 fn resolve_targets<'a>(
@@ -525,6 +635,53 @@ target = "weak"
             Some(&json!(false))
         );
         Ok(())
+    }
+
+    #[test]
+    fn retry_budget_defaults_and_accepts_an_override() -> ServerResult<()> {
+        let default: ServerConfig = toml::from_str(VALID_CONFIG).map_err(|error| {
+            ServerError::new(format!("failed to parse default config: {error}"))
+        })?;
+        let Some(primary) = default.llm_clients.get("primary") else {
+            return Err(ServerError::new("primary llm client is missing"));
+        };
+        assert_eq!(primary.max_retries, DEFAULT_MAX_RETRIES);
+
+        let explicit = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nmax_retries = 0",
+            1,
+        );
+        let config: ServerConfig = toml::from_str(&explicit).map_err(|error| {
+            ServerError::new(format!("failed to parse explicit retry config: {error}"))
+        })?;
+        let Some(primary) = config.llm_clients.get("primary") else {
+            return Err(ServerError::new("primary llm client is missing"));
+        };
+        assert_eq!(primary.max_retries, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_budget_rejects_negative_values() {
+        let invalid = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nmax_retries = -1",
+            1,
+        );
+        assert!(error_message(&invalid).contains("max_retries"));
+    }
+
+    #[test]
+    fn retry_budget_rejects_excessive_values() {
+        let invalid = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nmax_retries = 11",
+            1,
+        );
+        assert!(
+            error_message(&invalid).contains("llm client primary max_retries must be at most 10")
+        );
     }
 
     #[test]

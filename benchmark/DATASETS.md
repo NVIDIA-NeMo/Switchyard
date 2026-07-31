@@ -97,7 +97,7 @@ Pass the generated directory to the runner:
 ```bash
 bash benchmark/run-baseline.sh \
   --harbor-path benchmark/datasets/terminal-bench-2-closed-book \
-  --routing-profiles benchmark/routing-profiles/tb-lite-llm-classifier-opus-kimi-gemini.yaml \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
   --model switchyard \
   --agent codex \
   --n-tasks 1 \
@@ -105,8 +105,8 @@ bash benchmark/run-baseline.sh \
   --max-retries 0
 ```
 
-Use a routing profile and `--model` that match the route key you want Harbor agents to call. Omit
-`--routing-profiles` for a direct-upstream comparison, as described in the main README.
+Use a server config and `--model` that match the route id you want Harbor agents to call. Omit
+`--server-config` for a direct-upstream comparison, as described in the main README.
 
 Before reporting numbers for a new dataset, inspect:
 
@@ -117,7 +117,8 @@ run_manifest.json
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
 
-For Switchyard runs, also inspect `routing_stats_final.json`.
+For Switchyard runs, also inspect `server_metrics_final.prom` and
+`routing_stats_final.json`.
 
 ## What The Rewriter Changes
 

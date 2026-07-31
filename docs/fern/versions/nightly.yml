@@ -10,12 +10,6 @@ navigation:
         path: ../../getting_started.mdx
       - page: "Known Issues in 0.1.0"
         path: ../../known_issues.mdx
-  - section: "Guides"
-    contents:
-      - page: "Agent Launchers"
-        path: ../../guides/agent_launchers.mdx
-      - page: "Skill Distillation"
-        path: ../../skill_distillation.mdx
   - section: "Concepts"
     contents:
       - page: "Core Concepts"

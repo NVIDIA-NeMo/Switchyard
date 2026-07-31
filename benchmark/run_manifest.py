@@ -117,14 +117,14 @@ def dataset_fingerprint(
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def snapshot_routing_profiles(source: Path | None, run_dir: Path) -> Path | None:
-    """Copy the route bundle used for the run into the run directory."""
+def snapshot_server_config(source: Path | None, run_dir: Path) -> Path | None:
+    """Copy the Rust server configuration used for the run."""
     if source is None:
         return None
     if not source.is_file():
         raise FileNotFoundError(source)
 
-    dest = run_dir.resolve() / "routing_profiles" / source.name
+    dest = run_dir.resolve() / "server_config" / source.name
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, dest)
     return dest
@@ -223,116 +223,15 @@ def _copy_if_present(source: Path | None, dest: Path | None) -> str:
     return "present"
 
 
-_TOKEN_FIELDS = (
-    "prompt_tokens",
-    "cached_tokens",
-    "cache_creation_tokens",
-    "completion_tokens",
-    "reasoning_tokens",
-    "total_tokens",
-)
-
-
-def _new_section() -> dict[str, Any]:
-    return {"calls": 0, "totals": dict.fromkeys(_TOKEN_FIELDS, 0), "_buckets": {}}
-
-
-def _accumulate(section: dict[str, Any], record: dict[str, Any]) -> None:
-    section["calls"] += 1
-    model = record.get("model") or "unknown"
-    tier = record.get("tier") or ""
-    bucket = section["_buckets"].setdefault(
-        (model, tier),
-        {"model": model, "tier": tier, "calls": 0, **dict.fromkeys(_TOKEN_FIELDS, 0)},
-    )
-    bucket["calls"] += 1
-    for field in _TOKEN_FIELDS:
-        value = record.get(field)
-        value = value if isinstance(value, int) else 0
-        bucket[field] += value
-        section["totals"][field] += value
-
-
-def _finalize_section(section: dict[str, Any]) -> None:
-    buckets = section.pop("_buckets")
-    section["models"] = [buckets[key] for key in sorted(buckets)]
-
-
-def _kept_sessions(records: list[dict[str, Any]]) -> set[str]:
-    """The kept attempt of each trial is its latest-timestamped session.
-
-    Harbor retries sequentially and keeps only the final attempt, so within a
-    trial the session with the newest timestamp is the one that survived.
-    Records without a ``trial_id`` are all treated as kept (no netting).
-    """
-    latest: dict[str, tuple[str, str]] = {}
-    for record in records:
-        trial = record.get("trial_id")
-        session = record.get("session_id")
-        if not trial or not session:
-            continue
-        ts = record.get("ts") or ""
-        if trial not in latest or ts > latest[trial][0]:
-            latest[trial] = (ts, session)
-    return {session for _, session in latest.values()}
-
-
-def summarize_routing_log(log_path: Path) -> dict[str, Any]:
-    """Roll the routing log into per-task ``final`` and ``retries`` sections.
-
-    Requests are grouped by trial; the latest attempt in each trial is ``final``
-    and earlier attempts are ``retries`` (see :func:`_kept_sessions`).
-    """
-    by_task: dict[str, list[dict[str, Any]]] = {}
-    total_requests = 0
-    for raw in log_path.read_text().splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            record = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
-        total_requests += 1
-        by_task.setdefault(record.get("task") or "unattributed", []).append(record)
-
-    tasks: dict[str, dict[str, Any]] = {}
-    for task, records in by_task.items():
-        kept = _kept_sessions(records)
-        entry = {
-            "requests": len(records),
-            "n_retries": 0,
-            "final": _new_section(),
-            "retries": _new_section(),
-        }
-        retry_sessions: set[str] = set()
-        for record in records:
-            session = record.get("session_id")
-            # A record is a retry only when it has a trial_id and its session was
-            # not the kept one; untagged records default to final.
-            is_retry = bool(record.get("trial_id")) and session not in kept
-            _accumulate(entry["retries" if is_retry else "final"], record)
-            if is_retry and session:
-                retry_sessions.add(session)
-        entry["n_retries"] = len(retry_sessions)
-        _finalize_section(entry["final"])
-        _finalize_section(entry["retries"])
-        tasks[task] = entry
-    return {"total_requests": total_requests, "tasks": tasks}
-
-
 def finalize_manifest(
     path: Path,
     *,
     harbor_rc: int | None,
     harbor_job_dir: Path | None = None,
+    server_metrics: Path | None = None,
     routing_stats: Path | None = None,
-    routing_log: Path | None = None,
-    routing_stats_by_task: Path | None = None,
 ) -> int:
-    """Copy run artifacts into place, roll up the routing log, and record outcomes.
+    """Copy run artifacts into place and record outcomes.
 
     Returns 0 on success, 1 when the manifest is missing.
     """
@@ -348,6 +247,14 @@ def finalize_manifest(
     outcomes["harbor_result_json_status"] = _copy_if_present(harbor_source, harbor_dest)
     if harbor_job_dir is not None:
         outcomes["harbor_job_dir"] = str(harbor_job_dir.resolve())
+
+    metrics_dest = (
+        Path(outcomes["server_metrics_prom"]) if outcomes.get("server_metrics_prom") else None
+    )
+    if outcomes.get("server_metrics_prom_status") != "not-requested":
+        if server_metrics is None and metrics_dest is not None:
+            server_metrics = metrics_dest
+        outcomes["server_metrics_prom_status"] = _copy_if_present(server_metrics, metrics_dest)
 
     stats_dest = (
         Path(outcomes["routing_stats_json"]) if outcomes.get("routing_stats_json") else None
@@ -369,20 +276,6 @@ def finalize_manifest(
             if strip_source is not None:
                 break
         closed_book["proxy_strip_log_status"] = _copy_if_present(strip_source, strip_dest)
-
-    if routing_stats_by_task is not None:
-        status = "missing"
-        if routing_log is not None and routing_log.is_file():
-            try:
-                summary = summarize_routing_log(routing_log)
-                routing_stats_by_task.write_text(
-                    json.dumps(summary, indent=2, sort_keys=False) + "\n"
-                )
-                status = "present"
-            except OSError:
-                status = "missing"
-        outcomes["routing_stats_by_task_json"] = str(routing_stats_by_task.resolve())
-        outcomes["routing_stats_by_task_json_status"] = status
 
     outcomes["harbor_rc"] = harbor_rc
     outcomes["completed_at"] = _iso_timestamp()
@@ -422,12 +315,11 @@ def _cli_main(argv: list[str] | None = None) -> int:
     write.add_argument("--server-port", type=int, default=0)
     write.add_argument("--server-argv-json", default="[]")
     write.add_argument("--server-config-json", default="{}")
-    write.add_argument("--classifier-prompts-json", default="{}")
     write.add_argument("--harbor-server-url", default="")
     write.add_argument("--harbor-base-url", default="")
     write.add_argument("--upstream-base-url", default="")
     write.add_argument("--upstream-api-key-env", default="")
-    write.add_argument("--routing-profiles", type=Path, default=None)
+    write.add_argument("--server-config", type=Path, default=None)
     write.add_argument("--route-model", default="")
     write.add_argument("--harbor-command-json", default="[]")
     write.add_argument("--dataset-label", default="")
@@ -452,6 +344,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
     write.add_argument("--run-dir", type=Path, required=True)
     write.add_argument("--log-path", type=Path, required=True)
     write.add_argument("--harbor-result-json", type=Path, required=True)
+    write.add_argument("--server-metrics-prom", type=Path, default=None)
+    write.add_argument("--server-metrics-status", default="not-requested")
     write.add_argument("--routing-stats-json", type=Path, required=True)
     write.add_argument("--routing-stats-status", default="predicted")
     write.add_argument("--extra", action="append", default=[])
@@ -460,9 +354,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
     finalize.add_argument("--manifest", type=Path, required=True)
     finalize.add_argument("--harbor-rc", type=int, default=None)
     finalize.add_argument("--harbor-job-dir", type=Path, default=None)
+    finalize.add_argument("--server-metrics", type=Path, default=None)
     finalize.add_argument("--routing-stats", type=Path, default=None)
-    finalize.add_argument("--routing-log", type=Path, default=None)
-    finalize.add_argument("--routing-stats-by-task", type=Path, default=None)
 
     ns = parser.parse_args(argv)
     if ns.command == "finalize":
@@ -470,27 +363,22 @@ def _cli_main(argv: list[str] | None = None) -> int:
             ns.manifest,
             harbor_rc=ns.harbor_rc,
             harbor_job_dir=ns.harbor_job_dir,
+            server_metrics=ns.server_metrics,
             routing_stats=ns.routing_stats,
-            routing_log=ns.routing_log,
-            routing_stats_by_task=ns.routing_stats_by_task,
         )
     if ns.command != "write":
         parser.print_help()
         return 2
 
     task_list = ns.task_list_file.resolve() if ns.task_list_file else None
-    routing_profiles = ns.routing_profiles.resolve() if ns.routing_profiles else None
+    server_config = ns.server_config.resolve() if ns.server_config else None
     harbor_path = ns.harbor_path.resolve() if ns.harbor_path else None
     codex_model_catalog = (
         ns.codex_model_catalog.resolve() if ns.codex_model_catalog else None
     )
     run_dir = ns.run_dir.resolve()
-    classifier_prompts = _json_arg(ns.classifier_prompts_json, {})
-    if not isinstance(classifier_prompts, dict):
-        print("ERROR: --classifier-prompts-json must decode to a JSON object")
-        return 2
     try:
-        routing_profiles_snapshot = snapshot_routing_profiles(routing_profiles, run_dir)
+        server_config_snapshot = snapshot_server_config(server_config, run_dir)
         dataset_manifest_snapshot = snapshot_dataset_manifest(harbor_path, run_dir)
     except OSError as exc:
         print(f"ERROR: failed to snapshot run inputs: {exc}")
@@ -550,20 +438,17 @@ def _cli_main(argv: list[str] | None = None) -> int:
             "port": ns.server_port or None,
             "argv": _json_arg(ns.server_argv_json, []),
             "config": _json_arg(ns.server_config_json, {}),
-            "classifier_prompts": classifier_prompts,
             "harbor_server_url": _opt(ns.harbor_server_url),
             "harbor_base_url": _opt(ns.harbor_base_url),
             "upstream_base_url": _opt(ns.upstream_base_url),
             "upstream_api_key_env": _opt(ns.upstream_api_key_env),
-            "routing_profiles": str(routing_profiles) if routing_profiles else None,
-            "routing_profiles_digest": (
-                path_digest(routing_profiles) if routing_profiles else None
+            "server_config": str(server_config) if server_config else None,
+            "server_config_digest": path_digest(server_config) if server_config else None,
+            "server_config_snapshot": (
+                str(server_config_snapshot) if server_config_snapshot else None
             ),
-            "routing_profiles_snapshot": (
-                str(routing_profiles_snapshot) if routing_profiles_snapshot else None
-            ),
-            "routing_profiles_snapshot_digest": (
-                path_digest(routing_profiles_snapshot) if routing_profiles_snapshot else None
+            "server_config_snapshot_digest": (
+                path_digest(server_config_snapshot) if server_config_snapshot else None
             ),
             "route_model": _opt(ns.route_model),
         },
@@ -579,6 +464,10 @@ def _cli_main(argv: list[str] | None = None) -> int:
             "log_path": str(ns.log_path.resolve()),
             "harbor_result_json": str(ns.harbor_result_json.resolve()),
             "harbor_result_json_status": "predicted",
+            "server_metrics_prom": (
+                str(ns.server_metrics_prom.resolve()) if ns.server_metrics_prom else None
+            ),
+            "server_metrics_prom_status": ns.server_metrics_status,
             "routing_stats_json": str(ns.routing_stats_json.resolve()),
             "routing_stats_json_status": ns.routing_stats_status,
             "harbor_rc": None,

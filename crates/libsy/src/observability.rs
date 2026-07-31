@@ -147,7 +147,11 @@ pub(crate) async fn observe_run(
     let algorithm = algorithm_label(&ctx);
     record_run(algorithm, duration, &result, &Span::current());
     if result.is_ok() {
-        record_routing_overhead(algorithm, duration, driver.routed_call_duration());
+        if let Some(overhead) =
+            record_routing_overhead(algorithm, duration, driver.routed_call_duration())
+        {
+            driver.observe_routing_overhead(overhead);
+        }
     }
     result
 }
@@ -197,20 +201,23 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
 /// Records what routing cost on top of the call that served the run: classifier
 /// calls, target resolution, decision publishing. A run with no routed call has
 /// nothing to subtract, so it records nothing.
-fn record_routing_overhead(algorithm: &str, run: Duration, routed_call: Option<Duration>) {
-    let Some(routed_call) = routed_call else {
-        return;
-    };
+fn record_routing_overhead(
+    algorithm: &str,
+    run: Duration,
+    routed_call: Option<Duration>,
+) -> Option<Duration> {
+    let routed_call = routed_call?;
     // Saturating: the two clocks start a moment apart, so a run that is all
     // routed call can come out fractionally negative.
-    let overhead_ms = run.saturating_sub(routed_call).as_secs_f64() * 1000.0;
+    let overhead = run.saturating_sub(routed_call);
     meter()
         .f64_histogram("switchyard.routing_overhead_ms")
         .build()
         .record(
-            overhead_ms,
+            overhead.as_secs_f64() * 1000.0,
             &[KeyValue::new("algorithm", algorithm.to_string())],
         );
+    Some(overhead)
 }
 
 /// Records the resolution of one offloaded model call: the call counter and

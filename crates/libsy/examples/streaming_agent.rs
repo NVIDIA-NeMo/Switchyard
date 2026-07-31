@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
         raw_request: None,
         metadata: None,
     };
-    let stream = algo.run_stream(Context::default(), request);
+    let stream = algo.run_stream(Context::default(), request, None);
     tokio::pin!(stream);
 
     while let Some(step) = stream.next().await {

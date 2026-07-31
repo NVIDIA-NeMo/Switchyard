@@ -8,6 +8,7 @@ mod errors;
 mod interop;
 mod libsy_bindings;
 mod py_serde;
+mod server_bindings;
 mod translation;
 
 #[pymodule]
@@ -17,5 +18,6 @@ fn _switchyard_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
     interop::register(module)?;
     component_bindings::register(module)?;
     libsy_bindings::register(module)?;
+    server_bindings::register(module)?;
     Ok(())
 }

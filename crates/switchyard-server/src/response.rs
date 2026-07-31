@@ -14,21 +14,23 @@ use crate::sse::frame_stream;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
-/// Encodes a libsy response into the endpoint's wire format.
+/// Encodes a libsy response into the endpoint's wire format, reporting
+/// `served_model` as the response model so the body names the model that
+/// answered rather than the route the caller addressed.
 pub(crate) fn into_http_response(
     response: AlgorithmResponse,
     target_format: WireFormat,
-    requested_model: Option<String>,
+    served_model: Option<String>,
 ) -> Result<HttpResponse, BoxError> {
     match response.llm_response {
         LlmResponse::Agg(response) => Ok(Json(encode_aggregated_response(
             &response,
             target_format,
-            requested_model.as_deref(),
+            served_model.as_deref(),
         )?)
         .into_response()),
         LlmResponse::Stream(stream) => Ok(frame_stream(
-            encode_stream(stream, target_format, requested_model)?,
+            encode_stream(stream, target_format, served_model)?,
             target_format,
         )
         .into_response()),

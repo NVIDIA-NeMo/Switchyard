@@ -3,11 +3,13 @@
 
 //! Response usage and full-turn latency metrics for routed requests.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use libsy::{LlmResponse, LlmResponseChunk, Response, Usage};
 use opentelemetry::{global, KeyValue};
+
+use crate::stats::{StatsAccumulator, TokenUsage};
 
 /// Observes a routed response without changing its aggregate or streaming contents.
 pub(crate) fn observe(
@@ -15,6 +17,8 @@ pub(crate) fn observe(
     model: &str,
     tier: Option<&str>,
     started: Instant,
+    stats: StatsAccumulator,
+    cache_eligible: f64,
 ) -> Response {
     let Response {
         llm_response,
@@ -25,8 +29,14 @@ pub(crate) fn observe(
 
     let llm_response = match llm_response {
         LlmResponse::Agg(agg) => {
-            record_usage(&agg.usage, &model, tier.as_deref());
-            record_latency(&model, tier.as_deref(), started);
+            record_terminal(
+                &stats,
+                &agg.usage,
+                &model,
+                tier.as_deref(),
+                started,
+                cache_eligible,
+            );
             LlmResponse::Agg(agg)
         }
         LlmResponse::Stream(mut stream) => {
@@ -49,10 +59,14 @@ pub(crate) fn observe(
                         return;
                     }
                 }
-                if let Some(usage) = latest_usage {
-                    record_usage(&usage, &model, tier.as_deref());
-                }
-                record_latency(&model, tier.as_deref(), started);
+                record_terminal(
+                    &stats,
+                    &latest_usage.unwrap_or_default(),
+                    &model,
+                    tier.as_deref(),
+                    started,
+                    cache_eligible,
+                );
             };
             LlmResponse::Stream(Box::pin(wrapped))
         }
@@ -62,6 +76,46 @@ pub(crate) fn observe(
         llm_response,
         metadata,
     }
+}
+
+pub(crate) fn token_usage(usage: &Usage) -> TokenUsage {
+    let cached_tokens = usage.cached_input_tokens().unwrap_or(0);
+    let cache_creation_tokens = usage.cache_creation_input_tokens().unwrap_or(0);
+    TokenUsage {
+        prompt_tokens: usage
+            .input_tokens
+            .unwrap_or(0)
+            .saturating_add(cached_tokens)
+            .saturating_add(cache_creation_tokens),
+        completion_tokens: usage.output_tokens.unwrap_or(0),
+        cached_tokens,
+        cache_creation_tokens,
+        cacheable_prompt_tokens: 0,
+        reasoning_tokens: usage.reasoning_tokens.unwrap_or(0),
+    }
+}
+
+/// Records final usage and latency in both OpenTelemetry metrics and JSON stats.
+fn record_terminal(
+    stats: &StatsAccumulator,
+    usage: &Usage,
+    model: &str,
+    tier: Option<&str>,
+    started: Instant,
+    cache_eligible: f64,
+) {
+    let total_latency = started.elapsed();
+    record_usage(usage, model, tier);
+    record_latency(model, tier, total_latency);
+    let mut token_usage = token_usage(usage);
+    token_usage.cacheable_prompt_tokens =
+        (token_usage.prompt_tokens as f64 * cache_eligible).round() as u64;
+    stats.record_usage(
+        model,
+        token_usage,
+        total_latency.as_secs_f64() * 1_000.0,
+        tier,
+    );
 }
 
 fn attributes(model: &str, tier: Option<&str>) -> Vec<KeyValue> {
@@ -98,12 +152,9 @@ fn record_usage(usage: &Usage, model: &str, tier: Option<&str>) {
     }
 }
 
-fn record_latency(model: &str, tier: Option<&str>, started: Instant) {
+fn record_latency(model: &str, tier: Option<&str>, latency: Duration) {
     global::meter("switchyard")
         .f64_histogram("switchyard.total_latency_ms")
         .build()
-        .record(
-            started.elapsed().as_secs_f64() * 1000.0,
-            &attributes(model, tier),
-        );
+        .record(latency.as_secs_f64() * 1000.0, &attributes(model, tier));
 }

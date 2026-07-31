@@ -48,16 +48,17 @@ pub fn decode_aggregated_response(body: &Value, wire_format: WireFormat) -> Resu
 }
 
 /// Encodes a buffered aggregate into `wire_format`'s JSON body, stamping
-/// `requested_model` over the upstream id so the caller sees the model it asked for.
+/// `served_model` over the encoded id so the caller sees which model answered.
+/// Passing `None` leaves the id the upstream reported.
 pub fn encode_aggregated_response(
     agg: &AggLlmResponse,
     wire_format: WireFormat,
-    requested_model: Option<&str>,
+    served_model: Option<&str>,
 ) -> Result<Value> {
     let mut body = DEFAULT_TRANSLATION_ENGINE
         .encode_response(wire_format, agg, &DEFAULT_TRANSLATION_POLICY)?
         .body;
-    if let (Some(model), Value::Object(object)) = (requested_model, &mut body) {
+    if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
     Ok(body)
@@ -75,13 +76,14 @@ pub type RawEventStream = Pin<
 
 /// Encodes a stream of IR chunks into a stream of target-format wire events.
 ///
-/// `requested_model` is exposed as the response model (via the stream state's
-/// `target_model`). The target stream codec is resolved once and reused per chunk;
-/// terminal events (`message_stop` / `response.completed`) come from `finish`.
+/// `served_model` is exposed as the response model (via the stream state's
+/// `target_model`); `None` falls back to the id observed on the source stream.
+/// The target stream codec is resolved once and reused per chunk; terminal events
+/// (`message_stop` / `response.completed`) come from `finish`.
 pub fn encode_stream(
     chunks: LlmResponseStream,
     target: WireFormat,
-    requested_model: Option<String>,
+    served_model: Option<String>,
 ) -> std::result::Result<RawEventStream, LlmClientError> {
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
@@ -94,7 +96,7 @@ pub fn encode_stream(
 
     let mut state = StreamTranslationState {
         target: Some(target.into()),
-        target_model: requested_model,
+        target_model: served_model,
         ..Default::default()
     };
     let mut chunks = chunks;
@@ -246,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregated_response_round_trips_and_restamps_model() -> Result<(), BoxError> {
+    fn aggregated_response_round_trips_and_stamps_the_served_model() -> Result<(), BoxError> {
         let body = json!({
             "id": "1",
             "model": "upstream",
@@ -260,10 +262,10 @@ mod tests {
         let agg = decode_aggregated_response(&body, WireFormat::OpenAiChat)?;
         assert_eq!(completion_text(&agg), "Hi there");
 
-        // `requested_model` overrides the encoded model.
+        // `served_model` overrides the id the upstream reported.
         let encoded =
-            encode_aggregated_response(&agg, WireFormat::OpenAiChat, Some("client-facing"))?;
-        assert_eq!(encoded["model"], "client-facing");
+            encode_aggregated_response(&agg, WireFormat::OpenAiChat, Some("served/model"))?;
+        assert_eq!(encoded["model"], "served/model");
         assert_eq!(encoded["choices"][0]["message"]["content"], "Hi there");
         Ok(())
     }
@@ -301,6 +303,64 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event["choices"][0]["finish_reason"] == "stop"));
+        Ok(())
+    }
+
+    // The served model must win over the id the source stream announced, so a
+    // routed response never reports the route the caller addressed.
+    #[test]
+    fn encode_stream_stamps_the_served_model_on_message_start() -> Result<(), BoxError> {
+        let chunks: LlmResponseStream = stream::iter(vec![
+            Ok(LlmResponseChunk::MessageStart {
+                id: Some("msg_1".to_string()),
+                model: Some("upstream/model".to_string()),
+            }),
+            Ok(LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hi".to_string(),
+            }),
+        ])
+        .boxed();
+
+        let events = block_on(
+            encode_stream(
+                chunks,
+                WireFormat::AnthropicMessages,
+                Some("served/model".to_string()),
+            )?
+            .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<Value>, BoxError>>()?;
+
+        assert_eq!(events[0]["type"], "message_start");
+        assert_eq!(events[0]["message"]["model"], "served/model");
+        Ok(())
+    }
+
+    // Without a served model the upstream id survives, so passthrough routes keep
+    // reporting whatever the provider announced.
+    #[test]
+    fn encode_stream_falls_back_to_the_source_model() -> Result<(), BoxError> {
+        let chunks: LlmResponseStream = stream::iter(vec![
+            Ok(LlmResponseChunk::MessageStart {
+                id: Some("msg_1".to_string()),
+                model: Some("upstream/model".to_string()),
+            }),
+            Ok(LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hi".to_string(),
+            }),
+        ])
+        .boxed();
+
+        let events = block_on(
+            encode_stream(chunks, WireFormat::AnthropicMessages, None)?.collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<Value>, BoxError>>()?;
+
+        assert_eq!(events[0]["message"]["model"], "upstream/model");
         Ok(())
     }
 

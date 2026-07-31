@@ -5,13 +5,16 @@
 
 pub mod config;
 mod metrics;
+mod observability;
 mod response;
 mod sse;
+mod stats;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +28,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request};
+use libsy::{
+    Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request, RunObservation,
+    RunObserver,
+};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
 use tracing::Level;
@@ -33,6 +39,9 @@ use tracing::Level;
 use switchyard_translation::{decode_request, WireFormat};
 
 use crate::response::into_http_response;
+use crate::stats::{prefix_probe, tracking_enabled_from_env, StatsAccumulator, StatsSnapshot};
+
+pub use observability::{flush_observability, initialize_observability};
 
 /// Default TCP listen backlog used by the Rust server.
 pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
@@ -75,6 +84,8 @@ pub type ServerResult<T> = std::result::Result<T, ServerError>;
 pub struct ServerState {
     routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
     metrics: prometheus::Registry,
+    stats: StatsAccumulator,
+    track_cache_eligibility: bool,
 }
 
 impl ServerState {
@@ -99,6 +110,8 @@ impl ServerState {
         Ok(Self {
             routes: Arc::new(entries),
             metrics,
+            stats: StatsAccumulator::default(),
+            track_cache_eligibility: tracking_enabled_from_env(),
         })
     }
 
@@ -147,22 +160,60 @@ pub async fn run_server(state: ServerState, options: ServerRunOptions) -> Server
         return Ok(());
     }
 
-    let listener = bind_tcp_listener(options.addr, options.backlog)?;
-    let bound_addr = listener.local_addr().map_err(server_io_error)?;
-    let server_options = ServerRunOptions {
-        addr: bound_addr,
-        ..options
-    };
-    eprintln!("{}", startup_banner(&server_options, &state));
-    let router = build_switchyard_router(state);
-    if let Some(tls) = server_options.tls {
-        serve_tls(listener, router, tls).await
-    } else {
-        serve(listener, router).await
+    let server = BoundServer::bind(state, options)?;
+    eprintln!("{}", server.startup_banner());
+    server.serve(shutdown_signal()).await
+}
+
+/// A configured server with its listening socket already bound.
+pub struct BoundServer {
+    listener: TcpListener,
+    router: Router,
+    options: ServerRunOptions,
+    state: ServerState,
+}
+
+impl BoundServer {
+    /// Binds the configured address and prepares the HTTP router.
+    pub fn bind(state: ServerState, options: ServerRunOptions) -> ServerResult<Self> {
+        let listener = bind_tcp_listener(options.addr, options.backlog)?;
+        let addr = listener.local_addr().map_err(server_io_error)?;
+        Ok(Self {
+            listener,
+            router: build_switchyard_router(state.clone()),
+            options: ServerRunOptions { addr, ..options },
+            state,
+        })
+    }
+
+    /// Returns the actual bound address, including an OS-selected port.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.options.addr
+    }
+
+    /// Serves requests until the supplied shutdown future resolves.
+    pub async fn serve(
+        self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+    ) -> ServerResult<()> {
+        if let Some(tls) = self.options.tls {
+            serve_tls(self.listener, self.router, tls, shutdown).await
+        } else {
+            serve(self.listener, self.router, shutdown).await
+        }
+    }
+
+    fn startup_banner(&self) -> String {
+        startup_banner(&self.options, &self.state)
     }
 }
 
-async fn serve_tls(listener: TcpListener, router: Router, tls: TlsOptions) -> ServerResult<()> {
+async fn serve_tls(
+    listener: TcpListener,
+    router: Router,
+    tls: TlsOptions,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> ServerResult<()> {
     if let Err(error) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
         tracing::debug!(?error, "TLS crypto provider was already installed");
     }
@@ -174,7 +225,7 @@ async fn serve_tls(listener: TcpListener, router: Router, tls: TlsOptions) -> Se
 
     let shutdown_handle = handle.clone();
     tokio::spawn(async move {
-        shutdown_signal().await;
+        shutdown.await;
         shutdown_handle.graceful_shutdown(Some(Duration::from_secs(2)));
     });
 
@@ -187,9 +238,13 @@ async fn serve_tls(listener: TcpListener, router: Router, tls: TlsOptions) -> Se
         .map_err(server_io_error)
 }
 
-async fn serve(listener: TcpListener, router: Router) -> ServerResult<()> {
+async fn serve(
+    listener: TcpListener,
+    router: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> ServerResult<()> {
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(server_io_error)
 }
@@ -197,6 +252,34 @@ async fn serve(listener: TcpListener, router: Router) -> ServerResult<()> {
 /// Ingress timestamp for one request, taken before any body is read.
 #[derive(Clone, Copy)]
 struct RequestStart(Instant);
+
+/// Maps routed call observations to backend stats, non-routed calls to classifier/judge
+/// stats, and records routing overhead once the algorithm run completes.
+fn stats_observer(stats: StatsAccumulator) -> RunObserver {
+    Arc::new(move |observation| match observation {
+        RunObservation::LlmCall(call) => {
+            let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if call.is_routed {
+                if call.is_success {
+                    stats.record_success(&call.selected_model, latency_ms, call.tier.as_deref());
+                } else {
+                    stats.record_error(&call.selected_model, call.tier.as_deref());
+                }
+            } else if call.is_success {
+                stats.record_classifier_success(
+                    call.selected_model,
+                    call.usage.as_ref().map(usage_metrics::token_usage),
+                    latency_ms,
+                );
+            } else {
+                stats.record_classifier_error(call.selected_model);
+            }
+        }
+        RunObservation::RoutingOverhead(duration) => {
+            stats.record_routing_overhead(duration.as_secs_f64() * 1_000.0);
+        }
+    })
+}
 
 /// Stamps the ingress instant into request extensions. Runs as a router layer,
 /// so it executes before the handlers' `Json` extractor buffers the body —
@@ -216,6 +299,8 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .route("/v1/models", get(models))
+        .route("/v1/stats", get(get_stats))
+        .route("/v1/stats/reset", post(reset_stats))
         .route("/metrics", get(prometheus_metrics))
         .route("/health", get(health))
         .fallback(not_found)
@@ -293,7 +378,7 @@ async fn anthropic_count_tokens(
         Ok(body) => body,
         Err(message) => return invalid_body_error(message),
     };
-    let (algorithm, request, _) = match resolve_route(
+    let (algorithm, request) = match resolve_route(
         &state,
         metadata_from_headers(&headers),
         body,
@@ -373,9 +458,8 @@ fn llm_json_body(
 
 /// Decode `body`, resolve the route named by its `model`, and build the
 /// [`Request`]. Shared by the completion and `count_tokens` handlers. Returns
-/// the resolved algorithm, the built request, and the requested route model —
-/// or an error [`Response`] (invalid body, empty `model` → 400, unknown route →
-/// 404).
+/// the resolved algorithm and the built request — or an error [`Response`]
+/// (invalid body, empty `model` → 400, unknown route → 404).
 // Both callers immediately return the `Err(Response)` as the HTTP response, so
 // the large error type is intentional, not propagated up a call stack.
 #[allow(clippy::type_complexity, clippy::result_large_err)]
@@ -384,7 +468,7 @@ fn resolve_route(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-) -> std::result::Result<(Arc<dyn Algorithm>, Request, String), Response> {
+) -> std::result::Result<(Arc<dyn Algorithm>, Request), Response> {
     let llm_request = decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(error.to_string()))?;
     let requested_model = llm_request
@@ -412,7 +496,7 @@ fn resolve_route(
         raw_request: Some(body),
         metadata: Some(metadata),
     };
-    Ok((algorithm, request, requested_model))
+    Ok((algorithm, request))
 }
 
 async fn handle_llm_request(
@@ -422,31 +506,51 @@ async fn handle_llm_request(
     body: Value,
     wire_format: WireFormat,
 ) -> Response {
-    let (algorithm, request, requested_model) =
-        match resolve_route(&state, metadata, body, wire_format) {
-            Ok(resolved) => resolved,
-            Err(response) => return response,
-        };
-    let (trace, response) = match algorithm.run(Context::default(), request).await {
+    let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
+    let (algorithm, request) = match resolve_route(&state, metadata, body, wire_format) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    let observer = stats_observer(state.stats.clone());
+    let (trace, response) = match algorithm
+        .run_observed(Context::default(), request, Some(observer))
+        .await
+    {
         Ok(result) => result,
         Err(error) => return algorithm_error(error),
     };
-    let response = if let Some(decision) = trace.last() {
+
+    // Metrics, response body, and routing header all read the same decision, so
+    // the model they name can never disagree. An empty trace leaves the body with
+    // the id the upstream reported.
+    let decision = trace.last();
+    let response = if let Some(decision) = decision {
+        let cache_eligible = cache_probe
+            .as_ref()
+            .map(|probe| {
+                state
+                    .stats
+                    .prefix_eligibility(decision.selected_model(), probe)
+            })
+            .unwrap_or(0.0);
         usage_metrics::observe(
             response,
             decision.selected_model(),
             decision.routing_tier(),
             started.0,
+            state.stats,
+            cache_eligible,
         )
     } else {
         response
     };
 
-    let mut response = match into_http_response(response, wire_format, Some(requested_model)) {
+    let served_model = decision.map(|decision| decision.selected_model().to_string());
+    let mut response = match into_http_response(response, wire_format, served_model) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
     };
-    if let Some(decision) = trace.last() {
+    if let Some(decision) = decision {
         attach_routing_headers(&mut response, decision.as_ref());
     }
     response
@@ -657,6 +761,15 @@ fn error_response(
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
     Json(model_list_payload(state.models()))
+}
+
+async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
+    Json(state.stats.snapshot())
+}
+
+async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
+    state.stats.reset();
+    Json(json!({"status": "reset"}))
 }
 
 async fn health() -> Json<Value> {

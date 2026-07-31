@@ -16,14 +16,17 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.completion_usage import CompletionUsage
 from openai.types.responses import Response as OpenAIResponse
 
+from switchyard.lib.chat_response.anthropic import AnthropicResponseStream
 from switchyard.lib.chat_response.openai_chat import ResponseStream
 from switchyard_rust.core import (
+    ChatRequest,
     ChatRequestType,
     ChatResponse,
     ChatResponseType,
+    ProxyContext,
     response_type_matches,
 )
-from switchyard_rust.translation import TranslationEngine
+from switchyard_rust.translation import TranslationEngine, sse_frame_payloads
 
 E = TranslationEngine()
 
@@ -177,11 +180,7 @@ class TestToResponses:
     def test_responses_passthrough(self):
         """Responses API completion responses pass through unchanged."""
         resp = ChatResponse.openai_responses_completion(_make_responses_api_response())
-        result = E.response_to(
-            ChatRequestType.OPENAI_RESPONSES,
-            resp,
-            original_body={"model": "gpt-4o"},
-        )
+        result = E.response_to(ChatRequestType.OPENAI_RESPONSES, resp)
         assert result is resp
 
     def test_responses_streaming_passthrough(self):
@@ -189,21 +188,13 @@ class TestToResponses:
         from switchyard.lib.chat_response.openai_responses import ResponsesApiStream
 
         resp = ChatResponse.openai_responses_stream(ResponsesApiStream(_async_iter([])))
-        result = E.response_to(
-            ChatRequestType.OPENAI_RESPONSES,
-            resp,
-            original_body={"model": "gpt-4o"},
-        )
+        result = E.response_to(ChatRequestType.OPENAI_RESPONSES, resp)
         assert result is resp
 
     def test_openai_to_responses(self):
         """OpenAI completion responses are converted to Responses API responses."""
         resp = ChatResponse.openai_completion(_make_completion(content="Hello!"))
-        result = E.response_to(
-            ChatRequestType.OPENAI_RESPONSES,
-            resp,
-            original_body={"model": "gpt-4o", "input": "Hi"},
-        )
+        result = E.response_to(ChatRequestType.OPENAI_RESPONSES, resp)
 
         assert response_type_matches(result, ChatResponseType.OPENAI_RESPONSES_COMPLETION)
         body = result.body
@@ -215,11 +206,7 @@ class TestToResponses:
     def test_anthropic_to_responses(self):
         """Anthropic responses are converted to Responses API responses."""
         resp = ChatResponse.anthropic_completion(_make_anthropic_message())
-        result = E.response_to(
-            ChatRequestType.OPENAI_RESPONSES,
-            resp,
-            original_body={"model": "gpt-4o"},
-        )
+        result = E.response_to(ChatRequestType.OPENAI_RESPONSES, resp)
 
         assert response_type_matches(result, ChatResponseType.OPENAI_RESPONSES_COMPLETION)
         assert result.body["output"][0]["content"][0]["text"] == "Hi there"
@@ -269,6 +256,134 @@ async def _collect_events(chunks: list) -> list[dict]:
 
 def _find_event(events: list[dict], event_type: str) -> dict:
     return next(ev for ev in events if ev["type"] == event_type)
+
+
+# =========================================================================
+# terminal translate() role — served-model stamping (SWITCH-922)
+# =========================================================================
+
+
+_ROUTE_ID = "switchyard"
+_SERVED_MODEL = "served/model"
+
+
+def _routed_ctx(served_model: str | None = _SERVED_MODEL) -> ProxyContext:
+    """A context shaped like one a router leaves behind for the terminal role."""
+    ctx = ProxyContext()
+    ctx.selected_model = served_model
+    return ctx
+
+
+class TestTranslateStampsTheServedModel:
+    """The client-visible ``model`` must name the model that answered.
+
+    Routers rewrite the model on their own copy of the request, so the request
+    reaching the terminal role still names the route the client addressed
+    (``switchyard`` for the benchmark bundles). Reading it from there labelled
+    every routed turn with the route id.
+    """
+
+    @pytest.mark.asyncio
+    async def test_anthropic_stream_reports_the_served_model(self):
+        request = ChatRequest.anthropic(
+            {"model": _ROUTE_ID, "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
+        )
+        response = ChatResponse.openai_stream(ResponseStream(_async_iter([_chunk(content="hi")])))
+
+        events = [ev async for ev in await E.translate(_routed_ctx(), request, response)]
+
+        assert events[0]["message"]["model"] == _SERVED_MODEL
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_reports_the_served_model(self):
+        request = ChatRequest.openai_responses({"model": _ROUTE_ID, "input": "hi"})
+        response = ChatResponse.openai_stream(ResponseStream(_async_iter([_chunk(content="hi")])))
+
+        frames = [frame async for frame in await E.translate(_routed_ctx(), request, response)]
+        payloads = [
+            payload for frame in frames for payload in sse_frame_payloads(frame)
+        ]
+
+        assert payloads[0]["response"]["model"] == _SERVED_MODEL
+
+    @pytest.mark.asyncio
+    async def test_openai_chat_stream_reports_the_served_model(self):
+        request = ChatRequest.openai_chat(
+            {"model": _ROUTE_ID, "messages": [{"role": "user", "content": "hi"}]}
+        )
+        response = ChatResponse.anthropic_stream(
+            AnthropicResponseStream(
+                _async_iter(
+                    [
+                        {
+                            "type": "message_start",
+                            "message": {
+                                "id": "msg_1",
+                                "model": "upstream/model",
+                                "role": "assistant",
+                                "content": [],
+                            },
+                        },
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": "hi"},
+                        },
+                    ]
+                )
+            )
+        )
+
+        chunks = [chunk async for chunk in await E.translate(_routed_ctx(), request, response)]
+
+        # The OpenAI-chat target yields SDK chunk objects, not dicts.
+        assert chunks[0].model == _SERVED_MODEL
+
+    @pytest.mark.asyncio
+    async def test_buffered_response_reports_the_served_model(self):
+        request = ChatRequest.anthropic(
+            {"model": _ROUTE_ID, "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
+        )
+        response = ChatResponse.openai_completion(_make_completion(model=_SERVED_MODEL))
+
+        result = await E.translate(_routed_ctx(), request, response)
+
+        assert result["model"] == _SERVED_MODEL
+
+    @pytest.mark.asyncio
+    async def test_stream_falls_back_to_the_upstream_model_without_a_selection(self):
+        """Passthrough routes keep reporting whatever the provider announced."""
+        request = ChatRequest.openai_chat(
+            {"model": _ROUTE_ID, "messages": [{"role": "user", "content": "hi"}]}
+        )
+        response = ChatResponse.anthropic_stream(
+            AnthropicResponseStream(
+                _async_iter(
+                    [
+                        {
+                            "type": "message_start",
+                            "message": {
+                                "id": "msg_1",
+                                "model": "upstream/model",
+                                "role": "assistant",
+                                "content": [],
+                            },
+                        },
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": "hi"},
+                        },
+                    ]
+                )
+            )
+        )
+
+        chunks = [
+            chunk async for chunk in await E.translate(_routed_ctx(None), request, response)
+        ]
+
+        assert chunks[0].model == "upstream/model"
 
 
 class TestStreamOpenAIToAnthropicUsage:

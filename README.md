@@ -4,168 +4,50 @@
 
 # Switchyard
 
-Switchyard is a Python proxy for LLM traffic. It routes requests across
-providers, translates between the OpenAI and Anthropic APIs, collects usage
-statistics, and lets you build typed, profile-backed routing flows with little
-boilerplate.
+Switchyard is a Rust proxy and library for LLM traffic. It routes requests
+across providers, translates between OpenAI and Anthropic APIs, records
+operational metrics, and provides typed, composable routing algorithms.
 
 **Why Switchyard?** Point a coding agent such as Claude Code or Codex at an
 open-source model. Switchyard translates between the OpenAI Chat, Anthropic
 Messages, and OpenAI Responses formats, so the agent keeps speaking its native
 API while the request is served by vLLM, NVIDIA NIM, Ollama, or any
 OpenAI-compatible endpoint. The same proxy can spread traffic across several
-models for A/B benchmarking, signal-driven stage-router escalation, or a router you
-write yourself.
-
-**Launcher routing is explicit.** By default, launchers use the built-in
-LLM-classifier router, which you tune with `--weak-model`, `--classifier-model`,
-`--profile`, and `--classifier-min-confidence`. Use `--model X` for
-single-model passthrough or `--routing-profiles FILE` for a YAML route bundle.
+models for A/B benchmarking, apply signal-driven stage routing, or run a custom
+algorithm you write yourself.
 
 ## Features
 
 - **Protocol Translation**: convert between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats
 - **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or custom routers
-- **Strong Types**: typed request/response containers for OpenAI, Anthropic, and Responses APIs
-- **Profile-Owned Routing**: typed profiles own routing, backend calls, stats, and translation wiring
-- **One-Command Launchers**: `switchyard launch claude`, `switchyard launch codex`, and `switchyard launch openclaw` spin up a local proxy and drop you into the target CLI
-- **Request Statistics**: collect per-request latency, token, and cost data
+- **Strong Types**: provider-neutral request, response, and streaming types
+- **Explicit Configuration**: TOML defines LLM clients, targets, and algorithm routes
+- **Operational Metrics**: Prometheus metrics cover requests, errors, latency, tokens, and routing overhead
 
 ## Quick Start
 
-### Install from PyPI
+Install the CLI and server dependencies:
 
 ```bash
-pip install "nemo-switchyard[cli,server]"
+uv tool install "nemo-switchyard[cli,server]"
+export OPENROUTER_API_KEY="sk-or-..."
 ```
 
-### Install from source for local use (requires uv)
+Launch a coding agent through the packaged OpenRouter deployment:
 
 ```bash
-git clone git@github.com:NVIDIA-NeMo/Switchyard.git
-cd Switchyard
-uv tool install --editable '.[server,cli]'
+switchyard launch claude --model switchyard
+switchyard launch codex --model switchyard
 ```
 
-### Install from source for contributors (requires uv)
+Pass a custom native deployment when needed:
 
 ```bash
-git clone git@github.com:NVIDIA-NeMo/Switchyard.git
-cd Switchyard
-uv sync
-uv run switchyard ...
+switchyard launch claude --model my-route --config routes.toml
 ```
 
-### 1. Launch Claude Code, Codex, or OpenClaw through Switchyard
-
-Create an OpenRouter account at [openrouter.ai](https://openrouter.ai/) and
-generate an API key from the [OpenRouter keys page](https://openrouter.ai/keys),
-then export it:
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-export OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
-switchyard launch claude --model openai/gpt-4o-mini --api-key "$OPENROUTER_API_KEY" --base-url "$OPENROUTER_BASE_URL"
-switchyard launch codex --model openai/gpt-4o-mini --api-key "$OPENROUTER_API_KEY" --base-url "$OPENROUTER_BASE_URL"
-switchyard launch openclaw --model openai/gpt-4o-mini --api-key "$OPENROUTER_API_KEY" --base-url "$OPENROUTER_BASE_URL"
-```
-
-Each launcher starts a local proxy, points the agent at it, and shuts the proxy
-down when the agent exits. Use `--model` for single-model passthrough or
-`--routing-profiles` for a route bundle:
-
-```bash
-switchyard launch claude --model openai/gpt-4o-mini --base-url https://openrouter.ai/api/v1       # single-model passthrough
-switchyard --routing-profiles routes.yaml -- launch claude                                        # route bundle
-```
-
-> **Bedrock-backed profile caveat (Claude Code + MCP):** Bedrock enforces a 64-character `toolSpec.name` cap. Claude Code's MCP bridge can auto-inject longer tool names, producing `BedrockException` 400s on tool-bearing requests. If you use a Bedrock-backed route and hit this, swap to an OpenAI-compatible model with `--model openai/gpt-4o` or a routing-profile YAML.
-
-See [Agent Launchers](docs/guides/agent_launchers.mdx) for supported harness
-versions, model requirements, troubleshooting, and Claude Code `/model` picker
-aliasing.
-
-### 2. Run a standalone Python server
-
-Define one or more client-facing routes in YAML. A complete OpenRouter-backed
-random-routing bundle looks like this:
-
-```yaml
-defaults:
-  api_key: ${OPENROUTER_API_KEY}
-  base_url: https://openrouter.ai/api/v1
-  format: openai
-
-routes:
-  smart:
-    type: random_routing
-    strong:
-      model: openai/gpt-4o
-    weak:
-      model: openai/gpt-4o-mini
-    strong_probability: 0.3
-    fallback_target_on_evict: strong
-```
-
-Serve it as a proxy. The route name is exposed as a model ID, and clients
-select it through the request's `model` field:
-
-```bash
-switchyard --routing-profiles routes.yaml -- serve --port 4000
-curl http://localhost:4000/v1/models
-curl http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "smart", "messages": [{"role": "user", "content": "hi"}]}'
-```
-
-```bash
-switchyard --routing-profiles routes.yaml -- launch claude
-switchyard --routing-profiles routes.yaml -- configure --target provider \
-  --provider openrouter --api-key "$OPENROUTER_API_KEY" \
-  --base-url https://openrouter.ai/api/v1 --no-tui --no-model-discovery
-```
-
-Non-interactive `configure` does not read provider credentials from the routing
-bundle; pass `--api-key` explicitly when persisting the bundle for CI.
-
-The Rust `switchyard-server` binary has a separate explicit TOML schema for
-LLM clients, targets, and libsy algorithms. See
-[`crates/switchyard-server/README.md`](crates/switchyard-server/README.md).
-
-For profile selection and full configuration examples, start with
-[Routing Overview](docs/routing_algorithms/overview.mdx), then open the
-strategy-specific page:
-
-- [Random Routing](docs/routing_algorithms/random_routing.mdx)
-- [LLM Classifier Routing](docs/routing_algorithms/llm_classifier_routing.mdx)
-- [Stage-Router Routing](docs/routing_algorithms/stage_router_routing.mdx)
-
-For multi-turn classifier sessions, see
-[Session Affinity (Sticky Routing)](docs/routing_algorithms/sticky_routing.mdx).
-
-### 3. Use as a Python library
-
-```python
-import asyncio
-
-from switchyard import ChatRequest, PassthroughProfileConfig, ProfileSwitchyard
-
-switchyard = ProfileSwitchyard(PassthroughProfileConfig(
-    api_key="sk-...",
-    base_url="https://api.openai.com/v1",
-).build())
-
-async def main():
-    request = ChatRequest.openai_chat({
-        "model": "gpt-4o",
-        "messages": [{"role": "user", "content": "What is 2+2?"}],
-    })
-    response = await switchyard.call(request)
-    # call() returns a JSON-compatible dict in the OpenAI Chat Completions shape.
-    print(response["choices"][0]["message"]["content"])
-
-asyncio.run(main())
-```
+The deployment schema belongs in the
+[`switchyard-server` README](crates/switchyard-server/README.md).
 
 ## Architecture
 
@@ -183,60 +65,30 @@ flowchart LR
 
 Clients keep their native OpenAI or Anthropic API format. Switchyard picks a
 configured backend, forwards the request in that backend's own format, and
-translates the response back into the shape the client expects. See
-[Architecture](docs/architecture.mdx) for the system context and the full
-request flow.
-
-## Installation Options
-
-Install from PyPI:
-
-```bash
-pip install nemo-switchyard
-```
-
-Optional extras:
-
-```bash
-pip install "nemo-switchyard[server]"   # FastAPI / Uvicorn HTTP endpoints
-pip install "nemo-switchyard[cli]"      # Interactive CLI launchers (Claude / Codex)
-pip install "nemo-switchyard[all]"      # Server, CLI, tracing, intake, and affinity-redis extras
-```
-
-See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds.
+translates the response back into the shape the client expects.
 
 ## Documentation
 
-- **[Getting Started](docs/getting_started.mdx)**: step-by-step setup, first request, troubleshooting
-- **[Known Issues](docs/known_issues.mdx)**: known issues in 0.1.0
-- **[Agent Launchers](docs/guides/agent_launchers.mdx)**: Claude Code, Codex, and OpenClaw launcher behavior
-- **[Cli Reference](docs/cli_reference.mdx)**: canonical reference for every `switchyard` subcommand and flag
-- **[Architecture](docs/architecture.mdx)**: system context and end-to-end request flow
-- **[Routing Algorithms](docs/routing_algorithms/)**: signal-driven weak/strong stage-router routing: picker layers, signal dimensions, and calibration data.
-- **[Contributing](CONTRIBUTING.md)**: dev setup, testing, CI gates, PR process
-- **[Development](DEVELOPMENT.md)**: project structure, benchmarks, conventions
-- **[Agents](AGENTS.md)**: full design philosophy and architectural patterns
+- **[`switchyard-server`](crates/switchyard-server/README.md)**: server configuration, routing algorithms, and metrics
+- **[`switchyard-libsy`](crates/libsy/README.md)**: embed routing algorithms in a Rust application
+- **[`switchyard-protocol`](crates/protocol/README.md)**: provider-neutral request, response, and streaming types
+- **[`switchyard-translation`](crates/switchyard-translation/README.md)**: request, response, and stream translation
 
-## Supported Providers
+## Supported API Formats
 
-- **OpenAI**: Chat Completions API
-- **Anthropic**: Claude Messages API
-- **OpenAI Responses API**: structured output / reasoning
-- **OpenAI-compatible APIs**: vLLM, Ollama, Azure, etc. (anything with `/v1/chat/completions`)
+The server exposes:
 
-## Requirements
+- OpenAI Chat Completions
+- OpenAI Responses
+- Anthropic Messages
 
-- Python 3.12+
-- macOS, Linux, or Windows
-- API keys for your chosen backend (OpenAI, Anthropic, etc.)
-- Linux x86_64 wheels require an x86-64-v3 / AVX2-class CPU (post 2013).
-- Linux aarch64 wheels require a Neoverse N1-class CPU (post 2020).
+Configured upstream clients support the same formats. The OpenAI Chat format
+also works with compatible servers such as vLLM, NVIDIA NIM, Ollama, and Azure.
 
 ## Community
 
 - **Issues**: [GitHub Issues](https://github.com/NVIDIA-NeMo/Switchyard/issues)
 - **Code of Conduct**: [Code of Conduct](CODE_OF_CONDUCT.md)
-- **Contributing**: [Contributing](CONTRIBUTING.md)
 
 ## License
 

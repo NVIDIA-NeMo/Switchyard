@@ -286,5 +286,13 @@ def test_session_stats_endpoint_returns_snapshot_and_404(tmp_path: Path) -> None
 
 def test_serve_parser_accepts_routing_log_file() -> None:
     parser = _build_parser()
-    args = parser.parse_args(["serve", "--routing-log-file", "tmp/routing.jsonl"])
+    args = parser.parse_args(
+        [
+            "serve",
+            "--routing-profiles",
+            "routes.yaml",
+            "--routing-log-file",
+            "tmp/routing.jsonl",
+        ]
+    )
     assert args.routing_log_file == "tmp/routing.jsonl"

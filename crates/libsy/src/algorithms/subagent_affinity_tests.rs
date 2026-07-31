@@ -48,11 +48,14 @@ impl Classifier for AlwaysOrchestrator {
         _state: &mut (),
         _request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<Classification> {
-        Ok(Classification::Scores(vec![Score {
-            confidence: 0.5,
-            target: "orchestrator".to_string(),
-        }]))
+    ) -> Result<(Classification, Option<Response>)> {
+        Ok((
+            Classification::Scores(vec![Score {
+                confidence: 0.5,
+                target: "orchestrator".to_string(),
+            }]),
+            None,
+        ))
     }
 }
 
@@ -84,9 +87,11 @@ fn request(headers: &[(&str, &str)]) -> Request {
 /// Affinity replays an existing pin, the override seeds one for delegated work, and the
 /// terminal classifier serves everything else.
 fn router() -> Arc<FallThrough> {
+    let affinity = Arc::new(AffinityRouter::for_subagents());
     Arc::new(
         FallThrough::<()>::new(targets())
-            .with_component(Arc::new(AffinityRouter::for_subagents()))
+            .with_processor(affinity.clone())
+            .with_classifier(affinity)
             .with_classifier(Arc::new(SubagentOverride::new("worker")))
             .with_classifier(Arc::new(AlwaysOrchestrator)),
     )
@@ -165,7 +170,8 @@ async fn harness_maintenance_turns_are_not_forced_to_the_worker() -> Result<()> 
 fn router_overriding_to(affinity: Arc<AffinityRouter>, worker: &str) -> Arc<FallThrough> {
     Arc::new(
         FallThrough::<()>::new(targets())
-            .with_component(affinity)
+            .with_processor(affinity.clone())
+            .with_classifier(affinity)
             .with_classifier(Arc::new(SubagentOverride::new(worker)))
             .with_classifier(Arc::new(AlwaysOrchestrator)),
     )
@@ -221,9 +227,11 @@ async fn distinct_children_are_pinned_independently() -> Result<()> {
 async fn a_cascade_without_the_override_still_routes_root_traffic() -> Result<()> {
     // Affinity and the override are independent: dropping the override leaves a valid
     // cascade, which is the point of composing them rather than nesting one in the other.
+    let affinity = Arc::new(AffinityRouter::for_subagents());
     let router = Arc::new(
         FallThrough::<()>::new(targets())
-            .with_component(Arc::new(AffinityRouter::for_subagents()))
+            .with_processor(affinity.clone())
+            .with_classifier(affinity)
             .with_classifier(Arc::new(AlwaysOrchestrator)),
     );
     assert_eq!(turn(&router, &child("child-1")).await?, "orchestrator");

@@ -34,7 +34,7 @@ OUTPUT_DIR="${REPO_ROOT}/benchmark/tb_runs"
 PORT=4000
 SERVER_URL=""
 HARBOR_SERVER_URL=""
-ROUTING_PROFILES=""
+SERVER_CONFIG=""
 MODEL=""
 ROUTE_MODEL=""
 AGENT="terminus-2"
@@ -47,7 +47,7 @@ BOOK_MODE="closed"
 PROXY_STRIP_ARTIFACT="/etc/proxy-public/strip.jsonl"
 VERIFIER_PROXY_TEMPLATE='${SWITCHYARD_VERIFIER_HTTP_PROXY}'
 SWITCHYARD_DOCKER_IMAGE="${SWITCHYARD_DOCKER_IMAGE:-switchyard-baseline:local}"
-SWITCHYARD_DOCKERFILE="${SWITCHYARD_DOCKERFILE:-benchmark/switchyard-server.Dockerfile}"
+SWITCHYARD_DOCKERFILE="${SWITCHYARD_DOCKERFILE:-benchmark/switchyard-rust-server.Dockerfile}"
 SWITCHYARD_DOCKER_SERVICE_NAME="${SWITCHYARD_DOCKER_SERVICE_NAME:-switchyard}"
 SWITCHYARD_DOCKER_BUILD="${SWITCHYARD_DOCKER_BUILD:-1}"
 SWITCHYARD_DOCKER_NETWORK="${SWITCHYARD_DOCKER_NETWORK:-}"
@@ -91,10 +91,10 @@ Main options:
   --server-url URL             Host URL used for health and stats checks.
   --harbor-server-url URL      Server URL as seen from Harbor task containers.
                                Defaults to the Dockerized Switchyard service.
-  --routing-profiles PATH      Route bundle YAML for switchyard serve. When
+  --server-config PATH         Rust switchyard-server TOML configuration. When
                                omitted, Harbor connects directly upstream.
   --model MODEL                Model Harbor should request. With
-                               --routing-profiles this is a Switchyard route
+                               --server-config this is a Switchyard route
                                key; without it, this is the upstream model.
                                Defaults --harbor-model to nvidia/MODEL for
                                opencode, openai/MODEL for other OpenAI-style
@@ -248,12 +248,17 @@ merge_claude_closed_book_tools() {
 }
 
 harbor_extra_has_agent_version() {
+    harbor_extra_has_agent_kwarg version
+}
+
+harbor_extra_has_agent_kwarg() {
+    local key="$1"
     local i=0 token next
     while [[ "${i}" -lt "${#HARBOR_EXTRA[@]}" ]]; do
         token="${HARBOR_EXTRA[$i]}"
         if [[ "${token}" == "--ak" || "${token}" == "--agent-kwarg" ]]; then
             next="${HARBOR_EXTRA[$((i + 1))]:-}"
-            [[ "${next}" == version=* ]] && return 0
+            [[ "${next}" == "${key}="* ]] && return 0
             i=$((i + 2))
             continue
         fi
@@ -293,7 +298,10 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --server-url) SERVER_URL="$2"; shift 2 ;;
         --harbor-server-url) HARBOR_SERVER_URL="$2"; shift 2 ;;
-        --routing-profiles) ROUTING_PROFILES="$2"; shift 2 ;;
+        --server-config) SERVER_CONFIG="$2"; shift 2 ;;
+        --routing-profiles)
+            die "--routing-profiles is no longer supported by the benchmark runner; use --server-config with a Rust server TOML file"
+            ;;
         --model) MODEL="$2"; shift 2 ;;
         --route-model) ROUTE_MODEL="$2"; shift 2 ;;
         --agent) AGENT="$2"; shift 2 ;;
@@ -314,7 +322,7 @@ while [[ $# -gt 0 ]]; do
         --harbor-extra) HARBOR_EXTRA+=("$2"); shift 2 ;;
         --server-extra) SERVER_EXTRA+=("$2"); shift 2 ;;
         --strong-model|--weak-model|--classifier-model|--profile|--strong-probability)
-            die "$1 belongs to the removed legacy benchmark launchers; encode server routing in --routing-profiles instead"
+            die "$1 belongs to the removed legacy benchmark launchers; encode server routing in --server-config instead"
             ;;
         --dry-run) DRY_RUN=1; shift ;;
         --foreground) FOREGROUND=1; shift ;;
@@ -350,9 +358,9 @@ resolve_harbor() {
 
 resolve_harbor
 
-if [[ -n "${ROUTING_PROFILES}" ]]; then
-    [[ -f "${ROUTING_PROFILES}" ]] || die "--routing-profiles not found: ${ROUTING_PROFILES}"
-    ROUTING_PROFILES="$(cd "$(dirname "${ROUTING_PROFILES}")" && pwd)/$(basename "${ROUTING_PROFILES}")"
+if [[ -n "${SERVER_CONFIG}" ]]; then
+    [[ -f "${SERVER_CONFIG}" ]] || die "--server-config not found: ${SERVER_CONFIG}"
+    SERVER_CONFIG="$(cd "$(dirname "${SERVER_CONFIG}")" && pwd)/$(basename "${SERVER_CONFIG}")"
 fi
 UPSTREAM_BASE_URL="${UPSTREAM_BASE_URL:-https://openrouter.ai/api/v1}"
 if [[ -z "${UPSTREAM_API_KEY_ENV}" ]]; then
@@ -364,7 +372,7 @@ if [[ -z "${UPSTREAM_API_KEY_ENV}" ]]; then
 fi
 [[ "${UPSTREAM_API_KEY_ENV}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "--upstream-api-key-env must be a valid environment variable name"
 
-if [[ -n "${ROUTING_PROFILES}" ]]; then
+if [[ -n "${SERVER_CONFIG}" ]]; then
     if [[ -n "${MODEL}" && -n "${ROUTE_MODEL}" && "${MODEL}" != "${ROUTE_MODEL}" ]]; then
         die "--model and --route-model must name the same model when both are provided"
     fi
@@ -374,18 +382,18 @@ if [[ -n "${ROUTING_PROFILES}" ]]; then
     SWITCHYARD_ENABLED=1
     SERVER_PRESET="serve"
     [[ -z "${MODE}" ]] && MODE="serve"
-    [[ -n "${MODEL}" ]] || die "--model is required when using --routing-profiles"
+    [[ -n "${MODEL}" ]] || die "--model is required when using --server-config"
     ROUTE_MODEL="${MODEL}"
 else
     SWITCHYARD_ENABLED=0
     SERVER_PRESET="direct"
     [[ -z "${MODE}" ]] && MODE="direct"
-    [[ -z "${ROUTE_MODEL}" ]] || die "--route-model requires --routing-profiles; use --model for direct upstream"
+    [[ -z "${ROUTE_MODEL}" ]] || die "--route-model requires --server-config; use --model for direct upstream"
     [[ -n "${MODEL}" ]] || die "--model is required when running direct upstream"
     ROUTE_MODEL=""
-    [[ -z "${SERVER_URL}" ]] || die "--server-url requires --routing-profiles"
-    [[ -z "${HARBOR_SERVER_URL}" ]] || die "--harbor-server-url requires --routing-profiles"
-    [[ "${#SERVER_EXTRA[@]}" -eq 0 ]] || die "--server-extra requires --routing-profiles"
+    [[ -z "${SERVER_URL}" ]] || die "--server-url requires --server-config"
+    [[ -z "${HARBOR_SERVER_URL}" ]] || die "--harbor-server-url requires --server-config"
+    [[ "${#SERVER_EXTRA[@]}" -eq 0 ]] || die "--server-extra requires --server-config"
     [[ -n "${!UPSTREAM_API_KEY_ENV:-}" ]] || die "direct upstream requires \$${UPSTREAM_API_KEY_ENV} to be set"
 fi
 if [[ "${HARBOR_MODEL_SET}" -eq 0 ]]; then
@@ -412,17 +420,15 @@ check_harbor_available() {
 }
 
 if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
-    SERVER_CMD=(uv run --no-sync switchyard
-        --routing-profiles "${ROUTING_PROFILES}"
-        serve
+    SERVER_CMD=(switchyard-server
+        --config "${SERVER_CONFIG}"
         --host 0.0.0.0
         --port "${PORT}")
-    SERVER_DOCKER_CMD=(--routing-profiles "${ROUTING_PROFILES}"
-        serve
+    SERVER_DOCKER_CMD=(--config "${SERVER_CONFIG}"
         --host 0.0.0.0
         --port "${PORT}")
     SERVER_CONFIG_JSON="$(json_object_from_pairs \
-        mode "${MODE}" routing_profiles "${ROUTING_PROFILES}" route_model "${ROUTE_MODEL}")"
+        mode "${MODE}" server_config "${SERVER_CONFIG}" route_model "${ROUTE_MODEL}")"
     if [[ "${#SERVER_EXTRA[@]}" -gt 0 ]]; then
         SERVER_CMD+=("${SERVER_EXTRA[@]}")
         SERVER_DOCKER_CMD+=("${SERVER_EXTRA[@]}")
@@ -468,7 +474,8 @@ if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
         SERVER_ROOT_URL="${SERVER_CONTROL_URL}"
     fi
     SERVER_HEALTH_URL="${SERVER_ROOT_URL}/health"
-    SERVER_STATS_URL="${SERVER_ROOT_URL}/v1/routing/stats"
+    SERVER_METRICS_URL="${SERVER_ROOT_URL}/metrics"
+    SERVER_STATS_URL="${SERVER_ROOT_URL}/v1/stats"
 
     if [[ -z "${HARBOR_SERVER_URL}" ]]; then
         HARBOR_SERVER_URL="http://${SWITCHYARD_DOCKER_SERVICE_NAME}:${PORT}"
@@ -484,6 +491,7 @@ if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
 else
     SERVER_ROOT_URL=""
     SERVER_HEALTH_URL=""
+    SERVER_METRICS_URL=""
     SERVER_STATS_URL=""
     HARBOR_BASE_URL="${UPSTREAM_BASE_URL}"
     if [[ "${HARBOR_BASE_URL}" == */v1 ]]; then
@@ -502,13 +510,8 @@ LOG_PATH="${RUN_DIR}/${JOB_NAME}.log"
 SERVER_LOG="${RUN_DIR}/server.log"
 HARBOR_LOG="${RUN_DIR}/harbor.log"
 HARBOR_RESULT_JSON="${RUN_DIR}/harbor_result.json"
+SERVER_METRICS_PROM="${RUN_DIR}/server_metrics_final.prom"
 ROUTING_STATS_JSON="${RUN_DIR}/routing_stats_final.json"
-ROUTING_LOG_JSONL="${RUN_DIR}/routing_requests.jsonl"
-ROUTING_STATS_BY_TASK_JSON="${RUN_DIR}/routing_stats_by_task.json"
-if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
-    SERVER_CMD+=(--routing-log-file "${ROUTING_LOG_JSONL}")
-    SERVER_DOCKER_CMD+=(--routing-log-file "${ROUTING_LOG_JSONL}")
-fi
 DOCKER_RUN_ID="$(printf '%s-%s' "${TS##*_}" "$$" | tr -c '[:alnum:]_.-' '-')"
 SWITCHYARD_DOCKER_NETWORK="${SWITCHYARD_DOCKER_NETWORK:-switchyard-${DOCKER_RUN_ID}}"
 SWITCHYARD_DOCKER_CONTAINER="${SWITCHYARD_DOCKER_CONTAINER:-switchyard-${DOCKER_RUN_ID}}"
@@ -528,17 +531,9 @@ if [[ "${BOOK_MODE}" == "closed" || "${BOOK_MODE}" == "open" ]]; then
             docker_network "${SWITCHYARD_DOCKER_NETWORK}")"
     fi
 fi
-ROUTING_PROFILES_DIR=""
-if [[ -n "${ROUTING_PROFILES}" ]]; then
-    ROUTING_PROFILES_DIR="$(cd "$(dirname "${ROUTING_PROFILES}")" && pwd)"
-fi
-CLASSIFIER_PROMPTS_JSON="{}"
-if [[ -n "${ROUTING_PROFILES}" ]]; then
-    CLASSIFIER_PROMPTS_JSON="$(
-        uv run --no-sync python "${SCRIPT_DIR}/resolve_classifier_prompts.py" "${ROUTING_PROFILES}" \
-            2>/dev/null || echo '{}'
-    )"
-    [[ -n "${CLASSIFIER_PROMPTS_JSON}" ]] || CLASSIFIER_PROMPTS_JSON="{}"
+SERVER_CONFIG_DIR=""
+if [[ -n "${SERVER_CONFIG}" ]]; then
+    SERVER_CONFIG_DIR="$(cd "$(dirname "${SERVER_CONFIG}")" && pwd)"
 fi
 WRAPPER="${RUN_DIR}/run-background.sh"
 HARBOR_JOB_DIR="${RUN_DIR}/jobs/${JOB_NAME}"
@@ -579,6 +574,10 @@ add_agent_version_kwarg
 
 if [[ -n "${REASONING_EFFORT}" ]]; then
     HARBOR_CMD+=(--ak "reasoning_effort=${REASONING_EFFORT}")
+    # Claude code does not support thinking=true for now, so we use adaptive instead
+    if [[ "${AGENT}" == "claude-code" ]] && ! harbor_extra_has_agent_kwarg thinking; then
+        HARBOR_CMD+=(--ak "thinking=adaptive")
+    fi
 fi
 
 if [[ -n "${N_TASKS}" ]]; then
@@ -701,8 +700,8 @@ print_resolved() {
     if [[ "${BOOK_MODE}" == "closed" ]]; then
         echo "  verifier_net: authenticated proxy egress"
     fi
-    if [[ -n "${ROUTING_PROFILES}" ]]; then
-        echo "  route_profile: ${ROUTING_PROFILES}"
+    if [[ -n "${SERVER_CONFIG}" ]]; then
+        echo "  server_config: ${SERVER_CONFIG}"
         echo "  route_model:   ${ROUTE_MODEL}"
     fi
     printf '  harbor_cmd:    '
@@ -764,7 +763,6 @@ MANIFEST_CMD=(python3 "${MANIFEST_HELPER}" write
     --server-port "${PORT}"
     --server-argv-json "$(json_array "${SERVER_CMD[@]}")"
     --server-config-json "${SERVER_CONFIG_JSON}"
-    --classifier-prompts-json "${CLASSIFIER_PROMPTS_JSON}"
     --harbor-server-url "${HARBOR_SERVER_ROOT_URL}"
     --harbor-base-url "${HARBOR_BASE_URL}"
     --upstream-base-url "$([[ "${SWITCHYARD_ENABLED}" -eq 0 ]] && echo "${UPSTREAM_BASE_URL}")"
@@ -790,6 +788,8 @@ MANIFEST_CMD=(python3 "${MANIFEST_HELPER}" write
     --run-dir "${RUN_DIR}"
     --log-path "${LOG_PATH}"
     --harbor-result-json "${HARBOR_RESULT_JSON}"
+    --server-metrics-prom "${SERVER_METRICS_PROM}"
+    --server-metrics-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)"
     --routing-stats-json "${ROUTING_STATS_JSON}"
     --routing-stats-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)")
 if [[ -n "${HARBOR_PATH}" ]]; then
@@ -798,8 +798,8 @@ fi
 if [[ -n "${TASK_LIST_FILE}" ]]; then
     MANIFEST_CMD+=(--task-list-file "${TASK_LIST_FILE}")
 fi
-if [[ -n "${ROUTING_PROFILES}" ]]; then
-    MANIFEST_CMD+=(--routing-profiles "${ROUTING_PROFILES}")
+if [[ -n "${SERVER_CONFIG}" ]]; then
+    MANIFEST_CMD+=(--server-config "${SERVER_CONFIG}")
 fi
 if [[ -n "${CODEX_MODEL_CATALOG_HOST}" ]]; then
     MANIFEST_CMD+=(--codex-model-catalog "${CODEX_MODEL_CATALOG_HOST}")
@@ -820,6 +820,7 @@ UPSTREAM_API_KEY_ENV=$(q "${UPSTREAM_API_KEY_ENV}")
 SERVER_ROOT_URL=$(q "${SERVER_ROOT_URL}")
 HARBOR_SERVER_ROOT_URL=$(q "${HARBOR_SERVER_ROOT_URL}")
 SERVER_HEALTH_URL=$(q "${SERVER_HEALTH_URL}")
+SERVER_METRICS_URL=$(q "${SERVER_METRICS_URL}")
 SERVER_STATS_URL=$(q "${SERVER_STATS_URL}")
 HARBOR_BASE_URL=$(q "${HARBOR_BASE_URL}")
 MANIFEST_PATH=$(q "${MANIFEST_PATH}")
@@ -827,9 +828,8 @@ RUN_DIR=$(q "${RUN_DIR}")
 REPO_ROOT=$(q "${REPO_ROOT}")
 SERVER_LOG=$(q "${SERVER_LOG}")
 HARBOR_LOG=$(q "${HARBOR_LOG}")
+SERVER_METRICS_PROM=$(q "${SERVER_METRICS_PROM}")
 ROUTING_STATS_JSON=$(q "${ROUTING_STATS_JSON}")
-ROUTING_LOG_JSONL=$(q "${ROUTING_LOG_JSONL}")
-ROUTING_STATS_BY_TASK_JSON=$(q "${ROUTING_STATS_BY_TASK_JSON}")
 HARBOR_JOB_DIR=$(q "${HARBOR_JOB_DIR}")
 SKIP_HEALTH_CHECK=$(q "${SKIP_HEALTH_CHECK}")
 BOOK_MODE=$(q "${BOOK_MODE}")
@@ -839,7 +839,7 @@ SWITCHYARD_DOCKER_BUILD=$(q "${SWITCHYARD_DOCKER_BUILD}")
 SWITCHYARD_DOCKER_NETWORK=$(q "${SWITCHYARD_DOCKER_NETWORK}")
 SWITCHYARD_DOCKER_CONTAINER=$(q "${SWITCHYARD_DOCKER_CONTAINER}")
 SWITCHYARD_DOCKER_SERVICE_NAME=$(q "${SWITCHYARD_DOCKER_SERVICE_NAME}")
-ROUTING_PROFILES_DIR=$(q "${ROUTING_PROFILES_DIR}")
+SERVER_CONFIG_DIR=$(q "${SERVER_CONFIG_DIR}")
 
 SERVER_CMD=($(shell_join "${SERVER_CMD[@]}"))
 SERVER_DOCKER_CMD=($(shell_join "${SERVER_DOCKER_CMD[@]}"))
@@ -869,7 +869,7 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
     echo "Starting Dockerized Switchyard service"
     echo "  image:   \${SWITCHYARD_DOCKER_IMAGE}"
     echo "  network: \${SWITCHYARD_DOCKER_NETWORK}"
-    echo "  command: switchyard \${SERVER_DOCKER_CMD[*]}"
+    echo "  command: switchyard-server \${SERVER_DOCKER_CMD[*]}"
     if [[ "\${SWITCHYARD_DOCKER_BUILD}" != "0" ]]; then
         docker build -f "\${SWITCHYARD_DOCKERFILE}" -t "\${SWITCHYARD_DOCKER_IMAGE}" .
     fi
@@ -887,8 +887,8 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
         -v "\${REPO_ROOT}:\${REPO_ROOT}:ro"
         -v "\${RUN_DIR}:\${RUN_DIR}"
     )
-    if [[ -n "\${ROUTING_PROFILES_DIR}" && "\${ROUTING_PROFILES_DIR}" != "\${REPO_ROOT}"* ]]; then
-        DOCKER_RUN_ARGS+=(-v "\${ROUTING_PROFILES_DIR}:\${ROUTING_PROFILES_DIR}:ro")
+    if [[ -n "\${SERVER_CONFIG_DIR}" && "\${SERVER_CONFIG_DIR}" != "\${REPO_ROOT}"* ]]; then
+        DOCKER_RUN_ARGS+=(-v "\${SERVER_CONFIG_DIR}:\${SERVER_CONFIG_DIR}:ro")
     fi
     if [[ -n "\${UPSTREAM_API_KEY_ENV}" ]]; then
         DOCKER_RUN_ARGS+=(--env "\${UPSTREAM_API_KEY_ENV}")
@@ -898,6 +898,7 @@ if [[ "\${SERVER_ENABLED}" == "1" ]]; then
         --env PYTHONHASHSEED=0 \\
         --env LC_ALL=C.UTF-8 \\
         --env OPENAI_API_KEY \\
+        --env NVIDIA_API_KEY \\
         --env OPENROUTER_API_KEY \\
         --env UPSTREAM_API_KEY \\
         --env ANTHROPIC_API_KEY \\
@@ -943,8 +944,7 @@ if [[ "\${SERVER_ENABLED}" == "1" && "\${SKIP_HEALTH_CHECK}" != "1" ]]; then
         python3 benchmark/run_manifest.py finalize \\
             --manifest "\${MANIFEST_PATH}" \\
             --harbor-rc 124 \\
-            --harbor-job-dir "\${HARBOR_JOB_DIR}" \\
-            --routing-stats "\${ROUTING_STATS_JSON}" || true
+            --harbor-job-dir "\${HARBOR_JOB_DIR}" || true
         exit 124
     fi
 fi
@@ -961,8 +961,7 @@ if [[ "\${SERVER_ENABLED}" == "1" && "\${SWITCHYARD_CLOSED_BOOK_PREFLIGHT:-1}" !
         python3 benchmark/run_manifest.py finalize \\
             --manifest "\${MANIFEST_PATH}" \\
             --harbor-rc 125 \\
-            --harbor-job-dir "\${HARBOR_JOB_DIR}" \\
-            --routing-stats "\${ROUTING_STATS_JSON}" || true
+            --harbor-job-dir "\${HARBOR_JOB_DIR}" || true
         exit 125
     fi
 fi
@@ -1037,10 +1036,18 @@ FINALIZE_CMD=(python3 benchmark/run_manifest.py finalize \\
     --harbor-rc "\${HARBOR_RC}" \\
     --harbor-job-dir "\${HARBOR_JOB_DIR}")
 if [[ "\${SERVER_ENABLED}" == "1" ]]; then
-    curl -fsS "\${SERVER_STATS_URL}" -o "\${ROUTING_STATS_JSON}" >/dev/null 2>&1 || true
-    FINALIZE_CMD+=(--routing-stats "\${ROUTING_STATS_JSON}"
-        --routing-log "\${ROUTING_LOG_JSONL}"
-        --routing-stats-by-task "\${ROUTING_STATS_BY_TASK_JSON}")
+    if curl -fsS "\${SERVER_METRICS_URL}" -o "\${SERVER_METRICS_PROM}" >/dev/null 2>&1; then
+        echo "Captured aggregate Rust server metrics"
+    else
+        echo "WARNING: Rust server metrics could not be collected from \${SERVER_METRICS_URL}" >&2
+    fi
+    FINALIZE_CMD+=(--server-metrics "\${SERVER_METRICS_PROM}")
+    if curl -fsS "\${SERVER_STATS_URL}" -o "\${ROUTING_STATS_JSON}" >/dev/null 2>&1; then
+        echo "Captured aggregate Rust server routing stats"
+    else
+        echo "WARNING: Rust server stats could not be collected from \${SERVER_STATS_URL}" >&2
+    fi
+    FINALIZE_CMD+=(--routing-stats "\${ROUTING_STATS_JSON}")
 fi
 "\${FINALIZE_CMD[@]}" || true
 

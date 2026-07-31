@@ -9,6 +9,7 @@ Define the upstream once under `llm_clients`, then reference it from targets.
 format = "openai_chat"
 base_url = "https://example.com/v1"
 api_key_env = "PROVIDER_API_KEY"
+max_retries = 2
 
 [targets.model]
 id = "provider/model"

@@ -22,8 +22,9 @@ provider SDK.
   when set, otherwise the model's default backend.
 - **Backends.** A [`Backend`] is one of `OpenAiChat`, `OpenAiResponses`, or
   `Anthropic`, each wrapping an [`HttpBackendConfig`] (`base_url`, `api_key`,
-  static `extra_headers`, default `extra_body` fields). The variant fixes the URL
-  path and auth scheme (Bearer vs `x-api-key` + `anthropic-version`).
+  static `extra_headers`, default `extra_body` fields, and `max_retries`). The
+  variant fixes the URL path and auth scheme (Bearer vs `x-api-key` +
+  `anthropic-version`).
 - **Model rewrite.** The resolved model name is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
 - **Streaming is chosen by the request.** If the encoded body has `stream: true`
@@ -58,6 +59,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        max_retries: 2,
     };
 
     let models = [ModelConfig::new(
@@ -173,6 +175,14 @@ fn build_multi_format_client(
 - Per-backend static headers go in `HttpBackendConfig::extra_headers`.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
+- `HttpBackendConfig::max_retries` controls additional attempts after retryable
+  transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
+  transport failures are retried; streaming body failures are not replayed after
+  the response has been returned.
+
+Retries replay the same upstream request. A transport failure can therefore
+duplicate a request that the provider processed but did not finish returning,
+and the retry budget plus capped `Retry-After` delays determines total latency.
 
 ## Errors
 

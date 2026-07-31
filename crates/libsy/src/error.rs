@@ -65,6 +65,10 @@ pub enum LibsyError {
         source: LlmClientError,
     },
 
+    /// Every target overflowed its context window.
+    #[error("every target exceeded its context window")]
+    AllTargetsExcluded,
+
     /// A user extension or other foreign operation failed.
     #[error("{operation} failed: {source}")]
     External {

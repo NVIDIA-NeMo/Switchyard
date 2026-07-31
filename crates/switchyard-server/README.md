@@ -12,6 +12,7 @@ schema_version = 1
 format = "openai_chat"
 base_url = "https://example.com/v1"
 api_key_env = "API_KEY"
+max_retries = 2
 
 [targets.model_a]
 id = "model/a"
@@ -41,6 +42,14 @@ base_threshold = 0.5
 id = "switchyard/passthrough"
 type = "passthrough"
 target = "model_a"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "model_a"
+efficient_target = "model_b"
+picker = "efficient_first"
+confidence_threshold = 0.5
 ```
 
 ```bash
@@ -58,11 +67,13 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
-`anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`, and
-`llm_classifier`. An `api_key_env` value names an environment variable; the TOML
+`anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
+`llm_classifier`, and `stage_router`. An `api_key_env` value names an environment variable; the TOML
 never contains the secret itself. If omitted, the client sends no authentication.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
+`max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
+responses.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.
@@ -83,6 +94,12 @@ Session affinity retains a decision for the process lifetime, including a `stron
 fallback produced while the judge was unreachable. `message_hash_fallback` keys on request
 content rather than a session id, so unrelated callers sending identical text share one
 assignment.
+
+A `stage_router` route scores tool-result and agent-progress signals from recent turns to pick a
+tier per turn, without an extra classifier call on every turn. `capable_target`,
+`efficient_target`, `picker` (`efficient_first` or `capable_first`), and `confidence_threshold`
+are required. Optional handoff notes, per-tier system prompts, and a capability-judge fallback are
+documented in [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
 ## Metrics
 

@@ -62,6 +62,50 @@ exit 2
     return harbor
 
 
+def _write_fake_docker(bin_dir: Path) -> Path:
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ -n \"${FAKE_DOCKER_LOG:-}\" ]]; then\n"
+        "    printf '%s\\n' \"$*\" >> \"${FAKE_DOCKER_LOG}\"\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    docker.chmod(0o755)
+    return docker
+
+
+def _write_fake_curl(bin_dir: Path) -> Path:
+    curl = bin_dir / "curl"
+    curl.write_text(
+        """
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+url=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o) output="$2"; shift 2 ;;
+        *) url="$1"; shift ;;
+    esac
+done
+case "${url}" in
+    */health) body='{"status":"ok"}' ;;
+    */metrics) body='switchyard_total_requests 2' ;;
+    */v1/stats) body='{"total_requests":2,"total_errors":0,"models":{"strong":{"calls":2}}}' ;;
+    *) exit 22 ;;
+esac
+if [[ -n "${output}" ]]; then
+    printf '%s\\n' "${body}" > "${output}"
+else
+    printf '%s\\n' "${body}"
+fi
+""".lstrip()
+    )
+    curl.chmod(0o755)
+    return curl
+
+
 def _write_fake_harbor_patch(tmp_path: Path) -> Path:
     patch_file = tmp_path / "fake-harbor-agent-patches.diff"
     patch_file.write_text(
@@ -106,10 +150,14 @@ def _run_baseline(
     *args: str,
     env: dict[str, str] | None = None,
     include_dataset: bool = True,
+    fake_server: bool = False,
 ):
     fake_bin = tmp_path / "default-bin"
     fake_bin.mkdir(exist_ok=True)
     _write_fake_harbor(fake_bin)
+    if fake_server:
+        _write_fake_docker(fake_bin)
+        _write_fake_curl(fake_bin)
     fake_patch = _write_fake_harbor_patch(tmp_path)
     fake_harbor_python = _write_fake_harbor_python(tmp_path)
     base_path = env.get("PATH", os.environ["PATH"]) if env else os.environ["PATH"]
@@ -158,21 +206,29 @@ def _option_values(argv: list[str], option: str) -> list[str]:
     return [argv[idx + 1] for idx, value in enumerate(argv[:-1]) if value == option]
 
 
-def _write_route_profile(path: Path) -> Path:
+def _write_server_config(path: Path) -> Path:
     path.write_text(
         """
-routes:
-  tb-lite-random-routing:
-    type: random_routing
-    strong_probability: 0.5
-    rng_seed: 444
-    fallback_target_on_evict: strong
-    strong:
-      id: strong
-      model: strong-model
-    weak:
-      id: weak
-      model: weak-model
+schema_version = 1
+
+[llm_clients.test]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.strong]
+id = "strong-model"
+llm_client = "test"
+
+[targets.weak]
+id = "weak-model"
+llm_client = "test"
+
+[routes.random]
+id = "tb-lite-random-routing"
+type = "random"
+targets = ["strong", "weak"]
+weights = [1, 1]
+seed = 444
 """.lstrip()
     )
     return path
@@ -222,8 +278,8 @@ def test_direct_mode_defaults_to_openrouter_upstream_without_switchyard(tmp_path
     assert "upstream_url:  https://openrouter.ai/api/v1" in result.stdout
     assert "api_key_env:   OPENROUTER_API_KEY" in result.stdout
     assert "SERVER_CMD: <direct-upstream>" in result.stdout
-    assert "switchyard serve" not in result.stdout
-    assert "route_profile:" not in result.stdout
+    assert "switchyard-server" not in result.stdout
+    assert "server_config:" not in result.stdout
 
 
 def test_direct_mode_uses_generic_upstream_key_when_set(tmp_path: Path) -> None:
@@ -269,7 +325,7 @@ def test_direct_mode_rejects_server_only_options(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "--server-extra requires --routing-profiles" in result.stderr
+    assert "--server-extra requires --server-config" in result.stderr
 
     result = _run_baseline(
         tmp_path,
@@ -279,14 +335,29 @@ def test_direct_mode_rejects_server_only_options(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "--route-model requires --routing-profiles" in result.stderr
+    assert "--route-model requires --server-config" in result.stderr
+
+
+def test_legacy_routing_profiles_are_rejected(tmp_path: Path) -> None:
+    result = _run_baseline(
+        tmp_path,
+        "--routing-profiles",
+        str(tmp_path / "routes.yaml"),
+        "--model",
+        "switchyard",
+        "--dry-run",
+    )
+
+    assert result.returncode != 0
+    assert "--routing-profiles is no longer supported" in result.stderr
+    assert "use --server-config" in result.stderr
 
 
 def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
-        str(REPO / "benchmark" / "routing-profiles" / "tb-lite-single-opus-4-7.yaml"),
+        "--server-config",
+        str(REPO / "benchmark" / "server-configs" / "tb-lite-single-opus-4-7.toml"),
         "--route-model",
         "tb-lite-single-opus-4-7",
         "--agent",
@@ -299,6 +370,7 @@ def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> Non
     assert _option_value(harbor, "--model") == "tb-lite-single-opus-4-7"
     assert "version=2.1.211" in _option_values(harbor, "--ak")
     assert "reasoning_effort=high" in _option_values(harbor, "--ak")
+    assert "thinking=adaptive" in _option_values(harbor, "--ak")
     assert "reasoning:     high" in result.stdout
     assert "harbor_server: http://switchyard:4000" in result.stdout
 
@@ -306,8 +378,8 @@ def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> Non
 def test_dry_run_codex_gpt_defaults_high_reasoning(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
-        str(REPO / "benchmark" / "routing-profiles" / "tb-lite-single-gpt-5-5.yaml"),
+        "--server-config",
+        str(REPO / "benchmark" / "server-configs" / "tb-lite-single-gpt-5-5.toml"),
         "--route-model",
         "tb-lite-single-gpt-5-5",
         "--agent",
@@ -330,11 +402,11 @@ def test_dry_run_codex_gpt_defaults_high_reasoning(tmp_path: Path) -> None:
 
 
 def test_dry_run_explicit_empty_reasoning_omits_kwarg(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -348,15 +420,16 @@ def test_dry_run_explicit_empty_reasoning_omits_kwarg(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert not any(value.startswith("reasoning_effort=") for value in _option_values(harbor, "--ak"))
+    assert not any(value.startswith("thinking=") for value in _option_values(harbor, "--ak"))
     assert "reasoning:     unset" in result.stdout
 
 
 def test_dry_run_explicit_reasoning_overrides_default(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -370,14 +443,41 @@ def test_dry_run_explicit_reasoning_overrides_default(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert "reasoning_effort=medium" in _option_values(harbor, "--ak")
+    assert "thinking=adaptive" in _option_values(harbor, "--ak")
 
 
-def test_harbor_path_is_required(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+def test_dry_run_explicit_claude_thinking_overrides_adaptive_default(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
+        str(profile),
+        "--route-model",
+        "tb-lite-random-routing",
+        "--agent",
+        "claude-code",
+        "--reasoning-effort",
+        "high",
+        "--harbor-extra",
+        "--ak",
+        "--harbor-extra",
+        "thinking=disabled",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
+    thinking = [value for value in _option_values(harbor, "--ak") if value.startswith("thinking=")]
+    assert thinking == ["thinking=disabled"]
+
+
+def test_harbor_path_is_required(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
+
+    result = _run_baseline(
+        tmp_path,
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -391,14 +491,14 @@ def test_harbor_path_is_required(tmp_path: Path) -> None:
 
 def test_closed_book_dataset_rejects_unpatched_harbor(tmp_path: Path) -> None:
     dataset = _write_closed_book_dataset(tmp_path / "dataset")
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
     fake_python = _write_fake_harbor_python(tmp_path / "unpatched", patched=False)
 
     result = _run_baseline(
         tmp_path,
         "--harbor-path",
         str(dataset),
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -415,12 +515,12 @@ def test_closed_book_dataset_rejects_unpatched_harbor(tmp_path: Path) -> None:
     assert "patch -p1 <" in result.stderr
 
 
-def test_dry_run_routing_profile_uses_switchyard_serve(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+def test_dry_run_server_config_uses_rust_switchyard_server(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--model",
         "tb-lite-random-routing",
@@ -430,23 +530,47 @@ def test_dry_run_routing_profile_uses_switchyard_serve(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     server = _line_argv(result.stdout, "SERVER_CMD: ")
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
-    # New form: uv run --no-sync switchyard --routing-profiles FILE -- serve ...
-    assert server[:4] == ["uv", "run", "--no-sync", "switchyard"]
-    assert _option_value(server, "--routing-profiles") == str(profile)
-    assert "serve" in server
+    assert server[0] == "switchyard-server"
+    assert _option_value(server, "--config") == str(profile)
     assert _option_value(server, "--host") == "0.0.0.0"
     assert _option_value(server, "--port") == "4000"
     assert _option_value(harbor, "--model") == "openai/tb-lite-random-routing"
-    assert "route_profile:" in result.stdout
+    assert "server_config:" in result.stdout
     assert "route_model:   tb-lite-random-routing" in result.stdout
 
 
-def test_dry_run_route_model_alias_uses_switchyard_serve(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+def test_foreground_server_run_collects_rust_stats_endpoint(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
+    docker_log = tmp_path / "docker.log"
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
+        str(profile),
+        "--route-model",
+        "tb-lite-random-routing",
+        "--foreground",
+        fake_server=True,
+        env={"FAKE_DOCKER_LOG": str(docker_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    run_dir = next((tmp_path / "out").glob("baseline-serve-serve-*"))
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    stats = json.loads((run_dir / "routing_stats_final.json").read_text())
+
+    assert stats["total_requests"] == 2
+    assert manifest["outcomes"]["routing_stats_json_status"] == "present"
+    assert manifest["outcomes"]["server_metrics_prom_status"] == "present"
+    assert "--env NVIDIA_API_KEY" in docker_log.read_text()
+
+
+def test_dry_run_route_model_alias_uses_rust_switchyard_server(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
+
+    result = _run_baseline(
+        tmp_path,
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -456,18 +580,18 @@ def test_dry_run_route_model_alias_uses_switchyard_serve(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     server = _line_argv(result.stdout, "SERVER_CMD: ")
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
-    assert server[:4] == ["uv", "run", "--no-sync", "switchyard"]
-    assert "serve" in server
+    assert server[0] == "switchyard-server"
+    assert _option_value(server, "--config") == str(profile)
     assert _option_value(harbor, "--model") == "openai/tb-lite-random-routing"
     assert "route_model:   tb-lite-random-routing" in result.stdout
 
 
-def test_dry_run_routing_profile_honors_explicit_harbor_model(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+def test_dry_run_server_config_honors_explicit_harbor_model(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -481,33 +605,12 @@ def test_dry_run_routing_profile_honors_explicit_harbor_model(tmp_path: Path) ->
     assert _option_value(harbor, "--model") == "openai/custom-route-label"
 
 
-def test_checked_in_routing_profiles_load(monkeypatch) -> None:
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
-
-    import switchyard.cli.route_bundle as route_bundle
-
-    profiles = {
-        "gpt-5-5-deepseek-gemini.yaml": "switchyard",
-        "gpt-5-5-kimi-gemini.yaml": "switchyard",
-        "tb-lite-llm-classifier-opus-deepseek-gemini.yaml": "switchyard",
-        "tb-lite-llm-classifier-opus-kimi-gemini.yaml": "switchyard",
-        "tb-lite-single-opus-4-7.yaml": "tb-lite-single-opus-4-7",
-        "tb-lite-single-gpt-5-5.yaml": "tb-lite-single-gpt-5-5",
-    }
-    monkeypatch.setattr(route_bundle, "fetch_model_ids", lambda _base_url, _api_key: [])
-    for filename, model in profiles.items():
-        table = route_bundle.load_route_bundle_table(
-            REPO / "benchmark" / "routing-profiles" / filename
-        )
-        assert model in table.registered_models()
-
-
 def test_dry_run_harbor_extra(tmp_path: Path) -> None:
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -529,13 +632,13 @@ def test_dry_run_harbor_path_uses_local_dataset_and_closed_book_artifact(
     tmp_path: Path,
 ) -> None:
     dataset = _write_closed_book_dataset(tmp_path / "dataset")
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
         "--harbor-path",
         str(dataset),
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -572,13 +675,13 @@ def test_dry_run_harbor_path_uses_local_dataset_and_closed_book_artifact(
 
 def test_dry_run_open_book_uses_proxy_topology_without_tool_disables(tmp_path: Path) -> None:
     dataset = _write_closed_book_dataset(tmp_path / "dataset")
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
         "--harbor-path",
         str(dataset),
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -604,13 +707,13 @@ def test_dry_run_open_book_uses_proxy_topology_without_tool_disables(tmp_path: P
 
 def test_dry_run_claude_closed_book_merges_disallowed_tools(tmp_path: Path) -> None:
     dataset = _write_closed_book_dataset(tmp_path / "dataset")
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
         "--harbor-path",
         str(dataset),
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -632,13 +735,13 @@ def test_dry_run_claude_closed_book_merges_disallowed_tools(tmp_path: Path) -> N
 
 def test_dry_run_opencode_closed_book_disables_webfetch(tmp_path: Path) -> None:
     dataset = _write_closed_book_dataset(tmp_path / "dataset")
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
         "--harbor-path",
         str(dataset),
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -658,11 +761,11 @@ def test_dry_run_opencode_closed_book_disables_webfetch(tmp_path: Path) -> None:
 def test_task_list_file_expands_to_include_task_name(tmp_path: Path) -> None:
     task_list = tmp_path / "tasks.txt"
     task_list.write_text("# comment\nalpha\n\nbeta  # inline\n")
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",
@@ -680,11 +783,11 @@ def test_dry_run_uses_harbor_bin_override(tmp_path: Path) -> None:
     override_bin = tmp_path / "override-bin"
     override_bin.mkdir()
     expected_harbor = _write_fake_harbor(override_bin)
-    profile = _write_route_profile(tmp_path / "routes.yaml")
+    profile = _write_server_config(tmp_path / "routes.toml")
 
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
+        "--server-config",
         str(profile),
         "--route-model",
         "tb-lite-random-routing",

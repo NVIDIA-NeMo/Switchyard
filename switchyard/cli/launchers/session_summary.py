@@ -10,14 +10,14 @@ import logging
 from collections.abc import Mapping
 from typing import cast
 
+from switchyard.cli.launchers.stats_source import StatsSource
 from switchyard.lib.cost_estimator import estimate_model_cost
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 _RULE = "─" * 51
 _LOG = logging.getLogger(__name__)
 
 
-def print_session_summary(stats: StatsAccumulator) -> None:
+def print_session_summary(stats: StatsSource) -> None:
     """Print a session summary to stdout after the launcher exits."""
     try:
         snapshot = stats.snapshot_sync()
