@@ -93,42 +93,72 @@ def test_paid_e2e_requires_openrouter_key(
         next(fixture)
 
 
-def _request() -> dict[str, object]:
-    return {
-        "model": "auto",
-        "messages": [
+def _request(*, critical_error: bool = False) -> dict[str, object]:
+    messages: list[dict[str, object]] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Reply with a short greeting for a Switchyard E2E test.",
+                }
+            ],
+        }
+    ]
+    if critical_error:
+        messages.extend([
             {
-                "role": "user",
+                "role": "assistant",
                 "content": [
                     {
-                        "type": "text",
-                        "text": "Reply with a short greeting for a Switchyard E2E test.",
+                        "type": "tool_call",
+                        "id": "call_1",
+                        "name": "Bash",
+                        "arguments": {"command": "pytest"},
                     }
                 ],
-            }
-        ],
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_1",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "fatal runtime error: out of memory",
+                            }
+                        ],
+                        "is_error": True,
+                    }
+                ],
+            },
+        ])
+    return {
+        "model": "auto",
+        "messages": messages,
         "reasoning": {"effort": "low"},
         "output": {"max_output_tokens": 128},
     }
 
 
 @pytest.mark.e2e
-async def test_random_router_calls_both_real_openrouter_models(
+async def test_stage_router_calls_both_real_openrouter_models(
     litellm_base_url: str,
 ) -> None:
     strong_client = LiteLLMSyClient("strong", base_url=litellm_base_url)
     fast_client = LiteLLMSyClient("fast", base_url=litellm_base_url)
-    targets = [
+    router = algorithms.stage_router(
         LlmTarget("strong", strong_client),
         LlmTarget("fast", fast_client),
-    ]
+        picker="efficient_first",
+        confidence_threshold=0.5,
+        recent_window=3,
+    )
     try:
-        strong_trace, strong_response = await algorithms.random(
-            targets, weights=[1, 0], seed=42
-        ).run(_request())
-        fast_trace, fast_response = await algorithms.random(
-            targets, weights=[0, 1], seed=42
-        ).run(_request())
+        fast_trace, fast_response = await router.run(_request())
+        strong_trace, strong_response = await router.run(_request(critical_error=True))
     finally:
         await strong_client.aclose()
         await fast_client.aclose()

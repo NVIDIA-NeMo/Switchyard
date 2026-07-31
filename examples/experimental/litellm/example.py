@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Route one text request through LiteLLM with libsy's random algorithm."""
+"""Route one coding-agent turn through LiteLLM with libsy's Stage router."""
 
 import asyncio
 
@@ -12,7 +12,7 @@ from switchyard.libsy import LlmTarget, algorithms
 
 
 def sy_request() -> dict[str, object]:
-    """Build a normalized libsy text request."""
+    """Build a normalized turn whose critical tool failure needs the capable tier."""
     return {
         "model": "auto",
         "messages": [
@@ -21,10 +21,37 @@ def sy_request() -> dict[str, object]:
                 "content": [
                     {
                         "type": "text",
-                        "text": "Explain weighted random LLM routing in one sentence.",
+                        "text": "Fix the failing tests.",
                     }
                 ],
-            }
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call_1",
+                        "name": "Bash",
+                        "arguments": {"command": "pytest"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_1",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "fatal runtime error: out of memory",
+                            }
+                        ],
+                        "is_error": True,
+                    }
+                ],
+            },
         ],
         "reasoning": {"effort": "low"},
         "output": {"max_output_tokens": 96},
@@ -32,20 +59,19 @@ def sy_request() -> dict[str, object]:
 
 
 async def main() -> None:
-    """Run the weighted router and print its normalized result."""
+    """Run the Stage router and print its normalized result."""
     strong_client = LiteLLMSyClient("strong")
     fast_client = LiteLLMSyClient("fast")
-    router = algorithms.random(
-        [
-            LlmTarget("strong", strong_client),
-            LlmTarget("fast", fast_client),
-        ],
-        weights=[1, 3],
-        seed=42,
+    router = algorithms.stage_router(
+        LlmTarget("strong", strong_client),
+        LlmTarget("fast", fast_client),
+        picker="efficient_first",
+        confidence_threshold=0.5,
+        recent_window=3,
     )
     try:
         decisions, response = await router.run(sy_request())
-        print("Random:", decisions, response)
+        print("Stage router:", decisions, response)
     finally:
         await strong_client.aclose()
         await fast_client.aclose()

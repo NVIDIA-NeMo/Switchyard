@@ -15,9 +15,11 @@ llm_client = "litellm"
 id = "fast"
 llm_client = "litellm"
 
-[routes.litellm_random]
-id = "litellm-random"
-type = "random"
-targets = ["strong", "fast"]
-weights = [0.5, 0.5]
-seed = 42
+[routes.litellm_stage]
+id = "litellm-stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "fast"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3

@@ -57,6 +57,26 @@ def gateway_response(model: str = "moonshotai/kimi-k3") -> dict[str, object]:
     }
 
 
+def gateway_tool_response() -> dict[str, object]:
+    response = gateway_response()
+    response["choices"][0]["message"] = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {
+                    "name": "Bash",
+                    "arguments": '{"command":"pytest -q"}',
+                },
+            }
+        ],
+    }
+    response["choices"][0]["finish_reason"] = "tool_calls"
+    return response
+
+
 async def test_call_uses_litellm_async_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,6 +152,155 @@ async def test_call_translates_request_and_normalizes_response() -> None:
     }
 
 
+@respx.mock
+async def test_call_translates_function_tool_history() -> None:
+    route = respx.post(f"{BASE_URL}/chat/completions").mock(
+        return_value=httpx.Response(200, json=gateway_response())
+    )
+    request = request_body()
+    request["messages"] = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "Run the tests."}],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "id": "call_1",
+                    "name": "Bash",
+                    "arguments": {"command": "pytest"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_call_id": "call_1",
+                    "content": [{"type": "text", "text": "1 failed"}],
+                    "is_error": True,
+                }
+            ],
+        },
+    ]
+    request["tools"] = [
+        {
+            "name": "Bash",
+            "description": "Run a shell command.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            },
+            "strict": True,
+        }
+    ]
+    request["tool_choice"] = {"type": "tool", "data": {"name": "Bash"}}
+
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        await client.call(request)
+    finally:
+        await client.aclose()
+
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["messages"] == [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "Run the tests."}],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "Bash",
+                        "arguments": '{"command": "pytest"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "1 failed"},
+    ]
+    assert sent["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "Bash",
+                "description": "Run a shell command.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+                "strict": True,
+            },
+        }
+    ]
+    assert sent["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "Bash"},
+    }
+
+
+async def test_call_normalizes_a_function_tool_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_acompletion(**_: object) -> ModelResponse:
+        return ModelResponse(**gateway_tool_response())
+
+    monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        response = await client.call(request_body())
+    finally:
+        await client.aclose()
+
+    assert response["outputs"] == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "id": "call_2",
+                    "name": "Bash",
+                    "arguments": {"command": "pytest -q"},
+                }
+            ],
+            "stop_reason": "tool_use",
+        }
+    ]
+
+
+@pytest.mark.parametrize("choice", ["auto", "required", "none"])
+async def test_call_translates_standard_tool_choice(
+    monkeypatch: pytest.MonkeyPatch,
+    choice: str,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_acompletion(**kwargs: object) -> ModelResponse:
+        captured.update(kwargs)
+        return ModelResponse(**gateway_response())
+
+    monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
+    request = request_body()
+    request["tools"] = [{"name": "Bash", "description": None, "parameters": {}}]
+    request["tool_choice"] = {"type": choice}
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        await client.call(request)
+    finally:
+        await client.aclose()
+
+    assert captured["tool_choice"] == choice
+
+
 @pytest.mark.parametrize(
     ("mutate", "match"),
     [
@@ -149,16 +318,40 @@ async def test_call_translates_request_and_normalizes_response() -> None:
             "instructions",
         ),
         (
-            lambda body: body["tools"].append(
-                {"name": "lookup", "description": None, "parameters": {}}
-            ),
-            "tools",
-        ),
-        (
             lambda body: body["messages"][0]["content"].append(
                 {"type": "image", "source": {"type": "url", "data": {"url": "x"}}}
             ),
             r"messages\[0\]\.content\[1\]",
+        ),
+        (
+            lambda body: body.update(
+                messages=[
+                    {
+                        "role": "tool",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_call_id": "call_1",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "url",
+                                            "data": {"url": "x"},
+                                        },
+                                    }
+                                ],
+                                "is_error": False,
+                            }
+                        ],
+                    }
+                ]
+            ),
+            r"messages\[0\]\.content\[0\]\.content\[0\]",
+        ),
+        (
+            lambda body: body.update(tool_choice={"type": "raw", "data": {}}),
+            "tool_choice",
         ),
         (
             lambda body: body["sampling"].update(top_k=4),
