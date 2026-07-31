@@ -947,17 +947,6 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#switchyard-serve" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        switchyard serve
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#switchyard-launch" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1013,17 +1002,6 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#switchyard-serve" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        switchyard serve
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#switchyard-launch" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1055,104 +1033,14 @@
 
 
 <h1 id="cli-reference">CLI reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
-<p>Switchyard exposes two commands:</p>
-<table>
-<thead>
-<tr>
-<th>Command</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>switchyard serve</code></td>
-<td>Run the Python server from a YAML routing bundle.</td>
-</tr>
-<tr>
-<td><code>switchyard launch</code></td>
-<td>Launch a coding agent through the native Rust server.</td>
-</tr>
-</tbody>
-</table>
-<h2 id="switchyard-serve"><code>switchyard serve</code><a class="headerlink" href="#switchyard-serve" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span></code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Option</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--routing-profiles PATH</code>, <code>-c PATH</code></td>
-<td>Required YAML routing bundle.</td>
-</tr>
-<tr>
-<td><code>--host HOST</code></td>
-<td>Bind host.</td>
-</tr>
-<tr>
-<td><code>--port PORT</code>, <code>-p PORT</code></td>
-<td>Bind port.</td>
-</tr>
-<tr>
-<td><code>--inbound {openai,anthropic,both}</code></td>
-<td>Accepted inbound format.</td>
-</tr>
-<tr>
-<td><code>--reload</code></td>
-<td>Enable Uvicorn reload.</td>
-</tr>
-<tr>
-<td><code>--workers N</code>, <code>-w N</code></td>
-<td>Uvicorn worker count.</td>
-</tr>
-<tr>
-<td><code>--enable-rl-logging</code></td>
-<td>Write RL traces.</td>
-</tr>
-<tr>
-<td><code>--rl-log-dir DIR</code></td>
-<td>RL trace directory.</td>
-</tr>
-<tr>
-<td><code>--routing-log-file PATH</code></td>
-<td>Append routing records as JSONL.</td>
-</tr>
-<tr>
-<td><code>--intake-enabled</code></td>
-<td>Enable Intake for opted-in requests.</td>
-</tr>
-<tr>
-<td><code>--enable-intake</code></td>
-<td>Deprecated alias for <code>--intake-enabled</code>.</td>
-</tr>
-<tr>
-<td><code>--intake-base-url URL</code></td>
-<td>Intake base URL.</td>
-</tr>
-<tr>
-<td><code>--intake-workspace NAME</code></td>
-<td>Intake workspace.</td>
-</tr>
-<tr>
-<td><code>--intake-api-key VALUE</code></td>
-<td>Intake API key.</td>
-</tr>
-<tr>
-<td><code>--intake-target-url URL</code></td>
-<td>Intake posting URL.</td>
-</tr>
-</tbody>
-</table>
+<p>The documented CLI workflow launches a coding agent through the native Rust
+server.</p>
 <h2 id="switchyard-launch"><code>switchyard launch</code><a class="headerlink" href="#switchyard-launch" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>switchyard
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>switchyard
 </span></code></pre></div>
 <p>Supported agents are <code>claude</code>, <code>codex</code>, and <code>openclaw</code>.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>switchyard launch &lt;agent&gt; --model &lt;route-id&gt; [--config &lt;deployment.toml&gt;] [-- &lt;agent args&gt;]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard launch &lt;agent&gt; --model &lt;route-id&gt; [--config &lt;deployment.toml&gt;] [-- &lt;agent args&gt;]
 </span></code></pre></div>
 <table>
 <thead>
