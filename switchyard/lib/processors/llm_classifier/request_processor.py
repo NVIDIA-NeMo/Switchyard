@@ -385,16 +385,6 @@ class LLMClassifierRequestProcessor:
             prompt_tokens, completion_tokens, cached_tokens = _classifier_token_counts(
                 completion.usage,
             )
-            # Record usage so the intake sink emits the classifier sub-call as its
-            # own record; the routed-turn record never sees this call.
-            ctx.record_submodel_call(
-                model=self._config.model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cached_tokens=cached_tokens,
-                router_type="deterministic",
-                routed_to="classifier",
-            )
             if self._stats_accumulator is not None:
                 await self._record_classifier_call(
                     prompt_tokens=prompt_tokens,

@@ -9,7 +9,6 @@
 pub mod backends;
 mod contracts;
 pub mod dimension_collector;
-pub mod intake;
 pub mod request_processors;
 pub mod response_processors;
 pub mod stage_router;
@@ -24,18 +23,11 @@ pub use contracts::*;
 pub use dimension_collector::{
     ResponseFlag, ResponseSignals, ToolResultSignal, extract_tool_signals,
 };
-pub use intake::{
-    HttpIntakeSink, IntakeFormat, IntakePayloadBuilder, IntakeQueueFullPolicy,
-    IntakeRequestMetadata, IntakeRequestState, IntakeSink, IntakeSinkConfig, IntakeTarget,
-    RequestMetadata, SubModelCall, SubModelCalls,
-};
 pub use request_processors::{
-    DimensionCollector, IntakeRequestProcessor, RandomRoutingDecision, RandomRoutingEngine,
-    RandomRoutingProcessorConfig, RandomRoutingTier, StatsRequestProcessor,
+    DimensionCollector, RandomRoutingDecision, RandomRoutingEngine, RandomRoutingProcessorConfig,
+    RandomRoutingTier, StatsRequestProcessor,
 };
-pub use response_processors::{
-    IntakeResponseProcessor, ResponseSignalCollector, StatsResponseProcessor,
-};
+pub use response_processors::{ResponseSignalCollector, StatsResponseProcessor};
 pub use stats::{
     ClassifierStatsSnapshot, CostBreakdown, CostEstimate, LatencyHistogramSnapshot,
     ModelStatsSnapshot, PrefixProbe, StatsAccumulator, StatsBackendLatency, StatsRequestStart,

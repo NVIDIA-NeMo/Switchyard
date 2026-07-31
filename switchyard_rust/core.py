@@ -310,29 +310,6 @@ class ProxyContext:
     def backend_call_latency_ms(self, value: float | None) -> None:
         self._native.backend_call_latency_ms = value
 
-    @property
-    def submodel_calls(self) -> list[dict[str, Any]]:
-        return cast(list[dict[str, Any]], self._native.submodel_calls)
-
-    def record_submodel_call(
-        self,
-        model: str,
-        prompt_tokens: int,
-        completion_tokens: int,
-        cached_tokens: int,
-        router_type: str,
-        routed_to: str,
-    ) -> None:
-        """Record one routing model call for intake and stats."""
-        self._native.record_submodel_call(
-            model,
-            prompt_tokens,
-            completion_tokens,
-            cached_tokens,
-            router_type,
-            routed_to,
-        )
-
     def __repr__(self) -> str:
         return repr(self._native)
 

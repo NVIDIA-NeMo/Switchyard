@@ -11,11 +11,6 @@ const SWITCHYARD_VERSION_ENV: &str = "SWITCHYARD_VERSION";
 const SWITCHYARD_TELEMETRY_OPT_OUT_ENV: &str = "SWITCHYARD_TELEMETRY_OPT_OUT";
 const NEMO_SWITCHYARD_TELEMETRY_OPT_OUT_ENV: &str = "NEMO_SWITCHYARD_TELEMETRY_OPT_OUT";
 
-pub(crate) fn switchyard_version() -> String {
-    configured_version(env::var(SWITCHYARD_VERSION_ENV).ok().as_deref())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
-}
-
 pub(crate) fn telemetry_header_value() -> Option<String> {
     telemetry_header_value_from_values(
         env::var(SWITCHYARD_TELEMETRY_OPT_OUT_ENV).ok().as_deref(),

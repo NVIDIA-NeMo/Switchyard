@@ -191,11 +191,7 @@ switchyard/
 │   │   ├── format_translate.py
 │   │   ├── random_routing_request_processor.py
 │   │   ├── stats_request_processor.py
-│   │   ├── stats_response_processor_accumulator.py
-│   │   ├── intake_request_processor.py
-│   │   ├── intake_response_processor.py
-│   │   ├── intake_payload_builder.py
-│   │   └── intake_client.py
+│   │   └── stats_response_processor_accumulator.py
 │   ├── endpoints/                  # FastAPI endpoint wrappers (require `nemo-switchyard[server]`)
 │   │   ├── openai_chat_endpoint.py         # OpenAIChatEndpoint
 │   │   ├── anthropic_messages_endpoint.py  # AnthropicMessagesEndpoint
@@ -203,8 +199,6 @@ switchyard/
 │   │   ├── stats_endpoint.py               # StatsEndpoint
 │   │   ├── sse_helpers.py
 │   │   └── base.py
-│   └── config/
-│       └── intake_sink_config.py
 ├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
 │   ├── switchyard_cli.py           # `switchyard` entry point
 │   ├── launch_command.py           # `switchyard launch`
@@ -325,7 +319,6 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 | `ANTHROPIC_API_KEY` | API key for Anthropic Claude |
 | `NVIDIA_API_KEY` | API key for NVIDIA NIM / Inference Hub |
 | `OPENROUTER_API_KEY` | OpenRouter key used by the packaged launcher deployment |
-| `SWITCHYARD_INTAKE_CAPTURE_CONTENT` | Set truthy to include prompt/response text in intake; default off (metadata-only) |
 
 ## Code Style
 

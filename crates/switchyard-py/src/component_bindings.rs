@@ -8,7 +8,6 @@ use pyo3::prelude::*;
 mod backends;
 pub(crate) mod config;
 mod dimension_collector;
-pub(crate) mod intake;
 mod request_processors;
 mod response_processors;
 mod stage_router;
@@ -16,7 +15,6 @@ pub(crate) mod stats;
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     config::register(module)?;
-    intake::register(module)?;
     stats::register(module)?;
     request_processors::register(module)?;
     response_processors::register(module)?;

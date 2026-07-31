@@ -23,8 +23,7 @@ from switchyard.lib.processors.routing_log_response_processor import (
     RoutingLogResponseProcessor,
 )
 from switchyard.lib.proxy_context import CTX_PROXY_ACTUAL_MODEL
-from switchyard.lib.request_metadata import attach_request_metadata
-from switchyard_rust.components import RequestMetadata
+from switchyard.lib.request_metadata import RequestMetadata, attach_request_metadata
 from switchyard_rust.core import ChatResponse, ProxyContext
 
 TASK_HEADERS = {

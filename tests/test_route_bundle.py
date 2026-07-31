@@ -453,54 +453,6 @@ def test_main_accepts_routing_profiles_flag(
     assert capsys.readouterr().err == ""
 
 
-def test_serve_subcommand_enables_intake_from_cli_args(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    import switchyard.cli.switchyard_cli as cli
-    from switchyard.lib.processors import (
-        IntakeRequestProcessor,
-        IntakeResponseProcessor,
-    )
-
-    yaml_path = tmp_path / "routes.yaml"
-    yaml_path.write_text(
-        "routes:\n"
-        "  direct:\n"
-        "    type: model\n"
-        "    target: some/model\n"
-    )
-    captured: dict[str, Any] = {}
-
-    def _fake_serve(
-        args: Any,
-        switchyard: object,
-        inbound_default: str,
-        **_kwargs: object,
-    ) -> None:
-        captured["switchyard"] = switchyard
-
-    monkeypatch.setattr(cli, "build_and_serve", _fake_serve)
-
-    args = cli._build_parser().parse_args([
-        "serve",
-        "--routing-profiles",
-        str(yaml_path),
-        "--intake-enabled",
-        "--intake-base-url",
-        "https://intake.example.test",
-        "--intake-api-key",
-        "sk-intake",
-        "--port",
-        "4555",
-    ])
-    args.func(args)
-
-    components = captured["switchyard"].lookup_switchyard("direct").iter_components()
-    assert any(isinstance(component, IntakeRequestProcessor) for component in components)
-    assert any(isinstance(component, IntakeResponseProcessor) for component in components)
-
-
 class TestEscalationRouterRouteType:
     """`type: escalation_router` wires the judge-latched chain via YAML."""
 

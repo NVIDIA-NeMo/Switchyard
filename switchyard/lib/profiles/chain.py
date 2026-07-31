@@ -114,8 +114,8 @@ class ComponentChainProfile:
         """Return a copy with serving-level stats and processor hooks applied.
 
         Profile configs stay user-facing and parseable; shared serving resources
-        such as one route-table accumulator or Intake processors are attached by
-        the builder that hosts the profile.
+        such as one route-table accumulator are attached by the builder that
+        hosts the profile.
         """
         from switchyard.lib.processors.stats_request_processor import (
             StatsRequestProcessor,

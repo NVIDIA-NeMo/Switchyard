@@ -231,17 +231,6 @@ class TierClassifier:
         prompt_tokens, completion_tokens, cached_tokens = _tier_token_counts(
             getattr(response, "usage", None),
         )
-        # Record usage so the intake sink emits the tier-classifier call as its
-        # own intake record; the routed-turn record never sees it.
-        if hasattr(ctx, "record_submodel_call"):
-            ctx.record_submodel_call(
-                model=self._model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cached_tokens=cached_tokens,
-                router_type="stage_router",
-                routed_to="tier_classifier",
-            )
         if self._stats is not None:
             try:
                 await self._stats.record_classifier_usage(

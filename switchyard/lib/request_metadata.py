@@ -4,10 +4,10 @@
 """request metadata helpers for HTTP endpoint context."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
-from switchyard_rust.components import IntakeRequestMetadata, RequestMetadata
 
 CTX_REQUEST_METADATA = "_request_metadata"
 CTX_PROFILE_REQUEST_HEADERS = "_profile_request_headers"
@@ -15,8 +15,6 @@ CTX_PROFILE_REQUEST_HEADERS = "_profile_request_headers"
 # Existing Switchyard session header. Do not add aliases here unless a
 # concrete client requires one; keeping one spelling avoids ambiguity.
 PROXY_SESSION_ID_HEADER = "proxy_x_session_id"
-INTAKE_ENABLED_HEADER = "x-switchyard-intake-enabled"
-INTAKE_APP_HEADER = "x-switchyard-intake-app"
 INTAKE_TASK_HEADER = "x-switchyard-intake-task"
 
 # Sentinel values our own launchers send as the ``Authorization`` /
@@ -34,11 +32,28 @@ CALLER_API_KEY_HEADER = "x-switchyard-api-key"  # pragma: allowlist secret
 
 # Request headers whose values carry a caller credential. Redacted before the
 # header map is retained on the context (``CTX_PROFILE_REQUEST_HEADERS``), so the
-# caller's key never reaches profile metadata, intake, logs, or traces. The key
+# caller's key never reaches profile metadata, logs, or traces. The key
 # is still forwarded upstream via ``CTX_CALLER_API_KEY`` (extracted by
 # ``attach_caller_api_key`` from the raw headers, before redaction).
 _SENSITIVE_HEADERS = frozenset({"authorization", "x-api-key", CALLER_API_KEY_HEADER})
 _REDACTED = "[REDACTED]"
+
+
+@dataclass(frozen=True, slots=True)
+class RequestMetadata:
+    """Session and task identifiers retained for compatibility routing logs."""
+
+    session_id: str | None = None
+    task: str | None = None
+
+    @classmethod
+    def from_headers(cls, headers: Mapping[str, str]) -> "RequestMetadata":
+        """Extract request metadata from a case-insensitive header mapping."""
+        normalized = {name.lower(): value for name, value in headers.items()}
+        return cls(
+            session_id=_nonempty_header(normalized, PROXY_SESSION_ID_HEADER),
+            task=_nonempty_header(normalized, INTAKE_TASK_HEADER),
+        )
 
 
 def attach_request_metadata(
@@ -46,7 +61,7 @@ def attach_request_metadata(
     metadata: RequestMetadata,
     headers: Mapping[str, str] | None = None,
 ) -> None:
-    """Attach request metadata to both Python and native typed context storage."""
+    """Attach request metadata and redacted headers to the Python context."""
     ctx.metadata[CTX_REQUEST_METADATA] = metadata
     if headers is not None:
         # Redact credential headers before retaining the map: the caller key is
@@ -54,7 +69,11 @@ def attach_request_metadata(
         # so nothing downstream needs the raw value, and a retained/logged header
         # map must not expose it.
         ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = redact_sensitive_headers(headers)
-    metadata.apply_to_context(ctx)
+
+
+def _nonempty_header(headers: Mapping[str, str], name: str) -> str | None:
+    value = headers.get(name)
+    return value if value else None
 
 
 def redact_sensitive_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -114,11 +133,8 @@ __all__ = [
     "CALLER_API_KEY_HEADER",
     "CTX_REQUEST_METADATA",
     "CTX_PROFILE_REQUEST_HEADERS",
-    "INTAKE_APP_HEADER",
-    "INTAKE_ENABLED_HEADER",
     "INTAKE_TASK_HEADER",
     "PROXY_SESSION_ID_HEADER",
-    "IntakeRequestMetadata",
     "RequestMetadata",
     "attach_caller_api_key",
     "attach_request_metadata",

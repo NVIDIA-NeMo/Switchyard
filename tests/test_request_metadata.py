@@ -10,12 +10,12 @@ import pytest
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY, ProxyContext
 from switchyard.lib.request_metadata import (
     CTX_PROFILE_REQUEST_HEADERS,
+    RequestMetadata,
     attach_caller_api_key,
     attach_request_metadata,
     extract_caller_api_key,
     redact_sensitive_headers,
 )
-from switchyard_rust.components import RequestMetadata
 
 
 class TestExtractCallerApiKey:
@@ -91,7 +91,7 @@ class TestRedactSensitiveHeaders:
             "Authorization": "Bearer nvapi-real",
             "x-api-key": "nvapi-x",
             "x-switchyard-api-key": "nvapi-forwarded",
-            "x-switchyard-intake-app": "demo",
+            "x-switchyard-intake-task": "demo",
             "content-type": "application/json",
         }
         redacted = redact_sensitive_headers(headers)
@@ -99,7 +99,7 @@ class TestRedactSensitiveHeaders:
         assert redacted["x-api-key"] == "[REDACTED]"
         assert redacted["x-switchyard-api-key"] == "[REDACTED]"
         # Non-credential headers pass through untouched.
-        assert redacted["x-switchyard-intake-app"] == "demo"
+        assert redacted["x-switchyard-intake-task"] == "demo"
         assert redacted["content-type"] == "application/json"
 
     def test_matching_is_case_insensitive(self) -> None:
@@ -109,13 +109,13 @@ class TestRedactSensitiveHeaders:
 
 class TestCallerKeyForwardedButNotRetained:
     """The endpoint extracts the caller key for upstream use, then retains a
-    redacted header map so the key cannot leak into profile metadata, intake,
-    logs, or traces."""
+    redacted header map so the key cannot leak into profile metadata, logs, or
+    traces."""
 
     def test_key_extracted_but_redacted_in_stored_headers(self) -> None:
         headers = {
             "x-switchyard-api-key": "nvapi-secret",
-            "x-switchyard-intake-app": "demo",
+            "x-switchyard-intake-task": "demo",
         }
         ctx = ProxyContext()
         # Mirror the endpoint: both helpers receive the raw headers.
@@ -127,4 +127,4 @@ class TestCallerKeyForwardedButNotRetained:
         # ...but the retained header map carries no raw credential.
         stored = ctx.metadata[CTX_PROFILE_REQUEST_HEADERS]
         assert stored["x-switchyard-api-key"] == "[REDACTED]"
-        assert stored["x-switchyard-intake-app"] == "demo"
+        assert stored["x-switchyard-intake-task"] == "demo"

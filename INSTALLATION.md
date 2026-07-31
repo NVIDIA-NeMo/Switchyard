@@ -62,7 +62,7 @@ Install all optional dependencies:
 pip install nemo-switchyard[all]
 ```
 
-Equivalent to: `nemo-switchyard[server,cli,tracing,intake,affinity-redis]`
+Equivalent to: `nemo-switchyard[server,cli,tracing,affinity-redis]`
 
 ### Common Combinations
 

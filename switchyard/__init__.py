@@ -36,12 +36,6 @@ from switchyard.lib.chat_response import (
     ResponseStream,
     StreamingChatResponse,
 )
-from switchyard.lib.config import (
-    IntakeSinkConfig,
-)
-from switchyard.lib.processors.intake_payload_builder import IntakePayloadBuilder
-from switchyard.lib.processors.intake_request_processor import IntakeRequestProcessor
-from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 from switchyard.lib.processors.rl_logging_request_processor import RlLoggingRequestProcessor
 from switchyard.lib.processors.rl_logging_response_processor import RlLoggingResponseProcessor
 from switchyard.lib.profiles import (
@@ -170,10 +164,6 @@ __all__ = [
     "build_switchyard_app",
     # Route dispatch table
     "RouteTable",
-    "IntakePayloadBuilder",
-    "IntakeRequestProcessor",
-    "IntakeResponseProcessor",
-    "IntakeSinkConfig",
     "RlLoggingRequestProcessor",
     "RlLoggingResponseProcessor",
     # Random Routing usage case

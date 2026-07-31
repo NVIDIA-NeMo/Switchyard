@@ -10,7 +10,6 @@ to ``None`` so the picker keeps moving.
 
 import json
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from switchyard.lib.processors.stage_router.classifier import (
@@ -211,29 +210,3 @@ async def test_window_4_appends_last_four_messages():
     assert "msg-5" in user_prompt
     assert "msg-0" not in user_prompt
     assert "msg-1" not in user_prompt
-
-
-async def test_classify_stashes_submodel_call_for_intake() -> None:
-    """A successful tier-classifier call is recorded for the intake sink to emit."""
-    ctx, signal = await _build_signal()
-    resp = _Resp(content=json.dumps({"tier": "capable"}))
-    # The producer reads token usage off the response; _Resp carries no usage
-    # field, so attach one shaped like the OpenAI SDK usage object.
-    resp.usage = SimpleNamespace(  # type: ignore[attr-defined]
-        prompt_tokens=333,
-        completion_tokens=12,
-        prompt_tokens_details=SimpleNamespace(cached_tokens=5),
-    )
-    classifier = TierClassifier(model="tier-clf", api_key="k", client=_StubClient(resp))
-
-    assert await classifier.classify(ctx, signal) == CAPABLE_TIER
-    assert ctx.submodel_calls == [
-        {
-            "model": "tier-clf",
-            "prompt_tokens": 333,
-            "completion_tokens": 12,
-            "cached_tokens": 5,
-            "router_type": "stage_router",
-            "routed_to": "tier_classifier",
-        }
-    ]

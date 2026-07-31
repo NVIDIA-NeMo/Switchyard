@@ -15,11 +15,6 @@ _COMPONENT_EXPORTS = frozenset(
         "BackendFormat",
         "DimensionCollector",
         "EndpointConfig",
-        "IntakeQueueFullPolicy",
-        "IntakeRequestMetadata",
-        "IntakeRequestProcessor",
-        "IntakeResponseProcessor",
-        "IntakeSinkConfig",
         "LlmTarget",
         "LlmTargetBackend",
         "MultiLlmBackend",
@@ -27,7 +22,6 @@ _COMPONENT_EXPORTS = frozenset(
         "OpenAiPassthroughBackend",
         "PickOutcome",
         "RandomRoutingProcessorConfig",
-        "RequestMetadata",
         "ResponseFlag",
         "ResponseSignalCollector",
         "ResponseSignals",
@@ -59,11 +53,6 @@ if TYPE_CHECKING:
     BackendFormat: type[Any]
     DimensionCollector: type[Any]
     EndpointConfig: type[Any]
-    IntakeQueueFullPolicy: type[Any]
-    IntakeRequestMetadata: type[Any]
-    IntakeRequestProcessor: type[Any]
-    IntakeResponseProcessor: type[Any]
-    IntakeSinkConfig: type[Any]
     LlmTarget: type[Any]
     LlmTargetBackend: type[Any]
     MultiLlmBackend: type[Any]
@@ -71,7 +60,6 @@ if TYPE_CHECKING:
     OpenAiPassthroughBackend: type[Any]
     PickOutcome: type[Any]
     RandomRoutingProcessorConfig: type[Any]
-    RequestMetadata: type[Any]
     ResponseFlag: type[Any]
     ResponseSignalCollector: type[Any]
     ResponseSignals: type[Any]

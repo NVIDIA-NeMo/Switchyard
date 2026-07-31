@@ -23,21 +23,5 @@ def test_all_symbols_accessible() -> None:
     assert missing == [], f"Symbols in __all__ not importable from switchyard: {missing}"
 
 
-def test_intake_payload_builder_importable() -> None:
-    from switchyard import IntakePayloadBuilder  # noqa: F401
-
-
-def test_intake_request_processor_importable() -> None:
-    from switchyard import IntakeRequestProcessor  # noqa: F401
-
-
-def test_intake_response_processor_importable() -> None:
-    from switchyard import IntakeResponseProcessor  # noqa: F401
-
-
-def test_intake_sink_config_importable() -> None:
-    from switchyard import IntakeSinkConfig  # noqa: F401
-
-
 def test_random_routing_config_importable() -> None:
     from switchyard import RandomRoutingConfig  # noqa: F401

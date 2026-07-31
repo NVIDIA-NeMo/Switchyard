@@ -95,7 +95,7 @@ class RouteBundle:
     can share the same instance with downstream readers (live stats footer,
     ``/v1/routing/stats``). ``None`` makes the builder create a fresh one.
 
-    Per-chain processor injection (Intake telemetry, custom hooks) is
+    Per-chain processor injection (for example, custom hooks) is
     call-site runtime state, not bundle data. ``serve`` and launchers may pass
     processors through the table builder, but route YAML never declares
     those processors itself.
@@ -347,8 +347,7 @@ def load_route_bundle_table(
     standalone ``switchyard serve`` callers want.
 
     ``pre_routing_request_processors`` / ``extra_response_processors`` let
-    callers attach process-level components such as Intake telemetry to every
-    YAML-declared route.
+    callers attach process-level components to every YAML-declared route.
     """
     return build_route_bundle_table(
         parse_routing_profiles_file(path),
@@ -423,8 +422,8 @@ def build_table_from_bundle(
 
     ``pre_routing_request_processors`` / ``extra_response_processors`` are
     call-time kwargs (not bundle data). ``serve`` and launchers pass
-    process-level processors such as Intake here when CLI/env config enables
-    them; YAML routes never declare those processors themselves.
+    process-level processors here; YAML routes never declare those processors
+    themselves.
     """
     table = RouteTable()
     stats = bundle.stats_accumulator or StatsAccumulator()

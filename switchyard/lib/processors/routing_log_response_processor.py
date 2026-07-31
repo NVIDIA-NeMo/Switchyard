@@ -66,7 +66,7 @@ class RoutingLogResponseProcessor:
         actual_model = _field(response.body, "model")
         record = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-            "task": getattr(getattr(metadata, "intake", None), "task", None),
+            "task": getattr(metadata, "task", None),
             "trial_id": headers.get("x-switchyard-trial-id"),
             "session_id": getattr(metadata, "session_id", None),
             "model": actual_model if isinstance(actual_model, str) and actual_model else served_model,

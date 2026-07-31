@@ -16,11 +16,6 @@ if TYPE_CHECKING:
     from switchyard_rust.components import AnthropicNativeBackend as AnthropicNativeBackend
     from switchyard_rust.components import BackendFormat as BackendFormat
     from switchyard_rust.components import EndpointConfig as EndpointConfig
-    from switchyard_rust.components import IntakeQueueFullPolicy as IntakeQueueFullPolicy
-    from switchyard_rust.components import IntakeRequestMetadata as IntakeRequestMetadata
-    from switchyard_rust.components import IntakeRequestProcessor as IntakeRequestProcessor
-    from switchyard_rust.components import IntakeResponseProcessor as IntakeResponseProcessor
-    from switchyard_rust.components import IntakeSinkConfig as IntakeSinkConfig
     from switchyard_rust.components import LlmTarget as LlmTarget
     from switchyard_rust.components import LlmTargetBackend as LlmTargetBackend
     from switchyard_rust.components import MultiLlmBackend as MultiLlmBackend
@@ -29,7 +24,6 @@ if TYPE_CHECKING:
     from switchyard_rust.components import (
         RandomRoutingProcessorConfig as RandomRoutingProcessorConfig,
     )
-    from switchyard_rust.components import RequestMetadata as RequestMetadata
     from switchyard_rust.components import StatsAccumulator as StatsAccumulator
     from switchyard_rust.components import StatsLlmBackend as StatsLlmBackend
     from switchyard_rust.components import StatsRequestProcessor as StatsRequestProcessor
@@ -62,18 +56,12 @@ def __getattr__(name: str) -> object:
         "AnthropicNativeBackend",
         "BackendFormat",
         "EndpointConfig",
-        "IntakeQueueFullPolicy",
-        "IntakeRequestMetadata",
-        "IntakeRequestProcessor",
-        "IntakeResponseProcessor",
-        "IntakeSinkConfig",
         "LlmTarget",
         "LlmTargetBackend",
         "MultiLlmBackend",
         "OpenAiNativeBackend",
         "OpenAiPassthroughBackend",
         "RandomRoutingProcessorConfig",
-        "RequestMetadata",
         "StatsAccumulator",
         "StatsLlmBackend",
         "StatsRequestProcessor",
@@ -140,11 +128,6 @@ __all__ = [
     "ChatResponseStream",
     "ChatResponseType",
     "EndpointConfig",
-    "IntakeQueueFullPolicy",
-    "IntakeRequestMetadata",
-    "IntakeRequestProcessor",
-    "IntakeResponseProcessor",
-    "IntakeSinkConfig",
     "LLMBackend",
     "LlmTarget",
     "LlmTargetBackend",
@@ -154,7 +137,6 @@ __all__ = [
     "ProxyMetadata",
     "ProxyContext",
     "RandomRoutingProcessorConfig",
-    "RequestMetadata",
     "StatsAccumulator",
     "StatsLlmBackend",
     "StatsRequestProcessor",

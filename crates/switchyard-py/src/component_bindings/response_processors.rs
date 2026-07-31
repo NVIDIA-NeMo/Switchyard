@@ -4,9 +4,8 @@
 //! Python bindings for concrete response-side components.
 
 use pyo3::prelude::*;
-use switchyard_components::{IntakeResponseProcessor, StatsResponseProcessor};
+use switchyard_components::StatsResponseProcessor;
 
-use super::config::PyIntakeSinkConfig;
 use super::stats::PyStatsAccumulator;
 use crate::errors::py_core_error;
 use crate::interop::context::lease_from_python;
@@ -74,64 +73,7 @@ impl PyStatsResponseProcessor {
     }
 }
 
-#[pyclass(name = "IntakeResponseProcessor", skip_from_py_object)]
-#[derive(Clone, Debug)]
-pub(crate) struct PyIntakeResponseProcessor {
-    inner: IntakeResponseProcessor,
-    config: PyIntakeSinkConfig,
-}
-
-#[pymethods]
-impl PyIntakeResponseProcessor {
-    #[new]
-    fn py_new(config: PyRef<'_, PyIntakeSinkConfig>) -> PyResult<Self> {
-        let config = PyIntakeSinkConfig::from_core(config.clone_core());
-        let inner =
-            IntakeResponseProcessor::with_http_sink(config.clone_core()).map_err(py_core_error)?;
-        Ok(Self { inner, config })
-    }
-
-    #[getter]
-    fn config(&self) -> PyIntakeSinkConfig {
-        self.config.clone()
-    }
-
-    fn startup<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pyo3_async_runtimes::tokio::future_into_py(py, async { Ok(()) })
-    }
-
-    fn shutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let processor = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            processor.shutdown().await.map_err(py_core_error)
-        })
-    }
-
-    fn process<'py>(
-        &self,
-        py: Python<'py>,
-        ctx: &Bound<'_, PyAny>,
-        response: &Bound<'_, PyAny>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let processor = self.inner.clone();
-        let mut lease = lease_from_python(ctx)?;
-        let response = response_from_python(response)?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = processor.process(lease.context_mut()?, response).await;
-            let restore_result = lease.restore();
-            let response = result.map_err(py_core_error)?;
-            restore_result?;
-            Python::attach(|py| response_to_python(py, response))
-        })
-    }
-
-    fn __repr__(&self) -> &'static str {
-        "IntakeResponseProcessor()"
-    }
-}
-
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyStatsResponseProcessor>()?;
-    module.add_class::<PyIntakeResponseProcessor>()?;
     Ok(())
 }

@@ -328,8 +328,6 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
     args = argparse.Namespace(
         routing_profiles="profiles.yaml",
         enable_rl_logging=True, rl_log_dir=str(tmp_path),
-        intake_enabled=False, intake_base_url=None, intake_workspace=None,
-        intake_api_key=None, intake_target_url=None,
         routing_log_file=None,
     )
     cli._cmd_serve(args)

@@ -9,24 +9,17 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
-from inspect import signature
-from typing import Any
 
 from switchyard.cli.command_utils import (
     quiet_dependency_loggers as _quiet_dependency_loggers,
 )
-from switchyard.cli.intake_cli_config import IntakeCliConfig
 from switchyard.cli.launch_command import (
     cmd_launch_claude,
     cmd_launch_codex,
     cmd_launch_openclaw,
 )
 from switchyard.cli.route_bundle import RouteBundleConfigError, load_route_bundle_table
-from switchyard.lib.config import IntakeSinkConfig
-from switchyard.lib.processors.intake_request_processor import IntakeRequestProcessor
-from switchyard.lib.processors.intake_response_processor import IntakeResponseProcessor
 from switchyard.lib.processors.rl_logging_response_processor import build_rl_logging_processors
 from switchyard.server.server_util import (
     add_transport_args,
@@ -36,109 +29,12 @@ from switchyard.server.server_util import (
 
 logger = logging.getLogger(__name__)
 
-_CANONICAL_INTAKE_ENABLE_FLAG = "--intake-enabled"
-_DEPRECATED_INTAKE_ENABLE_FLAG = "--enable-intake"
-_ARGPARSE_ACTION_SUPPORTS_DEPRECATED = (
-    "deprecated" in signature(argparse.Action.__init__).parameters
-)
-
-
-class _IntakeEnabledAction(argparse.Action):
-    """Normalize the Intake flag and warn on its deprecated alias."""
-
-    def __init__(
-        self,
-        option_strings: Sequence[str],
-        dest: str,
-        nargs: int | str | None = None,
-        const: Any = None,
-        default: Any = None,
-        type: Any = None,
-        choices: Any = None,
-        required: bool = False,
-        help: str | None = None,
-        metavar: str | tuple[str, ...] | None = None,
-        deprecated: bool = False,
-    ) -> None:
-        del nargs
-        action_kwargs: dict[str, Any] = {
-            "option_strings": option_strings,
-            "dest": dest,
-            "nargs": 0,
-            "const": const,
-            "default": default,
-            "type": type,
-            "choices": choices,
-            "required": required,
-            "help": help,
-            "metavar": metavar,
-        }
-        if _ARGPARSE_ACTION_SUPPORTS_DEPRECATED:
-            action_kwargs["deprecated"] = deprecated
-        super().__init__(**action_kwargs)
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
-    ) -> None:
-        if option_string == _DEPRECATED_INTAKE_ENABLE_FLAG:
-            logger.warning(
-                "%s is deprecated; use %s",
-                _DEPRECATED_INTAKE_ENABLE_FLAG,
-                _CANONICAL_INTAKE_ENABLE_FLAG,
-            )
-        setattr(namespace, self.dest, True)
-
-
-def _add_intake_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        _CANONICAL_INTAKE_ENABLE_FLAG,
-        _DEPRECATED_INTAKE_ENABLE_FLAG,
-        dest="intake_enabled",
-        default=False,
-        action=_IntakeEnabledAction,
-        help=(
-            "Enable Intake for requests that opt in with store=true or "
-            "x-switchyard-intake-enabled=true."
-        ),
-    )
-    parser.add_argument("--intake-base-url", default=None)
-    parser.add_argument("--intake-workspace", default=None)
-    parser.add_argument("--intake-api-key", default=None)
-    parser.add_argument("--intake-target-url", default=None)
-
-
-def _resolve_intake_config(args: argparse.Namespace) -> IntakeSinkConfig | None:
-    intake = IntakeCliConfig.from_server_args(args)
-    if not intake.enabled:
-        return None
-    return IntakeSinkConfig(
-        intake_base_url=intake.base_url,
-        workspace=intake.workspace,
-        api_key=intake.api_key,
-        target_url=intake.target_url,
-    )
-
-
-def _resolve_intake_processors(
-    args: argparse.Namespace,
-) -> tuple[list[Any], list[Any]]:
-    intake = _resolve_intake_config(args)
-    if intake is None:
-        return [], []
-    return [IntakeRequestProcessor()], [IntakeResponseProcessor(intake)]
-
-
 def _cmd_serve(args: argparse.Namespace) -> None:
     """Serve an explicit routing-profile bundle."""
 
-    intake_request, intake_response = _resolve_intake_processors(args)
-    rl_request, rl_response = build_rl_logging_processors(resolve_rl_log_dir(args))
-    request_processors = [*intake_request, *rl_request]
-    response_processors = [*intake_response, *rl_response]
+    request_processors, response_processors = build_rl_logging_processors(
+        resolve_rl_log_dir(args)
+    )
     if args.routing_log_file:
         from switchyard.lib.processors.routing_log_response_processor import (
             RoutingLogResponseProcessor,
@@ -244,7 +140,6 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--enable-rl-logging", action="store_true")
     serve.add_argument("--rl-log-dir", default="./rl_data", metavar="DIR")
     add_transport_args(serve)
-    _add_intake_args(serve)
     serve.add_argument("--routing-log-file", default=None, metavar="PATH")
     serve.add_argument(
         "--workers",

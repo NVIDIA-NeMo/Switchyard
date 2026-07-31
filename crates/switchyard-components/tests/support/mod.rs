@@ -15,7 +15,6 @@ use serde_json::Value;
 use switchyard_components::{Result, SwitchyardError};
 
 pub mod config;
-pub mod intake;
 
 /// One HTTP request captured by a local mock server.
 #[derive(Debug)]

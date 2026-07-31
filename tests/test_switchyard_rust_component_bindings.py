@@ -16,10 +16,6 @@ from switchyard_rust import (
     ChatRequestType,
     ChatResponse,
     EndpointConfig,
-    IntakeQueueFullPolicy,
-    IntakeRequestProcessor,
-    IntakeResponseProcessor,
-    IntakeSinkConfig,
     LLMBackend,
     LlmTarget,
     LlmTargetBackend,
@@ -53,7 +49,6 @@ def test_component_exports_are_callable_processors_and_native_backends() -> None
     anthropic_target = _target("anthropic", "claude-test", format=BackendFormat.ANTHROPIC)
 
     assert callable(StatsRequestProcessor().process)
-    assert callable(IntakeRequestProcessor().process)
     assert callable(StatsResponseProcessor(StatsAccumulator()).process)
     assert isinstance(OpenAiNativeBackend(openai_target), LLMBackend)
     assert isinstance(AnthropicNativeBackend(anthropic_target), LLMBackend)
@@ -84,8 +79,6 @@ def test_config_bindings_validate_and_own_values() -> None:
     }
     assert target.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
     assert target.extra_headers == {"X-Inference-Priority": "batch"}
-    assert IntakeQueueFullPolicy("block") == IntakeQueueFullPolicy.BLOCK
-
     with pytest.raises(ValueError, match="Unknown backend format"):
         BackendFormat("bedrock")
     with pytest.raises(ValueError, match="must not be empty"):
@@ -238,13 +231,3 @@ def test_wrappers_require_rust_native_backend_instances() -> None:
 
     with pytest.raises(TypeError):
         StatsLlmBackend(PythonOnlyBackend(), StatsAccumulator())
-
-
-def test_intake_response_processor_validates_http_sink_config() -> None:
-    processor = IntakeResponseProcessor(
-        IntakeSinkConfig(intake_base_url="https://intake.example.test", api_key="key")
-    )
-    assert callable(processor.process)
-
-    with pytest.raises(RuntimeError, match="intake_base_url"):
-        IntakeResponseProcessor(IntakeSinkConfig())

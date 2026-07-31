@@ -83,76 +83,6 @@ class RandomRoutingProcessorConfig:
     def to_dict(self) -> dict[str, Any]: ...
 
 
-class IntakeQueueFullPolicy:
-    DROP: ClassVar[IntakeQueueFullPolicy]
-    BLOCK: ClassVar[IntakeQueueFullPolicy]
-
-    value: str
-
-    def __init__(self, value: str = "drop") -> None: ...
-
-
-class IntakeSinkConfig:
-    intake_base_url: str | None
-    workspace: str | None
-    user_id: str
-    api_key: str | None
-    target_url: str | None
-    target_format: str | None
-    target_authenticated: bool | None
-    max_queue_size: int
-    request_timeout_s: float
-    max_retries: int
-    on_queue_full: IntakeQueueFullPolicy
-    capture_content: bool
-
-    def __init__(
-        self,
-        intake_base_url: str | None = None,
-        workspace: str | None = None,
-        user_id: str | None = None,
-        api_key: str | None = None,
-        target_url: str | None = None,
-        target_format: str | None = None,
-        target_authenticated: bool | None = None,
-        max_queue_size: int | None = None,
-        request_timeout_s: float | None = None,
-        max_retries: int | None = None,
-        on_queue_full: IntakeQueueFullPolicy | str | None = None,
-        capture_content: bool | None = None,
-    ) -> None: ...
-    def to_dict(self) -> dict[str, Any]: ...
-
-
-class IntakeRequestMetadata:
-    enabled: bool | None
-    app: str | None
-    task: str | None
-
-    def __init__(
-        self,
-        enabled: bool | None = None,
-        app: str | None = None,
-        task: str | None = None,
-    ) -> None: ...
-    def to_dict(self) -> dict[str, Any]: ...
-
-
-class RequestMetadata:
-    session_id: str | None
-    intake: IntakeRequestMetadata
-
-    def __init__(
-        self,
-        session_id: str | None = None,
-        intake: IntakeRequestMetadata | None = None,
-    ) -> None: ...
-    @classmethod
-    def from_headers(cls, headers: Any) -> RequestMetadata: ...
-    def to_dict(self) -> dict[str, Any]: ...
-    def apply_to_context(self, ctx: Any) -> None: ...
-
-
 class StatsAccumulator:
     def __init__(self) -> None: ...
     async def record_success(
@@ -249,13 +179,6 @@ class StatsRequestProcessor:
     async def shutdown(self) -> None: ...
 
 
-class IntakeRequestProcessor:
-    def __init__(self) -> None: ...
-    async def process(self, ctx: ProxyContext, request: Any) -> Any: ...
-    async def startup(self) -> None: ...
-    async def shutdown(self) -> None: ...
-
-
 class StatsResponseProcessor:
     accumulator: StatsAccumulator
 
@@ -264,15 +187,6 @@ class StatsResponseProcessor:
     async def startup(self) -> None: ...
     async def shutdown(self) -> None: ...
     def get_endpoint(self) -> object: ...
-
-
-class IntakeResponseProcessor:
-    config: IntakeSinkConfig
-
-    def __init__(self, config: IntakeSinkConfig) -> None: ...
-    async def process(self, ctx: ProxyContext, response: Any) -> Any: ...
-    async def startup(self) -> None: ...
-    async def shutdown(self) -> None: ...
 
 
 class DimensionCollector:
