@@ -40,6 +40,10 @@ session_affinity = true
 message_hash_fallback = true
 ```
 
+`message_hash_fallback` is best-effort: independent sessions with the same
+first user message share an affinity key. Prefer an explicit
+`x-switchyard-session-id` when repeated opening prompts are possible.
+
 The target table names are local references. Their `id` values are the model
 identifiers sent to the upstream provider. The route's `id`, `smart`, is the
 model name clients send to Switchyard.

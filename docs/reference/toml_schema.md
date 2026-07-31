@@ -58,6 +58,11 @@ must exist and be non-empty when the server loads.
 
 Every route takes `id` and `type`, plus the keys for that type.
 
+### `noop`
+
+Returns a buffered assistant response containing `OK` without calling an
+upstream model. Use it for local smoke tests.
+
 ### `passthrough`
 
 Sends every request to one target.
@@ -74,7 +79,7 @@ Splits traffic across targets. See
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `targets` | Yes | — | Target names to choose from. |
-| `weights` | No | equal | Relative weights, in `targets` order. |
+| `weights` | No | equal | Finite, non-negative relative weights in `targets` order, with at least one positive value. Invalid weights are rejected at load time. |
 | `seed` | No | unset | Reproduces the selection sequence. |
 
 ### `llm_classifier`
@@ -124,6 +129,13 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `capable_system_prompt` | No | unset | System prompt handed to the capable tier. |
 | `efficient_system_prompt` | No | unset | System prompt handed to the efficient tier. |
+
+## Validation Errors
+
+`--dry-run` prefixes configuration failures with
+`invalid server config <path>:`. Within that wrapper, TOML deserialization
+errors start with `failed to parse TOML:`, while errors from validating the
+built configuration retain their inner message unchanged.
 
 ## Related Documentation
 

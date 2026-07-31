@@ -131,4 +131,4 @@ curl http://localhost:4000/v1/chat/completions \
 ```
 
 For the complete TOML schema and every route option, refer to the
-[Rust server README](../../crates/switchyard-server/README.md).
+[TOML Schema](../reference/toml_schema.md).

@@ -107,8 +107,8 @@ flowchart LR
 Clients keep their native OpenAI or Anthropic API format. Switchyard picks a
 configured backend, forwards the request in that backend's own format, and
 translates the response back into the shape the client expects. The server
-exposes OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages, and
-upstream clients support the same three formats.
+accepts OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. Each
+configured LLM client selects one upstream format.
 
 ## Documentation
 
