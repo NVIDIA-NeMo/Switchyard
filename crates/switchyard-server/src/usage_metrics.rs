@@ -60,6 +60,9 @@ pub(crate) fn observe(
                     if let Ok(LlmResponseChunk::Usage(usage)) = &item {
                         latest_usage = Some(usage.clone());
                     }
+                    if failed {
+                        record_stream_error(&stats, &model, tier.as_deref());
+                    }
                     yield item;
                     if failed {
                         return;
@@ -86,6 +89,15 @@ pub(crate) fn observe(
         llm_response,
         metadata,
     }
+}
+
+// Records a terminal stream failure after the routed call was already counted.
+fn record_stream_error(stats: &StatsAccumulator, model: &str, tier: Option<&str>) {
+    stats.record_stream_error(model, tier);
+    global::meter("switchyard")
+        .u64_counter("switchyard.errors")
+        .build()
+        .add(1, &attributes(model, tier));
 }
 
 pub(crate) fn token_usage(usage: &Usage) -> TokenUsage {

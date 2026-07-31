@@ -217,7 +217,45 @@ fn openai_chat_finish_synthesizes_terminal_chunk_after_incomplete_source() -> Te
     };
     assert_eq!(terminal["choices"][0]["delta"], json!({}));
     assert_eq!(terminal["choices"][0]["finish_reason"], "stop");
-    assert_eq!(terminal["usage"]["total_tokens"], 0);
+    assert!(terminal.get("usage").is_none());
+    Ok(())
+}
+
+// Verifies provider usage arriving after finish remains visible to OpenAI clients.
+#[test]
+fn openai_chat_emits_usage_arriving_after_stop() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let stop = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiChat,
+        &stop,
+    )?;
+    assert!(events[0].get("usage").is_none());
+
+    let usage = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiChat,
+        &usage,
+    )?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["choices"], json!([]));
+    assert_eq!(events[0]["usage"]["total_tokens"], 15);
     Ok(())
 }
 

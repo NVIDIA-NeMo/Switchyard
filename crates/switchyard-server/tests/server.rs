@@ -1130,7 +1130,7 @@ async fn streaming_success_records_only_final_usage_and_one_latency() -> TestRes
 }
 
 #[tokio::test]
-async fn streaming_error_records_neither_usage_nor_latency() -> TestResult {
+async fn streaming_error_records_error_without_usage_or_latency() -> TestResult {
     const MODEL: &str = "model/stream-error";
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
     let before = send(&app, "GET", "/metrics", None).await?;
@@ -1170,10 +1170,21 @@ async fn streaming_error_records_neither_usage_nor_latency() -> TestResult {
             "{name} changed after a failed stream"
         );
     }
+    assert_eq!(
+        metric_delta(
+            before,
+            after,
+            "switchyard_errors_total",
+            &[("model", MODEL)]
+        ),
+        Some(1.0)
+    );
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["total_requests"], 1);
+    assert_eq!(stats["total_errors"], 1);
     assert_eq!(stats["total_tokens"], empty_token_totals());
     assert_eq!(stats["models"][MODEL]["calls"], 1);
+    assert_eq!(stats["models"][MODEL]["errors"], 1);
     assert_eq!(stats["models"][MODEL]["total_latency"]["count"], 0);
     assert_eq!(stats["routing_overhead"]["count"], 1);
     Ok(())

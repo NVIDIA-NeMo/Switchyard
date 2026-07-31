@@ -202,7 +202,11 @@ fn encode_openai_chat_stream(
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
-            Vec::new()
+            if state.finished {
+                vec![openai_usage_chunk(state)]
+            } else {
+                Vec::new()
+            }
         }
         LlmResponseChunk::MessageStop { reason } => {
             if state.finished {
@@ -213,7 +217,7 @@ fn encode_openai_chat_stream(
                 state,
                 json!({}),
                 Some(openai_finish_reason(reason.as_deref())),
-                Some(openai_usage_value(state)),
+                state.saw_backend_usage.then(|| openai_usage_value(state)),
             )]
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
@@ -232,7 +236,7 @@ fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         state,
         json!({}),
         Some(openai_finish_reason(state.stop_reason.as_deref())),
-        Some(openai_usage_value(state)),
+        state.saw_backend_usage.then(|| openai_usage_value(state)),
     )]
 }
 
@@ -295,6 +299,13 @@ fn openai_stream_chunk(
     if let Some(usage) = usage {
         payload["usage"] = usage;
     }
+    payload
+}
+
+// Builds the usage-only chunk OpenAI emits after the terminal choices chunk.
+fn openai_usage_chunk(state: &StreamTranslationState) -> Value {
+    let mut payload = openai_stream_chunk(state, json!({}), None, Some(openai_usage_value(state)));
+    payload["choices"] = json!([]);
     payload
 }
 

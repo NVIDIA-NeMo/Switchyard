@@ -45,6 +45,7 @@ const RESERVED_HEADERS: &[&str] = &[
     "anthropic-beta",
     "anthropic-version",
     "content-type",
+    "accept-encoding",
 ];
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -1547,6 +1548,7 @@ mod tests {
         let mut headers = BTreeMap::new();
         headers.insert("x-request-id".to_string(), "abc".to_string());
         headers.insert("authorization".to_string(), "Bearer client-key".to_string());
+        headers.insert("accept-encoding".to_string(), "gzip, br".to_string());
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("gpt".to_string()),
@@ -1572,6 +1574,12 @@ mod tests {
         client
             .call_rewrite_model(Context::default(), request, None)
             .await?;
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        assert!(!received.headers.contains_key("accept-encoding"));
         Ok(())
     }
 

@@ -66,6 +66,19 @@ impl StatsAccumulator {
         }
     }
 
+    /// Records a stream failure after its routed call was already counted.
+    pub(crate) fn record_stream_error(&self, model: impl Into<String>, tier: Option<&str>) {
+        let mut inner = self.lock();
+        inner.total_errors = inner.total_errors.saturating_add(1);
+        let model = model.into();
+        let stats = inner.model_stats_mut(model.clone());
+        stats.errors = stats.errors.saturating_add(1);
+        if let Some(tier) = normalized_tier(tier) {
+            stats.tiers.insert(tier.to_string());
+            inner.tier_stats_mut(tier, &model);
+        }
+    }
+
     /// Records usage and terminal latency after a successful routed call.
     pub(crate) fn record_usage(
         &self,
