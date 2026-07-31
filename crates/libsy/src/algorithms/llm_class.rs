@@ -380,10 +380,11 @@ impl Classifier<State> for EscalationClassifier {
             .await?;
 
         let held = streak(state);
-        let (escalate, pending) = match classification {
-            Classification::Scores(ref scores) if !scores.is_empty() => (true, held + 1),
-            Classification::Scores(_) => (false, 0),
-            Classification::Ambiguous(_) => (false, held),
+        let best = classification.argmax(false)?;
+        let (escalate, pending) = match &best {
+            Some(score) if score.target == self.capable.semantic_name => (true, held + 1),
+            Some(_) => (false, 0),
+            None => (false, held),
         };
         state
             .extra
