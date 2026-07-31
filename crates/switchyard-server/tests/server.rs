@@ -936,6 +936,49 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
 }
 
 #[tokio::test]
+async fn routing_log_exposes_session_stats() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
+        .with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("proxy_x_session_id", "session-1")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}]
+        }))?))?;
+    let response = app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let stats = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=session-1",
+        None,
+    )
+    .await?
+    .json()?;
+    assert_eq!(stats["total_calls"], 1);
+    assert_eq!(stats["total_prompt_tokens"], 10);
+    assert_eq!(stats["total_cached_tokens"], 7);
+    assert_eq!(stats["models"]["model/a"]["completion_tokens"], 2);
+
+    let records = std::fs::read_to_string(log_path)?;
+    let first: Value =
+        serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
+    assert!(first["ts"]
+        .as_str()
+        .is_some_and(|value| value.ends_with('Z')));
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
 

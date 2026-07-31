@@ -7,6 +7,7 @@ pub mod config;
 mod metrics;
 mod observability;
 mod response;
+mod routing_log;
 mod sse;
 mod stats;
 mod usage_metrics;
@@ -21,7 +22,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{rejection::JsonRejection, DefaultBodyLimit, Request as HttpRequest, State};
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{DefaultBodyLimit, Query, Request as HttpRequest, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -31,8 +33,10 @@ use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use libsy::{
     Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request, RunObservation,
-    RunObserver,
+    RunObserver, Usage,
 };
+use parking_lot::Mutex;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
 use tracing::{Instrument, Level};
@@ -87,7 +91,42 @@ pub struct ServerState {
     routes: Arc<BTreeMap<String, Arc<dyn Algorithm>>>,
     metrics: prometheus::Registry,
     stats: StatsAccumulator,
+    routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+}
+
+#[derive(Clone)]
+struct SharedRoutingLog {
+    writer: Arc<Mutex<routing_log::RoutingLog>>,
+    path: PathBuf,
+}
+
+impl SharedRoutingLog {
+    fn new(path: PathBuf) -> ServerResult<Self> {
+        Ok(Self {
+            writer: Arc::new(Mutex::new(routing_log::RoutingLog::new(path.clone())?)),
+            path,
+        })
+    }
+
+    fn append(
+        &self,
+        context: routing_log::RoutingLogContext,
+        model: &str,
+        tier: Option<&str>,
+        usage: &Usage,
+    ) {
+        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+            tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
+        }
+    }
+
+    fn snapshot_session(
+        &self,
+        session_id: &str,
+    ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
+        routing_log::snapshot(&self.path, session_id)
+    }
 }
 
 impl ServerState {
@@ -113,8 +152,15 @@ impl ServerState {
             routes: Arc::new(entries),
             metrics,
             stats: StatsAccumulator::default(),
+            routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
         })
+    }
+
+    /// Enables durable per-request routing records at `path`.
+    pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
+        self.routing_log = Some(SharedRoutingLog::new(path.into())?);
+        Ok(self)
     }
 
     /// Returns the route model IDs served by the configured algorithms.
@@ -295,7 +341,7 @@ async fn stamp_request_start(mut request: HttpRequest, next: Next) -> Response {
 
 /// Builds an Axum router for the supported LLM wire formats.
 pub fn build_switchyard_router(state: ServerState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/responses", post(openai_responses))
@@ -304,7 +350,11 @@ pub fn build_switchyard_router(state: ServerState) -> Router {
         .route("/v1/stats", get(get_stats))
         .route("/v1/stats/reset", post(reset_stats))
         .route("/metrics", get(prometheus_metrics))
-        .route("/health", get(health))
+        .route("/health", get(health));
+    if state.routing_log.is_some() {
+        router = router.route("/v1/routing/session-stats", get(get_session_stats));
+    }
+    router
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
         // `layer` only wraps routes registered before it, so this stays last.
@@ -432,6 +482,10 @@ async fn handle_endpoint_inner(
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
+    let routing_log_context = state
+        .routing_log
+        .as_ref()
+        .map(|_| routing_log::RoutingLogContext::from_headers(&normalized_headers(&headers)));
     let metadata = metadata_from_headers(&headers);
     let request_log = RequestLogContext {
         started: started.0,
@@ -453,7 +507,17 @@ async fn handle_endpoint_inner(
     };
 
     let response = match llm_json_body(body) {
-        Ok(body) => handle_llm_request(state, started, metadata, body, wire_format).await,
+        Ok(body) => {
+            handle_llm_request(
+                state,
+                started,
+                metadata,
+                body,
+                wire_format,
+                routing_log_context,
+            )
+            .await
+        }
         Err(message) => invalid_body_error(message),
     };
     metrics::record_client_response(response.status().as_u16());
@@ -520,6 +584,7 @@ async fn handle_llm_request(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
+    routing_log_context: Option<routing_log::RoutingLogContext>,
 ) -> Response {
     let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
     let (algorithm, request) = match resolve_route(&state, metadata, body, wire_format) {
@@ -555,6 +620,7 @@ async fn handle_llm_request(
             started.0,
             state.stats,
             cache_eligible,
+            state.routing_log.zip(routing_log_context),
         )
     } else {
         response
@@ -785,6 +851,42 @@ async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
 async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
     state.stats.reset();
     Json(json!({"status": "reset"}))
+}
+
+#[derive(Deserialize)]
+struct SessionStatsQuery {
+    session_id: String,
+}
+
+async fn get_session_stats(
+    State(state): State<ServerState>,
+    query: std::result::Result<Query<SessionStatsQuery>, QueryRejection>,
+) -> Response {
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                error.to_string(),
+                "invalid_request_error",
+                "invalid_query",
+            )
+        }
+    };
+    let Some(routing_log) = state.routing_log else {
+        return not_found().await;
+    };
+    let snapshot = routing_log.snapshot_session(&query.session_id);
+    match snapshot {
+        Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            "Routing session not found",
+            "not_found",
+            "routing_session_not_found",
+        ),
+        Err(error) => server_error(format!("failed to read routing log: {error}")),
+    }
 }
 
 async fn health() -> Json<Value> {

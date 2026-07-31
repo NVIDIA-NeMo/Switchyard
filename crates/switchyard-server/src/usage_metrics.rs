@@ -9,7 +9,9 @@ use futures_util::StreamExt;
 use libsy::{LlmResponse, LlmResponseChunk, Response, Usage};
 use opentelemetry::{global, KeyValue};
 
+use crate::routing_log::RoutingLogContext;
 use crate::stats::{StatsAccumulator, TokenUsage};
+use crate::SharedRoutingLog;
 
 /// Observes a routed response without changing its aggregate or streaming contents.
 pub(crate) fn observe(
@@ -19,6 +21,7 @@ pub(crate) fn observe(
     started: Instant,
     stats: StatsAccumulator,
     cache_eligible: f64,
+    routing_log: Option<(SharedRoutingLog, RoutingLogContext)>,
 ) -> Response {
     let Response {
         llm_response,
@@ -37,6 +40,9 @@ pub(crate) fn observe(
                 started,
                 cache_eligible,
             );
+            if let Some((log, context)) = routing_log {
+                log.append(context, &model, tier.as_deref(), &agg.usage);
+            }
             LlmResponse::Agg(agg)
         }
         LlmResponse::Stream(mut stream) => {
@@ -59,14 +65,18 @@ pub(crate) fn observe(
                         return;
                     }
                 }
+                let usage = latest_usage.unwrap_or_default();
                 record_terminal(
                     &stats,
-                    &latest_usage.unwrap_or_default(),
+                    &usage,
                     &model,
                     tier.as_deref(),
                     started,
                     cache_eligible,
                 );
+                if let Some((log, context)) = routing_log {
+                    log.append(context, &model, tier.as_deref(), &usage);
+                }
             };
             LlmResponse::Stream(Box::pin(wrapped))
         }

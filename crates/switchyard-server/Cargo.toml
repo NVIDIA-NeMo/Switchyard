@@ -31,6 +31,7 @@ toml = "1.1"
 switchyard-llm-client.workspace = true
 serde_json.workspace = true
 switchyard-translation.workspace = true
+humantime = "2.4"
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry = "0.33"
