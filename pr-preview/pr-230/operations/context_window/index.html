@@ -856,17 +856,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#evictions-last-for-the-session" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Evictions last for the session
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#when-every-target-overflows" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1059,17 +1048,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#evictions-last-for-the-session" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Evictions last for the session
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#when-every-target-overflows" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1103,7 +1081,13 @@
 <h1 id="context-window-handling">Context-Window Handling<a class="headerlink" href="#context-window-handling" title="Permanent link">&para;</a></h1>
 <p>When an upstream rejects a request because the prompt exceeds the model's
 context window, Switchyard drops that target and calls another target on the
-same route, repeating until a call succeeds or every target has been tried.</p>
+same route, repeating until a call succeeds or every target has been tried. If
+the request carries <code>x-switchyard-session-id</code> or a recognized coding-agent
+session header such as <code>x-claude-code-session-id</code>, the target remains excluded
+for the rest of that session. Without a session header, the fallback still
+applies to the current request, but the overflow is not remembered.
+After truncating or resetting context, clients should use a new session ID;
+reusing the old ID preserves its target exclusions.</p>
 <h2 id="what-counts-as-an-overflow">What counts as an overflow<a class="headerlink" href="#what-counts-as-an-overflow" title="Permanent link">&para;</a></h2>
 <p>Switchyard treats an upstream reply as a context overflow only when the status
 is HTTP 400 <strong>and</strong> the body identifies a context-length error: an <code>error.code</code>
@@ -1142,14 +1126,6 @@ target, so the route below needs nothing beyond its two tiers:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>x-model-router-selected-model: openai/gpt-4o-mini
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>x-model-router-rationale: openai/gpt-4o exceeded its context window; fell back to openai/gpt-4o-mini
 </span></code></pre></div>
-<h2 id="evictions-last-for-the-session">Evictions last for the session<a class="headerlink" href="#evictions-last-for-the-session" title="Permanent link">&para;</a></h2>
-<p>A conversation only grows, so a target that overflowed on one turn will overflow
-on the next. Switchyard remembers the overflow and skips that target for the
-rest of the session rather than paying for a call certain to fail.</p>
-<p>Sessions are identified from a request header — <code>x-switchyard-session-id</code>, or
-the session header a coding agent already sends, such as
-<code>x-claude-code-session-id</code>. A request that carries no session header is served
-normally, but its overflows are not remembered.</p>
 <h2 id="when-every-target-overflows">When every target overflows<a class="headerlink" href="#when-every-target-overflows" title="Permanent link">&para;</a></h2>
 <p>Once no untried target is left — including a single-target <code>passthrough</code> route,
 which has no alternative from the start — the request fails with HTTP 400 and an

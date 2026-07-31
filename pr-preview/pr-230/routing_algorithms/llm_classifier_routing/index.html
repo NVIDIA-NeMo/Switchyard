@@ -1192,6 +1192,9 @@ decision for later requests in the same conversation.</p>
 </span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">message_hash_fallback</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span></code></pre></div>
+<p><code>message_hash_fallback</code> is best-effort: independent sessions with the same
+first user message share an affinity key. Prefer an explicit
+<code>x-switchyard-session-id</code> when repeated opening prompts are possible.</p>
 <p>The target table names are local references. Their <code>id</code> values are the model
 identifiers sent to the upstream provider. The route's <code>id</code>, <code>smart</code>, is the
 model name clients send to Switchyard.</p>

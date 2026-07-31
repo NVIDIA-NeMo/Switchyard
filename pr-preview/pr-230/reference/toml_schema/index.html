@@ -992,6 +992,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#noop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        noop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#passthrough" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1037,6 +1048,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Errors
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1141,6 +1163,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#noop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        noop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#passthrough" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1186,6 +1219,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Errors
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1324,6 +1368,9 @@ must exist and be non-empty when the server loads.</p>
 </table>
 <h2 id="routesname"><code>[routes.&lt;name&gt;]</code><a class="headerlink" href="#routesname" title="Permanent link">&para;</a></h2>
 <p>Every route takes <code>id</code> and <code>type</code>, plus the keys for that type.</p>
+<h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
+<p>Returns a buffered assistant response containing <code>OK</code> without calling an
+upstream model. Use it for local smoke tests.</p>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
 <p>Sends every request to one target.</p>
 <table>
@@ -1365,7 +1412,7 @@ must exist and be non-empty when the server loads.</p>
 <td><code>weights</code></td>
 <td style="text-align: center;">No</td>
 <td>equal</td>
-<td>Relative weights, in <code>targets</code> order.</td>
+<td>Finite, non-negative relative weights in <code>targets</code> order, with at least one positive value. Invalid weights are rejected at load time.</td>
 </tr>
 <tr>
 <td><code>seed</code></td>
@@ -1544,6 +1591,11 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 </tr>
 </tbody>
 </table>
+<h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>
+<p><code>--dry-run</code> prefixes configuration failures with
+<code>invalid server config &lt;path&gt;:</code>. Within that wrapper, TOML deserialization
+errors start with <code>failed to parse TOML:</code>, while errors from validating the
+built configuration retain their inner message unchanged.</p>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../../cli_reference/">CLI Reference</a></li>
