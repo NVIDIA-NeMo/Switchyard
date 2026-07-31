@@ -7,7 +7,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_protocol::{ResponseAccumulator, StopReason};
 use switchyard_translation::{
-    decode_stream_event, LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat,
+    LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -543,9 +543,11 @@ fn anthropic_thinking_stream_deltas_do_not_become_openai_chat_content() -> TestR
     assert!(events.iter().any(|event| {
         event["choices"][0]["delta"]["reasoning_content"] == "private chain of thought"
     }));
-    assert!(!events
-        .iter()
-        .any(|event| { event["choices"][0]["delta"]["content"] == "private chain of thought" }));
+    assert!(
+        !events
+            .iter()
+            .any(|event| { event["choices"][0]["delta"]["content"] == "private chain of thought" })
+    );
     Ok(())
 }
 

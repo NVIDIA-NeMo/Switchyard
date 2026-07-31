@@ -9,25 +9,25 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
-    ChatResponse, LlmBackend, LlmTarget, LlmTargetId, ProxyContext, Result, StreamEvent,
-    SwitchyardError,
+    BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType, ChatResponse, LlmBackend,
+    LlmTarget, LlmTargetId, ProxyContext, Result, StreamEvent, SwitchyardError,
+    merge_target_extra_body,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use switchyard_translation::{
-    normalize_anthropic_tool_use_ids, TranslationEngine, TranslationPolicy, WireFormat,
+    TranslationEngine, TranslationPolicy, WireFormat, normalize_anthropic_tool_use_ids,
 };
 
-use super::common::{
-    build_reqwest_client, decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes,
-    parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
-    ParsedSseFrame,
-};
 use super::BackendSelection;
-use crate::telemetry::{telemetry_header_value, SWITCHYARD_VERSION_HEADER};
+use super::common::{
+    ParsedSseFrame, build_reqwest_client, decode_sse_frame, drain_next_sse_frame,
+    has_non_whitespace_bytes, parse_json_sse_frame, request_wire_format, set_json_model,
+    shared_translation_engine,
+};
+use crate::telemetry::{SWITCHYARD_VERSION_HEADER, telemetry_header_value};
 
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";

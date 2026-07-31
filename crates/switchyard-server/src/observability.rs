@@ -9,15 +9,15 @@ use std::sync::OnceLock;
 use axum::http::HeaderMap;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use opentelemetry_sdk::Resource;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
 
-use crate::{metrics, ServerError, ServerResult};
+use crate::{ServerError, ServerResult, metrics};
 
 const DEFAULT_LOG_FILTER: &str = "switchyard_server=info,libsy=info,opentelemetry=warn";
 const DEFAULT_SERVICE_NAME: &str = "switchyard-server";
@@ -40,9 +40,10 @@ pub fn initialize_observability() -> ServerResult<()> {
 pub fn flush_observability() {
     if let Some(Ok(observability)) = OBSERVABILITY.get()
         && let Some(provider) = &observability.tracer_provider
-            && let Err(error) = provider.force_flush() {
-                tracing::warn!(error = %error, "failed to flush OpenTelemetry traces");
-            }
+        && let Err(error) = provider.force_flush()
+    {
+        tracing::warn!(error = %error, "failed to flush OpenTelemetry traces");
+    }
     metrics::flush();
 }
 

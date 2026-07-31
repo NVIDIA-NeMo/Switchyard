@@ -3,15 +3,15 @@
 
 //! Streaming codec for OpenAI Chat Completions chunks.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
+use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    record_source_identity, state_source_is, string_field, target_model_or_source_model,
-    StreamCodec, StreamTranslationState,
+    StreamCodec, StreamTranslationState, record_source_identity, state_source_is, string_field,
+    target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
-use crate::LlmResponseChunk;
 
 /// Stream codec for OpenAI Chat Completions chunks.
 pub struct OpenAiChatStreamCodec;
@@ -98,20 +98,22 @@ fn decode_openai_chat_stream(
         };
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
             if let Some(text) = delta.get("content").and_then(Value::as_str)
-                && !text.is_empty() {
-                    out.push(LlmResponseChunk::TextDelta {
+                && !text.is_empty()
+            {
+                out.push(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: text.to_string(),
+                });
+            }
+            for reasoning_key in ["reasoning_content", "reasoning"] {
+                if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
+                    && !text.is_empty()
+                {
+                    out.push(LlmResponseChunk::ReasoningDelta {
                         index: 0,
                         text: text.to_string(),
                     });
                 }
-            for reasoning_key in ["reasoning_content", "reasoning"] {
-                if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
-                    && !text.is_empty() {
-                        out.push(LlmResponseChunk::ReasoningDelta {
-                            index: 0,
-                            text: text.to_string(),
-                        });
-                    }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {

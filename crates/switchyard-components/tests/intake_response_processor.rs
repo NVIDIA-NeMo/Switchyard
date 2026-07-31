@@ -16,7 +16,7 @@ use switchyard_components::{
 };
 
 use support::intake::{
-    completion, drain_stream, opted_in_context, record_backend_selection, RecordingSink,
+    RecordingSink, completion, drain_stream, opted_in_context, record_backend_selection,
 };
 
 // Skip metadata should preserve the response and avoid sink writes.
@@ -521,8 +521,8 @@ async fn response_processor_wraps_responses_stream_completed_response() -> Resul
 
 // Responses streams without a completed event should synthesize the final response.
 #[tokio::test]
-async fn response_processor_wraps_responses_stream_function_call_without_completed_event(
-) -> Result<()> {
+async fn response_processor_wraps_responses_stream_function_call_without_completed_event()
+-> Result<()> {
     let sink = Arc::new(RecordingSink::default());
     let processor = IntakeResponseProcessor::new(
         IntakeSinkConfig {

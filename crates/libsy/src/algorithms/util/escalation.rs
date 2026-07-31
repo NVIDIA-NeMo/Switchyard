@@ -380,9 +380,11 @@ mod tests {
         assert_eq!(built.llm_request.messages.len(), 2);
         assert_eq!(built.llm_request.messages[0].role, Role::System);
         assert_eq!(built.llm_request.messages[1].role, Role::User);
-        assert!(built.llm_request.messages[1]
-            .text_content("")
-            .is_some_and(|text| text.contains("Conversation turn 4")));
+        assert!(
+            built.llm_request.messages[1]
+                .text_content("")
+                .is_some_and(|text| text.contains("Conversation turn 4"))
+        );
         // Bounded output, so a reasoning judge cannot run away mid-verdict.
         assert_eq!(
             built.llm_request.output.max_output_tokens,

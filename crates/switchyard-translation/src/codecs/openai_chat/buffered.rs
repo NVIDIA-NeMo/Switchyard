@@ -3,7 +3,7 @@
 
 //! Buffered codec for OpenAI Chat Completions request and response JSON.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
@@ -95,19 +95,20 @@ impl FormatCodec for OpenAiChatCodec {
                 )?;
                 prepend_openai_reasoning_blocks(&mut content, message);
                 if role == Role::Assistant
-                    && let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-                        if is_empty_text_only(&content) {
-                            content.clear();
-                        }
-                        for tool_call in tool_calls {
-                            generated_id += 1;
-                            if let Some(call) =
-                                decode_openai_tool_call(tool_call, generated_id, policy)?
-                            {
-                                content.push(ContentBlock::ToolCall(call));
-                            }
+                    && let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array)
+                {
+                    if is_empty_text_only(&content) {
+                        content.clear();
+                    }
+                    for tool_call in tool_calls {
+                        generated_id += 1;
+                        if let Some(call) =
+                            decode_openai_tool_call(tool_call, generated_id, policy)?
+                        {
+                            content.push(ContentBlock::ToolCall(call));
                         }
                     }
+                }
                 if role == Role::Tool {
                     let text = content
                         .iter()

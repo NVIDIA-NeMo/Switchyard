@@ -14,7 +14,7 @@ use switchyard_components::{
 };
 use switchyard_components::{ChatRequestType, EndpointConfig, LlmBackend, LlmTargetId};
 
-use super::config::{endpoint_config_from_python, PyEndpointConfig, PyLlmTarget};
+use super::config::{PyEndpointConfig, PyLlmTarget, endpoint_config_from_python};
 use super::stats::PyStatsAccumulator;
 use crate::errors::py_core_error;
 use crate::interop::request::request_type_from_python;

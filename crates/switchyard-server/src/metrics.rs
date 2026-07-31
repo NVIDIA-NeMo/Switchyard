@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
 use prometheus::{Encoder, Registry, TextEncoder};
 use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label};
@@ -64,9 +64,10 @@ fn initialize() -> Result<Metrics, String> {
 
 pub(crate) fn flush() {
     if let Some(Ok(metrics)) = METRICS.get()
-        && let Err(error) = metrics.provider.force_flush() {
-            tracing::warn!(error = %error, "failed to flush OpenTelemetry metrics");
-        }
+        && let Err(error) = metrics.provider.force_flush()
+    {
+        tracing::warn!(error = %error, "failed to flush OpenTelemetry metrics");
+    }
 }
 
 fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {

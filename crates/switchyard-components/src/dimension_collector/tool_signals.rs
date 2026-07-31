@@ -13,7 +13,7 @@ use switchyard_protocol::{Metadata, Request, WireFormat};
 
 /// The tool-signal output type. Re-exported from libsy so downstream consumers
 /// (the `ToolResultSignal` stamped on `ProxyContext`) see a single type.
-pub use switchyard_libsy::{ToolSignals as ToolResultSignal, DEFAULT_RECENT_WINDOW};
+pub use switchyard_libsy::{DEFAULT_RECENT_WINDOW, ToolSignals as ToolResultSignal};
 
 /// Adapt a format-tagged [`ChatRequest`] to a [`switchyard_protocol::Request`]
 /// carrying the raw body and its wire format, which is all libsy's extractor reads.

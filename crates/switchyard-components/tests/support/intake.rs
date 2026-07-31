@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_components::{
     BackendSelection, BackendSelectionReason, IntakeRequestMetadata, IntakeRequestState,
     IntakeSink, RequestMetadata,

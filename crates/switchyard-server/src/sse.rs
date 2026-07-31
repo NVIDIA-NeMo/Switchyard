@@ -7,7 +7,7 @@ use std::convert::Infallible;
 
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_translation::{RawEventStream, WireFormat};
 
 /// Boxed stream type accepted by Axum's SSE response wrapper.

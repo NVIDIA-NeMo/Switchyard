@@ -3,7 +3,7 @@
 
 //! Metric labelling inherited from Python
 
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 
 pub(crate) const fn is_retryable_http_status(status: u16) -> bool {
     status == 408 || status == 429 || (status >= 500 && status <= 599)

@@ -3,8 +3,8 @@
 
 //! Switch-aware cache eligibility for the Rust server.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use serde_json::Value;

@@ -12,7 +12,7 @@
 pub mod response;
 pub mod tool_signals;
 
-pub use response::{extract_response_signals, ResponseFlag, ResponseSignals};
+pub use response::{ResponseFlag, ResponseSignals, extract_response_signals};
 pub use tool_signals::{
-    extract_tool_signals, extract_tool_signals_with_window, ToolResultSignal, DEFAULT_RECENT_WINDOW,
+    DEFAULT_RECENT_WINDOW, ToolResultSignal, extract_tool_signals, extract_tool_signals_with_window,
 };

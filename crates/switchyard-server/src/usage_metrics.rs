@@ -6,12 +6,12 @@
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use switchyard_protocol::{LlmResponse, LlmResponseChunk, Response, Usage};
 
+use crate::SharedRoutingLog;
 use crate::routing_log::RoutingLogContext;
 use crate::stats::{StatsAccumulator, TokenUsage};
-use crate::SharedRoutingLog;
 
 /// Observes a routed response without changing its aggregate or streaming contents.
 pub(crate) fn observe(

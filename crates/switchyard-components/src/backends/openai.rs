@@ -9,9 +9,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::{
-    merge_target_extra_body, BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType,
-    ChatResponse, EndpointConfig, LlmBackend, LlmTarget, LlmTargetId, ModelId, ProxyContext,
-    Result, StreamEvent, SwitchyardError,
+    BackendFormat, BoxResponseStream, ChatRequest, ChatRequestType, ChatResponse, EndpointConfig,
+    LlmBackend, LlmTarget, LlmTargetId, ModelId, ProxyContext, Result, StreamEvent,
+    SwitchyardError, merge_target_extra_body,
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -20,12 +20,12 @@ use serde_json::{Map, Value};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use super::common::{
-    build_reqwest_client, decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes,
-    parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
-    ParsedSseFrame,
+    ParsedSseFrame, build_reqwest_client, decode_sse_frame, drain_next_sse_frame,
+    has_non_whitespace_bytes, parse_json_sse_frame, request_wire_format, set_json_model,
+    shared_translation_engine,
 };
 use super::{BackendSelection, BackendSelectionReason};
-use crate::telemetry::{telemetry_header_value, SWITCHYARD_VERSION_HEADER};
+use crate::telemetry::{SWITCHYARD_VERSION_HEADER, telemetry_header_value};
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";

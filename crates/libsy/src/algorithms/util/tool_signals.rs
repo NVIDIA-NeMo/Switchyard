@@ -300,18 +300,19 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
         return ToolCategory::Plan;
     }
     if BASH_TOOL_NAMES.contains(&lower.as_str())
-        && let Some(cmd) = command {
-            // Write/edit redirection trumps read-like operands.
-            if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
-                return ToolCategory::Write;
-            }
-            if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
-                return ToolCategory::Edit;
-            }
-            if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) {
-                return ToolCategory::Read;
-            }
+        && let Some(cmd) = command
+    {
+        // Write/edit redirection trumps read-like operands.
+        if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
+            return ToolCategory::Write;
         }
+        if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) {
+            return ToolCategory::Edit;
+        }
+        if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) {
+            return ToolCategory::Read;
+        }
+    }
     ToolCategory::Other
 }
 
@@ -823,7 +824,10 @@ mod tests {
     fn compaction_marker_sets_compacted() {
         // The compaction summary is a user message carrying Claude Code's preamble.
         let request = with_messages(vec![
-            Message::text(Role::User, "This session is being continued from a previous conversation that ran out of context."),
+            Message::text(
+                Role::User,
+                "This session is being continued from a previous conversation that ran out of context.",
+            ),
             bash("ls"),
         ]);
         assert!(ToolSignals::from_request(&request, None).compacted);

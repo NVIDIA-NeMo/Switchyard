@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role};
 
-use crate::core::processor::{Event, Processor};
 use crate::Result;
+use crate::core::processor::{Event, Processor};
 
 /// Appends `note` to the request as conversation text.
 ///
@@ -111,7 +111,7 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{text_request, LlmRequest, ToolResult};
+    use switchyard_protocol::{LlmRequest, ToolResult, text_request};
 
     const NOTE: &str = "recovering from an error";
     const STRONG_PROMPT: &str = "diagnose before you edit";

@@ -10,6 +10,6 @@
 //! through the same implementation the libsy profile uses.
 
 pub use switchyard_libsy::{
-    dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
-    PickOutcome, PickerMode, ScoreResult, StageClassifier, Tier,
+    CodingAgentDimensions, DecisionSource, PickOutcome, PickerMode, ScoreResult, StageClassifier,
+    Tier, dimensions_from_signal, pick_tier, score_signal,
 };

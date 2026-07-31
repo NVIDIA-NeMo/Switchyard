@@ -11,7 +11,7 @@ use crate::{ChatRequest, ChatRequestType, ChatResponse, LlmBackend, ProxyContext
 use async_trait::async_trait;
 
 use crate::stats::{
-    selected_stats_model, selected_stats_tier, StatsAccumulator, StatsBackendLatency,
+    StatsAccumulator, StatsBackendLatency, selected_stats_model, selected_stats_tier,
 };
 
 /// Transparent backend wrapper that records call success/error and backend latency.

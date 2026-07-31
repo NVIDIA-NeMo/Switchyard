@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pythonize::{depythonize, pythonize};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 /// Converts a Python mapping-like object into a Serde-owned Rust value.
@@ -36,15 +36,17 @@ pub(crate) fn value_to_python(py: Python<'_>, value: &Value) -> PyResult<Py<PyAn
 
 fn jsonable_python(value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(model_dump) = value.getattr("model_dump")
-        && model_dump.is_callable() {
-            let kwargs = PyDict::new(value.py());
-            kwargs.set_item("mode", "json")?;
-            kwargs.set_item("exclude_none", true)?;
-            return model_dump.call((), Some(&kwargs)).map(Bound::unbind);
-        }
+        && model_dump.is_callable()
+    {
+        let kwargs = PyDict::new(value.py());
+        kwargs.set_item("mode", "json")?;
+        kwargs.set_item("exclude_none", true)?;
+        return model_dump.call((), Some(&kwargs)).map(Bound::unbind);
+    }
     if let Ok(to_dict) = value.getattr("to_dict")
-        && to_dict.is_callable() {
-            return to_dict.call0().map(Bound::unbind);
-        }
+        && to_dict.is_callable()
+    {
+        return to_dict.call0().map(Bound::unbind);
+    }
     Ok(value.clone().unbind())
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_libsy::{
     Algorithm, HandoffNoteConfig, LibsyError as RustLibsyError, LlmFallback, LlmTarget,
     LlmTargetSet, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter, StageRouterConfig,

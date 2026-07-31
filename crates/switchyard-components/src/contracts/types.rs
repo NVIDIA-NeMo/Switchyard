@@ -92,11 +92,12 @@ impl ChatRequest {
         let checks_messages = matches!(self, Self::OpenAiChat(_) | Self::Anthropic(_));
         if checks_messages
             && let Some(messages) = self.body().get("messages").and_then(Value::as_array)
-                && messages.is_empty() {
-                    return Err(SwitchyardError::InvalidRequest(
-                        "messages must be a non-empty array".to_string(),
-                    ));
-                }
+            && messages.is_empty()
+        {
+            return Err(SwitchyardError::InvalidRequest(
+                "messages must be a non-empty array".to_string(),
+            ));
+        }
         Ok(())
     }
 

@@ -4,7 +4,7 @@
 //! Tests for custom translation and stream codec extension points.
 
 use pretty_assertions::assert_eq;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_translation::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -114,9 +114,11 @@ fn capability_profile_can_fail_fast_when_target_cannot_accept_request_features()
         Err(error) => error,
     };
 
-    assert!(error
-        .to_string()
-        .contains("target format/profile does not support tools"));
+    assert!(
+        error
+            .to_string()
+            .contains("target format/profile does not support tools")
+    );
 }
 
 // Minimal custom buffered codec used to exercise the registry extension point.

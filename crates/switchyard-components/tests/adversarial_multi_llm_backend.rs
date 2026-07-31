@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_components::{
     BackendFormat, ChatRequest, ChatRequestType, ChatResponse, LlmBackend, LlmTarget, LlmTargetId,
     ModelId, ProxyContext, Result, SwitchyardError,
@@ -414,8 +414,8 @@ async fn single_target_fallback_routes_without_selector() -> Result<()> {
 
 // Non-object request bodies should be repaired only in the delegated clone.
 #[tokio::test]
-async fn single_target_fallback_recovers_non_object_request_body_without_mutating_original(
-) -> Result<()> {
+async fn single_target_fallback_recovers_non_object_request_body_without_mutating_original()
+-> Result<()> {
     let calls = Shared::default();
     let events = Shared::default();
     let backend = MultiLlmBackend::new([target_backend(
@@ -492,8 +492,8 @@ async fn routing_preserves_responses_payload_shape_while_rewriting_model() -> Re
 
 // Multi-LLM dispatch should not reject a selected child based on its native format list.
 #[tokio::test]
-async fn selected_child_backend_receives_request_even_when_its_direct_formats_do_not_match(
-) -> Result<()> {
+async fn selected_child_backend_receives_request_even_when_its_direct_formats_do_not_match()
+-> Result<()> {
     let calls = Shared::default();
     let events = Shared::default();
     let backend = MultiLlmBackend::new([target_backend(
@@ -746,8 +746,8 @@ async fn duplicate_models_route_successfully_when_target_is_explicit() -> Result
 
 // Successful explicit routing should replace stale context selection before delegation.
 #[tokio::test]
-async fn explicit_target_overwrites_stale_selected_model_and_selection_before_delegation(
-) -> Result<()> {
+async fn explicit_target_overwrites_stale_selected_model_and_selection_before_delegation()
+-> Result<()> {
     let calls = Shared::default();
     let events = Shared::default();
     let backend = MultiLlmBackend::new([target_backend(
@@ -1198,9 +1198,11 @@ fn public_accessors_return_targets_and_backends_without_leaking_storage_shape() 
             .model,
         ModelId::from_static("second-model")
     );
-    assert!(backend
-        .target(&LlmTargetId::from_static("missing-target"))
-        .is_none());
+    assert!(
+        backend
+            .target(&LlmTargetId::from_static("missing-target"))
+            .is_none()
+    );
     assert_eq!(
         backend.targets()[0].backend().supported_request_types(),
         &ALL_REQUEST_TYPES

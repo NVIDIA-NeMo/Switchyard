@@ -3,8 +3,8 @@
 
 //! Private adapter for Rust-owned request context values.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::{Mutex, MutexGuard};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -422,10 +422,7 @@ impl PyProxyContext {
             .map(|target| target.as_str().to_string());
         Ok(format!(
             "ProxyContext(request_id={:?}, inbound_format={:?}, selected_model={:?}, selected_target={:?})",
-            inner.request_id,
-            inner.inbound_format,
-            selected_model,
-            selected_target,
+            inner.request_id, inner.inbound_format, selected_model, selected_target,
         ))
     }
 }

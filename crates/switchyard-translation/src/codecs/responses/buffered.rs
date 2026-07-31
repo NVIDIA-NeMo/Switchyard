@@ -73,14 +73,15 @@ impl FormatCodec for OpenAiResponsesCodec {
             ..LlmRequest::default()
         };
         if let Some(instructions) = body.get("instructions").and_then(Value::as_str)
-            && !instructions.is_empty() {
-                request.instructions.push(crate::llm::InstructionBlock {
-                    role: Role::System,
-                    content: vec![ContentBlock::Text {
-                        text: instructions.to_string(),
-                    }],
-                });
-            }
+            && !instructions.is_empty()
+        {
+            request.instructions.push(crate::llm::InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: instructions.to_string(),
+                }],
+            });
+        }
         request.messages = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
             &mut diagnostics,
@@ -152,9 +153,10 @@ impl FormatCodec for OpenAiResponsesCodec {
             body.insert("tools".to_string(), encode_responses_tools(&request.tools));
         }
         if let Some(choice) = &request.tool_choice
-            && let Some(choice) = encode_responses_tool_choice(choice) {
-                body.insert("tool_choice".to_string(), choice);
-            }
+            && let Some(choice) = encode_responses_tool_choice(choice)
+        {
+            body.insert("tool_choice".to_string(), choice);
+        }
         if let Some(max_output_tokens) = request.output.max_output_tokens {
             body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
         }
@@ -558,11 +560,11 @@ fn collect_responses_reasoning_text(value: Option<&Value>, out: &mut Vec<String>
                         if matches!(
                             object.get("type").and_then(Value::as_str),
                             Some("reasoning_text" | "summary_text" | "text")
-                        )
-                            && let Some(text) = object.get("text").and_then(Value::as_str)
-                                && !text.is_empty() {
-                                    out.push(text.to_string());
-                                }
+                        ) && let Some(text) = object.get("text").and_then(Value::as_str)
+                            && !text.is_empty()
+                        {
+                            out.push(text.to_string());
+                        }
                     }
                     _ => {}
                 }
@@ -682,20 +684,21 @@ fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
         if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
                 if let Some(name) = function.get("name").and_then(Value::as_str)
-                    && !name.is_empty() {
-                        out.push(ToolDefinition {
-                            name: name.to_string(),
-                            description: function
-                                .get("description")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
-                            parameters: function
-                                .get("parameters")
-                                .cloned()
-                                .unwrap_or_else(|| json!({})),
-                            strict: function.get("strict").and_then(Value::as_bool),
-                        });
-                    }
+                    && !name.is_empty()
+                {
+                    out.push(ToolDefinition {
+                        name: name.to_string(),
+                        description: function
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        parameters: function
+                            .get("parameters")
+                            .cloned()
+                            .unwrap_or_else(|| json!({})),
+                        strict: function.get("strict").and_then(Value::as_bool),
+                    });
+                }
             } else {
                 if !push_responses_function_tool(&mut out, tool) {
                     push_responses_id_tool(&mut out, tool);

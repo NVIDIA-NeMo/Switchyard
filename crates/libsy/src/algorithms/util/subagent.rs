@@ -17,9 +17,9 @@
 
 use async_trait::async_trait;
 
+use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::Result;
 use switchyard_protocol::{Metadata, Request, Response};
 
 /// Scores a fixed worker target for delegated sub-agent work; abstains otherwise.

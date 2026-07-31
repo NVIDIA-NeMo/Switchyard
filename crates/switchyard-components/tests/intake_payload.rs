@@ -5,7 +5,7 @@
 
 mod support;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_components::{
     ChatRequest, ChatRequestType, LlmTargetId, ModelId, ProxyContext, Result,
 };
@@ -337,9 +337,11 @@ fn payload_usage_uses_null_model_when_served_model_is_missing() -> Result<()> {
         false,
     )?;
 
-    assert!(payload["request"]["switchyard"]
-        .get("served_model")
-        .is_none());
+    assert!(
+        payload["request"]["switchyard"]
+            .get("served_model")
+            .is_none()
+    );
     Ok(())
 }
 

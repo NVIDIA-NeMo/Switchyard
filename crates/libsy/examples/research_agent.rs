@@ -18,8 +18,8 @@ use switchyard_libsy::{
     Algorithm, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Result, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    completion_text, text_request, text_response, Context, Decision, LlmResponse, Request,
-    Response, RoutedLlmClient,
+    Context, Decision, LlmResponse, Request, Response, RoutedLlmClient, completion_text,
+    text_request, text_response,
 };
 
 const CLASSIFIER: &str = "classifier/model";

@@ -135,21 +135,23 @@ fn backend_format_stays_wire_compatible_with_python_configs() -> TestResult {
 // Verifies Rust LLM targets reject stale provider tuning fields instead of dropping typos.
 #[test]
 fn llm_target_rejects_provider_tuning_fields() -> TestResult {
-    assert!(serde_json::from_value::<LlmTarget>(json!({
-        "id": "primary",
-        "model": "gpt-5",
-        "format": "openai",
-        "endpoint": {
-            "base_url": "https://example.test/v1",
-            "api_key": null,
-            "timeout_secs": 30
-        },
-        "tuning": {
-            "max_output_tokens": 4096,
-            "reasoning_effort": "xhigh"
-        }
-    }))
-    .is_err());
+    assert!(
+        serde_json::from_value::<LlmTarget>(json!({
+            "id": "primary",
+            "model": "gpt-5",
+            "format": "openai",
+            "endpoint": {
+                "base_url": "https://example.test/v1",
+                "api_key": null,
+                "timeout_secs": 30
+            },
+            "tuning": {
+                "max_output_tokens": 4096,
+                "reasoning_effort": "xhigh"
+            }
+        }))
+        .is_err()
+    );
 
     let target = serde_json::from_value::<LlmTarget>(json!({
         "id": "primary",

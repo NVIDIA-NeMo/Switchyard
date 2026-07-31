@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use switchyard_protocol::{completion_text, AggLlmResponse};
+use switchyard_protocol::{AggLlmResponse, completion_text};
 
 use crate::core::algorithm::{Driver, LlmTarget};
 use crate::core::classifier::{Classification, Classifier};
@@ -222,7 +222,7 @@ mod tests {
 
     use futures::StreamExt;
     use serde::Deserialize;
-    use switchyard_protocol::{text_request, text_response, ContentBlock, LlmClientError};
+    use switchyard_protocol::{ContentBlock, LlmClientError, text_request, text_response};
 
     use crate::core::algorithm::Step;
     use crate::core::classifier::Score;

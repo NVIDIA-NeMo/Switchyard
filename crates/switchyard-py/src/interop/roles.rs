@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
+use pyo3::PyTypeInfo;
 use pyo3::exceptions::{PyNotImplementedError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
-use pyo3::PyTypeInfo;
 use switchyard_components::LlmBackend;
 
 use super::context::lease_from_python;

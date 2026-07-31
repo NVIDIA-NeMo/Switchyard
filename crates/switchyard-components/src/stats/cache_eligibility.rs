@@ -3,8 +3,8 @@
 
 //! Switch-aware cache eligibility: how much of a prompt a model has already been sent.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use serde_json::Value;

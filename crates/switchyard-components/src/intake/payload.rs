@@ -11,14 +11,14 @@ use crate::{
     ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, ProxyContext, Result,
     StreamEvent, SwitchyardError,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use crate::backends::BackendSelection;
 use crate::intake::config::{IntakeFormat, IntakeSinkConfig};
 use crate::intake::context::{IntakeRequestState, RequestMetadata, SubModelCall};
 use crate::request_processors::RandomRoutingDecision;
-use crate::stats::{estimate_model_cost, usage_from_body, StatsRouteLabel};
+use crate::stats::{StatsRouteLabel, estimate_model_cost, usage_from_body};
 use crate::telemetry::switchyard_version;
 
 /// Placeholder model label used when no backend selected model is available.
@@ -1265,25 +1265,25 @@ impl OpenAiChatStreamCapture {
             "content": content,
         });
         if !self.reasoning_content.is_empty()
-            && let Value::Object(object) = &mut message {
-                object.insert(
-                    "reasoning_content".to_string(),
-                    Value::String(self.reasoning_content),
-                );
-            }
-        if has_tool_calls
-            && let Value::Object(object) = &mut message {
-                object.insert(
-                    "tool_calls".to_string(),
-                    Value::Array(
-                        self.tool_calls
-                            .into_iter()
-                            .enumerate()
-                            .filter_map(|(index, tool_call)| tool_call.into_openai(index))
-                            .collect(),
-                    ),
-                );
-            }
+            && let Value::Object(object) = &mut message
+        {
+            object.insert(
+                "reasoning_content".to_string(),
+                Value::String(self.reasoning_content),
+            );
+        }
+        if has_tool_calls && let Value::Object(object) = &mut message {
+            object.insert(
+                "tool_calls".to_string(),
+                Value::Array(
+                    self.tool_calls
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, tool_call)| tool_call.into_openai(index))
+                        .collect(),
+                ),
+            );
+        }
         let mut response = json!({
             "id": self.id.unwrap_or_else(|| "chatcmpl-switchyard-stream".to_string()),
             "object": "chat.completion",
@@ -1301,9 +1301,10 @@ impl OpenAiChatStreamCapture {
             }],
         });
         if let Some(usage) = self.usage
-            && let Value::Object(object) = &mut response {
-                object.insert("usage".to_string(), usage);
-            }
+            && let Value::Object(object) = &mut response
+        {
+            object.insert("usage".to_string(), usage);
+        }
         response
     }
 }
@@ -1528,10 +1529,9 @@ impl AnthropicStreamCapture {
             "role": "assistant",
             "content": if content.is_empty() { Value::Null } else { Value::String(content) },
         });
-        if has_tool_calls
-            && let Value::Object(object) = &mut message {
-                object.insert("tool_calls".to_string(), Value::Array(tool_calls));
-            }
+        if has_tool_calls && let Value::Object(object) = &mut message {
+            object.insert("tool_calls".to_string(), Value::Array(tool_calls));
+        }
         let mut response = json!({
             "id": self.id.unwrap_or_else(|| "msg_switchyard_stream".to_string()),
             "object": "chat.completion",

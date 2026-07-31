@@ -4,9 +4,9 @@
 //! Lossless round-trip tests for preservation metadata across all wire formats.
 
 use pretty_assertions::assert_eq;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_translation::{
-    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat, PRESERVATION_METADATA_KEY,
+    PRESERVATION_METADATA_KEY, PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 const FORMATS: [WireFormat; 3] = [

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
-    run_server, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
-    DEFAULT_LISTEN_BACKLOG,
+    DEFAULT_LISTEN_BACKLOG, ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions,
+    run_server,
 };
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);

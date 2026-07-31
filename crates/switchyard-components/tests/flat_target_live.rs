@@ -12,9 +12,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
-use switchyard_components::intake::to_flat_document;
+use serde_json::{Value, json};
 use switchyard_components::Result;
+use switchyard_components::intake::to_flat_document;
 use switchyard_components::{
     HttpIntakeSink, IntakeFormat, IntakeSink, IntakeSinkConfig, IntakeTarget,
 };

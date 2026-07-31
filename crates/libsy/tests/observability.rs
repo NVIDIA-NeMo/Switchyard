@@ -28,19 +28,19 @@ use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Subscriber};
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
 use switchyard_libsy::{
     Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Step,
     TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    text_request, text_response, LlmClientError, LlmResponseChunk, StopReason,
+    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
 };
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
+    LlmClientError, LlmResponseChunk, StopReason, text_request, text_response,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -626,10 +626,12 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         Some("ok")
     );
     // Host-defined labels ride in generically via Metadata.extra_metadata.
-    assert!(run_span
-        .fields
-        .get("extra_metadata")
-        .is_some_and(|extra| extra.contains("tenant") && extra.contains("obs-tenant-1")));
+    assert!(
+        run_span
+            .fields
+            .get("extra_metadata")
+            .is_some_and(|extra| extra.contains("tenant") && extra.contains("obs-tenant-1"))
+    );
 
     // The default-client serve inside `run` gets its own client-call span.
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
@@ -977,10 +979,12 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
         run_span.fields.get("outcome").map(String::as_str),
         Some("error")
     );
-    assert!(run_span
-        .fields
-        .get("error")
-        .is_some_and(|error| error.contains("synthetic upstream failure")));
+    assert!(
+        run_span
+            .fields
+            .get("error")
+            .is_some_and(|error| error.contains("synthetic upstream failure"))
+    );
     let call_span = find_span(&spans, "libsy.llm_call", "selected_model", MODEL);
     assert_eq!(
         call_span.fields.get("outcome").map(String::as_str),

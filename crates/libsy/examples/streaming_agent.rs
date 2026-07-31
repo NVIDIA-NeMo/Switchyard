@@ -18,8 +18,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use switchyard_libsy::{Algorithm, LibsyError, LlmTarget, LlmTargetSet, Random, Result, Step};
 use switchyard_protocol::{
-    completion_text, text_request, Context, LlmResponse, LlmResponseChunk, LlmResponseStream,
-    Request, Response,
+    Context, LlmResponse, LlmResponseChunk, LlmResponseStream, Request, Response, completion_text,
+    text_request,
 };
 
 /// The "real" model call the agent makes to fulfill an offloaded promise: a response

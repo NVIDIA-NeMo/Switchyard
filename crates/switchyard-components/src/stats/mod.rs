@@ -13,13 +13,13 @@ pub use accumulator::{
     ClassifierStatsSnapshot, LatencyHistogramSnapshot, ModelStatsSnapshot, StatsAccumulator,
     StatsSnapshot, TierStatsSnapshot, TokenTotals,
 };
-pub use cache_eligibility::{prefix_probe, tracking_enabled_from_env, PrefixProbe};
+pub use cache_eligibility::{PrefixProbe, prefix_probe, tracking_enabled_from_env};
 pub use context::{
-    selected_stats_model, selected_stats_tier, StatsBackendLatency, StatsRequestStart,
-    StatsRouteLabel,
+    StatsBackendLatency, StatsRequestStart, StatsRouteLabel, selected_stats_model,
+    selected_stats_tier,
 };
-pub use cost::{estimate_model_cost, has_model_price, CostBreakdown, CostEstimate};
+pub use cost::{CostBreakdown, CostEstimate, estimate_model_cost, has_model_price};
 pub use usage::{
-    openai_chat_usage_from_stream_event, openai_responses_usage_from_stream_event, usage_from_body,
-    AnthropicStreamUsage, TokenUsage,
+    AnthropicStreamUsage, TokenUsage, openai_chat_usage_from_stream_event,
+    openai_responses_usage_from_stream_event, usage_from_body,
 };

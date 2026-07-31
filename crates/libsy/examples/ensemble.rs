@@ -27,8 +27,8 @@ use parking_lot::Mutex;
 use switchyard_libsy::{Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, Result};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_protocol::{
-    completion_text, prompt_text, text_request, Context, Decision, Request, Response,
-    RoutedLlmClient,
+    Context, Decision, Request, Response, RoutedLlmClient, completion_text, prompt_text,
+    text_request,
 };
 
 const CANDIDATE_MODELS: [&str; 3] = [
@@ -469,8 +469,8 @@ mod tests {
     use super::*;
     use switchyard_libsy::LlmTarget;
     use switchyard_protocol::{
-        completion_text, prompt_text, text_request, text_response, LlmResponse, Response,
-        RoutedLlmClient, Signals,
+        LlmResponse, Response, RoutedLlmClient, Signals, completion_text, prompt_text,
+        text_request, text_response,
     };
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
@@ -742,10 +742,12 @@ mod tests {
                 target("judge/haiku"),
             ]),
         );
-        assert!(orch(algo)
-            .run(Context::default(), request("x"))
-            .await
-            .is_err());
+        assert!(
+            orch(algo)
+                .run(Context::default(), request("x"))
+                .await
+                .is_err()
+        );
         Ok(())
     }
 

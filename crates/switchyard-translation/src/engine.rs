@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::codecs::FormatCodec;
 use crate::codecs::anthropic::AnthropicMessagesCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
 use crate::codecs::stream::{StreamCodecRegistry, StreamTranslationState};
-use crate::codecs::FormatCodec;
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::FormatId;

@@ -3,7 +3,7 @@
 
 //! Buffered codec for Anthropic Messages request and response JSON.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{is_known_role_name, provider_extensions, text_from_blocks};
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
@@ -72,12 +72,13 @@ impl FormatCodec for AnthropicMessagesCodec {
             ..LlmRequest::default()
         };
         if let Some(system) = body.get("system")
-            && let Some(content) = decode_anthropic_system(system, &mut diagnostics, policy)? {
-                request.instructions.push(InstructionBlock {
-                    role: Role::System,
-                    content,
-                });
-            }
+            && let Some(content) = decode_anthropic_system(system, &mut diagnostics, policy)?
+        {
+            request.instructions.push(InstructionBlock {
+                role: Role::System,
+                content,
+            });
+        }
         if let Some(messages) = body.get("messages").and_then(Value::as_array) {
             let mut generated_id = 0;
             for (index, message) in messages.iter().enumerate() {
@@ -348,14 +349,15 @@ fn decode_anthropic_system(
             let mut content = Vec::new();
             for block in blocks {
                 if let Some(block) = block.as_object()
-                    && block.get("type").and_then(Value::as_str) == Some("text") {
-                        let text = block
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        content.push(ContentBlock::Text { text });
-                    }
+                    && block.get("type").and_then(Value::as_str) == Some("text")
+                {
+                    let text = block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    content.push(ContentBlock::Text { text });
+                }
             }
             Ok((!content.is_empty()).then_some(content))
         }

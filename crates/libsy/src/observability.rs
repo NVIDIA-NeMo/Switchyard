@@ -33,14 +33,14 @@
 use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
 use futures::Stream;
 use opentelemetry::metrics::{Meter, ObservableGauge};
-use opentelemetry::{global, Array as OtelArray, KeyValue, StringValue, Value as OtelValue};
+use opentelemetry::{Array as OtelArray, KeyValue, StringValue, Value as OtelValue, global};
 use switchyard_protocol::StopReason;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -97,11 +97,7 @@ pub(crate) fn initialize_metrics() {
 
 /// `outcome` attribute value for a result: `ok` or `error`.
 fn outcome_value<T>(result: &Result<T>) -> &'static str {
-    if result.is_ok() {
-        "ok"
-    } else {
-        "error"
-    }
+    if result.is_ok() { "ok" } else { "error" }
 }
 
 /// Span covering one algorithm run (the whole `create_run_task` execution).
@@ -169,9 +165,9 @@ pub(crate) async fn observe_run(
     if result.is_ok()
         && let Some(overhead) =
             record_routing_overhead(algorithm, duration, driver.routed_call_duration())
-        {
-            driver.observe_routing_overhead(overhead);
-        }
+    {
+        driver.observe_routing_overhead(overhead);
+    }
     result
 }
 

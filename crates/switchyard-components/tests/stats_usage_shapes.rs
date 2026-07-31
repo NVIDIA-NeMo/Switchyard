@@ -19,8 +19,8 @@
 //! eliminated.
 
 use serde_json::json;
-use switchyard_components::stats::usage_from_body;
 use switchyard_components::TokenUsage;
+use switchyard_components::stats::usage_from_body;
 
 #[test]
 fn openai_inclusive_shape_extracts_prompt_as_inclusive_total() {

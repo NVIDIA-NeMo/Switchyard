@@ -19,11 +19,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use switchyard_components::ChatResponse;
 use switchyard_components::{
-    dimension_collector::{
-        extract_response_signals as core_extract_response_signals, ResponseFlag, ResponseSignals,
-        ToolResultSignal, DEFAULT_RECENT_WINDOW,
-    },
     DimensionCollector, ResponseSignalCollector,
+    dimension_collector::{
+        DEFAULT_RECENT_WINDOW, ResponseFlag, ResponseSignals, ToolResultSignal,
+        extract_response_signals as core_extract_response_signals,
+    },
 };
 
 use crate::py_serde::value_from_python;

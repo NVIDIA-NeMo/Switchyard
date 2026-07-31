@@ -5,7 +5,7 @@
 
 use pyo3::prelude::*;
 use switchyard_components::{
-    tracking_enabled_from_env, IntakeRequestProcessor, StatsRequestProcessor,
+    IntakeRequestProcessor, StatsRequestProcessor, tracking_enabled_from_env,
 };
 
 use crate::errors::py_core_error;

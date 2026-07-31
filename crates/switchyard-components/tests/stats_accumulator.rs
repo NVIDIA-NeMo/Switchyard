@@ -5,7 +5,7 @@ use std::thread;
 
 use serde_json::json;
 use switchyard_components::{
-    prefix_probe, ModelStatsSnapshot, StatsAccumulator, StatsSnapshot, TokenUsage,
+    ModelStatsSnapshot, StatsAccumulator, StatsSnapshot, TokenUsage, prefix_probe,
 };
 use switchyard_components::{Result, SwitchyardError};
 

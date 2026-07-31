@@ -574,7 +574,7 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        completion_text, text_request, text_response, LlmClientError, Metadata,
+        LlmClientError, Metadata, completion_text, text_request, text_response,
     };
 
     use crate::core::algorithm::Algorithm;
@@ -1112,12 +1112,16 @@ mod tests {
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "rendered response schema has no primary rule enum".to_string(),
             })?;
-        assert!(rule_values
-            .iter()
-            .any(|value| value.as_str() == Some("SUP-1")));
-        assert!(rule_values
-            .iter()
-            .any(|value| value.as_str() == Some("none")));
+        assert!(
+            rule_values
+                .iter()
+                .any(|value| value.as_str() == Some("SUP-1"))
+        );
+        assert!(
+            rule_values
+                .iter()
+                .any(|value| value.as_str() == Some("none"))
+        );
         Ok(())
     }
 

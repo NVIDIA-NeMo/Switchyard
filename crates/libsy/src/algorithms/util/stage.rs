@@ -24,10 +24,10 @@ use serde::Deserialize;
 
 use super::prompts;
 use super::tool_signals::ToolSignals;
+use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
-use crate::Result;
 use switchyard_protocol::Request;
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
@@ -527,7 +527,7 @@ impl Classifier<State> for StageClassifier {
 mod tests {
     use super::*;
     use serde_json::json;
-    use switchyard_protocol::{text_request, Metadata, Request, WireFormat};
+    use switchyard_protocol::{Metadata, Request, WireFormat, text_request};
 
     fn signal_from(messages: serde_json::Value) -> ToolSignals {
         let raw_request = Some(json!({"model": "m", "messages": messages}));

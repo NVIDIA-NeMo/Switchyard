@@ -10,7 +10,7 @@
 use crate::{ChatRequest, ProxyContext, Result};
 
 use crate::dimension_collector::{
-    extract_tool_signals_with_window, ToolResultSignal, DEFAULT_RECENT_WINDOW,
+    DEFAULT_RECENT_WINDOW, ToolResultSignal, extract_tool_signals_with_window,
 };
 
 /// Populates `ProxyContext` with a [`ToolResultSignal`] read from the request's

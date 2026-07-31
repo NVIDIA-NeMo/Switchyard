@@ -23,8 +23,8 @@ pub use error::{Result, SkillDistillationError};
 pub use ids::{SkillEvidenceId, SkillNamespace, SkillVersionId};
 pub use model::{
     ActivationOperation, ActivationRecord, DistillationRequest, ExecutionMetadata, Metadata,
-    SkillCandidate, SkillProvenance, TaskDescriptor, Trajectory, TrajectoryEvent,
+    SCHEMA_VERSION, SkillCandidate, SkillProvenance, TaskDescriptor, Trajectory, TrajectoryEvent,
     TrajectoryEventKind, TrajectoryOutcome, TrajectorySourceInfo, ValidationCheck,
-    ValidationReport, ValidationStatus, SCHEMA_VERSION,
+    ValidationReport, ValidationStatus,
 };
 pub use ports::{SkillDistiller, SkillStore, SkillValidator, TrajectorySource};

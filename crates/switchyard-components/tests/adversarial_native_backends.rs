@@ -6,7 +6,7 @@
 mod support;
 
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_components::{
     AnthropicNativeBackend, BackendSelection, OpenAiNativeBackend, OpenAiPassthroughBackend,
 };

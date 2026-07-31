@@ -18,11 +18,11 @@ use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_server::config::load_server_state;
-use switchyard_server::{build_switchyard_router, ServerState};
+use switchyard_server::{ServerState, build_switchyard_router};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -417,24 +417,30 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         );
     }
     // A sub-millisecond boundary exists only because of the server's bucket view.
-    assert!(metric_line(
-        metrics,
-        "switchyard_routing_overhead_ms_bucket",
-        &[("algorithm", "random"), ("le", "0.1")]
-    )
-    .is_some());
-    assert!(metric_line(
-        metrics,
-        "switchyard_cache_creation_tokens_total",
-        &[("model", MODEL)]
-    )
-    .is_none());
-    assert!(metric_line(
-        metrics,
-        "switchyard_reasoning_tokens_total",
-        &[("model", MODEL)]
-    )
-    .is_none());
+    assert!(
+        metric_line(
+            metrics,
+            "switchyard_routing_overhead_ms_bucket",
+            &[("algorithm", "random"), ("le", "0.1")]
+        )
+        .is_some()
+    );
+    assert!(
+        metric_line(
+            metrics,
+            "switchyard_cache_creation_tokens_total",
+            &[("model", MODEL)]
+        )
+        .is_none()
+    );
+    assert!(
+        metric_line(
+            metrics,
+            "switchyard_reasoning_tokens_total",
+            &[("model", MODEL)]
+        )
+        .is_none()
+    );
     for metric in [
         "switchyard_prompt_tokens_total",
         "switchyard_completion_tokens_total",
@@ -892,9 +898,11 @@ async fn all_inbound_formats_run_libsy_and_return_the_caller_format() -> TestRes
         responses.push(send(&app, "POST", path, Some(body)).await?);
     }
 
-    assert!(responses
-        .iter()
-        .all(|response| response.status == StatusCode::OK));
+    assert!(
+        responses
+            .iter()
+            .all(|response| response.status == StatusCode::OK)
+    );
     assert_eq!(
         responses[0].json()?["choices"][0]["message"]["content"],
         "ok"
@@ -972,9 +980,11 @@ async fn routing_log_exposes_session_stats() -> TestResult {
     let records = std::fs::read_to_string(log_path)?;
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
-    assert!(first["ts"]
-        .as_str()
-        .is_some_and(|value| value.ends_with('Z')));
+    assert!(
+        first["ts"]
+            .as_str()
+            .is_some_and(|value| value.ends_with('Z'))
+    );
     Ok(())
 }
 

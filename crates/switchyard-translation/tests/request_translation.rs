@@ -4,7 +4,7 @@
 //! Tests for buffered request translation between provider formats.
 
 use pretty_assertions::assert_eq;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -78,10 +78,12 @@ fn anthropic_request_translates_to_openai_chat_without_anthropic_only_fields() -
     );
     assert_eq!(output["messages"][3]["role"], "tool");
     assert_eq!(output["messages"][3]["tool_call_id"], "toolu_1");
-    assert!(output["messages"][3]["content"]
-        .as_str()
-        .unwrap()
-        .contains("72F"));
+    assert!(
+        output["messages"][3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("72F")
+    );
     assert_eq!(output["tools"][0]["function"]["name"], "lookup");
     assert_eq!(
         output["tool_choice"],
@@ -1332,8 +1334,10 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
     assert!(!json_contains_content_type(&output, "reasoning_text"));
     assert!(!output.to_string().contains("private chain of thought"));
     assert!(input.iter().any(|item| item["type"] == "function_call"));
-    assert!(input
-        .iter()
-        .any(|item| item["type"] == "function_call_output"));
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "function_call_output")
+    );
     Ok(())
 }

@@ -9,15 +9,15 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::RequestBuilder;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value};
 use switchyard_protocol::{
     Context, Decision, LlmRequest, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-    encode_request, encode_stream, WireFormat,
+    WireFormat, decode_aggregated_response, decode_request, decode_stream,
+    encode_aggregated_response, encode_request, encode_stream,
 };
 use tracing::Instrument;
 
@@ -515,7 +515,7 @@ impl RoutedLlmClient for TranslatingLlmClient {
             EncodedResponse::Streaming(_) => {
                 return Err(LlmClientError::InvalidRequest {
                     message: "count_tokens does not support streaming requests".to_string(),
-                })
+                });
             }
         };
         serde_json::from_slice(&body).map_err(|error| LlmClientError::InvalidResponse {
@@ -714,12 +714,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
     use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread::JoinHandle;
 
     use serde_json::json;
-    use switchyard_protocol::{completion_text, text_request, LlmRequest};
+    use switchyard_protocol::{LlmRequest, completion_text, text_request};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -852,8 +852,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_model_errors(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn missing_model_errors()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(None, false), None)
@@ -869,8 +869,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_model_errors(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn unknown_model_errors()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
             .call_rewrite_model(Context::default(), request_for(Some("gpt"), false), None)
@@ -887,8 +887,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_model_format_errors(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn unknown_model_format_errors()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         // "gpt" exists but only over OpenAI Chat; the request pins Anthropic.
         let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1"))?;
         let Err(error) = client
@@ -911,23 +911,27 @@ mod tests {
     }
 
     #[test]
-    fn backend_for_resolves_configured_format(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    fn backend_for_resolves_configured_format()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&chat_map("https://example.test/v1"))?;
         // "gpt" is served over OpenAI Chat only; other formats and models miss.
         assert!(client.backend_for("gpt", WireFormat::OpenAiChat).is_some());
-        assert!(client
-            .backend_for("gpt", WireFormat::AnthropicMessages)
-            .is_none());
-        assert!(client
-            .backend_for("missing", WireFormat::OpenAiChat)
-            .is_none());
+        assert!(
+            client
+                .backend_for("gpt", WireFormat::AnthropicMessages)
+                .is_none()
+        );
+        assert!(
+            client
+                .backend_for("missing", WireFormat::OpenAiChat)
+                .is_none()
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn model_name_arg_wins_over_request_model(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn model_name_arg_wins_over_request_model()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         // Arg "b" is looked up (and reported), not the request's "a".
         let Err(error) = client
@@ -945,8 +949,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn buffered_openai_chat_round_trips(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn buffered_openai_chat_round_trips()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -975,8 +979,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_json_is_a_response_translation_error(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn invalid_json_is_a_response_translation_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
@@ -1007,8 +1011,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_body_io_failure_is_a_transport_error(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn response_body_io_failure_is_a_transport_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let (base_url, server) = truncated_response_server("application/json", "{}")?;
         let client = TranslatingLlmClient::new(&chat_map(&base_url))?;
         let result = client
@@ -1028,14 +1032,16 @@ mod tests {
             panic!("expected the reqwest transport source");
         };
         assert!(source.is_decode());
-        assert!(!std::error::Error::source(&source)
-            .is_some_and(|source| source.is::<serde_json::Error>()));
+        assert!(
+            !std::error::Error::source(&source)
+                .is_some_and(|source| source.is::<serde_json::Error>())
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn response_body_transport_failures_are_retried(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn response_body_transport_failures_are_retried()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let truncated_responses = [
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Content-Length: 102\r\nConnection: close\r\n\r\n{}",
@@ -1063,8 +1069,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streaming_body_io_failure_preserves_transport_error(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn streaming_body_io_failure_preserves_transport_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
         let (base_url, server) = truncated_response_server("text/event-stream", body)?;
         let client = TranslatingLlmClient::new(&chat_map_with_retries(&base_url, 2))?;
@@ -1085,8 +1091,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rewrites_model_to_resolved_upstream_id(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn rewrites_model_to_resolved_upstream_id()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         // Inbound body says "switchyard"; the upstream must receive "gpt".
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1114,8 +1120,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extra_body_adds_defaults_without_overriding_the_request(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn extra_body_adds_defaults_without_overriding_the_request()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -1164,8 +1170,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streaming_openai_chat_aggregates(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn streaming_openai_chat_aggregates()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
@@ -1196,8 +1202,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streaming_openai_chat_preserves_usage_opt_out(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn streaming_openai_chat_preserves_usage_opt_out()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -1233,8 +1239,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upstream_500_is_upstream_http(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn upstream_500_is_upstream_http()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -1257,8 +1263,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retryable_http_failure_recovers_within_budget(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn retryable_http_failure_recovers_within_budget()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
@@ -1288,8 +1294,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deterministic_http_failure_is_not_retried(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn deterministic_http_failure_is_not_retried()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
@@ -1322,8 +1328,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_exhaustion_returns_the_final_upstream_error(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn retry_exhaustion_returns_the_final_upstream_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
@@ -1358,8 +1364,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_is_retried_before_a_response_is_returned(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn timeout_is_retried_before_a_response_is_returned()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed_calls = Arc::clone(&calls);
@@ -1464,8 +1470,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routed_llm_client_exposes_timeout_variant(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn routed_llm_client_exposes_timeout_variant()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(
@@ -1497,8 +1503,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_overflow_400_is_mapped(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn context_overflow_400_is_mapped()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
@@ -1523,8 +1529,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forwards_metadata_headers_except_reserved(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn forwards_metadata_headers_except_reserved()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(wiremock::matchers::header("x-request-id", "abc"))
@@ -1587,8 +1593,8 @@ mod tests {
     // Exercises the `RoutedLlmClient` impl: `call` resolves the upstream model from the
     // decision (the request carries none) and round-trips a buffered response.
     #[tokio::test]
-    async fn routed_llm_client_serves_the_decision_model(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn routed_llm_client_serves_the_decision_model()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -1617,8 +1623,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_raw_request_is_a_request_translation_error(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn invalid_raw_request_is_a_request_translation_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         let Err(error) = client
             .call_rewrite_model_raw(
@@ -1643,8 +1649,8 @@ mod tests {
     // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
     // Chat JSON, with the served `model` restamped over the id the caller addressed.
     #[tokio::test]
-    async fn call_rewrite_model_raw_round_trips_buffered_json(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn call_rewrite_model_raw_round_trips_buffered_json()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
@@ -1688,8 +1694,8 @@ mod tests {
     // Raw path, streaming: an inbound `stream: true` request yields an unframed stream
     // of OpenAI Chat chunk objects whose deltas reassemble the completion.
     #[tokio::test]
-    async fn call_rewrite_model_raw_streams_wire_events(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn call_rewrite_model_raw_streams_wire_events()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         use futures::TryStreamExt;
 
         let server = MockServer::start().await;
@@ -1736,8 +1742,8 @@ mod tests {
 
     // Raw path forwards caller headers (minus the reserved set) to the upstream.
     #[tokio::test]
-    async fn call_rewrite_model_raw_forwards_headers(
-    ) -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+    async fn call_rewrite_model_raw_forwards_headers()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(wiremock::matchers::header("x-request-id", "abc"))

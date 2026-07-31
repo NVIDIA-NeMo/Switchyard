@@ -5,7 +5,7 @@
 
 use crate::{ChatRequest, ProxyContext, Result};
 
-use crate::stats::{prefix_probe, StatsRequestStart};
+use crate::stats::{StatsRequestStart, prefix_probe};
 
 /// Records request start time, and optionally the prefix fingerprints used for
 /// switch-aware theoretical cache eligibility (gated, since fingerprinting hashes

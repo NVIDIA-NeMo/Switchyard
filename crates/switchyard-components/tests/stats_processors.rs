@@ -3,8 +3,8 @@
 
 //! Stats processor tests covering request stamps, backend wrappers, and stream usage.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -277,8 +277,8 @@ async fn backend_wrapper_records_success_using_served_model_and_delegates_lifecy
 
 // If a backend does not stamp a served model, request model is the fallback.
 #[tokio::test]
-async fn backend_wrapper_falls_back_to_request_model_when_backend_does_not_stamp_model(
-) -> Result<()> {
+async fn backend_wrapper_falls_back_to_request_model_when_backend_does_not_stamp_model()
+-> Result<()> {
     let accumulator = StatsAccumulator::new();
     let backend = StatsLlmBackend::new(
         Arc::new(FakeBackend::success(ChatResponse::openai_completion(

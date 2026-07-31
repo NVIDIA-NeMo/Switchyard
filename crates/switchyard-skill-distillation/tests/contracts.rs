@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use serde_json::json;
 use switchyard_skill_distillation::{
     ActivationOperation, ActivationRecord, DistillationRequest, ExecutionMetadata, Metadata,
-    Result, SkillCandidate, SkillDistillationError, SkillDistiller, SkillEvidenceId,
-    SkillNamespace, SkillProvenance, SkillStore, SkillValidator, SkillVersionId, TaskDescriptor,
-    Trajectory, TrajectoryEvent, TrajectoryEventKind, TrajectoryOutcome, TrajectorySource,
-    TrajectorySourceInfo, ValidationCheck, ValidationReport, ValidationStatus, SCHEMA_VERSION,
+    Result, SCHEMA_VERSION, SkillCandidate, SkillDistillationError, SkillDistiller,
+    SkillEvidenceId, SkillNamespace, SkillProvenance, SkillStore, SkillValidator, SkillVersionId,
+    TaskDescriptor, Trajectory, TrajectoryEvent, TrajectoryEventKind, TrajectoryOutcome,
+    TrajectorySource, TrajectorySourceInfo, ValidationCheck, ValidationReport, ValidationStatus,
 };
 use tokio::sync::Mutex;
 

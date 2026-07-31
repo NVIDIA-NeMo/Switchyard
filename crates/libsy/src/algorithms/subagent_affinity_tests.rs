@@ -15,12 +15,12 @@ use async_trait::async_trait;
 use super::fall_through::FallThrough;
 use super::util::affinity::AffinityRouter;
 use super::util::subagent::SubagentOverride;
+use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
-use crate::Result;
 use switchyard_protocol::{
-    completion_text, text_request, text_response, Context, Decision, LlmResponse, Metadata,
-    Request, Response, RoutedLlmClient,
+    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, completion_text,
+    text_request, text_response,
 };
 
 /// A client that echoes the routed target name back as the completion.

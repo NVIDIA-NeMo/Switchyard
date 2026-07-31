@@ -96,16 +96,16 @@ pub use algorithms::rand::{Random, RandomClassifier, RandomDecision};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
 pub use algorithms::util::escalation::EscalationJudgeConfig;
-pub use algorithms::util::prompts::{append_note, SystemPromptProcessor, TargetPrompts};
+pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::SubagentOverride;
-pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
+pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).
 pub use algorithms::util::stage::{
-    dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
-    HandoffNoteConfig, PickOutcome, PickerMode, ScoreResult, StageClassifier, StageTargets, Tier,
-    DECISION_SOURCE_KEY,
+    CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
+    PickerMode, ScoreResult, StageClassifier, StageTargets, Tier, dimensions_from_signal,
+    pick_tier, score_signal,
 };
 
 mod observability;

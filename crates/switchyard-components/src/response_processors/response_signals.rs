@@ -11,7 +11,7 @@
 
 use crate::{ChatResponse, ProxyContext, Result};
 
-use crate::dimension_collector::response::{extract_response_signals, ResponseSignals};
+use crate::dimension_collector::response::{ResponseSignals, extract_response_signals};
 
 /// Populates `ProxyContext` with [`ResponseSignals`] derived from the
 /// buffered response body.

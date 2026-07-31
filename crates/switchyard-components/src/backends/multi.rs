@@ -195,7 +195,7 @@ impl MultiLlmBackend {
             .map(|model| format!(" and request model {model:?} did not match a configured target"))
             .unwrap_or_default();
         SwitchyardError::InvalidConfig(format!(
-                "MultiLlmBackend has multiple targets but no selected target{request_model}; known targets: {}",
+            "MultiLlmBackend has multiple targets but no selected target{request_model}; known targets: {}",
             self.known_target_ids()
         ))
     }

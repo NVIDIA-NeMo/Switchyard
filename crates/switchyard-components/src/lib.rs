@@ -22,7 +22,7 @@ pub use backends::{
 };
 pub use contracts::*;
 pub use dimension_collector::{
-    extract_tool_signals, ResponseFlag, ResponseSignals, ToolResultSignal,
+    ResponseFlag, ResponseSignals, ToolResultSignal, extract_tool_signals,
 };
 pub use intake::{
     HttpIntakeSink, IntakeFormat, IntakePayloadBuilder, IntakeQueueFullPolicy,
@@ -37,8 +37,8 @@ pub use response_processors::{
     IntakeResponseProcessor, ResponseSignalCollector, StatsResponseProcessor,
 };
 pub use stats::{
-    prefix_probe, tracking_enabled_from_env, ClassifierStatsSnapshot, CostBreakdown, CostEstimate,
-    LatencyHistogramSnapshot, ModelStatsSnapshot, PrefixProbe, StatsAccumulator,
-    StatsBackendLatency, StatsRequestStart, StatsRouteLabel, StatsSnapshot, TierStatsSnapshot,
-    TokenTotals, TokenUsage,
+    ClassifierStatsSnapshot, CostBreakdown, CostEstimate, LatencyHistogramSnapshot,
+    ModelStatsSnapshot, PrefixProbe, StatsAccumulator, StatsBackendLatency, StatsRequestStart,
+    StatsRouteLabel, StatsSnapshot, TierStatsSnapshot, TokenTotals, TokenUsage, prefix_probe,
+    tracking_enabled_from_env,
 };

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use switchyard_protocol::{Request, Response};
 
-use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
 use crate::Result;
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
 use switchyard_protocol::{Context, Decision, RoutedLlmClient};
 
 /// See module comment
@@ -78,8 +78,8 @@ mod tests {
     use super::Passthrough;
     use crate::core::algorithm::{Algorithm, LlmTarget};
     use switchyard_protocol::{
-        completion_text, text_request, text_response, Context, Decision, LlmResponse, Request,
-        Response, RoutedLlmClient,
+        Context, Decision, LlmResponse, Request, Response, RoutedLlmClient, completion_text,
+        text_request, text_response,
     };
 
     /// Echoes the selected target so tests can inspect which target was called.

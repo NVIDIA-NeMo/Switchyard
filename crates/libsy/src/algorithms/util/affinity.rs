@@ -17,7 +17,7 @@
 //! session. [`AffinityRouter::for_subagents`] narrows affinity to explicitly identified
 //! child agents, leaving root traffic to later classifiers on every turn.
 
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 
 use async_trait::async_trait;
@@ -108,18 +108,19 @@ impl AffinityRouter {
     /// Derives the stable identity this router should retain for `request`.
     fn affinity_key(&self, request: &Request) -> Option<AffinityKey> {
         if let Some(metadata) = request.metadata.as_ref()
-            && let Some(session) = metadata.session_id.clone() {
-                return if metadata.is_subagent {
-                    metadata
-                        .agent_id
-                        .clone()
-                        .map(|agent| AffinityKey::Subagent { session, agent })
-                } else if self.subagents_only {
-                    None
-                } else {
-                    Some(AffinityKey::Session(session))
-                };
-            }
+            && let Some(session) = metadata.session_id.clone()
+        {
+            return if metadata.is_subagent {
+                metadata
+                    .agent_id
+                    .clone()
+                    .map(|agent| AffinityKey::Subagent { session, agent })
+            } else if self.subagents_only {
+                None
+            } else {
+                Some(AffinityKey::Session(session))
+            };
+        }
 
         // If headers are not present and we are not a subagent, use the message hash based fallback key to do task based routing
         let is_subagent = request
@@ -144,14 +145,15 @@ where
 {
     async fn process(&self, _state: &mut S, event: Event<'_>) -> crate::Result<()> {
         if let Event::Decision { request, decision } = event
-            && let Some(key) = self.affinity_key(request) {
-                let model = decision.selected_model();
-                let mut assignments = self.assignments.lock();
-                if self.should_latch(model) && !assignments.contains_key(&key) {
-                    evict_if_full(&mut assignments);
-                    assignments.insert(key, model.to_string());
-                }
+            && let Some(key) = self.affinity_key(request)
+        {
+            let model = decision.selected_model();
+            let mut assignments = self.assignments.lock();
+            if self.should_latch(model) && !assignments.contains_key(&key) {
+                evict_if_full(&mut assignments);
+                assignments.insert(key, model.to_string());
             }
+        }
         Ok(())
     }
 }
@@ -201,9 +203,10 @@ where
 /// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
 fn evict_if_full(assignments: &mut HashMap<AffinityKey, String>) {
     if assignments.len() >= MAX_ASSIGNMENTS
-        && let Some(evicted) = assignments.keys().next().cloned() {
-            assignments.remove(&evicted);
-        }
+        && let Some(evicted) = assignments.keys().next().cloned()
+    {
+        assignments.remove(&evicted);
+    }
 }
 
 #[cfg(test)]
@@ -213,7 +216,7 @@ mod tests {
     use std::sync::Arc;
 
     use switchyard_protocol::{
-        text_request, ContentBlock, Decision, LlmRequest, Message, Metadata,
+        ContentBlock, Decision, LlmRequest, Message, Metadata, text_request,
     };
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
@@ -471,9 +474,11 @@ mod tests {
             "Reimplement this binary from two input/output pairs.",
             Some("Now run the test suite."),
         );
-        assert!(scores(&router, &mut state, &mut other_task)
-            .await?
-            .is_empty());
+        assert!(
+            scores(&router, &mut state, &mut other_task)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -524,9 +529,11 @@ mod tests {
             "Implement the parser.",
             None,
         );
-        assert!(scores(&router, &mut state, &mut other_session)
-            .await?
-            .is_empty());
+        assert!(
+            scores(&router, &mut state, &mut other_session)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 

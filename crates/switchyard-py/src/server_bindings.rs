@@ -5,15 +5,15 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::time::Duration;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
-    flush_observability, initialize_observability, BoundServer, ServerResult, ServerRunOptions,
-    DEFAULT_LISTEN_BACKLOG,
+    BoundServer, DEFAULT_LISTEN_BACKLOG, ServerResult, ServerRunOptions, flush_observability,
+    initialize_observability,
 };
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -123,9 +123,10 @@ impl PyServer {
         let result = py.detach(move || {
             let result = completion.recv_timeout(timeout);
             if matches!(result, Err(RecvTimeoutError::Timeout))
-                && let Some(task) = task {
-                    task.abort();
-                }
+                && let Some(task) = task
+            {
+                task.abort();
+            }
             flush_observability();
             result
         });

@@ -3,15 +3,15 @@
 
 //! Streaming codec for Anthropic Messages events.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
+use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    record_source_identity, target_message_id_or_source_message_id, target_model_or_source_model,
-    StreamCodec, StreamTranslationState,
+    StreamCodec, StreamTranslationState, record_source_identity,
+    target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::util::sanitize_anthropic_tool_use_id;
-use crate::LlmResponseChunk;
 
 /// Stream codec for Anthropic Messages events.
 pub struct AnthropicMessagesStreamCodec;
@@ -69,9 +69,10 @@ fn decode_anthropic_stream(
                 state.message_id = Some(id.to_string());
             }
             if let Some(message) = message
-                && let Some(usage) = message.get("usage") {
-                    capture_anthropic_usage(state, usage);
-                }
+                && let Some(usage) = message.get("usage")
+            {
+                capture_anthropic_usage(state, usage);
+            }
             vec![LlmResponseChunk::MessageStart {
                 id: state.message_id.clone(),
                 model: state.model.clone(),
@@ -459,17 +460,18 @@ fn encode_anthropic_tool_delta(
     }
 
     if let Some(content_index) = tool.content_index
-        && !tool.pending_arguments.is_empty() {
-            out.push(json!({
-                "type": "content_block_delta",
-                "index": content_index,
-                "delta": {
-                    "type": "input_json_delta",
-                    "partial_json": tool.pending_arguments,
-                },
-            }));
-            tool.pending_arguments.clear();
-        }
+        && !tool.pending_arguments.is_empty()
+    {
+        out.push(json!({
+            "type": "content_block_delta",
+            "index": content_index,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": tool.pending_arguments,
+            },
+        }));
+        tool.pending_arguments.clear();
+    }
     out
 }
 

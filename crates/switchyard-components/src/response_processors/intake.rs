@@ -10,8 +10,8 @@ use async_stream::try_stream;
 use futures_util::StreamExt;
 
 use crate::intake::{
-    now_millis, HttpIntakeSink, IntakePayloadBuilder, IntakePayloadContext, IntakeRequestState,
-    IntakeSink, IntakeSinkConfig, IntakeStreamCapture, IntakeStreamFormat, SubModelCalls,
+    HttpIntakeSink, IntakePayloadBuilder, IntakePayloadContext, IntakeRequestState, IntakeSink,
+    IntakeSinkConfig, IntakeStreamCapture, IntakeStreamFormat, SubModelCalls, now_millis,
 };
 
 /// Response processor that converts completed responses into intake payloads.

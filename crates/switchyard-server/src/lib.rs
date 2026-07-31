@@ -34,16 +34,16 @@ use axum_server::tls_rustls::RustlsConfig;
 use libsy::{Algorithm, LibsyError, RunObservation, RunObserver};
 use parking_lot::Mutex;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use switchyard_protocol::{Context, Decision, LlmClientError, Metadata, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{decode_request, WireFormat};
+use switchyard_translation::{WireFormat, decode_request};
 
 use crate::response::into_http_response;
-use crate::stats::{prefix_probe, tracking_enabled_from_env, StatsAccumulator, StatsSnapshot};
+use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
 
 pub use observability::{flush_observability, initialize_observability};
 
@@ -871,7 +871,7 @@ async fn get_session_stats(
                 error.to_string(),
                 "invalid_request_error",
                 "invalid_query",
-            )
+            );
         }
     };
     let Some(routing_log) = state.routing_log else {

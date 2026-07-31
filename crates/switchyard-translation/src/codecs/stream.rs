@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
+use crate::LlmResponseChunk;
 use crate::codecs::anthropic::AnthropicMessagesStreamCodec;
 use crate::codecs::openai_chat::OpenAiChatStreamCodec;
 use crate::codecs::responses::OpenAiResponsesStreamCodec;
@@ -16,7 +17,6 @@ use crate::engine::{FormatRegistry, TranslationEngine};
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
-use crate::LlmResponseChunk;
 
 /// Mutable state accumulated while translating one streaming response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

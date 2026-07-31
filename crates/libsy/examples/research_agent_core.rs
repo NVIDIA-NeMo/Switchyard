@@ -16,7 +16,7 @@ use switchyard_libsy::{
     TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    completion_text, text_request, text_response, Context, Decision, LlmResponse, Request, Response,
+    Context, Decision, LlmResponse, Request, Response, completion_text, text_request, text_response,
 };
 use tokio_stream::StreamExt;
 

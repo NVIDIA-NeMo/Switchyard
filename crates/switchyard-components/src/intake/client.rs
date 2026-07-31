@@ -4,8 +4,8 @@
 //! Intake payload sinks.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::{Result, SwitchyardError};
@@ -238,10 +238,9 @@ async fn post_once(
         None => (chat_completions_ingest_url(config), true),
     };
     let mut request = client.post(url).json(payload);
-    if authenticated
-        && let Some(api_key) = config.api_key.as_deref() {
-            request = request.bearer_auth(api_key);
-        }
+    if authenticated && let Some(api_key) = config.api_key.as_deref() {
+        request = request.bearer_auth(api_key);
+    }
     let response = request.send().await.map_err(|error| {
         SwitchyardError::Upstream(format!("intake payload POST failed: {error}"))
     })?;

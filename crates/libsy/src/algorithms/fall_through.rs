@@ -356,8 +356,8 @@ mod tests {
     use crate::{SystemPromptProcessor, TargetPrompts};
 
     use switchyard_protocol::{
-        completion_text, text_request, text_response, LlmClientError, LlmRequest, LlmResponse,
-        Message, Metadata, Role,
+        LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role, completion_text,
+        text_request, text_response,
     };
 
     #[derive(Debug, thiserror::Error)]
@@ -922,9 +922,11 @@ mod tests {
 
         assert_eq!(text, "strong");
         assert_eq!(trace[0].selected_model(), "strong");
-        assert!(trace[0]
-            .reasoning()
-            .is_some_and(|r| r.contains("fell back to strong")));
+        assert!(
+            trace[0]
+                .reasoning()
+                .is_some_and(|r| r.contains("fell back to strong"))
+        );
         Ok(())
     }
 

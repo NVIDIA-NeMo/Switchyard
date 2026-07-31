@@ -8,9 +8,9 @@ use async_stream::try_stream;
 use futures_util::StreamExt;
 
 use crate::stats::{
-    openai_chat_usage_from_stream_event, openai_responses_usage_from_stream_event,
-    selected_stats_model, selected_stats_tier, usage_from_body, AnthropicStreamUsage, PrefixProbe,
-    StatsAccumulator, StatsBackendLatency, StatsRequestStart, TokenUsage,
+    AnthropicStreamUsage, PrefixProbe, StatsAccumulator, StatsBackendLatency, StatsRequestStart,
+    TokenUsage, openai_chat_usage_from_stream_event, openai_responses_usage_from_stream_event,
+    selected_stats_model, selected_stats_tier, usage_from_body,
 };
 
 /// Records token usage, total latency, and routing overhead.

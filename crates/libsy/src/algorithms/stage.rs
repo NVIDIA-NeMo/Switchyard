@@ -23,10 +23,10 @@ use super::fall_through::{DefaultTarget, FallThrough};
 use super::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
-    record_decision_source, DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier,
-    StageTargets,
+    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
+    record_decision_source,
 };
-use super::util::tool_signals::{ToolSignalProcessor, DEFAULT_RECENT_WINDOW};
+use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
@@ -229,7 +229,7 @@ mod tests {
     use parking_lot::Mutex;
     use serde_json::json;
     use switchyard_protocol::{
-        text_response, ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat,
+        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat, text_response,
     };
 
     use super::*;
