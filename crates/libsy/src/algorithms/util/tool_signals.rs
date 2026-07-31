@@ -103,9 +103,10 @@ static EDIT_TOOL_NAMES: &[&str] = &[
     "str_replace",
     "str_replace_based_edit_tool",
     "text_editor",
+    "patch", // hermes's str_replace-style edit tool
 ];
 
-static WRITE_TOOL_NAMES: &[&str] = &["write", "create_file", "new_file"];
+static WRITE_TOOL_NAMES: &[&str] = &["write", "create_file", "new_file", "write_file"];
 
 // Bash subcommand patterns. Lowercased; callers must lowercase the command
 // before matching. Bucketed into write_count / edit_count alongside the
@@ -145,7 +146,7 @@ static BASH_READ_PATTERNS: &[&str] = &[
     "diff ", "which ", "ps ", "df ", "du ", "stat ", "file ", "less ", "more ",
 ];
 
-static READ_TOOL_NAMES: &[&str] = &["read", "view"];
+static READ_TOOL_NAMES: &[&str] = &["read", "view", "read_file", "search_files"];
 
 // Planning / scratchpad tool calls — investigative (non-producing) activity.
 // `update_plan` is codex's equivalent of `todowrite`.
@@ -153,8 +154,15 @@ static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_p
 
 // Tool names that route through Bash-command pattern matching. `bash` is
 // claude-code's name; `shell_command` is codex's; `shell` / `local_shell_call`
-// are seen on some OpenAI-derived harnesses.
-static BASH_TOOL_NAMES: &[&str] = &["bash", "shell_command", "shell", "local_shell_call"];
+// are seen on some OpenAI-derived harnesses; `terminal` is hermes's (it carries
+// a `command` arg like the others, so its intent comes from the pattern match).
+static BASH_TOOL_NAMES: &[&str] = &[
+    "bash",
+    "shell_command",
+    "shell",
+    "local_shell_call",
+    "terminal",
+];
 
 // Prefer false negatives: tests_passed routes the picker to EFFICIENT, so a false
 // positive would drop tier on an unfinished task.
@@ -991,6 +999,25 @@ mod tests {
     fn read_tool_classifies_as_read() {
         assert_eq!(classify_tool_call("Read", None), ToolCategory::Read);
         assert_eq!(classify_tool_call("View", None), ToolCategory::Read);
+    }
+
+    #[test]
+    fn hermes_tool_names_classify() {
+        // Hermes (NousResearch) file tools route by name.
+        assert_eq!(classify_tool_call("write_file", None), ToolCategory::Write);
+        assert_eq!(classify_tool_call("patch", None), ToolCategory::Edit);
+        assert_eq!(classify_tool_call("read_file", None), ToolCategory::Read);
+        assert_eq!(classify_tool_call("search_files", None), ToolCategory::Read);
+        // Hermes runs shell through `terminal`, which carries a `command` arg,
+        // so its intent comes from the Bash-pattern match like codex's shell_command.
+        assert_eq!(
+            classify_tool_call("terminal", Some("sed -i 's/a/b/' /app/x.py")),
+            ToolCategory::Edit,
+        );
+        assert_eq!(
+            classify_tool_call("terminal", Some("grep foo /app")),
+            ToolCategory::Read,
+        );
     }
 
     #[test]
