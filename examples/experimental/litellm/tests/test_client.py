@@ -277,6 +277,54 @@ async def test_call_normalizes_a_function_tool_response(
     ]
 
 
+async def test_call_rejects_non_mapping_tool_call_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_acompletion(**_: object) -> ModelResponse:
+        return ModelResponse(**gateway_response())
+
+    monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
+    request = request_body()
+    request["messages"] = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "id": "call_1",
+                    "name": "Bash",
+                    "arguments": ["pytest"],
+                }
+            ],
+        }
+    ]
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        with pytest.raises(ValueError, match=r"messages\[0\]\.content\[0\]\.arguments"):
+            await client.call(request)
+    finally:
+        await client.aclose()
+
+
+async def test_call_rejects_non_mapping_response_tool_call_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = gateway_tool_response()
+    tool_call = payload["choices"][0]["message"]["tool_calls"][0]
+    tool_call["function"]["arguments"] = '["pytest"]'
+
+    async def fake_acompletion(**_: object) -> ModelResponse:
+        return ModelResponse(**payload)
+
+    monkeypatch.setattr("switchyard_litellm.client.acompletion", fake_acompletion)
+    client = LiteLLMSyClient("fast", base_url=BASE_URL)
+    try:
+        with pytest.raises(ValueError, match="invalid tool-call arguments"):
+            await client.call(request_body())
+    finally:
+        await client.aclose()
+
+
 @pytest.mark.parametrize("choice", ["auto", "required", "none"])
 async def test_call_translates_standard_tool_choice(
     monkeypatch: pytest.MonkeyPatch,

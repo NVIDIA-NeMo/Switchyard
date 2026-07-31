@@ -79,16 +79,19 @@ def _tool_call(raw_block: object, path: str) -> dict[str, object]:
     block = _mapping(raw_block, path)
     call_id = block.get("id")
     name = block.get("name")
+    arguments = block.get("arguments")
     if block.get("type") != "tool_call" or not isinstance(call_id, str):
         raise ValueError(f"{path} must be a tool-call block")
     if not isinstance(name, str):
         raise ValueError(f"{path}.name must be a string")
+    if not isinstance(arguments, Mapping):
+        raise ValueError(f"{path}.arguments must be a mapping")
     return {
         "id": call_id,
         "type": "function",
         "function": {
             "name": name,
-            "arguments": json.dumps(block.get("arguments")),
+            "arguments": json.dumps(arguments),
         },
     }
 
@@ -279,6 +282,8 @@ def _response(response: ModelResponse) -> dict[str, object]:
             arguments = json.loads(tool_call.function.arguments)
         except (TypeError, json.JSONDecodeError) as error:
             raise ValueError("LiteLLM returned invalid tool-call arguments") from error
+        if not isinstance(arguments, Mapping):
+            raise ValueError("LiteLLM returned invalid tool-call arguments")
         content.append({
             "type": "tool_call",
             "id": tool_call.id,
