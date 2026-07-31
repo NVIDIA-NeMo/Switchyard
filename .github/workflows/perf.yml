@@ -141,7 +141,7 @@ jobs:
               type: model
               model: mock-model
           YAML
-          uv run switchyard --routing-profiles bench.yaml -- serve --port $PROXY_PORT &
+          uv run switchyard serve --routing-profiles bench.yaml --port $PROXY_PORT &
           echo "PROXY_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for proxy to be ready
