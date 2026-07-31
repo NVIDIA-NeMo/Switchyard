@@ -287,15 +287,15 @@ fn summarize_for_judge(
         window.drain(..window.len() - config.recent_turn_window);
     }
 
-    let header = format!(
-        "Conversation turn {turn}; showing the last {} of {} messages after the task framing.",
-        window.len(),
-        messages.len(),
-    );
     let assemble = |window: &[String]| {
-        std::iter::once(header.as_str())
-            .chain(anchors.iter().map(String::as_str))
-            .chain(window.iter().map(String::as_str))
+        let header = format!(
+            "Conversation turn {turn}; showing the last {} of {} messages after the task framing.",
+            window.len(),
+            messages.len(),
+        );
+        std::iter::once(header)
+            .chain(anchors.iter().cloned())
+            .chain(window.iter().cloned())
             .collect::<Vec<_>>()
             .join("\n")
     };

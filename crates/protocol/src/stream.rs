@@ -100,24 +100,28 @@ impl AggLlmResponse {
             id: self.id,
             model: self.model,
         });
-        for (index, output) in self.outputs.into_iter().enumerate() {
+        let mut tool_call_index = 0usize;
+        for (output_index, output) in self.outputs.into_iter().enumerate() {
             for block in output.content {
                 match block {
                     ContentBlock::Text { text } => {
-                        chunks.push(LlmResponseChunk::TextDelta { index, text });
+                        chunks.push(LlmResponseChunk::TextDelta { index: output_index, text });
                     }
                     ContentBlock::Reasoning { text, .. } => {
-                        chunks.push(LlmResponseChunk::ReasoningDelta { index, text });
+                        chunks.push(LlmResponseChunk::ReasoningDelta { index: output_index, text });
                     }
                     ContentBlock::ToolCall(tool) => {
                         let args = serde_json::to_string(&tool.arguments).unwrap_or_default();
                         chunks.push(LlmResponseChunk::ToolCallDelta {
-                            index,
+                            index: tool_call_index,
                             id: Some(tool.id),
                             name: Some(tool.name),
                             arguments_delta: Some(args),
                         });
+                        tool_call_index += 1;
                     }
+                    // Other variants (Image, ToolResult, Refusal, etc.) don't have
+                    // a streaming chunk representation and don't appear in assistant outputs.
                     _ => {}
                 }
             }
