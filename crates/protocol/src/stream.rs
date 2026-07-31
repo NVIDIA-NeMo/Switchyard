@@ -407,6 +407,33 @@ mod tests {
     }
 
     #[test]
+    fn into_stream_round_trips_through_into_agg() {
+        let original = AggLlmResponse {
+            id: Some("id1".to_string()),
+            model: Some("m".to_string()),
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+                stop_reason: Some(StopReason::EndTurn),
+            }],
+            usage: Usage {
+                output_tokens: Some(3),
+                ..Usage::default()
+            },
+            ..AggLlmResponse::default()
+        };
+        let stream = LlmResponse::Stream(original.clone().into_stream());
+        let recovered = block_on(stream.into_agg()).expect("into_agg failed");
+        assert_eq!(recovered.id, original.id);
+        assert_eq!(recovered.model, original.model);
+        assert_eq!(recovered.usage.output_tokens, original.usage.output_tokens);
+        assert_eq!(recovered.outputs[0].stop_reason, original.outputs[0].stop_reason);
+        assert_eq!(recovered.outputs[0].content, original.outputs[0].content);
+    }
+
+    #[test]
     fn into_agg_preserves_stream_item_error() {
         let response = LlmResponse::Stream(Box::pin(stream::once(async {
             Err(LlmClientError::Timeout {

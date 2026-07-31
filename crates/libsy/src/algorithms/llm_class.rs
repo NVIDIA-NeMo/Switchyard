@@ -362,7 +362,11 @@ impl Classifier<State> for EscalationClassifier {
         let mut judge_request = request.clone();
         judge_request.llm_request.messages.push(assistant_message(&agg));
         let efficient_response = Response {
-            llm_response: LlmResponse::Stream(agg.into_stream()),
+            llm_response: if request.llm_request.stream {
+                LlmResponse::Stream(agg.into_stream())
+            } else {
+                LlmResponse::Agg(agg)
+            },
             metadata: efficient_response.metadata,
         };
 
@@ -371,35 +375,22 @@ impl Classifier<State> for EscalationClassifier {
             .score(state, &mut judge_request, Some(driver))
             .await?;
 
-        // A `Scores` result names the tier; `Ambiguous` (judge unavailable) leaves the streak
-        // alone and stays efficient — an outage should never escalate.
-        let best = classification.argmax(false)?;
-        match best {
-            Some(score) if score.target == self.capable.semantic_name => {
-                let next = streak(state) + 1;
-                state
-                    .extra
-                    .insert(STREAK_KEY.to_string(), StateValue::Count(next));
-                if next >= self.confirmations {
-                    // Streak confirmed: drop the efficient response, caller will serve capable.
-                    Ok((decisive(&self.capable.semantic_name), None))
-                } else {
-                    // Building streak but not yet confirmed: reuse the efficient response.
-                    Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
-                }
-            }
-            Some(_) => {
-                // Decline: clear the streak.
-                state
-                    .extra
-                    .insert(STREAK_KEY.to_string(), StateValue::Count(0));
-                Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
-            }
-            None => {
-                // Judge unavailable: no evidence, leave streak intact, stay efficient.
-                Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
-            }
+        let held = streak(state);
+        let (escalate, pending) = match classification {
+            Classification::Scores(ref scores) if !scores.is_empty() => (true, held + 1),
+            Classification::Scores(_) => (false, 0),
+            Classification::Ambiguous(_) => (false, held),
+        };
+        state
+            .extra
+            .insert(STREAK_KEY.to_string(), StateValue::Count(pending));
+
+        if escalate && pending >= self.confirmations {
+            // Streak confirmed: drop the efficient response, caller will serve capable.
+            return Ok((decisive(&self.capable.semantic_name), None));
         }
+
+        Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
     }
 }
 
