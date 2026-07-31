@@ -178,6 +178,9 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
         }
         merge_extra_body(&mut body, backend.extra_body());
+        if matches!(backend, Backend::Anthropic(_)) {
+            enable_anthropic_prompt_caching(&mut body);
+        }
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
         }
@@ -700,6 +703,35 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
+// Marks the final message content block as the Anthropic prompt-cache breakpoint.
+fn enable_anthropic_prompt_caching(body: &mut Value) {
+    let Some(content) = body
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .and_then(|messages| messages.last_mut())
+        .and_then(|message| message.get_mut("content"))
+    else {
+        return;
+    };
+    match content {
+        Value::String(text) => {
+            *content = serde_json::json!([{
+                "type": "text",
+                "text": std::mem::take(text),
+                "cache_control": {"type": "ephemeral"}
+            }]);
+        }
+        Value::Array(blocks) => {
+            if let Some(block) = blocks.last_mut().and_then(Value::as_object_mut) {
+                block
+                    .entry("cache_control".to_string())
+                    .or_insert_with(|| serde_json::json!({"type": "ephemeral"}));
+            }
+        }
+        _ => {}
+    }
+}
+
 // Requests streamed Chat usage by default while preserving an explicit caller choice.
 fn ensure_openai_stream_usage(body: &mut Value) {
     let Value::Object(object) = body else {
@@ -861,6 +893,20 @@ mod tests {
             raw_request: None,
             metadata: None,
         }
+    }
+
+    #[test]
+    fn anthropic_prompt_caching_marks_final_message() {
+        let mut body = json!({
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        enable_anthropic_prompt_caching(&mut body);
+
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
     }
 
     // A request that pins `format` in its metadata, so the client resolves that
