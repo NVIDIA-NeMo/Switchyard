@@ -207,22 +207,16 @@ switchyard/
 │       └── intake_sink_config.py
 ├── cli/                            # CLI (requires `nemo-switchyard[cli]`)
 │   ├── switchyard_cli.py           # `switchyard` entry point
-│   ├── launch_command.py           # `switchyard launch claude/codex`
-│   ├── configure_command.py        # `switchyard configure`
-│   ├── status.py                   # render_status helper used by `configure --show`
+│   ├── launch_command.py           # `switchyard launch`
 │   ├── command_utils.py
-│   ├── output.py
-│   ├── launchers/                  # claude_code_launcher, codex_cli_launcher
+│   ├── defaults/                   # packaged OpenRouter TOML deployment
+│   ├── launchers/                  # Claude, Codex, and OpenClaw launchers
 │   ├── model_catalog/              # model_discovery
-│   ├── routing/                    # route_builder
-│   ├── tui/                        # Terminal UI widgets
-│   └── config/
-│       └── user_config.py          # Saved user defaults (~/.config/switchyard/)
+│   └── route_bundle.py             # YAML route parsing for `serve`
 └── server/                         # FastAPI app factory + server utilities
     ├── switchyard_app.py           # build_switchyard_app()
     ├── server_util.py              # Shared CLI / server plumbing
-    ├── shell_tui.py                # Shell TUI session
-    └── verify.py                   # e2e verification helpers
+    └── shell_tui.py                # Shell TUI session
 
 tests/                              # Unit tests (pytest)
 ```
@@ -255,26 +249,17 @@ and their transitives never appear in downstream vulnerability scans.
 ### Running the server
 
 ```bash
-export OPENAI_API_KEY="sk-..."       # or NVIDIA_API_KEY / ANTHROPIC_API_KEY where supported
-export OPENROUTER_API_KEY="sk-or-..." # pass with --api-key or save via configure
+export OPENROUTER_API_KEY="sk-or-..."
 
 # Serve a routing bundle. Routes live in YAML; see docs/routing_algorithms/overview.md.
-switchyard --routing-profiles routes.yaml -- serve --port 4000
+switchyard serve --routing-profiles routes.yaml --port 4000
 
-# One-command launchers — single-model passthrough via --model
-switchyard launch claude --model openai/gpt-4o-mini \
-    --base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"
-switchyard launch codex --model openai/gpt-4o-mini \
-    --base-url https://openrouter.ai/api/v1 --api-key "$OPENROUTER_API_KEY"
+# Launch against the packaged OpenRouter deployment.
+switchyard launch claude --model switchyard
+switchyard launch codex --model switchyard
 
-# Launchers default to built-in LLM-classifier routing; tune the tiers:
-switchyard launch claude \
-    --weak-model openai/gpt-4o-mini --classifier-model openai/gpt-4o \
-    --classifier-min-confidence 0.6
-
-# Verification and saved config
-switchyard verify --model openai/gpt-4o-mini
-switchyard configure --show
+# Or select a route from a custom native TOML deployment.
+switchyard launch claude --model my-route --config routes.toml
 ```
 
 ### Testing
@@ -339,7 +324,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 | `OPENAI_BASE_URL` | Base URL for OpenAI-compatible API |
 | `ANTHROPIC_API_KEY` | API key for Anthropic Claude |
 | `NVIDIA_API_KEY` | API key for NVIDIA NIM / Inference Hub |
-| `OPENROUTER_API_KEY` | OpenRouter key for examples and saved provider setup; pass via `--api-key` or `switchyard configure` |
+| `OPENROUTER_API_KEY` | OpenRouter key used by the packaged launcher deployment |
 | `SWITCHYARD_INTAKE_CAPTURE_CONTENT` | Set truthy to include prompt/response text in intake; default off (metadata-only) |
 
 ## Code Style

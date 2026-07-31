@@ -18,8 +18,6 @@ The flow is::
         ▼  build_table_from_bundle
     RouteTable
 
-Launchers skip the parser and construct a :class:`RouteBundle` directly so
-argparse-driven and YAML-driven assembly share one builder.
 """
 
 import os
@@ -310,14 +308,6 @@ class _YamlModule(Protocol):
     def safe_load(self, stream: str) -> object: ...
 
 
-#: Tier fields drilled into by :func:`routing_profile_model_ids`. The
-#: ``classifier`` tier is intentionally NOT surfaced — it is an internal-only
-#: LLM call, not a user-facing target.
-_USER_FACING_TIER_FIELDS: tuple[str, ...] = (
-    "strong", "weak", "target",
-)
-
-
 def parse_routing_profiles_file(path: str | Path) -> dict[str, object]:
     """Read *path* and return the parsed YAML dict (no env-var expansion)."""
     yaml = cast(_YamlModule, import_module("yaml"))
@@ -342,47 +332,6 @@ def _format_exception_one_line(exc: BaseException) -> str:
     return " ".join(str(exc).split())
 
 
-def routing_profile_model_ids(
-    routing_profiles: Mapping[str, object] | None,
-) -> list[str]:
-    """User-callable model ids from a parsed routing-profiles bundle.
-
-    Returns each route's YAML key followed by its tier ``model`` fields
-    (``strong`` / ``weak`` for stage_router/deterministic/random_routing,
-    ``target`` for ``model``). Declaration order, later
-    duplicates dropped.
-    Returns ``[]`` for a ``None`` or empty bundle.
-
-    Used by both the configure wizard (preview the picker) and the launchers
-    (validate ``--model`` against the YAML without paying the cost of a full
-    table build + catalog discovery).
-    """
-    if not routing_profiles:
-        return []
-    routes = routing_profiles.get("routes")
-    if not isinstance(routes, Mapping):
-        return []
-    seen: set[str] = set()
-    ordered: list[str] = []
-
-    def _add(value: object) -> None:
-        if isinstance(value, str) and value and value not in seen:
-            seen.add(value)
-            ordered.append(value)
-
-    for route_id, route in routes.items():
-        _add(route_id)
-        if not isinstance(route, Mapping):
-            continue
-        for tier_field in _USER_FACING_TIER_FIELDS:
-            tier = route.get(tier_field)
-            if isinstance(tier, Mapping):
-                _add(tier.get("model"))
-            elif isinstance(tier, str):
-                _add(tier)
-    return ordered
-
-
 def load_route_bundle_table(
     path: str | Path,
     stats_accumulator: StatsAccumulator | None = None,
@@ -391,8 +340,8 @@ def load_route_bundle_table(
 ) -> RouteTable:
     """Load *path* and return a table keyed by route model id.
 
-    Pass ``stats_accumulator`` when a caller (typically a launcher) is merging
-    this YAML table on top of one it already built, so YAML-declared chains
+    Pass ``stats_accumulator`` when a caller is merging this YAML table into
+    an existing runtime so YAML-declared chains
     record into the same accumulator surfaced at ``/v1/routing/stats`` and the
     live stats footer. ``None`` (default) creates a fresh accumulator — what
     standalone ``switchyard serve`` callers want.
@@ -1421,5 +1370,4 @@ __all__ = [
     "build_route_bundle_table",
     "load_route_bundle_table",
     "parse_routing_profiles_file",
-    "routing_profile_model_ids",
 ]

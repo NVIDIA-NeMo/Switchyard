@@ -1,5 +1,4 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persistent CLI configuration helpers."""
-
+"""Packaged launcher deployment defaults."""

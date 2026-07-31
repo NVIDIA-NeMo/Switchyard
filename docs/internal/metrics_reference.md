@@ -15,7 +15,7 @@ a drop-in scrape config and starter alert rules.
 | Default scrape interval | 15s |
 
 `GET /metrics` is served by the Python route-bundle server started with
-`switchyard --routing-profiles PATH -- serve`.
+`switchyard serve --routing-profiles PATH`.
 
 A JSON variant of the same underlying data lives at `GET /v1/stats`, with
 `GET /v1/routing/stats` as a backwards-compatible alias.

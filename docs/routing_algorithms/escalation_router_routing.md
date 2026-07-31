@@ -101,7 +101,7 @@ routes:
 Run the route as a standalone proxy:
 
 ```bash
-switchyard --routing-profiles routes.yaml -- serve --port 4000
+switchyard serve --routing-profiles routes.yaml --port 4000
 ```
 
 The route ID (`agent-escalation`) is the model ID clients select to use the

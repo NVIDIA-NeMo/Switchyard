@@ -20,8 +20,6 @@ nav:
   - Get Started:
       - Getting Started: getting_started.md
       - Known Issues in 0.1.0: known_issues.md
-  - Guides:
-      - Skill Distillation: skill_distillation.md
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
