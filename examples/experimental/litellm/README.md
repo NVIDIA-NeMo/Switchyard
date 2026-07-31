@@ -240,7 +240,9 @@ bash benchmark/run-baseline.sh \
 
 The native benchmark route uses the same efficient-first Stage policy but does
 not use `LiteLLMSyClient`; Switchyard server translates requests directly to
-the shared LiteLLM gateway. The sample runs `broken-python`,
+the shared LiteLLM gateway. The gateway drops parameters unsupported by the
+selected provider model, so the benchmark's reasoning effort reaches `strong`
+without causing `fast` requests to fail. The sample runs `broken-python`,
 `cosign-keyless-signing`, and `jq-data-processing`. Three autonomous coding-agent
 tasks can make many paid model calls. Inspect the resulting run under
 `benchmark/tb_runs/`, including

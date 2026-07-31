@@ -24,6 +24,7 @@ def test_gateway_uses_openrouter_models_and_credential() -> None:
             "api_key": "os.environ/OPENROUTER_API_KEY",
         },
     }
+    assert config["litellm_settings"] == {"drop_params": True}
 
     compose = yaml.safe_load((PACKAGE_ROOT / "compose.yaml").read_text())
     assert compose["services"]["litellm"]["environment"] == {

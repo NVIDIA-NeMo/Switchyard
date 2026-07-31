@@ -7,3 +7,6 @@ model_list:
     litellm_params:
       model: openrouter/moonshotai/kimi-k3
       api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  drop_params: true
