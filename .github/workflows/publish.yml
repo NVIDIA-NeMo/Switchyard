@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+      - "!v*-*"
   workflow_dispatch:
     inputs:
       build_dev_artifact:

@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-server"
-version = "0.1.0"
+version.workspace = true
 description = "Rust HTTP server surface for libsy algorithms"
 authors.workspace = true
 edition.workspace = true

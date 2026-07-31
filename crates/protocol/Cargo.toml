@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-protocol"
-version = "0.1.0"
+version.workspace = true
 description = "Provider-neutral LLM protocol types for Switchyard"
 authors.workspace = true
 edition.workspace = true

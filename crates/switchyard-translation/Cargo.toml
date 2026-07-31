@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-translation"
-version = "0.1.0"
+version.workspace = true
 description = "Pure Rust request, response, and stream translation for Switchyard"
 authors.workspace = true
 edition.workspace = true
