@@ -958,11 +958,23 @@ fn model_entry_json(model: &str) -> Value {
 
 fn startup_banner(options: &ServerRunOptions, state: &ServerState, color: bool) -> String {
     let scheme = if options.is_tls() { "https" } else { "http" };
+    let listen_url = url_for_addr(scheme, options.addr);
+    let request_url = request_url_for_addr(scheme, options.addr);
+    let routes = state.models().collect::<Vec<_>>();
+    let route_list = routes.join(", ");
+    let example_model = routes.first().copied().unwrap_or("switchyard/route");
+    let example_body = json!({
+        "model": example_model,
+        "messages": [{"role": "user", "content": "Hello from Switchyard"}],
+    });
     format!(
-        "{}\nSwitchyard libsy server\n  listening: {}\n  routes: {}",
+        "{}\nSwitchyard libsy server\n  listening: {}\n  routes: {}\n\nendpoints:\n{}\n\nexample:\n  curl -s {}/v1/chat/completions \\\n    -H 'Content-Type: application/json' \\\n    -d '{}'",
         render_startup_banner_art(color),
-        url_for_addr(scheme, options.addr),
-        state.models().collect::<Vec<_>>().join(", ")
+        listen_url,
+        route_list,
+        endpoint_listing(state.routing_log.is_some()),
+        request_url,
+        example_body,
     )
 }
 
@@ -992,11 +1004,41 @@ fn url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
     format!("{scheme}://{}:{}", host_for_url(addr.ip()), addr.port())
 }
 
+fn request_url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
+    let host = if addr.ip().is_unspecified() {
+        match addr.ip() {
+            std::net::IpAddr::V4(_) => "127.0.0.1".to_string(),
+            std::net::IpAddr::V6(_) => "[::1]".to_string(),
+        }
+    } else {
+        host_for_url(addr.ip())
+    };
+    format!("{scheme}://{host}:{}", addr.port())
+}
+
 fn host_for_url(ip: std::net::IpAddr) -> String {
     match ip {
         std::net::IpAddr::V4(ip) => ip.to_string(),
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
     }
+}
+
+fn endpoint_listing(has_routing_log: bool) -> String {
+    let mut endpoints = vec![
+        "  POST /v1/chat/completions    OpenAI Chat Completions",
+        "  POST /v1/messages            Anthropic Messages",
+        "  POST /v1/responses           OpenAI Responses",
+        "  POST /v1/messages/count_tokens",
+        "  GET  /v1/models              configured routes",
+        "  GET  /v1/stats               routing stats",
+        "  POST /v1/stats/reset",
+        "  GET  /metrics                Prometheus metrics",
+        "  GET  /health",
+    ];
+    if has_routing_log {
+        endpoints.push("  GET  /v1/routing/session-stats");
+    }
+    endpoints.join("\n")
 }
 
 #[cfg(test)]
