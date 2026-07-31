@@ -327,9 +327,9 @@ def test_serve_subcommand_hands_table_to_server(
     monkeypatch.setattr(cli, "build_and_serve", _fake_serve)
 
     args = cli._build_parser().parse_args([
+        "serve",
         "--routing-profiles",
         str(yaml_path),
-        "serve",
         "--port",
         "4555",
     ])
@@ -354,7 +354,7 @@ def test_main_reports_route_bundle_config_error_without_traceback(
         "    bogus_key: 1\n"
     )
     monkeypatch.setattr(
-        sys, "argv", ["switchyard", "--routing-profiles", str(yaml_path), "serve"]
+        sys, "argv", ["switchyard", "serve", "--routing-profiles", str(yaml_path)]
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -372,7 +372,7 @@ def test_main_reports_missing_route_bundle_file_without_traceback(
 ) -> None:
     missing_path = tmp_path / "does-not-exist.yaml"
     monkeypatch.setattr(
-        sys, "argv", ["switchyard", "--routing-profiles", str(missing_path), "serve"]
+        sys, "argv", ["switchyard", "serve", "--routing-profiles", str(missing_path)]
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -395,7 +395,7 @@ def test_main_reports_bad_route_bundle_yaml_without_traceback(
         "   target: x\n"
     )
     monkeypatch.setattr(
-        sys, "argv", ["switchyard", "--routing-profiles", str(yaml_path), "serve"]
+        sys, "argv", ["switchyard", "serve", "--routing-profiles", str(yaml_path)]
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -414,7 +414,7 @@ def test_main_reports_non_utf8_route_bundle_without_traceback(
     yaml_path = tmp_path / "non_utf8.yaml"
     yaml_path.write_bytes(b"\xff")
     monkeypatch.setattr(
-        sys, "argv", ["switchyard", "--routing-profiles", str(yaml_path), "serve"]
+        sys, "argv", ["switchyard", "serve", "--routing-profiles", str(yaml_path)]
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -435,7 +435,7 @@ def test_main_accepts_routing_profiles_flag(
     yaml_path.write_text("routes:\n  direct:\n    type: model\n    target: some/model\n")
 
     monkeypatch.setattr(
-        sys, "argv", ["switchyard", "--routing-profiles", str(yaml_path), "serve"]
+        sys, "argv", ["switchyard", "serve", "--routing-profiles", str(yaml_path)]
     )
 
     def _fake_serve(
@@ -449,34 +449,6 @@ def test_main_accepts_routing_profiles_flag(
     monkeypatch.setattr(cli, "build_and_serve", _fake_serve)
 
     cli.main()
-
-    assert capsys.readouterr().err == ""
-
-
-def test_serve_accepts_saved_route_bundle(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from switchyard.cli.config.user_config import UserConfig, save_user_config
-
-    monkeypatch.setenv("SWITCHYARD_CONFIG_DIR", str(tmp_path))
-    save_user_config(UserConfig(routing_profiles={"routes": {
-        "direct": {"type": "model", "target": "some/model"},
-    }}))
-
-    def _fake_serve(
-        args: argparse.Namespace,
-        switchyard: object,
-        inbound_default: str,
-        **_kwargs: object,
-    ) -> None:
-        return
-
-    monkeypatch.setattr(cli, "build_and_serve", _fake_serve)
-    args = cli._build_parser().parse_args(["serve", "--port", "4000"])
-
-    cli._cmd_serve(args)
 
     assert capsys.readouterr().err == ""
 
@@ -511,9 +483,9 @@ def test_serve_subcommand_enables_intake_from_cli_args(
     monkeypatch.setattr(cli, "build_and_serve", _fake_serve)
 
     args = cli._build_parser().parse_args([
+        "serve",
         "--routing-profiles",
         str(yaml_path),
-        "serve",
         "--intake-enabled",
         "--intake-base-url",
         "https://intake.example.test",

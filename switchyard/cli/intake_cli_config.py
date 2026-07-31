@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared CLI/env resolution for intake options."""
+"""Resolve Intake options for ``switchyard serve``."""
 
 import argparse
 import os
@@ -11,16 +11,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class IntakeCliConfig:
-    """Resolved intake options shared by server and launcher CLI paths."""
+    """Resolved Intake options for the Python server."""
 
     enabled: bool
     base_url: str | None = None
     workspace: str | None = None
     api_key: str | None = None
-    app: str | None = None
-    task: str | None = None
-    session_id: str | None = None
-    user_id: str | None = None
     target_url: str | None = None
 
     @classmethod
@@ -42,35 +38,6 @@ class IntakeCliConfig:
                 args, "intake_target_url", resolved_env, "SWITCHYARD_INTAKE_TARGET_URL",
             ),
         )
-
-    @classmethod
-    def from_launch_args(
-        cls,
-        args: argparse.Namespace,
-        *,
-        env: Mapping[str, str] | None = None,
-    ) -> "IntakeCliConfig":
-        resolved_env = os.environ if env is None else env
-        base_url, workspace, api_key = _resolve_sink_connection(args, resolved_env)
-        return cls(
-            enabled=bool(getattr(args, "intake_enabled", False))
-            or _env_bool("SWITCHYARD_INTAKE_ENABLED", resolved_env),
-            base_url=base_url,
-            workspace=workspace,
-            api_key=api_key,
-            app=_arg_or_env(args, "intake_app", resolved_env, "SWITCHYARD_INTAKE_APP"),
-            task=_arg_or_env(args, "intake_task", resolved_env, "SWITCHYARD_INTAKE_TASK"),
-            session_id=_arg_or_env(
-                args, "intake_session_id", resolved_env, "SWITCHYARD_SESSION_ID",
-            ),
-            user_id=_arg_or_env(
-                args, "intake_user_id", resolved_env, "SWITCHYARD_USER_ID",
-            ),
-            target_url=_arg_or_env(
-                args, "intake_target_url", resolved_env, "SWITCHYARD_INTAKE_TARGET_URL",
-            ),
-        )
-
 
 def _resolve_sink_connection(
     args: argparse.Namespace,

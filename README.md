@@ -26,106 +26,28 @@ algorithm you write yourself.
 
 ## Quick Start
 
-### Install prerequisites
-
-You need Git, a native build toolchain, and Rust with Cargo. On Ubuntu or WSL:
+Install the CLI and server dependencies:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential curl git
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+uv tool install "nemo-switchyard[cli,server]"
+export OPENROUTER_API_KEY="sk-or-..."
 ```
 
-The Rust installer includes `rustc`, Cargo, and `rustup`. On macOS or native
-Windows, follow the [official Rust installation instructions](https://rust-lang.org/tools/install/).
-
-Install `uv` for the repository's Python-based tooling and CI checks. It is not
-required to build or run the Rust server:
+Launch a coding agent through the packaged OpenRouter deployment:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+switchyard launch claude --model switchyard
+switchyard launch codex --model switchyard
 ```
 
-If either installer updates your shell configuration, restart the shell before
-continuing. Verify that the tools are available:
+Pass a custom native deployment when needed:
 
 ```bash
-git --version
-rustc --version
-cargo --version
-uv --version
+switchyard launch claude --model my-route --config routes.toml
 ```
 
-### Build the Rust server from source
-
-```bash
-git clone https://github.com/NVIDIA-NeMo/Switchyard.git
-cd Switchyard
-cargo build --locked --release -p switchyard-server
-./target/release/switchyard-server --help
-```
-
-The repository pins Rust `1.96.1` in `rust-toolchain.toml`; `rustup` selects and
-installs it automatically when you run Cargo from the repository. Prebuilt Rust
-binaries are not published yet.
-
-### Run the server
-
-The `switchyard-server` binary reads an explicit TOML configuration for LLM
-clients, targets, and routes. Create `routes.toml` with an LLM-classifier route:
-
-```toml
-schema_version = 1
-
-[llm_clients.openrouter]
-format = "openai_chat"
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[targets.weak]
-id = "openai/gpt-4o-mini"
-llm_client = "openrouter"
-
-[targets.strong]
-id = "openai/gpt-4o"
-llm_client = "openrouter"
-
-[routes.smart]
-id = "switchyard"
-type = "llm_classifier"
-classifier_target = "weak"
-strong_target = "strong"
-weak_target = "weak"
-base_threshold = 0.5
-```
-
-The weak model classifies each request, then serves requests above the threshold
-itself and sends the rest to the strong model.
-
-Export the provider credential, validate the configuration without binding a
-socket, then start the server:
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-./target/release/switchyard-server --config routes.toml --dry-run
-./target/release/switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
-```
-
-The route `id` is the model name clients use. In another terminal:
-
-```bash
-curl http://localhost:4000/health
-curl http://localhost:4000/v1/models
-curl http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"switchyard","messages":[{"role":"user","content":"hi"}]}'
-```
-
-The Rust server also supports random, LLM-classifier, and stage-router routes,
-OpenAI Responses and Anthropic Messages endpoints, TLS, and Prometheus metrics.
-See the [`switchyard-server` guide](crates/switchyard-server/README.md) for the
-complete configuration schema and operational details.
+The deployment schema belongs in the
+[`switchyard-server` README](crates/switchyard-server/README.md).
 
 ## Architecture
 

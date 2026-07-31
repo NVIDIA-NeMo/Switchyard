@@ -23,8 +23,8 @@ libsy = { package = "switchyard-libsy", path = "../libsy" }
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "reqwest-rustls", "trace"] }
 opentelemetry-prometheus = "0.32"
-parking_lot.workspace = true
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
+parking_lot.workspace = true
 prometheus = "0.14"
 serde.workspace = true
 toml = "1.1"

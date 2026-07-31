@@ -64,7 +64,7 @@ tracing = [
 ]
 
 # Intake — NeMo Platform SDK required by IntakeClient for telemetry capture.
-# Only needed when --intake-enabled is passed to ``switchyard launch``.
+# Only needed when --intake-enabled is passed to ``switchyard serve``.
 # Install with: pip install nemo-switchyard[intake]
 intake = [
     "nemo-platform>=0.1.0,<1.0",
@@ -137,6 +137,7 @@ include = ["switchyard*"]
 [tool.setuptools.package-data]
 switchyard = [
     "py.typed",
+    "cli/defaults/*.toml",
     "lib/processors/prompts/*.md",
     "lib/processors/stage_router/prompts/*.md",
 ]

@@ -16,26 +16,20 @@
 //! Every composition retains one thing regardless: a target that overflows its context window is
 //! remembered for the rest of its session and skipped on later turns.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::core::algorithm::{call_llm_with_overflow_fallback, exclude_evicted, SessionEvictions};
 use crate::core::{Classification, Classifier, Event, Processor, Score};
 use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmClientError, LlmTarget, LlmTargetSet,
-    Request, Response, Result, RoutedLlmClient,
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
+    Result, RoutedLlmClient,
 };
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
-
-/// Matches the cap the Python stack uses. Dropping a live session's entry costs one
-/// rediscovered overflow, so the victim choice does not need to be exact.
-const MAX_EVICTION_SESSIONS: usize = 1_024;
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
@@ -112,7 +106,7 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
     session_states: Option<SessionStates<S>>,
-    session_evictions: Mutex<HashMap<String, HashSet<String>>>,
+    session_evictions: SessionEvictions,
 }
 
 impl FallThrough<()> {
@@ -125,7 +119,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             targets,
             session_states: None,
-            session_evictions: Mutex::new(HashMap::new()),
+            session_evictions: SessionEvictions::default(),
         }
     }
 }
@@ -143,7 +137,7 @@ where
             classifiers: Vec::new(),
             targets,
             session_states: Some(Mutex::new(HashMap::new())),
-            session_evictions: Mutex::new(HashMap::new()),
+            session_evictions: SessionEvictions::default(),
         }
     }
 
@@ -170,22 +164,6 @@ where
         self.classifiers.push(classifier);
         self
     }
-    /// Registers one dual-role component in *both* the processor chain and the classifier
-    /// cascade.
-    ///
-    /// A component that writes state as a [`Processor`] and reads it back as a
-    /// [`Classifier`] — such as [`AffinityRouter`](crate::algorithms::AffinityRouter) —
-    /// shares that state through the instance, so both roles must be the same `Arc`.
-    /// Registering the two separately is easy to half-wire: omit the processor and the
-    /// classifier silently never sees an assignment. This registers both at once.
-    pub fn with_component<T>(self, component: Arc<T>) -> Self
-    where
-        T: Processor<S> + Classifier<S> + 'static,
-    {
-        self.with_processor(component.clone())
-            .with_classifier(component)
-    }
-
     /// Executes the processor/classifier/target-call sequence for wrappers and the trait entrypoint.
     pub(crate) async fn execute(
         &self,
@@ -198,14 +176,12 @@ where
         let mut request = request;
         let session = session_id(&request);
         let mut ctx = ctx;
-        for target in self.evicted_in_session(session.as_deref()) {
-            // Never seed the pool empty: a later turn may be small enough to serve, and the
-            // caller should get the upstream's answer rather than a routing error.
-            if self.eligible_targets(&ctx) <= 1 {
-                break;
-            }
-            ctx.exclude_target(target);
-        }
+        exclude_evicted(
+            &mut ctx,
+            &self.targets,
+            &self.session_evictions,
+            session.as_deref(),
+        );
         let session_state = self.session_state(&request);
         let (target, decision, served) = match session_state {
             Some(state) => {
@@ -226,90 +202,19 @@ where
         match served {
             Some(response) => Ok(response),
             None => {
-                self.call_with_overflow_fallback(
+                call_llm_with_overflow_fallback(
                     ctx,
                     &driver,
+                    &self.targets,
                     target,
                     decision,
                     request,
                     session.as_deref(),
+                    &self.session_evictions,
+                    |from, to| self.fallback_decision(from, to),
                 )
                 .await
             }
-        }
-    }
-
-    fn eligible_targets(&self, ctx: &Context) -> usize {
-        self.targets
-            .targets()
-            .iter()
-            .filter(|t| !ctx.is_excluded(&t.semantic_name))
-            .count()
-    }
-
-    fn evicted_in_session(&self, session: Option<&str>) -> Vec<String> {
-        let Some(session) = session else {
-            return Vec::new();
-        };
-        self.session_evictions
-            .lock()
-            .get(session)
-            .map(|targets| targets.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    fn record_eviction(&self, session: Option<&str>, target: &str) {
-        let Some(session) = session else { return };
-        let mut sessions = self.session_evictions.lock();
-        if sessions.len() >= MAX_EVICTION_SESSIONS && !sessions.contains_key(session) {
-            if let Some(oldest) = sessions.keys().next().cloned() {
-                sessions.remove(&oldest);
-            }
-        }
-        sessions
-            .entry(session.to_string())
-            .or_default()
-            .insert(target.to_string());
-    }
-
-    /// Calls `target`, falling back to the next eligible target whenever one overflows its
-    /// context window, until a call succeeds or every target has been tried.
-    ///
-    /// Routing is deliberately not re-run: the fallback replaces the target in place so the
-    /// processor chain and the retained session state still see exactly one turn.
-    async fn call_with_overflow_fallback(
-        &self,
-        mut ctx: Context,
-        driver: &Driver,
-        mut target: LlmTarget,
-        mut decision: Arc<dyn Decision>,
-        request: Request,
-        session: Option<&str>,
-    ) -> Result<Response> {
-        loop {
-            let result = driver
-                .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
-                .await;
-            let Err(error) = result else { return result };
-            let LibsyError::ClientCall {
-                target: failed,
-                source: LlmClientError::ContextWindowExceeded { .. },
-            } = &error
-            else {
-                return Err(error);
-            };
-            // A target already excluded means the pool is spent; surface the client error
-            // so the caller still sees a context overflow rather than an internal failure.
-            if !ctx.exclude_target(failed) {
-                return Err(error);
-            }
-            self.record_eviction(session, failed);
-            let Ok(next) = self.targets.resolve_target(&target.semantic_name, &ctx) else {
-                return Err(error);
-            };
-            decision = self.fallback_decision(&target, &next);
-            target = next;
-            driver.info(ctx.clone(), decision.clone()).await?;
         }
     }
 
@@ -447,13 +352,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algorithms::{append_note, SystemPromptProcessor, TargetPrompts};
     use crate::core::Classification;
 
     use switchyard_protocol::{
-        completion_text, text_response, LlmRequest, Message, Metadata, Role,
+        completion_text, text_request, text_response, LlmRequest, Message, Metadata, Role,
     };
 
-    use crate::{LlmResponse, LlmTarget, RoutedLlmClient};
+    use crate::{LlmClientError, LlmResponse, LlmTarget, RoutedLlmClient};
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
@@ -509,6 +415,59 @@ mod tests {
         }
     }
 
+    const CAPABLE_PROMPT: &str = "diagnose before you edit";
+    const EFFICIENT_PROMPT: &str = "follow the settled plan";
+    const NOTE: &str = "the previous model was stalling";
+
+    /// One model call as the prompt and note tests observe it.
+    #[derive(Clone, Debug, Default)]
+    struct RecordedCall {
+        target: String,
+        messages: Vec<String>,
+        instructions: Vec<String>,
+    }
+
+    /// Captures the prompt-bearing request that reached the selected target.
+    #[derive(Default)]
+    struct RecordingPromptClient(Mutex<Option<RecordedCall>>);
+
+    #[async_trait]
+    impl RoutedLlmClient for RecordingPromptClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            request: Request,
+            decision: Arc<dyn Decision>,
+        ) -> std::result::Result<Response, switchyard_protocol::LlmClientError> {
+            *self.0.lock() = Some(RecordedCall {
+                target: decision.selected_model().to_string(),
+                messages: request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.text_content("|"))
+                    .collect(),
+                instructions: request
+                    .llm_request
+                    .instructions
+                    .iter()
+                    .filter_map(|block| block.content.iter().find_map(text_of))
+                    .collect(),
+            });
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, decision.selected_model())),
+                metadata: None,
+            })
+        }
+    }
+
+    fn text_of(block: &switchyard_protocol::ContentBlock) -> Option<String> {
+        match block {
+            switchyard_protocol::ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        }
+    }
+
     /// A target set whose targets all serve via [`EchoClient`].
     fn target_set(names: &[&str]) -> LlmTargetSet {
         LlmTargetSet::new(
@@ -520,6 +479,57 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    fn prompt_targets(client: &Arc<RecordingPromptClient>, names: &[&str]) -> LlmTargetSet {
+        LlmTargetSet::new(
+            names
+                .iter()
+                .map(|name| LlmTarget {
+                    semantic_name: (*name).to_string(),
+                    llm_client: Some(client.clone() as Arc<dyn RoutedLlmClient>),
+                })
+                .collect(),
+        )
+    }
+
+    fn target_prompts() -> TargetPrompts {
+        TargetPrompts::default()
+            .with("capable", CAPABLE_PROMPT)
+            .with("efficient", EFFICIENT_PROMPT)
+    }
+
+    /// Routes one turn on a prompt test cascade and returns the recorded model call.
+    async fn routed_prompt_call(
+        client: &Arc<RecordingPromptClient>,
+        router: FallThrough,
+    ) -> Result<RecordedCall> {
+        Arc::new(router)
+            .run(
+                Context::default(),
+                Request {
+                    llm_request: text_request(Some("auto".to_string()), "fix the build"),
+                    raw_request: None,
+                    metadata: None,
+                },
+            )
+            .await?;
+        let call = client.0.lock().take();
+        match call {
+            Some(call) => Ok(call),
+            None => panic!("the model was never called"),
+        }
+    }
+
+    /// A prompt cascade that always routes to `target`.
+    fn prompt_router(
+        client: &Arc<RecordingPromptClient>,
+        target: &str,
+        prompts: TargetPrompts,
+    ) -> FallThrough {
+        FallThrough::new(prompt_targets(client, &["capable", "efficient"]))
+            .with_processor(Arc::new(SystemPromptProcessor::new(prompts)))
+            .with_classifier(Arc::new(DefaultTarget::new(target)))
     }
 
     /// A classifier that emits fixed scores (empty = abstain).
@@ -606,6 +616,94 @@ mod tests {
     }
 
     // --- tests -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn each_target_gets_its_own_prompt() -> Result<()> {
+        for (target, expected) in [("capable", CAPABLE_PROMPT), ("efficient", EFFICIENT_PROMPT)] {
+            let client = Arc::new(RecordingPromptClient::default());
+            let call =
+                routed_prompt_call(&client, prompt_router(&client, target, target_prompts()))
+                    .await?;
+            assert_eq!(call.target, target);
+            assert_eq!(call.instructions, vec![expected.to_string()]);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_target_with_no_prompt_is_left_untouched() -> Result<()> {
+        let client = Arc::new(RecordingPromptClient::default());
+        let only_capable = TargetPrompts::default().with("capable", CAPABLE_PROMPT);
+
+        let call =
+            routed_prompt_call(&client, prompt_router(&client, "efficient", only_capable)).await?;
+
+        assert!(
+            call.instructions.is_empty(),
+            "one target's prompt must not leak onto another: {:?}",
+            call.instructions
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_prompt_follows_the_target_whichever_classifier_picked_it() -> Result<()> {
+        // The first classifier abstains, so the second decides; the prompt follows the
+        // target the cascade settled on rather than the classifier that named it.
+        struct Abstains;
+
+        #[async_trait]
+        impl Classifier for Abstains {
+            async fn score(
+                &self,
+                _state: &mut (),
+                _request: &mut Request,
+                _driver: Option<&Driver>,
+            ) -> Result<(Classification, Option<Response>)> {
+                Ok((Classification::Ambiguous(Vec::new()), None))
+            }
+        }
+
+        let client = Arc::new(RecordingPromptClient::default());
+        let router = FallThrough::new(prompt_targets(&client, &["capable", "efficient"]))
+            .with_processor(Arc::new(SystemPromptProcessor::new(target_prompts())))
+            .with_classifier(Arc::new(Abstains))
+            .with_classifier(Arc::new(DefaultTarget::new("capable")));
+
+        let call = routed_prompt_call(&client, router).await?;
+
+        assert_eq!(call.target, "capable");
+        assert_eq!(call.instructions, vec![CAPABLE_PROMPT.to_string()]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_note_reaches_the_model_in_the_conversation() -> Result<()> {
+        // Appends a note to every outbound request, the way a router would on a turn it
+        // wants to explain.
+        struct Noting;
+
+        #[async_trait]
+        impl Processor for Noting {
+            async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
+                if let Event::Decision { request, .. } = event {
+                    append_note(request, NOTE);
+                }
+                Ok(())
+            }
+        }
+
+        let client = Arc::new(RecordingPromptClient::default());
+        let router = FallThrough::new(prompt_targets(&client, &["capable", "efficient"]))
+            .with_processor(Arc::new(Noting))
+            .with_classifier(Arc::new(DefaultTarget::new("capable")));
+
+        let call = routed_prompt_call(&client, router).await?;
+
+        assert_eq!(call.messages, vec![format!("fix the build|{NOTE}")]);
+        assert!(call.instructions.is_empty(), "a note is not an instruction");
+        Ok(())
+    }
 
     /// Overflows for the named targets and echoes for the rest, recording every call.
     struct OverflowClient {

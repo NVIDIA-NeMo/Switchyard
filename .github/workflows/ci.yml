@@ -224,7 +224,10 @@ jobs:
             switchyard launch claude --help > /dev/null
           uv run --isolated --no-project --python 3.12 \
             --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
-            switchyard launch claude --help 2>&1 | grep -q -- '--routing-profiles' || { echo 'FAIL: --routing-profiles flag missing from help'; exit 1; }
+            switchyard launch claude --help 2>&1 | grep -q -- '--model' || { echo 'FAIL: --model flag missing from help'; exit 1; }
+          uv run --isolated --no-project --python 3.12 \
+            --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
+            switchyard launch claude --help 2>&1 | grep -q -- '--config' || { echo 'FAIL: --config flag missing from help'; exit 1; }
           uv run --isolated --no-project --python 3.12 \
             --with "${SWITCHYARD_EXTRAS_PACKAGE}" \
             switchyard serve --help > /dev/null

@@ -5,7 +5,7 @@ The Python CLI loads routing policies from a YAML bundle. Each key under
 Anthropic Messages, and OpenAI Responses requests:
 
 ```bash
-switchyard --routing-profiles routes.yaml -- serve --port 4000
+switchyard serve --routing-profiles routes.yaml --port 4000
 ```
 
 Use this page to choose a routing strategy, then open its detailed page for

@@ -13,8 +13,8 @@ from collections.abc import Callable, Mapping
 from typing import cast
 
 from switchyard.cli.launchers.proxy_health_monitor import ProxyHealthMonitor
+from switchyard.cli.launchers.stats_source import StatsSource
 from switchyard.lib.route_table import RouteTable
-from switchyard.lib.stats_accumulator import StatsAccumulator
 
 FOOTER_ROWS = 2
 
@@ -24,7 +24,7 @@ class LiveStatsFooter:
 
     def __init__(
         self,
-        stats: StatsAccumulator,
+        stats: StatsSource,
         model: str,
         health: ProxyHealthMonitor,
         *,

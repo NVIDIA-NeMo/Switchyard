@@ -15,9 +15,7 @@ use tracing_subscriber::{EnvFilter, Layer as _};
 
 use crate::{metrics, ServerError, ServerResult};
 
-const DEFAULT_LOG_FILTER: &str = "switchyard_server=info";
-const OPENTELEMETRY_LOG_FILTER: &str = "opentelemetry=warn";
-const OTEL_SPAN_FILTER: &str = "libsy=info";
+const DEFAULT_LOG_FILTER: &str = "switchyard_server=info,libsy=info,opentelemetry=warn";
 const DEFAULT_SERVICE_NAME: &str = "switchyard-server";
 
 struct Observability {
@@ -83,13 +81,7 @@ fn initialize() -> Result<Observability, String> {
     let tracer_provider = otlp_enabled("TRACES")
         .then(build_tracer_provider)
         .transpose()?;
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER))
-        .add_directive(
-            OPENTELEMETRY_LOG_FILTER
-                .parse()
-                .map_err(|error| format!("invalid OpenTelemetry log filter: {error}"))?,
-        );
+    let filter = log_filter()?;
     let format = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_writer(std::io::stderr)
@@ -102,7 +94,7 @@ fn initialize() -> Result<Observability, String> {
             .with(
                 tracing_opentelemetry::layer()
                     .with_tracer(tracer)
-                    .with_filter(EnvFilter::new(OTEL_SPAN_FILTER)),
+                    .with_filter(log_filter()?),
             )
             .try_init()
             .map_err(|error| format!("failed to initialize tracing: {error}"))?;
@@ -114,6 +106,12 @@ fn initialize() -> Result<Observability, String> {
     }
 
     Ok(Observability { tracer_provider })
+}
+
+fn log_filter() -> Result<EnvFilter, String> {
+    EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(DEFAULT_LOG_FILTER))
+        .map_err(|error| format!("invalid tracing filter: {error}"))
 }
 
 fn build_tracer_provider() -> Result<SdkTracerProvider, String> {

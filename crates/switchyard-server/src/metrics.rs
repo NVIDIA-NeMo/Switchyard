@@ -21,7 +21,7 @@ const ROUTING_OVERHEAD_BUCKETS_MS: &[f64] = &[
 
 struct Metrics {
     registry: Registry,
-    _provider: SdkMeterProvider,
+    provider: SdkMeterProvider,
 }
 
 static METRICS: OnceLock<Result<Metrics, String>> = OnceLock::new();
@@ -59,15 +59,12 @@ fn initialize() -> Result<Metrics, String> {
         .build()
         .record(1, &[KeyValue::new("version", env!("CARGO_PKG_VERSION"))]);
     seed_outcome_metrics();
-    Ok(Metrics {
-        registry,
-        _provider: provider,
-    })
+    Ok(Metrics { registry, provider })
 }
 
 pub(crate) fn flush() {
     if let Some(Ok(metrics)) = METRICS.get() {
-        if let Err(error) = metrics._provider.force_flush() {
+        if let Err(error) = metrics.provider.force_flush() {
             tracing::warn!(error = %error, "failed to flush OpenTelemetry metrics");
         }
     }

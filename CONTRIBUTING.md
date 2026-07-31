@@ -108,7 +108,7 @@ Use one of:
 - `revert:` — revert a previous commit
 - `style:` — formatting-only changes
 
-Scopes are optional: `fix(cli): preserve launcher args`.
+Scopes are optional: `fix(cli): preserve command arguments`.
 Breaking changes use `!` or a `BREAKING CHANGE:` footer:
 
 ```text

@@ -1,0 +1,23 @@
+schema_version = 1
+
+[llm_clients.litellm]
+format = "openai_chat"
+base_url = "http://litellm:4000/v1"
+
+[llm_clients.litellm.extra_headers]
+authorization = "Bearer not-needed"
+
+[targets.strong]
+id = "strong"
+llm_client = "litellm"
+
+[targets.fast]
+id = "fast"
+llm_client = "litellm"
+
+[routes.litellm_random]
+id = "litellm-random"
+type = "random"
+targets = ["strong", "fast"]
+weights = [0.5, 0.5]
+seed = 42

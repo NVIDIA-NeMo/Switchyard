@@ -17,9 +17,8 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
-use libsy::algorithms::{FallThrough, Random};
-use libsy::stage_router::{PickerMode, StageClassifier, StageTargets};
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient, State as AlgorithmState};
+use libsy::algorithms::Random;
+use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde_json::{json, Value};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
 use switchyard_server::config::load_server_state;
@@ -806,78 +805,6 @@ targets = ["weak"]
         response.json()?["error"]["code"],
         "count_tokens_unsupported"
     );
-    Ok(())
-}
-
-// Build a stage_router (FallThrough) with an Anthropic `strong` tier and an
-// OpenAI `weak` tier, both pointed at the mock upstream, and register it.
-fn stage_router_state(upstream: &MockUpstream, mode: PickerMode) -> TestResult<ServerState> {
-    let cfg = |url: &str| HttpBackendConfig {
-        base_url: url.to_string(),
-        api_key: Some("k".to_string()),
-        extra_headers: BTreeMap::new(),
-        extra_body: BTreeMap::new(),
-        max_retries: 0,
-    };
-    let strong: Arc<dyn RoutedLlmClient> =
-        Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
-            "strong",
-            Backend::Anthropic(cfg(&upstream.base_url)),
-            None,
-        )])?);
-    let weak: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
-        "weak",
-        Backend::OpenAiChat(cfg(&upstream.base_url)),
-        None,
-    )])?);
-    let targets = LlmTargetSet::new(vec![
-        LlmTarget {
-            semantic_name: "strong".to_string(),
-            llm_client: Some(strong),
-        },
-        LlmTarget {
-            semantic_name: "weak".to_string(),
-            llm_client: Some(weak),
-        },
-    ]);
-    let stage: Arc<dyn Algorithm> = Arc::new(
-        FallThrough::<AlgorithmState>::new_with_state(targets).with_classifier(Arc::new(
-            StageClassifier::new(StageTargets::new("strong", "weak"), mode, 0.5),
-        )),
-    );
-    Ok(ServerState::new([("switchyard/stage".to_string(), stage)])?)
-}
-
-/// `count_tokens` is a **direct passthrough**, not a routed call, so on a stage
-/// router it goes straight to the Anthropic (`strong`) tier — bypassing the
-/// classifier cascade. This is exactly what makes it work where a completion
-/// can't: a signal-less request (as `count_tokens` always is) gives the
-/// `StageClassifier` nothing to score, so a *completion* on this bare stage
-/// router abstains — but `count_tokens` still succeeds.
-#[tokio::test]
-async fn count_tokens_on_a_stage_router_passes_through_to_the_anthropic_tier() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(stage_router_state(&upstream, PickerMode::EfficientFirst)?);
-    let body = json!({
-        "model": "switchyard/stage",
-        "messages": [{"role": "user", "content": "hi"}]
-    });
-
-    // A completion routes → the bare StageClassifier abstains on a signal-less
-    // request → error.
-    let completion = send(&app, "POST", "/v1/messages", Some(body.clone())).await?;
-    assert!(completion.text()?.contains("abstained"));
-
-    // count_tokens does NOT route — it passes through to the strong (Anthropic)
-    // tier and succeeds.
-    let count = send(&app, "POST", "/v1/messages/count_tokens", Some(body)).await?;
-    assert_eq!(count.status, StatusCode::OK);
-    assert_eq!(count.json()?["input_tokens"], 7);
-
-    // The forwarded call went to count_tokens with the strong tier's model id.
-    let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["model"], "strong");
     Ok(())
 }
 

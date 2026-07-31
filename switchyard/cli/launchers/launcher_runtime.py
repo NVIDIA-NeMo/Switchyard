@@ -5,19 +5,10 @@
 
 import logging
 import os
-import socket
 import sys
-import threading
 import time
 import urllib.request
 from pathlib import Path
-
-import uvicorn
-
-from switchyard.cli.config.user_config import get_user_config_dir
-from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
-from switchyard.lib.route_table import SwitchyardApp
-from switchyard.server.switchyard_app import build_switchyard_app
 
 _debug_file_handler: logging.FileHandler | None = None
 log = logging.getLogger(__name__)
@@ -25,47 +16,6 @@ log = logging.getLogger(__name__)
 #: Opener that ignores env proxies — loopback probes to the in-process proxy
 #: must never be routed through a configured HTTP_PROXY.
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-#: System CA bundle paths to try (Debian/Ubuntu, RHEL/CentOS/Fedora).
-_SYSTEM_CA_BUNDLE_CANDIDATES = (
-    "/etc/ssl/certs/ca-certificates.crt",
-    "/etc/pki/tls/certs/ca-bundle.crt",
-    "/etc/ssl/cert.pem",
-)
-
-
-def ensure_system_ssl_trust() -> None:
-    """Point Python's TLS at the system CA bundle when one is available.
-
-    The classifier path uses the OpenAI Python SDK → httpx, which defaults
-    to certifi's CA bundle. On Linux dev environments behind a corporate
-    outbound SSL intercept (NVIDIA dev boxes are one), certifi doesn't
-    include the intercept CA — every classifier call fails with
-    ``Connection error`` at TLS handshake. Curl and the Rust backend
-    (``rustls-tls-native-roots`` feature) use the OS keystore at
-    ``/etc/ssl/certs/ca-certificates.crt`` which *does* include the
-    intercept CA. Setting ``SSL_CERT_FILE`` tells Python's httpx /
-    OpenAI SDK to do the same.
-
-    No-op when ``SSL_CERT_FILE`` is already set (user override wins) or
-    when no known system bundle path exists (macOS without an explicit
-    bundle; we don't touch the Mac keychain path).
-    """
-    if os.environ.get("SSL_CERT_FILE"):
-        return
-    for candidate in _SYSTEM_CA_BUNDLE_CANDIDATES:
-        if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
-
-
-def find_free_port() -> int:
-    """Bind to ``127.0.0.1:0``, let the OS pick, return the chosen port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port: int = s.getsockname()[1]
-        return port
 
 
 def wait_for_proxy_ready(port: int, *, timeout_s: float) -> bool:
@@ -83,61 +33,25 @@ def wait_for_proxy_ready(port: int, *, timeout_s: float) -> bool:
     return False
 
 
-def spawn_proxy_thread(
-    switchyard: SwitchyardApp,
-    port: int,
-    *,
-    thread_name: str,
-) -> tuple[uvicorn.Server, threading.Thread]:
-    """Run uvicorn in a background daemon thread."""
-    app = build_switchyard_app(switchyard)
-    config = uvicorn.Config(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
-    server = uvicorn.Server(config)
-
-    def _run_server() -> None:
-        try:
-            server.run()
-        except Exception:
-            log.debug("uvicorn server thread crashed on port %d", port, exc_info=True)
-            raise
-
-    thread = threading.Thread(target=_run_server, name=thread_name, daemon=True)
-    thread.start()
-    log.debug(
-        "spawned proxy thread name=%s port=%d alive=%s",
-        thread.name,
-        port,
-        thread.is_alive(),
-    )
-    return server, thread
-
-
 def configure_debug_file_logging(*, display_model: str) -> Path:
     """Move launcher diagnostics to a per-run debug log and return its path."""
     global _debug_file_handler
 
-    log_dir = get_user_config_dir() / "logs"
+    state_home = os.environ.get("XDG_STATE_HOME")
+    state_dir = (
+        Path(state_home).expanduser()
+        if state_home
+        else Path.home() / ".local" / "state"
+    )
+    log_dir = state_dir / "switchyard" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"switchyard-{os.getpid()}.log"
 
     if _debug_file_handler is not None:
         _debug_file_handler.close()
 
-    # Truncate any prior file under this pid (only matters if a stale launch
-    # left one behind), then open the FileHandler in append + delay mode.
-    # Background: uvicorn's startup runs `logging.config.dictConfig(...)`,
-    # which internally calls `logging.shutdown()` on every registered handler.
-    # `FileHandler.close()` then sets `stream=None` AND sets `_closed=True`.
-    # If we'd opened in mode="w", `FileHandler.emit()` refuses to reopen the
-    # stream (to avoid silently truncating the file a second time), and every
-    # subsequent log line vanishes — the handler is still attached but
-    # streamless. Append + delay sidesteps this: the handler is allowed to
-    # reopen its stream on demand, and the file content is preserved.
+    # Truncate any prior file under this pid, then let the delayed handler open
+    # it only when the first diagnostic is emitted.
     log_path.write_text("", encoding="utf-8")
     file_handler = logging.FileHandler(
         log_path, mode="a", encoding="utf-8", delay=True,
@@ -161,9 +75,6 @@ def configure_debug_file_logging(*, display_model: str) -> Path:
         "httpcore",
         "openai",
         "anthropic",
-        "uvicorn",
-        "uvicorn.error",
-        "uvicorn.access",
     ):
         logger = logging.getLogger(name)
         for handler in logger.handlers[:]:
@@ -187,29 +98,11 @@ def silence_launch_loggers(*, local_logger: logging.Logger) -> None:
         "switchyard",
         "httpx",
         "httpcore",
-        "uvicorn",
-        "uvicorn.access",
-        "uvicorn.error",
         "openai",
         "anthropic",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     local_logger.setLevel(logging.INFO)
-
-
-def suppress_uvicorn_stream_handlers() -> None:
-    """Remove uvicorn stdout/stderr handlers after startup."""
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logger = logging.getLogger(name)
-        for handler in logger.handlers[:]:
-            if isinstance(handler, logging.FileHandler):
-                continue
-            logger.removeHandler(handler)
-            handler.close()
-        if _debug_file_handler is not None and _debug_file_handler not in logger.handlers:
-            logger.addHandler(_debug_file_handler)
-        logger.setLevel(logging.DEBUG)
-        logger.propagate = False
 
 
 def stdin_is_tty() -> bool:
@@ -218,11 +111,6 @@ def stdin_is_tty() -> bool:
         return os.isatty(sys.stdin.fileno())
     except Exception:
         return False
-
-
-def passthrough_strategy_summary(model: str) -> str:
-    """Return the strategy summary string for a single-model passthrough."""
-    return f"passthrough → {model}"
 
 
 def routing_profiles_strategy_summary(routing_profiles: str, default_model: str) -> str:
@@ -278,15 +166,6 @@ def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
         target = r.get("model") or r.get("target") or route_key
         return f"passthrough → {target}"
     return f"{route_type}: {route_key}"
-
-
-def deterministic_strategy_summary(config: DeterministicRoutingConfig) -> str:
-    """Return the strategy summary string for a deterministic (LLM-classifier) launch."""
-    return (
-        f"llm-classifier: classifier={config.classifier.model}, "
-        f"strong={config.strong.model}, weak={config.weak.model}, "
-        f"profile={config.profile_name}"
-    )
 
 
 # Keys that are abbreviated in the banner display.
@@ -395,7 +274,7 @@ def print_ready_banner(
         "",
         f"  {dim('proxy')}     {cyan(base)}",
         f"  {dim('models')}    {dim(f'curl -s {base}/v1/models')}",
-        f"  {dim('stats')}     {dim(f'curl -s {base}/v1/routing/stats | python3 -m json.tool')}",
+        f"  {dim('stats')}     {dim(f'curl -s {base}/v1/stats | python3 -m json.tool')}",
     ]
     if log_path is not None:
         lines.append(f"  {dim('debug')}     {dim(str(log_path))}")

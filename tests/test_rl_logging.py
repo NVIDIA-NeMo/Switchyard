@@ -16,7 +16,6 @@ from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from openai.types.completion_usage import CompletionUsage
 
-from switchyard.cli.launchers.launch_intake_config import build_launch_capture_processors
 from switchyard.cli.switchyard_cli import _build_parser
 from switchyard.lib.chat_response import ResponseStream
 from switchyard.lib.processors.rl_logging_request_processor import (
@@ -236,15 +235,6 @@ async def test_write_failure_does_not_break_the_response(
     assert list(tmp_path.glob("*.json")) == []
 
 
-def test_build_launch_capture_processors_toggles_on_rl_log_dir(tmp_path: Path) -> None:
-    none_req, none_resp = build_launch_capture_processors(None, None)
-    assert none_req == [] and none_resp == []
-
-    req, resp = build_launch_capture_processors(None, tmp_path)
-    assert [type(p).__name__ for p in req] == ["RlLoggingRequestProcessor"]
-    assert [type(p).__name__ for p in resp] == ["RlLoggingResponseProcessor"]
-
-
 def test_resolve_rl_log_dir() -> None:
     off = argparse.Namespace(enable_rl_logging=False, rl_log_dir="./rl_data")
     assert resolve_rl_log_dir(off) is None
@@ -296,20 +286,17 @@ async def test_streaming_logs_after_drain(tmp_path: Path) -> None:
     }
 
 
-def test_global_flag_parses_before_subcommand() -> None:
+def test_rl_flags_are_scoped_to_serve() -> None:
     parser = _build_parser()
     args = parser.parse_args(
-        ["--enable-rl-logging", "--rl-log-dir", "/tmp/x", "launch", "claude"],
-    )
-    assert args.enable_rl_logging is True
-    assert args.rl_log_dir == "/tmp/x"
-    assert resolve_rl_log_dir(args) == Path("/tmp/x")
-
-
-def test_global_flag_parses_before_serve() -> None:
-    parser = _build_parser()
-    args = parser.parse_args(
-        ["--enable-rl-logging", "--rl-log-dir", "/tmp/x", "serve"],
+        [
+            "serve",
+            "--routing-profiles",
+            "profiles.yaml",
+            "--enable-rl-logging",
+            "--rl-log-dir",
+            "/tmp/x",
+        ],
     )
     assert args.command == "serve"
     assert args.enable_rl_logging is True
@@ -343,6 +330,7 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
         enable_rl_logging=True, rl_log_dir=str(tmp_path),
         intake_enabled=False, intake_base_url=None, intake_workspace=None,
         intake_api_key=None, intake_target_url=None,
+        routing_log_file=None,
     )
     cli._cmd_serve(args)
 

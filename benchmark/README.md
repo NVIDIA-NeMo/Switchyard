@@ -10,7 +10,7 @@ It covers the two smoke paths most people need first:
 - **Switchyard routing:** Harbor calls Switchyard, and Switchyard routes across two model tiers.
 
 Both paths use the same generated dataset, task proxy, pinned agent versions, and run artifact
-layout. Passing `--routing-profiles` starts Switchyard; omitting it disables Switchyard and points
+layout. Passing `--server-config` starts the Rust server; omitting it disables Switchyard and points
 Harbor directly at the upstream provider.
 
 ## Prerequisites
@@ -22,7 +22,7 @@ uv sync
 ```
 
 You also need Docker with Compose support, because baseline runs launch task containers and use the
-generated benchmark proxy topology. Runs with `--routing-profiles` also start Switchyard inside
+generated benchmark proxy topology. Runs with `--server-config` also start Switchyard inside
 Docker.
 
 Harbor is installed as a dev dependency. Check that the CLI resolves from the uv environment:
@@ -55,8 +55,8 @@ bash benchmark/run-baseline.sh \
   ...
 ```
 
-Route-profile YAML files expand `${OPENROUTER_API_KEY}` by default. For another provider, copy a
-profile and update its `api_key`, `base_url`, and model ids to match that provider.
+Rust server TOML files refer to the credential through `api_key_env`. For another provider, copy a
+config and update its `api_key_env`, `base_url`, and model ids to match that provider.
 
 ## One-Time Setup
 
@@ -141,7 +141,7 @@ uv run --no-sync python benchmark/prepare_harbor_dataset.py \
 
 ## Run Without Switchyard
 
-Omit `--routing-profiles` to fully disable Switchyard. The runner still creates the benchmark
+Omit `--server-config` to fully disable Switchyard. The runner still creates the benchmark
 Docker network for the generated proxy sidecar, but Harbor sends model calls straight to
 `${UPSTREAM_BASE_URL:-https://openrouter.ai/api/v1}` using `OPENROUTER_API_KEY` by default:
 
@@ -162,14 +162,14 @@ Switchyard translation is disabled.
 
 ## Run With Switchyard Routing
 
-Pass `--routing-profiles` to start Switchyard and route Harbor traffic through it. This smoke test
-uses `benchmark/routing-profiles/tb-lite-llm-classifier-opus-kimi-gemini.yaml`, an
-LLM-as-classifier profile for coding-agent tasks:
+Pass `--server-config` to start `switchyard-server` and route Harbor traffic through it. This smoke
+test uses `benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml`, a Rust
+task-classifier configuration for coding-agent tasks:
 
 ```bash
 bash benchmark/run-baseline.sh \
   --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --routing-profiles benchmark/routing-profiles/tb-lite-llm-classifier-opus-kimi-gemini.yaml \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
   --model switchyard \
   --agent codex \
   --reasoning-effort xhigh \
@@ -178,8 +178,8 @@ bash benchmark/run-baseline.sh \
   --max-retries 0
 ```
 
-Use the route key from the YAML as `--model`. In this profile, the Gemini classifier selects the
-target tier for each request, then Switchyard routes to one of:
+Use the route `id` from the TOML as `--model`. In this config, the Gemini classifier selects the
+target tier for the task, then Switchyard routes to one of:
 
 - strong: `anthropic/claude-opus-4.7`
 - weak: `moonshotai/kimi-k2.7-code`
@@ -189,8 +189,8 @@ Classifier model: `google/gemini-3.5-flash`.
 To smoke-test a single-model Switchyard path instead, use one of:
 
 ```text
-benchmark/routing-profiles/tb-lite-single-gpt-5-5.yaml
-benchmark/routing-profiles/tb-lite-single-opus-4-7.yaml
+benchmark/server-configs/tb-lite-single-gpt-5-5.toml
+benchmark/server-configs/tb-lite-single-opus-4-7.toml
 ```
 
 By default, the runner starts in the background and prints the PID, log path, and kill command.
@@ -198,14 +198,14 @@ By default, the runner starts in the background and prints the PID, log path, an
 ## Book Modes
 
 Both book modes use the same generated `--harbor-path` dataset, prebaked agent images, and proxy
-sidecar topology. Switchyard is Dockerized only when `--routing-profiles` is provided.
+sidecar topology. Switchyard is Dockerized only when `--server-config` is provided.
 
 Closed-book mode is the default:
 
 ```bash
 bash benchmark/run-baseline.sh \
   --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --routing-profiles benchmark/routing-profiles/tb-lite-llm-classifier-opus-kimi-gemini.yaml \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
   --model switchyard \
   --agent codex \
   --n-tasks 1
@@ -221,14 +221,14 @@ Open-book mode keeps the same proxy path but broadens egress:
 bash benchmark/run-baseline.sh \
   --book-mode open \
   --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --routing-profiles benchmark/routing-profiles/tb-lite-llm-classifier-opus-kimi-gemini.yaml \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
   --model switchyard \
   --agent codex \
   --n-tasks 1
 ```
 
 Use open-book mode only when the evaluation intentionally allows internet access. The manifest
-records the mode, the local dataset digest, any copied routing profile, proxy metadata, upstream
+records the mode, the local dataset digest, a snapshot of the server config, proxy metadata, upstream
 base URL for direct runs, and agent version pins in both modes.
 
 ## Run A Full TB Lite Pass
@@ -253,7 +253,7 @@ Switchyard LLM-classifier routing:
 ```bash
 bash benchmark/run-baseline.sh \
   --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
-  --routing-profiles benchmark/routing-profiles/tb-lite-llm-classifier-opus-kimi-gemini.yaml \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
   --model switchyard \
   --agent codex \
   --reasoning-effort xhigh \
@@ -272,30 +272,21 @@ Run directories are created under `benchmark/tb_runs/`. The most useful artifact
 run_manifest.json
 server.log
 harbor.log
+server_metrics_final.prom
 routing_stats_final.json
-routing_requests.jsonl
-routing_stats_by_task.json
 jobs/<job-name>/result.json
 jobs/<job-name>/<task-id>/agent/trajectory.json
 ```
 
 The manifest records the command, git state, Harbor patch provenance, local dataset digest, copied
-routing profile when present, direct-upstream metadata when Switchyard is disabled, book-mode
-settings, agent version pins, log paths, and final Harbor status. When the routing profile contains
-deterministic LLM-classifier routes, `server.classifier_prompts` records each route's effective
-prompt, prompt SHA-256, `max_request_chars`, and `recent_turn_window` for reproducibility. Direct
-runs mark routing stats as `not-requested`.
+server config, direct-upstream metadata when Switchyard is disabled, book-mode settings, agent
+version pins, log paths, and final Harbor status.
 
-Switchyard runs also write `routing_requests.jsonl` (one record per router request: task, trial,
-session, served model, tier, and the six token fields from the global schema) and roll it up into
-`routing_stats_by_task.json` at finalize. The per-task proxy sidecar stamps the identity headers on
-model-bound requests: `x-switchyard-intake-task`, `x-switchyard-trial-id` (Harbor's trial name), and
-a per-attempt `proxy_x_session_id`.
-
-Each task in `routing_stats_by_task.json` splits into `final` and `retries`. Requests are grouped by
-trial, and within a trial the latest attempt is the one Harbor kept (it retries sequentially and
-discards earlier attempts), so tokens spent on retried-away attempts land in `retries` and can be
-netted out of cost.
+`server_metrics_final.prom` is the final `/metrics` snapshot. `routing_stats_final.json` is the
+final aggregate `/v1/stats` snapshot, including model and tier calls, errors, tokens, and latency.
+Neither artifact provides task or trial attribution. The runner writes them only after Harbor exits
+and while the Rust server is still reachable; otherwise the manifest records them as missing.
+`routing_requests.jsonl` and `routing_stats_by_task.json` are not produced by the Rust server.
 
 ### Replay Stage-Router Scores
 
@@ -316,7 +307,8 @@ fall-open behavior.
 
 ## Docker Image Notes
 
-Baseline runs build `switchyard-baseline:local` from `benchmark/switchyard-server.Dockerfile`.
+Baseline runs build `switchyard-baseline:local` from
+`benchmark/switchyard-rust-server.Dockerfile`.
 The default is to rebuild before each run so the container matches the current checkout.
 
 To reuse an already built image:
@@ -325,7 +317,7 @@ To reuse an already built image:
 SWITCHYARD_DOCKER_BUILD=0 bash benchmark/run-baseline.sh ...
 ```
 
-Only reuse the image when you know it already contains the current Switchyard code and Rust extension.
+Only reuse the image when you know it already contains the current Rust `switchyard-server` binary.
 
 ## Troubleshooting
 
