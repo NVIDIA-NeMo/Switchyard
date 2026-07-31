@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,6 +53,7 @@ pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
 const HEADER_RATIONALE: &str = "x-model-router-rationale";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
+const STARTUP_BANNER_ART: &str = include_str!("../assets/startup_banner.txt");
 
 /// Error returned while configuring or running the server.
 #[derive(Debug)]
@@ -161,7 +163,7 @@ pub async fn run_server(state: ServerState, options: ServerRunOptions) -> Server
     }
 
     let server = BoundServer::bind(state, options)?;
-    eprintln!("{}", server.startup_banner());
+    println!("{}", server.startup_banner(std::io::stdout().is_terminal()));
     server.serve(shutdown_signal()).await
 }
 
@@ -203,8 +205,8 @@ impl BoundServer {
         }
     }
 
-    fn startup_banner(&self) -> String {
-        startup_banner(&self.options, &self.state)
+    fn startup_banner(&self, color: bool) -> String {
+        startup_banner(&self.options, &self.state, color)
     }
 }
 
@@ -828,13 +830,29 @@ fn model_entry_json(model: &str) -> Value {
     })
 }
 
-fn startup_banner(options: &ServerRunOptions, state: &ServerState) -> String {
+fn startup_banner(options: &ServerRunOptions, state: &ServerState, color: bool) -> String {
     let scheme = if options.is_tls() { "https" } else { "http" };
     format!(
-        "Switchyard libsy server\n  listening: {}\n  routes: {}",
+        "{}\nSwitchyard libsy server\n  listening: {}\n  routes: {}",
+        render_startup_banner_art(color),
         url_for_addr(scheme, options.addr),
         state.models().collect::<Vec<_>>().join(", ")
     )
+}
+
+// Keep redirected logs plain. Terminal output applies NVIDIA-green ANSI truecolor per line.
+fn render_startup_banner_art(color: bool) -> String {
+    let banner = STARTUP_BANNER_ART.trim_end();
+    if !color {
+        return banner.to_string();
+    }
+
+    let (red, green, blue) = (118, 185, 0);
+    let mut rendered = String::new();
+    for line in banner.lines() {
+        rendered.push_str(&format!("\x1b[38;2;{red};{green};{blue}m{line}\x1b[0m\n"));
+    }
+    rendered.trim_end_matches('\n').to_string()
 }
 
 fn dry_run_summary(state: &ServerState) -> String {
