@@ -96,6 +96,7 @@ pub fn encode_stream(
             message: err.to_string(),
         })?;
 
+    let served_model_for_events = served_model.clone();
     let mut state = StreamTranslationState {
         target: Some(target_format.clone()),
         target_model: served_model,
@@ -106,18 +107,59 @@ pub fn encode_stream(
     let events = try_stream! {
         while let Some(item) = chunks.next().await {
             let event = item?;
-            for value in
+            for mut value in
                 encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event)
             {
+                stamp_streamed_response_model(
+                    &mut value,
+                    target,
+                    served_model_for_events.as_deref(),
+                );
                 yield value;
             }
         }
-        for value in codec.finish(&mut state) {
+        for mut value in codec.finish(&mut state) {
+            stamp_streamed_response_model(
+                &mut value,
+                target,
+                served_model_for_events.as_deref(),
+            );
             yield value;
         }
     };
 
     Ok(Box::pin(events))
+}
+
+// The raw-response helper promises that the caller sees the model that served the
+// request. Same-format preservation bypasses provider codecs, so apply that
+// helper-specific override after replay without disturbing any other raw fields.
+fn stamp_streamed_response_model(
+    event: &mut Value,
+    target: WireFormat,
+    served_model: Option<&str>,
+) {
+    let Some(served_model) = served_model else {
+        return;
+    };
+
+    match target {
+        WireFormat::OpenAiChat => {
+            if let Some(event) = event.as_object_mut() {
+                event.insert("model".to_string(), Value::String(served_model.to_string()));
+            }
+        }
+        WireFormat::OpenAiResponses => {
+            if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+                response.insert("model".to_string(), Value::String(served_model.to_string()));
+            }
+        }
+        WireFormat::AnthropicMessages => {
+            if let Some(message) = event.get_mut("message").and_then(Value::as_object_mut) {
+                message.insert("model".to_string(), Value::String(served_model.to_string()));
+            }
+        }
+    }
 }
 
 /// Decodes a byte stream of `source`-format SSE frames into neutral IR chunks.
@@ -224,7 +266,7 @@ mod tests {
 
     use super::{
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream,
+        encode_request, encode_stream, stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, WireFormat};
 
@@ -444,6 +486,61 @@ mod tests {
 
         assert_eq!(replayed, vec![provider_event]);
         Ok(())
+    }
+
+    #[test]
+    fn openai_chat_replay_stamps_the_served_model_without_losing_extensions() {
+        let mut event = json!({
+            "choices": [{"delta": {"content": "Hello"}}],
+            "system_fingerprint": "fp_provider_specific",
+        });
+
+        stamp_streamed_response_model(&mut event, WireFormat::OpenAiChat, Some("served/model"));
+
+        assert_eq!(event["model"], "served/model");
+        assert_eq!(event["system_fingerprint"], "fp_provider_specific");
+    }
+
+    #[test]
+    fn responses_replay_stamps_the_served_model_inside_response() {
+        let mut event = json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        stamp_streamed_response_model(
+            &mut event,
+            WireFormat::OpenAiResponses,
+            Some("served/model"),
+        );
+
+        assert_eq!(event["response"]["model"], "served/model");
+        assert_eq!(event["response"]["provider_extension"], true);
+    }
+
+    #[test]
+    fn anthropic_replay_stamps_the_served_model_inside_message() {
+        let mut event = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        stamp_streamed_response_model(
+            &mut event,
+            WireFormat::AnthropicMessages,
+            Some("served/model"),
+        );
+
+        assert_eq!(event["message"]["model"], "served/model");
+        assert_eq!(event["message"]["provider_extension"], true);
     }
 
     #[test]
