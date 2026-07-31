@@ -1161,8 +1161,8 @@
 to complete a request, then routes the request to a weak or strong target.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
-whether GLM-5.2 can complete the task, uses GLM-5.2 as the weak target, and keeps
-the first routing decision for later requests in the same conversation.</p>
+whether the weak target can complete the task, and keeps the first routing
+decision for later requests in the same conversation.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>
@@ -1256,15 +1256,16 @@ more traffic to the strong model.</p>
 </tbody>
 </table>
 <h3 id="classifier-calibration">Classifier calibration<a class="headerlink" href="#classifier-calibration" title="Permanent link">&para;</a></h3>
-<p>The packaged prompt is currently calibrated for GLM-5.2, assumes it receives
-the initial task, and describes a sticky routing decision. It is not a
+<p>The packaged prompt is calibrated for one specific weak model, assumes it
+receives the initial task, and describes a sticky routing decision. It is not a
 model-neutral weak-target evaluator.</p>
 <p>Without affinity, the runtime judges every request; by default, it sends the
 newest user message rather than the initial task. The example enables affinity
 and its message-hash fallback so the first request is judged and later requests
 with the same opening task reuse that decision. If you use a different weak
-model or per-request routing, recalibrate the prompt and thresholds before
-treating classifier decisions as production policy.</p>
+model or per-request routing, tune the thresholds before treating classifier
+decisions as production policy.</p>
+<p>Support for supplying your own classifier prompt is coming soon.</p>
 <h2 id="session-affinity">Session affinity<a class="headerlink" href="#session-affinity" title="Permanent link">&para;</a></h2>
 <p>With <code>session_affinity = true</code>, the first selected target is retained for the
 request's session identity. This includes <code>strong_target</code> when it was selected
