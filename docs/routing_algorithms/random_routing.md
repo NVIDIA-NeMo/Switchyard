@@ -77,8 +77,9 @@ therefore use different targets.
 
 ## Run the route
 
-After [building the Rust server](../getting_started.md#install), export the
-provider credential, validate the configuration, and start the release binary:
+After [building the Rust server](../getting_started.md#build-the-server), export
+the provider credential, validate the configuration, and start the release
+binary:
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret

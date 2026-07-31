@@ -1,36 +1,69 @@
 # Context-Window Handling
 
 When an upstream rejects a request because the prompt exceeds the model's
-context window, Switchyard evicts that target for the current request,
-reroutes to the configured fallback target, and retries once. If the fallback
-also overflows, the request fails with a 400 in the client's inbound wire
-format.
+context window, Switchyard drops that target and calls another target on the
+same route, repeating until a call succeeds or every target has been tried.
 
-Any multi-target route (stage-router, random_routing, or deterministic) supports
-this. Set `fallback_target_on_evict` on the route. Single-target routes
-(`type: model`) have no alternative target, so the original
-overflow propagates unchanged.
+## What counts as an overflow
+
+Switchyard treats an upstream reply as a context overflow only when the status
+is HTTP 400 **and** the body identifies a context-length error: an `error.code`
+of `context_length_exceeded`, or a message containing a phrase such as
+`maximum context length` or `prompt is too long`. An overflow reported any other
+way — HTTP 413 or 422, for example — is not recognized as one. The request
+fails on the spot with the upstream's status code, and the upstream's body is
+returned inside Switchyard's error message.
 
 ## Configuration
 
-`fallback_target_on_evict` is required on every multi-target route and must
-match one of the route's declared target ids:
+There is no eviction key. A route falls through whenever it has more than one
+target, so the route below needs nothing beyond its two tiers:
 
-```yaml
-routes:
-  my-stage-router:
-    type: stage_router
-    picker: capable_first
-    fallback_target_on_evict: strong   # must match strong.id or weak.id
-    strong:
-      id: strong
-      model: anthropic/claude-opus-4.7
-    weak:
-      id: weak
-      model: moonshotai/kimi-k2.6
+```toml
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.strong]
+id = "openai/gpt-4o"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "openai/gpt-4o-mini"
+llm_client = "openrouter"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
 ```
 
-## Scope
+Response headers report where the request actually landed:
 
-Single eviction + single retry per request. Compaction, cool-down, and
-re-insertion of evicted targets are out of scope.
+```text
+x-model-router-selected-model: openai/gpt-4o-mini
+x-model-router-rationale: openai/gpt-4o exceeded its context window; fell back to openai/gpt-4o-mini
+```
+
+## Evictions last for the session
+
+A conversation only grows, so a target that overflowed on one turn will overflow
+on the next. Switchyard remembers the overflow and skips that target for the
+rest of the session rather than paying for a call certain to fail.
+
+Sessions are identified from a request header — `x-switchyard-session-id`, or
+the session header a coding agent already sends, such as
+`x-claude-code-session-id`. A request that carries no session header is served
+normally, but its overflows are not remembered.
+
+## When every target overflows
+
+Once no untried target is left — including a single-target `passthrough` route,
+which has no alternative from the start — the request fails with HTTP 400 and an
+error `code` of `context_length_exceeded`.

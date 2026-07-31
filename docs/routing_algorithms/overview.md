@@ -1,160 +1,134 @@
 # Routing Overview
 
-The Python CLI loads routing policies from a YAML bundle. Each key under
-`routes:` becomes a model ID available through OpenAI Chat Completions,
-Anthropic Messages, and OpenAI Responses requests:
-
-```bash
-switchyard serve --routing-profiles routes.yaml --port 4000
-```
+The `switchyard-server` binary loads a native TOML deployment. Each route's `id`
+becomes a model ID available through OpenAI Chat Completions, Anthropic Messages,
+and OpenAI Responses requests.
 
 Use this page to choose a routing strategy, then open its detailed page for
-configuration and tuning.
+configuration and tuning. For the vocabulary these pages use, see
+[Core Concepts](../core_concepts.md).
 
 ## Choose a strategy
 
 | Strategy | Use it when | Route `type` |
 |---|---|---|
-| [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random_routing` |
-| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `deterministic` |
+| [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
+| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
 | [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
-| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `escalation_router` |
-
-[Session Affinity (Sticky Routing)](sticky_routing.md) is an opt-in feature of
-LLM classifier routing, not a standalone routing strategy.
+| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
 
 ## Common route shape
 
-Provider defaults can be shared across all routes, while each route owns its
-target configuration:
+A deployment has three layers. LLM clients describe how to reach a provider,
+targets name models on those clients, and routes decide which target serves a
+request:
 
-```yaml
-defaults:
-  api_key: ${OPENROUTER_API_KEY}
-  base_url: https://openrouter.ai/api/v1
-  format: openai
+```toml
+schema_version = 1
 
-routes:
-  fast:
-    type: model
-    target: openai/gpt-4o-mini
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
-  smart:
-    type: random_routing
-    strong:
-      model: openai/gpt-4o
-    weak:
-      model: openai/gpt-4o-mini
-    strong_probability: 0.3
-    fallback_target_on_evict: strong
+[targets.strong]
+id = "openai/gpt-4o"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "openai/gpt-4o-mini"
+llm_client = "openrouter"
+
+[routes.fast]
+id = "fast"
+type = "passthrough"
+target = "weak"
+
+[routes.smart]
+id = "smart"
+type = "random"
+targets = ["strong", "weak"]
+weights = [3, 7]
 ```
 
-Use the route name (`fast` or `smart`) as the request's model ID. A single
-bundle can serve multiple routes on the same host and port.
+Clients send a route's `id` (`fast` or `smart`) as the request's model ID. The
+table name in `[routes.smart]` is local to the file; only `id` is visible to
+clients. A single deployment can serve multiple routes on the same host and port.
+
+Credentials stay outside the file: `api_key_env` names an environment variable
+that is read at startup. Omit it for an upstream that needs no credential, such
+as a local model server.
 
 The examples use model IDs from the
 [OpenRouter model catalog](https://openrouter.ai/api/v1/models). Select IDs
 available to your account before deploying; catalog availability can change.
 
-## Model routes
+## Direct model routes
 
-- `type: model` registers one explicit model alias without model discovery.
+A `passthrough` route registers one target under one model ID with no routing
+decision:
 
-This creates a direct, single-target chain. Use a routing policy when requests
-must be split or classified across targets. There is no catalog auto-discovery,
-so to expose several upstream models, add one `type: model` route per model id.
+```toml
+[routes.fast]
+id = "fast"
+type = "passthrough"
+target = "weak"
+```
+
+Use a routing strategy instead when requests must be split or classified across
+targets. There is no catalog auto-discovery, so to expose several upstream
+models, add one `passthrough` route per model.
 
 ## Self-hosted targets
 
-Any route target can point at an OpenAI-compatible model server you operate.
-For example, start a local vLLM server:
+Any target can point at an OpenAI-compatible model server you operate. For
+example, start a local vLLM server:
 
 ```bash
 vllm serve ./my-rl-qwen --served-model-name my-rl-qwen --port 8000
 ```
 
-Then configure it as a normal route:
+Then declare it as its own LLM client and target. The client needs no
+`api_key_env` when the server does not require a credential:
 
-```yaml
-routes:
-  local:
-    type: model
-    target: my-rl-qwen
-    base_url: http://localhost:8000/v1
-    api_key: dummy
-    format: openai
+```toml
+[llm_clients.local_vllm]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+
+[targets.local]
+id = "my-rl-qwen"
+llm_client = "local_vllm"
+
+[routes.local]
+id = "local"
+type = "passthrough"
+target = "local"
 ```
 
-Switchyard does not start or manage the model server; it only sends requests
-to the configured endpoint.
+Switchyard does not start or manage the model server; it only sends requests to
+the configured endpoint.
 
-## Sub-agent override (`subagent_target`)
+## Run a deployment
 
-Any route may name an optional `subagent_target` in its common envelope,
-alongside `type`. A request carrying a recognized sub-agent signal — Claude Code
-agent-lineage headers, Codex delegated-work kinds (`x-openai-subagent:
-collab_spawn` or `review`), or an explicit `x-switchyard-is-subagent: true` —
-bypasses the route's own chain and runs as a direct passthrough to that target:
+After building the Rust server, as described in
+[Getting Started](../getting_started.md#build-the-server), export the provider
+credential, validate the configuration, and start the binary:
 
-```yaml
-routes:
-  assistant:
-    type: model
-    target:
-      model: strong-model
-    subagent_target:
-      model: cheaper-worker-model
+```bash
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
+./target/release/switchyard-server --config routes.toml --dry-run
+./target/release/switchyard-server --config routes.toml \
+  --host 127.0.0.1 --port 4000
 ```
 
-This keeps a sub-agent loop on one intentional, cache-compatible target instead
-of re-routing every worker turn. The worker may live on a different provider
-entirely — give it its own `base_url` and `api_key` and one route spans two
-upstreams:
+Send a request using a route ID:
 
-```yaml
-    subagent_target:
-      model: my-local-model
-      base_url: http://localhost:8000/v1
-      api_key: dummy
-      format: openai
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Detection is the protocol crate's canonical policy, shared with the libsy
-`SubagentOverride` classifier, so both engines agree on what counts as
-delegated work. Harness-maintenance turns (`compact`, `memory_consolidation`)
-and unrecognized kinds stay on normal routing, as does everything else when the
-field is absent. A worker-target failure surfaces as a normal target error — it
-is never silently re-routed through the route's own chain.
-
-To suppress sub-agent routing for a request that carries a recognized signal,
-send `x-switchyard-is-subagent: false`. This explicit header overrides Codex and
-Claude Code lineage signals in either direction: `false` keeps the request on
-normal routing even when delegated-work headers are present, and `true` marks a
-request as a sub-agent even when no harness headers appear.
-
-The key applies to `model`, `deterministic`, `escalation_router`,
-and `stage_router` routes. `random_routing` expands into its table entries on a
-separate path and does not consume it.
-
-## How session affinity composes
-
-Session affinity is configured directly on the LLM classifier router. After
-the configured warmup, the first confident policy, tool-planning, or alignment
-verdict pins the tier. Abstain, low-confidence, missing-signal, and fail-open
-decisions never pin. Later turns reuse the tier and skip the classifier call.
-
-Pins use a bounded in-process LRU keyed from the stable conversation prefix.
-They are not shared across workers or restarts. See
-[Sticky Routing](sticky_routing.md) for configuration and key derivation.
-
-Random and stage-router routing make a fresh routing decision for each request.
-The escalation router instead uses affinity as a one-way escalation latch: only
-the strong tier is pinned, and the judge runs until that latch fires.
-
-## Rust server configuration
-
-The `switchyard-server` binary has a separate TOML schema that explicitly
-constructs LLM clients, targets, and libsy algorithms. It does not load Python
-route bundles. See the
-[Rust server README](../../crates/switchyard-server/README.md) for its supported
-configuration.
+For the complete TOML schema and every route option, refer to the
+[Rust server README](../../crates/switchyard-server/README.md).

@@ -1,198 +1,166 @@
 # Escalation-Router Routing
 
-Escalation-router routing starts each conversation on a cheaper `weak` model.
-An LLM judge watches how the work progresses and moves the conversation to a
-more capable `strong` model when it detects sustained, recoverable trouble.
-After escalation, the conversation stays on the strong tier for the rest of
-the task.
+Escalation routing starts each conversation on a cheaper weak model. An LLM judge
+reads how the work is going and latches the session to a strong model when it
+detects sustained trouble.
 
-Use it for multi-turn agent workloads where a weak model can handle routine
-work but may need rescue after repeated errors, loops, drift, false progress,
-or premature completion. Unlike
-[LLM Classifier Routing](llm_classifier_routing.md), which predicts how
-difficult a request looks, escalation routing judges whether the run is
-actually going well.
+Use it for multi-turn agent workloads where a weak model handles routine work but
+may need rescue after repeated errors, loops, or drift. Unlike plain
+[LLM Classifier Routing](llm_classifier_routing.md), which predicts how difficult
+a request looks before running it, escalation judges whether the run is actually
+going well.
 
-## How it works
+## Configure an escalation route
 
-The router keeps one state value per conversation: whether that conversation
-has escalated. Conversations are identified from the stable system prompt and
-first user message, using the same bounded in-memory store described in
-[Sticky Routing](sticky_routing.md).
+```toml
+schema_version = 1
 
-For each turn, Switchyard:
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
 
-1. Checks the conversation latch. A latched conversation routes to `strong`
-   without calling the judge again.
-2. Routes an unlatched conversation to `weak`. Before `judge.min_turn`
-   (default `3`), it skips the judge because there is too little trajectory to
-   assess.
-3. Gives the judge a bounded summary containing the system and first-user
-   anchors, recent messages, and a coverage note for omitted history.
-4. Parses the judge's structured `escalate` decision. When the configured
-   confirmation policy is satisfied, Switchyard pins the conversation to
-   `strong` and uses the strong model for the current turn.
-5. Fails open to `weak` when the judge times out, errors, or returns invalid
-   output. A judge failure never creates a strong-tier pin.
+[targets.judge]
+id = "google/gemini-3.5-flash"
+llm_client = "openrouter"
 
-The routing decision for one turn is:
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "moonshotai/kimi-k2.6"
+llm_client = "openrouter"
+
+[routes.agent]
+id = "agent"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
+```
+
+`classifier_target` is the judge. The route's `id`, `agent`, is the model name
+clients send; the judge is not exposed as a client-selectable model.
+
+`base_threshold` is still required, but escalation ignores it, along with
+`min_confidence`, `capability_elevated_floor`, and `session_affinity`.
+
+## How the decision works
+
+For each turn on an unlatched session, Switchyard:
+
+1. Calls the weak target and buffers its reply.
+2. Appends that reply to the transcript and asks the judge to rule on the
+   completed turn. The judge therefore rates work the weak model actually did,
+   not a prediction about work it might do.
+3. Increments a consecutive-escalate streak on an escalate verdict, and resets it
+   to zero on a decline.
+4. Serves the buffered weak reply when the streak has not yet reached
+   `confirmations` — so a judged turn that does not escalate costs one weak call
+   plus one judge call, and no strong call.
+5. Discards the buffered weak reply and serves the strong target instead once the
+   streak reaches `confirmations`. That turn is billed for a weak call, a judge
+   call, and a strong call.
+
+A latched session routes straight to the strong target with no judge call:
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
 flowchart LR
-    t["turn"] --> p{"strong tier pinned?"}
+    t["turn"] --> p{"streak >= confirmations?"}
     p -->|yes| s["route strong; skip judge"]
-    p -->|no| m{"turn >= min_turn?"}
-    m -->|no| w["route weak"]
-    m -->|yes| j["judge recent trajectory"]
-    j -->|stay / fail open| w
-    j -->|not yet confirmed| w
-    j -->|confirmed escalation| l["pin and route strong"]
+    p -->|no| c["call weak, buffer reply"]
+    c --> j["judge the completed turn"]
+    j -->|decline: streak = 0| w["serve buffered weak reply"]
+    j -->|escalate, not yet confirmed| w
+    j -->|escalate, confirmed| l["discard weak reply; serve strong"]
 
     classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
-    class t,p,s,m,w,j,l box;
+    class t,p,s,c,j,w,l box;
 ```
 
-## Confirmation policy
+A judge that times out, errors, or returns an unparseable verdict fails open: the
+turn serves the buffered weak reply and the existing streak is held rather than
+cleared. A judge failure never creates a strong-tier latch.
 
-`judge.confirmations` controls how many positive verdicts are required before
-the strong-tier latch fires:
+## Tuning options
 
-- `confirmations: 1` is the default and escalates on the first positive
-  verdict.
-- `confirmations: 2` with `confirmation_window: 1` requires positive verdicts
-  on consecutive judged turns.
-- A larger `confirmation_window` allows recurring trouble to confirm even when
-  negative verdicts occur between positive ones. A positive verdict remains
-  live across at most `confirmation_window - 1` intervening negative verdicts.
+The judge exposes three settings. Their defaults are the benchmarked
+configuration, so a bare `escalation = {}` is a valid, tuned route:
 
-A judge failure provides no evidence either way: it routes the turn to weak
-without clearing an existing confirmation streak.
+| Key | Default | Meaning |
+|---|---|---|
+| `confirmations` | `2` | Consecutive escalate verdicts required before the session latches to strong. Must be at least `1`. |
+| `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
+| `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
 
-## Configure an escalation route
+`confirmations` is the main cost dial. `1` latches sooner and spends more on the
+strong tier. `2` or higher requires a session identity, because the streak is
+retained per session — without one, every turn starts from zero and the route
+never latches. Clients supply it with `x-switchyard-session-id`.
 
-Configure escalation routing in the `routes:` bundle loaded by
-`--routing-profiles`.
+Everything else is fixed: anchor and transcript caps, the judge's reply budget,
+and the streak rule that any decline resets to zero.
 
-```yaml
-routes:
-  agent-escalation:
-    type: escalation_router
-    fallback_target_on_evict: strong
-    judge:
-      model: google/gemini-3.5-flash
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      timeout_secs: 5.0
-      min_turn: 3
-      confirmations: 1
-      confirmation_window: 1
-      recent_turn_window: 14
-    weak:
-      model: moonshotai/kimi-k2.6
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-    strong:
-      model: anthropic/claude-opus-4.7
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-```
+## Run the route
 
-Run the route as a standalone proxy:
+After building the Rust server, as described in
+[Getting Started](../getting_started.md#build-the-server), export the provider
+credential, validate the configuration, and start the binary:
 
 ```bash
-switchyard serve --routing-profiles routes.yaml --port 4000
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
+./target/release/switchyard-server --config routes.toml --dry-run
+./target/release/switchyard-server --config routes.toml \
+  --host 127.0.0.1 --port 4000
 ```
 
-The route ID (`agent-escalation`) is the model ID clients select to use the
-router. The strong and weak model IDs are also registered as direct
-passthrough choices. The judge is internal to the route and is not exposed as
-a client-selectable model.
+Send a request using the route ID, supplying a session identity so the streak
+persists across turns:
 
-If the selected tier exceeds its context window, Switchyard retries once on
-`fallback_target_on_evict`, which must match one of the configured tier ids
-(`strong` / `weak` unless the targets set their own `id`). See
-[Context-Window Handling](../operations/context_window.md).
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-switchyard-session-id: demo-session" \
+  -d '{"model":"agent","messages":[{"role":"user","content":"hello"}]}'
+```
 
-## Useful options
-
-| Option | Default | Use it when |
-|---|---|---|
-| `judge.timeout_secs` | `5.0` | The judge needs a different wall-clock limit. Timeouts fail open to weak. |
-| `judge.min_turn` | `3` | The judge should start earlier or wait for more trajectory evidence. |
-| `judge.confirmations` | `1` | One positive verdict is too eager and escalation should require repeated evidence. |
-| `judge.confirmation_window` | `1` | Intermittent trouble should remain eligible for confirmation across negative verdicts. |
-| `judge.disable_reasoning` | `true` | Set to `false` when a reasoning judge benefits from thinking despite the added latency. The thinking-off hint is only sent to models that accept it (Claude/Bedrock judges never receive it). |
-| `judge.max_completion_tokens` | auto | The judge's completion budget needs an explicit value. The default follows the reasoning mode: `128` when the thinking-off hint is sent, `4096` otherwise (reasoning tokens and the JSON verdict share the budget; a too-small cap silently fails open every turn). Judges that never accept the hint (Claude/Bedrock) also get the larger ceiling — it is a cap, not spend. |
-| `judge.dump_verdicts` | `false` | Benchmark runs need per-turn `escalation_verdict=` stderr lines (includes a first-user `task_hint` snippet). Keep off in production; routing telemetry flows through the stats endpoints. |
-| `judge.recent_turn_window` | `14` | The judge needs a wider or narrower trailing-message window. |
-| `judge.window_message_chars` | `300` | More tool-output detail should survive per-message truncation. |
-| `judge.max_request_chars` | `12000` | The complete judge request needs a different character budget. Oldest recent messages are dropped first. |
-| `judge.prompt` | built-in | A deployment needs a custom escalation rubric inlined in the YAML. |
-| `judge.prompt_path` | built-in | The custom rubric lives in a file (mutually exclusive with `judge.prompt`; relative paths resolve against the server's working directory). |
-| `tier_timeout_s` | `600` | Strong or weak targets without their own `timeout_secs` need a different call timeout. |
-| `enable_stats` | `true` | Set to `false` only when route-level usage statistics are not needed. |
-| `affinity_max_sessions` | `10000` | A long-lived process needs a different in-memory latch capacity. |
-| `affinity_store` | `memory` | Set to `redis` to share the escalation latch across workers and keep it across pod churn; with `memory`, a worker change silently restarts an escalated conversation on weak. Best-effort — a store error never fails a request. |
-| `affinity_store_url` | — | Connection URL for the shared latch store (e.g. `redis://host:6379/0`); required with `affinity_store: redis`. |
-| `affinity_store_ttl_seconds` | `3600` | A shared latch entry should expire on a different horizon. |
-| `affinity_key_prefix` | `swyd:esc:` | Multiple deployments share one Redis and need namespaced keys. |
-| `session_key_depth` | `0` | Repeated benchmark trials with identical task prefixes need separate latches; keep `0` for normal traffic. |
+Invalid settings are rejected when the configuration loads rather than on the
+first request, so `--dry-run` catches them.
 
 ## Observability
 
-Read the standard routing stats endpoint:
+Read the standard stats endpoint:
 
 ```bash
-curl -s http://localhost:4000/v1/routing/stats
+curl -s http://localhost:4000/v1/stats
 ```
 
 The snapshot reports per-model calls, tokens, latency, and cost for the strong
-and weak tiers. Judge calls are recorded in the classifier stats bucket so
-their token cost, latency, and errors remain visible as routing overhead.
-
-With `judge.dump_verdicts: true` (off by default), each judged turn also
-writes an `escalation_verdict={...}` JSON line to server stderr. The record
-includes the decision, reason, turn, confirmation state, and judge latency.
-After the latch fires, later turns skip the judge and report the pinned
-routing source in request metadata.
-
-## Repeated benchmark trials
-
-By default, the session key is derived from the system prompt and first user
-message. Repeated trials of the same task against one long-lived server can
-therefore share a latch: if the first trial escalates, later trials may start
-on strong.
-
-Use one of these isolation strategies:
-
-- Start a fresh Switchyard process for each trial set.
-- Set `session_key_depth: N` to extend the key with the first `N` messages
-  after the initial user message. This only separates trials when those early
-  trajectories differ, so it requires nonzero sampling temperature.
-
-Keep `session_key_depth: 0` for normal traffic. Context compaction or other
-mid-session prefix rewrites can change a deep key and lose the existing latch.
+and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
+token cost and latency remain visible as routing overhead.
 
 ## When not to use escalation routing
 
-- **One-shot requests.** There is no trajectory to judge. Use
-  [LLM Classifier Routing](llm_classifier_routing.md) when the initial request
-  should determine the tier.
-- **Fixed traffic experiments.** Use
-  [Random Routing](random_routing.md) for A/B splits and gradual traffic ramps.
+- **One-shot requests.** No trajectory to judge. Use
+  [LLM Classifier Routing](llm_classifier_routing.md) without the `escalation`
+  table.
+- **Traffic without session identity.** With `confirmations` above `1`, the route
+  cannot accumulate a streak and never latches.
+- **Fixed traffic experiments.** Use [Random Routing](random_routing.md).
 - **Per-turn stage optimization.** Use
-  [Stage-Router Routing](stage_router_routing.md) when tool-result signals
-  should move individual turns in both directions.
-- **Latency-critical traffic.** Eligible unlatched turns wait for the judge
-  before the selected backend call.
-- **Long-range failure cycles.** The judge only sees a bounded recent window;
-  cycles longer than that window may be missed.
+  [Stage-Router Routing](stage_router_routing.md) when signals should move
+  individual turns in both directions.
+- **Latency-critical traffic.** An unlatched turn waits for the weak call and then
+  the judge call.
 
 ## Related
 
 - [Routing Overview](overview.md): compare all supported routing strategies.
-- [Sticky Routing](sticky_routing.md): session-key derivation and affinity
-  behavior.
-- [Architecture](../architecture.md): the end-to-end request lifecycle and
-  system boundaries.
+- [LLM Classifier Routing](llm_classifier_routing.md): pick a tier up front
+  instead of judging the run.
+- [Architecture](../architecture.md): the end-to-end request lifecycle and system
+  boundaries.

@@ -1,108 +1,124 @@
 # LLM Classifier Routing
 
-LLM classifier routing asks a classifier model to evaluate each request, then
-sends the request to a `weak` or `strong` backend. Use it when routing should
-depend on request content, tool use, context needs, or risk level instead of a
-fixed traffic split.
-
-The classifier runs before the selected backend. Low-confidence and abstained
-results use the configured default tier. Classifier errors do the same when
-`classifier_fail_open` is enabled, which is the default. The built-in two-tier
-policies default to `strong`.
-
-## Choose a policy
-
-Set `profile` for the traffic you expect:
-
-| `profile` | Use for | Default tier mapping |
-|---|---|---|
-| `general` | Mixed chat or API traffic | `simple` uses `weak`; all higher tiers use `strong`. |
-| `coding_agent` | Claude Code, Codex, Cursor-style agents | `simple` and `medium` use `weak`; `complex` and `reasoning` use `strong`. Tool-planning turns can escalate. |
-| `openclaw` | OpenClaw personal-assistant traffic | `simple` and `medium` use `weak`; `complex` and `reasoning` use `strong`. Tool orchestration and high-risk external actions can escalate. |
-
-For coding-agent traffic, start with `profile: coding_agent`.
+LLM classifier routing asks a judge model whether the efficient model is likely
+to complete a request, then routes the request to a weak or strong target.
 
 ## Configure a classifier route
 
-Define the strong, weak, and classifier models in a `deterministic` route:
+This example uses the packaged classifier prompt as intended: it estimates
+whether GLM-5.2 can complete the task, uses GLM-5.2 as the weak target, and keeps
+the first routing decision for later requests in the same conversation.
 
-```yaml
-defaults:
-  api_key: ${OPENROUTER_API_KEY}
-  base_url: https://openrouter.ai/api/v1
-  format: openai
+```toml
+schema_version = 1
 
-routes:
-  smart:
-    type: deterministic
-    profile: coding_agent
-    classifier:
-      model: nvidia/nemotron-3-nano-30b-a3b
-      min_confidence: 0.6
-      fail_open: true
-      recent_turn_window: 4
-    strong:
-      model: openai/gpt-4o
-    weak:
-      model: openai/gpt-4o-mini
-    fallback_target_on_evict: strong
+[llm_clients.openrouter]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.classifier]
+id = "openai/gpt-4o-mini"
+llm_client = "openrouter"
+
+[targets.strong]
+id = "openai/gpt-4o"
+llm_client = "openrouter"
+
+[targets.weak]
+id = "z-ai/glm-5.2"
+llm_client = "openrouter"
+
+[routes.smart]
+id = "smart"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+session_affinity = true
+message_hash_fallback = true
 ```
 
-Start the server with:
+The target table names are local references. Their `id` values are the model
+identifiers sent to the upstream provider. The route's `id`, `smart`, is the
+model name clients send to Switchyard.
 
-```bash
-switchyard serve --routing-profiles routes.yaml --port 4000
-```
+## How the decision works
 
-The route ID (`smart`) is the model ID clients select for classifier-based
-routing.
+The classifier target returns a structured verdict containing:
 
-Try the profile with representative requests:
+- `p_solve`: the estimated probability that the weak model completes the task.
+- `confidence`: confidence in the assessment.
+- `capability_boundary`: `supported`, `uncertain`, `unsupported`, or `unmatched`.
 
-```bash
-# Coding task: expected to use the strong tier.
-curl -X POST http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer dummy" -H "Content-Type: application/json" \
-  -d '{"model":"smart","messages":[{"role":"user","content":"Plan and implement a multi-file API change."}],"max_tokens":200}'
+For a usable verdict, Switchyard routes to `weak_target` when `p_solve` is
+greater than or equal to the applicable threshold. Otherwise it routes to
+`strong_target`:
 
-# Simple question: expected to use the weak tier.
-curl -X POST http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer dummy" -H "Content-Type: application/json" \
-  -d '{"model":"smart","messages":[{"role":"user","content":"What is 2+2? Reply with just the number."}],"max_tokens":50}'
-```
+- `supported` uses `base_threshold`.
+- `uncertain`, `unsupported`, and `unmatched` use
+  `capability_elevated_floor` when configured, or `base_threshold` otherwise.
 
-Treat these as smoke checks, not fixed test vectors: the classifier model and
-prompt determine the verdict.
+An abstention, an invalid or unparseable verdict, a judge failure, or confidence
+below `min_confidence` routes to `strong_target`. Raising either threshold sends
+more traffic to the strong model.
 
-## Useful options
+## Tuning options
 
-| Configuration path | Use it when |
-|---|---|
-| `classifier.min_confidence` | Low-confidence results should use the default tier instead of the classifier policy. |
-| `classifier.fail_open` | Classifier errors should use the default tier rather than fail the client request. |
-| `classifier.recent_turn_window` | The classifier needs more or less recent conversation and tool context. |
-| `alignment_min_confidence` | A classifier recommendation should only raise the policy tier above this confidence. |
-| `default_tier` | Abstain, low-confidence, and fail-open decisions should use a tier other than the default `strong`. |
-| `tier_mapping` | The four classifier policy tiers need a custom mapping to `weak` or `strong`. |
+| Key | Default | Meaning |
+|---|---|---|
+| `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
+| `min_confidence` | `0.0` | Lowest judge confidence that permits weak routing. Must be between `0` and `1`. |
+| `capability_elevated_floor` | unset | Higher threshold for uncertain, unsupported, and unmatched tasks. It must be between `0` and `1` and greater than `base_threshold`. |
+| `recent_turn_window` | unset | When unset, the judge sees only the newest user message. When set to `N`, it sees client system/developer instructions, the opening user task, and the last `N` conversation messages after that task. `0` keeps only the instructions and opening task. |
+| `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
+| `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
 
-For a self-hosted strong, weak, or classifier target, configure it like any
-other OpenAI-compatible endpoint. See
-[Self-hosted targets](overview.md#self-hosted-targets).
+### Classifier calibration
+
+The packaged prompt is currently calibrated for GLM-5.2, assumes it receives
+the initial task, and describes a sticky routing decision. It is not a
+model-neutral weak-target evaluator.
+
+Without affinity, the runtime judges every request; by default, it sends the
+newest user message rather than the initial task. The example enables affinity
+and its message-hash fallback so the first request is judged and later requests
+with the same opening task reuse that decision. If you use a different weak
+model or per-request routing, recalibrate the prompt and thresholds before
+treating classifier decisions as production policy.
 
 ## Session affinity
 
-LLM classifier routing supports optional session affinity through
-`DeterministicRoutingConfig`. Set `session_affinity: true` to share one affinity
-store between the classifier and tier selector. After any configured
-`affinity_warmup_turns`, the first confident verdict pins the tier. Later turns
-reuse that tier before classification, so they skip the classifier call;
-abstain, low-confidence, missing-signal, and fail-open decisions do not pin.
+With `session_affinity = true`, the first selected target is retained for the
+request's session identity. This includes `strong_target` when it was selected
+as the fallback for an unavailable or unusable judge verdict. There is no
+warmup period. Later requests with the same identity reuse the target before
+classification, so the judge call is skipped.
 
-Configure these fields on the `type: deterministic` entry in the `routes:`
-bundle. See [Session Affinity](sticky_routing.md) for YAML and
-[How session affinity composes](overview.md#how-session-affinity-composes) for
-the interaction with routing decisions.
+Affinity is process-local. Clients can send `x-switchyard-session-id`, or enable
+`message_hash_fallback` to key requests without session metadata from the first
+user-message text.
 
-If the per-request classifier cost is too high, use
-[Stage-Router Routing](stage_router_routing.md), which can route many turns from tool and
-agent-progress signals without an extra classifier call.
+## Run the route
+
+After [building the Rust server](../getting_started.md#build-the-server), export
+the provider credential, validate the configuration, and start the release
+binary:
+
+```bash
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
+./target/release/switchyard-server --config routes.toml --dry-run
+./target/release/switchyard-server --config routes.toml \
+  --host 127.0.0.1 --port 4000
+```
+
+Send a request using the route ID:
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart","messages":[{"role":"user","content":"Explain why the sky appears blue."}]}'
+```
+
+Treat the selected target as model-dependent output, not a fixed test result.

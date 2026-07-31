@@ -354,7 +354,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 - Export new public classes from `switchyard/__init__.py` with `__all__`.
 - Write unit tests for new roles and bug fixes.
 - Use `ProxyContext.metadata` for cross-component state within a request.
-- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/context_window.md).
+- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/operations/context_window.md).
 
 ### Ask first
 - Modifying `pyproject.toml` dependencies.

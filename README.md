@@ -19,39 +19,80 @@ algorithm you write yourself.
 ## Features
 
 - **Protocol Translation**: convert between OpenAI Chat, Anthropic Messages, and OpenAI Responses formats
-- **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or custom routers
-- **Strong Types**: provider-neutral request, response, and streaming types
-- **Explicit Configuration**: TOML defines LLM clients, targets, and algorithm routes
+- **Multi-Backend Routing**: random routing, LLM-as-classifier routing, signal-driven stage-router, or your own algorithm
 - **Operational Metrics**: Prometheus metrics cover requests, errors, latency, tokens, and routing overhead
 
 ## Quick Start
 
-Install the CLI and server dependencies:
+Choose the launcher path to run Claude Code, Codex CLI, or OpenClaw through
+Switchyard. Choose the server path to run Switchyard as a standalone proxy.
+
+### Launcher Path
+
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) if it is
+not already available, then install the published Switchyard tool:
 
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
 uv tool install "nemo-switchyard[cli,server]"
-export OPENROUTER_API_KEY="sk-or-..."
 ```
 
-Launch a coding agent through the packaged OpenRouter deployment:
+The coding agent you launch must also be installed and on your `PATH`. This does
+not install the standalone `switchyard-server` binary; use the Server Path for
+that.
+
+Set an OpenRouter key and launch against the packaged deployment:
 
 ```bash
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
 switchyard launch claude --model switchyard
 switchyard launch codex --model switchyard
+switchyard launch openclaw --model switchyard
 ```
 
-Pass a custom native deployment when needed:
+To use your own native TOML deployment, pass its route ID and configuration:
 
 ```bash
 switchyard launch claude --model my-route --config routes.toml
 ```
 
-The deployment schema belongs in the
-[`switchyard-server` README](crates/switchyard-server/README.md).
+### Server Path
+
+Use this path to build and run the standalone Rust proxy. Install
+[Rust with Cargo](https://rust-lang.org/tools/install/), then build the release
+binary from source:
+
+```bash
+git clone https://github.com/NVIDIA-NeMo/Switchyard.git
+cd Switchyard
+cargo build --locked --release -p switchyard-server
+./target/release/switchyard-server --help
+```
+
+Prebuilt binaries are not published yet. `rustup` installs the pinned toolchain
+automatically when you run Cargo from the repository.
+
+Create `routes.toml` using the
+[Getting Started guide](docs/getting_started.md#server-path), then validate it
+and start the server:
+
+```bash
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
+./target/release/switchyard-server --config routes.toml --dry-run
+./target/release/switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
+```
+
+Verify the proxy in another terminal:
+
+```bash
+curl http://localhost:4000/health
+```
+
+For a complete configuration and a test request, follow
+[Getting Started](docs/getting_started.md).
 
 ## Architecture
-
-Switchyard sits between your client applications and one or more LLM backends:
 
 ```mermaid
 flowchart LR
@@ -65,25 +106,19 @@ flowchart LR
 
 Clients keep their native OpenAI or Anthropic API format. Switchyard picks a
 configured backend, forwards the request in that backend's own format, and
-translates the response back into the shape the client expects.
+translates the response back into the shape the client expects. The server
+exposes OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages, and
+upstream clients support the same three formats.
 
 ## Documentation
 
+- **[Getting Started](docs/getting_started.md)**: complete launcher and standalone server walkthroughs
+- **[Core Concepts](docs/core_concepts.md)**: LLM clients, targets, routes, model IDs, and routing algorithms
+- **[Routing Overview](docs/routing_algorithms/overview.md)**: choose and configure a routing algorithm
 - **[`switchyard-server`](crates/switchyard-server/README.md)**: server configuration, routing algorithms, and metrics
 - **[`switchyard-libsy`](crates/libsy/README.md)**: embed routing algorithms in a Rust application
 - **[`switchyard-protocol`](crates/protocol/README.md)**: provider-neutral request, response, and streaming types
 - **[`switchyard-translation`](crates/switchyard-translation/README.md)**: request, response, and stream translation
-
-## Supported API Formats
-
-The server exposes:
-
-- OpenAI Chat Completions
-- OpenAI Responses
-- Anthropic Messages
-
-Configured upstream clients support the same formats. The OpenAI Chat format
-also works with compatible servers such as vLLM, NVIDIA NIM, Ollama, and Azure.
 
 ## Community
 

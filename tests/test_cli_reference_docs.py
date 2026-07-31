@@ -4,6 +4,7 @@
 """CLI reference drift tests."""
 
 import argparse
+import subprocess
 from pathlib import Path
 
 from switchyard.cli.switchyard_cli import _build_parser
@@ -29,9 +30,13 @@ def _long_options(parser: argparse.ArgumentParser) -> set[str]:
     }
 
 
-def test_reference_documents_launch_only() -> None:
+def test_reference_documents_launcher_before_server() -> None:
     text = CLI_REFERENCE.read_text()
-    assert "## `switchyard launch`" in text
+    launcher = text.index("## Launcher Path: `switchyard launch`")
+    server = text.index("## Server Path: `switchyard-server`")
+    related = text.index("## Related Documentation")
+
+    assert launcher < server < related
     assert "switchyard serve" not in text
     assert "switchyard configure" not in text
     assert "switchyard verify" not in text
@@ -44,3 +49,38 @@ def test_reference_lists_launcher_contract() -> None:
         assert _long_options(parser) == {"--model", "--config"}
     assert "--model" in text
     assert "--config" in text
+
+
+def test_reference_lists_server_contract() -> None:
+    result = subprocess.run(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--locked",
+            "-p",
+            "switchyard-server",
+            "--",
+            "--help",
+        ],
+        cwd=CLI_REFERENCE.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    text = CLI_REFERENCE.read_text()
+    for flag in (
+        "--config",
+        "--host",
+        "--port",
+        "--backlog",
+        "--dry-run",
+        "--tls-cert",
+        "--tls-key",
+        "--help",
+        "--version",
+    ):
+        assert flag in result.stdout
+        assert flag in text
