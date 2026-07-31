@@ -154,15 +154,16 @@ def _run_codex_with_switchyard(
         )
         return _EXIT_BINARY_NOT_FOUND
 
-    model_catalog_json = _write_codex_model_catalog(codex_bin, codex_model_catalog)
     silence_launch_loggers(local_logger=logger)
     log_path = configure_debug_file_logging(display_model=display_model)
     server = _start_native_server(config)
     resolved_port = server.port
     stats = server.stats
+    model_catalog_json: str | None = None
     strategy_summary = f"config → {config.name}"
 
     try:
+        model_catalog_json = _write_codex_model_catalog(codex_bin, codex_model_catalog)
         if not _wait_ready(resolved_port):
             print_startup_failure(
                 port=resolved_port,

@@ -166,7 +166,7 @@ def _run_claude_with_switchyard(
         if stdin_is_tty():
             footer = LiveStatsFooter(
                 stats, display_model, health,
-                strategy_label=strategy_summary.split(":")[0].strip() if strategy_summary else None,
+                strategy_label="config",
             )
             tui = ShellTUI(
                 command=[claude_bin, *claude_args],
