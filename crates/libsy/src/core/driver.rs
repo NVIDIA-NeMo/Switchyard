@@ -55,7 +55,7 @@ use parking_lot::Mutex;
 use futures::{Stream, StreamExt};
 use switchyard_protocol::Context;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tokio_stream::wrappers::ReceiverStream;
 
 type BoxAny = Box<dyn Any + Send>;
@@ -238,7 +238,7 @@ impl TypeErasedDriver {
 
     /// Take the single consumer stream of [`DriverStep`]s. Callable once: a second
     /// call yields a one-item stream carrying an `Err`, since the receiver is gone.
-    pub fn stream(&self) -> impl Stream<Item = Result<DriverStep>> {
+    pub fn stream(&self) -> impl Stream<Item = Result<DriverStep>> + use<> {
         let receiver = self
             .inner
             .step_rx
@@ -434,10 +434,12 @@ mod tests {
         // Drop the consumer stream (and its receiver) before producing anything.
         drop(driver.stream());
 
-        assert!(driver
-            .fulfill_request::<u32, u32>(Context::default(), 1u32)
-            .await
-            .is_err());
+        assert!(
+            driver
+                .fulfill_request::<u32, u32>(Context::default(), 1u32)
+                .await
+                .is_err()
+        );
         assert!(driver.info(Context::default(), 1u32).await.is_err());
         assert!(driver.done(Context::default(), 1u32).await.is_err());
         Ok(())
@@ -584,7 +586,7 @@ mod tests {
             Ok(()) => {
                 return Err(test_error(
                     "expected ensure_started to reject an untaken stream",
-                ))
+                ));
             }
             Err(err) => assert!(matches!(err, LibsyError::Driver(DriverError::NotStarted))),
         }

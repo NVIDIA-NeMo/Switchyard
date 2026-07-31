@@ -8,7 +8,7 @@ use std::fmt;
 use crate::{LlmTarget, LlmTargetId, ModelId, Result, SwitchyardError};
 use parking_lot::Mutex;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_STRONG_PROBABILITY: f64 = 0.5;
@@ -115,7 +115,7 @@ impl RandomRoutingEngine {
         config.validate()?;
         let rng = match config.rng_seed {
             Some(seed) => StdRng::seed_from_u64(seed),
-            None => StdRng::from_entropy(),
+            None => rand::make_rng(),
         };
         Ok(Self {
             config,
@@ -157,7 +157,7 @@ impl RandomRoutingEngine {
 
     // Draws the next probability sample.
     fn next_draw(&self) -> f64 {
-        self.rng.lock().gen()
+        (*self.rng.lock()).random()
     }
 }
 

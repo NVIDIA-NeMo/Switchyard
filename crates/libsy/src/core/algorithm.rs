@@ -26,7 +26,7 @@ use switchyard_protocol::{
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
-use crate::{observability, DriverError, LibsyError, Result};
+use crate::{DriverError, LibsyError, Result, observability};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -285,7 +285,7 @@ impl Driver {
     /// Transform the raw driver stream into a stream of [`Step`]s. Internal: the
     /// consumer stream is taken (once) by [`run_stream`](Algorithm::run_stream). A
     /// payload that does not match the expected type for its step becomes an `Err` item.
-    pub(crate) fn stream(&self) -> impl Stream<Item = Result<Step>> {
+    pub(crate) fn stream(&self) -> impl Stream<Item = Result<Step>> + use<> {
         self.driver.stream().map(|item| match item? {
             DriverStep::Request(req) => Ok(Step::CallLlm(Box::new(CallLlmRequest::new(req)))),
             DriverStep::Info(payload) => payload
@@ -786,7 +786,7 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use switchyard_protocol::{
-        completion_text, text_request, text_response, LlmResponse, LlmResponseChunk,
+        LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
     };
 
     #[derive(Debug, thiserror::Error)]
@@ -1706,9 +1706,10 @@ mod tests {
         match result {
             Ok(_) => Err(test_error("expected the terminal error, got a response")),
             Err(err) => {
-                assert!(err
-                    .to_string()
-                    .contains("terminal error while calls pending"));
+                assert!(
+                    err.to_string()
+                        .contains("terminal error while calls pending")
+                );
                 Ok(())
             }
         }

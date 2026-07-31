@@ -16,7 +16,7 @@ use libsy::{
 use serde::Deserialize;
 use serde_json::Value;
 use switchyard_llm_client::{
-    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient, DEFAULT_MAX_RETRIES,
+    Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::RoutedLlmClient;
 
@@ -733,14 +733,19 @@ target = "weak"
         assert!(error_message(&missing).contains("SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET"));
 
         const EMPTY_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_EMPTY_KEY";
-        std::env::set_var(EMPTY_KEY_ENV, "");
+        unsafe {
+            // "unsafe" is for concurrent reads and writes, very rare
+            std::env::set_var(EMPTY_KEY_ENV, "");
+        }
         let empty = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
             &format!("base_url = \"https://example.test/v1\"\napi_key_env = \"{EMPTY_KEY_ENV}\""),
             1,
         );
         let message = error_message(&empty);
-        std::env::remove_var(EMPTY_KEY_ENV);
+        unsafe {
+            std::env::remove_var(EMPTY_KEY_ENV);
+        }
         assert!(message.contains("is empty"));
     }
 }

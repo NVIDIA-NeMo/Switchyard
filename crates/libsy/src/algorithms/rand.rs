@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use rand::distributions::{Distribution, WeightedIndex};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::distr::{Distribution, weighted::WeightedIndex};
+use rand::rngs::StdRng;
 
 use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
 use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
@@ -79,7 +79,7 @@ impl RandomClassifier {
             WeightedIndex::new(weights).map_err(|error| invalid_weights(error.to_string()))?;
         let rng = match seed {
             Some(seed) => StdRng::seed_from_u64(seed),
-            None => StdRng::from_entropy(),
+            None => rand::make_rng(),
         };
         Ok(Self {
             targets,
@@ -181,11 +181,11 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use switchyard_protocol::{completion_text, text_request, text_response, Metadata};
+    use switchyard_protocol::{Metadata, completion_text, text_request, text_response};
 
+    use crate::DriverError;
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::algorithm::LlmTarget;
-    use crate::DriverError;
     use switchyard_protocol::{Decision, LlmResponse, Request, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
@@ -448,10 +448,12 @@ mod tests {
         let decision = &trace[0];
 
         assert_eq!(decision.selected_model(), "only/model");
-        assert!(decision
-            .reasoning()
-            .unwrap_or_default()
-            .contains("only/model"));
+        assert!(
+            decision
+                .reasoning()
+                .unwrap_or_default()
+                .contains("only/model")
+        );
         let concrete = decision
             .as_any()
             .downcast_ref::<RandomDecision>()
