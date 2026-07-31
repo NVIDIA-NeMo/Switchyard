@@ -24,12 +24,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 
-use switchyard_libsy::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
-    Result, RoutedLlmClient,
-};
+use switchyard_libsy::{Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, Result};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
-use switchyard_protocol::{completion_text, prompt_text, text_request};
+use switchyard_protocol::{
+    completion_text, prompt_text, text_request, Context, Decision, Request, Response,
+    RoutedLlmClient,
+};
 
 const CANDIDATE_MODELS: [&str; 3] = [
     "nvidia/qwen/qwen3.6-27b",
@@ -467,8 +467,11 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_libsy::{LlmResponse, LlmTarget, Response, RoutedLlmClient, Signals};
-    use switchyard_protocol::text_response;
+    use switchyard_libsy::LlmTarget;
+    use switchyard_protocol::{
+        completion_text, prompt_text, text_request, text_response, LlmResponse, Response,
+        RoutedLlmClient, Signals,
+    };
 
     /// Mock client that answers candidate calls with `answer from {model}` and,
     /// for the judge model, returns the 1-based number of the response whose

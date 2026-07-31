@@ -45,9 +45,10 @@ use switchyard_protocol::StopReason;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::{
-    AggLlmResponse, Context, Decision, Driver, LibsyError, LlmClientError, LlmRequest, LlmResponse,
-    LlmResponseChunk, LlmResponseStream, Request, Response, Result, Usage,
+use crate::{Driver, LibsyError, Result};
+use switchyard_protocol::{
+    AggLlmResponse, Context, Decision, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk,
+    LlmResponseStream, Request, Response, Usage,
 };
 
 const METRICS_SCOPE: &str = "switchyard";
@@ -105,9 +106,9 @@ fn outcome_value<T>(result: &Result<T>) -> &'static str {
 
 /// Span covering one algorithm run (the whole `create_run_task` execution).
 ///
-/// Correlation ids from the request [`crate::Metadata`] are recorded as span fields
+/// Correlation ids from the request [`switchyard_protocol::Metadata`] are recorded as span fields
 /// when present. `tracing` spans cannot grow field names at runtime, so
-/// arbitrary host labels ride in via [`crate::Metadata::extra_metadata`], recorded
+/// arbitrary host labels ride in via [`switchyard_protocol::Metadata::extra_metadata`], recorded
 /// whole into the `extra_metadata` field. `outcome` and `error` are filled in
 /// by [`record_run`] when the run ends.
 pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {

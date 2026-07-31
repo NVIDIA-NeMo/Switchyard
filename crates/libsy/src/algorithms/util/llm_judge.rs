@@ -14,10 +14,11 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use switchyard_protocol::{completion_text, AggLlmResponse};
 
-use crate::{
-    Classification, Classifier, Context, Decision, Driver, LibsyError, LlmTarget, Request,
-    Response, Result, State,
-};
+use crate::core::algorithm::{Driver, LlmTarget};
+use crate::core::classifier::{Classification, Classifier};
+use crate::core::state::State;
+use crate::{LibsyError, Result};
+use switchyard_protocol::{Context, Decision, Request, Response};
 
 #[derive(Clone, Debug, Default)]
 /// Prompt and structured-output contract for one judge.
@@ -223,7 +224,9 @@ mod tests {
     use serde::Deserialize;
     use switchyard_protocol::{text_request, text_response, ContentBlock, LlmClientError};
 
-    use crate::{LlmResponse, LlmResponseChunk, Response, Score, Step};
+    use crate::core::algorithm::Step;
+    use crate::core::classifier::Score;
+    use switchyard_protocol::{LlmResponse, LlmResponseChunk, Response};
 
     const VERDICT: &str = r#"{"ok":true}"#;
 

@@ -19,18 +19,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::llm_class::TaskClassifierConfig;
+use super::fall_through::{DefaultTarget, FallThrough};
+use super::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
 use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
 use super::util::stage::{
     record_decision_source, DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier,
     StageTargets,
 };
-use super::util::tool_signals::ToolSignalProcessor;
-use super::{DefaultTarget, FallThrough, LlmTaskClassifier};
-use crate::{
-    Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTarget, LlmTargetSet,
-    Request, Response, Result, RoutedLlmClient, State, DEFAULT_RECENT_WINDOW,
-};
+use super::util::tool_signals::{ToolSignalProcessor, DEFAULT_RECENT_WINDOW};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::classifier::{Classification, Classifier};
+use crate::core::state::State;
+use crate::{LibsyError, Result};
+use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
@@ -232,9 +233,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        Algorithm, Context, Decision, LlmResponse, LlmTarget, Metadata, Response, RoutedLlmClient,
-        StateValue,
+    use crate::algorithms::util::stage::DECISION_SOURCE_KEY;
+    use crate::core::algorithm::{Algorithm, LlmTarget};
+    use crate::core::classifier::Score;
+    use crate::core::state::StateValue;
+    use switchyard_protocol::{
+        Context, Decision, LlmResponse, Metadata, Response, RoutedLlmClient,
     };
 
     fn tier_target(name: &str) -> LlmTarget {
@@ -256,7 +260,7 @@ mod tests {
             _driver: Option<&Driver>,
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
-                Classification::Scores(vec![crate::Score {
+                Classification::Scores(vec![Score {
                     target: self.0.to_string(),
                     confidence: 1.0,
                 }]),
@@ -289,12 +293,10 @@ mod tests {
         stamp
             .score(&mut state, &mut Request::default(), None)
             .await?;
-        Ok(
-            match state.extra.get(crate::stage_router::DECISION_SOURCE_KEY) {
-                Some(StateValue::String(source)) => Some(source.clone()),
-                _ => None,
-            },
-        )
+        Ok(match state.extra.get(DECISION_SOURCE_KEY) {
+            Some(StateValue::String(source)) => Some(source.clone()),
+            _ => None,
+        })
     }
 
     #[tokio::test]

@@ -10,7 +10,9 @@ use switchyard_protocol::{
     AggLlmResponse, ContentBlock, LlmResponse, Request, Response, ResponseOutput, Role, StopReason,
 };
 
-use crate::{Algorithm, Context, Decision, Driver, Result};
+use crate::core::algorithm::{Algorithm, Driver};
+use crate::Result;
+use switchyard_protocol::{Context, Decision};
 
 /// A routing algorithm that does not route. It returns a hard-coded response.
 pub struct Noop {}

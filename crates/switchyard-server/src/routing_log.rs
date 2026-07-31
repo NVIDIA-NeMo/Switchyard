@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
-use libsy::Usage;
 use serde::{Deserialize, Serialize};
+use switchyard_protocol::Usage;
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};

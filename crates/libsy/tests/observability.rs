@@ -32,12 +32,16 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
-use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmResponseChunk, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
+    Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Step,
+    TaskClassifierConfig,
 };
-use switchyard_protocol::{text_request, text_response, LlmClientError, StopReason};
+use switchyard_protocol::{
+    text_request, text_response, LlmClientError, LlmResponseChunk, StopReason,
+};
+use switchyard_protocol::{
+    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]

@@ -11,12 +11,13 @@
 
 use std::sync::Arc;
 
-use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
-    Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Result, Step,
+    Algorithm, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Result, Step,
+    TaskClassifierConfig,
 };
-use switchyard_protocol::{completion_text, text_request, text_response};
+use switchyard_protocol::{
+    completion_text, text_request, text_response, Context, Decision, LlmResponse, Request, Response,
+};
 use tokio_stream::StreamExt;
 
 const CLASSIFIER: &str = "classifier/model";

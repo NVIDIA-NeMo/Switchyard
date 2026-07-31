@@ -31,13 +31,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{
-    Algorithm, Context, Decision, LibsyError, LlmClientError, Metadata, Request, RunObservation,
-    RunObserver, Usage,
-};
+use libsy::{Algorithm, LibsyError, RunObservation, RunObserver};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use switchyard_protocol::{Context, Decision, LlmClientError, Metadata, Request, Usage};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};

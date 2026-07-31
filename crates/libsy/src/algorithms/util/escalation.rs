@@ -10,8 +10,12 @@
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, LlmRequest, Message, OutputParams, Role};
 
-use super::{load_judge_config, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
-use crate::{Classification, LlmTarget, Request, Result, Score, State};
+use super::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use crate::core::algorithm::LlmTarget;
+use crate::core::classifier::{Classification, Score};
+use crate::core::state::State;
+use crate::{LibsyError, Result};
+use switchyard_protocol::Request;
 
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
@@ -62,7 +66,7 @@ pub struct EscalationJudgeConfig {
 impl EscalationJudgeConfig {
     /// Rejects settings that would leave the judge with nothing useful to read.
     fn validate(&self) -> Result<()> {
-        let reject = |message: String| Err(crate::LibsyError::AlgorithmError { message });
+        let reject = |message: String| Err(LibsyError::AlgorithmError { message });
         if self.confirmations == 0 {
             return reject("confirmations must be at least 1".to_string());
         }
@@ -169,7 +173,7 @@ pub(crate) fn build_judge(
     config: EscalationJudgeConfig,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
-    let rubric = load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    let rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
     Ok(JudgeClassifier::new(
         EscalationJudge { rubric, config },
         judge_target,
@@ -360,7 +364,7 @@ mod tests {
     #[test]
     fn judge_request_is_rubric_plus_summary_under_a_completion_cap() -> Result<()> {
         let judge = EscalationJudge {
-            rubric: load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
+            rubric: llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
             config: EscalationJudgeConfig::default(),
         };
 

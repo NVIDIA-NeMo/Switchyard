@@ -49,10 +49,11 @@
 
 use std::{any::Any, sync::Arc};
 
-use crate::{Context, DriverError, LibsyError, Result};
+use crate::{DriverError, LibsyError, Result};
 use parking_lot::Mutex;
 
 use futures::{Stream, StreamExt};
+use switchyard_protocol::Context;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 use tokio_stream::wrappers::ReceiverStream;

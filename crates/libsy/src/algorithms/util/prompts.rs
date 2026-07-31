@@ -20,7 +20,8 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role};
 
-use crate::{Event, Processor, Result};
+use crate::core::processor::{Event, Processor};
+use crate::Result;
 
 /// Appends `note` to the request as conversation text.
 ///
@@ -191,7 +192,7 @@ mod tests {
 
     /// A decision routed to `target`.
     struct RoutedTo(&'static str);
-    impl crate::Decision for RoutedTo {
+    impl switchyard_protocol::Decision for RoutedTo {
         fn selected_model(&self) -> &str {
             self.0
         }

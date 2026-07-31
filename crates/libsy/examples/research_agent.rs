@@ -14,12 +14,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
-    Algorithm, Context, Decision, LibsyError, LlmResponse, LlmTarget, LlmTargetSet, Request,
-    Response, Result, RoutedLlmClient,
+    Algorithm, LibsyError, LlmTarget, LlmTargetSet, LlmTaskClassifier, Result, TaskClassifierConfig,
 };
-use switchyard_protocol::{completion_text, text_request, text_response};
+use switchyard_protocol::{
+    completion_text, text_request, text_response, Context, Decision, LlmResponse, Request,
+    Response, RoutedLlmClient,
+};
 
 const CLASSIFIER: &str = "classifier/model";
 const STRONG: &str = "strong/model";

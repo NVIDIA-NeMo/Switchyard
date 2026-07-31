@@ -15,14 +15,14 @@
 //! - An [`Algorithm`] is the optimization *algorithm*. Its
 //!   [`create_run_task`](Algorithm::create_run_task) runs once per request
 //!   and makes as many model calls as it needs — via [`Driver::call_llm_target`], which look
-//!   like ordinary calls — publishes its [`Decision`]s with [`Driver::info`], and
-//!   returns the final [`Response`]. The provided
+//!   like ordinary calls — publishes its [`Decision`](switchyard_protocol::Decision)s with [`Driver::info`], and
+//!   returns the final [`Response`](switchyard_protocol::Response). The provided
 //!   [`run_stream`](Algorithm::run_stream) drives that on its own task and hands
 //!   back a stream of [`Step`]s; [`run`](Algorithm::run) runs
 //!   it to completion with the targets' default clients.
 //! - An [`LlmTarget`] names a routing target by its [`semantic_name`](LlmTarget::semantic_name).
 //!   Every call is *offloaded* to the request's stream as a [`Step::CallLlm`]; the
-//!   target's [`RoutedLlmClient`], if any, rides along as
+//!   target's [`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient), if any, rides along as
 //!   [`RoutedRequest::default_client`] so the host can serve it by default or
 //!   override it (see below).
 //!
@@ -32,7 +32,7 @@
 //!
 //! - [`run`](Algorithm::run) — run to completion, serving each
 //!   offloaded call via its [`RoutedRequest::default_client`], and return the decision
-//!   trace plus the final [`Response`]. The simplest integration; use it when the
+//!   trace plus the final [`Response`](switchyard_protocol::Response). The simplest integration; use it when the
 //!   algorithm holds the model clients (it errors if a routed target has no client).
 //! - [`run_stream`](Algorithm::run_stream) — return a stream of [`Step`]s. Each
 //!   model call is offloaded: the stream yields a [`Step::CallLlm`] carrying a promise;
@@ -55,9 +55,9 @@
 //! ## Observability
 //!
 //! The provided run methods instrument every algorithm from the outside — at the
-//! [`Decision`] hook and the offload boundary — so algorithms carry no telemetry
+//! [`Decision`](switchyard_protocol::Decision) hook and the offload boundary — so algorithms carry no telemetry
 //! code. Each run gets a `libsy.run` tracing span (correlation ids from
-//! [`Metadata`] attached) with a child `libsy.llm_call` span per model call
+//! [`Metadata`](switchyard_protocol::Metadata) attached) with a child `libsy.llm_call` span per model call
 //! (fulfillment time as the algorithm observes it) plus a `libsy.client_call`
 //! span around the actual API call when [`run`](Algorithm::run) serves it;
 //! each [`Driver::info`] decision is logged with its reasoning; and OpenTelemetry
@@ -77,32 +77,42 @@
 //! [`algorithms::LlmTaskClassifier`] uses one model to classify and route to its selected target.
 
 mod core;
-pub use core::*;
+pub use core::algorithm::{
+    Algorithm, CallLlmRequest, Driver, LlmCallObservation, LlmTarget, LlmTargetSet, RoutedRequest,
+    RunObservation, RunObserver, Step, StepStream,
+};
+pub use core::classifier::{Classification, Classifier, Score};
+pub use core::processor::{Event, Processor};
+pub use core::state::{State, StateValue};
 
 mod error;
 pub use error::{DriverError, LibsyError, Result};
 
-pub mod algorithms;
+mod algorithms;
+pub use algorithms::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
+pub use algorithms::noop::{Noop, NoopDecision};
+pub use algorithms::passthrough::{Passthrough, PassthroughDecision};
+pub use algorithms::rand::{Random, RandomClassifier, RandomDecision};
+pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
+pub use algorithms::util::affinity::AffinityRouter;
+pub use algorithms::util::escalation::EscalationJudgeConfig;
+pub use algorithms::util::prompts::{append_note, SystemPromptProcessor, TargetPrompts};
+pub use algorithms::util::subagent::SubagentOverride;
+pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
+
+// Stage-router scoring and tier selection — the shared signal-driven routing
+// core (scorer, picker, and the `StageClassifier`).
+pub use algorithms::util::stage::{
+    dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
+    HandoffNoteConfig, PickOutcome, PickerMode, ScoreResult, StageClassifier, StageTargets, Tier,
+    DECISION_SOURCE_KEY,
+};
 
 mod observability;
-pub use algorithms::util::tool_signals::{ToolSignals, DEFAULT_RECENT_WINDOW};
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 ///
 /// Hosts should call this after installing their OpenTelemetry meter provider.
 pub fn initialize_metrics() {
     observability::initialize_metrics();
-}
-
-/// Stage-router scoring and tier selection — the shared signal-driven routing
-/// core (scorer, picker, and the `StageClassifier`).
-// TODO cleanup once switchyard-components is removed
-pub mod stage_router {
-    pub use crate::algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
-
-    pub use crate::algorithms::util::stage::{
-        dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
-        HandoffNoteConfig, PickOutcome, PickerMode, ScoreResult, StageClassifier, StageTargets,
-        Tier, DECISION_SOURCE_KEY,
-    };
 }

@@ -19,7 +19,8 @@ use switchyard_protocol::{ContentBlock, Request};
 
 use crate::Result;
 
-use crate::{Event, Processor, State};
+use crate::core::processor::{Event, Processor};
+use crate::core::state::State;
 
 // ─── severity constants ───────────────────────────────────────────────────────
 

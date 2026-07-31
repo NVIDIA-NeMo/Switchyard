@@ -6,8 +6,8 @@
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use libsy::{LlmResponse, LlmResponseChunk, Response, Usage};
 use opentelemetry::{global, KeyValue};
+use switchyard_protocol::{LlmResponse, LlmResponseChunk, Response, Usage};
 
 use crate::routing_log::RoutingLogContext;
 use crate::stats::{StatsAccumulator, TokenUsage};

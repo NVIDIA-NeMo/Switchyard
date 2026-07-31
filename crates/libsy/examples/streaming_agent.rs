@@ -16,12 +16,11 @@ use std::io::Write;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use switchyard_libsy::algorithms::Random;
-use switchyard_libsy::{
-    Algorithm, Context, LibsyError, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmTarget,
-    LlmTargetSet, Request, Response, Result, Step,
+use switchyard_libsy::{Algorithm, LibsyError, LlmTarget, LlmTargetSet, Random, Result, Step};
+use switchyard_protocol::{
+    completion_text, text_request, Context, LlmResponse, LlmResponseChunk, LlmResponseStream,
+    Request, Response,
 };
-use switchyard_protocol::{completion_text, text_request};
 
 /// The "real" model call the agent makes to fulfill an offloaded promise: a response
 /// whose body is a live token stream (`MessageStart`, one `TextDelta` per token,

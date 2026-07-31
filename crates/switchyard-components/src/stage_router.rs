@@ -9,7 +9,7 @@
 //! module simply re-exports the API so the crate's processors decide a turn's tier
 //! through the same implementation the libsy profile uses.
 
-pub use switchyard_libsy::stage_router::{
+pub use switchyard_libsy::{
     dimensions_from_signal, pick_tier, score_signal, CodingAgentDimensions, DecisionSource,
     PickOutcome, PickerMode, ScoreResult, StageClassifier, Tier,
 };

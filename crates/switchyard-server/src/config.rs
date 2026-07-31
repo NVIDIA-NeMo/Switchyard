@@ -8,17 +8,17 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use libsy::algorithms::{
-    EscalationJudgeConfig, LlmTaskClassifier, Noop, Passthrough, Random, StageRouter,
-    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+use libsy::{
+    Algorithm, EscalationJudgeConfig, HandoffNoteConfig, LlmFallback, LlmTarget, LlmTargetSet,
+    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig,
+    TargetPrompts, TaskClassifierConfig,
 };
-use libsy::stage_router::{HandoffNoteConfig, LlmFallback, PickerMode};
-use libsy::{Algorithm, LlmTarget, LlmTargetSet, RoutedLlmClient};
 use serde::Deserialize;
 use serde_json::Value;
 use switchyard_llm_client::{
     Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient, DEFAULT_MAX_RETRIES,
 };
+use switchyard_protocol::RoutedLlmClient;
 
 use crate::{ServerError, ServerResult, ServerState};
 

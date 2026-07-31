@@ -16,10 +16,10 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
-use crate::{
-    Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmTargetSet, Request,
-    Response, Result, RoutedLlmClient, Score,
-};
+use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
+use crate::core::classifier::{Classification, Classifier, Score};
+use crate::{LibsyError, Result};
+use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
 
 /// Compatibility name for the decision produced by [`Random`].
 pub type RandomDecision = FallThroughDecision;
@@ -183,8 +183,10 @@ mod tests {
 
     use switchyard_protocol::{completion_text, text_request, text_response, Metadata};
 
-    use crate::algorithms::AffinityRouter;
-    use crate::{Decision, LlmResponse, LlmTarget, Request, RoutedLlmClient, Signals};
+    use crate::algorithms::util::affinity::AffinityRouter;
+    use crate::core::algorithm::LlmTarget;
+    use crate::DriverError;
+    use switchyard_protocol::{Decision, LlmResponse, Request, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
     struct EchoClient;
@@ -454,7 +456,7 @@ mod tests {
             .as_any()
             .downcast_ref::<RandomDecision>()
             .ok_or_else(|| {
-                LibsyError::from(crate::DriverError::TypeMismatch {
+                LibsyError::from(DriverError::TypeMismatch {
                     expected: "RandomDecision",
                 })
             })?;

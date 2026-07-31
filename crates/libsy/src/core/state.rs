@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::ToolSignals;
+use crate::algorithms::util::tool_signals::ToolSignals;
 
 /// A value in a session's [`State`].
 #[derive(Debug, Clone)]

@@ -9,14 +9,14 @@ use async_trait::async_trait;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
-use switchyard_libsy::algorithms::{
-    LlmFallback, LlmTaskClassifier, Noop, Random, StageRouter, StageRouterConfig,
+use switchyard_libsy::{
+    Algorithm, HandoffNoteConfig, LibsyError as RustLibsyError, LlmFallback, LlmTarget,
+    LlmTargetSet, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter, StageRouterConfig,
     TaskClassifierConfig,
 };
-use switchyard_libsy::stage_router::{HandoffNoteConfig, PickerMode};
-use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, LibsyError as RustLibsyError, LlmClientError,
-    LlmResponse, LlmTarget, LlmTargetSet, Metadata, Request, Response, RoutedLlmClient,
+use switchyard_protocol::{
+    AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
+    RoutedLlmClient,
 };
 
 use crate::errors::py_libsy_error;

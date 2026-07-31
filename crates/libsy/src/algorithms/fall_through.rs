@@ -22,12 +22,11 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{call_llm_with_overflow_fallback, exclude_evicted, SessionEvictions};
-use crate::core::{Classification, Classifier, Event, Processor, Score};
-use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
-    Result, RoutedLlmClient,
-};
+use crate::core::algorithm::{self, Algorithm, Driver, LlmTarget, LlmTargetSet, SessionEvictions};
+use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::processor::{Event, Processor};
+use crate::{LibsyError, Result};
+use switchyard_protocol::{Context, Decision, Request, Response, RoutedLlmClient};
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
 
@@ -176,7 +175,7 @@ where
         let mut request = request;
         let session = session_id(&request);
         let mut ctx = ctx;
-        exclude_evicted(
+        algorithm::exclude_evicted(
             &mut ctx,
             &self.targets,
             &self.session_evictions,
@@ -202,7 +201,7 @@ where
         match served {
             Some(response) => Ok(response),
             None => {
-                call_llm_with_overflow_fallback(
+                algorithm::call_llm_with_overflow_fallback(
                     ctx,
                     &driver,
                     &self.targets,
@@ -250,7 +249,7 @@ where
         ctx: &Context,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(crate::LlmTarget, Arc<dyn Decision>, Option<Response>)> {
+    ) -> Result<(LlmTarget, Arc<dyn Decision>, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         for processor in &self.processors {
             processor.process(state, Event::Request(request)).await?;
@@ -352,14 +351,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algorithms::{append_note, SystemPromptProcessor, TargetPrompts};
-    use crate::core::Classification;
+    use crate::algorithms::util::prompts;
+    use crate::core::classifier::Classification;
+    use crate::{SystemPromptProcessor, TargetPrompts};
 
     use switchyard_protocol::{
-        completion_text, text_request, text_response, LlmRequest, Message, Metadata, Role,
+        completion_text, text_request, text_response, LlmClientError, LlmRequest, LlmResponse,
+        Message, Metadata, Role,
     };
-
-    use crate::{LlmClientError, LlmResponse, LlmTarget, RoutedLlmClient};
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
@@ -687,7 +686,7 @@ mod tests {
         impl Processor for Noting {
             async fn process(&self, _state: &mut (), event: Event<'_>) -> Result<()> {
                 if let Event::Decision { request, .. } = event {
-                    append_note(request, NOTE);
+                    prompts::append_note(request, NOTE);
                 }
                 Ok(())
             }

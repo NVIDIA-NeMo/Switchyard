@@ -22,10 +22,13 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::prompts::append_note;
-use crate::{
-    Classification, Classifier, Driver, Request, Result, Score, State, StateValue, ToolSignals,
-};
+use super::prompts;
+use super::tool_signals::ToolSignals;
+use crate::core::algorithm::Driver;
+use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::state::{State, StateValue};
+use crate::Result;
+use switchyard_protocol::Request;
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
 /// normal exploration, not a stall.
@@ -468,7 +471,7 @@ impl StageClassifier {
             return;
         };
         if let Some(note) = config.note_for(tier, source) {
-            append_note(request, note);
+            prompts::append_note(request, note);
         }
     }
 }
@@ -484,7 +487,7 @@ impl Classifier<State> for StageClassifier {
         state: &mut State,
         request: &mut Request,
         _driver: Option<&Driver>,
-    ) -> Result<(Classification, Option<crate::Response>)> {
+    ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
         let tool_signals = &state.tool_signals;
         let Some(signal) = tool_signals else {
             // No tool activity yet — nothing to score, so the signals have no
@@ -524,7 +527,7 @@ impl Classifier<State> for StageClassifier {
 mod tests {
     use super::*;
     use serde_json::json;
-    use switchyard_protocol::{Metadata, Request, WireFormat};
+    use switchyard_protocol::{text_request, Metadata, Request, WireFormat};
 
     fn signal_from(messages: serde_json::Value) -> ToolSignals {
         let raw_request = Some(json!({"model": "m", "messages": messages}));
@@ -762,7 +765,7 @@ mod tests {
     /// A one-user-turn request, the thing a note gets spliced into.
     fn request() -> Request {
         Request {
-            llm_request: switchyard_protocol::text_request(Some("auto".to_string()), "hi"),
+            llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,
             metadata: None,
         }

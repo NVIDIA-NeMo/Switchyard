@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Driver, LibsyError, Response, Result};
+use crate::core::algorithm::Driver;
+use crate::{LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::Request;
+use switchyard_protocol::{Request, Response};
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]

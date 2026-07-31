@@ -24,7 +24,9 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use switchyard_protocol::{Request, Role};
 
-use crate::{Classification, Classifier, Event, Processor, Score};
+use crate::core::algorithm::Driver;
+use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::processor::{Event, Processor};
 
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
@@ -179,8 +181,8 @@ where
         &self,
         _state: &mut S,
         request: &mut Request,
-        _driver: Option<&crate::Driver>,
-    ) -> crate::Result<(Classification, Option<crate::Response>)> {
+        _driver: Option<&Driver>,
+    ) -> crate::Result<(Classification, Option<switchyard_protocol::Response>)> {
         let Some(key) = self.affinity_key(request) else {
             return Ok((Classification::Scores(Vec::new()), None));
         };

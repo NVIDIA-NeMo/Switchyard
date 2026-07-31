@@ -7,7 +7,7 @@ use std::error::Error;
 
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::Json;
-use libsy::{LlmResponse, Response as AlgorithmResponse};
+use switchyard_protocol::{LlmResponse, Response as AlgorithmResponse};
 use switchyard_translation::{encode_aggregated_response, encode_stream, WireFormat};
 
 use crate::sse::frame_stream;

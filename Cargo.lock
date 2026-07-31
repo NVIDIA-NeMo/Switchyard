@@ -2092,6 +2092,7 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-llm-client",
+ "switchyard-protocol",
  "switchyard-translation",
  "tempfile",
  "tokio",

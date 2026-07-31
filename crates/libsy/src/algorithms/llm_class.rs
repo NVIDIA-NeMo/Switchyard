@@ -13,16 +13,16 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
 
-use super::util::escalation::{build_judge, EscalationJudge, EscalationPolicy};
-pub use super::util::EscalationJudgeConfig;
-use super::util::{
-    load_judge_config, AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy,
-};
-use super::{DefaultTarget, FallThrough};
-use crate::{
-    AggLlmResponse, Algorithm, Classification, Classifier, Context, Driver, LibsyError,
-    LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Result, RoutedLlmClient, Score, State,
-    StateValue,
+use super::fall_through::{DefaultTarget, FallThrough};
+use super::util::affinity::AffinityRouter;
+use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
+use super::util::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
+use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::state::{State, StateValue};
+use crate::{LibsyError, Result};
+use switchyard_protocol::{
+    AggLlmResponse, Context, LlmResponse, Request, Response, RoutedLlmClient,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
@@ -484,7 +484,7 @@ impl LlmTaskClassifier {
         let efficient_name = efficient_target.semantic_name.clone();
         let confirmations = config.confirmations;
         let esc = Arc::new(EscalationClassifier {
-            judge: build_judge(judge_target, capable_name, efficient_name, config)?,
+            judge: escalation::build_judge(judge_target, capable_name, efficient_name, config)?,
             capable: capable_target.clone(),
             efficient: efficient_target.clone(),
             confirmations,
@@ -501,7 +501,7 @@ impl LlmTaskClassifier {
 
     /// Loads the judge configuration from the packaged prompt and schema.
     fn load_judge_config() -> Result<JudgeConfig> {
-        load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
+        llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
     }
 }
 
@@ -573,9 +573,12 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use switchyard_protocol::{completion_text, text_response, LlmClientError, Metadata};
+    use switchyard_protocol::{
+        completion_text, text_request, text_response, LlmClientError, Metadata,
+    };
 
-    use crate::{Algorithm, Context, LlmResponse, Response, RoutedLlmClient};
+    use crate::core::algorithm::Algorithm;
+    use switchyard_protocol::{Context, LlmResponse, Response, RoutedLlmClient};
 
     const TEST_THRESHOLD: f64 = 0.5;
 
@@ -637,7 +640,7 @@ mod tests {
             &self,
             _ctx: Context,
             request: Request,
-            decision: Arc<dyn crate::Decision>,
+            decision: Arc<dyn Decision>,
         ) -> std::result::Result<Response, LlmClientError> {
             let model = decision.selected_model().to_string();
             self.calls.lock().push(model.clone());
@@ -661,7 +664,7 @@ mod tests {
             &self,
             _ctx: Context,
             request: Request,
-            decision: Arc<dyn crate::Decision>,
+            decision: Arc<dyn Decision>,
         ) -> std::result::Result<Response, LlmClientError> {
             let model = decision.selected_model().to_string();
             if model == "judge" {
@@ -691,10 +694,7 @@ mod tests {
 
     fn classify_request() -> Request {
         Request {
-            llm_request: switchyard_protocol::text_request(
-                Some("auto".to_string()),
-                "classify this task",
-            ),
+            llm_request: text_request(Some("auto".to_string()), "classify this task"),
             raw_request: None,
             metadata: None,
         }
@@ -1127,7 +1127,7 @@ mod tests {
 
     use switchyard_protocol::LlmClientError as ClientError;
 
-    use crate::Decision;
+    use switchyard_protocol::Decision;
 
     /// Serves each call with the next queued reply.
     struct QueuedClient {

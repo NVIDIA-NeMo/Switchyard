@@ -17,7 +17,10 @@
 
 use async_trait::async_trait;
 
-use crate::{Classification, Classifier, Driver, Metadata, Request, Response, Result, Score};
+use crate::core::algorithm::Driver;
+use crate::core::classifier::{Classification, Classifier, Score};
+use crate::Result;
+use switchyard_protocol::{Metadata, Request, Response};
 
 /// Scores a fixed worker target for delegated sub-agent work; abstains otherwise.
 pub struct SubagentOverride {
@@ -72,7 +75,6 @@ where
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-
     use switchyard_protocol::text_request;
 
     fn request(headers: &[(&str, &str)]) -> Request {

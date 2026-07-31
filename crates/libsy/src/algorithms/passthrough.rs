@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use switchyard_protocol::{Request, Response};
 
-use crate::{Algorithm, Context, Decision, Driver, LlmTarget, Result, RoutedLlmClient};
+use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
+use crate::Result;
+use switchyard_protocol::{Context, Decision, RoutedLlmClient};
 
 /// See module comment
 pub struct Passthrough {
@@ -73,10 +75,12 @@ impl Algorithm for Passthrough {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{
-        Algorithm, Context, Decision, LlmResponse, LlmTarget, Request, Response, RoutedLlmClient,
+    use super::Passthrough;
+    use crate::core::algorithm::{Algorithm, LlmTarget};
+    use switchyard_protocol::{
+        completion_text, text_request, text_response, Context, Decision, LlmResponse, Request,
+        Response, RoutedLlmClient,
     };
-    use switchyard_protocol::{completion_text, text_request, text_response};
 
     /// Echoes the selected target so tests can inspect which target was called.
     /// TODO: Duplicated from rand.rs
@@ -98,14 +102,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_passthrough() -> crate::error::Result<()> {
+    async fn test_passthrough() -> crate::Result<()> {
         const MODEL_ID: &str = "testing/passthrough";
         let request = Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,
             metadata: None,
         };
-        let algorithm: Arc<dyn Algorithm> = Arc::new(super::Passthrough::new(LlmTarget {
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
             semantic_name: MODEL_ID.to_string(),
             llm_client: Some(Arc::new(EchoClient)),
         }));

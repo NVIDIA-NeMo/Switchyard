@@ -21,9 +21,8 @@ use tracing::Instrument;
 /// [`LlmRequest`] is the normalized request; [`AggLlmResponse`] is the buffered response;
 /// [`LlmResponseChunk`] is one streaming event; [`LlmResponse`] is the streamed response
 /// (a live [`LlmResponseStream`] or the terminal aggregate).
-pub use switchyard_protocol::{
-    AggLlmResponse, Context, Decision, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, Metadata, Request, Response, RoutedLlmClient, Signals, Usage,
+use switchyard_protocol::{
+    Context, Decision, LlmClientError, Request, Response, RoutedLlmClient, Signals, Usage,
 };
 
 use super::driver::{DriverRequest, DriverStep, TypeErasedDriver};
@@ -784,7 +783,9 @@ pub trait Algorithm: Send + Sync + 'static {
 mod tests {
     use super::*;
     use futures::StreamExt;
-    use switchyard_protocol::{completion_text, text_request, text_response};
+    use switchyard_protocol::{
+        completion_text, text_request, text_response, LlmResponse, LlmResponseChunk,
+    };
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
