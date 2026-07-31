@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-components"
-version = "0.1.0"
+version.workspace = true
 description = "Concrete Switchyard backends and processors"
 authors.workspace = true
 edition.workspace = true

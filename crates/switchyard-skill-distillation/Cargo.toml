@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-skill-distillation"
-version = "0.1.0"
+version.workspace = true
 description = "Source-neutral Rust contracts for Switchyard skill distillation"
 authors.workspace = true
 edition.workspace = true

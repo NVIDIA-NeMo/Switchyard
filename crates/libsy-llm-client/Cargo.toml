@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-llm-client"
-version = "0.1.0"
+version.workspace = true
 description = "HTTP LLM client speaking Switchyard's neutral IR directly"
 authors.workspace = true
 edition.workspace = true

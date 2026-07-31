@@ -3,7 +3,7 @@
 
 [package]
 name = "switchyard-py"
-version = "0.1.0"
+version.workspace = true
 description = "PyO3 bindings for Switchyard Rust crates"
 authors.workspace = true
 edition.workspace = true

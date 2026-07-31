@@ -19,7 +19,7 @@ nav:
   - Home: index.md
   - Get Started:
       - Getting Started: getting_started.md
-      - Known Issues in 0.1.0: known_issues.md
+      - Known Issues: known_issues.md
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md

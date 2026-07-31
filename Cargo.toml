@@ -15,6 +15,7 @@ members = [
 ]
 
 [workspace.package]
+version = "0.2.0"
 authors = ["NVIDIA Corporation"]
 edition = "2021"
 license = "Apache-2.0"
@@ -32,12 +33,12 @@ rand = "0.8"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-switchyard-components = { path = "crates/switchyard-components", version = "0.1.0" }
-switchyard-libsy = { path = "crates/libsy", version = "0.1.0" }
-switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.1.0" }
-switchyard-protocol = { path = "crates/protocol", version = "0.1.0" }
-switchyard-server = { path = "crates/switchyard-server", version = "0.1.0" }
-switchyard-translation = { path = "crates/switchyard-translation", version = "0.1.0" }
+switchyard-components = { path = "crates/switchyard-components", version = "0.2.0" }
+switchyard-libsy = { path = "crates/libsy", version = "0.2.0" }
+switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.2.0" }
+switchyard-protocol = { path = "crates/protocol", version = "0.2.0" }
+switchyard-server = { path = "crates/switchyard-server", version = "0.2.0" }
+switchyard-translation = { path = "crates/switchyard-translation", version = "0.2.0" }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes", "std"] }
