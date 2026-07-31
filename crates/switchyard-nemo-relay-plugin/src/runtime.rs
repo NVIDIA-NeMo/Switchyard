@@ -9,8 +9,9 @@ use std::task::{Context as TaskContext, Poll};
 use futures::Stream;
 use futures_util::StreamExt;
 use nemo_relay_plugin::{
-    Json, LlmCallErrorV2, LlmDispatchRequestV2, LlmDispatchTargetV2, LlmRequest as RelayRequest,
-    NemoRelayNativeAsyncNext, NemoRelayNativeAsyncStream, NemoRelayNativeHostApiV4, PluginRuntime,
+    Json, LlmContinuationFailureV2, LlmContinuationInvocationV2, LlmContinuationTargetV2,
+    LlmNonHttpFailureKindV2, LlmRequest as RelayRequest, NemoRelayNativeAsyncNext,
+    NemoRelayNativeAsyncStream, NemoRelayNativeHostApiV4, PluginRuntime,
 };
 use serde::Deserialize;
 use serde_json::{json, Map};
@@ -34,7 +35,7 @@ pub struct Invocation {
 pub struct SwitchyardRuntime {
     config: SwitchyardConfig,
     algorithm: Arc<dyn Algorithm>,
-    target_headers: BTreeMap<String, Map<String, Json>>,
+    target_headers: BTreeMap<String, BTreeMap<String, String>>,
     translation: TranslationEngine,
     relay: PluginRuntime,
 }
@@ -104,18 +105,14 @@ impl SwitchyardRuntime {
                 Err(failure) if failure.retryable() && attempt < max_attempts => {
                     self.mark(
                         "switchyard.routing.retry",
-                        json!({"attempt": attempt, "error": failure.error.to_string()}),
+                        failure_mark_data(attempt, &failure),
                         identity_metadata(&invocation.request),
                     );
                 }
                 Err(failure) => {
                     self.mark(
                         "switchyard.routing.error",
-                        json!({
-                            "attempt": attempt,
-                            "retryable": failure.retryable(),
-                            "error": failure.error.to_string(),
-                        }),
+                        failure_mark_data(attempt, &failure),
                         identity_metadata(&invocation.request),
                     );
                     return self
@@ -183,7 +180,7 @@ impl SwitchyardRuntime {
         call: CallLlmRequest,
         host: &NemoRelayNativeHostApiV4,
         next: *const NemoRelayNativeAsyncNext,
-        provider_error: Arc<Mutex<Option<LlmCallErrorV2>>>,
+        provider_error: Arc<Mutex<Option<LlmContinuationFailureV2>>>,
     ) -> switchyard_libsy::Result<()> {
         let routed = call.get_routed().clone();
         let target_name = routed.decision.selected_model().to_string();
@@ -207,7 +204,7 @@ impl SwitchyardRuntime {
                     if let Ok(mut stored) = provider_error.lock() {
                         *stored = Some(error.clone());
                     }
-                    Err(client_error(error, &target_name))
+                    Err(client_error(error))
                 }
             }
         }
@@ -267,30 +264,28 @@ impl SwitchyardRuntime {
         target: &TargetBinding,
         mut request: Request,
         streaming: bool,
-    ) -> Result<LlmDispatchRequestV2, LlmClientError> {
+    ) -> Result<LlmContinuationInvocationV2, LlmClientError> {
         request.llm_request.stream = streaming;
         let headers = self
             .target_headers
             .get(target_name)
             .cloned()
             .unwrap_or_default();
-        let mut request = translation::encode_request(
-            &self.translation,
-            target.protocol,
-            &request.llm_request,
-            headers,
-        )
-        .map_err(LlmClientError::RequestEncoding)?;
+        let mut request =
+            translation::encode_request(&self.translation, target.protocol, &request.llm_request)
+                .map_err(LlmClientError::RequestEncoding)?;
         let body = request.content.as_object_mut().ok_or_else(|| {
             LlmClientError::RequestEncoding("translated provider request is not an object".into())
         })?;
         body.insert("model".into(), Json::String(target.model.clone()));
         body.insert("stream".into(), Json::Bool(streaming));
-        Ok(LlmDispatchRequestV2 {
+        Ok(LlmContinuationInvocationV2 {
             request,
-            target: LlmDispatchTargetV2 {
+            target: LlmContinuationTargetV2 {
+                method: "POST".into(),
                 url: target.dispatch_url(),
                 route: target.protocol.relay_route(),
+                headers,
             },
         })
     }
@@ -449,7 +444,7 @@ impl SwitchyardRuntime {
         host: &NemoRelayNativeHostApiV4,
         next: *const NemoRelayNativeAsyncNext,
         output: *const NemoRelayNativeAsyncStream,
-        provider_error: Arc<Mutex<Option<LlmCallErrorV2>>>,
+        provider_error: Arc<Mutex<Option<LlmContinuationFailureV2>>>,
     ) -> switchyard_libsy::Result<()> {
         let routed = call.get_routed().clone();
         let target_name = routed.decision.selected_model().to_string();
@@ -474,7 +469,7 @@ impl SwitchyardRuntime {
         host: &NemoRelayNativeHostApiV4,
         next: *const NemoRelayNativeAsyncNext,
         output: *const NemoRelayNativeAsyncStream,
-        provider_error: Arc<Mutex<Option<LlmCallErrorV2>>>,
+        provider_error: Arc<Mutex<Option<LlmContinuationFailureV2>>>,
     ) -> Result<Response, LlmClientError> {
         let target = self.target(target_name)?;
         let metadata = request.metadata.clone();
@@ -483,14 +478,14 @@ impl SwitchyardRuntime {
             Ok(upstream) => upstream,
             Err(error) => {
                 remember_provider_error(&provider_error, &error);
-                return Err(client_error(error, target_name));
+                return Err(client_error(error));
             }
         };
         let first_raw = match upstream.next().await {
             Some(Ok(first)) => first,
             Some(Err(error)) => {
                 remember_provider_error(&provider_error, &error);
-                return Err(client_error(error, target_name));
+                return Err(client_error(error));
             }
             None => {
                 return Err(LlmClientError::InvalidResponse {
@@ -512,7 +507,6 @@ impl SwitchyardRuntime {
             first: Some(first),
             protocol: target.protocol,
             state,
-            target_name: target_name.to_string(),
             provider_error,
         });
         Ok(Response {
@@ -530,7 +524,7 @@ impl SwitchyardRuntime {
         inbound: WireProtocol,
         host: &NemoRelayNativeHostApiV4,
         output: *const NemoRelayNativeAsyncStream,
-        provider_error: &Arc<Mutex<Option<LlmCallErrorV2>>>,
+        provider_error: &Arc<Mutex<Option<LlmContinuationFailureV2>>>,
     ) -> Result<(), StreamAttemptFailure> {
         let source = response
             .metadata
@@ -633,7 +627,7 @@ impl SwitchyardRuntime {
     fn emit_stream_retry(&self, attempt: u32, failure: &RunFailure, metadata: &Json) {
         self.mark(
             "switchyard.routing.retry",
-            json!({"attempt": attempt, "error": failure.error.to_string()}),
+            failure_mark_data(attempt, failure),
             metadata.clone(),
         );
     }
@@ -641,11 +635,7 @@ impl SwitchyardRuntime {
     fn emit_stream_error(&self, attempt: u32, failure: &RunFailure, metadata: &Json) {
         self.mark(
             "switchyard.routing.error",
-            json!({
-                "attempt": attempt,
-                "retryable": failure.retryable(),
-                "error": failure.error.to_string(),
-            }),
+            failure_mark_data(attempt, failure),
             metadata.clone(),
         );
     }
@@ -653,7 +643,7 @@ impl SwitchyardRuntime {
 
 struct StreamRun {
     response: Response,
-    provider_error: Arc<Mutex<Option<LlmCallErrorV2>>>,
+    provider_error: Arc<Mutex<Option<LlmContinuationFailureV2>>>,
 }
 
 struct TranslatedProviderStream {
@@ -661,8 +651,7 @@ struct TranslatedProviderStream {
     first: Option<LlmResponseStreamEvent>,
     protocol: WireProtocol,
     state: StreamTranslationState,
-    target_name: String,
-    provider_error: Arc<Mutex<Option<LlmCallErrorV2>>>,
+    provider_error: Arc<Mutex<Option<LlmContinuationFailureV2>>>,
 }
 
 impl Stream for TranslatedProviderStream {
@@ -686,7 +675,7 @@ impl Stream for TranslatedProviderStream {
             }
             Poll::Ready(Some(Err(error))) => {
                 remember_provider_error(&self.provider_error, &error);
-                Poll::Ready(Some(Err(client_error(error, &self.target_name))))
+                Poll::Ready(Some(Err(client_error(error))))
             }
             Poll::Ready(None) => Poll::Ready(None),
         }
@@ -719,8 +708,8 @@ fn decode_provider_event(
 }
 
 fn remember_provider_error(
-    provider_error: &Arc<Mutex<Option<LlmCallErrorV2>>>,
-    error: &LlmCallErrorV2,
+    provider_error: &Arc<Mutex<Option<LlmContinuationFailureV2>>>,
+    error: &LlmContinuationFailureV2,
 ) {
     if let Ok(mut stored) = provider_error.lock() {
         *stored = Some(error.clone());
@@ -736,7 +725,7 @@ impl StreamAttemptFailure {
     fn client(
         error: LlmClientError,
         committed: bool,
-        provider_error: &Arc<Mutex<Option<LlmCallErrorV2>>>,
+        provider_error: &Arc<Mutex<Option<LlmContinuationFailureV2>>>,
     ) -> Self {
         Self {
             failure: RunFailure::new(
@@ -750,7 +739,7 @@ impl StreamAttemptFailure {
     fn translation(
         error: &str,
         committed: bool,
-        provider_error: &Arc<Mutex<Option<LlmCallErrorV2>>>,
+        provider_error: &Arc<Mutex<Option<LlmContinuationFailureV2>>>,
     ) -> Self {
         Self::client(
             LlmClientError::ResponseTranslation(error.to_string()),
@@ -762,11 +751,14 @@ impl StreamAttemptFailure {
 
 struct RunFailure {
     error: LibsyError,
-    provider_error: Option<LlmCallErrorV2>,
+    provider_error: Option<LlmContinuationFailureV2>,
 }
 
 impl RunFailure {
-    fn new(error: LibsyError, provider_error: &Arc<Mutex<Option<LlmCallErrorV2>>>) -> Self {
+    fn new(
+        error: LibsyError,
+        provider_error: &Arc<Mutex<Option<LlmContinuationFailureV2>>>,
+    ) -> Self {
         Self {
             error,
             provider_error: provider_error.lock().ok().and_then(|error| error.clone()),
@@ -776,46 +768,70 @@ impl RunFailure {
     fn retryable(&self) -> bool {
         self.provider_error
             .as_ref()
-            .is_some_and(LlmCallErrorV2::is_retryable)
+            .is_some_and(LlmContinuationFailureV2::is_retryable)
     }
 }
 
-fn client_error(error: LlmCallErrorV2, model: &str) -> LlmClientError {
+fn client_error(error: LlmContinuationFailureV2) -> LlmClientError {
     match error {
-        LlmCallErrorV2::Upstream {
-            class,
-            status,
-            body,
-            ..
-        } => match class {
-            nemo_relay_plugin::LlmUpstreamFailureClassV2::Connection => LlmClientError::Transport {
-                source: Box::new(std::io::Error::other(body)),
+        LlmContinuationFailureV2::Http { failure } => LlmClientError::UpstreamHttp {
+            status: failure.status,
+            body: failure.body,
+        },
+        LlmContinuationFailureV2::NonHttp { failure } => match failure.kind {
+            LlmNonHttpFailureKindV2::Transport => LlmClientError::Transport {
+                source: Box::new(std::io::Error::other(failure.message)),
             },
-            nemo_relay_plugin::LlmUpstreamFailureClassV2::Timeout => LlmClientError::Timeout {
-                source: Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, body)),
+            LlmNonHttpFailureKindV2::Timeout => LlmClientError::Timeout {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    failure.message,
+                )),
             },
-            nemo_relay_plugin::LlmUpstreamFailureClassV2::ContextWindow => {
-                LlmClientError::ContextWindowExceeded {
-                    model: model.into(),
-                    message: body,
+            LlmNonHttpFailureKindV2::InvalidRequest | LlmNonHttpFailureKindV2::Guardrail => {
+                LlmClientError::InvalidRequest {
+                    message: failure.message,
                 }
             }
-            nemo_relay_plugin::LlmUpstreamFailureClassV2::InvalidRequest
-            | nemo_relay_plugin::LlmUpstreamFailureClassV2::Authentication => {
-                LlmClientError::InvalidRequest { message: body }
+            LlmNonHttpFailureKindV2::Cancelled | LlmNonHttpFailureKindV2::Internal => {
+                LlmClientError::General(failure.message)
             }
-            _ => match status {
-                Some(status) => LlmClientError::UpstreamHttp { status, body },
-                None => LlmClientError::General(body),
-            },
         },
-        LlmCallErrorV2::InvalidRequest { message }
-        | LlmCallErrorV2::GuardrailRejected { message } => {
-            LlmClientError::InvalidRequest { message }
+    }
+}
+
+fn failure_mark_data(attempt: u32, failure: &RunFailure) -> Json {
+    let mut data = Map::from_iter([
+        ("attempt".into(), Json::from(attempt)),
+        ("retryable".into(), Json::from(failure.retryable())),
+    ]);
+    match &failure.provider_error {
+        Some(LlmContinuationFailureV2::Http { failure }) => {
+            data.insert("failure_kind".into(), Json::from("http"));
+            data.insert("http_status".into(), Json::from(failure.status));
         }
-        LlmCallErrorV2::Cancelled { message } | LlmCallErrorV2::Internal { message } => {
-            LlmClientError::General(message)
+        Some(LlmContinuationFailureV2::NonHttp { failure }) => {
+            data.insert("failure_kind".into(), Json::from("non_http"));
+            data.insert(
+                "non_http_kind".into(),
+                Json::from(non_http_failure_label(failure.kind)),
+            );
         }
+        None => {
+            data.insert("failure_kind".into(), Json::from("algorithm"));
+        }
+    }
+    Json::Object(data)
+}
+
+const fn non_http_failure_label(kind: LlmNonHttpFailureKindV2) -> &'static str {
+    match kind {
+        LlmNonHttpFailureKindV2::Transport => "transport",
+        LlmNonHttpFailureKindV2::Timeout => "timeout",
+        LlmNonHttpFailureKindV2::Cancelled => "cancelled",
+        LlmNonHttpFailureKindV2::InvalidRequest => "invalid_request",
+        LlmNonHttpFailureKindV2::Guardrail => "guardrail",
+        LlmNonHttpFailureKindV2::Internal => "internal",
     }
 }
 
@@ -834,4 +850,67 @@ fn identity_metadata(request: &RelayRequest) -> Json {
         "turn_id": metadata.turn_id,
         "request_id": metadata.correlation_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nemo_relay_plugin::{LlmHttpFailureV2, LlmNonHttpFailureV2};
+
+    #[test]
+    fn http_failures_keep_status_semantics_without_provider_classification() {
+        let error = client_error(LlmContinuationFailureV2::Http {
+            failure: LlmHttpFailureV2 {
+                status: 400,
+                body: "context length exceeded".into(),
+                headers: BTreeMap::new(),
+            },
+        });
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamHttp { status: 400, .. }
+        ));
+    }
+
+    #[test]
+    fn routing_failure_marks_exclude_provider_payloads() {
+        let failure = RunFailure {
+            error: LibsyError::MissingFinalResponse,
+            provider_error: Some(LlmContinuationFailureV2::Http {
+                failure: LlmHttpFailureV2 {
+                    status: 429,
+                    body: "provider body must not be recorded".into(),
+                    headers: BTreeMap::from([("retry-after".into(), "secret".into())]),
+                },
+            }),
+        };
+        assert_eq!(
+            failure_mark_data(2, &failure),
+            json!({
+                "attempt": 2,
+                "retryable": true,
+                "failure_kind": "http",
+                "http_status": 429,
+            })
+        );
+
+        let failure = RunFailure {
+            error: LibsyError::MissingFinalResponse,
+            provider_error: Some(LlmContinuationFailureV2::NonHttp {
+                failure: LlmNonHttpFailureV2 {
+                    kind: LlmNonHttpFailureKindV2::Timeout,
+                    message: "timeout detail must not be recorded".into(),
+                },
+            }),
+        };
+        assert_eq!(
+            failure_mark_data(3, &failure),
+            json!({
+                "attempt": 3,
+                "retryable": true,
+                "failure_kind": "non_http",
+                "non_http_kind": "timeout",
+            })
+        );
+    }
 }

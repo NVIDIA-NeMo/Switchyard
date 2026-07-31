@@ -7,8 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 
 This crate builds the external `nvidia.switchyard` native plugin. It embeds
 `switchyard-libsy` and drives `Algorithm::run_stream`; NeMo Relay remains
-responsible for provider transport, authentication, retries, fallback, and
-observability.
+responsible for provider transport, retries, fallback, and observability. The
+plugin resolves each target's provider headers and credentials.
 
 The plugin requires NeMo Relay native plugin C API v2. It does not link the
 Relay runtime, use `switchyard-llm-client`, or start `switchyard-server`.
@@ -36,10 +36,19 @@ For every managed LLM call, the plugin:
    `CallLlmRequest::respond`; and
 7. translates `ReturnToAgent` back to the caller protocol.
 
-Relay owns URLs, credentials, provider transport, retries, fallback, stream
-commitment, and event export. Switchyard owns routing and translation. The
-plugin contains no Relay provider codecs and does not use private dispatch
+Switchyard owns routing, translation, target URLs, and target credentials.
+Relay validates and transports the selected HTTP target, runs it through the
+captured LLM continuation, and owns retries, fallback, stream commitment, and
+event export. Target data never enters `LlmRequest.headers`, marks, or spans.
+The plugin contains no Relay provider codecs and does not use private dispatch
 headers.
+
+Provider failures use HTTP semantics: status, a bounded body, and safe response
+headers when Relay received an HTTP response; otherwise a transport, timeout,
+cancelled, invalid-request, guardrail, or internal kind. Retry policy is derived
+from those values rather than serialized. HTTP 408, 425, 429, 500, 502, 503,
+and 504 plus transport and timeout failures retry. The plugin does not inspect
+provider bodies to reclassify HTTP 400 context-window or HTTP 404 model errors.
 
 `switchyard-translation` is used for same-protocol routes as well as
 cross-protocol routes. Same-protocol response events replay their preserved
@@ -136,6 +145,7 @@ It launches a local three-protocol fake provider and real Relay process. The
 test covers:
 
 - exact same-protocol unknown-field and raw-stream replay;
+- isolated target credentials and headers without source-header inheritance;
 - buffered and streaming OpenAI Chat, OpenAI Responses, and Anthropic
   Messages routes;
 - cross-protocol request/response translation;

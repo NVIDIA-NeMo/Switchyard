@@ -28,14 +28,13 @@ pub fn encode_request(
     engine: &TranslationEngine,
     protocol: WireProtocol,
     request: &LlmRequest,
-    headers: Map<String, Json>,
 ) -> Result<RelayRequest, String> {
     let output = engine
         .encode_request(protocol.wire_format(), request, &request_policy(protocol))
         .map_err(error)?;
     safe(&output.diagnostics)?;
     Ok(RelayRequest {
-        headers,
+        headers: Map::new(),
         content: output.body,
     })
 }

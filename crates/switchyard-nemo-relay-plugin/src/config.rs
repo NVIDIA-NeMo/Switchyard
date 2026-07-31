@@ -5,9 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use http::header::{HeaderName, HeaderValue};
-use nemo_relay_plugin::LlmDispatchRouteV2;
+use nemo_relay_plugin::LlmContinuationRouteV2;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value as Json};
 use switchyard_libsy::algorithms::{LlmTaskClassifier, Random, TaskClassifierConfig};
 use switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet};
 use switchyard_protocol::WireFormat;
@@ -50,11 +49,11 @@ impl WireProtocol {
         }
     }
 
-    pub const fn relay_route(self) -> LlmDispatchRouteV2 {
+    pub const fn relay_route(self) -> LlmContinuationRouteV2 {
         match self {
-            Self::OpenaiChat => LlmDispatchRouteV2::OpenaiChat,
-            Self::OpenaiResponses => LlmDispatchRouteV2::OpenaiResponses,
-            Self::AnthropicMessages => LlmDispatchRouteV2::AnthropicMessages,
+            Self::OpenaiChat => LlmContinuationRouteV2::OpenaiChat,
+            Self::OpenaiResponses => LlmContinuationRouteV2::OpenaiResponses,
+            Self::AnthropicMessages => LlmContinuationRouteV2::AnthropicMessages,
         }
     }
 
@@ -106,11 +105,11 @@ impl TargetBinding {
         format!("{base}{endpoint}")
     }
 
-    pub fn resolved_headers(&self) -> Result<Map<String, Json>, String> {
-        let mut headers = Map::new();
+    pub fn resolved_headers(&self) -> Result<BTreeMap<String, String>, String> {
+        let mut headers = BTreeMap::new();
         for (name, value) in &self.headers {
             validate_header(name, value)?;
-            headers.insert(name.clone(), Json::String(value.clone()));
+            headers.insert(name.clone(), value.clone());
         }
         for (name, variable) in &self.header_env {
             if self
@@ -125,7 +124,7 @@ impl TargetBinding {
             let value = std::env::var(variable)
                 .map_err(|_| format!("environment variable {variable:?} is not set"))?;
             validate_header(name, &value)?;
-            headers.insert(name.clone(), Json::String(value));
+            headers.insert(name.clone(), value);
         }
         Ok(headers)
     }

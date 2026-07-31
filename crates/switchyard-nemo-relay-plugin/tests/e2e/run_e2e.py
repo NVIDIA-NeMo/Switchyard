@@ -23,6 +23,8 @@ from typing import Any, cast
 
 HERE = Path(__file__).resolve().parent
 CRATE_ROOT = HERE.parents[1]
+TARGET_AUTHORIZATION = "Bearer target-e2e"
+TARGET_AUTHORIZATION_ENV = "SWITCHYARD_E2E_TARGET_AUTHORIZATION"
 
 
 def free_port() -> int:
@@ -207,6 +209,7 @@ class RelayScenario:
         subprocess.run(
             [str(self.relay_bin), "plugins", "enable", "nvidia.switchyard"],
             cwd=self.root,
+            env={**os.environ, TARGET_AUTHORIZATION_ENV: TARGET_AUTHORIZATION},
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -223,6 +226,7 @@ class RelayScenario:
                 "warn",
             ],
             cwd=self.root,
+            env={**os.environ, TARGET_AUTHORIZATION_ENV: TARGET_AUTHORIZATION},
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -293,10 +297,16 @@ def run_same_protocol(
         '[plugins.dynamic.config.algorithm]\nkind = "random"\nseed = 7',
         """\
 [plugins.dynamic.config.targets.chat]
-model = "fake/chat"
+model = "fake/header-target"
 protocol = "openai_chat"
 base_url = "{provider_url}/v1"
 weight = 1
+
+[plugins.dynamic.config.targets.chat.header_env]
+authorization = "SWITCHYARD_E2E_TARGET_AUTHORIZATION"
+
+[plugins.dynamic.config.targets.chat.headers]
+x-switchyard-target = "same"
 """,
         'openai_chat = "chat"',
         '"openai_chat"',
@@ -518,7 +528,14 @@ def run_retry_and_fallback(
         status, raw = request(relay.url, CASES[0][1], body)
         assert status == 200
         assert json.loads(raw)["model"] == "fake/retry-once"
-    assert len(relay.marks("switchyard.routing.retry")) == 1
+    retry_marks = relay.marks("switchyard.routing.retry")
+    assert len(retry_marks) == 1
+    assert retry_marks[0]["data"] == {
+        "attempt": 1,
+        "retryable": True,
+        "failure_kind": "http",
+        "http_status": 503,
+    }
     assert not relay.marks("switchyard.routing.fallback", expected=0)
 
     fallback_config = single_target_config(
@@ -536,7 +553,14 @@ def run_retry_and_fallback(
         status, raw = request(relay.url, CASES[0][1], body)
         assert status == 200
         assert json.loads(raw)["model"] == "fake/trusted-fallback"
-    assert len(relay.marks("switchyard.routing.error")) == 1
+    error_marks = relay.marks("switchyard.routing.error")
+    assert len(error_marks) == 1
+    assert error_marks[0]["data"] == {
+        "attempt": 1,
+        "retryable": False,
+        "failure_kind": "http",
+        "http_status": 400,
+    }
     assert len(relay.marks("switchyard.routing.fallback")) == 1
 
     calls = http_json(provider_url, "/calls")
@@ -650,6 +674,17 @@ def main() -> None:
             "reliability": run_retry_and_fallback(
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
+        }
+        recorded = [
+            path
+            for path in root.rglob("*")
+            if path.suffix in {".jsonl", ".log", ".toml"}
+            and TARGET_AUTHORIZATION in path.read_text(encoding="utf-8")
+        ]
+        assert not recorded, f"target credential was recorded in {recorded}"
+        summary["target_headers"] = {
+            "source_credentials_replaced": True,
+            "credential_recorded": False,
         }
         print(json.dumps(summary, indent=2, sort_keys=True))
     finally:

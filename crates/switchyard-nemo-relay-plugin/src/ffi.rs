@@ -10,7 +10,8 @@ use std::task::{Context, Poll};
 use futures::channel::oneshot;
 use futures::Stream;
 use nemo_relay_plugin::{
-    LlmCallErrorV2, LlmCallOutcomeV2, LlmDispatchRequestV2, LlmRequest, LlmStreamEventV2,
+    LlmContinuationFailureV2, LlmContinuationInvocationV2, LlmContinuationOutcomeV2,
+    LlmContinuationStreamEventV2, LlmNonHttpFailureKindV2, LlmNonHttpFailureV2, LlmRequest,
     NemoRelayNativeAsyncCompletion, NemoRelayNativeAsyncNext, NemoRelayNativeAsyncNextStreamCb,
     NemoRelayNativeAsyncStream, NemoRelayNativeHostApiV1, NemoRelayNativeHostApiV4,
     NemoRelayNativeLlmStreamV2, NemoRelayNativeString, NemoRelayStatus,
@@ -82,10 +83,10 @@ pub fn read_json(
 pub async fn dispatch_buffered(
     host: &NemoRelayNativeHostApiV4,
     next: *const NemoRelayNativeAsyncNext,
-    dispatch: &LlmDispatchRequestV2,
-) -> Result<Json, LlmCallErrorV2> {
+    dispatch: &LlmContinuationInvocationV2,
+) -> Result<Json, LlmContinuationFailureV2> {
     let dispatch = HostString::json(&host.v3.v1, dispatch).map_err(internal_error)?;
-    let (sender, receiver) = oneshot::channel::<LlmCallOutcomeV2>();
+    let (sender, receiver) = oneshot::channel::<LlmContinuationOutcomeV2>();
     let sender = Box::into_raw(Box::new(sender)).cast::<c_void>();
     let status = unsafe {
         (host.async_llm_next_invoke_result_v2)(next, dispatch.as_ptr(), buffered_result, sender)
@@ -93,7 +94,7 @@ pub async fn dispatch_buffered(
     if status != NemoRelayStatus::Ok {
         unsafe {
             drop(Box::from_raw(
-                sender.cast::<oneshot::Sender<LlmCallOutcomeV2>>(),
+                sender.cast::<oneshot::Sender<LlmContinuationOutcomeV2>>(),
             ))
         };
         return Err(internal_error(format!(
@@ -101,8 +102,8 @@ pub async fn dispatch_buffered(
         )));
     }
     match receiver.await {
-        Ok(LlmCallOutcomeV2::Success { response }) => Ok(response),
-        Ok(LlmCallOutcomeV2::Failure { error }) => Err(error),
+        Ok(LlmContinuationOutcomeV2::Success { response }) => Ok(response),
+        Ok(LlmContinuationOutcomeV2::Failure { error }) => Err(error),
         Err(_) => Err(internal_error(
             "Relay dropped the buffered dispatch callback".into(),
         )),
@@ -237,11 +238,12 @@ unsafe extern "C" fn buffered_result(
     user_data: *mut c_void,
     outcome_json: *const NemoRelayNativeString,
 ) {
-    let sender = unsafe { Box::from_raw(user_data.cast::<oneshot::Sender<LlmCallOutcomeV2>>()) };
+    let sender =
+        unsafe { Box::from_raw(user_data.cast::<oneshot::Sender<LlmContinuationOutcomeV2>>()) };
     let host = crate::host();
     let outcome = read_json(&host.v3.v1, outcome_json)
         .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
-        .unwrap_or_else(|error| LlmCallOutcomeV2::Failure {
+        .unwrap_or_else(|error| LlmContinuationOutcomeV2::Failure {
             error: internal_error(format!("invalid Relay buffered outcome: {error}")),
         });
     let _ = sender.send(outcome);
@@ -251,10 +253,10 @@ pub async fn dispatch_stream(
     host: &NemoRelayNativeHostApiV4,
     next: *const NemoRelayNativeAsyncNext,
     output_stream: *const NemoRelayNativeAsyncStream,
-    dispatch: &LlmDispatchRequestV2,
-) -> Result<ProviderJsonStream, LlmCallErrorV2> {
+    dispatch: &LlmContinuationInvocationV2,
+) -> Result<ProviderJsonStream, LlmContinuationFailureV2> {
     let dispatch = HostString::json(&host.v3.v1, dispatch).map_err(internal_error)?;
-    let (sender, receiver) = oneshot::channel::<Result<usize, LlmCallErrorV2>>();
+    let (sender, receiver) = oneshot::channel::<Result<usize, LlmContinuationFailureV2>>();
     let sender = Box::into_raw(Box::new(sender)).cast::<c_void>();
     let status = unsafe {
         (host.async_llm_next_open_stream_v2)(
@@ -268,7 +270,7 @@ pub async fn dispatch_stream(
     if status != NemoRelayStatus::Ok {
         unsafe {
             drop(Box::from_raw(
-                sender.cast::<oneshot::Sender<Result<usize, LlmCallErrorV2>>>(),
+                sender.cast::<oneshot::Sender<Result<usize, LlmContinuationFailureV2>>>(),
             ))
         };
         return Err(internal_error(format!(
@@ -292,7 +294,7 @@ unsafe extern "C" fn provider_stream_open(
     error_json: *const NemoRelayNativeString,
 ) {
     let sender = unsafe {
-        Box::from_raw(user_data.cast::<oneshot::Sender<Result<usize, LlmCallErrorV2>>>())
+        Box::from_raw(user_data.cast::<oneshot::Sender<Result<usize, LlmContinuationFailureV2>>>())
     };
     let host = crate::host();
     let result = if error_json.is_null() {
@@ -314,14 +316,14 @@ unsafe extern "C" fn provider_stream_open(
 pub struct ProviderJsonStream {
     host: NemoRelayNativeHostApiV4,
     stream: *const NemoRelayNativeLlmStreamV2,
-    pending: Option<oneshot::Receiver<LlmStreamEventV2>>,
+    pending: Option<oneshot::Receiver<LlmContinuationStreamEventV2>>,
     done: bool,
 }
 
 unsafe impl Send for ProviderJsonStream {}
 
 impl Stream for ProviderJsonStream {
-    type Item = Result<Json, LlmCallErrorV2>;
+    type Item = Result<Json, LlmContinuationFailureV2>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.done {
@@ -336,7 +338,7 @@ impl Stream for ProviderJsonStream {
             if status != NemoRelayStatus::Ok {
                 unsafe {
                     drop(Box::from_raw(
-                        sender.cast::<oneshot::Sender<LlmStreamEventV2>>(),
+                        sender.cast::<oneshot::Sender<LlmContinuationStreamEventV2>>(),
                     ))
                 };
                 self.done = true;
@@ -349,16 +351,16 @@ impl Stream for ProviderJsonStream {
         let receiver = self.pending.as_mut().expect("pending receiver was set");
         match Pin::new(receiver).poll(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(LlmStreamEventV2::Chunk { chunk })) => {
+            Poll::Ready(Ok(LlmContinuationStreamEventV2::Chunk { chunk })) => {
                 self.pending = None;
                 Poll::Ready(Some(Ok(chunk)))
             }
-            Poll::Ready(Ok(LlmStreamEventV2::Failure { error })) => {
+            Poll::Ready(Ok(LlmContinuationStreamEventV2::Failure { error })) => {
                 self.pending = None;
                 self.done = true;
                 Poll::Ready(Some(Err(error)))
             }
-            Poll::Ready(Ok(LlmStreamEventV2::Done)) => {
+            Poll::Ready(Ok(LlmContinuationStreamEventV2::Done)) => {
                 self.pending = None;
                 self.done = true;
                 Poll::Ready(None)
@@ -387,11 +389,12 @@ unsafe extern "C" fn provider_stream_next(
     user_data: *mut c_void,
     event_json: *const NemoRelayNativeString,
 ) {
-    let sender = unsafe { Box::from_raw(user_data.cast::<oneshot::Sender<LlmStreamEventV2>>()) };
+    let sender =
+        unsafe { Box::from_raw(user_data.cast::<oneshot::Sender<LlmContinuationStreamEventV2>>()) };
     let host = crate::host();
     let event = read_json(&host.v3.v1, event_json)
         .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
-        .unwrap_or_else(|error| LlmStreamEventV2::Failure {
+        .unwrap_or_else(|error| LlmContinuationStreamEventV2::Failure {
             error: internal_error(format!("invalid Relay stream event: {error}")),
         });
     let _ = sender.send(event);
@@ -466,6 +469,11 @@ pub unsafe fn release_stream(
     unsafe { (host.v3.async_stream_release)(stream) };
 }
 
-pub fn internal_error(message: String) -> LlmCallErrorV2 {
-    LlmCallErrorV2::Internal { message }
+pub fn internal_error(message: String) -> LlmContinuationFailureV2 {
+    LlmContinuationFailureV2::NonHttp {
+        failure: LlmNonHttpFailureV2 {
+            kind: LlmNonHttpFailureKindV2::Internal,
+            message,
+        },
+    }
 }

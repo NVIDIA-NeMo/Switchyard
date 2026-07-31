@@ -41,6 +41,12 @@ class Handler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(size) or b"{}")
         model = request.get("model", "unknown")
         attempt = call_number(model)
+        if model == "fake/header-target" and (
+            self.headers.get("authorization") != "Bearer target-e2e"
+            or self.headers.get("x-switchyard-target") != "same"
+        ):
+            self._json(401, {"error": {"message": "target headers were not isolated"}})
+            return
         if model == "fake/retry-once" and attempt == 1:
             self._json(503, {"error": {"message": "retry this request"}})
             return
