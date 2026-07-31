@@ -192,6 +192,7 @@ impl TranslatingLlmClient {
                 attempt = attempt + 1,
                 max_attempts,
                 retry = attempt > 0,
+                openinference.span.kind = "CHAIN",
                 outcome = tracing::field::Empty,
                 status_code = tracing::field::Empty,
                 will_retry = tracing::field::Empty,

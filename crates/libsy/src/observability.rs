@@ -116,6 +116,7 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         "libsy.run",
         algorithm,
         switchyard.algorithm = algorithm,
+        openinference.span.kind = "CHAIN",
         switchyard.route = tracing::field::Empty,
         session_id = tracing::field::Empty,
         session.id = tracing::field::Empty,

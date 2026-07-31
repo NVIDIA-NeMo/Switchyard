@@ -192,6 +192,7 @@ impl Driver {
         fields(
             algorithm = observability::algorithm_label(&routed.ctx),
             selected_model = routed.decision.selected_model(),
+            openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             error = tracing::field::Empty,
             input_tokens = tracing::field::Empty,
@@ -689,6 +690,7 @@ pub trait Algorithm: Send + Sync + 'static {
                 selected_model = call.get_decision().selected_model(),
                 otel.kind = "client",
                 otel.name = %format_args!("chat {}", call.get_decision().selected_model()),
+                openinference.span.kind = "LLM",
                 gen_ai.operation.name = "chat",
                 gen_ai.request.model = call.get_decision().selected_model(),
                 gen_ai.request.stream = tracing::field::Empty,

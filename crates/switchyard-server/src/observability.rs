@@ -55,6 +55,7 @@ pub(crate) fn request_span(headers: &HeaderMap) -> tracing::Span {
         target: "switchyard_server",
         "switchyard.request",
         otel.kind = "server",
+        openinference.span.kind = "CHAIN",
     );
     let _ = span.set_parent(parent);
     span
