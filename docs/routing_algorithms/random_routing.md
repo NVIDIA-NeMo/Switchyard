@@ -1,5 +1,8 @@
-# Random Routing
-
+---
+title: "Random Routing"
+description: "Split traffic between two or more model targets with fixed weights in a TOML deployment."
+position: 2
+---
 Random routing selects one configured target for each request without inspecting
 the prompt. It supports two or more targets.
 
@@ -77,7 +80,7 @@ therefore use different targets.
 
 ## Run the route
 
-After [building the Rust server](../getting_started.md#install), export the
+After [installing Switchyard](/get-started/getting-started#install), export the
 provider credential, validate the configuration, and start the release binary:
 
 ```bash
@@ -98,8 +101,8 @@ curl http://localhost:4000/v1/chat/completions \
 ## Experimental LiteLLM integration
 
 The package's
-[developer guide](../../examples/experimental/litellm/README.md) is the
-canonical documentation for integrating Switchyard with a Dockerized LiteLLM
+[developer guide](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/examples/experimental/litellm/README.md)
+is the canonical documentation for integrating Switchyard with a Dockerized LiteLLM
 gateway. Its source-installable client adapts libsy's dictionary contract and
 demonstrates weighted random routing between model aliases backed by
 OpenRouter. The guide covers setup, application usage, live end-to-end testing,

@@ -128,7 +128,7 @@ testing, and review do not require loading a skill.
 |---|---|
 | `publish-python-release` | Python wheel artifacts, PyPI releases, and release workflow changes |
 | `switchyard-coding-agent-launchers` | Claude Code, Codex, or OpenClaw launcher behavior |
-| `switchyard-docs` | Published MkDocs pages, strict builds, previews, and docs CI |
+| `switchyard-docs` | Published Fern docs, `fern check`, previews, and docs CI |
 | `switchyard-rust-review` | Focused review of Rust, PyO3, async, streaming, and crate boundaries |
 | `switchyard-stage-router-scorer` | Replaying benchmark trajectories through the stage-router scorer and picker |
 | `switchyard-testing-ci` | Selecting non-obvious validation or diagnosing CI failures |
@@ -354,7 +354,7 @@ uvicorn.run(build_switchyard_app(switchyard), port=4000)
 - Export new public classes from `switchyard/__init__.py` with `__all__`.
 - Write unit tests for new roles and bug fixes.
 - Use `ProxyContext.metadata` for cross-component state within a request.
-- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/context_window.md).
+- In a new `LLMBackend`, map upstream context-window 4xx to `SwitchyardError::ContextWindowExceeded` (Rust) — the chain executor uses it for evict-and-retry. See [Context-Window Handling](docs/operations/context_window.md).
 
 ### Ask first
 - Modifying `pyproject.toml` dependencies.

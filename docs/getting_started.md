@@ -1,5 +1,8 @@
-# Getting Started
-
+---
+title: "Getting Started"
+description: "Install NeMo Switchyard and launch a coding agent through the packaged OpenRouter deployment."
+position: 1
+---
 ## Install
 
 ```bash
@@ -28,4 +31,6 @@ To use another deployment:
 switchyard launch claude --model my-route --config routes.toml
 ```
 
-See `crates/switchyard-server/README.md` for the TOML schema.
+See
+[`crates/switchyard-server/README.md`](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/switchyard-server/README.md)
+for the TOML schema.

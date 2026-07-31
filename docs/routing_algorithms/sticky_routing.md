@@ -1,5 +1,8 @@
-# Sticky Routing
-
+---
+title: "Sticky Routing"
+description: "Keep multi-turn conversations on one model tier to preserve upstream prompt and KV caches."
+position: 4
+---
 By default, routing is recomputed on every request, so a single task can hop
 between models mid-conversation. This throws away the upstream prompt/KV cache
 and, on the classifier router, pays for an LLM classifier call every turn.

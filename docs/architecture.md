@@ -1,5 +1,8 @@
-# Switchyard Architecture
-
+---
+title: "Architecture"
+description: "Understand how NeMo Switchyard routes requests, translates provider formats, and handles responses end to end."
+position: 2
+---
 Switchyard is an LLM traffic proxy that sits between clients and model
 backends. It keeps the client-facing API stable while applying routing policy,
 translating provider formats, and handling configured fallbacks.
@@ -36,7 +39,7 @@ flowchart TB
 Routing policy determines which model or endpoint receives a request. Depending
 on the selected strategy, that decision can use fixed weights, a classifier,
 request signals, or conversation affinity. See the
-[Routing Overview](routing_algorithms/overview.md) for the available strategies.
+[Routing Overview](/routing/overview) for the available strategies.
 
 ## Backend Wire Format
 
@@ -92,6 +95,6 @@ upstream format.
 
 ## Related Documentation
 
-- [Getting Started](getting_started.md): install Switchyard and run a first request
-- [Routing Overview](routing_algorithms/overview.md): choose and configure a routing strategy
-- [CLI Reference](cli_reference.md): configure and operate Switchyard from the command line
+- [Getting Started](/get-started/getting-started): install Switchyard and run a first request
+- [Routing Overview](/routing/overview): choose and configure a routing strategy
+- [CLI Reference](/reference/cli-reference): configure and operate Switchyard from the command line

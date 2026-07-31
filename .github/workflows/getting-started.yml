@@ -12,6 +12,8 @@ on:
     paths:
       - "docs/getting_started.md"
       - "crates/**"
+      - "switchyard/**"
+      - "switchyard_rust/**"
       - "tests/getting_started/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -24,6 +26,8 @@ on:
     paths:
       - "docs/getting_started.md"
       - "crates/**"
+      - "switchyard/**"
+      - "switchyard_rust/**"
       - "tests/getting_started/**"
       - "Cargo.toml"
       - "Cargo.lock"

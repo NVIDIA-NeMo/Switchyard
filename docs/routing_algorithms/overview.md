@@ -1,5 +1,8 @@
-# Routing Overview
-
+---
+title: "Overview"
+description: "Choose and configure passthrough, random, classifier, stage-router, escalation-router, and sticky routing behavior."
+position: 1
+---
 The Python CLI loads routing policies from a YAML bundle. Each key under
 `routes:` becomes a model ID available through OpenAI Chat Completions,
 Anthropic Messages, and OpenAI Responses requests:
@@ -15,13 +18,15 @@ configuration and tuning.
 
 | Strategy | Use it when | Route `type` |
 |---|---|---|
-| [Random Routing](random_routing.md) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random_routing` |
-| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `deterministic` |
-| [Stage-Router Routing](stage_router_routing.md) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
-| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `escalation_router` |
+| [Random Routing](/routing/random-routing) | You need a fixed strong/weak split for A/B tests, baselines, or cost experiments. | `random_routing` |
+| [LLM Classifier Routing](/routing/llm-classifier-routing) | Request content should decide whether a turn needs the weak or strong tier. | `deterministic` |
+| [Stage-Router Routing](/routing/stage-router-routing) | Tool-result and agent-progress signals should route most turns without an extra classifier call. | `stage_router` |
+| [Escalation-Router Routing](/routing/escalation-router-routing) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `escalation_router` |
 
-[Session Affinity (Sticky Routing)](sticky_routing.md) is an opt-in feature of
-LLM classifier routing, not a standalone routing strategy.
+[Session Affinity (Sticky Routing)](/routing/sticky-routing) is an opt-in feature of
+LLM classifier routing, not a standalone routing strategy. See
+[How session affinity composes](#how-session-affinity-composes) for the exact
+behavior.
 
 ## Common route shape
 
@@ -145,7 +150,7 @@ decisions never pin. Later turns reuse the tier and skip the classifier call.
 
 Pins use a bounded in-process LRU keyed from the stable conversation prefix.
 They are not shared across workers or restarts. See
-[Sticky Routing](sticky_routing.md) for configuration and key derivation.
+[Sticky Routing](/routing/sticky-routing) for configuration and key derivation.
 
 Random and stage-router routing make a fresh routing decision for each request.
 The escalation router instead uses affinity as a one-way escalation latch: only
@@ -156,5 +161,5 @@ the strong tier is pinned, and the judge runs until that latch fires.
 The `switchyard-server` binary has a separate TOML schema that explicitly
 constructs LLM clients, targets, and libsy algorithms. It does not load Python
 route bundles. See the
-[Rust server README](../../crates/switchyard-server/README.md) for its supported
+[Rust server README](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/switchyard-server/README.md) for its supported
 configuration.

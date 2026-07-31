@@ -1,5 +1,8 @@
-# CLI reference
-
+---
+title: "CLI Reference"
+description: "Reference the NeMo Switchyard launch command, options, and deployment configuration path."
+position: 1
+---
 The documented CLI workflow launches a coding agent through the native Rust
 server.
 
@@ -22,4 +25,5 @@ switchyard launch <agent> --model <route-id> [--config <deployment.toml>] [-- <a
 | `--config PATH` | TOML deployment. Defaults to the packaged OpenRouter deployment. |
 | `-- ...` | Arguments forwarded to the coding agent. |
 
-Custom deployment syntax is documented in `crates/switchyard-server/README.md`.
+Custom deployment syntax is documented in
+[`crates/switchyard-server/README.md`](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/crates/switchyard-server/README.md).

@@ -1,5 +1,8 @@
-# LLM Classifier Routing
-
+---
+title: "LLM Classifier Routing"
+description: "Use an LLM classifier to route each request to a strong or weak model target."
+position: 3
+---
 LLM classifier routing asks a classifier model to evaluate each request, then
 sends the request to a `weak` or `strong` backend. Use it when routing should
 depend on request content, tool use, context needs, or risk level instead of a
@@ -87,7 +90,7 @@ prompt determine the verdict.
 
 For a self-hosted strong, weak, or classifier target, configure it like any
 other OpenAI-compatible endpoint. See
-[Self-hosted targets](overview.md#self-hosted-targets).
+[Self-hosted targets](/routing/overview#self-hosted-targets).
 
 ## Session affinity
 
@@ -99,10 +102,10 @@ reuse that tier before classification, so they skip the classifier call;
 abstain, low-confidence, missing-signal, and fail-open decisions do not pin.
 
 Configure these fields on the `type: deterministic` entry in the `routes:`
-bundle. See [Session Affinity](sticky_routing.md) for YAML and
-[How session affinity composes](overview.md#how-session-affinity-composes) for
+bundle. See [Session Affinity](/routing/sticky-routing) for YAML and
+[How session affinity composes](/routing/overview#how-session-affinity-composes) for
 the interaction with routing decisions.
 
 If the per-request classifier cost is too high, use
-[Stage-Router Routing](stage_router_routing.md), which can route many turns from tool and
+[Stage-Router Routing](/routing/stage-router-routing), which can route many turns from tool and
 agent-progress signals without an extra classifier call.
