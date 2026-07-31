@@ -105,10 +105,16 @@ impl AggLlmResponse {
             for block in output.content {
                 match block {
                     ContentBlock::Text { text } => {
-                        chunks.push(LlmResponseChunk::TextDelta { index: output_index, text });
+                        chunks.push(LlmResponseChunk::TextDelta {
+                            index: output_index,
+                            text,
+                        });
                     }
                     ContentBlock::Reasoning { text, .. } => {
-                        chunks.push(LlmResponseChunk::ReasoningDelta { index: output_index, text });
+                        chunks.push(LlmResponseChunk::ReasoningDelta {
+                            index: output_index,
+                            text,
+                        });
                     }
                     ContentBlock::ToolCall(tool) => {
                         let args = serde_json::to_string(&tool.arguments).unwrap_or_default();
@@ -127,7 +133,9 @@ impl AggLlmResponse {
             }
             chunks.push(LlmResponseChunk::MessageStop {
                 reason: output.stop_reason.and_then(|r| {
-                    serde_json::to_value(r).ok().and_then(|v| v.as_str().map(String::from))
+                    serde_json::to_value(r)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
                 }),
             });
         }
@@ -433,7 +441,10 @@ mod tests {
         assert_eq!(recovered.id, original.id);
         assert_eq!(recovered.model, original.model);
         assert_eq!(recovered.usage.output_tokens, original.usage.output_tokens);
-        assert_eq!(recovered.outputs[0].stop_reason, original.outputs[0].stop_reason);
+        assert_eq!(
+            recovered.outputs[0].stop_reason,
+            original.outputs[0].stop_reason
+        );
         assert_eq!(recovered.outputs[0].content, original.outputs[0].content);
     }
 

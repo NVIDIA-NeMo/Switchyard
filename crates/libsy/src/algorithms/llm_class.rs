@@ -14,14 +14,15 @@ use serde::Deserialize;
 use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
 
 use super::util::escalation::{build_judge, EscalationJudge, EscalationPolicy};
+pub use super::util::EscalationJudgeConfig;
 use super::util::{
     load_judge_config, AffinityRouter, Judge, JudgeClassifier, JudgeConfig, JudgePolicy,
 };
-pub use super::util::EscalationJudgeConfig;
 use super::{DefaultTarget, FallThrough};
 use crate::{
-    AggLlmResponse, Algorithm, Classification, Classifier, Context, Driver, LibsyError, LlmResponse,
-    LlmTarget, LlmTargetSet, Request, Response, Result, RoutedLlmClient, Score, State, StateValue,
+    AggLlmResponse, Algorithm, Classification, Classifier, Context, Driver, LibsyError,
+    LlmResponse, LlmTarget, LlmTargetSet, Request, Response, Result, RoutedLlmClient, Score, State,
+    StateValue,
 };
 
 const PROMPT_TEMPLATE: &str = include_str!("../prompts/capability-classifier/prompt.md");
@@ -360,7 +361,10 @@ impl Classifier<State> for EscalationClassifier {
             })?;
         // Append the efficient reply so the judge reads this turn's completed trajectory.
         let mut judge_request = request.clone();
-        judge_request.llm_request.messages.push(assistant_message(&agg));
+        judge_request
+            .llm_request
+            .messages
+            .push(assistant_message(&agg));
         let efficient_response = Response {
             llm_response: if request.llm_request.stream {
                 LlmResponse::Stream(agg.into_stream())
@@ -390,7 +394,10 @@ impl Classifier<State> for EscalationClassifier {
             return Ok((decisive(&self.capable.semantic_name), None));
         }
 
-        Ok((decisive(&self.efficient.semantic_name), Some(efficient_response)))
+        Ok((
+            decisive(&self.efficient.semantic_name),
+            Some(efficient_response),
+        ))
     }
 }
 
@@ -1221,8 +1228,14 @@ mod tests {
         let router = escalation_router(model_client, judge_client)?;
 
         let session_request = classify_session_request();
-        router.clone().run(Context::default(), session_request.clone()).await?;
-        let (trace, _) = router.clone().run(Context::default(), session_request).await?;
+        router
+            .clone()
+            .run(Context::default(), session_request.clone())
+            .await?;
+        let (trace, _) = router
+            .clone()
+            .run(Context::default(), session_request)
+            .await?;
 
         assert_eq!(trace.last().map(|d| d.selected_model()), Some("capable"));
         Ok(())
