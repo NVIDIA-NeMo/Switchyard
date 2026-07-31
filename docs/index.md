@@ -19,14 +19,6 @@ switchyard launch codex --model my-route --config routes.toml
 
 The TOML schema is maintained in `crates/switchyard-server/README.md`.
 
-## Serve
-
-The preserved Python server accepts an explicit YAML routing bundle:
-
-```bash
-switchyard serve --routing-profiles routes.yaml --port 4000
-```
-
 ## Read More
 
 - [Getting Started](getting_started.md)

@@ -29,12 +29,3 @@ switchyard launch claude --model my-route --config routes.toml
 ```
 
 See `crates/switchyard-server/README.md` for the TOML schema.
-
-## Run the Python server
-
-```bash
-switchyard serve --routing-profiles routes.yaml --port 4000
-```
-
-The YAML route format is documented in the
-[Routing Overview](routing_algorithms/overview.md).

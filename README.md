@@ -47,12 +47,7 @@ switchyard launch claude --model my-route --config routes.toml
 ```
 
 The deployment schema belongs in the
-[`switchyard-server` README](crates/switchyard-server/README.md). The preserved
-Python server accepts an explicit YAML bundle:
-
-```bash
-switchyard serve --routing-profiles routes.yaml --port 4000
-```
+[`switchyard-server` README](crates/switchyard-server/README.md).
 
 ## Architecture
 

@@ -29,19 +29,12 @@ def _long_options(parser: argparse.ArgumentParser) -> set[str]:
     }
 
 
-def test_reference_matches_top_level_commands() -> None:
-    commands = set(_subparsers(_build_parser()))
+def test_reference_documents_launch_only() -> None:
     text = CLI_REFERENCE.read_text()
-    assert commands == {"serve", "launch"}
-    assert all(f"## `switchyard {command}`" in text for command in commands)
+    assert "## `switchyard launch`" in text
+    assert "switchyard serve" not in text
     assert "switchyard configure" not in text
     assert "switchyard verify" not in text
-
-
-def test_reference_lists_every_serve_option() -> None:
-    serve = _subparsers(_build_parser())["serve"]
-    text = CLI_REFERENCE.read_text()
-    assert not sorted(option for option in _long_options(serve) if option not in text)
 
 
 def test_reference_lists_launcher_contract() -> None:

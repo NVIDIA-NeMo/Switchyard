@@ -12,6 +12,6 @@ def test_getting_started_uses_the_current_cli() -> None:
     ).read_text()
     assert "switchyard launch claude --model switchyard" in guide
     assert "switchyard launch codex --model switchyard" in guide
-    assert "switchyard serve --routing-profiles routes.yaml" in guide
+    assert "switchyard serve" not in guide
     assert "switchyard configure" not in guide
     assert "switchyard verify" not in guide
