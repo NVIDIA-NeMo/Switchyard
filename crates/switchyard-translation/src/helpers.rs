@@ -169,6 +169,7 @@ where
 
         // A non-standard upstream might omit the final blank line; parse a trailing
         // complete frame instead of losing its last chunk.
+        #[allow(clippy::collapsible_if)]
         if !frame.trim_end().is_empty() {
             if let Some(value) = sse::parse_json_sse_frame(&frame, marker)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?
@@ -201,9 +202,9 @@ fn llm_client_error_from_io(error: std::io::Error) -> LlmClientError {
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
-    use futures::{stream, Stream, StreamExt};
-    use serde_json::{json, Value};
-    use switchyard_protocol::{completion_text, LlmClientError, LlmResponseChunk};
+    use futures::{Stream, StreamExt, stream};
+    use serde_json::{Value, json};
+    use switchyard_protocol::{LlmClientError, LlmResponseChunk, completion_text};
 
     use super::{
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
@@ -300,9 +301,11 @@ mod tests {
             .collect();
         assert_eq!(content, "Hello world");
         // The terminal chunk carries the stop reason through to the wire events.
-        assert!(events
-            .iter()
-            .any(|event| event["choices"][0]["finish_reason"] == "stop"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event["choices"][0]["finish_reason"] == "stop")
+        );
         Ok(())
     }
 

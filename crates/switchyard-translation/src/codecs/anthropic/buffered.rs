@@ -71,14 +71,13 @@ impl FormatCodec for AnthropicMessagesCodec {
             ),
             ..LlmRequest::default()
         };
-        if let Some(system) = body.get("system") {
-            if let Some(content) = decode_anthropic_system(system, &mut diagnostics, policy)? {
+        if let Some(system) = body.get("system")
+            && let Some(content) = decode_anthropic_system(system, &mut diagnostics, policy)? {
                 request.instructions.push(InstructionBlock {
                     role: Role::System,
                     content,
                 });
             }
-        }
         if let Some(messages) = body.get("messages").and_then(Value::as_array) {
             let mut generated_id = 0;
             for (index, message) in messages.iter().enumerate() {
@@ -348,8 +347,8 @@ fn decode_anthropic_system(
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for block in blocks {
-                if let Some(block) = block.as_object() {
-                    if block.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(block) = block.as_object()
+                    && block.get("type").and_then(Value::as_str) == Some("text") {
                         let text = block
                             .get("text")
                             .and_then(Value::as_str)
@@ -357,7 +356,6 @@ fn decode_anthropic_system(
                             .to_string();
                         content.push(ContentBlock::Text { text });
                     }
-                }
             }
             Ok((!content.is_empty()).then_some(content))
         }

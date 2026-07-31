@@ -44,13 +44,12 @@ pub(crate) fn build_reqwest_client(
 
 /// Validates timeout values before they reach reqwest.
 pub(crate) fn validate_timeout_secs(backend_name: &str, timeout_secs: Option<f64>) -> Result<()> {
-    if let Some(timeout_secs) = timeout_secs {
-        if !timeout_secs.is_finite() || timeout_secs <= 0.0 {
+    if let Some(timeout_secs) = timeout_secs
+        && (!timeout_secs.is_finite() || timeout_secs <= 0.0) {
             return Err(SwitchyardError::InvalidConfig(format!(
                 "{backend_name} target timeout_secs must be finite and positive, got {timeout_secs:?}"
             )));
         }
-    }
     Ok(())
 }
 

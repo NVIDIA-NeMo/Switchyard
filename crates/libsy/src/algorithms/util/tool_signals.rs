@@ -299,8 +299,8 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
     if PLAN_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolCategory::Plan;
     }
-    if BASH_TOOL_NAMES.contains(&lower.as_str()) {
-        if let Some(cmd) = command {
+    if BASH_TOOL_NAMES.contains(&lower.as_str())
+        && let Some(cmd) = command {
             // Write/edit redirection trumps read-like operands.
             if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
                 return ToolCategory::Write;
@@ -312,7 +312,6 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
                 return ToolCategory::Read;
             }
         }
-    }
     ToolCategory::Other
 }
 

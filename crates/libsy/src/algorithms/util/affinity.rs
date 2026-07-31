@@ -107,8 +107,8 @@ impl AffinityRouter {
 
     /// Derives the stable identity this router should retain for `request`.
     fn affinity_key(&self, request: &Request) -> Option<AffinityKey> {
-        if let Some(metadata) = request.metadata.as_ref() {
-            if let Some(session) = metadata.session_id.clone() {
+        if let Some(metadata) = request.metadata.as_ref()
+            && let Some(session) = metadata.session_id.clone() {
                 return if metadata.is_subagent {
                     metadata
                         .agent_id
@@ -120,7 +120,6 @@ impl AffinityRouter {
                     Some(AffinityKey::Session(session))
                 };
             }
-        }
 
         // If headers are not present and we are not a subagent, use the message hash based fallback key to do task based routing
         let is_subagent = request
@@ -144,8 +143,8 @@ where
     S: Send + 'static,
 {
     async fn process(&self, _state: &mut S, event: Event<'_>) -> crate::Result<()> {
-        if let Event::Decision { request, decision } = event {
-            if let Some(key) = self.affinity_key(request) {
+        if let Event::Decision { request, decision } = event
+            && let Some(key) = self.affinity_key(request) {
                 let model = decision.selected_model();
                 let mut assignments = self.assignments.lock();
                 if self.should_latch(model) && !assignments.contains_key(&key) {
@@ -153,7 +152,6 @@ where
                     assignments.insert(key, model.to_string());
                 }
             }
-        }
         Ok(())
     }
 }
@@ -202,11 +200,10 @@ where
 
 /// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
 fn evict_if_full(assignments: &mut HashMap<AffinityKey, String>) {
-    if assignments.len() >= MAX_ASSIGNMENTS {
-        if let Some(evicted) = assignments.keys().next().cloned() {
+    if assignments.len() >= MAX_ASSIGNMENTS
+        && let Some(evicted) = assignments.keys().next().cloned() {
             assignments.remove(&evicted);
         }
-    }
 }
 
 #[cfg(test)]

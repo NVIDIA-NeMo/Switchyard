@@ -3,15 +3,15 @@
 
 //! Streaming codec for OpenAI Responses API events.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    record_source_identity, target_message_id_or_source_message_id, target_model_or_source_model,
-    StreamCodec, StreamTranslationState,
+    StreamCodec, StreamTranslationState, record_source_identity,
+    target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
-use crate::LlmResponseChunk;
 
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;
@@ -186,66 +186,66 @@ fn encode_responses_stream(
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     let mut out = ensure_responses_created(state);
-    if state.response_text_started {
-        if let Some(output_index) = state.response_text_output_index {
-            out.push(json!({
-                "type": "response.content_part.done",
-                "output_index": output_index,
-                "content_index": 0,
-                "part": {"type": "output_text", "text": state.response_text},
-            }));
-            out.push(json!({
-                "type": "response.output_item.done",
-                "output_index": output_index,
-                "item": {
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{"type": "output_text", "text": state.response_text}],
-                },
-            }));
-        }
+    if state.response_text_started
+        && let Some(output_index) = state.response_text_output_index
+    {
+        out.push(json!({
+            "type": "response.content_part.done",
+            "output_index": output_index,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": state.response_text},
+        }));
+        out.push(json!({
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": state.response_text}],
+            },
+        }));
     }
 
     let mut final_items: Vec<(usize, Value)> = Vec::new();
-    if state.response_reasoning_started {
-        if let Some(output_index) = state.response_reasoning_output_index {
-            out.push(json!({
-                "type": "response.reasoning_text.done",
-                "output_index": output_index,
-                "content_index": 0,
+    if state.response_reasoning_started
+        && let Some(output_index) = state.response_reasoning_output_index
+    {
+        out.push(json!({
+            "type": "response.reasoning_text.done",
+            "output_index": output_index,
+            "content_index": 0,
+            "text": state.response_reasoning_text,
+        }));
+        let item = json!({
+            "type": "reasoning",
+            "id": format!("rs_{output_index}"),
+            "status": "completed",
+            "content": [{
+                "type": "reasoning_text",
                 "text": state.response_reasoning_text,
-            }));
-            let item = json!({
-                "type": "reasoning",
-                "id": format!("rs_{output_index}"),
-                "status": "completed",
-                "content": [{
-                    "type": "reasoning_text",
-                    "text": state.response_reasoning_text,
-                }],
-                "summary": [],
-            });
-            out.push(json!({
-                "type": "response.output_item.done",
-                "output_index": output_index,
-                "item": item,
-            }));
-            final_items.push((output_index, item));
-        }
+            }],
+            "summary": [],
+        });
+        out.push(json!({
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": item,
+        }));
+        final_items.push((output_index, item));
     }
-    if state.response_text_started {
-        if let Some(output_index) = state.response_text_output_index {
-            final_items.push((
-                output_index,
-                json!({
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{"type": "output_text", "text": state.response_text}],
-                }),
-            ));
-        }
+    if state.response_text_started
+        && let Some(output_index) = state.response_text_output_index
+    {
+        final_items.push((
+            output_index,
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": state.response_text}],
+            }),
+        ));
     }
 
     for tool in state.tool_states.values() {
@@ -507,15 +507,15 @@ fn encode_responses_tool_delta(
         return out;
     }
 
-    if let Some(output_index) = tool.response_output_index {
-        if !tool.pending_arguments.is_empty() {
-            out.push(json!({
-                "type": "response.function_call_arguments.delta",
-                "output_index": output_index,
-                "delta": tool.pending_arguments,
-            }));
-            tool.pending_arguments.clear();
-        }
+    if let Some(output_index) = tool.response_output_index
+        && !tool.pending_arguments.is_empty()
+    {
+        out.push(json!({
+            "type": "response.function_call_arguments.delta",
+            "output_index": output_index,
+            "delta": tool.pending_arguments,
+        }));
+        tool.pending_arguments.clear();
     }
     out
 }

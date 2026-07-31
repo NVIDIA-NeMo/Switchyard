@@ -63,11 +63,10 @@ fn initialize() -> Result<Metrics, String> {
 }
 
 pub(crate) fn flush() {
-    if let Some(Ok(metrics)) = METRICS.get() {
-        if let Err(error) = metrics.provider.force_flush() {
+    if let Some(Ok(metrics)) = METRICS.get()
+        && let Err(error) = metrics.provider.force_flush() {
             tracing::warn!(error = %error, "failed to flush OpenTelemetry metrics");
         }
-    }
 }
 
 fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {

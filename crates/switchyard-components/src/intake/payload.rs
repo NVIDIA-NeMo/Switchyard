@@ -1264,16 +1264,15 @@ impl OpenAiChatStreamCapture {
             "role": "assistant",
             "content": content,
         });
-        if !self.reasoning_content.is_empty() {
-            if let Value::Object(object) = &mut message {
+        if !self.reasoning_content.is_empty()
+            && let Value::Object(object) = &mut message {
                 object.insert(
                     "reasoning_content".to_string(),
                     Value::String(self.reasoning_content),
                 );
             }
-        }
-        if has_tool_calls {
-            if let Value::Object(object) = &mut message {
+        if has_tool_calls
+            && let Value::Object(object) = &mut message {
                 object.insert(
                     "tool_calls".to_string(),
                     Value::Array(
@@ -1285,7 +1284,6 @@ impl OpenAiChatStreamCapture {
                     ),
                 );
             }
-        }
         let mut response = json!({
             "id": self.id.unwrap_or_else(|| "chatcmpl-switchyard-stream".to_string()),
             "object": "chat.completion",
@@ -1302,11 +1300,10 @@ impl OpenAiChatStreamCapture {
                     .unwrap_or_else(|| default_openai_finish_reason(has_tool_calls)),
             }],
         });
-        if let Some(usage) = self.usage {
-            if let Value::Object(object) = &mut response {
+        if let Some(usage) = self.usage
+            && let Value::Object(object) = &mut response {
                 object.insert("usage".to_string(), usage);
             }
-        }
         response
     }
 }
@@ -1531,11 +1528,10 @@ impl AnthropicStreamCapture {
             "role": "assistant",
             "content": if content.is_empty() { Value::Null } else { Value::String(content) },
         });
-        if has_tool_calls {
-            if let Value::Object(object) = &mut message {
+        if has_tool_calls
+            && let Value::Object(object) = &mut message {
                 object.insert("tool_calls".to_string(), Value::Array(tool_calls));
             }
-        }
         let mut response = json!({
             "id": self.id.unwrap_or_else(|| "msg_switchyard_stream".to_string()),
             "object": "chat.completion",

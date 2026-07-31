@@ -97,23 +97,21 @@ fn decode_openai_chat_stream(
             continue;
         };
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                if !text.is_empty() {
+            if let Some(text) = delta.get("content").and_then(Value::as_str)
+                && !text.is_empty() {
                     out.push(LlmResponseChunk::TextDelta {
                         index: 0,
                         text: text.to_string(),
                     });
                 }
-            }
             for reasoning_key in ["reasoning_content", "reasoning"] {
-                if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str) {
-                    if !text.is_empty() {
+                if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
+                    && !text.is_empty() {
                         out.push(LlmResponseChunk::ReasoningDelta {
                             index: 0,
                             text: text.to_string(),
                         });
                     }
-                }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tool_call in tool_calls {

@@ -90,15 +90,13 @@ impl ChatRequest {
     /// and is exempt.
     pub fn validate(&self) -> Result<()> {
         let checks_messages = matches!(self, Self::OpenAiChat(_) | Self::Anthropic(_));
-        if checks_messages {
-            if let Some(messages) = self.body().get("messages").and_then(Value::as_array) {
-                if messages.is_empty() {
+        if checks_messages
+            && let Some(messages) = self.body().get("messages").and_then(Value::as_array)
+                && messages.is_empty() {
                     return Err(SwitchyardError::InvalidRequest(
                         "messages must be a non-empty array".to_string(),
                     ));
                 }
-            }
-        }
         Ok(())
     }
 

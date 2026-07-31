@@ -122,11 +122,10 @@ impl PyServer {
         let task = self.task.take();
         let result = py.detach(move || {
             let result = completion.recv_timeout(timeout);
-            if matches!(result, Err(RecvTimeoutError::Timeout)) {
-                if let Some(task) = task {
+            if matches!(result, Err(RecvTimeoutError::Timeout))
+                && let Some(task) = task {
                     task.abort();
                 }
-            }
             flush_observability();
             result
         });

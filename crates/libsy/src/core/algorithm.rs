@@ -443,11 +443,10 @@ impl SessionEvictions {
     fn record(&self, session: Option<&str>, target: &str) {
         let Some(session) = session else { return };
         let mut sessions = self.sessions.lock();
-        if sessions.len() >= MAX_EVICTION_SESSIONS && !sessions.contains_key(session) {
-            if let Some(oldest) = sessions.keys().next().cloned() {
+        if sessions.len() >= MAX_EVICTION_SESSIONS && !sessions.contains_key(session)
+            && let Some(oldest) = sessions.keys().next().cloned() {
                 sessions.remove(&oldest);
             }
-        }
         sessions
             .entry(session.to_string())
             .or_default()

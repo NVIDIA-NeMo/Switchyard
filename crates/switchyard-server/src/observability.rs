@@ -38,13 +38,11 @@ pub fn initialize_observability() -> ServerResult<()> {
 
 /// Flushes pending OTLP telemetry without shutting down process-wide providers.
 pub fn flush_observability() {
-    if let Some(Ok(observability)) = OBSERVABILITY.get() {
-        if let Some(provider) = &observability.tracer_provider {
-            if let Err(error) = provider.force_flush() {
+    if let Some(Ok(observability)) = OBSERVABILITY.get()
+        && let Some(provider) = &observability.tracer_provider
+            && let Err(error) = provider.force_flush() {
                 tracing::warn!(error = %error, "failed to flush OpenTelemetry traces");
             }
-        }
-    }
     metrics::flush();
 }
 

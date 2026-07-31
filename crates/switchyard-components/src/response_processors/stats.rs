@@ -133,8 +133,8 @@ fn wrap_openai_chat_stream(
         let mut committed = false;
         while let Some(event) = stream.next().await {
             let event = event?;
-            if !committed {
-                if let Some(usage) = openai_chat_usage_from_stream_event(&event) {
+            if !committed
+                && let Some(usage) = openai_chat_usage_from_stream_event(&event) {
                     log_stream_record_result(record_usage(
                         &accumulator,
                         &model,
@@ -146,7 +146,6 @@ fn wrap_openai_chat_stream(
                     ), &model);
                     committed = true;
                 }
-            }
             yield event;
         }
     })
@@ -165,8 +164,8 @@ fn wrap_openai_responses_stream(
         let mut committed = false;
         while let Some(event) = stream.next().await {
             let event = event?;
-            if !committed {
-                if let Some(usage) = openai_responses_usage_from_stream_event(&event) {
+            if !committed
+                && let Some(usage) = openai_responses_usage_from_stream_event(&event) {
                     log_stream_record_result(record_usage(
                         &accumulator,
                         &model,
@@ -178,7 +177,6 @@ fn wrap_openai_responses_stream(
                     ), &model);
                     committed = true;
                 }
-            }
             yield event;
         }
     })

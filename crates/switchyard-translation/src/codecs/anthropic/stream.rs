@@ -68,11 +68,10 @@ fn decode_anthropic_stream(
             {
                 state.message_id = Some(id.to_string());
             }
-            if let Some(message) = message {
-                if let Some(usage) = message.get("usage") {
+            if let Some(message) = message
+                && let Some(usage) = message.get("usage") {
                     capture_anthropic_usage(state, usage);
                 }
-            }
             vec![LlmResponseChunk::MessageStart {
                 id: state.message_id.clone(),
                 model: state.model.clone(),
@@ -459,8 +458,8 @@ fn encode_anthropic_tool_delta(
         return out;
     }
 
-    if let Some(content_index) = tool.content_index {
-        if !tool.pending_arguments.is_empty() {
+    if let Some(content_index) = tool.content_index
+        && !tool.pending_arguments.is_empty() {
             out.push(json!({
                 "type": "content_block_delta",
                 "index": content_index,
@@ -471,7 +470,6 @@ fn encode_anthropic_tool_delta(
             }));
             tool.pending_arguments.clear();
         }
-    }
     out
 }
 

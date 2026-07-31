@@ -94,8 +94,8 @@ impl FormatCodec for OpenAiChatCodec {
                     format!("$.messages[{index}].content"),
                 )?;
                 prepend_openai_reasoning_blocks(&mut content, message);
-                if role == Role::Assistant {
-                    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+                if role == Role::Assistant
+                    && let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
                         if is_empty_text_only(&content) {
                             content.clear();
                         }
@@ -108,7 +108,6 @@ impl FormatCodec for OpenAiChatCodec {
                             }
                         }
                     }
-                }
                 if role == Role::Tool {
                     let text = content
                         .iter()

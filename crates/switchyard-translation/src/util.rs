@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
@@ -422,10 +422,10 @@ fn mapped_tool_id(
         return existing.clone();
     }
     let mut candidate = sanitize_anthropic_tool_use_id(raw);
-    if let Some(owner) = used_ids.get(&candidate) {
-        if owner != raw {
-            candidate = format!("{}_{}", candidate, stable_suffix(raw));
-        }
+    if let Some(owner) = used_ids.get(&candidate)
+        && owner != raw
+    {
+        candidate = format!("{}_{}", candidate, stable_suffix(raw));
     }
     id_map.insert(raw.to_string(), candidate.clone());
     used_ids.insert(candidate.clone(), raw.to_string());

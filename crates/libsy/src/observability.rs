@@ -166,13 +166,12 @@ pub(crate) async fn observe_run(
     let duration = started.elapsed();
     let algorithm = algorithm_label(&ctx);
     record_run(algorithm, duration, &result, &Span::current());
-    if result.is_ok() {
-        if let Some(overhead) =
+    if result.is_ok()
+        && let Some(overhead) =
             record_routing_overhead(algorithm, duration, driver.routed_call_duration())
         {
             driver.observe_routing_overhead(overhead);
         }
-    }
     result
 }
 
