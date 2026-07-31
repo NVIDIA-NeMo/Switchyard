@@ -6,8 +6,8 @@ to complete a request, then routes the request to a weak or strong target.
 ## Configure a classifier route
 
 This example uses the packaged classifier prompt as intended: it estimates
-whether GLM-5.2 can complete the task, uses GLM-5.2 as the weak target, and keeps
-the first routing decision for later requests in the same conversation.
+whether the weak target can complete the task, and keeps the first routing
+decision for later requests in the same conversation.
 
 ```toml
 schema_version = 1
@@ -77,16 +77,18 @@ more traffic to the strong model.
 
 ### Classifier calibration
 
-The packaged prompt is currently calibrated for GLM-5.2, assumes it receives
-the initial task, and describes a sticky routing decision. It is not a
+The packaged prompt is calibrated for one specific weak model, assumes it
+receives the initial task, and describes a sticky routing decision. It is not a
 model-neutral weak-target evaluator.
 
 Without affinity, the runtime judges every request; by default, it sends the
 newest user message rather than the initial task. The example enables affinity
 and its message-hash fallback so the first request is judged and later requests
 with the same opening task reuse that decision. If you use a different weak
-model or per-request routing, recalibrate the prompt and thresholds before
-treating classifier decisions as production policy.
+model or per-request routing, tune the thresholds before treating classifier
+decisions as production policy.
+
+Support for supplying your own classifier prompt is coming soon.
 
 ## Session affinity
 
