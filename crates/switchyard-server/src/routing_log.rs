@@ -3,6 +3,7 @@
 
 //! Durable per-request routing records and session snapshots.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -11,8 +12,7 @@ use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
 use libsy::Usage;
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -50,12 +50,12 @@ impl RoutingLog {
     ) -> std::io::Result<()> {
         let usage = token_usage(usage);
         let record = RoutingRecord {
-            ts: format_rfc3339_millis(SystemTime::now()).to_string(),
-            task: context.task,
-            trial_id: context.trial_id,
-            session_id: context.session_id,
-            model,
-            tier: tier.unwrap_or(""),
+            ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
+            task: context.task.map(Cow::Owned),
+            trial_id: context.trial_id.map(Cow::Owned),
+            session_id: context.session_id.map(Cow::Owned),
+            model: model.into(),
+            tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -75,7 +75,7 @@ pub(crate) fn snapshot(
     path: &Path,
     session_id: &str,
 ) -> std::io::Result<Option<SessionStatsSnapshot>> {
-    let mut reader = BufReader::new(fs::File::open(path)?);
+    let mut reader = BufReader::with_capacity(64 * 1024, fs::File::open(path)?);
     let mut line = Vec::new();
     let mut snapshot = SessionStatsSnapshot::new(session_id);
     loop {
@@ -86,16 +86,16 @@ pub(crate) fn snapshot(
         if !line.ends_with(b"\n") {
             break;
         }
-        let Ok(record) = serde_json::from_slice::<Value>(&line) else {
+        let Ok(record) = serde_json::from_slice::<RoutingRecord>(&line) else {
             continue;
         };
         snapshot.add_record(&record, session_id);
     }
+    snapshot.sum_totals();
     Ok((snapshot.total_calls > 0).then_some(snapshot))
 }
 
 /// Request headers retained until terminal usage is available.
-#[derive(Clone, Debug)]
 pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
@@ -112,14 +112,21 @@ impl RoutingLogContext {
     }
 }
 
-#[derive(Serialize)]
+/// One appended routing record, and the read schema [`snapshot`] parses back,
+/// so the written and expected shapes cannot drift apart. Missing fields
+/// default so a record from an older schema still contributes what it has.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
 struct RoutingRecord<'a> {
-    ts: String,
-    task: Option<String>,
-    trial_id: Option<String>,
-    session_id: Option<String>,
-    model: &'a str,
-    tier: &'a str,
+    ts: Cow<'a, str>,
+    #[serde(borrow)]
+    task: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    trial_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    session_id: Option<Cow<'a, str>>,
+    model: Cow<'a, str>,
+    tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
@@ -129,7 +136,7 @@ struct RoutingRecord<'a> {
 }
 
 /// Session totals returned by the routing stats endpoint.
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
     total_calls: u64,
@@ -140,7 +147,7 @@ pub(crate) struct SessionStatsSnapshot {
     models: BTreeMap<String, SessionModelStats>,
 }
 
-#[derive(Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Default, Serialize)]
 struct SessionModelStats {
     calls: u64,
     prompt_tokens: u64,
@@ -162,59 +169,40 @@ impl SessionStatsSnapshot {
         }
     }
 
-    fn add_record(&mut self, record: &Value, session_id: &str) {
-        let Some(record) = record.as_object() else {
-            return;
-        };
-        if record.get("session_id").and_then(Value::as_str) != Some(session_id) {
+    fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
+        if record.session_id.as_deref() != Some(session_id) {
             return;
         }
-        let model = record
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|model| !model.is_empty())
-            .unwrap_or("unknown")
-            .to_string();
-        let stats = self.models.entry(model).or_default();
+        let model = match record.model.as_ref() {
+            "" => "unknown",
+            model => model,
+        };
+        let stats = self.models.entry(model.to_string()).or_default();
         stats.calls = stats.calls.saturating_add(1);
-        self.total_calls = self.total_calls.saturating_add(1);
-
-        add_counter(
-            record,
-            "prompt_tokens",
-            &mut stats.prompt_tokens,
-            &mut self.total_prompt_tokens,
-        );
-        add_counter(
-            record,
-            "cached_tokens",
-            &mut stats.cached_tokens,
-            &mut self.total_cached_tokens,
-        );
-        add_counter(
-            record,
-            "cache_creation_tokens",
-            &mut stats.cache_creation_tokens,
-            &mut self.total_cache_creation_tokens,
-        );
-        add_counter(
-            record,
-            "completion_tokens",
-            &mut stats.completion_tokens,
-            &mut self.total_completion_tokens,
-        );
+        stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
+        stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);
+        stats.cache_creation_tokens = stats
+            .cache_creation_tokens
+            .saturating_add(record.cache_creation_tokens);
+        stats.completion_tokens = stats
+            .completion_tokens
+            .saturating_add(record.completion_tokens);
     }
-}
 
-fn add_counter(
-    record: &serde_json::Map<String, Value>,
-    key: &str,
-    model_total: &mut u64,
-    session_total: &mut u64,
-) {
-    if let Some(value) = record.get(key).and_then(Value::as_u64) {
-        *model_total = model_total.saturating_add(value);
-        *session_total = session_total.saturating_add(value);
+    /// Session totals are exactly the sum of the per-model stats, so they are
+    /// derived once rather than accumulated alongside them.
+    fn sum_totals(&mut self) {
+        for stats in self.models.values() {
+            self.total_calls = self.total_calls.saturating_add(stats.calls);
+            self.total_prompt_tokens = self.total_prompt_tokens.saturating_add(stats.prompt_tokens);
+            self.total_cached_tokens = self.total_cached_tokens.saturating_add(stats.cached_tokens);
+            self.total_cache_creation_tokens = self
+                .total_cache_creation_tokens
+                .saturating_add(stats.cache_creation_tokens);
+            self.total_completion_tokens = self
+                .total_completion_tokens
+                .saturating_add(stats.completion_tokens);
+        }
     }
 }
 
@@ -227,4 +215,38 @@ fn routing_log_error(path: &Path, error: std::io::Error) -> ServerError {
         "failed to initialize routing log {}: {error}",
         path.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the requested session is counted, absent fields fall back to zero
+    /// and `unknown`, and an unparseable line does not abort the scan.
+    #[test]
+    fn snapshot_counts_only_the_requested_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("routing.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"session_id":"a","model":"m1","prompt_tokens":10,"completion_tokens":2}"#,
+                "\n",
+                r#"{"session_id":"b","model":"m1","prompt_tokens":99,"completion_tokens":99}"#,
+                "\n",
+                "not json\n",
+                r#"{"session_id":"a","prompt_tokens":5}"#,
+                "\n",
+            ),
+        )
+        .expect("write log");
+
+        let stats = snapshot(&path, "a").expect("read log").expect("session a");
+        assert_eq!(stats.total_calls, 2);
+        assert_eq!(stats.total_prompt_tokens, 15);
+        assert_eq!(stats.total_completion_tokens, 2);
+        assert_eq!(stats.models["m1"].calls, 1);
+        assert_eq!(stats.models["unknown"].prompt_tokens, 5);
+        assert!(snapshot(&path, "missing").expect("read log").is_none());
+    }
 }

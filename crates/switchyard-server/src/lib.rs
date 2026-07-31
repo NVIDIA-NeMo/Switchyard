@@ -39,6 +39,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
+use tokio::task;
 use tracing::{Instrument, Level};
 
 use switchyard_translation::{decode_request, WireFormat};
@@ -858,6 +859,8 @@ struct SessionStatsQuery {
     session_id: String,
 }
 
+// TODO: This loads the entire file. It should stream the JSONL instead.
+// Huge files will crash the demo server.
 async fn get_session_stats(
     State(state): State<ServerState>,
     query: std::result::Result<Query<SessionStatsQuery>, QueryRejection>,
@@ -874,9 +877,19 @@ async fn get_session_stats(
         }
     };
     let Some(routing_log) = state.routing_log else {
+        // Should be unreachable
         return not_found().await;
     };
-    let snapshot = routing_log.snapshot_session(&query.session_id);
+    let session_id = query.session_id.clone();
+    // Loading and de-serializing a large file is a time consuming blocking operation
+    let snapshot =
+        match task::spawn_blocking(move || routing_log.snapshot_session(&session_id)).await {
+            Ok(s) => s,
+            Err(err) => {
+                return server_error(format!("failed to snapshot: {err}"));
+            }
+        };
+
     match snapshot {
         Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
         Ok(None) => error_response(
