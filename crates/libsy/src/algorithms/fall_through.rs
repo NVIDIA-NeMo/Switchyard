@@ -16,26 +16,20 @@
 //! Every composition retains one thing regardless: a target that overflows its context window is
 //! remembered for the rest of its session and skipped on later turns.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::core::algorithm::{call_llm_with_overflow_fallback, exclude_evicted, SessionEvictions};
 use crate::core::{Classification, Classifier, Event, Processor, Score};
 use crate::{
-    Algorithm, Context, Decision, Driver, LibsyError, LlmClientError, LlmTarget, LlmTargetSet,
-    Request, Response, Result, RoutedLlmClient,
+    Algorithm, Context, Decision, Driver, LibsyError, LlmTarget, LlmTargetSet, Request, Response,
+    Result, RoutedLlmClient,
 };
 
 type SessionStates<S> = Mutex<HashMap<String, Arc<AsyncMutex<S>>>>;
-
-/// Matches the cap the Python stack uses. Dropping a live session's entry costs one
-/// rediscovered overflow, so the victim choice does not need to be exact.
-const MAX_EVICTION_SESSIONS: usize = 1_024;
 
 /// The decision a fall-through run produces: the selected model plus a human-readable reason.
 pub struct FallThroughDecision {
@@ -112,7 +106,7 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     targets: LlmTargetSet,
     session_states: Option<SessionStates<S>>,
-    session_evictions: Mutex<HashMap<String, HashSet<String>>>,
+    session_evictions: SessionEvictions,
 }
 
 impl FallThrough<()> {
@@ -125,7 +119,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             targets,
             session_states: None,
-            session_evictions: Mutex::new(HashMap::new()),
+            session_evictions: SessionEvictions::default(),
         }
     }
 }
@@ -143,7 +137,7 @@ where
             classifiers: Vec::new(),
             targets,
             session_states: Some(Mutex::new(HashMap::new())),
-            session_evictions: Mutex::new(HashMap::new()),
+            session_evictions: SessionEvictions::default(),
         }
     }
 
@@ -182,14 +176,12 @@ where
         let mut request = request;
         let session = session_id(&request);
         let mut ctx = ctx;
-        for target in self.evicted_in_session(session.as_deref()) {
-            // Never seed the pool empty: a later turn may be small enough to serve, and the
-            // caller should get the upstream's answer rather than a routing error.
-            if self.eligible_targets(&ctx) <= 1 {
-                break;
-            }
-            ctx.exclude_target(target);
-        }
+        exclude_evicted(
+            &mut ctx,
+            &self.targets,
+            &self.session_evictions,
+            session.as_deref(),
+        );
         let session_state = self.session_state(&request);
         let (target, decision, served) = match session_state {
             Some(state) => {
@@ -210,90 +202,19 @@ where
         match served {
             Some(response) => Ok(response),
             None => {
-                self.call_with_overflow_fallback(
+                call_llm_with_overflow_fallback(
                     ctx,
                     &driver,
+                    &self.targets,
                     target,
                     decision,
                     request,
                     session.as_deref(),
+                    &self.session_evictions,
+                    |from, to| self.fallback_decision(from, to),
                 )
                 .await
             }
-        }
-    }
-
-    fn eligible_targets(&self, ctx: &Context) -> usize {
-        self.targets
-            .targets()
-            .iter()
-            .filter(|t| !ctx.is_excluded(&t.semantic_name))
-            .count()
-    }
-
-    fn evicted_in_session(&self, session: Option<&str>) -> Vec<String> {
-        let Some(session) = session else {
-            return Vec::new();
-        };
-        self.session_evictions
-            .lock()
-            .get(session)
-            .map(|targets| targets.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    fn record_eviction(&self, session: Option<&str>, target: &str) {
-        let Some(session) = session else { return };
-        let mut sessions = self.session_evictions.lock();
-        if sessions.len() >= MAX_EVICTION_SESSIONS && !sessions.contains_key(session) {
-            if let Some(oldest) = sessions.keys().next().cloned() {
-                sessions.remove(&oldest);
-            }
-        }
-        sessions
-            .entry(session.to_string())
-            .or_default()
-            .insert(target.to_string());
-    }
-
-    /// Calls `target`, falling back to the next eligible target whenever one overflows its
-    /// context window, until a call succeeds or every target has been tried.
-    ///
-    /// Routing is deliberately not re-run: the fallback replaces the target in place so the
-    /// processor chain and the retained session state still see exactly one turn.
-    async fn call_with_overflow_fallback(
-        &self,
-        mut ctx: Context,
-        driver: &Driver,
-        mut target: LlmTarget,
-        mut decision: Arc<dyn Decision>,
-        request: Request,
-        session: Option<&str>,
-    ) -> Result<Response> {
-        loop {
-            let result = driver
-                .call_llm_target(ctx.clone(), &target, request.clone(), decision.clone())
-                .await;
-            let Err(error) = result else { return result };
-            let LibsyError::ClientCall {
-                target: failed,
-                source: LlmClientError::ContextWindowExceeded { .. },
-            } = &error
-            else {
-                return Err(error);
-            };
-            // A target already excluded means the pool is spent; surface the client error
-            // so the caller still sees a context overflow rather than an internal failure.
-            if !ctx.exclude_target(failed) {
-                return Err(error);
-            }
-            self.record_eviction(session, failed);
-            let Ok(next) = self.targets.resolve_target(&target.semantic_name, &ctx) else {
-                return Err(error);
-            };
-            decision = self.fallback_decision(&target, &next);
-            target = next;
-            driver.info(ctx.clone(), decision.clone()).await?;
         }
     }
 
@@ -438,7 +359,7 @@ mod tests {
         completion_text, text_request, text_response, LlmRequest, Message, Metadata, Role,
     };
 
-    use crate::{LlmResponse, LlmTarget, RoutedLlmClient};
+    use crate::{LlmClientError, LlmResponse, LlmTarget, RoutedLlmClient};
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
