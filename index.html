@@ -322,10 +322,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#start" class="md-nav__link">
+  <a href="#choose-a-path" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Start
+        Choose a Path
       
     </span>
   </a>
@@ -333,10 +333,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#read-more" class="md-nav__link">
+  <a href="#explore" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Read More
+        Explore
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
       
     </span>
   </a>
@@ -724,34 +735,6 @@
   
   
     <li class="md-nav__item">
-      <a href="routing_algorithms/sticky_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="routing_algorithms/stage_router_routing/" class="md-nav__link">
         
   
@@ -975,6 +958,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1011,10 +1022,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#start" class="md-nav__link">
+  <a href="#choose-a-path" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Start
+        Choose a Path
       
     </span>
   </a>
@@ -1022,10 +1033,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#read-more" class="md-nav__link">
+  <a href="#explore" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Read More
+        Explore
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
       
     </span>
   </a>
@@ -1055,22 +1077,50 @@
 <h1 id="switchyard">Switchyard<a class="headerlink" href="#switchyard" title="Permanent link">&para;</a></h1>
 <p>Switchyard routes and translates LLM traffic for coding agents and API clients.
 It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.</p>
-<h2 id="start">Start<a class="headerlink" href="#start" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;nemo-switchyard[cli,server]&quot;</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-or-...&quot;</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>claude<span class="w"> </span>--model<span class="w"> </span>switchyard
-</span></code></pre></div>
-<p>Use a custom native deployment when needed:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>codex<span class="w"> </span>--model<span class="w"> </span>my-route<span class="w"> </span>--config<span class="w"> </span>routes.toml
-</span></code></pre></div>
-<p>The TOML schema is maintained in <code>crates/switchyard-server/README.md</code>.</p>
-<h2 id="read-more">Read More<a class="headerlink" href="#read-more" title="Permanent link">&para;</a></h2>
+<h2 id="choose-a-path">Choose a Path<a class="headerlink" href="#choose-a-path" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Goal</th>
+<th>Path</th>
+<th>Start here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Run Claude Code, Codex, or OpenClaw through Switchyard</td>
+<td>Launcher Path</td>
+<td><a href="getting_started/#launcher-path">Install and launch an agent</a></td>
+</tr>
+<tr>
+<td>Run Switchyard as a standalone proxy for API clients</td>
+<td>Server Path</td>
+<td><a href="getting_started/#server-path">Build and run the Rust server</a></td>
+</tr>
+<tr>
+<td>Add Switchyard routing to a Rust application</td>
+<td>Library Path</td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6769656c5287c612f90e35c56075ee86ec2aff1/crates/libsy/README.md"><code>switchyard-libsy</code></a></td>
+</tr>
+</tbody>
+</table>
+<p>The Launcher Path installs the <code>switchyard</code> CLI and hosts the native Rust server
+through its packaged PyO3 binding. The Server Path builds and runs the
+standalone <code>switchyard-server</code> binary.</p>
+<h2 id="explore">Explore<a class="headerlink" href="#explore" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="getting_started/">Getting Started</a></li>
-<li><a href="cli_reference/">CLI Reference</a></li>
-<li><a href="routing_algorithms/overview/">Routing Overview</a></li>
-<li><a href="architecture/">Architecture</a></li>
-<li><a href="operations/context_window/">Context-Window Handling</a></li>
+<li><a href="core_concepts/">Core Concepts</a>: learn the LLM client, target, and route layers</li>
+<li><a href="routing_algorithms/overview/">Routing Algorithms</a>: choose how requests select a model</li>
+<li><a href="architecture/">Architecture</a>: understand the proxy and library components</li>
+<li><a href="cli_reference/">CLI Reference</a>: inspect supported launcher commands and options</li>
+<li><a href="operations/context_window/">Context-Window Handling</a>: configure eviction and retry behavior</li>
+</ul>
+<h2 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6769656c5287c612f90e35c56075ee86ec2aff1/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration, endpoints, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6769656c5287c612f90e35c56075ee86ec2aff1/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embeddable routing algorithms</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6769656c5287c612f90e35c56075ee86ec2aff1/crates/protocol/README.md"><code>switchyard-protocol</code></a>: provider-neutral API types</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6769656c5287c612f90e35c56075ee86ec2aff1/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>: protocol translation</li>
 </ul>
 
 

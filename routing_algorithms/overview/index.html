@@ -657,10 +657,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#model-routes" class="md-nav__link">
+  <a href="#direct-model-routes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Model routes
+        Direct model routes
       
     </span>
   </a>
@@ -679,32 +679,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#sub-agent-override-subagent_target" class="md-nav__link">
+  <a href="#run-a-deployment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sub-agent override (subagent_target)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-session-affinity-composes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How session affinity composes
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rust-server-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Rust server configuration
+        Run a deployment
       
     </span>
   </a>
@@ -763,34 +741,6 @@
     
   
     LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../sticky_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
   
 
     
@@ -1034,6 +984,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1092,10 +1070,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#model-routes" class="md-nav__link">
+  <a href="#direct-model-routes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Model routes
+        Direct model routes
       
     </span>
   </a>
@@ -1114,32 +1092,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#sub-agent-override-subagent_target" class="md-nav__link">
+  <a href="#run-a-deployment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sub-agent override (subagent_target)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-session-affinity-composes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How session affinity composes
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#rust-server-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Rust server configuration
+        Run a deployment
       
     </span>
   </a>
@@ -1167,13 +1123,12 @@
 
 
 <h1 id="routing-overview">Routing Overview<a class="headerlink" href="#routing-overview" title="Permanent link">&para;</a></h1>
-<p>The Python CLI loads routing policies from a YAML bundle. Each key under
-<code>routes:</code> becomes a model ID available through OpenAI Chat Completions,
-Anthropic Messages, and OpenAI Responses requests:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>serve<span class="w"> </span>--routing-profiles<span class="w"> </span>routes.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
-</span></code></pre></div>
+<p>The <code>switchyard-server</code> binary loads a native TOML deployment. Each route's <code>id</code>
+becomes a model ID available through OpenAI Chat Completions, Anthropic Messages,
+and OpenAI Responses requests.</p>
 <p>Use this page to choose a routing strategy, then open its detailed page for
-configuration and tuning.</p>
+configuration and tuning. For the vocabulary these pages use, see
+<a href="../../core_concepts/">Core Concepts</a>.</p>
 <h2 id="choose-a-strategy">Choose a strategy<a class="headerlink" href="#choose-a-strategy" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1186,13 +1141,13 @@ configuration and tuning.</p>
 <tbody>
 <tr>
 <td><a href="../random_routing/">Random Routing</a></td>
-<td>You need a fixed strong/weak split for A/B tests, baselines, or cost experiments.</td>
-<td><code>random_routing</code></td>
+<td>You need a fixed traffic split for A/B tests, baselines, or cost experiments.</td>
+<td><code>random</code></td>
 </tr>
 <tr>
 <td><a href="../llm_classifier_routing/">LLM Classifier Routing</a></td>
 <td>Request content should decide whether a turn needs the weak or strong tier.</td>
-<td><code>deterministic</code></td>
+<td><code>llm_classifier</code></td>
 </tr>
 <tr>
 <td><a href="../stage_router_routing/">Stage-Router Routing</a></td>
@@ -1202,117 +1157,98 @@ configuration and tuning.</p>
 <tr>
 <td><a href="../escalation_router_routing/">Escalation-Router Routing</a></td>
 <td>Start every task on the weak tier and escalate to strong when an LLM judge detects trouble.</td>
-<td><code>escalation_router</code></td>
+<td><code>llm_classifier</code> with <code>escalation</code></td>
 </tr>
 </tbody>
 </table>
-<p><a href="../sticky_routing/">Session Affinity (Sticky Routing)</a> is an opt-in feature of
-LLM classifier routing, not a standalone routing strategy.</p>
 <h2 id="common-route-shape">Common route shape<a class="headerlink" href="#common-route-shape" title="Permanent link">&para;</a></h2>
-<p>Provider defaults can be shared across all routes, while each route owns its
-target configuration:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">defaults</span><span class="p">:</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${OPENROUTER_API_KEY}</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://openrouter.ai/api/v1</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">fast</span><span class="p">:</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">model</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">smart</span><span class="p">:</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">random_routing</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">strong</span><span class="p">:</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="nt">weak</span><span class="p">:</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/gpt-4o-mini</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="nt">strong_probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.3</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="nt">fallback_target_on_evict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong</span>
+<p>A deployment has three layers. LLM clients describe how to reach a provider,
+targets name models on those clients, and routes decide which target serves a
+request:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENROUTER_API_KEY&quot;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">[targets.strong]</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o&quot;</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="k">[targets.weak]</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">[routes.fast]</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;fast&quot;</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;passthrough&quot;</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;random&quot;</span>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="p">]</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="n">weights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">7</span><span class="p">]</span>
 </span></code></pre></div>
-<p>Use the route name (<code>fast</code> or <code>smart</code>) as the request's model ID. A single
-bundle can serve multiple routes on the same host and port.</p>
+<p>Clients send a route's <code>id</code> (<code>fast</code> or <code>smart</code>) as the request's model ID. The
+table name in <code>[routes.smart]</code> is local to the file; only <code>id</code> is visible to
+clients. A single deployment can serve multiple routes on the same host and port.</p>
+<p>Credentials stay outside the file: <code>api_key_env</code> names an environment variable
+that is read at startup. Omit it for an upstream that needs no credential, such
+as a local model server.</p>
 <p>The examples use model IDs from the
 <a href="https://openrouter.ai/api/v1/models">OpenRouter model catalog</a>. Select IDs
 available to your account before deploying; catalog availability can change.</p>
-<h2 id="model-routes">Model routes<a class="headerlink" href="#model-routes" title="Permanent link">&para;</a></h2>
-<ul>
-<li><code>type: model</code> registers one explicit model alias without model discovery.</li>
-</ul>
-<p>This creates a direct, single-target chain. Use a routing policy when requests
-must be split or classified across targets. There is no catalog auto-discovery,
-so to expose several upstream models, add one <code>type: model</code> route per model id.</p>
+<h2 id="direct-model-routes">Direct model routes<a class="headerlink" href="#direct-model-routes" title="Permanent link">&para;</a></h2>
+<p>A <code>passthrough</code> route registers one target under one model ID with no routing
+decision:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[routes.fast]</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;fast&quot;</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;passthrough&quot;</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span></code></pre></div>
+<p>Use a routing strategy instead when requests must be split or classified across
+targets. There is no catalog auto-discovery, so to expose several upstream
+models, add one <code>passthrough</code> route per model.</p>
 <h2 id="self-hosted-targets">Self-hosted targets<a class="headerlink" href="#self-hosted-targets" title="Permanent link">&para;</a></h2>
-<p>Any route target can point at an OpenAI-compatible model server you operate.
-For example, start a local vLLM server:</p>
+<p>Any target can point at an OpenAI-compatible model server you operate. For
+example, start a local vLLM server:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vllm<span class="w"> </span>serve<span class="w"> </span>./my-rl-qwen<span class="w"> </span>--served-model-name<span class="w"> </span>my-rl-qwen<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </span></code></pre></div>
-<p>Then configure it as a normal route:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">local</span><span class="p">:</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">model</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-rl-qwen</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8000/v1</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dummy</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
+<p>Then declare it as its own LLM client and target. The client needs no
+<code>api_key_env</code> when the server does not require a credential:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[llm_clients.local_vllm]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;http://localhost:8000/v1&quot;</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">[targets.local]</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;my-rl-qwen&quot;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local_vllm&quot;</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="k">[routes.local]</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local&quot;</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;passthrough&quot;</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local&quot;</span>
 </span></code></pre></div>
-<p>Switchyard does not start or manage the model server; it only sends requests
-to the configured endpoint.</p>
-<h2 id="sub-agent-override-subagent_target">Sub-agent override (<code>subagent_target</code>)<a class="headerlink" href="#sub-agent-override-subagent_target" title="Permanent link">&para;</a></h2>
-<p>Any route may name an optional <code>subagent_target</code> in its common envelope,
-alongside <code>type</code>. A request carrying a recognized sub-agent signal — Claude Code
-agent-lineage headers, Codex delegated-work kinds (<code>x-openai-subagent:
-collab_spawn</code> or <code>review</code>), or an explicit <code>x-switchyard-is-subagent: true</code> —
-bypasses the route's own chain and runs as a direct passthrough to that target:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">routes</span><span class="p">:</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">assistant</span><span class="p">:</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">model</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">target</span><span class="p">:</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">strong-model</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">subagent_target</span><span class="p">:</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cheaper-worker-model</span>
+<p>Switchyard does not start or manage the model server; it only sends requests to
+the configured endpoint.</p>
+<h2 id="run-a-deployment">Run a deployment<a class="headerlink" href="#run-a-deployment" title="Permanent link">&para;</a></h2>
+<p>After building the Rust server, as described in
+<a href="../../getting_started/#build-the-server">Getting Started</a>, export the provider
+credential, validate the configuration, and start the binary:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
-<p>This keeps a sub-agent loop on one intentional, cache-compatible target instead
-of re-routing every worker turn. The worker may live on a different provider
-entirely — give it its own <code>base_url</code> and <code>api_key</code> and one route spans two
-upstreams:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="w">    </span><span class="nt">subagent_target</span><span class="p">:</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-local-model</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">      </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:8000/v1</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">      </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dummy</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">      </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
+<p>Send a request using a route ID:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;smart&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
 </span></code></pre></div>
-<p>Detection is the protocol crate's canonical policy, shared with the libsy
-<code>SubagentOverride</code> classifier, so both engines agree on what counts as
-delegated work. Harness-maintenance turns (<code>compact</code>, <code>memory_consolidation</code>)
-and unrecognized kinds stay on normal routing, as does everything else when the
-field is absent. A worker-target failure surfaces as a normal target error — it
-is never silently re-routed through the route's own chain.</p>
-<p>To suppress sub-agent routing for a request that carries a recognized signal,
-send <code>x-switchyard-is-subagent: false</code>. This explicit header overrides Codex and
-Claude Code lineage signals in either direction: <code>false</code> keeps the request on
-normal routing even when delegated-work headers are present, and <code>true</code> marks a
-request as a sub-agent even when no harness headers appear.</p>
-<p>The key applies to <code>model</code>, <code>deterministic</code>, <code>escalation_router</code>,
-and <code>stage_router</code> routes. <code>random_routing</code> expands into its table entries on a
-separate path and does not consume it.</p>
-<h2 id="how-session-affinity-composes">How session affinity composes<a class="headerlink" href="#how-session-affinity-composes" title="Permanent link">&para;</a></h2>
-<p>Session affinity is configured directly on the LLM classifier router. After
-the configured warmup, the first confident policy, tool-planning, or alignment
-verdict pins the tier. Abstain, low-confidence, missing-signal, and fail-open
-decisions never pin. Later turns reuse the tier and skip the classifier call.</p>
-<p>Pins use a bounded in-process LRU keyed from the stable conversation prefix.
-They are not shared across workers or restarts. See
-<a href="../sticky_routing/">Sticky Routing</a> for configuration and key derivation.</p>
-<p>Random and stage-router routing make a fresh routing decision for each request.
-The escalation router instead uses affinity as a one-way escalation latch: only
-the strong tier is pinned, and the judge runs until that latch fires.</p>
-<h2 id="rust-server-configuration">Rust server configuration<a class="headerlink" href="#rust-server-configuration" title="Permanent link">&para;</a></h2>
-<p>The <code>switchyard-server</code> binary has a separate TOML schema that explicitly
-constructs LLM clients, targets, and libsy algorithms. It does not load Python
-route bundles. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/730a5285e637af4c699d7ab5e6f7d96aee25f5d4/crates/switchyard-server/README.md">Rust server README</a> for its supported
-configuration.</p>
+<p>For the complete TOML schema and every route option, refer to the
+<a href="../../reference/toml_schema/">TOML Schema</a>.</p>
 
 
 

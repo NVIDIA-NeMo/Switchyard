@@ -750,34 +750,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../sticky_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sticky Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../stage_router_routing/" class="md-nav__link">
         
   
@@ -1001,6 +973,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/toml_schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TOML Schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1163,8 +1163,9 @@ split. More generally:</p>
 configured proportions exactly. Separate turns in the same conversation can
 therefore use different targets.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
-<p>After <a href="../../getting_started/#install">building the Rust server</a>, export the
-provider credential, validate the configuration, and start the release binary:</p>
+<p>After <a href="../../getting_started/#build-the-server">building the Rust server</a>, export
+the provider credential, validate the configuration, and start the release
+binary:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>./target/release/switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
@@ -1177,7 +1178,7 @@ provider credential, validate the configuration, and start the release binary:</
 </span></code></pre></div>
 <h2 id="experimental-litellm-integration">Experimental LiteLLM integration<a class="headerlink" href="#experimental-litellm-integration" title="Permanent link">&para;</a></h2>
 <p>The package's
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/730a5285e637af4c699d7ab5e6f7d96aee25f5d4/examples/experimental/litellm/README.md">developer guide</a> is the
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6769656c5287c612f90e35c56075ee86ec2aff1/examples/experimental/litellm/README.md">developer guide</a> is the
 canonical documentation for integrating Switchyard with a Dockerized LiteLLM
 gateway. Its source-installable client adapts libsy's dictionary contract and
 demonstrates weighted random routing between model aliases backed by
