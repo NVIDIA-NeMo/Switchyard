@@ -1,6 +1,6 @@
 # NeMo Switchyard docs
 
-Switchyard documentation is authored as [Fern](https://buildwithfern.com/) MDX in this directory.
+Switchyard documentation is authored as [Fern](https://buildwithfern.com/) Markdown in this directory.
 The current Fern site is available at
 **[nemo-switchyard.docs.buildwithfern.com/nemo/switchyard](https://nemo-switchyard.docs.buildwithfern.com/nemo/switchyard/home)**.
 
@@ -8,14 +8,14 @@ The current Fern site is available at
 
 | Change | Location |
 |---|---|
-| Published page | `docs/**/*.mdx` |
+| Published page | `docs/**/*.md` |
 | Public navigation | [`fern/versions/nightly.yml`](fern/versions/nightly.yml) |
 | Site settings and redirects | [`fern/docs.yml`](fern/docs.yml) |
 | Internal, unpublished notes | `docs/internal/**/*.md` |
 | Fern build and publishing details | [`fern/README.md`](fern/README.md) |
 
 Markdown files under `internal/` are intentionally excluded from the public navigation. Promote one
-to MDX only when it is ready to become public documentation.
+to Markdown only when it is ready to become public documentation.
 
 ## Common commands
 
@@ -33,7 +33,7 @@ publish the site.
 
 ## Add or edit a page
 
-1. Add or update the MDX page under `docs/`.
+1. Add or update the Markdown page under `docs/`.
 2. Add new pages to [`fern/versions/nightly.yml`](fern/versions/nightly.yml) in the intended order.
 3. Use canonical Fern routes derived from the navigation labels for internal links.
 4. Run the Fern check and route regression tests above.

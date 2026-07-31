@@ -56,7 +56,7 @@ VALIDATIONS = {
     "getting-started": Validation(
         "Getting Started examples",
         "OPENAI_API_KEY=sk-test NVIDIA_API_KEY=nvapi-test ANTHROPIC_API_KEY=sk-ant-test "
-        "uv run pytest tests/getting_started --markdown-docs docs/getting_started.mdx -v",
+        "uv run pytest tests/getting_started --markdown-docs docs/getting_started.md -v",
         "The Getting Started guide or its executable coverage changed.",
     ),
     "workflow-security": Validation(
@@ -105,7 +105,7 @@ def select_validations(paths: Iterable[str]) -> list[Validation]:
         selected.add("readme")
 
     if any(
-        path == "docs/getting_started.mdx" or path.startswith("tests/getting_started/")
+        path == "docs/getting_started.md" or path.startswith("tests/getting_started/")
         for path in normalized
     ):
         selected.add("getting-started")

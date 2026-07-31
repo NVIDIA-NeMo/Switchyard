@@ -3,38 +3,38 @@
 
 navigation:
   - page: "Home"
-    path: ../../index.mdx
+    path: ../../index.md
   - section: "Get Started"
     contents:
       - page: "Getting Started"
-        path: ../../getting_started.mdx
+        path: ../../getting_started.md
       - page: "Known Issues in 0.1.0"
-        path: ../../known_issues.mdx
+        path: ../../known_issues.md
   - section: "Concepts"
     contents:
       - page: "Core Concepts"
-        path: ../../core_concepts.mdx
+        path: ../../core_concepts.md
       - page: "Architecture"
-        path: ../../architecture.mdx
+        path: ../../architecture.md
   - section: "Routing"
     contents:
       - page: "Overview"
-        path: ../../routing_algorithms/overview.mdx
+        path: ../../routing_algorithms/overview.md
       - page: "Random Routing"
-        path: ../../routing_algorithms/random_routing.mdx
+        path: ../../routing_algorithms/random_routing.md
       - page: "LLM Classifier Routing"
-        path: ../../routing_algorithms/llm_classifier_routing.mdx
+        path: ../../routing_algorithms/llm_classifier_routing.md
       - page: "Sticky Routing"
-        path: ../../routing_algorithms/sticky_routing.mdx
+        path: ../../routing_algorithms/sticky_routing.md
       - page: "Stage-Router Routing"
-        path: ../../routing_algorithms/stage_router_routing.mdx
+        path: ../../routing_algorithms/stage_router_routing.md
       - page: "Escalation-Router Routing"
-        path: ../../routing_algorithms/escalation_router_routing.mdx
+        path: ../../routing_algorithms/escalation_router_routing.md
   - section: "Operations"
     contents:
       - page: "Context-Window Handling"
-        path: ../../operations/context_window.mdx
+        path: ../../operations/context_window.md
   - section: "Reference"
     contents:
       - page: "CLI Reference"
-        path: ../../cli_reference.mdx
+        path: ../../cli_reference.md

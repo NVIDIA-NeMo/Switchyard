@@ -1,6 +1,6 @@
 name: Getting Started
 
-# Executable coverage for docs/getting_started.mdx.
+# Executable coverage for docs/getting_started.md.
 #
 # Fails when the documented Rust server flow drifts from the product, including
 # CLI changes, TOML schema changes, and operational endpoint regressions. It lives in
@@ -10,7 +10,7 @@ name: Getting Started
 on:
   pull_request:
     paths:
-      - "docs/getting_started.mdx"
+      - "docs/getting_started.md"
       - "crates/**"
       - "switchyard/**"
       - "switchyard_rust/**"
@@ -24,7 +24,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "docs/getting_started.mdx"
+      - "docs/getting_started.md"
       - "crates/**"
       - "switchyard/**"
       - "switchyard_rust/**"

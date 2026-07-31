@@ -2,7 +2,7 @@
 
 This directory contains the Fern configuration, navigation, redirect tooling, and CI-facing inputs
 for the [NeMo Switchyard documentation](https://nemo-switchyard.docs.buildwithfern.com/nemo/switchyard/home).
-Published MDX pages live one level up under `docs/`; they are not duplicated under
+Published Markdown pages live one level up under `docs/`; they are not duplicated under
 `docs/fern/versions/nightly/pages/`.
 
 ## Layout
@@ -10,7 +10,7 @@ Published MDX pages live one level up under `docs/`; they are not duplicated und
 ```text
 docs/
 ├── Makefile                         # pinned local check and preview commands
-├── **/*.mdx                         # published documentation pages
+├── **/*.md                          # published documentation pages
 ├── internal/**/*.md                 # unpublished project notes
 └── fern/
     ├── README.md                    # this guide
@@ -26,7 +26,7 @@ docs/
 Run the supported commands from the repository root:
 
 ```bash
-cd docs && make check       # validate Fern configuration, navigation, links, and MDX
+cd docs && make check       # validate Fern configuration, navigation, links, and Markdown
 cd docs && make preview     # serve a local preview at http://localhost:3000
 cd docs && make clean       # remove local Fern artifacts
 ```
@@ -42,11 +42,11 @@ uv run pytest tests/test_fern_docs.py -v
 
 ## Navigation and routes
 
-`versions/nightly.yml` defines the published page set and sidebar. Its page paths point back to MDX
+`versions/nightly.yml` defines the published page set and sidebar. Its page paths point back to Markdown
 files under `docs/` with `../../` paths. Navigation labels determine the public slugs; filenames do
 not.
 
-Keep sections label-only and put pages under `contents:`. Assigning an MDX file to a section and a
+Keep sections label-only and put pages under `contents:`. Assigning a page file to a section and a
 child page changes the route Fern publishes and can make the expected child URL return 404.
 
 ## Redirects

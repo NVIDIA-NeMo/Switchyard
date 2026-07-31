@@ -8,7 +8,7 @@ from pathlib import Path
 
 from switchyard.cli.switchyard_cli import _build_parser
 
-CLI_REFERENCE = Path(__file__).resolve().parents[1] / "docs" / "cli_reference.mdx"
+CLI_REFERENCE = Path(__file__).resolve().parents[1] / "docs" / "cli_reference.md"
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:

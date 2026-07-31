@@ -44,7 +44,7 @@ def test_native_or_package_changes_select_all_affected_gates() -> None:
 
 def test_docs_only_change_does_not_select_runtime_or_live_tests() -> None:
     """Ordinary docs changes stay focused and never opt into provider calls."""
-    validations = _load_script()["select_validations"](["docs/operations/context_window.mdx"])
+    validations = _load_script()["select_validations"](["docs/operations/context_window.md"])
     assert [item.name for item in validations] == ["Fern docs"]
     assert all("integration" not in item.command for item in validations)
 

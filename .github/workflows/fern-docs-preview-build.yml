@@ -47,14 +47,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Save changed MDX paths
+      - name: Save changed Markdown paths
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           mkdir -p .preview-metadata
-          git diff --name-only "origin/${BASE_REF}...HEAD" -- '*.mdx' > .preview-metadata/changed_mdx_files 2>/dev/null || true
+          git diff --name-only "origin/${BASE_REF}...HEAD" -- 'docs/**/*.md' > .preview-metadata/changed_md_files 2>/dev/null || true
 
-      # The nightly navigation reaches from docs/fern/ into docs/**/*.mdx,
+      # The nightly navigation reaches from docs/fern/ into docs/**/*.md,
       # so the artifact must preserve the complete docs tree.
       - name: Upload docs sources and metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

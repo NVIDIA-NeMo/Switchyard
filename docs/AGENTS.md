@@ -13,7 +13,7 @@ These instructions apply to everything under `docs/`. More specific rules in
 
 ## Content boundaries
 
-- Published pages are `docs/**/*.mdx`, excluding `docs/fern/`.
+- Published pages are `docs/**/*.md`, excluding `docs/fern/`.
 - `docs/internal/**/*.md` files are unpublished. Do not add them to Fern navigation or link to them
   from published pages unless the task explicitly promotes that content.
 - Keep contributor guidance in `README.md` and `AGENTS.md`; do not add either file to Fern
@@ -25,9 +25,9 @@ These instructions apply to everything under `docs/`. More specific rules in
 
 - Give every published page non-empty `title` and `description` frontmatter.
 - Keep navigation sections label-only and place authored pages under `contents:`. Do not assign the
-  same MDX page to both a section `path:` and a child page.
+  same page to both a section `path:` and a child page.
 - Use canonical, version-agnostic Fern routes derived from navigation labels for internal links.
-- Do not link unpublished internal notes from published MDX.
+- Do not link unpublished internal notes from published pages.
 - Use Fern callout components instead of GitHub admonition syntax.
 
 ## Validation

@@ -116,15 +116,15 @@ jobs:
           fi
           echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Build page links for changed MDX files
+      - name: Build page links for changed Markdown files
         id: page-links
         env:
           FERN_TOKEN: ${{ secrets.DOCS_FERN_TOKEN }}
           PREVIEW_URL: ${{ steps.generate-docs.outputs.preview_url }}
         run: |
           CHANGED_FILES=""
-          if [ -f preview-source/.preview-metadata/changed_mdx_files ]; then
-            CHANGED_FILES=$(cat preview-source/.preview-metadata/changed_mdx_files)
+          if [ -f preview-source/.preview-metadata/changed_md_files ]; then
+            CHANGED_FILES=$(cat preview-source/.preview-metadata/changed_md_files)
           fi
 
           if [ -z "$CHANGED_FILES" ] || [ -z "$PREVIEW_URL" ]; then

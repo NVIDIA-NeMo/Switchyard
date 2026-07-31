@@ -64,14 +64,30 @@ def _published_routes() -> set[str]:
     return routes
 
 
+def _published_doc_paths() -> list[Path]:
+    """Return authored page paths referenced by nightly navigation."""
+    navigation = _load_yaml(NAVIGATION_PATH)["navigation"]
+    paths: list[Path] = []
+    version_dir = NAVIGATION_PATH.parent
+
+    def add_path(relative_path: str) -> None:
+        paths.append((version_dir / relative_path).resolve())
+
+    for item in navigation:
+        if "page" in item:
+            add_path(item["path"])
+            continue
+        for child in item["contents"]:
+            add_path(child["path"])
+    return paths
+
+
 def test_internal_mdx_links_resolve_to_navigation_routes() -> None:
-    """Every root-relative MDX link must name a route that Fern publishes."""
+    """Every root-relative doc link must name a route that Fern publishes."""
     routes = _published_routes()
     broken: list[str] = []
     patterns = (r"\]\((/[^)\s]+)", r'href="(/[^"]+)"')
-    for path in sorted(DOCS_ROOT.rglob("*.mdx")):
-        if FERN_ROOT in path.parents:
-            continue
+    for path in _published_doc_paths():
         text = path.read_text(encoding="utf-8")
         for pattern in patterns:
             for target in re.findall(pattern, text):
@@ -84,9 +100,7 @@ def test_internal_mdx_links_resolve_to_navigation_routes() -> None:
 def test_published_pages_have_descriptions_and_titled_callouts() -> None:
     """Published pages must retain SEO descriptions and converted admonition titles."""
     failures: list[str] = []
-    for path in sorted(DOCS_ROOT.rglob("*.mdx")):
-        if FERN_ROOT in path.parents:
-            continue
+    for path in _published_doc_paths():
         text = path.read_text(encoding="utf-8")
         frontmatter = text.split("---", 2)[1]
         metadata = yaml.safe_load(frontmatter)

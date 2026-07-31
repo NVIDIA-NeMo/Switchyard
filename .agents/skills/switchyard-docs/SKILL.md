@@ -7,7 +7,7 @@ description: Use when adding or editing Switchyard docs or contributor guidance 
 
 ## Overview
 
-Published documentation is authored as MDX at the top level of `docs/`. Fern infrastructure lives
+Published documentation is authored as Markdown at the top level of `docs/`. Fern infrastructure lives
 under `docs/fern/`; do not put nightly content under `docs/fern/versions/nightly/pages/`.
 
 `docs/README.md` is the contributor entry point. Scoped instructions live in `docs/AGENTS.md` and
@@ -31,12 +31,12 @@ pinned in `docs/fern/fern.config.json`.
 | Remove local Fern artifacts | `cd docs && make clean` |
 | List published pages | `sed -n '1,240p' docs/fern/versions/nightly.yml` |
 | Find unpublished notes | `find docs/internal -type f -name '*.md' -print` |
-| Check MDX safety | `cd docs && make check` |
+| Check Markdown safety | `cd docs && make check` |
 | Check internal Fern links | `uv run pytest tests/test_fern_docs.py::test_internal_mdx_links_resolve_to_navigation_routes -v` |
 
 ## Where Things Live
 
-- **Published content** → `docs/**/*.mdx`, excluding `docs/fern/`.
+- **Published content** → `docs/**/*.md`, excluding `docs/fern/`.
 - **Unpublished notes** → `docs/internal/**/*.md`.
 - **Docs contributor guide and scoped instructions** → `docs/README.md` and `docs/AGENTS.md`.
 - **Fern infrastructure guide and scoped instructions** → `docs/fern/README.md` and
@@ -55,14 +55,14 @@ pinned in `docs/fern/fern.config.json`.
 
 ## Adding a Published Page
 
-1. Create `docs/<section>/<page>.mdx` with concise frontmatter, including `title` and `position`.
+1. Create `docs/<section>/<page>.md` with concise frontmatter, including `title` and `position`.
 2. Add it to `docs/fern/versions/nightly.yml` in the intended sidebar location. Preserve existing
    labels and order unless the change explicitly redesigns navigation.
 3. Point `path:` from the version file back to the authored page with `../../`, for example:
 
    ```yaml
    - page: Health-aware Routing
-     path: ../../routing_algorithms/health_aware_routing.mdx
+     path: ../../routing_algorithms/health_aware_routing.md
    ```
 
 4. Use version-agnostic Fern URLs for published-page links. Fern URLs derive from the slugified
@@ -84,7 +84,7 @@ pinned in `docs/fern/fern.config.json`.
   route. Every authored page in this site belongs under `contents:` and resolves as
   `/section/page`.
 - Keep the first navigation entry as the home page.
-- Paths in nightly navigation point to `../../*.mdx`. Frozen releases, when added, own independent
+- Paths in nightly navigation point to `../../*.md`. Frozen releases, when added, own independent
   copies under `docs/fern/versions/<version>/pages/`.
 - Do not add `latest.yml` as a copy of nightly. A future `latest` alias must point at a frozen GA
   tree.
@@ -97,7 +97,7 @@ pinned in `docs/fern/fern.config.json`.
 - Use MDX comments (`{/* note */}`), not HTML comments.
 - Built-in Fern components do not require imports. Add product-specific components only when a page
   needs them, then register their directory in `docs/fern/docs.yml`.
-- Do not link unpublished `docs/internal/` notes from published MDX.
+- Do not link unpublished `docs/internal/` notes from published pages.
 - Preserve titled MkDocs admonitions with the Fern callout `title` prop, for example
   `<Note title="Deployment boundary">`.
 - Give every published page a non-empty `description` in frontmatter.
@@ -121,9 +121,9 @@ The Fern workflows follow the same split as NeMo Curator:
   is included in the required `CI Success` aggregate, so Fern failures cannot merge as an optional
   check.
 - `fern-docs-preview-build.yml` runs only for same-repository PR branches, uses no secrets, and
-  uploads the complete `docs/` tree plus a changed-MDX hint. Fork PRs stop after required Fern
+  uploads the complete `docs/` tree plus a changed-Markdown hint. Fork PRs stop after required Fern
   validation. The complete tree is required because nightly navigation under `docs/fern/`
-  references MDX pages through `../../` paths. It uses PR-numbered concurrency and cancels
+  references pages through `../../` paths. It uses PR-numbered concurrency and cancels
   superseded runs.
 - `fern-docs-preview-comment.yml` runs through `workflow_run`, downloads the collector artifact,
   rejects fork-originated runs, derives the target PR from the trusted event, reads the Fern version
@@ -149,7 +149,7 @@ steps do not persist credentials. Do not collapse the collector and trusted prev
 
 | Symptom | Fix |
 |---|---|
-| `Path does not exist` | Correct the `../../` path in `versions/nightly.yml` or restore the referenced MDX file. |
+| `Path does not exist` | Correct the `../../` path in `versions/nightly.yml` or restore the referenced page file. |
 | Navigation object does not match schema | Use `section` with `contents`, or a standalone `folder`; do not combine `folder` and `contents`. |
 | Unsupported JSX tag | Replace it with a built-in Fern component or register the product component directory. |
 | MDX parse error near `<` | Escape prose comparisons/placeholders or self-close the HTML element. |
@@ -162,9 +162,9 @@ steps do not persist credentials. Do not collapse the collector and trusted prev
 
 - Adding unpublished design notes to navigation because they happen to live under `docs/`.
 - Adding `README.md` or `AGENTS.md` contributor guidance to published navigation.
-- Recreating `docs/fern/versions/nightly/pages/`; nightly content is authored at `docs/*.mdx`.
+- Recreating `docs/fern/versions/nightly/pages/`; nightly content is authored at `docs/*.md`.
 - Deriving links from filenames instead of the navigation title/slug.
-- Assigning the same MDX file to a section `path` and one of its child pages.
+- Assigning the same page file to a section `path` and one of its child pages.
 - Hardcoding `/nightly/` in shared page links.
 - Vendoring NVIDIA theme CSS, logos, favicon, or footer components.
 - Reintroducing MkDocs configuration, hooks, or a parallel docs build.

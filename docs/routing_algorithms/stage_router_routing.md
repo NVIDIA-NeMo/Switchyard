@@ -225,13 +225,7 @@ switchyard-server --config routes.toml --port 4000
 
 This is the recommended default: routing on tool signals alone, no classifier.
 
-<<<<<<< HEAD:docs/routing_algorithms/stage_router_routing.mdx
-`fallback_target_on_evict` is required and must reference one of the
-declared target ids. See [Context-Window Handling](/operations/context-window-handling) for
-exception types and error envelopes.
-=======
 ### Optional: handoff notes
->>>>>>> origin/main:docs/routing_algorithms/stage_router_routing.md
 
 Add a `[routes.stage.handoff_notes]` section to pass a contextual note to the
 model the router switches to. The escalation note is sent to the capable tier on

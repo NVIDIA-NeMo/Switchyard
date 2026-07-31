@@ -21,7 +21,7 @@ These instructions apply to `docs/fern/` in addition to `docs/AGENTS.md` and the
 
 ## Site structure
 
-- Keep published nightly MDX at `docs/**/*.mdx`, outside `docs/fern/`.
+- Keep published nightly Markdown at `docs/**/*.md`, outside `docs/fern/`.
 - Do not create `docs/fern/versions/nightly/pages/`.
 - Keep `versions/nightly.yml` paths relative to that file; current authored pages use `../../`.
 - Keep Switchyard navigation sections label-only so pages resolve as `/section/page`.
