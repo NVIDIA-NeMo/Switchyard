@@ -198,14 +198,15 @@ def _run_openclaw_with_switchyard(
     server = _start_native_server(config)
     resolved_port = server.port
     stats = server.stats
-    workspace = _write_openclaw_workspace(
-        port=resolved_port,
-        entries=catalog_entries,
-        primary_model_id=_qualified_model_id(display_model),
-    )
+    workspace: str | None = None
     strategy_summary = f"config → {config.name}"
 
     try:
+        workspace = _write_openclaw_workspace(
+            port=resolved_port,
+            entries=catalog_entries,
+            primary_model_id=_qualified_model_id(display_model),
+        )
         if not _wait_ready(resolved_port):
             print_startup_failure(
                 port=resolved_port,
