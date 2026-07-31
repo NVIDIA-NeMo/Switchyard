@@ -688,9 +688,16 @@ pub trait Algorithm: Send + Sync + 'static {
                 switchyard.routing.tier = tracing::field::Empty,
                 selected_model = call.get_decision().selected_model(),
                 otel.kind = "client",
+                otel.name = %format_args!("chat {}", call.get_decision().selected_model()),
                 gen_ai.operation.name = "chat",
                 gen_ai.request.model = call.get_decision().selected_model(),
-                gen_ai.request.stream = call.get_routed().request.llm_request.stream,
+                gen_ai.request.stream = tracing::field::Empty,
+                gen_ai.request.temperature = tracing::field::Empty,
+                gen_ai.request.top_p = tracing::field::Empty,
+                gen_ai.request.top_k = tracing::field::Empty,
+                gen_ai.request.max_tokens = tracing::field::Empty,
+                gen_ai.request.reasoning.level = tracing::field::Empty,
+                gen_ai.output.type = tracing::field::Empty,
                 gen_ai.conversation.id = tracing::field::Empty,
                 server.address = tracing::field::Empty,
                 server.port = tracing::field::Empty,
@@ -709,6 +716,7 @@ pub trait Algorithm: Send + Sync + 'static {
         )]
         async fn serve(call: CallLlmRequest) -> Result<()> {
             let span = tracing::Span::current();
+            observability::record_gen_ai_request(&span, &call.get_routed().request.llm_request);
             if let Some(tier) = call.get_decision().routing_tier() {
                 span.record("switchyard.routing.tier", tier);
             }

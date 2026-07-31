@@ -17,23 +17,27 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::{Array as OtelArray, Value as OtelValue};
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use parking_lot::Mutex;
+use serde_json::json;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Subscriber};
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
 use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse,
-    LlmResponseChunk, LlmTarget, LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step,
-    Usage,
+    Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmResponseChunk, LlmTarget,
+    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
 };
-use switchyard_protocol::{text_request, text_response, LlmClientError};
+use switchyard_protocol::{text_request, text_response, LlmClientError, StopReason};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -93,6 +97,14 @@ impl Visit for FieldVisitor<'_> {
     fn record_u64(&mut self, field: &Field, value: u64) {
         self.0.insert(field.name().to_string(), value.to_string());
     }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.0.insert(field.name().to_string(), value.to_string());
+    }
+
+    fn record_f64(&mut self, field: &Field, value: f64) {
+        self.0.insert(field.name().to_string(), value.to_string());
+    }
 }
 
 /// Subscriber layer capturing spans (with contextual parents and recorded
@@ -147,9 +159,16 @@ where
 /// Installs the process-global telemetry sinks once: an in-memory OTel metric
 /// pipeline behind the global meter provider, and the capture layer as the
 /// global tracing subscriber.
-fn telemetry() -> &'static (CaptureStore, InMemoryMetricExporter, SdkMeterProvider) {
-    static TELEMETRY: OnceLock<(CaptureStore, InMemoryMetricExporter, SdkMeterProvider)> =
-        OnceLock::new();
+type Telemetry = (
+    CaptureStore,
+    InMemoryMetricExporter,
+    SdkMeterProvider,
+    InMemorySpanExporter,
+    SdkTracerProvider,
+);
+
+fn telemetry() -> &'static Telemetry {
+    static TELEMETRY: OnceLock<Telemetry> = OnceLock::new();
     TELEMETRY.get_or_init(|| {
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter.clone()).build();
@@ -157,14 +176,23 @@ fn telemetry() -> &'static (CaptureStore, InMemoryMetricExporter, SdkMeterProvid
         opentelemetry::global::set_meter_provider(provider.clone());
         switchyard_libsy::initialize_metrics();
 
+        let span_exporter = InMemorySpanExporter::default();
+        let tracer_provider = SdkTracerProvider::builder()
+            .with_simple_exporter(span_exporter.clone())
+            .build();
+        let tracer = tracer_provider.tracer("switchyard-observability-test");
         let store = CaptureStore::default();
-        let subscriber = tracing_subscriber::registry().with(CaptureLayer {
-            store: store.clone(),
-        });
+        let otel_layer: OpenTelemetryLayer<_, _> =
+            tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = tracing_subscriber::registry()
+            .with(CaptureLayer {
+                store: store.clone(),
+            })
+            .with(otel_layer);
         if tracing::subscriber::set_global_default(subscriber).is_err() {
             panic!("a global tracing subscriber was already installed in this test binary");
         }
-        (store, exporter, provider)
+        (store, exporter, provider, span_exporter, tracer_provider)
     })
 }
 
@@ -344,13 +372,15 @@ impl RoutedLlmClient for UsageClient {
         _request: Request,
         decision: Arc<dyn Decision>,
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
+        let mut response = text_response(
+            Some(decision.selected_model().to_string()),
+            "observed response",
+        );
+        response.id = Some("obs-response-1".to_string());
+        response.usage = self.usage.clone();
+        response.outputs[0].stop_reason = Some(StopReason::EndTurn);
         Ok(Response {
-            llm_response: LlmResponse::Agg(AggLlmResponse {
-                id: Some("obs-response-1".to_string()),
-                model: Some(decision.selected_model().to_string()),
-                usage: self.usage.clone(),
-                ..AggLlmResponse::default()
-            }),
+            llm_response: LlmResponse::Agg(response),
             metadata: None,
         })
     }
@@ -428,10 +458,47 @@ fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> Span
     }
 }
 
+fn find_otel_span(exporter: &InMemorySpanExporter, name: &str, model: &str) -> SpanData {
+    let spans = match exporter.get_finished_spans() {
+        Ok(spans) => spans,
+        Err(error) => panic!("failed to read exported spans: {error}"),
+    };
+    match spans.iter().find(|span| {
+        span.name == name
+            && span.attributes.iter().any(|attribute| {
+                attribute.key.as_str() == "gen_ai.request.model"
+                    && attribute.value.as_str() == model
+            })
+    }) {
+        Some(span) => span.clone(),
+        None => {
+            let available = spans
+                .iter()
+                .map(|span| {
+                    let model = span
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key.as_str() == "gen_ai.request.model")
+                        .map(|attribute| attribute.value.as_str().into_owned());
+                    (span.name.to_string(), model)
+                })
+                .collect::<Vec<_>>();
+            panic!("no exported '{name}' span for model {model}; available: {available:?}")
+        }
+    }
+}
+
+fn otel_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a OtelValue> {
+    span.attributes
+        .iter()
+        .find(|attribute| attribute.key.as_str() == key)
+        .map(|attribute| &attribute.value)
+}
+
 #[tokio::test]
 async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (store, exporter, provider) = telemetry();
+    let (store, exporter, provider, span_exporter, _) = telemetry();
     const ALGO: &str = "obs-success-algo";
     const MODEL: &str = "obs-success-model";
     let before = flushed_metrics(exporter, provider);
@@ -449,11 +516,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
             cache: Usage::cache_details(Some(3), Some(4)),
         },
     }) as Arc<dyn RoutedLlmClient>;
+    let mut request = request_with_metadata("obs-session-1", "obs-corr-1");
+    request.llm_request.sampling.temperature = Some(0.25);
+    request.llm_request.sampling.top_p = Some(0.9);
+    request.llm_request.sampling.top_k = Some(40);
+    request.llm_request.output.max_output_tokens = Some(512);
+    request.llm_request.output.response_format = Some(json!({"type": "json_schema"}));
+    request.llm_request.reasoning.effort = Some("high".to_string());
     let (trace, _response) = algo(ALGO, MODEL, Some(client))
-        .run(
-            Context::default(),
-            request_with_metadata("obs-session-1", "obs-corr-1"),
-        )
+        .run(Context::default(), request)
         .await?;
     assert_eq!(trace.len(), 1);
 
@@ -575,9 +646,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     for (field, value) in [
         ("otel.kind", "client"),
         ("switchyard.algorithm", ALGO),
+        ("otel.name", "chat obs-success-model"),
         ("gen_ai.operation.name", "chat"),
         ("gen_ai.request.model", MODEL),
-        ("gen_ai.request.stream", "false"),
+        ("gen_ai.request.temperature", "0.25"),
+        ("gen_ai.request.top_p", "0.9"),
+        ("gen_ai.request.top_k", "40"),
+        ("gen_ai.request.max_tokens", "512"),
+        ("gen_ai.request.reasoning.level", "high"),
+        ("gen_ai.output.type", "json"),
         ("gen_ai.conversation.id", "obs-session-1"),
         ("gen_ai.response.id", "obs-response-1"),
         ("gen_ai.response.model", MODEL),
@@ -593,6 +670,22 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
             "unexpected {field}"
         );
     }
+    assert_eq!(client_span.fields.get("gen_ai.request.stream"), None);
+
+    let otel_span = find_otel_span(span_exporter, "chat obs-success-model", MODEL);
+    assert!(matches!(
+        otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
+        Some(OtelValue::Array(OtelArray::String(reasons)))
+            if reasons.len() == 1 && reasons[0].as_str() == "end_turn"
+    ));
+    assert_eq!(
+        otel_attribute(&otel_span, "gen_ai.request.max_tokens"),
+        Some(&OtelValue::I64(512))
+    );
+    assert_eq!(
+        otel_attribute(&otel_span, "gen_ai.usage.input_tokens"),
+        Some(&OtelValue::I64(18))
+    );
 
     let call_span = find_span(&spans, "libsy.llm_call", "selected_model", MODEL);
     assert_eq!(call_span.parent.as_deref(), Some("libsy.run"));
@@ -676,10 +769,26 @@ impl RoutedLlmClient for StreamingUsageClient {
     }
 }
 
+struct TimeoutClient;
+
+#[async_trait]
+impl RoutedLlmClient for TimeoutClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        _request: Request,
+        _decision: Arc<dyn Decision>,
+    ) -> Result<Response, LlmClientError> {
+        Err(LlmClientError::Timeout {
+            source: Box::new(TestError("upstream timed out")),
+        })
+    }
+}
+
 #[tokio::test]
 async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (store, _, _) = telemetry();
+    let (store, _, _, span_exporter, _) = telemetry();
     const ALGO: &str = "obs-stream-algo";
     const MODEL: &str = "obs-stream-model";
     let client = Arc::new(StreamingUsageClient) as Arc<dyn RoutedLlmClient>;
@@ -700,6 +809,7 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     let spans = store.spans();
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
     for (field, value) in [
+        ("otel.name", "chat obs-stream-model"),
         ("gen_ai.request.stream", "true"),
         ("gen_ai.response.id", "obs-stream-response"),
         ("gen_ai.response.model", MODEL),
@@ -713,13 +823,77 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
             "unexpected {field}"
         );
     }
+    let otel_span = find_otel_span(span_exporter, "chat obs-stream-model", MODEL);
+    assert!(matches!(
+        otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
+        Some(OtelValue::Array(OtelArray::String(reasons)))
+            if reasons.len() == 1 && reasons[0].as_str() == "end_turn"
+    ));
     Ok(())
+}
+
+#[tokio::test]
+async fn dropped_stream_records_cancelled_outcome() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "obs-cancelled-stream-algo";
+    const MODEL: &str = "obs-cancelled-stream-model";
+    let client = Arc::new(StreamingUsageClient) as Arc<dyn RoutedLlmClient>;
+    let mut request = request_with_metadata("obs-cancelled-session", "obs-cancelled-corr");
+    request.llm_request.stream = true;
+    let (_, response) = algo(ALGO, MODEL, Some(client))
+        .run(Context::default(), request)
+        .await?;
+    let LlmResponse::Stream(stream) = response.llm_response else {
+        return Err(test_error("expected a streamed response"));
+    };
+    drop(stream);
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("outcome").map(String::as_str),
+        Some("cancelled")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_client_failure_records_semantic_error_type() {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "obs-timeout-algo";
+    const MODEL: &str = "obs-timeout-model";
+    let result = algo(
+        ALGO,
+        MODEL,
+        Some(Arc::new(TimeoutClient) as Arc<dyn RoutedLlmClient>),
+    )
+    .run(
+        Context::default(),
+        request_with_metadata("obs-timeout-session", "obs-timeout-corr"),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(LibsyError::ClientCall {
+            source: LlmClientError::Timeout { .. },
+            ..
+        })
+    ));
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("timeout")
+    );
 }
 
 #[tokio::test]
 async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (store, exporter, provider) = telemetry();
+    let (store, exporter, provider, _, _) = telemetry();
     const ALGO: &str = "obs-failure-algo";
     const MODEL: &str = "obs-failure-model";
     let before = flushed_metrics(exporter, provider);
@@ -841,7 +1015,7 @@ async fn failed_call_records_error_outcome_and_warn_logs() -> switchyard_libsy::
 #[tokio::test]
 async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_store, exporter, provider) = telemetry();
+    let (_store, exporter, provider, _, _) = telemetry();
     let before = flushed_metrics(exporter, provider);
     let total_requests_before =
         u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();

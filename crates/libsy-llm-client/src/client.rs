@@ -605,13 +605,15 @@ fn duration_millis(duration: Duration) -> u64 {
 fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
     let span = tracing::Span::current();
     span.record("gen_ai.request.model", model);
-    span.record("gen_ai.request.stream", streaming);
+    if streaming {
+        span.record("gen_ai.request.stream", true);
+    }
     if let Ok(url) = reqwest::Url::parse(url) {
         if let Some(host) = url.host_str() {
             span.record("server.address", host);
         }
         if let Some(port) = url.port_or_known_default() {
-            span.record("server.port", u64::from(port));
+            span.record("server.port", i64::from(port));
         }
     }
 }
