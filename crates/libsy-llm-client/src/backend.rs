@@ -144,14 +144,6 @@ impl Backend {
         self.config().max_retries
     }
 
-    /// Stable GenAI semantic-convention provider name for this wire protocol.
-    pub(crate) fn provider_name(&self) -> &'static str {
-        match self {
-            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => "openai",
-            Backend::Anthropic(_) => "anthropic",
-        }
-    }
-
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {

@@ -178,7 +178,7 @@ impl TranslatingLlmClient {
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let url = endpoint.url(backend);
-        record_gen_ai_request(backend, &url, model, streaming);
+        record_gen_ai_request(&url, model, streaming);
 
         let max_retries = u64::from(backend.max_retries());
         let max_attempts = max_retries + 1;
@@ -602,9 +602,8 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn record_gen_ai_request(backend: &Backend, url: &str, model: &str, streaming: bool) {
+fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
     let span = tracing::Span::current();
-    span.record("gen_ai.provider.name", backend.provider_name());
     span.record("gen_ai.request.model", model);
     span.record("gen_ai.request.stream", streaming);
     if let Ok(url) = reqwest::Url::parse(url) {

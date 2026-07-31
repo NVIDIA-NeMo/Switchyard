@@ -692,7 +692,6 @@ pub trait Algorithm: Send + Sync + 'static {
                 gen_ai.request.model = call.get_decision().selected_model(),
                 gen_ai.request.stream = call.get_routed().request.llm_request.stream,
                 gen_ai.conversation.id = tracing::field::Empty,
-                gen_ai.provider.name = tracing::field::Empty,
                 server.address = tracing::field::Empty,
                 server.port = tracing::field::Empty,
                 gen_ai.response.id = tracing::field::Empty,
