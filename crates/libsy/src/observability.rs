@@ -35,11 +35,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use opentelemetry::metrics::{Meter, ObservableGauge};
 use opentelemetry::{global, KeyValue};
 use tracing::Span;
 
-use crate::{Context, Decision, Driver, Metadata, Response, Result};
+use crate::{
+    AggLlmResponse, Context, Decision, Driver, LlmResponse, LlmResponseChunk, LlmResponseStream,
+    Request, Response, Result, Usage,
+};
 
 const METRICS_SCOPE: &str = "switchyard";
 const TRACING_TARGET: &str = "libsy";
@@ -96,17 +100,20 @@ fn outcome_value<T>(result: &Result<T>) -> &'static str {
 
 /// Span covering one algorithm run (the whole `create_run_task` execution).
 ///
-/// Correlation ids from the request [`Metadata`] are recorded as span fields
+/// Correlation ids from the request [`crate::Metadata`] are recorded as span fields
 /// when present. `tracing` spans cannot grow field names at runtime, so
-/// arbitrary host labels ride in via [`Metadata::extra_metadata`], recorded
+/// arbitrary host labels ride in via [`crate::Metadata::extra_metadata`], recorded
 /// whole into the `extra_metadata` field. `outcome` and `error` are filled in
 /// by [`record_run`] when the run ends.
-pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
+pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
     let span = tracing::info_span!(
         target: TRACING_TARGET,
         "libsy.run",
         algorithm,
+        switchyard.algorithm = algorithm,
+        switchyard.route = tracing::field::Empty,
         session_id = tracing::field::Empty,
+        session.id = tracing::field::Empty,
         agent_id = tracing::field::Empty,
         task_id = tracing::field::Empty,
         correlation_id = tracing::field::Empty,
@@ -114,7 +121,10 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
         outcome = tracing::field::Empty,
         error = tracing::field::Empty,
     );
-    if let Some(metadata) = metadata {
+    if let Some(route) = request.requested_model() {
+        span.record("switchyard.route", route);
+    }
+    if let Some(metadata) = &request.metadata {
         for (field, value) in [
             ("session_id", &metadata.session_id),
             ("agent_id", &metadata.agent_id),
@@ -124,6 +134,9 @@ pub(crate) fn run_span(algorithm: &str, metadata: Option<&Metadata>) -> Span {
             if let Some(value) = value {
                 span.record(field, value.as_str());
             }
+        }
+        if let Some(session_id) = &metadata.session_id {
+            span.record("session.id", session_id.as_str());
         }
         if let Some(extra) = &metadata.extra_metadata {
             span.record("extra_metadata", tracing::field::debug(extra));
@@ -156,15 +169,97 @@ pub(crate) async fn observe_run(
     result
 }
 
-/// Records the outcome fields on the enclosing `libsy.client_call` span. The
-/// failure itself is not logged here — it propagates to the algorithm, where
-/// the `libsy.llm_call` recording logs it once.
-pub(crate) fn record_client_call(result: &Result<Response>) {
+/// Adds terminal response and usage fields to the enclosing `libsy.client_call`
+/// span without consuming or buffering a streaming response.
+pub(crate) fn observe_client_call(result: Result<Response>) -> Result<Response> {
     let span = Span::current();
-    span.record("outcome", outcome_value(result));
-    if let Err(error) = result {
-        span.record("error", tracing::field::display(error));
+    match result {
+        Ok(mut response) => {
+            span.record("outcome", "ok");
+            match response.llm_response {
+                LlmResponse::Agg(agg) => {
+                    record_gen_ai_response(&span, &agg);
+                    response.llm_response = LlmResponse::Agg(agg);
+                }
+                LlmResponse::Stream(stream) => {
+                    response.llm_response =
+                        LlmResponse::Stream(observe_client_stream(stream, span));
+                }
+            }
+            Ok(response)
+        }
+        Err(error) => {
+            record_client_error(&span, "client_call", &error);
+            Err(error)
+        }
     }
+}
+
+fn observe_client_stream(stream: LlmResponseStream, span: Span) -> LlmResponseStream {
+    Box::pin(stream.inspect(move |item| match item {
+        Ok(LlmResponseChunk::MessageStart { id, model }) => {
+            record_optional(&span, "gen_ai.response.id", id.as_deref());
+            record_optional(&span, "gen_ai.response.model", model.as_deref());
+        }
+        Ok(LlmResponseChunk::Usage(usage)) => {
+            record_gen_ai_usage(&span, usage);
+        }
+        Ok(LlmResponseChunk::DecodeError { message }) => {
+            record_client_error(&span, "decode_error", message);
+        }
+        Ok(LlmResponseChunk::StreamError { message }) => {
+            record_client_error(&span, "stream_error", message);
+        }
+        Err(error) => {
+            record_client_error(&span, "client_stream", error);
+        }
+        _ => {}
+    }))
+}
+
+fn record_gen_ai_response(span: &Span, response: &AggLlmResponse) {
+    record_optional(span, "gen_ai.response.id", response.id.as_deref());
+    record_optional(span, "gen_ai.response.model", response.model.as_deref());
+    record_gen_ai_usage(span, &response.usage);
+}
+
+fn record_gen_ai_usage(span: &Span, usage: &Usage) {
+    let cache_read = usage.cached_input_tokens();
+    let cache_creation = usage.cache_creation_input_tokens();
+    if usage.input_tokens.is_some() || cache_read.is_some() || cache_creation.is_some() {
+        let input_tokens = usage
+            .input_tokens
+            .unwrap_or_default()
+            .saturating_add(cache_read.unwrap_or_default())
+            .saturating_add(cache_creation.unwrap_or_default());
+        span.record("gen_ai.usage.input_tokens", input_tokens);
+    }
+    for (field, value) in [
+        ("gen_ai.usage.output_tokens", usage.output_tokens),
+        ("gen_ai.usage.cache_read.input_tokens", cache_read),
+        ("gen_ai.usage.cache_creation.input_tokens", cache_creation),
+        (
+            "gen_ai.usage.reasoning.output_tokens",
+            usage.reasoning_tokens,
+        ),
+    ] {
+        if let Some(value) = value {
+            span.record(field, value);
+        }
+    }
+}
+
+fn record_optional(span: &Span, field: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        span.record(field, value);
+    }
+}
+
+fn record_client_error(span: &Span, error_type: &str, error: &dyn std::fmt::Display) {
+    span.record("outcome", "error");
+    span.record("otel.status_code", "ERROR");
+    span.record("error.type", error_type);
+    span.record("error", tracing::field::display(error));
 }
 
 /// Records the end of one algorithm run: the run counter and duration

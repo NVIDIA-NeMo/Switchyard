@@ -6,9 +6,13 @@
 use std::env;
 use std::sync::OnceLock;
 
+use axum::http::HeaderMap;
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
@@ -42,6 +46,30 @@ pub fn flush_observability() {
         }
     }
     metrics::flush();
+}
+
+/// Creates the server request span with any incoming W3C trace context as its parent.
+pub(crate) fn request_span(headers: &HeaderMap) -> tracing::Span {
+    let parent = TraceContextPropagator::new().extract(&HeaderExtractor(headers));
+    let span = tracing::info_span!(
+        target: "switchyard_server",
+        "switchyard.request",
+        otel.kind = "server",
+    );
+    let _ = span.set_parent(parent);
+    span
+}
+
+struct HeaderExtractor<'a>(&'a HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|name| name.as_str()).collect()
+    }
 }
 
 pub(crate) fn otlp_enabled(signal: &str) -> bool {
@@ -129,4 +157,44 @@ fn build_tracer_provider() -> Result<SdkTracerProvider, String> {
 
 fn env_var_is_true(name: &str) -> bool {
     env::var(name).is_ok_and(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "1"))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+    use opentelemetry::trace::{TraceContextExt, TracerProvider as _};
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::request_span;
+
+    #[test]
+    fn request_span_continues_incoming_w3c_trace_context() {
+        let provider = SdkTracerProvider::builder().build();
+        let tracer = provider.tracer("request-span-test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "traceparent",
+            HeaderValue::from_static("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+        );
+        headers.insert(
+            "tracestate",
+            HeaderValue::from_static("vendor=opaque-value"),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = request_span(&headers);
+            let context = span.context();
+            let current = context.span();
+            let span_context = current.span_context();
+            assert_eq!(
+                span_context.trace_id().to_string(),
+                "4bf92f3577b34da6a3ce929d0e0e4736"
+            );
+            assert_eq!(span_context.trace_state().header(), "vendor=opaque-value");
+        });
+    }
 }

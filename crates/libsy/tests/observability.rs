@@ -29,8 +29,9 @@ use tracing_subscriber::Layer;
 
 use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
 use switchyard_libsy::{
-    AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse, LlmTarget,
-    LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step, Usage,
+    AggLlmResponse, Algorithm, Context, Decision, Driver, LibsyError, LlmResponse,
+    LlmResponseChunk, LlmTarget, LlmTargetSet, Metadata, Request, Response, RoutedLlmClient, Step,
+    Usage,
 };
 use switchyard_protocol::{text_request, text_response, LlmClientError};
 
@@ -167,7 +168,7 @@ fn telemetry() -> &'static (CaptureStore, InMemoryMetricExporter, SdkMeterProvid
     })
 }
 
-/// The three tests in this file must not overlap because metrics are global.
+/// The tests in this file must not overlap because metrics are global.
 /// There is no Rust/cargo-native way of saying this (people use `serial_test` crate) so use a
 /// lock.
 /// Each file in `tests/` (integration tests) runs as a separate test process, so we are not
@@ -345,6 +346,7 @@ impl RoutedLlmClient for UsageClient {
     ) -> Result<Response, switchyard_protocol::LlmClientError> {
         Ok(Response {
             llm_response: LlmResponse::Agg(AggLlmResponse {
+                id: Some("obs-response-1".to_string()),
                 model: Some(decision.selected_model().to_string()),
                 usage: self.usage.clone(),
                 ..AggLlmResponse::default()
@@ -442,9 +444,9 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         usage: Usage {
             input_tokens: Some(11),
             output_tokens: Some(7),
-            total_tokens: Some(18),
+            total_tokens: Some(25),
             reasoning_tokens: Some(2),
-            ..Usage::default()
+            cache: Usage::cache_details(Some(3), Some(4)),
         },
     }) as Arc<dyn RoutedLlmClient>;
     let (trace, _response) = algo(ALGO, MODEL, Some(client))
@@ -526,6 +528,21 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         Some("obs-session-1")
     );
     assert_eq!(
+        run_span.fields.get("session.id").map(String::as_str),
+        Some("obs-session-1")
+    );
+    assert_eq!(
+        run_span
+            .fields
+            .get("switchyard.algorithm")
+            .map(String::as_str),
+        Some(ALGO)
+    );
+    assert_eq!(
+        run_span.fields.get("switchyard.route").map(String::as_str),
+        Some("auto")
+    );
+    assert_eq!(
         run_span.fields.get("correlation_id").map(String::as_str),
         Some("obs-corr-1")
     );
@@ -555,6 +572,27 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         client_span.fields.get("outcome").map(String::as_str),
         Some("ok")
     );
+    for (field, value) in [
+        ("otel.kind", "client"),
+        ("switchyard.algorithm", ALGO),
+        ("gen_ai.operation.name", "chat"),
+        ("gen_ai.request.model", MODEL),
+        ("gen_ai.request.stream", "false"),
+        ("gen_ai.conversation.id", "obs-session-1"),
+        ("gen_ai.response.id", "obs-response-1"),
+        ("gen_ai.response.model", MODEL),
+        ("gen_ai.usage.input_tokens", "18"),
+        ("gen_ai.usage.output_tokens", "7"),
+        ("gen_ai.usage.cache_read.input_tokens", "3"),
+        ("gen_ai.usage.cache_creation.input_tokens", "4"),
+        ("gen_ai.usage.reasoning.output_tokens", "2"),
+    ] {
+        assert_eq!(
+            client_span.fields.get(field).map(String::as_str),
+            Some(value),
+            "unexpected {field}"
+        );
+    }
 
     let call_span = find_span(&spans, "libsy.llm_call", "selected_model", MODEL);
     assert_eq!(call_span.parent.as_deref(), Some("libsy.run"));
@@ -576,7 +614,7 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     );
     assert_eq!(
         call_span.fields.get("total_tokens").map(String::as_str),
-        Some("18")
+        Some("25")
     );
     assert_eq!(
         call_span.fields.get("reasoning_tokens").map(String::as_str),
@@ -601,6 +639,80 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
         }),
         "no routing-decision log event for {MODEL} in {events:?}"
     );
+    Ok(())
+}
+
+/// A streamed response keeps the client span available until terminal usage arrives.
+struct StreamingUsageClient;
+
+#[async_trait]
+impl RoutedLlmClient for StreamingUsageClient {
+    async fn call(
+        &self,
+        _ctx: Context,
+        _request: Request,
+        decision: Arc<dyn Decision>,
+    ) -> Result<Response, LlmClientError> {
+        let usage = Usage {
+            input_tokens: Some(13),
+            output_tokens: Some(5),
+            cache: Usage::cache_details(Some(8), None),
+            ..Usage::default()
+        };
+        let chunks = vec![
+            Ok(LlmResponseChunk::MessageStart {
+                id: Some("obs-stream-response".to_string()),
+                model: Some(decision.selected_model().to_string()),
+            }),
+            Ok(LlmResponseChunk::Usage(usage)),
+            Ok(LlmResponseChunk::MessageStop {
+                reason: Some("end_turn".to_string()),
+            }),
+        ];
+        Ok(Response {
+            llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter(chunks))),
+            metadata: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _) = telemetry();
+    const ALGO: &str = "obs-stream-algo";
+    const MODEL: &str = "obs-stream-model";
+    let client = Arc::new(StreamingUsageClient) as Arc<dyn RoutedLlmClient>;
+    let mut request = request_with_metadata("obs-stream-session", "obs-stream-corr");
+    request.llm_request.stream = true;
+    let (_, response) = algo(ALGO, MODEL, Some(client))
+        .run(Context::default(), request)
+        .await?;
+    let LlmResponse::Stream(mut stream) = response.llm_response else {
+        return Err(test_error("expected a streamed response"));
+    };
+    while let Some(item) = stream.next().await {
+        if let Err(error) = item {
+            panic!("unexpected stream error: {error}");
+        }
+    }
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    for (field, value) in [
+        ("gen_ai.request.stream", "true"),
+        ("gen_ai.response.id", "obs-stream-response"),
+        ("gen_ai.response.model", MODEL),
+        ("gen_ai.usage.input_tokens", "21"),
+        ("gen_ai.usage.output_tokens", "5"),
+        ("gen_ai.usage.cache_read.input_tokens", "8"),
+    ] {
+        assert_eq!(
+            client_span.fields.get(field).map(String::as_str),
+            Some(value),
+            "unexpected {field}"
+        );
+    }
     Ok(())
 }
 

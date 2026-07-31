@@ -34,7 +34,7 @@ use libsy::{
 };
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpSocket};
-use tracing::Level;
+use tracing::{Instrument, Level};
 
 use switchyard_translation::{decode_request, WireFormat};
 
@@ -411,6 +411,19 @@ fn count_tokens_error(error: LibsyError) -> Response {
 }
 
 async fn handle_endpoint(
+    state: ServerState,
+    started: RequestStart,
+    headers: HeaderMap,
+    body: std::result::Result<Json<Value>, JsonRejection>,
+    wire_format: WireFormat,
+) -> Response {
+    let span = observability::request_span(&headers);
+    handle_endpoint_inner(state, started, headers, body, wire_format)
+        .instrument(span)
+        .await
+}
+
+async fn handle_endpoint_inner(
     state: ServerState,
     started: RequestStart,
     headers: HeaderMap,

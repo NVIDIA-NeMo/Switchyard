@@ -618,7 +618,7 @@ pub trait Algorithm: Send + Sync + 'static {
         // One `libsy.run` span covers the whole algorithm task; the driver's
         // `libsy.llm_call` spans and decision logs nest inside it via `tracing`'s
         // contextual parenting.
-        let span = observability::run_span(self.name(), request.metadata.as_ref());
+        let span = observability::run_span(self.name(), &request);
         let observed_driver = task_driver.clone();
         let handle = tokio::spawn(
             async move {
@@ -684,12 +684,44 @@ pub trait Algorithm: Send + Sync + 'static {
             skip_all,
             fields(
                 algorithm = observability::algorithm_label(&call.get_routed().ctx),
+                switchyard.algorithm = observability::algorithm_label(&call.get_routed().ctx),
+                switchyard.routing.tier = tracing::field::Empty,
                 selected_model = call.get_decision().selected_model(),
+                otel.kind = "client",
+                gen_ai.operation.name = "chat",
+                gen_ai.request.model = call.get_decision().selected_model(),
+                gen_ai.request.stream = call.get_routed().request.llm_request.stream,
+                gen_ai.conversation.id = tracing::field::Empty,
+                gen_ai.provider.name = tracing::field::Empty,
+                server.address = tracing::field::Empty,
+                server.port = tracing::field::Empty,
+                gen_ai.response.id = tracing::field::Empty,
+                gen_ai.response.model = tracing::field::Empty,
+                gen_ai.usage.input_tokens = tracing::field::Empty,
+                gen_ai.usage.output_tokens = tracing::field::Empty,
+                gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+                gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
+                gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
                 outcome = tracing::field::Empty,
+                otel.status_code = tracing::field::Empty,
+                error.type = tracing::field::Empty,
                 error = tracing::field::Empty,
             )
         )]
         async fn serve(call: CallLlmRequest) -> Result<()> {
+            let span = tracing::Span::current();
+            if let Some(tier) = call.get_decision().routing_tier() {
+                span.record("switchyard.routing.tier", tier);
+            }
+            if let Some(session_id) = call
+                .get_routed()
+                .request
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.session_id.as_deref())
+            {
+                span.record("gen_ai.conversation.id", session_id);
+            }
             let routed = call.get_routed().clone();
             let target = routed.decision.selected_model().to_string();
             let client =
@@ -703,7 +735,7 @@ pub trait Algorithm: Send + Sync + 'static {
                 .call(routed.ctx, routed.request, routed.decision)
                 .await
                 .map_err(|source| LibsyError::client_call(target, source));
-            observability::record_client_call(&result);
+            let result = observability::observe_client_call(result);
             call.respond(result)
         }
 
