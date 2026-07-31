@@ -967,13 +967,15 @@ fn startup_banner(options: &ServerRunOptions, state: &ServerState, color: bool) 
         "model": example_model,
         "messages": [{"role": "user", "content": "Hello from Switchyard"}],
     });
+    let example_url = shell_quote(&format!("{request_url}/v1/chat/completions"));
+    let example_body = shell_quote(&example_body.to_string());
     format!(
-        "{}\nSwitchyard libsy server\n  listening: {}\n  routes: {}\n\nendpoints:\n{}\n\nexample:\n  curl -s {}/v1/chat/completions \\\n    -H 'Content-Type: application/json' \\\n    -d '{}'",
+        "{}\nSwitchyard libsy server\n  listening: {}\n  routes: {}\n\nendpoints:\n{}\n\nexample:\n  curl -s {} \\\n    -H 'Content-Type: application/json' \\\n    -d {}",
         render_startup_banner_art(color),
         listen_url,
         route_list,
         endpoint_listing(state.routing_log.is_some()),
-        request_url,
+        example_url,
         example_body,
     )
 }
@@ -1004,6 +1006,7 @@ fn url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
     format!("{scheme}://{}:{}", host_for_url(addr.ip()), addr.port())
 }
 
+// Use loopback in request examples when the listener binds all interfaces.
 fn request_url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
     let host = if addr.ip().is_unspecified() {
         match addr.ip() {
@@ -1016,11 +1019,16 @@ fn request_url_for_addr(scheme: &'static str, addr: SocketAddr) -> String {
     format!("{scheme}://{host}:{}", addr.port())
 }
 
+// Bracket IPv6 literals so they are valid inside a URL authority.
 fn host_for_url(ip: std::net::IpAddr) -> String {
     match ip {
         std::net::IpAddr::V4(ip) => ip.to_string(),
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn endpoint_listing(has_routing_log: bool) -> String {
