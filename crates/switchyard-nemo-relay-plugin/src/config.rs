@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use http::header::{HeaderName, HeaderValue};
-use nemo_relay_plugin::LlmContinuationRouteV2;
 use serde::{Deserialize, Serialize};
 use switchyard_libsy::algorithms::{LlmTaskClassifier, Random, TaskClassifierConfig};
 use switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet};
@@ -46,14 +45,6 @@ impl WireProtocol {
                 Some(Self::AnthropicMessages)
             }
             _ => None,
-        }
-    }
-
-    pub const fn relay_route(self) -> LlmContinuationRouteV2 {
-        match self {
-            Self::OpenaiChat => LlmContinuationRouteV2::OpenaiChat,
-            Self::OpenaiResponses => LlmContinuationRouteV2::OpenaiResponses,
-            Self::AnthropicMessages => LlmContinuationRouteV2::AnthropicMessages,
         }
     }
 

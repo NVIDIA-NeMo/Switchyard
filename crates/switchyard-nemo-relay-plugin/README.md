@@ -54,10 +54,11 @@ host queue; unmanaged provider events do not cross the plugin ABI.
 
 Provider failures use HTTP semantics: status, a bounded body, and safe response
 headers when Relay received an HTTP response; otherwise a transport, timeout,
-cancelled, invalid-request, guardrail, or internal kind. Retry policy is derived
-from those values rather than serialized. HTTP 408, 425, 429, 500, 502, 503,
-and 504 plus transport and timeout failures retry. The plugin does not inspect
-provider bodies to reclassify HTTP 400 context-window or HTTP 404 model errors.
+cancelled, invalid-request, guardrail, or internal kind. Relay reports those
+neutral failure facts; the Switchyard plugin owns retry and fallback policy.
+HTTP 408, 425, 429, 500, 502, 503, and 504 plus transport and timeout failures
+retry. The plugin does not inspect provider bodies to reclassify HTTP 400
+context-window or HTTP 404 model errors.
 
 `switchyard-translation` is used for same-protocol routes as well as
 cross-protocol routes. Same-protocol response events replay their preserved

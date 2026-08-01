@@ -269,7 +269,6 @@ impl SwitchyardRuntime {
             target: LlmContinuationTargetV2 {
                 method: "POST".into(),
                 url: target.dispatch_url(),
-                route: target.protocol.relay_route(),
                 headers,
             },
         })
@@ -810,7 +809,19 @@ impl RunFailure {
     fn retryable(&self) -> bool {
         self.provider_error
             .as_ref()
-            .is_some_and(LlmContinuationFailureV2::is_retryable)
+            .is_some_and(should_retry_provider_failure)
+    }
+}
+
+fn should_retry_provider_failure(failure: &LlmContinuationFailureV2) -> bool {
+    match failure {
+        LlmContinuationFailureV2::Http { failure } => {
+            matches!(failure.status, 408 | 425 | 429 | 500 | 502 | 503 | 504)
+        }
+        LlmContinuationFailureV2::NonHttp { failure } => matches!(
+            failure.kind,
+            LlmNonHttpFailureKindV2::Transport | LlmNonHttpFailureKindV2::Timeout
+        ),
     }
 }
 
@@ -916,30 +927,47 @@ mod tests {
     }
 
     #[test]
-    fn stream_open_failures_keep_typed_retry_semantics() {
-        let retryable = RunFailure {
-            error: LibsyError::MissingFinalResponse,
-            provider_error: Some(LlmContinuationFailureV2::Http {
+    fn switchyard_retry_policy_uses_http_status_and_non_http_kind() {
+        for status in [408, 425, 429, 500, 502, 503, 504] {
+            let failure = LlmContinuationFailureV2::Http {
                 failure: LlmHttpFailureV2 {
-                    status: 503,
-                    body: "temporarily unavailable".into(),
+                    status,
+                    body: String::new(),
                     headers: BTreeMap::new(),
                 },
-            }),
-        };
-        assert!(retryable.retryable());
-
-        let non_retryable = RunFailure {
-            error: LibsyError::MissingFinalResponse,
-            provider_error: Some(LlmContinuationFailureV2::Http {
+            };
+            assert!(should_retry_provider_failure(&failure), "status={status}");
+        }
+        for status in [400, 401, 404, 409, 422, 501] {
+            let failure = LlmContinuationFailureV2::Http {
                 failure: LlmHttpFailureV2 {
-                    status: 400,
-                    body: "invalid request".into(),
+                    status,
+                    body: String::new(),
                     headers: BTreeMap::new(),
                 },
-            }),
-        };
-        assert!(!non_retryable.retryable());
+            };
+            assert!(!should_retry_provider_failure(&failure), "status={status}");
+        }
+        for (kind, expected) in [
+            (LlmNonHttpFailureKindV2::Transport, true),
+            (LlmNonHttpFailureKindV2::Timeout, true),
+            (LlmNonHttpFailureKindV2::Cancelled, false),
+            (LlmNonHttpFailureKindV2::InvalidRequest, false),
+            (LlmNonHttpFailureKindV2::Guardrail, false),
+            (LlmNonHttpFailureKindV2::Internal, false),
+        ] {
+            let failure = LlmContinuationFailureV2::NonHttp {
+                failure: LlmNonHttpFailureV2 {
+                    kind,
+                    message: String::new(),
+                },
+            };
+            assert_eq!(
+                should_retry_provider_failure(&failure),
+                expected,
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
