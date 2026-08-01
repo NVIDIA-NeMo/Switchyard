@@ -1110,8 +1110,9 @@ dependencies = [
 [[package]]
 name = "nemo-relay-plugin"
 version = "0.8.0"
-source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=a11ff5e105850a4b0f07a261546648bacb64d771#a11ff5e105850a4b0f07a261546648bacb64d771"
+source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=ed397cd598d0a5c3bde94b47db7b796077ab3d9a#ed397cd598d0a5c3bde94b47db7b796077ab3d9a"
 dependencies = [
+ "futures",
  "nemo-relay-types",
  "serde",
  "serde_json",
@@ -1120,7 +1121,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-types"
 version = "0.8.0"
-source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=a11ff5e105850a4b0f07a261546648bacb64d771#a11ff5e105850a4b0f07a261546648bacb64d771"
+source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=ed397cd598d0a5c3bde94b47db7b796077ab3d9a#ed397cd598d0a5c3bde94b47db7b796077ab3d9a"
 dependencies = [
  "bitflags",
  "chrono",
@@ -2100,7 +2101,7 @@ dependencies = [
 name = "switchyard-nemo-relay-plugin"
 version = "0.1.0"
 dependencies = [
- "futures",
+ "async-stream",
  "futures-util",
  "http",
  "nemo-relay-plugin",

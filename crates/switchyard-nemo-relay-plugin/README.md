@@ -7,13 +7,16 @@ SPDX-License-Identifier: Apache-2.0
 
 This crate builds the external `nvidia.switchyard` native plugin. It embeds
 `switchyard-libsy` and drives `Algorithm::run_stream`; NeMo Relay remains
-responsible for provider transport, retries, fallback, and observability. The
-plugin resolves each target's provider headers and credentials.
+responsible for provider transport and the observability substrate. The plugin
+resolves each target's provider headers and credentials and coordinates the
+Switchyard retry and trusted-fallback policy.
 
-The plugin requires NeMo Relay native plugin C API v2. It does not link the
-Relay runtime, use `switchyard-llm-client`, or start `switchyard-server`.
-`switchyard-translation` is the only request, response, and stream translation
-layer.
+The plugin requires NeMo Relay native API v2. It uses the safe Rust continuation
+facade from `nemo-relay-plugin`; the C ABI remains the binary boundary, but no
+raw callbacks, handles, host tables, or unsafe FFI glue appear in this crate. It
+does not link the Relay runtime, use `switchyard-llm-client`, or start
+`switchyard-server`. `switchyard-translation` is the only request, response, and
+stream translation layer.
 
 The crate is a source/build unit and is not published to crates.io. Operators
 install a release bundle containing the compiled shared library, materialized
@@ -31,17 +34,23 @@ For every managed LLM call, the plugin:
 2. drives the configured libsy algorithm through `Algorithm::run_stream`;
 3. records each real `Decision`;
 4. translates every `CallLlm` request to the selected target protocol;
-5. asks Relay to dispatch the translated request through native API v2;
+5. asks Relay's safe native API v2 continuation to dispatch the translated
+   request;
 6. passes the actual response, stream, or typed provider failure back through
    `CallLlmRequest::respond`; and
 7. translates `ReturnToAgent` back to the caller protocol.
 
 Switchyard owns routing, translation, target URLs, and target credentials.
 Relay validates and transports the selected HTTP target, runs it through the
-captured LLM continuation, and owns retries, fallback, stream commitment, and
-event export. Target data never enters `LlmRequest.headers`, marks, or spans.
-The plugin contains no Relay provider codecs and does not use private dispatch
-headers.
+captured LLM continuation, and owns stream transport and event export.
+Switchyard retries or falls back only before the first caller event; after
+commitment, a late provider failure is returned without retry. Target data never
+enters `LlmRequest.headers`, marks, or spans. The plugin contains no Relay
+provider codecs and does not use private dispatch headers.
+
+Calls outside the enabled profiles return the SDK's explicit `Passthrough`
+outcome. Relay then forwards the downstream provider stream through its bounded
+host queue; unmanaged provider events do not cross the plugin ABI.
 
 Provider failures use HTTP semantics: status, a bounded body, and safe response
 headers when Relay received an HTTP response; otherwise a transport, timeout,
