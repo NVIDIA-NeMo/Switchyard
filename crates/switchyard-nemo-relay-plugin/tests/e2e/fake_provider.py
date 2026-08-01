@@ -47,10 +47,10 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self._json(401, {"error": {"message": "target headers were not isolated"}})
             return
-        if model == "fake/retry-once" and attempt == 1:
+        if model in {"fake/retry-once", "fake/retry-stream-once"} and attempt == 1:
             self._json(503, {"error": {"message": "retry this request"}})
             return
-        if model == "fake/always-fail":
+        if model in {"fake/always-fail", "fake/always-fail-stream"}:
             self._json(400, {"error": {"message": "invalid routed request"}})
             return
         if self.path == "/v1/chat/completions":
@@ -73,6 +73,22 @@ class Handler(BaseHTTPRequestHandler):
             if classifier
             else f"chat from {model}"
         )
+        if request.get("stream") and model == "fake/late-stream-failure":
+            self._sse_then_disconnect(
+                {
+                    "id": "chatcmpl-late-failure",
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "committed before failure"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            return
         if request.get("stream"):
             events: list[dict[str, object]] = [
                 {
@@ -269,6 +285,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
         self.wfile.flush()
+
+    def _sse_then_disconnect(self, first: dict[str, object]) -> None:
+        data = f"data: {json.dumps(first)}\n\n".encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("content-length", str(len(data) + 64))
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+        self.wfile.flush()
+        self.close_connection = True
 
     def _json(self, status: int, value: object) -> None:
         data = json.dumps(value).encode()

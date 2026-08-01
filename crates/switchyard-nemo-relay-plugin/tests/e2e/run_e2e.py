@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import http.client
 import json
 import os
 import signal
@@ -58,6 +59,25 @@ def request(
     )
     with urllib.request.urlopen(request, timeout=15) as response:
         return response.status, response.read()
+
+
+def request_until_stream_error(
+    relay_url: str, path: str, body: dict[str, Any]
+) -> tuple[int, bytes, bool]:
+    request = urllib.request.Request(
+        f"{relay_url}{path}",
+        data=json.dumps(body).encode(),
+        headers={
+            "content-type": "application/json",
+            "authorization": "Bearer e2e",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        try:
+            return response.status, response.read(), False
+        except http.client.IncompleteRead as error:
+            return response.status, error.partial, True
 
 
 def stream_events(raw: bytes) -> list[dict[str, object]]:
@@ -490,6 +510,8 @@ def single_target_config(
     atof: Path,
     selected_model: str,
     fallback_model: str,
+    *,
+    max_retries: int = 1,
 ) -> str:
     return plugin_config(
         manifest,
@@ -509,6 +531,7 @@ base_url = "{{provider_url}}/v1"
 """,
         'openai_chat = "fallback"',
         '"openai_chat"',
+        max_retries=max_retries,
     )
 
 
@@ -571,6 +594,166 @@ def run_retry_and_fallback(
     return {
         "retry_attempts": calls["fake/retry-once"],
         "fallback_calls": calls["fake/trusted-fallback"],
+    }
+
+
+def run_stream_reliability(
+    relay_bin: Path, root: Path, manifest: Path, provider_url: str
+) -> dict[str, object]:
+    retry_config = single_target_config(
+        manifest,
+        provider_url,
+        root / "stream-retry" / "atof",
+        "fake/retry-stream-once",
+        "fake/retry-stream-fallback",
+        max_retries=1,
+    )
+    with RelayScenario(relay_bin, root, provider_url, "stream-retry", retry_config) as relay:
+        body = dict(CASES[0][2])
+        body["stream"] = True
+        status, raw = request(relay.url, CASES[0][1], body)
+        events = stream_events(raw)
+        assert status == 200
+        assert len(events) == 2
+        assert raw.decode().count("data: [DONE]") == 1
+        assert stream_text("openai_chat", events) == "chat from fake/retry-stream-once"
+    retry_marks = relay.marks("switchyard.routing.retry")
+    assert len(retry_marks) == 1
+    assert retry_marks[0]["data"] == {
+        "attempt": 1,
+        "retryable": True,
+        "failure_kind": "http",
+        "http_status": 503,
+    }
+    assert not relay.marks("switchyard.routing.fallback", expected=0)
+    assert len(relay.marks("switchyard.routing.requested", expected=2)) == 2
+    assert len(relay.marks("switchyard.routing.decision", expected=2)) == 2
+
+    fallback_config = single_target_config(
+        manifest,
+        provider_url,
+        root / "stream-fallback" / "atof",
+        "fake/always-fail-stream",
+        "fake/trusted-stream-fallback",
+        max_retries=1,
+    )
+    with RelayScenario(relay_bin, root, provider_url, "stream-fallback", fallback_config) as relay:
+        body = dict(CASES[0][2])
+        body["stream"] = True
+        status, raw = request(relay.url, CASES[0][1], body)
+        events = stream_events(raw)
+        assert status == 200
+        assert len(events) == 2
+        assert raw.decode().count("data: [DONE]") == 1
+        assert stream_text("openai_chat", events) == "chat from fake/trusted-stream-fallback"
+    error_marks = relay.marks("switchyard.routing.error")
+    assert len(error_marks) == 1
+    assert error_marks[0]["data"] == {
+        "attempt": 1,
+        "retryable": False,
+        "failure_kind": "http",
+        "http_status": 400,
+    }
+    assert len(relay.marks("switchyard.routing.fallback")) == 1
+    assert len(relay.marks("switchyard.routing.requested")) == 1
+    assert len(relay.marks("switchyard.routing.decision")) == 1
+
+    late_config = single_target_config(
+        manifest,
+        provider_url,
+        root / "stream-late-failure" / "atof",
+        "fake/late-stream-failure",
+        "fake/late-stream-fallback",
+        max_retries=1,
+    )
+    with RelayScenario(relay_bin, root, provider_url, "stream-late-failure", late_config) as relay:
+        body = dict(CASES[0][2])
+        body["stream"] = True
+        status, raw, saw_stream_error = request_until_stream_error(
+            relay.url, CASES[0][1], body
+        )
+        events = stream_events(raw)
+        assert status == 200
+        assert saw_stream_error
+        assert len(events) == 1
+        assert stream_text("openai_chat", events) == "committed before failure"
+        assert "data: [DONE]" not in raw.decode()
+    late_error_marks = relay.marks("switchyard.routing.error")
+    assert len(late_error_marks) == 1
+    assert late_error_marks[0]["data"] == {
+        "attempt": 1,
+        "retryable": True,
+        "failure_kind": "non_http",
+        "non_http_kind": "transport",
+    }
+    assert not relay.marks("switchyard.routing.retry", expected=0)
+    assert not relay.marks("switchyard.routing.fallback", expected=0)
+    assert len(relay.marks("switchyard.routing.requested")) == 1
+    assert len(relay.marks("switchyard.routing.decision")) == 1
+
+    calls = http_json(provider_url, "/calls")
+    assert calls["fake/retry-stream-once"] == 2
+    assert calls.get("fake/retry-stream-fallback", 0) == 0
+    assert calls["fake/always-fail-stream"] == 1
+    assert calls["fake/trusted-stream-fallback"] == 1
+    assert calls["fake/late-stream-failure"] == 1
+    assert calls.get("fake/late-stream-fallback", 0) == 0
+    return {
+        "retry_attempts": calls["fake/retry-stream-once"],
+        "fallback_calls": calls["fake/trusted-stream-fallback"],
+        "late_events_before_failure": len(events),
+        "late_error_marks": len(late_error_marks),
+    }
+
+
+def run_unmanaged_passthrough(
+    relay_bin: Path, root: Path, manifest: Path, provider_url: str
+) -> dict[str, object]:
+    config = plugin_config(
+        manifest,
+        provider_url,
+        root / "unmanaged-passthrough" / "atof",
+        '[plugins.dynamic.config.algorithm]\nkind = "random"\nseed = 5',
+        """\
+[plugins.dynamic.config.targets.responses]
+model = "fake/unused-responses-target"
+protocol = "openai_responses"
+base_url = "{provider_url}/v1"
+weight = 1
+""",
+        'openai_responses = "responses"',
+        '"openai_responses"',
+    )
+    with RelayScenario(relay_bin, root, provider_url, "unmanaged-passthrough", config) as relay:
+        body = dict(CASES[0][2])
+        body["model"] = "fake/unmanaged-passthrough"
+        body["stream"] = False
+        status, raw = request(relay.url, CASES[0][1], body)
+        response = json.loads(raw)
+        assert status == 200
+        assert response["model"] == "fake/unmanaged-passthrough"
+
+        body["stream"] = True
+        status, raw = request(relay.url, CASES[0][1], body)
+        events = stream_events(raw)
+        assert status == 200
+        assert len(events) == 2
+        assert raw.decode().count("data: [DONE]") == 1
+        assert stream_text("openai_chat", events) == "chat from fake/unmanaged-passthrough"
+
+    assert not relay.marks("switchyard.routing.requested", expected=0)
+    assert not relay.marks("switchyard.routing.decision", expected=0)
+    assert not relay.marks("switchyard.routing.retry", expected=0)
+    assert not relay.marks("switchyard.routing.error", expected=0)
+    assert not relay.marks("switchyard.routing.fallback", expected=0)
+    calls = http_json(provider_url, "/calls")
+    assert calls["fake/unmanaged-passthrough"] == 2
+    assert calls.get("fake/unused-responses-target", 0) == 0
+    return {
+        "buffered": True,
+        "streaming": True,
+        "provider_calls": calls["fake/unmanaged-passthrough"],
+        "switchyard_marks": 0,
     }
 
 
@@ -672,6 +855,12 @@ def main() -> None:
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
             "reliability": run_retry_and_fallback(
+                relay_bin, root, bundle / "relay-plugin.toml", provider_url
+            ),
+            "stream_reliability": run_stream_reliability(
+                relay_bin, root, bundle / "relay-plugin.toml", provider_url
+            ),
+            "unmanaged_passthrough": run_unmanaged_passthrough(
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
         }
