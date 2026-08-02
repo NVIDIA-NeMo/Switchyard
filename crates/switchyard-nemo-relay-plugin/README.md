@@ -30,9 +30,10 @@ enter plugin-local Tokio state across the dynamic-library boundary. libsy's
 `run_stream` and driver response timeout are therefore poll-driven rather than
 calling `tokio::spawn` or `tokio::time::timeout`.
 
-The crate is a source/build unit and is not published to crates.io. Operators
-install a release bundle containing the compiled shared library, materialized
-`relay-plugin.toml`, `config.schema.json`, licensing files, and checksum.
+The crate is a `cdylib`-only source/build unit and is not published to
+crates.io. Operators install a release bundle containing the compiled shared
+library, materialized `relay-plugin.toml`, `config.schema.json`, licensing
+files, and checksum.
 
 During development, `nemo-relay-plugin` is pinned to the Relay native API v2
 feature commit. Native API v2 remains unreleased, so every bundle must be
@@ -55,8 +56,9 @@ For every managed LLM call, the plugin:
 7. translates `ReturnToAgent` back to the caller protocol.
 
 Switchyard owns routing, translation, target URLs, and target credentials.
-Relay validates and transports the selected HTTP target, runs it through the
-captured LLM continuation, and owns stream transport and event export.
+Each continuation target is an absolute HTTP(S) URL plus headers, and Relay
+dispatches it with HTTP `POST` through the captured LLM continuation. Relay
+validates the target and owns stream transport and event export.
 Switchyard retries or falls back only before the first caller event; after
 commitment, a late provider failure is returned without retry. Target URLs,
 transport headers, and credentials never enter `LlmRequest.headers`, marks, or
@@ -64,14 +66,19 @@ spans; semantic target names remain visible in genuine routing marks. The
 plugin contains no Relay provider codecs and does not use private dispatch
 headers.
 
-Calls outside the enabled profiles return the SDK's explicit `Passthrough`
-outcome. Relay then forwards the downstream provider stream through its bounded
-host queue; unmanaged provider events do not cross the plugin ABI.
+Calls whose protocol is absent from `default_targets` return the SDK's explicit
+`Passthrough` outcome. Relay then forwards the downstream provider stream
+through its bounded host queue. These ordinary untargeted calls remain inside
+Relay's managed LLM lifecycle, but their provider events do not cross the
+plugin ABI. Targeted provider streams permit at most one pending pull; plugin
+output and direct pass-through use bounded 32-event host queues.
 
-Provider failures use HTTP semantics: status, a bounded body, and safe response
-headers when Relay received an HTTP response; otherwise a transport, timeout,
-cancelled, invalid-request, guardrail, or internal kind. Relay reports those
-neutral failure facts; the Switchyard plugin owns retry and fallback policy.
+Provider failures use HTTP semantics. Relay supplies status, a bounded body,
+and safe response headers when it received an HTTP response; Switchyard passes
+the status and body to libsy but does not currently use the response headers.
+Failures without an HTTP response use a transport, timeout, cancelled,
+invalid-request, guardrail, or internal kind. The Switchyard plugin alone owns
+retry and fallback policy.
 HTTP 408, 425, 429, 500, 502, 503, and 504 plus transport and timeout failures
 retry. The plugin does not inspect provider bodies to reclassify HTTP 400
 context-window or HTTP 404 model errors.
@@ -97,20 +104,13 @@ manifest = "/opt/switchyard-relay-plugin/relay-plugin.toml"
 version = 2
 priority = 0
 max_retries = 3
-enabled_inbound_profiles = [
-  "openai_chat",
-  "openai_responses",
-  "anthropic_messages",
-]
 
 [plugins.dynamic.config.algorithm]
 kind = "random"
 seed = 42
 
 [plugins.dynamic.config.default_targets]
-openai_chat = "chat-default"
-openai_responses = "responses-default"
-anthropic_messages = "anthropic-default"
+openai_chat = "fast"
 
 [plugins.dynamic.config.targets.fast]
 model = "provider/model"
@@ -125,8 +125,9 @@ authorization = "PROVIDER_AUTHORIZATION"
 
 Target map keys such as `fast` are the semantic model names exposed to libsy.
 The target binding remains authoritative for the provider model, protocol, URL,
-and headers. `header_env` resolves credentials in the plugin process without
-putting them in configuration or libsy metadata.
+and headers. Each `default_targets` key both enables that inbound protocol and
+names its trusted fallback. `header_env` resolves credentials in the plugin
+process without putting them in configuration or libsy metadata.
 
 Version-1 service configuration is rejected with a migration error. The plugin
 does not provide decision-only or observe-only execution.
@@ -170,13 +171,19 @@ python3 crates/switchyard-nemo-relay-plugin/tests/e2e/run_e2e.py \
 It launches a local three-protocol fake provider and real Relay process. The
 test covers:
 
-- exact same-protocol unknown-field and raw-stream replay;
+- same-protocol preservation of unknown buffered and raw stream-event fields
+  across all three protocols;
 - isolated target credentials and headers without source-header inheritance;
 - buffered and streaming OpenAI Chat, OpenAI Responses, and Anthropic
   Messages routes;
 - cross-protocol request/response translation;
 - 12 concurrent independent random-router calls;
 - genuine requested and decision marks;
-- an LLM-classifier call followed by its selected provider call;
-- a retryable provider failure with a fresh run; and
-- non-retryable failure with exactly-once trusted fallback.
+- LLM-classifier weak and strong selections followed by their provider calls;
+- buffered and streaming retry reselection plus exactly-once trusted fallback;
+- empty-stream fallback and a committed late error with no retry;
+- untargeted buffered and streaming pass-through with no Switchyard marks; and
+- target credential replacement without recording credential values.
+
+Translation unit tests separately require exact parsed-JSON replay for
+same-protocol raw stream events.
