@@ -13,13 +13,13 @@ rust-version.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 async-stream.workspace = true
 futures-util.workspace = true
 http.workspace = true
-nemo-relay-plugin = { git = "https://github.com/bbednarski9/NeMo-Relay", rev = "1580e22b33dc727710cf0a42e23ce6eeb7936dfe" }
+nemo-relay-plugin = { git = "https://github.com/bbednarski9/NeMo-Relay", rev = "8c1d724b17be278d5506ab550b154836577aad72" }
 serde.workspace = true
 serde_json.workspace = true
 switchyard-libsy.workspace = true

@@ -23,7 +23,7 @@ use switchyard_translation::{StreamTranslationState, TranslationEngine};
 use crate::config::{protocol_from_call, PreparedTargetBinding, SwitchyardConfig};
 use crate::translation;
 
-pub struct SwitchyardRuntime {
+pub(crate) struct SwitchyardRuntime {
     max_retries: u32,
     algorithm: Arc<dyn Algorithm>,
     targets: BTreeMap<String, PreparedTargetBinding>,
@@ -33,7 +33,7 @@ pub struct SwitchyardRuntime {
 }
 
 impl SwitchyardRuntime {
-    pub fn new(config: SwitchyardConfig, relay: PluginRuntime) -> Result<Self, String> {
+    pub(crate) fn new(config: SwitchyardConfig, relay: PluginRuntime) -> Result<Self, String> {
         let prepared = config.prepare()?;
         Ok(Self {
             max_retries: prepared.max_retries,
@@ -45,7 +45,7 @@ impl SwitchyardRuntime {
         })
     }
 
-    pub async fn execute_buffered(
+    pub(crate) async fn execute_buffered(
         &self,
         name: String,
         request: RelayRequest,
@@ -260,7 +260,7 @@ impl SwitchyardRuntime {
         );
     }
 
-    pub async fn execute_stream(
+    pub(crate) async fn execute_stream(
         self: Arc<Self>,
         name: String,
         request: RelayRequest,
@@ -585,10 +585,9 @@ fn libsy_error_retryable(error: &LibsyError) -> bool {
     };
     match source {
         LlmClientError::UpstreamHttp { status, .. } => {
-            LlmContinuationFailureV2::http_status_is_retryable(*status)
+            matches!(*status, 408 | 425 | 429 | 500 | 502 | 503 | 504)
         }
-        LlmClientError::Transport { .. } => LlmNonHttpFailureKindV2::Transport.is_retryable(),
-        LlmClientError::Timeout { .. } => LlmNonHttpFailureKindV2::Timeout.is_retryable(),
+        LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
         _ => false,
     }
 }

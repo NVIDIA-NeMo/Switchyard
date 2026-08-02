@@ -29,22 +29,22 @@ const fn default_endpoint(protocol: WireFormat) -> &'static str {
 }
 
 #[derive(Deserialize)]
-pub struct TargetBinding {
-    pub model: String,
-    pub protocol: WireFormat,
+struct TargetBinding {
+    model: String,
+    protocol: WireFormat,
     #[serde(default)]
-    pub endpoint: String,
-    pub base_url: String,
+    endpoint: String,
+    base_url: String,
     #[serde(default = "default_weight")]
-    pub weight: f64,
+    weight: f64,
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
     #[serde(default)]
-    pub header_env: BTreeMap<String, String>,
+    header_env: BTreeMap<String, String>,
 }
 
 impl TargetBinding {
-    pub fn dispatch_url(&self) -> String {
+    fn dispatch_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         let endpoint = if self.endpoint.is_empty() {
             default_endpoint(self.protocol)
@@ -101,22 +101,22 @@ impl TargetBinding {
     }
 }
 
-pub struct PreparedTargetBinding {
-    pub model: String,
-    pub protocol: WireFormat,
+pub(crate) struct PreparedTargetBinding {
+    pub(crate) model: String,
+    pub(crate) protocol: WireFormat,
     dispatch_url: String,
-    pub headers: BTreeMap<String, String>,
+    pub(crate) headers: BTreeMap<String, String>,
 }
 
 impl PreparedTargetBinding {
-    pub fn dispatch_url(&self) -> &str {
+    pub(crate) fn dispatch_url(&self) -> &str {
         &self.dispatch_url
     }
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AlgorithmConfig {
+enum AlgorithmConfig {
     Random {
         #[serde(default)]
         seed: Option<u64>,
@@ -139,26 +139,26 @@ pub enum AlgorithmConfig {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SwitchyardConfig {
-    pub version: u32,
+pub(crate) struct SwitchyardConfig {
+    version: u32,
     #[serde(default)]
-    pub priority: i32,
+    pub(crate) priority: i32,
     #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
-    pub algorithm: AlgorithmConfig,
-    pub targets: BTreeMap<String, TargetBinding>,
-    pub default_targets: BTreeMap<WireFormat, String>,
+    max_retries: u32,
+    algorithm: AlgorithmConfig,
+    targets: BTreeMap<String, TargetBinding>,
+    default_targets: BTreeMap<WireFormat, String>,
 }
 
 pub(crate) struct PreparedConfig {
-    pub max_retries: u32,
-    pub algorithm: Arc<dyn Algorithm>,
-    pub targets: BTreeMap<String, PreparedTargetBinding>,
-    pub default_targets: BTreeMap<WireFormat, String>,
+    pub(crate) max_retries: u32,
+    pub(crate) algorithm: Arc<dyn Algorithm>,
+    pub(crate) targets: BTreeMap<String, PreparedTargetBinding>,
+    pub(crate) default_targets: BTreeMap<WireFormat, String>,
 }
 
 impl SwitchyardConfig {
-    pub fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         self.validate_structure()?;
         self.build_algorithm().map(drop)
     }
@@ -239,8 +239,11 @@ impl SwitchyardConfig {
                 let targets = self
                     .targets
                     .keys()
-                    .map(|name| target(name))
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .map(|name| LlmTarget {
+                        semantic_name: name.clone(),
+                        llm_client: None,
+                    })
+                    .collect();
                 let weights = self
                     .targets
                     .values()
