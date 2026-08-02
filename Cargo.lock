@@ -581,6 +581,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+
+[[package]]
 name = "futures-util"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1104,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-plugin"
 version = "0.8.0"
-source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=5126ff511aa6d655f2075a37973729d30b5dc33c#5126ff511aa6d655f2075a37973729d30b5dc33c"
+source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=6a55a82d8d2b30f384027a1d4d086552d76a341b#6a55a82d8d2b30f384027a1d4d086552d76a341b"
 dependencies = [
  "futures",
  "nemo-relay-types",
@@ -1115,7 +1121,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-types"
 version = "0.8.0"
-source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=5126ff511aa6d655f2075a37973729d30b5dc33c#5126ff511aa6d655f2075a37973729d30b5dc33c"
+source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=6a55a82d8d2b30f384027a1d4d086552d76a341b#6a55a82d8d2b30f384027a1d4d086552d76a341b"
 dependencies = [
  "bitflags",
  "chrono",
@@ -2056,6 +2062,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-timer",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",

@@ -24,6 +24,12 @@ An active `run_stream` policy therefore does not occupy a blocking worker for
 the lifetime of the request. Provider results, stream capacity, and
 cancellation wake the policy through the generic native task contract.
 
+The plugin future itself remains executor-neutral. Relay and a native plugin
+can link distinct copies of Tokio, so polling from Relay's runtime does not
+enter plugin-local Tokio state across the dynamic-library boundary. libsy's
+`run_stream` and driver response timeout are therefore poll-driven rather than
+calling `tokio::spawn` or `tokio::time::timeout`.
+
 The crate is a source/build unit and is not published to crates.io. Operators
 install a release bundle containing the compiled shared library, materialized
 `relay-plugin.toml`, `config.schema.json`, licensing files, and checksum.
