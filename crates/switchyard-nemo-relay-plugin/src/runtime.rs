@@ -14,11 +14,10 @@ use nemo_relay_plugin::{
     PluginRuntime,
 };
 use serde_json::{json, Map};
-use switchyard_libsy::{
-    Algorithm, CallLlmRequest, Context, LibsyError, LlmResponse, Request, Response, Step,
-};
+use switchyard_libsy::{Algorithm, CallLlmRequest, LibsyError, Step};
 use switchyard_protocol::{
-    LlmClientError, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
+    Context, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream,
+    LlmResponseStreamEvent, Metadata, Request, Response,
 };
 use switchyard_translation::{StreamTranslationState, TranslationEngine};
 
@@ -128,7 +127,7 @@ impl SwitchyardRuntime {
         context
             .values
             .insert("relay.routing_attempt".into(), attempt.to_string());
-        let mut steps = self.algorithm.clone().run_stream(context, request);
+        let mut steps = self.algorithm.clone().run_stream(context, request, None);
         let provider_error = Arc::new(Mutex::new(None));
         while let Some(step) = steps.next().await {
             match step {
@@ -420,7 +419,7 @@ impl SwitchyardRuntime {
         context
             .values
             .insert("relay.routing_attempt".into(), attempt.to_string());
-        let mut steps = self.algorithm.clone().run_stream(context, request);
+        let mut steps = self.algorithm.clone().run_stream(context, request, None);
         let provider_error = Arc::new(Mutex::new(None));
         while let Some(step) = steps.next().await {
             match step {

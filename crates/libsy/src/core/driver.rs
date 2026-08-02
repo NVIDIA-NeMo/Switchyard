@@ -42,21 +42,20 @@
 //! There is no explicit stop method — the consumer terminates by **dropping the
 //! stream** (and any [`DriverRequest`] it is holding). The producer's next publish
 //! (`fulfill_request`/`info`/`done`/`fail`) then resolves to `Err`, and a producer
-//! awaiting a response sees `Err` once the promise it handed out is dropped. In
-//! [`Algorithm::run_stream`](super::algorithm::Algorithm::run_stream), the producer
-//! future is owned by the returned stream, so dropping the stream also cancels an
-//! algorithm that is between driver interactions.
+//! awaiting a response sees `Err` once the promise it handed out is dropped. Either
+//! way the algorithm unwinds cooperatively at its next driver interaction. Because the
+//! producer runs on a task the driver does not own, hard cancellation (e.g. mid-compute
+//! that never touches the driver) is the caller's concern — abort the producer task.
 
 use std::{any::Any, sync::Arc};
 
 use crate::{DriverError, LibsyError, Result};
 use parking_lot::Mutex;
 
-use futures::{future::Either, pin_mut, Stream, StreamExt};
-use futures_timer::Delay;
+use futures::{Stream, StreamExt};
 use switchyard_protocol::Context;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::Duration;
+use tokio::time::{timeout, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 
 type BoxAny = Box<dyn Any + Send>;
@@ -176,17 +175,12 @@ impl TypeErasedDriver {
 
         // Outer error: the promise was dropped without a response. Inner error: the
         // consumer fulfilled it with an explicit `Err` — propagate it as-is.
-        let timeout = Delay::new(FULFILL_REQUEST_TIMEOUT);
-        pin_mut!(rx, timeout);
-        let response = match futures::future::select(rx, timeout).await {
-            Either::Left((response, _)) => response.map_err(|_| DriverError::ResponseDropped)??,
-            Either::Right(((), _)) => {
-                return Err(DriverError::ResponseTimedOut {
-                    timeout: FULFILL_REQUEST_TIMEOUT,
-                }
-                .into());
-            }
-        };
+        let response = timeout(FULFILL_REQUEST_TIMEOUT, rx)
+            .await
+            .map_err(|_| DriverError::ResponseTimedOut {
+                timeout: FULFILL_REQUEST_TIMEOUT,
+            })?
+            .map_err(|_| DriverError::ResponseDropped)??;
         response.downcast::<RES>().map(|boxed| *boxed).map_err(|_| {
             DriverError::TypeMismatch {
                 expected: std::any::type_name::<RES>(),

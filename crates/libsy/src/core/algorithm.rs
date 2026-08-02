@@ -7,14 +7,13 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    panic::AssertUnwindSafe,
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use tracing::Instrument;
 
@@ -333,6 +332,15 @@ pub enum Step {
     ReturnToAgent(Box<Response>),
 }
 
+/// Abort guard
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// A named routing target: a `semantic_name` an algorithm routes by, and an optional
 /// [`RoutedLlmClient`] to serve its calls. An algorithm hands a target to
 /// [`Driver::call_llm_target`]; the client rides along as
@@ -594,10 +602,6 @@ pub trait Algorithm: Send + Sync + 'static {
     /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
     /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
     /// Report each model call to `observer`.
-    ///
-    /// The returned stream is lazy and executor-neutral: polling it drives the
-    /// algorithm future on the consumer's executor. Dropping it cancels that
-    /// future, including algorithms waiting without an outstanding driver call.
     fn run_stream(
         self: Arc<Self>,
         ctx: Context,
@@ -620,7 +624,7 @@ pub trait Algorithm: Send + Sync + 'static {
         // contextual parenting.
         let span = observability::run_span(self.name(), &request);
         let observed_driver = task_driver.clone();
-        let task = AssertUnwindSafe(
+        let handle = tokio::spawn(
             async move {
                 observability::observe_run(
                     task_ctx.clone(),
@@ -630,18 +634,17 @@ pub trait Algorithm: Send + Sync + 'static {
                 .await
             }
             .instrument(span),
-        )
-        .catch_unwind();
+        );
+        // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
+        let abort_guard = AbortOnDrop(handle.abort_handle());
 
         let finish_driver = driver.clone();
         let finish_ctx = ctx;
         let tail: StepStream = Box::pin(
             futures::stream::once(async move {
-                let result = match task.await {
+                let result = match handle.await {
                     Ok(response) => response,
-                    Err(_) => Err(LibsyError::AlgorithmError {
-                        message: "algorithm task panicked".to_string(),
-                    }),
+                    Err(source) => Err(LibsyError::AlgorithmTask { source }),
                 };
                 finish_driver.finish(finish_ctx, result).await
             })
@@ -649,7 +652,11 @@ pub trait Algorithm: Send + Sync + 'static {
         );
 
         let stream: StepStream = Box::pin(stream);
-        Box::pin(futures::stream::select(stream, tail))
+        Box::pin(futures::stream::select(stream, tail).map(move |step| {
+            // link abort guard to stream
+            let _keep_alive = &abort_guard;
+            step
+        }))
     }
 
     /// Process a request to completion, returning the final [`Response`] and the trace of
@@ -1073,34 +1080,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn run_stream_is_executor_neutral_for_embedded_hosts() -> Result<()> {
-        futures::executor::block_on(async {
-            let mut stream = orch(target_set(&[("embedded/model", false)]))
-                .run_stream(Context::default(), request());
-            let mut returned = false;
-            while let Some(step) = stream.next().await {
-                match step? {
-                    Step::CallLlm(call) => {
-                        call.respond(Ok(Response {
-                            llm_response: LlmResponse::Agg(text_response(None, "embedded")),
-                            metadata: None,
-                        }))?;
-                    }
-                    Step::Decision(_) => {}
-                    Step::ReturnToAgent(response) => {
-                        returned = response
-                            .llm_response
-                            .as_agg()
-                            .is_some_and(|response| completion_text(response) == "embedded");
-                    }
-                }
-            }
-            assert!(returned, "embedded executor did not receive ReturnToAgent");
-            Ok(())
-        })
-    }
-
     #[tokio::test]
     async fn client_backed_target_offloads_with_a_default_client() -> Result<()> {
         // Every call now offloads to the stream; a client-backed target rides its
@@ -1340,10 +1319,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let mut stream = algo.run_stream(Context::default(), request(), None);
-        // `run_stream` is a lazy stream: poll it once to start the algorithm
-        // before checking that dropping the stream cancels the in-flight task.
-        assert!(futures::poll!(stream.as_mut().next()).is_pending());
+        let stream = algo.run_stream(Context::default(), request(), None);
         started_rx
             .recv()
             .await
@@ -1360,8 +1336,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_run_task_panic_surfaces_as_a_stream_error() -> Result<()> {
-        // An algorithm panic must surface as an `Err` step to the stream
-        // consumer, not abort the embedding host.
+        // An algorithm whose task panics must surface an `Err` step to the stream
+        // consumer, not abort the process from an unobserved detached task.
         struct Panicky;
 
         #[async_trait]
@@ -1388,11 +1364,7 @@ mod tests {
         while let Some(step) = stream.next().await {
             match step {
                 Err(err) => {
-                    assert!(matches!(
-                        err,
-                        LibsyError::AlgorithmError { message }
-                            if message == "algorithm task panicked"
-                    ));
+                    assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
                     saw_error = true;
                 }
                 Ok(_) => return Err(test_error("expected the panic to surface as an error step")),
@@ -1431,11 +1403,7 @@ mod tests {
                 "expected run to surface the algorithm panic as an error",
             )),
             Err(err) => {
-                assert!(matches!(
-                    err,
-                    LibsyError::AlgorithmError { message }
-                        if message == "algorithm task panicked"
-                ));
+                assert!(matches!(err, LibsyError::AlgorithmTask { .. }));
                 Ok(())
             }
         }

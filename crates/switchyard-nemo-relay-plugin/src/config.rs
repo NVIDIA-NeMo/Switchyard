@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use switchyard_libsy::algorithms::{LlmTaskClassifier, Random, TaskClassifierConfig};
-use switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet};
+use switchyard_libsy::{
+    Algorithm, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random, TaskClassifierConfig,
+};
 use switchyard_protocol::WireFormat;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

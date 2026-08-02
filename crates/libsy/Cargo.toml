@@ -16,7 +16,6 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
-futures-timer.workspace = true
 # Metrics-only OTel API: instruments record through the host-installed global
 # meter provider. Pinned to the 0.32 line used across the workspace.
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
