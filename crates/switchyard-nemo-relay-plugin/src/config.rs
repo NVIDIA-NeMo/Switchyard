@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn removed_enabled_profile_list_is_not_silently_ignored() {
+    fn unknown_configuration_fields_are_rejected() {
         let value = json!({
             "version": 2,
             "algorithm": {"kind": "random"},
@@ -441,12 +441,12 @@ mod tests {
                 }
             },
             "default_targets": {"openai_chat": "chat"},
-            "enabled_inbound_profiles": ["openai_chat"]
+            "unexpected_setting": true
         });
         let error = serde_json::from_value::<SwitchyardConfig>(value)
             .err()
-            .expect("removed field must produce a migration error");
-        assert!(error.to_string().contains("enabled_inbound_profiles"));
+            .expect("unknown field must be rejected");
+        assert!(error.to_string().contains("unexpected_setting"));
     }
 
     #[test]

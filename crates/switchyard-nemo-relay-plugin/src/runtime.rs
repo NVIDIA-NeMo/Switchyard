@@ -57,7 +57,8 @@ impl SwitchyardRuntime {
         let libsy_request = self.libsy_request(inbound, &request, false)?;
         let metadata = identity_metadata(libsy_request.metadata.as_ref());
         let max_attempts = self.max_retries + 1;
-        for attempt in 1..=max_attempts {
+        let mut attempt = 1;
+        loop {
             self.mark(
                 "switchyard.routing.requested",
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
@@ -83,6 +84,7 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
+                    attempt += 1;
                 }
                 Err(failure) => {
                     self.mark(
@@ -96,7 +98,6 @@ impl SwitchyardRuntime {
                 }
             }
         }
-        Err("Switchyard retry loop ended without a result".into())
     }
 
     async fn drive_buffered(
@@ -284,7 +285,8 @@ impl SwitchyardRuntime {
     ) -> LlmJsonAsyncStreamV2 {
         Box::pin(async_stream::try_stream! {
         let max_attempts = self.max_retries + 1;
-        for attempt in 1..=max_attempts {
+        let mut attempt = 1;
+        loop {
             self.mark(
                 "switchyard.routing.requested",
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
@@ -335,6 +337,7 @@ impl SwitchyardRuntime {
                     failure_mark_data(attempt, &failure),
                     &metadata,
                 );
+                attempt += 1;
                 continue;
             }
             self.mark(
@@ -352,7 +355,6 @@ impl SwitchyardRuntime {
             }
             return;
         }
-        Err("Switchyard stream retry loop ended without a result".to_string())?;
         })
     }
 
