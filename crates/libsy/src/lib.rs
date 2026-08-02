@@ -17,8 +17,8 @@
 //!   and makes as many model calls as it needs — via [`Driver::call_llm_target`], which look
 //!   like ordinary calls — publishes its [`Decision`](switchyard_protocol::Decision)s with [`Driver::info`], and
 //!   returns the final [`Response`](switchyard_protocol::Response). The provided
-//!   [`run_stream`](Algorithm::run_stream) drives that on its own task and hands
-//!   back a stream of [`Step`]s; [`run`](Algorithm::run) runs
+//!   [`run_stream`](Algorithm::run_stream) drives that as its returned stream is
+//!   polled and hands back [`Step`]s; [`run`](Algorithm::run) runs
 //!   it to completion with the targets' default clients.
 //! - An [`LlmTarget`] names a routing target by its [`semantic_name`](LlmTarget::semantic_name).
 //!   Every call is *offloaded* to the request's stream as a [`Step::CallLlm`]; the

@@ -13,7 +13,7 @@
 //! OpenTelemetry ecosystem bridges with `tracing-opentelemetry` /
 //! `opentelemetry-appender-tracing`), so the host's subscriber decides where
 //! they go. Method spans use `#[tracing::instrument]`; the `libsy.run` span is
-//! attached to the spawned run task with [`tracing::Instrument`]. Neither holds
+//! attached to the poll-driven run future with [`tracing::Instrument`]. Neither holds
 //! a [`Span::enter`] guard across an `.await` — a suspended task would leave
 //! the span entered on its executor thread, mis-parenting every span other
 //! tasks create there (see the `tracing` docs on spans in asynchronous code).
