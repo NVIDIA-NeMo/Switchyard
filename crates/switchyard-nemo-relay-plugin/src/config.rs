@@ -5,13 +5,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use http::header::{HeaderName, HeaderValue};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use switchyard_libsy::{
     Algorithm, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random, TaskClassifierConfig,
 };
 use switchyard_protocol::WireFormat;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum WireProtocol {
     OpenaiChat,
@@ -66,7 +66,7 @@ impl WireProtocol {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
 pub struct TargetBinding {
     pub model: String,
     pub protocol: WireProtocol,
@@ -97,13 +97,12 @@ impl TargetBinding {
         format!("{base}{endpoint}")
     }
 
-    pub fn resolved_headers(&self) -> Result<BTreeMap<String, String>, String> {
-        let mut headers = BTreeMap::new();
+    fn validate_headers(&self) -> Result<(), String> {
         for (name, value) in &self.headers {
             validate_header(name, value)?;
-            headers.insert(name.clone(), value.clone());
         }
         for (name, variable) in &self.header_env {
+            validate_header_name(name)?;
             if self
                 .headers
                 .keys()
@@ -113,16 +112,47 @@ impl TargetBinding {
                     "target header {name:?} cannot appear in both headers and header_env"
                 ));
             }
-            let value = std::env::var(variable)
-                .map_err(|_| format!("environment variable {variable:?} is not set"))?;
-            validate_header(name, &value)?;
-            headers.insert(name.clone(), value);
+            if variable.is_empty() {
+                return Err(format!(
+                    "environment variable name for target header {name:?} must not be empty"
+                ));
+            }
         }
-        Ok(headers)
+        Ok(())
+    }
+
+    fn into_prepared(self) -> Result<PreparedTargetBinding, String> {
+        let dispatch_url = self.dispatch_url();
+        let mut headers = self.headers;
+        for (name, variable) in self.header_env {
+            let value = std::env::var(&variable)
+                .map_err(|_| format!("environment variable {variable:?} is not set"))?;
+            validate_header(&name, &value)?;
+            headers.insert(name, value);
+        }
+        Ok(PreparedTargetBinding {
+            model: self.model,
+            protocol: self.protocol,
+            dispatch_url,
+            headers,
+        })
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PreparedTargetBinding {
+    pub model: String,
+    pub protocol: WireProtocol,
+    dispatch_url: String,
+    pub headers: BTreeMap<String, String>,
+}
+
+impl PreparedTargetBinding {
+    pub fn dispatch_url(&self) -> &str {
+        &self.dispatch_url
+    }
+}
+
+#[derive(Default, Deserialize)]
 pub struct ProtocolDefaults {
     #[serde(default)]
     pub openai_chat: String,
@@ -142,7 +172,7 @@ impl ProtocolDefaults {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AlgorithmConfig {
     Random {
@@ -171,7 +201,7 @@ impl Default for AlgorithmConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
 pub struct SwitchyardConfig {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -188,8 +218,21 @@ pub struct SwitchyardConfig {
     pub enabled_inbound_profiles: BTreeSet<WireProtocol>,
 }
 
+pub(crate) struct PreparedConfig {
+    pub max_retries: u32,
+    pub algorithm: Arc<dyn Algorithm>,
+    pub targets: BTreeMap<String, PreparedTargetBinding>,
+    pub default_targets: ProtocolDefaults,
+    pub enabled_inbound_profiles: BTreeSet<WireProtocol>,
+}
+
 impl SwitchyardConfig {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_structure()?;
+        self.build_algorithm().map(drop)
+    }
+
+    fn validate_structure(&self) -> Result<(), String> {
         if self.version != 2 {
             return Err(format!(
                 "unsupported Switchyard config version {}; version 1 used switchyard-server; migrate to version = 2",
@@ -217,7 +260,7 @@ impl SwitchyardConfig {
                     "target {name:?} weight must be finite and nonnegative"
                 ));
             }
-            target.resolved_headers()?;
+            target.validate_headers()?;
         }
         for protocol in &self.enabled_inbound_profiles {
             let fallback = self.default_targets.target(*protocol);
@@ -232,10 +275,27 @@ impl SwitchyardConfig {
                 ));
             }
         }
-        self.build_algorithm().map(|_| ())
+        Ok(())
     }
 
-    pub fn build_algorithm(&self) -> Result<Arc<dyn Algorithm>, String> {
+    pub(crate) fn prepare(self) -> Result<PreparedConfig, String> {
+        self.validate_structure()?;
+        let algorithm = self.build_algorithm()?;
+        let targets = self
+            .targets
+            .into_iter()
+            .map(|(name, target)| target.into_prepared().map(|prepared| (name, prepared)))
+            .collect::<Result<_, _>>()?;
+        Ok(PreparedConfig {
+            max_retries: self.max_retries,
+            algorithm,
+            targets,
+            default_targets: self.default_targets,
+            enabled_inbound_profiles: self.enabled_inbound_profiles,
+        })
+    }
+
+    fn build_algorithm(&self) -> Result<Arc<dyn Algorithm>, String> {
         let target = |name: &str| {
             self.targets
                 .contains_key(name)
@@ -289,9 +349,14 @@ impl SwitchyardConfig {
     }
 }
 
-fn validate_header(name: &str, value: &str) -> Result<(), String> {
+fn validate_header_name(name: &str) -> Result<(), String> {
     HeaderName::from_bytes(name.as_bytes())
-        .map_err(|error| format!("invalid target header name {name:?}: {error}"))?;
+        .map(|_| ())
+        .map_err(|error| format!("invalid target header name {name:?}: {error}"))
+}
+
+fn validate_header(name: &str, value: &str) -> Result<(), String> {
+    validate_header_name(name)?;
     HeaderValue::from_str(value)
         .map_err(|error| format!("invalid target header value for {name:?}: {error}"))?;
     Ok(())
@@ -366,11 +431,11 @@ mod tests {
     fn version_two_random_configuration_builds_without_a_service() {
         let config = config();
         config.validate().unwrap();
-        assert_eq!(config.build_algorithm().unwrap().name(), "random");
         assert_eq!(
             config.targets["chat"].dispatch_url(),
             "https://provider.example/v1/chat/completions"
         );
+        assert_eq!(config.prepare().unwrap().algorithm.name(), "random");
     }
 
     #[test]
@@ -397,8 +462,52 @@ mod tests {
         };
         config.validate().unwrap();
         assert_eq!(
-            config.build_algorithm().unwrap().name(),
+            config.prepare().unwrap().algorithm.name(),
             "llm_task_classifier"
         );
+    }
+
+    #[test]
+    fn validation_does_not_resolve_environment_backed_headers() {
+        let mut config = config();
+        config.targets.get_mut("chat").unwrap().header_env = BTreeMap::from([(
+            "authorization".into(),
+            "SWITCHYARD_TEST_ENVIRONMENT_VARIABLE_THAT_IS_NOT_SET".into(),
+        )]);
+
+        config.validate().unwrap();
+        let error = config
+            .prepare()
+            .err()
+            .expect("preparation must resolve headers");
+        assert!(error.contains("SWITCHYARD_TEST_ENVIRONMENT_VARIABLE_THAT_IS_NOT_SET"));
+    }
+
+    #[test]
+    fn static_validation_preserves_algorithm_constructor_checks() {
+        let mut random = config();
+        for target in random.targets.values_mut() {
+            target.weight = 0.0;
+        }
+        assert!(random
+            .validate()
+            .unwrap_err()
+            .contains("at least one weight must be positive"));
+
+        let mut classifier = config();
+        classifier.algorithm = AlgorithmConfig::LlmClassifier {
+            classifier_target: "chat".into(),
+            weak_target: "responses".into(),
+            strong_target: "anthropic".into(),
+            base_threshold: 1.1,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+        };
+        assert!(classifier
+            .validate()
+            .unwrap_err()
+            .contains("base_threshold must be between 0 and 1"));
     }
 }
