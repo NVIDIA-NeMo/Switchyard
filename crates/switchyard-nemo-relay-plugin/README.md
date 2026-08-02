@@ -18,13 +18,21 @@ does not link the Relay runtime, use `switchyard-llm-client`, or start
 `switchyard-server`. `switchyard-translation` is the only request, response, and
 stream translation layer.
 
+Relay polls the plugin's pending Rust futures cooperatively on its Tokio
+runtime and restores the captured continuation and scope context on every poll.
+An active `run_stream` policy therefore does not occupy a blocking worker for
+the lifetime of the request. Provider results, stream capacity, and
+cancellation wake the policy through the generic native task contract.
+
 The crate is a source/build unit and is not published to crates.io. Operators
 install a release bundle containing the compiled shared library, materialized
 `relay-plugin.toml`, `config.schema.json`, licensing files, and checksum.
 
-During development, `nemo-relay-plugin` is pinned to the Relay ABI v2 feature
-commit. Replace that Git dependency with the first published compatible SDK
-version before releasing a bundle.
+During development, `nemo-relay-plugin` is pinned to the Relay native API v2
+feature commit. Native API v2 remains unreleased, so every bundle must be
+rebuilt against the exact pinned revision; an older v2 bundle must not be used
+with a newer draft host table. Replace the Git dependency with the first
+published compatible SDK version before releasing a bundle.
 
 ## Runtime contract
 
@@ -44,9 +52,11 @@ Switchyard owns routing, translation, target URLs, and target credentials.
 Relay validates and transports the selected HTTP target, runs it through the
 captured LLM continuation, and owns stream transport and event export.
 Switchyard retries or falls back only before the first caller event; after
-commitment, a late provider failure is returned without retry. Target data never
-enters `LlmRequest.headers`, marks, or spans. The plugin contains no Relay
-provider codecs and does not use private dispatch headers.
+commitment, a late provider failure is returned without retry. Target URLs,
+transport headers, and credentials never enter `LlmRequest.headers`, marks, or
+spans; semantic target names remain visible in genuine routing marks. The
+plugin contains no Relay provider codecs and does not use private dispatch
+headers.
 
 Calls outside the enabled profiles return the SDK's explicit `Passthrough`
 outcome. Relay then forwards the downstream provider stream through its bounded
