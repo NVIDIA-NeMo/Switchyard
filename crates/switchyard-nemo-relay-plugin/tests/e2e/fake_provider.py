@@ -50,6 +50,9 @@ class Handler(BaseHTTPRequestHandler):
         if model in {"fake/retry-once", "fake/retry-stream-once"} and attempt == 1:
             self._json(503, {"error": {"message": "retry this request"}})
             return
+        if model in {"fake/reselect-fail", "fake/reselect-stream-fail"}:
+            self._json(503, {"error": {"message": "reselect this target"}})
+            return
         if model in {"fake/always-fail", "fake/always-fail-stream"}:
             self._json(400, {"error": {"message": "invalid routed request"}})
             return
@@ -64,15 +67,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _chat(self, request: dict[str, object]) -> None:
         model = str(request.get("model", "unknown"))
-        classifier = model == "fake/classifier"
+        classifier = model in {"fake/classifier", "fake/classifier-strong"}
+        p_solve = 0.1 if model == "fake/classifier-strong" else 0.9
+        recommended_route = "capable" if model == "fake/classifier-strong" else "efficient"
         answer = (
-            '{"recommended_route":"efficient","p_solve":0.9,'
+            f'{{"recommended_route":"{recommended_route}","p_solve":{p_solve},'
             '"confidence":0.95,"abstain":false,'
             '"capability_boundary":"supported","primary_rule":"SUP-1",'
             '"crux":"bounded task"}'
             if classifier
             else f"chat from {model}"
         )
+        if request.get("stream") and model == "fake/empty-stream":
+            self._empty_sse()
+            return
         if request.get("stream") and model == "fake/late-stream-failure":
             self._sse_then_disconnect(
                 {
@@ -111,9 +119,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model": model,
                     "system_fingerprint": "fp_dynamic_plugin",
                     "provider_extension": {"preserved": True},
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": "stop"}
-                    ],
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 },
             ]
             self._sse(events)
@@ -191,9 +197,7 @@ class Handler(BaseHTTPRequestHandler):
                         "type": "message",
                         "status": "completed",
                         "role": "assistant",
-                        "content": [
-                            {"type": "output_text", "text": text, "annotations": []}
-                        ],
+                        "content": [{"type": "output_text", "text": text, "annotations": []}],
                     }
                 ],
                 "usage": {
@@ -297,6 +301,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         self.wfile.flush()
         self.close_connection = True
+
+    def _empty_sse(self) -> None:
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("content-length", "0")
+        self.end_headers()
 
     def _json(self, status: int, value: object) -> None:
         data = json.dumps(value).encode()

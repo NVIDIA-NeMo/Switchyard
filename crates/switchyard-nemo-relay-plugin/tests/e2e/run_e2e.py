@@ -45,9 +45,7 @@ def http_json(base: str, path: str) -> dict[str, int]:
         return cast(dict[str, int], json.loads(response.read()))
 
 
-def request(
-    relay_url: str, path: str, body: dict[str, Any]
-) -> tuple[int, bytes]:
+def request(relay_url: str, path: str, body: dict[str, Any]) -> tuple[int, bytes]:
     request = urllib.request.Request(
         f"{relay_url}{path}",
         data=json.dumps(body).encode(),
@@ -82,9 +80,7 @@ def request_until_stream_error(
 
 def stream_events(raw: bytes) -> list[dict[str, object]]:
     return [
-        json.loads(line[6:])
-        for line in raw.decode().splitlines()
-        if line.startswith("data: {")
+        json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: {")
     ]
 
 
@@ -221,9 +217,7 @@ class RelayScenario:
 
     def __enter__(self) -> RelayScenario:
         (self.root / ".nemo-relay").mkdir(parents=True)
-        (self.root / ".nemo-relay" / "plugins.toml").write_text(
-            self.config, encoding="utf-8"
-        )
+        (self.root / ".nemo-relay" / "plugins.toml").write_text(self.config, encoding="utf-8")
         subprocess.run(
             [str(self.relay_bin), "plugins", "enable", "nvidia.switchyard"],
             cwd=self.root,
@@ -249,15 +243,12 @@ class RelayScenario:
             stderr=subprocess.STDOUT,
             text=True,
         )
-        threading.Thread(
-            target=capture, args=(self.process, self.log), daemon=True
-        ).start()
+        threading.Thread(target=capture, args=(self.process, self.log), daemon=True).start()
         deadline = time.time() + 20
         while True:
             if self.process.poll() is not None:
                 raise RuntimeError(
-                    f"Relay exited early ({self.process.returncode}):\n"
-                    + "\n".join(self.log[-40:])
+                    f"Relay exited early ({self.process.returncode}):\n" + "\n".join(self.log[-40:])
                 )
             try:
                 with urllib.request.urlopen(f"{self.url}/healthz", timeout=1) as response:
@@ -277,18 +268,13 @@ class RelayScenario:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
-        (self.root / "relay.log").write_text(
-            "\n".join(self.log) + "\n", encoding="utf-8"
-        )
+        (self.root / "relay.log").write_text("\n".join(self.log) + "\n", encoding="utf-8")
         if self.process.returncode:
             raise RuntimeError(
-                f"Relay exited with {self.process.returncode}:\n"
-                + "\n".join(self.log[-40:])
+                f"Relay exited with {self.process.returncode}:\n" + "\n".join(self.log[-40:])
             )
 
-    def marks(
-        self, name: str, expected: int = 1, timeout: float = 5
-    ) -> list[dict[str, object]]:
+    def marks(self, name: str, expected: int = 1, timeout: float = 5) -> list[dict[str, object]]:
         deadline = time.time() + timeout
         while True:
             try:
@@ -345,12 +331,44 @@ x-switchyard-target = "same"
         assert all(event["provider_extension"] == {"preserved": True} for event in events)
         assert all(event["system_fingerprint"] == "fp_dynamic_plugin" for event in events)
     assert len(relay.marks("switchyard.routing.decision", 2)) == 2
-    return {"buffered_unknown_fields": True, "stream_events_replayed": len(events)}
+
+    replayed = {"openai_chat": len(events)}
+    for protocol, path, template in CASES[1:]:
+        config = plugin_config(
+            manifest,
+            provider_url,
+            root / f"same-{protocol}" / "atof",
+            '[plugins.dynamic.config.algorithm]\nkind = "random"\nseed = 7',
+            f"""\
+[plugins.dynamic.config.targets.target]
+model = "fake/preserve-{protocol}"
+protocol = "{protocol}"
+base_url = "{{provider_url}}/v1"
+weight = 1
+""",
+            f'{protocol} = "target"',
+        )
+        with RelayScenario(relay_bin, root, provider_url, f"same-{protocol}", config) as scenario:
+            body = dict(template)
+            body["stream"] = False
+            status, raw = request(scenario.url, path, body)
+            response = json.loads(raw)
+            assert status == 200
+            assert response["provider_extension"] == {"preserved": True}
+
+            body["stream"] = True
+            status, raw = request(scenario.url, path, body)
+            events = stream_events(raw)
+            assert status == 200
+            assert events
+            assert all(event["provider_extension"] == {"preserved": True} for event in events)
+        assert len(scenario.marks("switchyard.routing.decision", 2)) == 2
+        replayed[protocol] = len(events)
+
+    return {"buffered_unknown_fields": True, "stream_events_replayed": replayed}
 
 
-def run_random(
-    relay_bin: Path, root: Path, manifest: Path, provider_url: str
-) -> dict[str, object]:
+def run_random(relay_bin: Path, root: Path, manifest: Path, provider_url: str) -> dict[str, object]:
     config = plugin_config(
         manifest,
         provider_url,
@@ -375,11 +393,7 @@ protocol = "anthropic_messages"
 base_url = "{provider_url}/v1"
 weight = 1
 """,
-        (
-            'openai_chat = "chat"\n'
-            'openai_responses = "responses"\n'
-            'anthropic_messages = "anthropic"'
-        ),
+        ('openai_chat = "chat"\nopenai_responses = "responses"\nanthropic_messages = "anthropic"'),
     )
     with RelayScenario(relay_bin, root, provider_url, "random", config) as relay:
         models: set[str] = set()
@@ -433,13 +447,16 @@ weight = 1
     }
 
 
-def run_classifier(
-    relay_bin: Path, root: Path, manifest: Path, provider_url: str
-) -> dict[str, object]:
-    config = plugin_config(
+def classifier_config(
+    manifest: Path,
+    provider_url: str,
+    atof: Path,
+    classifier_model: str,
+) -> str:
+    return plugin_config(
         manifest,
         provider_url,
-        root / "classifier" / "atof",
+        atof,
         """\
 [plugins.dynamic.config.algorithm]
 kind = "llm_classifier"
@@ -451,52 +468,116 @@ min_confidence = 0.5
 session_affinity = false
 message_hash_fallback = false
 """,
-        """\
+        f"""\
 [plugins.dynamic.config.targets.classifier]
-model = "fake/classifier"
+model = "{classifier_model}"
 protocol = "openai_chat"
-base_url = "{provider_url}/v1"
+base_url = "{{provider_url}}/v1"
 
 [plugins.dynamic.config.targets.weak]
 model = "fake/weak"
 protocol = "openai_responses"
-base_url = "{provider_url}/v1"
+base_url = "{{provider_url}}/v1"
 
 [plugins.dynamic.config.targets.strong]
 model = "fake/strong"
 protocol = "anthropic_messages"
-base_url = "{provider_url}/v1"
+base_url = "{{provider_url}}/v1"
 
 [plugins.dynamic.config.targets.fallback]
 model = "fake/fallback"
 protocol = "openai_chat"
-base_url = "{provider_url}/v1"
+base_url = "{{provider_url}}/v1"
 """,
-        'openai_chat = "fallback"',
+        ('openai_chat = "fallback"\nopenai_responses = "weak"\nanthropic_messages = "strong"'),
     )
-    with RelayScenario(relay_bin, root, provider_url, "classifier", config) as relay:
-        body = dict(CASES[0][2])
-        body["stream"] = False
-        status, raw = request(relay.url, CASES[0][1], body)
-        response = json.loads(raw)
-        assert status == 200
-        assert response["model"] == "fake/weak"
 
-        body["stream"] = True
-        status, raw = request(relay.url, CASES[0][1], body)
-        events = stream_events(raw)
-        assert status == 200
-        assert "responses from fake/weak" == stream_text("openai_chat", events)
 
-    decisions = relay.marks("switchyard.routing.decision", 2)
-    assert len(decisions) == 2
+def run_classifier(
+    relay_bin: Path, root: Path, manifest: Path, provider_url: str
+) -> dict[str, object]:
+    weak_config = classifier_config(
+        manifest,
+        provider_url,
+        root / "classifier-weak" / "atof",
+        "fake/classifier",
+    )
+    with RelayScenario(relay_bin, root, provider_url, "classifier-weak", weak_config) as weak_relay:
+        for protocol, path, template in CASES:
+            body = dict(template)
+            body["stream"] = False
+            status, raw = request(weak_relay.url, path, body)
+            response = json.loads(raw)
+            assert status == 200
+            assert response["model"] == "fake/weak"
+            assert response_text(protocol, response) == "responses from fake/weak"
+
+            body["stream"] = True
+            status, raw = request(weak_relay.url, path, body)
+            events = stream_events(raw)
+            assert status == 200
+            assert stream_text(protocol, events) == "responses from fake/weak"
+
+        def concurrent_classifier_call(index: int) -> str:
+            protocol, path, template = CASES[index % len(CASES)]
+            body = dict(template)
+            body["stream"] = False
+            status, raw = request(weak_relay.url, path, body)
+            response = json.loads(raw)
+            assert status == 200
+            assert response["model"] == "fake/weak"
+            return response_text(protocol, response)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            concurrent_results = list(executor.map(concurrent_classifier_call, range(6)))
+        assert all(result == "responses from fake/weak" for result in concurrent_results)
+
+    weak_decisions = weak_relay.marks("switchyard.routing.decision", 12)
+    assert len(weak_decisions) == 12
     assert all(
         event["data"]["algorithm"] == "llm_task_classifier"  # type: ignore[index]
         and event["data"]["selected_target"] == "weak"  # type: ignore[index]
         and event["data"]["routing_tier"] == "weak"  # type: ignore[index]
-        for event in decisions
+        for event in weak_decisions
     )
-    return {"selected_target": "weak", "decisions": len(decisions)}
+
+    strong_config = classifier_config(
+        manifest,
+        provider_url,
+        root / "classifier-strong" / "atof",
+        "fake/classifier-strong",
+    )
+    with RelayScenario(
+        relay_bin, root, provider_url, "classifier-strong", strong_config
+    ) as strong_relay:
+        body = dict(CASES[0][2])
+        body["stream"] = False
+        status, raw = request(strong_relay.url, CASES[0][1], body)
+        response = json.loads(raw)
+        assert status == 200
+        assert response["model"] == "fake/strong"
+        assert response_text("openai_chat", response) == "anthropic from fake/strong"
+
+        body["stream"] = True
+        status, raw = request(strong_relay.url, CASES[0][1], body)
+        events = stream_events(raw)
+        assert status == 200
+        assert stream_text("openai_chat", events) == "anthropic from fake/strong"
+
+    strong_decisions = strong_relay.marks("switchyard.routing.decision", 2)
+    assert len(strong_decisions) == 2
+    assert all(
+        event["data"]["algorithm"] == "llm_task_classifier"  # type: ignore[index]
+        and event["data"]["selected_target"] == "strong"  # type: ignore[index]
+        and event["data"]["routing_tier"] == "strong"  # type: ignore[index]
+        for event in strong_decisions
+    )
+    return {
+        "weak_decisions": len(weak_decisions),
+        "strong_decisions": len(strong_decisions),
+        "protocols": [protocol for protocol, _, _ in CASES],
+        "concurrent_calls": len(concurrent_results),
+    }
 
 
 def single_target_config(
@@ -526,6 +607,43 @@ base_url = "{{provider_url}}/v1"
 """,
         'openai_chat = "fallback"',
         max_retries=max_retries,
+    )
+
+
+def reselection_config(
+    manifest: Path,
+    provider_url: str,
+    atof: Path,
+    failing_model: str,
+    succeeding_model: str,
+    fallback_model: str,
+) -> str:
+    return plugin_config(
+        manifest,
+        provider_url,
+        atof,
+        '[plugins.dynamic.config.algorithm]\nkind = "random"\nseed = 6',
+        f"""\
+[plugins.dynamic.config.targets.a_fail]
+model = "{failing_model}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+weight = 1
+
+[plugins.dynamic.config.targets.b_success]
+model = "{succeeding_model}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+weight = 1
+
+[plugins.dynamic.config.targets.z_fallback]
+model = "{fallback_model}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+weight = 0
+""",
+        'openai_chat = "z_fallback"',
+        max_retries=1,
     )
 
 
@@ -562,9 +680,7 @@ def run_retry_and_fallback(
         "fake/always-fail",
         "fake/trusted-fallback",
     )
-    with RelayScenario(
-        relay_bin, root, provider_url, "fallback", fallback_config
-    ) as relay:
+    with RelayScenario(relay_bin, root, provider_url, "fallback", fallback_config) as relay:
         body = dict(CASES[0][2])
         body["stream"] = False
         status, raw = request(relay.url, CASES[0][1], body)
@@ -580,14 +696,40 @@ def run_retry_and_fallback(
     }
     assert len(relay.marks("switchyard.routing.fallback")) == 1
 
+    reselection = reselection_config(
+        manifest,
+        provider_url,
+        root / "retry-reselection" / "atof",
+        "fake/reselect-fail",
+        "fake/reselect-success",
+        "fake/reselect-fallback",
+    )
+    with RelayScenario(relay_bin, root, provider_url, "retry-reselection", reselection) as relay:
+        body = dict(CASES[0][2])
+        body["stream"] = False
+        status, raw = request(relay.url, CASES[0][1], body)
+        assert status == 200
+        assert json.loads(raw)["model"] == "fake/reselect-success"
+    decisions = relay.marks("switchyard.routing.decision", 2)
+    assert [event["data"]["selected_target"] for event in decisions] == [  # type: ignore[index]
+        "a_fail",
+        "b_success",
+    ]
+    assert len(relay.marks("switchyard.routing.retry")) == 1
+    assert not relay.marks("switchyard.routing.fallback", expected=0)
+
     calls = http_json(provider_url, "/calls")
     assert calls["fake/retry-once"] == 2
     assert calls.get("fake/retry-fallback", 0) == 0
     assert calls["fake/always-fail"] == 1
     assert calls["fake/trusted-fallback"] == 1
+    assert calls["fake/reselect-fail"] == 1
+    assert calls["fake/reselect-success"] == 1
+    assert calls.get("fake/reselect-fallback", 0) == 0
     return {
         "retry_attempts": calls["fake/retry-once"],
         "fallback_calls": calls["fake/trusted-fallback"],
+        "retry_reselected": ["a_fail", "b_success"],
     }
 
 
@@ -663,14 +805,12 @@ def run_stream_reliability(
     with RelayScenario(relay_bin, root, provider_url, "stream-late-failure", late_config) as relay:
         body = dict(CASES[0][2])
         body["stream"] = True
-        status, raw, saw_stream_error = request_until_stream_error(
-            relay.url, CASES[0][1], body
-        )
-        events = stream_events(raw)
+        status, raw, saw_stream_error = request_until_stream_error(relay.url, CASES[0][1], body)
+        late_events = stream_events(raw)
         assert status == 200
         assert saw_stream_error
-        assert len(events) == 1
-        assert stream_text("openai_chat", events) == "committed before failure"
+        assert len(late_events) == 1
+        assert stream_text("openai_chat", late_events) == "committed before failure"
         assert "data: [DONE]" not in raw.decode()
     late_error_marks = relay.marks("switchyard.routing.error")
     assert len(late_error_marks) == 1
@@ -685,6 +825,57 @@ def run_stream_reliability(
     assert len(relay.marks("switchyard.routing.requested")) == 1
     assert len(relay.marks("switchyard.routing.decision")) == 1
 
+    empty_config = single_target_config(
+        manifest,
+        provider_url,
+        root / "stream-empty" / "atof",
+        "fake/empty-stream",
+        "fake/empty-stream-fallback",
+        max_retries=1,
+    )
+    with RelayScenario(relay_bin, root, provider_url, "stream-empty", empty_config) as relay:
+        body = dict(CASES[0][2])
+        body["stream"] = True
+        status, raw = request(relay.url, CASES[0][1], body)
+        events = stream_events(raw)
+        assert status == 200
+        assert stream_text("openai_chat", events) == "chat from fake/empty-stream-fallback"
+    empty_error_marks = relay.marks("switchyard.routing.error")
+    assert len(empty_error_marks) == 1
+    assert empty_error_marks[0]["data"] == {
+        "attempt": 1,
+        "retryable": False,
+        "failure_kind": "non_http",
+        "non_http_kind": "invalid_response",
+    }
+    assert len(relay.marks("switchyard.routing.fallback")) == 1
+    assert not relay.marks("switchyard.routing.retry", expected=0)
+
+    stream_reselection = reselection_config(
+        manifest,
+        provider_url,
+        root / "stream-reselection" / "atof",
+        "fake/reselect-stream-fail",
+        "fake/reselect-stream-success",
+        "fake/reselect-stream-fallback",
+    )
+    with RelayScenario(
+        relay_bin, root, provider_url, "stream-reselection", stream_reselection
+    ) as relay:
+        body = dict(CASES[0][2])
+        body["stream"] = True
+        status, raw = request(relay.url, CASES[0][1], body)
+        events = stream_events(raw)
+        assert status == 200
+        assert stream_text("openai_chat", events) == "chat from fake/reselect-stream-success"
+    decisions = relay.marks("switchyard.routing.decision", 2)
+    assert [event["data"]["selected_target"] for event in decisions] == [  # type: ignore[index]
+        "a_fail",
+        "b_success",
+    ]
+    assert len(relay.marks("switchyard.routing.retry")) == 1
+    assert not relay.marks("switchyard.routing.fallback", expected=0)
+
     calls = http_json(provider_url, "/calls")
     assert calls["fake/retry-stream-once"] == 2
     assert calls.get("fake/retry-stream-fallback", 0) == 0
@@ -692,11 +883,18 @@ def run_stream_reliability(
     assert calls["fake/trusted-stream-fallback"] == 1
     assert calls["fake/late-stream-failure"] == 1
     assert calls.get("fake/late-stream-fallback", 0) == 0
+    assert calls["fake/empty-stream"] == 1
+    assert calls["fake/empty-stream-fallback"] == 1
+    assert calls["fake/reselect-stream-fail"] == 1
+    assert calls["fake/reselect-stream-success"] == 1
+    assert calls.get("fake/reselect-stream-fallback", 0) == 0
     return {
         "retry_attempts": calls["fake/retry-stream-once"],
         "fallback_calls": calls["fake/trusted-stream-fallback"],
-        "late_events_before_failure": len(events),
+        "late_events_before_failure": len(late_events),
         "late_error_marks": len(late_error_marks),
+        "empty_stream_fallback_calls": calls["fake/empty-stream-fallback"],
+        "retry_reselected": ["a_fail", "b_success"],
     }
 
 
@@ -830,9 +1028,7 @@ def main() -> None:
             except (OSError, urllib.error.URLError):
                 pass
             if provider.poll() is not None:
-                raise RuntimeError(
-                    "fake provider exited early:\n" + "\n".join(provider_log[-40:])
-                )
+                raise RuntimeError("fake provider exited early:\n" + "\n".join(provider_log[-40:]))
             if time.time() > deadline:
                 raise TimeoutError("fake provider did not become healthy")
             time.sleep(0.05)
@@ -841,9 +1037,7 @@ def main() -> None:
             "same_protocol_preservation": run_same_protocol(
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
-            "random": run_random(
-                relay_bin, root, bundle / "relay-plugin.toml", provider_url
-            ),
+            "random": run_random(relay_bin, root, bundle / "relay-plugin.toml", provider_url),
             "llm_classifier": run_classifier(
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
