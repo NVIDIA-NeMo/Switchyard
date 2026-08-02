@@ -33,6 +33,10 @@ def main() -> None:
         parser.error(f"compiled plugin library does not exist: {library}")
 
     output = args.output.resolve()
+    if output.exists() and not output.is_dir():
+        parser.error(f"bundle output exists and is not a directory: {output}")
+    if output.is_dir() and any(output.iterdir()):
+        parser.error(f"bundle output directory must be empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
     artifact = output / library.name
     shutil.copy2(library, artifact)

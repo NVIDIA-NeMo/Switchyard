@@ -186,6 +186,11 @@ impl SwitchyardConfig {
             if !target.base_url.starts_with("http://") && !target.base_url.starts_with("https://") {
                 return Err(format!("target {name:?} base_url must use http or https"));
             }
+            if !target.endpoint.is_empty() && !target.endpoint.starts_with('/') {
+                return Err(format!(
+                    "target {name:?} endpoint must be empty or begin with '/'"
+                ));
+            }
             if !target.weight.is_finite() || target.weight < 0.0 {
                 return Err(format!(
                     "target {name:?} weight must be finite and nonnegative"
@@ -365,6 +370,21 @@ mod tests {
         let error = config.validate().unwrap_err();
         assert!(error.contains("version 1 used switchyard-server"));
         assert!(error.contains("version = 2"));
+    }
+
+    #[test]
+    fn target_endpoints_are_empty_or_begin_with_a_slash() {
+        let mut config = config();
+        config.targets.get_mut("chat").unwrap().endpoint = "/custom/chat".into();
+        config.validate().unwrap();
+        assert_eq!(
+            config.targets["chat"].dispatch_url(),
+            "https://provider.example/v1/custom/chat"
+        );
+
+        config.targets.get_mut("chat").unwrap().endpoint = "v1/chat/completions".into();
+        let error = config.validate().unwrap_err();
+        assert!(error.contains("endpoint must be empty or begin with '/'"));
     }
 
     #[test]

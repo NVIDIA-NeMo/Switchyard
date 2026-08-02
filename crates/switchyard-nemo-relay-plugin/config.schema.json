@@ -70,7 +70,7 @@
           "protocol": {
             "enum": ["openai_chat", "openai_responses", "anthropic_messages"]
           },
-          "endpoint": { "type": "string" },
+          "endpoint": { "type": "string", "pattern": "^$|^/" },
           "base_url": {
             "type": "string",
             "pattern": "^https?://"
@@ -94,9 +94,9 @@
       "minProperties": 1,
       "additionalProperties": false,
       "properties": {
-        "openai_chat": { "type": "string" },
-        "openai_responses": { "type": "string" },
-        "anthropic_messages": { "type": "string" }
+        "openai_chat": { "type": "string", "minLength": 1 },
+        "openai_responses": { "type": "string", "minLength": 1 },
+        "anthropic_messages": { "type": "string", "minLength": 1 }
       }
     }
   }

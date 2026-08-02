@@ -10,7 +10,7 @@ use switchyard_translation::{
     TranslationPolicy, UnknownFieldPolicy,
 };
 
-pub fn decode_request(
+pub(crate) fn decode_request(
     engine: &TranslationEngine,
     protocol: WireFormat,
     request: &RelayRequest,
@@ -22,7 +22,7 @@ pub fn decode_request(
     Ok(output.request)
 }
 
-pub fn encode_request(
+pub(crate) fn encode_request(
     engine: &TranslationEngine,
     protocol: WireFormat,
     request: &LlmRequest,
@@ -37,7 +37,7 @@ pub fn encode_request(
     })
 }
 
-pub fn decode_response(
+pub(crate) fn decode_response(
     engine: &TranslationEngine,
     protocol: WireFormat,
     response: &Json,
@@ -49,7 +49,7 @@ pub fn decode_response(
     Ok(output.response)
 }
 
-pub fn encode_response(
+pub(crate) fn encode_response(
     engine: &TranslationEngine,
     protocol: WireFormat,
     response: &AggLlmResponse,
@@ -61,7 +61,7 @@ pub fn encode_response(
     Ok(output.body)
 }
 
-pub fn decode_stream_event(
+pub(crate) fn decode_stream_event(
     engine: &TranslationEngine,
     state: &mut StreamTranslationState,
     protocol: WireFormat,
@@ -72,7 +72,7 @@ pub fn decode_stream_event(
         .map_err(error)
 }
 
-pub fn encode_stream_event(
+pub(crate) fn encode_stream_event(
     engine: &TranslationEngine,
     state: &mut StreamTranslationState,
     protocol: WireFormat,
@@ -83,7 +83,7 @@ pub fn encode_stream_event(
         .map_err(error)
 }
 
-pub fn finish_stream(
+pub(crate) fn finish_stream(
     engine: &TranslationEngine,
     state: &mut StreamTranslationState,
     protocol: WireFormat,
