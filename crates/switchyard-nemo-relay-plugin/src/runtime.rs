@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -14,20 +14,20 @@ use nemo_relay_plugin::{
 use serde_json::{json, Map};
 use switchyard_libsy::{Algorithm, CallLlmRequest, LibsyError, Step};
 use switchyard_protocol::{
-    Context, LlmClientError, LlmRequest as SwitchyardLlmRequest, LlmResponse, LlmResponseChunk,
-    LlmResponseStream, LlmResponseStreamEvent, Metadata, Request, Response,
+    Context, Decision, LlmClientError, LlmRequest as SwitchyardLlmRequest, LlmResponse,
+    LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata, Request, Response,
+    WireFormat,
 };
 use switchyard_translation::{StreamTranslationState, TranslationEngine};
 
-use crate::config::{PreparedTargetBinding, ProtocolDefaults, SwitchyardConfig, WireProtocol};
+use crate::config::{protocol_from_call, PreparedTargetBinding, SwitchyardConfig};
 use crate::translation;
 
 pub struct SwitchyardRuntime {
     max_retries: u32,
     algorithm: Arc<dyn Algorithm>,
     targets: BTreeMap<String, PreparedTargetBinding>,
-    default_targets: ProtocolDefaults,
-    enabled_inbound_profiles: BTreeSet<WireProtocol>,
+    default_targets: BTreeMap<WireFormat, String>,
     translation: Arc<TranslationEngine>,
     relay: PluginRuntime,
 }
@@ -40,7 +40,6 @@ impl SwitchyardRuntime {
             algorithm: prepared.algorithm,
             targets: prepared.targets,
             default_targets: prepared.default_targets,
-            enabled_inbound_profiles: prepared.enabled_inbound_profiles,
             translation: Arc::new(TranslationEngine::default()),
             relay,
         })
@@ -52,12 +51,9 @@ impl SwitchyardRuntime {
         request: RelayRequest,
         continuation: LlmContinuationV2,
     ) -> Result<Json, String> {
-        let Some(inbound) = WireProtocol::from_call(&name) else {
+        let Some(inbound) = self.managed_protocol(&name) else {
             return continuation.call_passthrough(request).await;
         };
-        if !self.enabled_inbound_profiles.contains(&inbound) {
-            return continuation.call_passthrough(request).await;
-        }
         let libsy_request = self.libsy_request(inbound, &request, false)?;
         let metadata = identity_metadata(libsy_request.metadata.as_ref());
         let max_attempts = self.max_retries + 1;
@@ -117,18 +113,7 @@ impl SwitchyardRuntime {
         while let Some(step) = steps.next().await {
             match step {
                 Ok(Step::Decision(decision)) => {
-                    self.mark(
-                        "switchyard.routing.decision",
-                        json!({
-                            "algorithm": self.algorithm.name(),
-                            "attempt": attempt,
-                            "selected_target": decision.selected_model(),
-                            "reasoning": decision.reasoning(),
-                            "routing_tier": decision.routing_tier(),
-                            "is_routed_call": decision.is_routed_call(),
-                        }),
-                        mark_metadata,
-                    );
+                    self.emit_decision(decision.as_ref(), attempt, mark_metadata);
                 }
                 Ok(Step::CallLlm(call)) => {
                     self.serve_buffered_call(*call, continuation).await?;
@@ -157,7 +142,7 @@ impl SwitchyardRuntime {
             Ok(Response {
                 llm_response: LlmResponse::Agg(response),
                 metadata: Some(Metadata {
-                    wire_format: Some(target.protocol.wire_format()),
+                    wire_format: Some(target.protocol),
                     ..Metadata::default()
                 }),
             })
@@ -169,12 +154,12 @@ impl SwitchyardRuntime {
 
     async fn fallback_buffered(
         &self,
-        inbound: WireProtocol,
+        inbound: WireFormat,
         request: Request,
         continuation: &LlmContinuationV2,
         metadata: &Json,
     ) -> Result<Json, String> {
-        let target_name = self.default_targets.target(inbound);
+        let target_name = self.default_target(inbound);
         let target = self
             .target(target_name)
             .map_err(|error| error.to_string())?;
@@ -196,7 +181,7 @@ impl SwitchyardRuntime {
 
     fn libsy_request(
         &self,
-        inbound: WireProtocol,
+        inbound: WireFormat,
         original: &RelayRequest,
         streaming: bool,
     ) -> Result<Request, String> {
@@ -204,7 +189,7 @@ impl SwitchyardRuntime {
         request.stream = streaming;
         let headers = string_headers(&original.headers);
         let mut metadata = Metadata::from_headers(&headers);
-        metadata.wire_format = Some(inbound.wire_format());
+        metadata.wire_format = Some(inbound);
         Ok(Request {
             llm_request: request,
             raw_request: None,
@@ -244,10 +229,35 @@ impl SwitchyardRuntime {
             })
     }
 
+    fn managed_protocol(&self, name: &str) -> Option<WireFormat> {
+        protocol_from_call(name).filter(|protocol| self.default_targets.contains_key(protocol))
+    }
+
+    fn default_target(&self, protocol: WireFormat) -> &str {
+        self.default_targets
+            .get(&protocol)
+            .expect("managed protocol must have a default target")
+    }
+
     fn mark(&self, name: &str, data: Json, metadata: &Json) {
         if let Err(error) = self.relay.emit_mark(name, Some(&data), Some(metadata)) {
             eprintln!("Switchyard could not emit routing mark {name:?}: {error}");
         }
+    }
+
+    fn emit_decision(&self, decision: &dyn Decision, attempt: u32, metadata: &Json) {
+        self.mark(
+            "switchyard.routing.decision",
+            json!({
+                "algorithm": self.algorithm.name(),
+                "attempt": attempt,
+                "selected_target": decision.selected_model(),
+                "reasoning": decision.reasoning(),
+                "routing_tier": decision.routing_tier(),
+                "is_routed_call": decision.is_routed_call(),
+            }),
+            metadata,
+        );
     }
 
     pub async fn execute_stream(
@@ -256,12 +266,9 @@ impl SwitchyardRuntime {
         request: RelayRequest,
         continuation: LlmStreamContinuationV2,
     ) -> Result<LlmStreamExecutionOutcomeV2, String> {
-        let Some(inbound) = WireProtocol::from_call(&name) else {
+        let Some(inbound) = self.managed_protocol(&name) else {
             return Ok(LlmStreamExecutionOutcomeV2::Passthrough(request));
         };
-        if !self.enabled_inbound_profiles.contains(&inbound) {
-            return Ok(LlmStreamExecutionOutcomeV2::Passthrough(request));
-        }
         let libsy_request = self.libsy_request(inbound, &request, true)?;
         let metadata = identity_metadata(libsy_request.metadata.as_ref());
         let stream = self.routed_stream(inbound, libsy_request, continuation, metadata);
@@ -270,20 +277,20 @@ impl SwitchyardRuntime {
 
     fn routed_stream(
         self: Arc<Self>,
-        inbound: WireProtocol,
+        inbound: WireFormat,
         request: Request,
         continuation: LlmStreamContinuationV2,
         metadata: Json,
     ) -> LlmJsonAsyncStreamV2 {
         Box::pin(async_stream::try_stream! {
         let max_attempts = self.max_retries + 1;
-        'attempts: for attempt in 1..=max_attempts {
+        for attempt in 1..=max_attempts {
             self.mark(
                 "switchyard.routing.requested",
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
                 &metadata,
             );
-            let response = match self
+            let failure = match self
                 .drive_stream(
                     request.clone(),
                     &continuation,
@@ -292,73 +299,56 @@ impl SwitchyardRuntime {
                 )
                 .await
             {
-                Ok(response) => response,
-                Err(failure) if libsy_error_retryable(&failure) && attempt < max_attempts => {
-                    self.emit_stream_retry(attempt, &failure, &metadata);
-                    continue;
-                }
-                Err(failure) => {
-                    self.emit_stream_error(attempt, &failure, &metadata);
-                    let mut fallback = self
-                        .fallback_stream(
-                            inbound,
-                            request.clone(),
-                            &continuation,
-                            &metadata,
-                        )
-                        .await?;
-                    while let Some(item) = fallback.next().await {
-                        yield item.map_err(|failure| {
-                            format!(
-                                "trusted fallback stream failed: {}",
-                                failure.error
-                            )
-                        })?;
-                    }
-                    return;
-                }
-            };
-            let mut returned =
-                Self::returned_stream(response, inbound, Arc::clone(&self.translation));
-            while let Some(item) = returned.next().await {
-                match item {
-                    Ok(event) => yield event,
-                    Err(failure)
-                        if !failure.committed
-                            && libsy_error_retryable(&failure.error)
-                            && attempt < max_attempts =>
-                    {
-                        self.emit_stream_retry(attempt, &failure.error, &metadata);
-                        continue 'attempts;
-                    }
-                    Err(failure) if !failure.committed => {
-                        self.emit_stream_error(attempt, &failure.error, &metadata);
-                        let mut fallback = self
-                            .fallback_stream(
-                                inbound,
-                                request.clone(),
-                                &continuation,
-                                &metadata,
-                            )
-                            .await?;
-                        while let Some(item) = fallback.next().await {
-                            yield item.map_err(|failure| {
-                                format!(
-                                    "trusted fallback stream failed: {}",
-                                    failure.error
-                                )
-                            })?;
+                Ok(response) => {
+                    let mut returned = Self::returned_stream(
+                        response,
+                        inbound,
+                        Arc::clone(&self.translation),
+                    );
+                    let mut committed = false;
+                    loop {
+                        match returned.next().await {
+                            Some(Ok(event)) => {
+                                committed = true;
+                                yield event;
+                            }
+                            Some(Err(failure)) if committed => {
+                                self.mark(
+                                    "switchyard.routing.error",
+                                    failure_mark_data(attempt, &failure),
+                                    &metadata,
+                                );
+                                Err(format!(
+                                    "Switchyard stream failed after response commitment: {failure}"
+                                ))?;
+                            }
+                            Some(Err(failure)) => break failure,
+                            None => return,
                         }
-                        return;
-                    }
-                    Err(failure) => {
-                        self.emit_stream_error(attempt, &failure.error, &metadata);
-                        Err(format!(
-                            "Switchyard stream failed after response commitment: {}",
-                            failure.error
-                        ))?;
                     }
                 }
+                Err(failure) => failure,
+            };
+            if libsy_error_retryable(&failure) && attempt < max_attempts {
+                self.mark(
+                    "switchyard.routing.retry",
+                    failure_mark_data(attempt, &failure),
+                    &metadata,
+                );
+                continue;
+            }
+            self.mark(
+                "switchyard.routing.error",
+                failure_mark_data(attempt, &failure),
+                &metadata,
+            );
+            let mut fallback = self
+                .fallback_stream(inbound, request.clone(), &continuation, &metadata)
+                .await?;
+            while let Some(item) = fallback.next().await {
+                yield item.map_err(|failure| {
+                    format!("trusted fallback stream failed: {failure}")
+                })?;
             }
             return;
         }
@@ -380,18 +370,7 @@ impl SwitchyardRuntime {
         while let Some(step) = steps.next().await {
             match step {
                 Ok(Step::Decision(decision)) => {
-                    self.mark(
-                        "switchyard.routing.decision",
-                        json!({
-                            "algorithm": self.algorithm.name(),
-                            "attempt": attempt,
-                            "selected_target": decision.selected_model(),
-                            "reasoning": decision.reasoning(),
-                            "routing_tier": decision.routing_tier(),
-                            "is_routed_call": decision.is_routed_call(),
-                        }),
-                        mark_metadata,
-                    );
+                    self.emit_decision(decision.as_ref(), attempt, mark_metadata);
                 }
                 Ok(Step::CallLlm(call)) => {
                     self.serve_stream_call(*call, continuation).await?;
@@ -444,10 +423,7 @@ impl SwitchyardRuntime {
                 });
             }
         };
-        let mut state = StreamTranslationState::new(
-            target.protocol.wire_format(),
-            target.protocol.wire_format(),
-        );
+        let mut state = StreamTranslationState::new(target.protocol, target.protocol);
         let first =
             decode_provider_event(&self.translation, &mut state, target.protocol, first_raw)?;
         let protocol = target.protocol;
@@ -462,7 +438,7 @@ impl SwitchyardRuntime {
         Ok(Response {
             llm_response: LlmResponse::Stream(stream),
             metadata: Some(Metadata {
-                wire_format: Some(target.protocol.wire_format()),
+                wire_format: Some(target.protocol),
                 ..metadata.unwrap_or_default()
             }),
         })
@@ -470,40 +446,36 @@ impl SwitchyardRuntime {
 
     fn returned_stream(
         response: Response,
-        inbound: WireProtocol,
+        inbound: WireFormat,
         translation: Arc<TranslationEngine>,
     ) -> ReturnedJsonStream {
         Box::pin(async_stream::stream! {
             let source = match response
                 .metadata
                 .as_ref()
-                .and_then(|metadata| metadata.wire_format.as_ref())
-                .and_then(WireProtocol::from_wire_format)
+                .and_then(|metadata| metadata.wire_format)
             {
                 Some(source) => source,
                 None => {
-                    yield Err(StreamAttemptFailure::translation(
+                    yield Err(returned_stream_translation_error(
                         "libsy returned a stream without a supported source wire format",
-                        false,
                     ));
                     return;
                 }
             };
             let LlmResponse::Stream(mut stream) = response.llm_response else {
-                yield Err(StreamAttemptFailure::translation(
+                yield Err(returned_stream_translation_error(
                     "libsy returned a buffered response for a streaming request",
-                    false,
                 ));
                 return;
             };
-            let mut state =
-                StreamTranslationState::new(source.wire_format(), inbound.wire_format());
-            let mut committed = false;
+            let mut state = StreamTranslationState::new(source, inbound);
+            let mut emitted = false;
             while let Some(item) = stream.next().await {
                 let event = match item {
                     Ok(event) => event,
                     Err(error) => {
-                        yield Err(StreamAttemptFailure::client(error, committed));
+                        yield Err(LibsyError::client_call("return_to_agent", error));
                         return;
                     }
                 };
@@ -515,42 +487,29 @@ impl SwitchyardRuntime {
                 ) {
                     Ok(events) => events,
                     Err(error) => {
-                        yield Err(StreamAttemptFailure::translation(
-                            &error,
-                            committed,
-                        ));
+                        yield Err(returned_stream_translation_error(error));
                         return;
                     }
                 };
                 for event in events {
-                    committed = true;
+                    emitted = true;
                     yield Ok(event);
                 }
             }
-            if source != inbound {
-                let events = match translation::finish_stream(
-                    &translation,
-                    &mut state,
-                    inbound,
-                ) {
-                    Ok(events) => events,
-                    Err(error) => {
-                        yield Err(StreamAttemptFailure::translation(
-                            &error,
-                            committed,
-                        ));
-                        return;
-                    }
-                };
-                for event in events {
-                    committed = true;
-                    yield Ok(event);
+            let events = match translation::finish_stream(&translation, &mut state, inbound) {
+                Ok(events) => events,
+                Err(error) => {
+                    yield Err(returned_stream_translation_error(error));
+                    return;
                 }
+            };
+            for event in events {
+                emitted = true;
+                yield Ok(event);
             }
-            if !committed {
-                yield Err(StreamAttemptFailure::translation(
+            if !emitted {
+                yield Err(returned_stream_translation_error(
                     "Switchyard produced an empty output stream",
-                    false,
                 ));
             }
         })
@@ -558,12 +517,12 @@ impl SwitchyardRuntime {
 
     async fn fallback_stream(
         &self,
-        inbound: WireProtocol,
+        inbound: WireFormat,
         request: Request,
         continuation: &LlmStreamContinuationV2,
         metadata: &Json,
     ) -> Result<ReturnedJsonStream, String> {
-        let target_name = self.default_targets.target(inbound);
+        let target_name = self.default_target(inbound);
         self.mark(
             "switchyard.routing.fallback",
             json!({"selected_target": target_name}),
@@ -584,30 +543,14 @@ impl SwitchyardRuntime {
             Arc::clone(&self.translation),
         ))
     }
-
-    fn emit_stream_retry(&self, attempt: u32, failure: &LibsyError, metadata: &Json) {
-        self.mark(
-            "switchyard.routing.retry",
-            failure_mark_data(attempt, failure),
-            metadata,
-        );
-    }
-
-    fn emit_stream_error(&self, attempt: u32, failure: &LibsyError, metadata: &Json) {
-        self.mark(
-            "switchyard.routing.error",
-            failure_mark_data(attempt, failure),
-            metadata,
-        );
-    }
 }
 
-type ReturnedJsonStream = Pin<Box<dyn Stream<Item = Result<Json, StreamAttemptFailure>> + Send>>;
+type ReturnedJsonStream = Pin<Box<dyn Stream<Item = Result<Json, LibsyError>> + Send>>;
 
 fn decode_provider_event(
     translation: &TranslationEngine,
     state: &mut StreamTranslationState,
-    protocol: WireProtocol,
+    protocol: WireFormat,
     raw: Json,
 ) -> Result<LlmResponseStreamEvent, LlmClientError> {
     let event = translation::decode_stream_event(translation, state, protocol, raw)
@@ -629,41 +572,25 @@ fn decode_provider_event(
     Ok(event)
 }
 
-struct StreamAttemptFailure {
-    error: LibsyError,
-    committed: bool,
-}
-
-impl StreamAttemptFailure {
-    fn client(error: LlmClientError, committed: bool) -> Self {
-        Self {
-            error: LibsyError::client_call("return_to_agent", error),
-            committed,
-        }
-    }
-
-    fn translation(error: &str, committed: bool) -> Self {
-        Self::client(
-            LlmClientError::ResponseTranslation(error.to_string()),
-            committed,
-        )
-    }
+fn returned_stream_translation_error(error: impl Into<String>) -> LibsyError {
+    LibsyError::client_call(
+        "return_to_agent",
+        LlmClientError::ResponseTranslation(error.into()),
+    )
 }
 
 fn libsy_error_retryable(error: &LibsyError) -> bool {
-    matches!(
-        error,
-        LibsyError::ClientCall {
-            source: LlmClientError::UpstreamHttp { status, .. },
-            ..
-        } if matches!(*status, 408 | 425 | 429 | 500 | 502 | 503 | 504)
-    ) || matches!(
-        error,
-        LibsyError::ClientCall {
-            source: LlmClientError::Transport { .. } | LlmClientError::Timeout { .. },
-            ..
+    let LibsyError::ClientCall { source, .. } = error else {
+        return false;
+    };
+    match source {
+        LlmClientError::UpstreamHttp { status, .. } => {
+            LlmContinuationFailureV2::http_status_is_retryable(*status)
         }
-    )
+        LlmClientError::Transport { .. } => LlmNonHttpFailureKindV2::Transport.is_retryable(),
+        LlmClientError::Timeout { .. } => LlmNonHttpFailureKindV2::Timeout.is_retryable(),
+        _ => false,
+    }
 }
 
 fn client_error(error: LlmContinuationFailureV2) -> LlmClientError {
@@ -886,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn late_provider_failure_stays_committed_and_cannot_retry() {
+    fn returned_stream_preserves_late_provider_failure() {
         let raw = json!({
             "id": "chatcmpl-test",
             "object": "chat.completion.chunk",
@@ -900,7 +827,7 @@ mod tests {
         let response = Response {
             llm_response: LlmResponse::Stream(Box::pin(futures_util::stream::iter([
                 Ok(LlmResponseStreamEvent::preserved(
-                    WireProtocol::OpenaiChat.wire_format(),
+                    WireFormat::OpenAiChat,
                     raw.clone(),
                     vec![LlmResponseChunk::TextDelta {
                         index: 0,
@@ -915,14 +842,14 @@ mod tests {
                 }),
             ]))),
             metadata: Some(Metadata {
-                wire_format: Some(WireProtocol::OpenaiChat.wire_format()),
+                wire_format: Some(WireFormat::OpenAiChat),
                 ..Metadata::default()
             }),
         };
 
         let mut stream = SwitchyardRuntime::returned_stream(
             response,
-            WireProtocol::OpenaiChat,
+            WireFormat::OpenAiChat,
             Arc::new(TranslationEngine::default()),
         );
         let first = stream
@@ -938,7 +865,6 @@ mod tests {
             .expect("late failure is ready")
             .expect("late failure exists")
             .expect_err("late failure is propagated");
-        assert!(failure.committed);
-        assert!(libsy_error_retryable(&failure.error));
+        assert!(libsy_error_retryable(&failure));
     }
 }

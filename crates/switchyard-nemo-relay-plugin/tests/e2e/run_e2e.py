@@ -155,7 +155,6 @@ def plugin_config(
     algorithm: str,
     targets: str,
     defaults: str,
-    profiles: str,
     *,
     max_retries: int = 1,
 ) -> str:
@@ -169,7 +168,6 @@ manifest = {json.dumps(str(manifest))}
 version = 2
 priority = 0
 max_retries = {max_retries}
-enabled_inbound_profiles = [{profiles}]
 
 {algorithm}
 
@@ -329,7 +327,6 @@ authorization = "SWITCHYARD_E2E_TARGET_AUTHORIZATION"
 x-switchyard-target = "same"
 """,
         'openai_chat = "chat"',
-        '"openai_chat"',
     )
     with RelayScenario(relay_bin, root, provider_url, "same", config) as relay:
         template = dict(CASES[0][2])
@@ -383,7 +380,6 @@ weight = 1
             'openai_responses = "responses"\n'
             'anthropic_messages = "anthropic"'
         ),
-        '"openai_chat", "openai_responses", "anthropic_messages"',
     )
     with RelayScenario(relay_bin, root, provider_url, "random", config) as relay:
         models: set[str] = set()
@@ -477,7 +473,6 @@ protocol = "openai_chat"
 base_url = "{provider_url}/v1"
 """,
         'openai_chat = "fallback"',
-        '"openai_chat"',
     )
     with RelayScenario(relay_bin, root, provider_url, "classifier", config) as relay:
         body = dict(CASES[0][2])
@@ -530,7 +525,6 @@ protocol = "openai_chat"
 base_url = "{{provider_url}}/v1"
 """,
         'openai_chat = "fallback"',
-        '"openai_chat"',
         max_retries=max_retries,
     )
 
@@ -722,7 +716,6 @@ base_url = "{provider_url}/v1"
 weight = 1
 """,
         'openai_responses = "responses"',
-        '"openai_responses"',
     )
     with RelayScenario(relay_bin, root, provider_url, "unmanaged-passthrough", config) as relay:
         body = dict(CASES[0][2])

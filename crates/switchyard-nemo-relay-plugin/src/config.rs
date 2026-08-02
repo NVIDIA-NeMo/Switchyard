@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use http::header::{HeaderName, HeaderValue};
@@ -11,65 +11,27 @@ use switchyard_libsy::{
 };
 use switchyard_protocol::WireFormat;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-pub enum WireProtocol {
-    OpenaiChat,
-    OpenaiResponses,
-    AnthropicMessages,
+pub(crate) fn protocol_from_call(name: &str) -> Option<WireFormat> {
+    match name {
+        "openai.chat_completions" => Some(WireFormat::OpenAiChat),
+        "openai.responses" => Some(WireFormat::OpenAiResponses),
+        "anthropic.messages" => Some(WireFormat::AnthropicMessages),
+        _ => None,
+    }
 }
 
-impl WireProtocol {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::OpenaiChat => "openai_chat",
-            Self::OpenaiResponses => "openai_responses",
-            Self::AnthropicMessages => "anthropic_messages",
-        }
-    }
-
-    pub const fn endpoint(self) -> &'static str {
-        match self {
-            Self::OpenaiChat => "/v1/chat/completions",
-            Self::OpenaiResponses => "/v1/responses",
-            Self::AnthropicMessages => "/v1/messages",
-        }
-    }
-
-    pub fn from_call(name: &str) -> Option<Self> {
-        match name {
-            "openai.chat_completions" | "openai_chat" | "openai_chat_completions" => {
-                Some(Self::OpenaiChat)
-            }
-            "openai.responses" | "openai_responses" => Some(Self::OpenaiResponses),
-            "anthropic.messages" | "anthropic" | "anthropic_messages" => {
-                Some(Self::AnthropicMessages)
-            }
-            _ => None,
-        }
-    }
-
-    pub const fn wire_format(self) -> WireFormat {
-        match self {
-            Self::OpenaiChat => WireFormat::OpenAiChat,
-            Self::OpenaiResponses => WireFormat::OpenAiResponses,
-            Self::AnthropicMessages => WireFormat::AnthropicMessages,
-        }
-    }
-
-    pub fn from_wire_format(format: &WireFormat) -> Option<Self> {
-        match format {
-            WireFormat::OpenAiChat => Some(Self::OpenaiChat),
-            WireFormat::OpenAiResponses => Some(Self::OpenaiResponses),
-            WireFormat::AnthropicMessages => Some(Self::AnthropicMessages),
-        }
+const fn default_endpoint(protocol: WireFormat) -> &'static str {
+    match protocol {
+        WireFormat::OpenAiChat => "/v1/chat/completions",
+        WireFormat::OpenAiResponses => "/v1/responses",
+        WireFormat::AnthropicMessages => "/v1/messages",
     }
 }
 
 #[derive(Deserialize)]
 pub struct TargetBinding {
     pub model: String,
-    pub protocol: WireProtocol,
+    pub protocol: WireFormat,
     #[serde(default)]
     pub endpoint: String,
     pub base_url: String,
@@ -85,7 +47,7 @@ impl TargetBinding {
     pub fn dispatch_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         let endpoint = if self.endpoint.is_empty() {
-            self.protocol.endpoint()
+            default_endpoint(self.protocol)
         } else {
             &self.endpoint
         };
@@ -141,7 +103,7 @@ impl TargetBinding {
 
 pub struct PreparedTargetBinding {
     pub model: String,
-    pub protocol: WireProtocol,
+    pub protocol: WireFormat,
     dispatch_url: String,
     pub headers: BTreeMap<String, String>,
 }
@@ -149,26 +111,6 @@ pub struct PreparedTargetBinding {
 impl PreparedTargetBinding {
     pub fn dispatch_url(&self) -> &str {
         &self.dispatch_url
-    }
-}
-
-#[derive(Default, Deserialize)]
-pub struct ProtocolDefaults {
-    #[serde(default)]
-    pub openai_chat: String,
-    #[serde(default)]
-    pub openai_responses: String,
-    #[serde(default)]
-    pub anthropic_messages: String,
-}
-
-impl ProtocolDefaults {
-    pub fn target(&self, protocol: WireProtocol) -> &str {
-        match protocol {
-            WireProtocol::OpenaiChat => &self.openai_chat,
-            WireProtocol::OpenaiResponses => &self.openai_responses,
-            WireProtocol::AnthropicMessages => &self.anthropic_messages,
-        }
     }
 }
 
@@ -195,35 +137,24 @@ pub enum AlgorithmConfig {
     },
 }
 
-impl Default for AlgorithmConfig {
-    fn default() -> Self {
-        Self::Random { seed: None }
-    }
-}
-
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SwitchyardConfig {
-    #[serde(default = "default_version")]
     pub version: u32,
     #[serde(default)]
     pub priority: i32,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
-    #[serde(default)]
     pub algorithm: AlgorithmConfig,
     pub targets: BTreeMap<String, TargetBinding>,
-    #[serde(default)]
-    pub default_targets: ProtocolDefaults,
-    #[serde(default = "default_enabled_protocols")]
-    pub enabled_inbound_profiles: BTreeSet<WireProtocol>,
+    pub default_targets: BTreeMap<WireFormat, String>,
 }
 
 pub(crate) struct PreparedConfig {
     pub max_retries: u32,
     pub algorithm: Arc<dyn Algorithm>,
     pub targets: BTreeMap<String, PreparedTargetBinding>,
-    pub default_targets: ProtocolDefaults,
-    pub enabled_inbound_profiles: BTreeSet<WireProtocol>,
+    pub default_targets: BTreeMap<WireFormat, String>,
 }
 
 impl SwitchyardConfig {
@@ -245,8 +176,8 @@ impl SwitchyardConfig {
         if self.targets.is_empty() {
             return Err("targets must not be empty".into());
         }
-        if self.enabled_inbound_profiles.is_empty() {
-            return Err("enabled_inbound_profiles must not be empty".into());
+        if self.default_targets.is_empty() {
+            return Err("default_targets must not be empty".into());
         }
         for (name, target) in &self.targets {
             if name.trim().is_empty() || target.model.trim().is_empty() {
@@ -262,8 +193,7 @@ impl SwitchyardConfig {
             }
             target.validate_headers()?;
         }
-        for protocol in &self.enabled_inbound_profiles {
-            let fallback = self.default_targets.target(*protocol);
+        for (protocol, fallback) in &self.default_targets {
             let target = self
                 .targets
                 .get(fallback)
@@ -271,7 +201,7 @@ impl SwitchyardConfig {
             if target.protocol != *protocol {
                 return Err(format!(
                     "default target {fallback:?} must use protocol {}",
-                    protocol.label()
+                    protocol.as_str()
                 ));
             }
         }
@@ -291,7 +221,6 @@ impl SwitchyardConfig {
             algorithm,
             targets,
             default_targets: self.default_targets,
-            enabled_inbound_profiles: self.enabled_inbound_profiles,
         })
     }
 
@@ -362,10 +291,6 @@ fn validate_header(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-const fn default_version() -> u32 {
-    2
-}
-
 const fn default_max_retries() -> u32 {
     3
 }
@@ -374,19 +299,12 @@ const fn default_weight() -> f64 {
     1.0
 }
 
-fn default_enabled_protocols() -> BTreeSet<WireProtocol> {
-    BTreeSet::from([
-        WireProtocol::OpenaiChat,
-        WireProtocol::OpenaiResponses,
-        WireProtocol::AnthropicMessages,
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn binding(protocol: WireProtocol, model: &str) -> TargetBinding {
+    fn binding(protocol: WireFormat, model: &str) -> TargetBinding {
         TargetBinding {
             model: model.into(),
             protocol,
@@ -407,23 +325,22 @@ mod tests {
             targets: BTreeMap::from([
                 (
                     "chat".into(),
-                    binding(WireProtocol::OpenaiChat, "provider/chat"),
+                    binding(WireFormat::OpenAiChat, "provider/chat"),
                 ),
                 (
                     "responses".into(),
-                    binding(WireProtocol::OpenaiResponses, "provider/responses"),
+                    binding(WireFormat::OpenAiResponses, "provider/responses"),
                 ),
                 (
                     "anthropic".into(),
-                    binding(WireProtocol::AnthropicMessages, "provider/anthropic"),
+                    binding(WireFormat::AnthropicMessages, "provider/anthropic"),
                 ),
             ]),
-            default_targets: ProtocolDefaults {
-                openai_chat: "chat".into(),
-                openai_responses: "responses".into(),
-                anthropic_messages: "anthropic".into(),
-            },
-            enabled_inbound_profiles: default_enabled_protocols(),
+            default_targets: BTreeMap::from([
+                (WireFormat::OpenAiChat, "chat".into()),
+                (WireFormat::OpenAiResponses, "responses".into()),
+                (WireFormat::AnthropicMessages, "anthropic".into()),
+            ]),
         }
     }
 
@@ -445,6 +362,86 @@ mod tests {
         let error = config.validate().unwrap_err();
         assert!(error.contains("version 1 used switchyard-server"));
         assert!(error.contains("version = 2"));
+    }
+
+    #[test]
+    fn default_target_keys_define_the_managed_protocols() {
+        let mut config = config();
+        config
+            .default_targets
+            .retain(|protocol, _| *protocol == WireFormat::OpenAiChat);
+        config.validate().unwrap();
+        assert_eq!(config.default_targets.len(), 1);
+    }
+
+    #[test]
+    fn only_canonical_relay_execution_names_resolve_protocols() {
+        assert_eq!(
+            protocol_from_call("openai.chat_completions"),
+            Some(WireFormat::OpenAiChat)
+        );
+        assert_eq!(
+            protocol_from_call("openai.responses"),
+            Some(WireFormat::OpenAiResponses)
+        );
+        assert_eq!(
+            protocol_from_call("anthropic.messages"),
+            Some(WireFormat::AnthropicMessages)
+        );
+        for alias in [
+            "openai_chat",
+            "openai_chat_completions",
+            "openai_responses",
+            "anthropic",
+            "anthropic_messages",
+        ] {
+            assert_eq!(protocol_from_call(alias), None, "alias={alias}");
+        }
+    }
+
+    #[test]
+    fn schema_required_contract_fields_do_not_default_during_deserialization() {
+        let base = json!({
+            "version": 2,
+            "algorithm": {"kind": "random"},
+            "targets": {
+                "chat": {
+                    "model": "provider/chat",
+                    "protocol": "openai_chat",
+                    "base_url": "https://provider.example/v1"
+                }
+            },
+            "default_targets": {"openai_chat": "chat"}
+        });
+        for field in ["version", "algorithm", "default_targets"] {
+            let mut value = base.clone();
+            value.as_object_mut().unwrap().remove(field);
+            let error = serde_json::from_value::<SwitchyardConfig>(value)
+                .err()
+                .expect("required field must not default");
+            assert!(error.to_string().contains(field), "field={field}: {error}");
+        }
+    }
+
+    #[test]
+    fn removed_enabled_profile_list_is_not_silently_ignored() {
+        let value = json!({
+            "version": 2,
+            "algorithm": {"kind": "random"},
+            "targets": {
+                "chat": {
+                    "model": "provider/chat",
+                    "protocol": "openai_chat",
+                    "base_url": "https://provider.example/v1"
+                }
+            },
+            "default_targets": {"openai_chat": "chat"},
+            "enabled_inbound_profiles": ["openai_chat"]
+        });
+        let error = serde_json::from_value::<SwitchyardConfig>(value)
+            .err()
+            .expect("removed field must produce a migration error");
+        assert!(error.to_string().contains("enabled_inbound_profiles"));
     }
 
     #[test]
