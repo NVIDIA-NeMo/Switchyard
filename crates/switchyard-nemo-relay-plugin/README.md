@@ -66,12 +66,12 @@ spans; semantic target names remain visible in genuine routing marks. The
 plugin contains no Relay provider codecs and does not use private dispatch
 headers.
 
-Calls whose protocol is absent from `default_targets` return the SDK's explicit
-`Passthrough` outcome. Relay then forwards the downstream provider stream
-through its bounded host queue. These ordinary untargeted calls remain inside
-Relay's managed LLM lifecycle, but their provider events do not cross the
-plugin ABI. Targeted provider streams permit at most one pending pull; plugin
-output and direct pass-through use bounded 32-event host queues.
+Only supported LLM execution names whose mapped protocol appears in
+`default_targets` are managed. Every other buffered or streaming call uses the
+SDK's explicit `Passthrough` path. These ordinary untargeted calls remain
+inside Relay's managed LLM lifecycle, but their provider events do not cross
+the plugin ABI. Targeted provider streams permit at most one pending pull;
+plugin output and direct pass-through use bounded 32-event host queues.
 
 Provider failures use HTTP semantics. Relay supplies status, a bounded body,
 and safe response headers when it received an HTTP response; Switchyard passes
