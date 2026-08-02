@@ -129,6 +129,11 @@ and headers. Each `default_targets` key both enables that inbound protocol and
 names its trusted fallback. `header_env` resolves credentials in the plugin
 process without putting them in configuration or libsy metadata.
 
+For `kind = "llm_classifier"`, the classifier thresholds, affinity options, and
+`recent_turn_window` use libsy's `TaskClassifierConfig` directly. The plugin
+adds only the semantic `classifier_target`, `weak_target`, and `strong_target`
+bindings required to resolve Relay continuations.
+
 Version-1 service configuration is rejected with a migration error. The plugin
 does not provide decision-only or observe-only execution.
 

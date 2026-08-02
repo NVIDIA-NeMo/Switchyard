@@ -52,6 +52,10 @@
               "minimum": 0,
               "maximum": 1
             },
+            "recent_turn_window": {
+              "type": ["integer", "null"],
+              "minimum": 0
+            },
             "session_affinity": { "type": "boolean", "default": false },
             "message_hash_fallback": { "type": "boolean", "default": false }
           }

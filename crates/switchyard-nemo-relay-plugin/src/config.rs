@@ -125,15 +125,8 @@ enum AlgorithmConfig {
         classifier_target: String,
         weak_target: String,
         strong_target: String,
-        base_threshold: f64,
-        #[serde(default)]
-        min_confidence: f64,
-        #[serde(default)]
-        capability_elevated_floor: Option<f64>,
-        #[serde(default)]
-        session_affinity: bool,
-        #[serde(default)]
-        message_hash_fallback: bool,
+        #[serde(flatten)]
+        config: TaskClassifierConfig,
     },
 }
 
@@ -262,23 +255,12 @@ impl SwitchyardConfig {
                 classifier_target,
                 weak_target,
                 strong_target,
-                base_threshold,
-                min_confidence,
-                capability_elevated_floor,
-                session_affinity,
-                message_hash_fallback,
+                config,
             } => LlmTaskClassifier::new(
                 target(classifier_target)?,
                 target(weak_target)?,
                 target(strong_target)?,
-                TaskClassifierConfig {
-                    base_threshold: *base_threshold,
-                    min_confidence: *min_confidence,
-                    capability_elevated_floor: *capability_elevated_floor,
-                    session_affinity: *session_affinity,
-                    message_hash_fallback: *message_hash_fallback,
-                    recent_turn_window: None,
-                },
+                config.clone(),
             )
             .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
             .map_err(|error| error.to_string()),
@@ -468,18 +450,24 @@ mod tests {
     }
 
     #[test]
-    fn classifier_targets_are_semantic_names_not_provider_models() {
+    fn classifier_reuses_libsy_configuration_with_semantic_targets() {
         let mut config = config();
-        config.algorithm = AlgorithmConfig::LlmClassifier {
-            classifier_target: "chat".into(),
-            weak_target: "responses".into(),
-            strong_target: "anthropic".into(),
-            base_threshold: 0.5,
-            min_confidence: 0.0,
-            capability_elevated_floor: None,
-            session_affinity: false,
-            message_hash_fallback: false,
+        config.algorithm = serde_json::from_value(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "chat",
+            "weak_target": "responses",
+            "strong_target": "anthropic",
+            "base_threshold": 0.5,
+            "recent_turn_window": 4
+        }))
+        .unwrap();
+        let AlgorithmConfig::LlmClassifier {
+            config: classifier, ..
+        } = &config.algorithm
+        else {
+            panic!("expected classifier configuration");
         };
+        assert_eq!(classifier.recent_turn_window, Some(4));
         config.validate().unwrap();
         assert_eq!(
             config.prepare().unwrap().algorithm.name(),
@@ -519,11 +507,10 @@ mod tests {
             classifier_target: "chat".into(),
             weak_target: "responses".into(),
             strong_target: "anthropic".into(),
-            base_threshold: 1.1,
-            min_confidence: 0.0,
-            capability_elevated_floor: None,
-            session_affinity: false,
-            message_hash_fallback: false,
+            config: TaskClassifierConfig {
+                base_threshold: 1.1,
+                ..Default::default()
+            },
         };
         assert!(classifier
             .validate()
