@@ -12,6 +12,7 @@ use switchyard_translation::{
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+// Same-format replay returns the same parsed JSON value, including provider-specific fields.
 #[test]
 fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
     let cases = [
@@ -118,6 +119,7 @@ fn replayed_terminal_event_suppresses_synthesized_finish() -> TestResult {
     Ok(())
 }
 
+// Cross-format encoding discards provider-specific fields and uses normalized chunks.
 #[test]
 fn preserved_cross_format_event_uses_normalized_content() -> TestResult {
     let engine = TranslationEngine::default();
@@ -140,9 +142,11 @@ fn preserved_cross_format_event_uses_normalized_content() -> TestResult {
         engine.encode_stream_event(&mut state, WireFormat::AnthropicMessages, preserved)?;
 
     assert_eq!(translated[2]["delta"]["text"], "Hi");
-    assert!(translated
-        .iter()
-        .all(|event| event.get("system_fingerprint").is_none()));
+    assert!(
+        translated
+            .iter()
+            .all(|event| event.get("system_fingerprint").is_none())
+    );
     Ok(())
 }
 
