@@ -11,7 +11,7 @@ use nemo_relay_plugin::{
     LlmContinuationV2, LlmJsonAsyncStreamV2, LlmNonHttpFailureKindV2, LlmRequest as RelayRequest,
     LlmStreamContinuationV2, LlmStreamExecutionOutcomeV2, PluginRuntime,
 };
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 use switchyard_libsy::{Algorithm, CallLlmRequest, LibsyError, Step};
 use switchyard_protocol::{
     Context, Decision, LlmClientError, LlmRequest as SwitchyardLlmRequest, LlmResponse,
@@ -20,7 +20,7 @@ use switchyard_protocol::{
 };
 use switchyard_translation::{StreamTranslationState, TranslationEngine};
 
-use crate::config::{protocol_from_call, PreparedTargetBinding, SwitchyardConfig};
+use crate::config::{PreparedTargetBinding, SwitchyardConfig, protocol_from_call};
 use crate::translation;
 
 pub(crate) struct SwitchyardRuntime {

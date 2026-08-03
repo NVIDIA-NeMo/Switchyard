@@ -52,7 +52,7 @@ use std::{any::Any, sync::Arc};
 use crate::{DriverError, LibsyError, Result};
 use parking_lot::Mutex;
 
-use futures::{future::Either, pin_mut, Stream, StreamExt};
+use futures::{Stream, StreamExt, future::Either, pin_mut};
 use futures_timer::Delay;
 use switchyard_protocol::Context;
 use tokio::sync::{mpsc, oneshot};

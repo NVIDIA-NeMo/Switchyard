@@ -497,10 +497,12 @@ mod tests {
         for target in random.targets.values_mut() {
             target.weight = 0.0;
         }
-        assert!(random
-            .validate()
-            .unwrap_err()
-            .contains("at least one weight must be positive"));
+        assert!(
+            random
+                .validate()
+                .unwrap_err()
+                .contains("at least one weight must be positive")
+        );
 
         let mut classifier = config();
         classifier.algorithm = AlgorithmConfig::LlmClassifier {
@@ -512,9 +514,11 @@ mod tests {
                 ..Default::default()
             },
         };
-        assert!(classifier
-            .validate()
-            .unwrap_err()
-            .contains("base_threshold must be between 0 and 1"));
+        assert!(
+            classifier
+                .validate()
+                .unwrap_err()
+                .contains("base_threshold must be between 0 and 1")
+        );
     }
 }

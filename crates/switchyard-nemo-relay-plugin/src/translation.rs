@@ -211,11 +211,15 @@ mod tests {
         .unwrap();
         let translated =
             encode_stream_event(&engine, &mut state, WireFormat::AnthropicMessages, event).unwrap();
-        assert!(translated
-            .iter()
-            .any(|event| { event.pointer("/delta/text").and_then(Json::as_str) == Some("Hi") }));
-        assert!(translated
-            .iter()
-            .all(|event| event.get("system_fingerprint").is_none()));
+        assert!(
+            translated
+                .iter()
+                .any(|event| { event.pointer("/delta/text").and_then(Json::as_str) == Some("Hi") })
+        );
+        assert!(
+            translated
+                .iter()
+                .all(|event| event.get("system_fingerprint").is_none())
+        );
     }
 }
