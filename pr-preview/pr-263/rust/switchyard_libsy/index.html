@@ -3,24 +3,130 @@
 An <code>Algorithm</code> chooses one or more semantic <code>LlmTarget</code>s; each target’s
 <code>RoutedLlmClient</code> performs model I/O.</p>
 <h3 id="setup"><a class="doc-anchor" href="#setup">§</a>Setup</h3><div class="example-wrap"><pre class="language-toml"><code>[dependencies]
+async-trait = &quot;0.1&quot;
+futures = &quot;0.3&quot;
 switchyard-libsy = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
-switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }</code></pre></div><h3 id="quick-start"><a class="doc-anchor" href="#quick-start">§</a>Quick start</h3>
-<p>This complete <code>src/main.rs</code> constructs a uniform random router over two semantic
-targets. Add a client to each target before calling <code>Algorithm::run</code>, or let the
-host fulfill calls through <code>Algorithm::run_stream</code>.</p>
+switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
+tokio = { version = &quot;1&quot;, features = [&quot;macros&quot;, &quot;rt&quot;] }</code></pre></div><h3 id="quick-start"><a class="doc-anchor" href="#quick-start">§</a>Quick start</h3>
+<p>This complete <code>src/main.rs</code> routes a request with <code>LlmTaskClassifier</code>. The first
+run lets libsy call each target’s client. The second drives the step stream so
+the host can perform or override each model call itself.</p>
 
 <div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::sync::Arc;
 
-<span class="kw">use </span>switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
+<span class="kw">use </span>async_trait::async_trait;
+<span class="kw">use </span>futures::StreamExt;
+<span class="kw">use </span>switchyard_libsy::{
+    Algorithm, LibsyError, LlmTarget, LlmTaskClassifier, Step, TaskClassifierConfig,
+};
+<span class="kw">use </span>switchyard_protocol::{
+    AggLlmResponse, ContentBlock, Context, Decision, LlmClientError, LlmRequest,
+    LlmResponse, Message, Request, Response, ResponseOutput, Role, RoutedLlmClient,
+};
 
-<span class="kw">fn </span>main() -&gt; switchyard_libsy::Result&lt;()&gt; {
+<span class="kw">struct </span>DemoClient;
+
+<span class="attr">#[async_trait]
+</span><span class="kw">impl </span>RoutedLlmClient <span class="kw">for </span>DemoClient {
+    <span class="kw">async fn </span>call(
+        <span class="kw-2">&amp;</span><span class="self">self</span>,
+        _ctx: Context,
+        _request: Request,
+        decision: Arc&lt;<span class="kw">dyn </span>Decision&gt;,
+    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt; {
+        <span class="kw">let </span>model = decision.selected_model();
+        <span class="kw">let </span>text = <span class="kw">if </span>model == <span class="string">"judge" </span>{
+            <span class="string">r#"{
+                "recommended_route": "efficient",
+                "p_solve": 0.9,
+                "confidence": 0.9,
+                "abstain": false,
+                "capability_boundary": "supported",
+                "primary_rule": "SUP-1",
+                "crux": "bounded task"
+            }"#
+            </span>.to_string()
+        } <span class="kw">else </span>{
+            <span class="macro">format!</span>(<span class="string">"answer from {model}"</span>)
+        };
+        <span class="prelude-val">Ok</span>(Response {
+            llm_response: LlmResponse::Agg(AggLlmResponse {
+                model: <span class="prelude-val">Some</span>(model.to_string()),
+                outputs: <span class="macro">vec!</span>[ResponseOutput {
+                    role: Role::Assistant,
+                    content: <span class="macro">vec!</span>[ContentBlock::Text { text }],
+                    stop_reason: <span class="prelude-val">None</span>,
+                }],
+                ..AggLlmResponse::default()
+            }),
+            metadata: <span class="prelude-val">None</span>,
+        })
+    }
+}
+
+<span class="attr">#[tokio::main(flavor = <span class="string">"current_thread"</span>)]
+</span><span class="kw">async fn </span>main() -&gt; switchyard_libsy::Result&lt;()&gt; {
+    <span class="kw">let </span>client = Arc::new(DemoClient);
     <span class="kw">let </span>target = |name: <span class="kw-2">&amp;</span>str| LlmTarget {
-        semantic_name: name.into(),
-        llm_client: <span class="prelude-val">None</span>,
+        semantic_name: name.to_string(),
+        llm_client: <span class="prelude-val">Some</span>(client.clone()),
     };
-    <span class="kw">let </span>targets = LlmTargetSet::new(<span class="macro">vec!</span>[target(<span class="string">"fast"</span>), target(<span class="string">"strong"</span>)]);
-    <span class="kw">let </span>router: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(Random::new(targets, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)<span class="question-mark">?</span>);
-    <span class="macro">println!</span>(<span class="string">"{}"</span>, router.name());
+
+    <span class="kw">let </span>router: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(LlmTaskClassifier::new(
+        target(<span class="string">"judge"</span>),
+        target(<span class="string">"efficient"</span>),
+        target(<span class="string">"capable"</span>),
+        TaskClassifierConfig {
+            base_threshold: <span class="number">0.5</span>,
+            ..TaskClassifierConfig::default()
+        },
+    )<span class="question-mark">?</span>);
+    <span class="kw">let </span>request = Request {
+        llm_request: LlmRequest {
+            model: <span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()),
+            messages: <span class="macro">vec!</span>[Message {
+                role: Role::User,
+                content: <span class="macro">vec!</span>[ContentBlock::Text {
+                    text: <span class="string">"Explain tail latency"</span>.to_string(),
+                }],
+            }],
+            ..LlmRequest::default()
+        },
+        ..Request::default()
+    };
+
+    <span class="comment">// `run` serves the judge and routed calls through their target clients.
+    </span><span class="kw">let </span>(<span class="kw">_</span>, response) = router
+        .clone()
+        .run(Context::default(), request.clone())
+        .<span class="kw">await</span><span class="question-mark">?</span>;
+    <span class="macro">println!</span>(<span class="string">"run returned {}"</span>, response.selected_model().unwrap_or(<span class="string">"unknown"</span>));
+
+    <span class="comment">// `run_stream` exposes those calls so the host controls their transport.
+    </span><span class="kw">let </span>stream = router.run_stream(Context::default(), request, <span class="prelude-val">None</span>);
+    <span class="macro">tokio::pin!</span>(stream);
+    <span class="kw">while let </span><span class="prelude-val">Some</span>(step) = stream.next().<span class="kw">await </span>{
+        <span class="kw">match </span>step<span class="question-mark">? </span>{
+            Step::CallLlm(call) =&gt; {
+                <span class="kw">let </span>routed = call.get_routed().clone();
+                <span class="kw">let </span>target = routed.decision.selected_model().to_string();
+                <span class="kw">let </span>result = client
+                    .call(routed.ctx, routed.request, routed.decision)
+                    .<span class="kw">await
+                    </span>.map_err(|source| LibsyError::client_call(target, source));
+                call.respond(result)<span class="question-mark">?</span>;
+            }
+            Step::Decision(decision) =&gt; {
+                <span class="macro">println!</span>(<span class="string">"run_stream chose {}"</span>, decision.selected_model());
+            }
+            Step::ReturnToAgent(response) =&gt; {
+                <span class="macro">println!</span>(
+                    <span class="string">"run_stream returned {}"</span>,
+                    response.selected_model().unwrap_or(<span class="string">"unknown"</span>)
+                );
+            }
+        }
+    }
     <span class="prelude-val">Ok</span>(())
 }</code></pre></div><h3 id="built-in-algorithms"><a class="doc-anchor" href="#built-in-algorithms">§</a>Built-in algorithms</h3><div><table><thead><tr><th>Algorithm</th><th>Purpose</th></tr></thead><tbody>
 <tr><td><code>Passthrough</code></td><td>Always call one configured target.</td></tr>
