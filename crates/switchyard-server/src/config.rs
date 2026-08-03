@@ -3,7 +3,7 @@
 
 //! Typed TOML configuration and explicit construction for the Rust server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -64,6 +64,26 @@ impl ServerConfig {
             )));
         }
 
+        // An llm client keys its models by id, so two targets that share an id on one
+        // client end up as one entry: the client keeps one target and drops the other. Warn
+        // so the drop is visible at startup instead of silent, and still build both routes.
+        // The set only tells us the pair was already seen, not whether the two targets
+        // differ, so it warns for a harmless duplicate and for one whose extra_body would be
+        // dropped alike. The same id on two different clients never collides: each client
+        // keeps its own model.
+        let mut seen_client_model_ids = HashSet::new();
+        for (target_name, target) in &self.targets {
+            validate_value("target name", target_name)?;
+            validate_value(&format!("target {target_name} id"), &target.id)?;
+            if !seen_client_model_ids.insert((target.llm_client.as_str(), target.id.as_str())) {
+                tracing::warn!(
+                    "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
+                    target.id,
+                    target.llm_client
+                );
+            }
+        }
+
         let clients = self.build_clients()?;
         let targets = self.build_targets(&clients)?;
         let mut routes = Vec::with_capacity(self.routes.len());
@@ -89,8 +109,6 @@ impl ServerConfig {
             validate_value("llm client name", name)?;
         }
         for (target_name, target) in &self.targets {
-            validate_value("target name", target_name)?;
-            validate_value(&format!("target {target_name} id"), &target.id)?;
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
                 ServerError::new(format!(
                     "target {target_name} references unknown llm client {}",
@@ -777,6 +795,83 @@ classifier_magic = true
                 "expected error containing {expected}"
             );
         }
+    }
+
+    #[test]
+    fn accepts_duplicate_target_model_ids_on_one_client() -> ServerResult<()> {
+        // Two targets share one model id on one client. The client keeps one and drops the
+        // other, so the build warns and still succeeds, and both routes resolve. Serving one
+        // model under two route names this way is allowed; pointing both routes at one target
+        // is the tidier form.
+        const SAME_MODEL_TWO_ROUTES: &str = r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.fast]
+id = "gpt-4o"
+llm_client = "primary"
+
+[targets.smart]
+id = "gpt-4o"
+llm_client = "primary"
+
+[routes.fast]
+id = "switchyard/fast"
+type = "passthrough"
+target = "fast"
+
+[routes.smart]
+id = "switchyard/smart"
+type = "passthrough"
+target = "smart"
+"#;
+        let state = server_state_from_toml(SAME_MODEL_TWO_ROUTES)?;
+        assert_eq!(
+            state.models().collect::<Vec<_>>(),
+            ["switchyard/fast", "switchyard/smart"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_same_model_id_on_different_llm_clients() -> ServerResult<()> {
+        // The same model id served by two llm clients never collides (each client keys its own
+        // models), so cross-provider A/B builds with no warning; only a repeat within one client
+        // warns.
+        const CROSS_PROVIDER: &str = r#"
+schema_version = 1
+
+[llm_clients.openai]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[llm_clients.azure]
+format = "openai_chat"
+base_url = "https://azure.test/v1"
+
+[targets.openai]
+id = "gpt-4o"
+llm_client = "openai"
+
+[targets.azure]
+id = "gpt-4o"
+llm_client = "azure"
+
+[routes.openai]
+id = "switchyard/openai-gpt4o"
+type = "passthrough"
+target = "openai"
+
+[routes.azure]
+id = "switchyard/azure-gpt4o"
+type = "passthrough"
+target = "azure"
+"#;
+        server_state_from_toml(CROSS_PROVIDER)?;
+        Ok(())
     }
 
     #[test]
