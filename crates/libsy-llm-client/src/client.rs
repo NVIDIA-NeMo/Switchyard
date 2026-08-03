@@ -48,6 +48,29 @@ const RESERVED_HEADERS: &[&str] = &[
     "accept-encoding",
 ];
 
+// Body phrases marking a 4xx as a rejection of a request *parameter* rather than of
+// the request's content. A server that refuses an unknown top-level field names it
+// one of these ways; the reasoning-control knobs are listed explicitly because they
+// are the fields operators most often configure per target. Matched against the raw
+// body, which covers both JSON error envelopes and the plain-text bodies some
+// proxies return.
+const PARAM_REJECT_PHRASES: &[&str] = &[
+    "chat_template_kwargs",
+    "enable_thinking",
+    "unexpected keyword",
+    "unknown parameter",
+    "unknown field",
+    "unrecognized",
+    "extra_forbidden",
+    "additional properties",
+    "extra fields not permitted",
+    "invalid parameter",
+];
+
+// Statuses that can mean "request malformed / unknown parameter". A 429 or 5xx is a
+// transient fault and must never be treated as a parameter reject.
+const PARAM_REJECT_STATUSES: &[u16] = &[400, 422];
+
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -205,7 +228,10 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
-        merge_extra_body(&mut body, backend.extra_body());
+        let injected_extra_body = merge_extra_body(&mut body, backend.extra_body());
+        // Set once the injected defaults have been dropped, so the strip is attempted
+        // at most once per call.
+        let mut stripped_extra_body = false;
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
@@ -248,6 +274,24 @@ impl TranslatingLlmClient {
                     return Ok(response);
                 }
                 Err(failure) => {
+                    // The upstream refused a parameter, and this client injected some:
+                    // drop exactly those and try again. This does not consume the retry
+                    // budget — that budget exists for transient faults, and a request
+                    // without an optional default is a different request, not a repeat
+                    // of a failed one. Guarded so it happens at most once.
+                    if !stripped_extra_body
+                        && !injected_extra_body.is_empty()
+                        && failure.is_param_reject()
+                    {
+                        stripped_extra_body = true;
+                        remove_body_keys(&mut body, &injected_extra_body);
+                        span.record("outcome", "error");
+                        if let Some(status) = failure.status {
+                            span.record("status_code", status);
+                        }
+                        span.record("will_retry", true);
+                        continue;
+                    }
                     let will_retry = attempt < max_retries && failure.is_retryable();
                     span.record("outcome", "error");
                     if let Some(status) = failure.status {
@@ -559,6 +603,26 @@ struct AttemptFailure {
 }
 
 impl AttemptFailure {
+    /// Whether this failure is the upstream refusing a request *parameter*, so the
+    /// call may be retried once without the fields the client injected.
+    ///
+    /// Deliberately narrow: only a 400/422 whose body names a parameter qualifies.
+    /// A rate limit or server error must surface as-is — stripping a field and
+    /// re-firing on a 429 would double the load and mask the real failure. Content
+    /// rejections (context overflow) carry their own variant and never match here.
+    fn is_param_reject(&self) -> bool {
+        let LlmClientError::UpstreamHttp { status, body } = &self.error else {
+            return false;
+        };
+        if !PARAM_REJECT_STATUSES.contains(status) {
+            return false;
+        }
+        let lowered = body.to_ascii_lowercase();
+        PARAM_REJECT_PHRASES
+            .iter()
+            .any(|phrase| lowered.contains(phrase))
+    }
+
     fn is_retryable(&self) -> bool {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
@@ -732,12 +796,29 @@ fn is_unsigned_thinking_block(block: &Value) -> bool {
 }
 
 // Applies target defaults without overriding fields supplied by the caller.
-fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
+// Returns the keys actually injected, so a parameter reject can drop exactly those
+// and leave the caller's own fields alone.
+fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) -> Vec<String> {
+    let Value::Object(object) = body else {
+        return Vec::new();
+    };
+    let mut injected = Vec::new();
+    for (key, value) in extra_body {
+        if !object.contains_key(key) {
+            object.insert(key.clone(), value.clone());
+            injected.push(key.clone());
+        }
+    }
+    injected
+}
+
+// Removes previously injected default fields from an encoded body.
+fn remove_body_keys(body: &mut Value, keys: &[String]) {
     let Value::Object(object) = body else {
         return;
     };
-    for (key, value) in extra_body {
-        object.entry(key.clone()).or_insert_with(|| value.clone());
+    for key in keys {
+        object.remove(key);
     }
 }
 
@@ -1644,6 +1725,165 @@ mod tests {
         assert!(
             matches!(error, LlmClientError::Timeout { .. }),
             "expected a timeout, got {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn param_reject_classification_is_narrow() {
+        let failure = |status: u16, body: &str| AttemptFailure {
+            error: LlmClientError::UpstreamHttp {
+                status,
+                body: body.to_string(),
+            },
+            status: Some(status),
+            retry_after: None,
+        };
+
+        // A 400/422 naming a parameter is the whole of the class.
+        for status in [400, 422] {
+            assert!(
+                failure(
+                    status,
+                    r#"{"error":{"message":"unknown parameter: enable_thinking"}}"#
+                )
+                .is_param_reject(),
+                "HTTP {status} naming a parameter should qualify"
+            );
+        }
+        assert!(failure(400, "extra fields not permitted").is_param_reject());
+
+        // Transient faults must never be treated as a parameter reject, whatever
+        // their body says — stripping and re-firing would double the load.
+        for status in [429, 500, 503] {
+            assert!(
+                !failure(status, "unknown parameter").is_param_reject(),
+                "HTTP {status} is transient and must not qualify"
+            );
+        }
+        // An unrelated 400 is not one either.
+        assert!(!failure(400, r#"{"error":{"message":"invalid api key"}}"#).is_param_reject());
+
+        // A content rejection carries its own variant and never matches.
+        let overflow = AttemptFailure {
+            error: LlmClientError::ContextWindowExceeded {
+                model: "gpt".to_string(),
+                message: "unknown parameter".to_string(),
+            },
+            status: Some(400),
+            retry_after: None,
+        };
+        assert!(!overflow.is_param_reject());
+    }
+
+    #[test]
+    fn merge_extra_body_reports_only_the_keys_it_injected() {
+        let mut body = json!({"model": "gpt", "max_tokens": 7});
+        let extra = BTreeMap::from([
+            ("max_tokens".to_string(), json!(999)),
+            ("enable_thinking".to_string(), json!(false)),
+        ]);
+
+        let injected = merge_extra_body(&mut body, &extra);
+
+        // The caller's own `max_tokens` is untouched and not reported.
+        assert_eq!(injected, vec!["enable_thinking".to_string()]);
+        assert_eq!(body.get("max_tokens"), Some(&json!(7)));
+
+        // Stripping removes the injected default and leaves the caller's field.
+        remove_body_keys(&mut body, &injected);
+        assert!(body.get("enable_thinking").is_none());
+        assert_eq!(body.get("max_tokens"), Some(&json!(7)));
+    }
+
+    #[tokio::test]
+    async fn a_param_reject_retries_once_without_the_injected_defaults()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        // The upstream refuses the injected knob...
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"enable_thinking": false}),
+            ))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: enable_thinking"}
+            })))
+            .mount(&server)
+            .await;
+        // ...and serves the same request once the knob is gone.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([("enable_thinking".to_string(), json!(false))]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+
+        // Succeeds despite max_retries = 0: the strip is not a budgeted retry.
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_persistent_param_reject_surfaces_rather_than_looping()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        // Rejects every request, knob or no knob.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: enable_thinking"}
+            })))
+            .mount(&server)
+            .await;
+
+        let extra_body = BTreeMap::from([("enable_thinking".to_string(), json!(false))]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+
+        let result = client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await;
+
+        // The strip is attempted at most once, so the second rejection is returned.
+        let error = result.err().ok_or("expected the call to fail")?;
+        assert!(
+            matches!(error, LlmClientError::UpstreamHttp { status: 400, .. }),
+            "expected the upstream 400 to surface, got {error:?}"
         );
         Ok(())
     }
