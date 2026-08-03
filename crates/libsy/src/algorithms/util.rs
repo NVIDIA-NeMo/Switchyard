@@ -8,3 +8,6 @@ pub(crate) mod prompts;
 pub(crate) mod stage;
 pub mod subagent;
 pub(crate) mod tool_signals;
+
+/// Default completion budget for internal classifier and escalation judge calls.
+pub(crate) const DEFAULT_JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;

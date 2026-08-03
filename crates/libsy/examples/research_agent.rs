@@ -109,11 +109,7 @@ async fn main() -> Result<()> {
         strong,
         TaskClassifierConfig {
             base_threshold: BASE_THRESHOLD,
-            min_confidence: 0.0,
-            capability_elevated_floor: None,
-            session_affinity: false,
-            message_hash_fallback: false,
-            recent_turn_window: None,
+            ..TaskClassifierConfig::default()
         },
     )?);
 

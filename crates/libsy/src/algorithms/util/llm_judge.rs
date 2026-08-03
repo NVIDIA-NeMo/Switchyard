@@ -20,13 +20,27 @@ use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Decision, Request, Response};
 
-#[derive(Clone, Debug, Default)]
+use super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
+
+#[derive(Clone, Debug)]
 /// Prompt and structured-output contract for one judge.
 pub struct JudgeConfig {
     /// Prepended instructions that define what the judge evaluates.
     pub system_prompt: String,
     /// Optional provider response format that constrains the judge verdict.
     pub response_schema: Option<Value>,
+    /// Maximum completion tokens available to the judge verdict.
+    pub max_output_tokens: u64,
+}
+
+impl Default for JudgeConfig {
+    fn default() -> Self {
+        Self {
+            system_prompt: String::new(),
+            response_schema: None,
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        }
+    }
 }
 
 /// Builds and parses requests for one algorithm-specific LLM judge.
@@ -171,6 +185,7 @@ pub(crate) fn load_judge_config(
     Ok(JudgeConfig {
         system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
         response_schema: Some(response_schema),
+        max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
     })
 }
 

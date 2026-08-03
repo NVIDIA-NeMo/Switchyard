@@ -1045,11 +1045,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
         strong,
         TaskClassifierConfig {
             base_threshold: 0.5,
-            min_confidence: 0.0,
-            capability_elevated_floor: None,
-            session_affinity: false,
-            message_hash_fallback: false,
-            recent_turn_window: None,
+            ..TaskClassifierConfig::default()
         },
     )?);
 

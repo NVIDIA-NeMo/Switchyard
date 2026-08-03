@@ -125,7 +125,8 @@ impl PyTaskClassifierConfig {
         capability_elevated_floor=None,
         session_affinity=false,
         message_hash_fallback=false,
-        recent_turn_window=None
+        recent_turn_window=None,
+        max_output_tokens=4096
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -135,6 +136,7 @@ impl PyTaskClassifierConfig {
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
+        max_output_tokens: u64,
     ) -> Self {
         Self {
             inner: TaskClassifierConfig {
@@ -144,6 +146,7 @@ impl PyTaskClassifierConfig {
                 session_affinity,
                 message_hash_fallback,
                 recent_turn_window,
+                max_output_tokens,
             },
         }
     }

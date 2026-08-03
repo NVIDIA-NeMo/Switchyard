@@ -14,6 +14,7 @@ use serde::Deserialize;
 use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
 
 use super::fall_through::{DefaultTarget, FallThrough};
+use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::AffinityRouter;
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
 use super::util::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
@@ -120,8 +121,8 @@ impl Judge for CapabilityJudge {
                 model: request.llm_request.model.clone(),
                 messages,
                 output: OutputParams {
+                    max_output_tokens: Some(self.config.max_output_tokens),
                     response_format: self.config.response_schema.clone(),
-                    ..OutputParams::default()
                 },
                 ..LlmRequest::default()
             },
@@ -189,7 +190,7 @@ impl JudgePolicy for TaskClassifierPolicy {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 /// Thresholds that control capability classifier routing.
 pub struct TaskClassifierConfig {
     /// Lowest solve probability that routes a supported task to the efficient target.
@@ -214,6 +215,27 @@ pub struct TaskClassifierConfig {
     /// task, and the last `n` turns after it.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
+    /// Maximum completion tokens available to the classifier verdict.
+    #[serde(default = "default_judge_max_output_tokens")]
+    pub max_output_tokens: u64,
+}
+
+const fn default_judge_max_output_tokens() -> u64 {
+    DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
+}
+
+impl Default for TaskClassifierConfig {
+    fn default() -> Self {
+        Self {
+            base_threshold: 0.0,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+            recent_turn_window: None,
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        }
+    }
 }
 
 impl TaskClassifierConfig {
@@ -250,6 +272,11 @@ impl TaskClassifierConfig {
                     ),
                 });
             }
+        }
+        if self.max_output_tokens == 0 {
+            return Err(LibsyError::AlgorithmError {
+                message: "max_output_tokens must be at least 1".to_string(),
+            });
         }
         if self.message_hash_fallback && !self.session_affinity {
             return Err(LibsyError::AlgorithmError {
@@ -418,7 +445,8 @@ impl LlmTaskClassifier {
         config: TaskClassifierConfig,
     ) -> Result<Self> {
         config.validate()?;
-        let judge_config = Self::load_judge_config()?;
+        let mut judge_config = Self::load_judge_config()?;
+        judge_config.max_output_tokens = config.max_output_tokens;
         let targets = LlmTargetSet::new(vec![efficient_target.clone(), capable_target.clone()]);
         let session_affinity = config.session_affinity;
         let message_hash_fallback = config.message_hash_fallback;
@@ -585,11 +613,7 @@ mod tests {
     fn test_config(base_threshold: f64) -> TaskClassifierConfig {
         TaskClassifierConfig {
             base_threshold,
-            min_confidence: 0.0,
-            capability_elevated_floor: None,
-            session_affinity: false,
-            message_hash_fallback: false,
-            recent_turn_window: None,
+            ..TaskClassifierConfig::default()
         }
     }
 
@@ -626,11 +650,16 @@ mod tests {
     #[derive(Default)]
     struct PerRequestClient {
         calls: Mutex<Vec<String>>,
+        judge_max_output_tokens: Mutex<Vec<Option<u64>>>,
     }
 
     impl PerRequestClient {
         fn calls(&self) -> Vec<String> {
             self.calls.lock().clone()
+        }
+
+        fn judge_max_output_tokens(&self) -> Vec<Option<u64>> {
+            self.judge_max_output_tokens.lock().clone()
         }
     }
 
@@ -645,6 +674,9 @@ mod tests {
             let model = decision.selected_model().to_string();
             self.calls.lock().push(model.clone());
             let completion = if model == "judge" {
+                self.judge_max_output_tokens
+                    .lock()
+                    .push(request.llm_request.output.max_output_tokens);
                 r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
             } else {
                 format!("answer from {model}")
@@ -754,6 +786,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn classifier_config_sets_the_judge_completion_cap() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(client.clone()),
+        };
+        let router = Arc::new(LlmTaskClassifier::new(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            TaskClassifierConfig {
+                max_output_tokens: 512,
+                ..test_config(TEST_THRESHOLD)
+            },
+        )?);
+
+        router.run(Context::default(), classify_request()).await?;
+
+        assert_eq!(client.judge_max_output_tokens(), vec![Some(512)]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn classifier_config_enables_session_affinity() -> Result<()> {
         let client = Arc::new(PerRequestClient::default());
         let target = |name: &str| LlmTarget {
@@ -857,26 +912,22 @@ mod tests {
             TaskClassifierConfig {
                 base_threshold: 0.5,
                 min_confidence: 1.1,
-                capability_elevated_floor: None,
-                session_affinity: false,
-                message_hash_fallback: false,
-                recent_turn_window: None,
+                ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
                 base_threshold: 0.5,
-                min_confidence: 0.0,
                 capability_elevated_floor: Some(0.5),
-                session_affinity: false,
-                message_hash_fallback: false,
-                recent_turn_window: None,
+                ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
                 base_threshold: 0.5,
-                min_confidence: 0.0,
-                capability_elevated_floor: None,
-                session_affinity: false,
                 message_hash_fallback: true,
-                recent_turn_window: None,
+                ..TaskClassifierConfig::default()
+            },
+            TaskClassifierConfig {
+                base_threshold: 0.5,
+                max_output_tokens: 0,
+                ..TaskClassifierConfig::default()
             },
         ] {
             assert!(
@@ -1034,6 +1085,10 @@ mod tests {
         assert_eq!(
             judge_request.llm_request.output.response_format,
             judge.config.response_schema
+        );
+        assert_eq!(
+            judge_request.llm_request.output.max_output_tokens,
+            Some(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
         );
         Ok(())
     }
