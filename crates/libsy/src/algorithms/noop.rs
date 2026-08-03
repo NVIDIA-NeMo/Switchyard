@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! No-op router. Always returns a hard coded response. Does not route to a backend.
-//! For testing.
+//! Test-only algorithm that returns a hard-coded response without calling a backend.
 
 use std::sync::Arc;
 
@@ -14,11 +13,10 @@ use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver};
 use switchyard_protocol::{Context, Decision};
 
-/// A routing algorithm that does not route. It returns a hard-coded response.
+/// Test helper that returns a hard-coded response without routing or model I/O.
 pub struct Noop {}
 
-/// How [`Noop`] records which model it chose. This will be the model on the Request if any,
-/// otherwise a hard coded placeholder. Neither is actually used.
+/// Test decision carrying the inbound model or a fixed placeholder.
 pub struct NoopDecision {
     model: String,
 }

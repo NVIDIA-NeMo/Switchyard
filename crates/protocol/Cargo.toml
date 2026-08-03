@@ -12,7 +12,6 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
-documentation = "https://docs.rs/switchyard-protocol"
 keywords = ["llm", "protocol", "openai", "anthropic"]
 publish = ["crates-io"]
 

@@ -10,7 +10,8 @@ routing, or network calls.
 
 ```toml
 [dependencies]
-switchyard-protocol = "0.2"
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+serde_json = "1"
 ```
 
 Applications using libsy should depend on both `switchyard-libsy` and
@@ -33,21 +34,75 @@ Types are also available through their owning modules, such as
 `switchyard_protocol::llm::LlmRequest`; the crate root re-exports them for
 concise imports.
 
-## Construct a request
+## Simple request
 
 ```rust
-use switchyard_protocol::{LlmRequest, Message, Role};
+use switchyard_protocol::{prompt_text, text_request};
 
-let request = LlmRequest {
-    model: Some("provider/model".into()),
-    messages: vec![Message::text(Role::User, "Explain tail latency")],
-    ..LlmRequest::default()
-};
+let request = text_request(Some("provider/model".into()), "Explain tail latency");
+
+assert_eq!(request.model.as_deref(), Some("provider/model"));
+assert_eq!(prompt_text(&request), "Explain tail latency");
 ```
 
 `text_request` and `text_response` construct common single-turn text shapes.
 `prompt_text` and `completion_text` return lossy text views: they intentionally
 omit tools, reasoning, media, instructions, and additional outputs.
+
+## Detailed request
+
+Construct the normalized request directly when routing needs instructions,
+tools, generation controls, and correlation metadata:
+
+```rust
+use serde_json::json;
+use switchyard_protocol::{
+    ContentBlock, InstructionBlock, LlmRequest, Message, Metadata, OutputParams,
+    Request, Role, SamplingParams, ToolChoice, ToolDefinition,
+};
+
+let request = Request {
+    llm_request: LlmRequest {
+        model: Some("provider/model".into()),
+        instructions: vec![InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "Answer with concise operational guidance.".into(),
+            }],
+        }],
+        messages: vec![Message::text(Role::User, "Why is p99 latency rising?")],
+        tools: vec![ToolDefinition {
+            name: "lookup_metric".into(),
+            description: Some("Read one service metric".into()),
+            parameters: json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }),
+            strict: Some(true),
+        }],
+        tool_choice: Some(ToolChoice::Auto),
+        sampling: SamplingParams {
+            temperature: Some(0.2),
+            ..SamplingParams::default()
+        },
+        output: OutputParams {
+            max_output_tokens: Some(512),
+            ..OutputParams::default()
+        },
+        stream: true,
+        ..LlmRequest::default()
+    },
+    metadata: Some(Metadata {
+        session_id: Some("session-42".into()),
+        correlation_id: Some("request-7".into()),
+        ..Metadata::default()
+    }),
+    ..Request::default()
+};
+
+assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
+```
 
 ## Buffered and streaming responses
 
@@ -94,8 +149,7 @@ NeMo Relay, and Dynamo headers recognized by Switchyard. Explicit
 
 ## Reference
 
-- [Protocol API documentation](https://docs.rs/switchyard-protocol)
-- [libsy API documentation](https://docs.rs/switchyard-libsy)
+- [Generated Rust API reference](../../docs/reference/rust_api.md)
 - [Switchyard repository](https://github.com/NVIDIA-NeMo/Switchyard)
 
 ## License

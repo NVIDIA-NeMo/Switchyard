@@ -3,111 +3,101 @@
 
 #![warn(missing_docs)]
 
-//! # libsy — multi-LLM agent optimization (routing first)
+//! # switchyard-libsy
 //!
-//! `libsy` decides, per request, *how* to serve an LLM call: which model(s) to
-//! invoke, in what order, and how to combine the results. Routing is the first
-//! and simplest case; the same interfaces also express classifier routing,
-//! ensembles, cascades, and other optimizations. The library owns no HTTP client
-//! and no provider SDK — it decides, and the host makes (or is asked to make) the
-//! actual calls — so it embeds cleanly in a proxy, gateway, or agent runtime.
+//! Provider-neutral routing and multi-model orchestration for LLM applications.
+//! An [`Algorithm`] chooses one or more semantic [`LlmTarget`]s; each target's
+//! [`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient) performs model I/O.
+//! This separation lets the same algorithm run in a proxy, gateway, or agent runtime.
+//!
+//! ## Setup
+//!
+//! ```toml
+//! [dependencies]
+//! switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+//! switchyard-llm-client = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+//! switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+//! tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+//! ```
 //!
 //! ## Quick start
 //!
-//! This complete `src/main.rs` uses [`Noop`] to verify host integration without
-//! making an upstream call:
+//! This complete `src/main.rs` sends one request through [`Passthrough`] to an
+//! OpenAI-compatible backend. Set `LLM_BASE_URL`, `LLM_MODEL`, and optionally
+//! `LLM_API_KEY` before running it.
 //!
 //! ```no_run
+//! use std::collections::BTreeMap;
+//! use std::error::Error;
 //! use std::sync::Arc;
-//! use switchyard_libsy::{Algorithm, Noop};
-//! use switchyard_protocol::{Context, Request, text_request};
+//!
+//! use switchyard_libsy::{Algorithm, LlmTarget, Passthrough};
+//! use switchyard_llm_client::{
+//!     Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+//! };
+//! use switchyard_protocol::{Context, Request, completion_text, text_request};
 //!
 //! #[tokio::main]
-//! async fn main() -> switchyard_libsy::Result<()> {
-//!     let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
+//! async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+//!     let model = std::env::var("LLM_MODEL")?;
+//!     let client = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+//!         model.clone(),
+//!         Backend::OpenAiChat(HttpBackendConfig {
+//!             base_url: std::env::var("LLM_BASE_URL")?,
+//!             api_key: std::env::var("LLM_API_KEY").ok(),
+//!             extra_headers: BTreeMap::new(),
+//!             extra_body: BTreeMap::new(),
+//!             max_retries: 2,
+//!         }),
+//!         None,
+//!     )])?);
+//!     let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
+//!         semantic_name: model,
+//!         llm_client: Some(client),
+//!     }));
 //!     let request = Request {
-//!         llm_request: text_request(Some("switchyard/noop".into()), "hello"),
+//!         llm_request: text_request(None, "Explain tail latency in one sentence."),
 //!         ..Request::default()
 //!     };
-//!     let (decisions, response) = algorithm.run(Context::default(), request).await?;
-//!     for decision in decisions {
-//!         println!("selected {}", decision.selected_model());
-//!     }
-//!     assert_eq!(response.selected_model(), Some("switchyard/noop"));
+//!
+//!     let (_decisions, response) = algorithm.run(Context::default(), request).await?;
+//!     let response = response.llm_response.into_agg().await?;
+//!     println!("{}", completion_text(&response));
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## The model
-//!
-//! - An [`Algorithm`] is the optimization *algorithm*. Its
-//!   [`create_run_task`](Algorithm::create_run_task) runs once per request
-//!   and makes as many model calls as it needs — via [`Driver::call_llm_target`], which look
-//!   like ordinary calls — publishes its [`Decision`](switchyard_protocol::Decision)s with [`Driver::info`], and
-//!   returns the final [`Response`](switchyard_protocol::Response). The provided
-//!   [`run_stream`](Algorithm::run_stream) drives that on its own task and hands
-//!   back a stream of [`Step`]s; [`run`](Algorithm::run) runs
-//!   it to completion with the targets' default clients.
-//! - An [`LlmTarget`] names a routing target by its [`semantic_name`](LlmTarget::semantic_name).
-//!   Every call is *offloaded* to the request's stream as a [`Step::CallLlm`]; the
-//!   target's [`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient), if any, rides along as
-//!   [`RoutedRequest::default_client`] so the host can serve it by default or
-//!   override it (see below).
-//!
-//! ## Running a request
-//!
-//! Hold the algorithm as `Arc<dyn Algorithm>` and call one of two provided methods:
-//!
-//! - [`run`](Algorithm::run) — run to completion, serving each
-//!   offloaded call via its [`RoutedRequest::default_client`], and return the decision
-//!   trace plus the final [`Response`](switchyard_protocol::Response). The simplest integration; use it when the
-//!   algorithm holds the model clients (it errors if a routed target has no client).
-//! - [`run_stream`](Algorithm::run_stream) — return a stream of [`Step`]s. Each
-//!   model call is offloaded: the stream yields a [`Step::CallLlm`] carrying a promise;
-//!   the host performs the real model call (optionally via the promise's
-//!   `default_client`) and fulfills it with [`CallLlmRequest::respond`]. Decisions
-//!   arrive as [`Step::Decision`] as the algorithm makes them, and the run ends with a
-//!   [`Step::ReturnToAgent`] carrying the final response. The step stream is bounded,
-//!   so pulling it paces the algorithm one step at a time — an "ask, don't call" mode
-//!   that lets a host that owns its transport keep control of every call.
-//!   Pass `None` for its optional observer when per-call observations are not needed.
-//!
-//! ## Concurrency
-//!
-//! [`Algorithm::create_run_task`] takes `self: Arc<Self>`, so one shared
-//! `Arc<dyn Algorithm>` (no lock) serves many requests in parallel. Each
-//! [`run_stream`](Algorithm::run_stream) call builds its own [`Driver`], so
-//! offloaded calls never cross between concurrent requests. An algorithm is
-//! responsible for its own thread-safety — stateless (like the reference routers) or
-//! interior mutability over just its own state.
-//!
-//! ## Observability
-//!
-//! The provided run methods instrument every algorithm from the outside — at the
-//! [`Decision`](switchyard_protocol::Decision) hook and the offload boundary — so algorithms carry no telemetry
-//! code. Each run gets a `libsy.run` tracing span (correlation ids from
-//! [`Metadata`](switchyard_protocol::Metadata) attached) with a child `libsy.llm_call` span per model call
-//! (fulfillment time as the algorithm observes it) plus a `libsy.client_call`
-//! span around the actual API call when [`run`](Algorithm::run) serves it;
-//! each [`Driver::info`] decision is logged with its reasoning; and OpenTelemetry
-//! metrics record run/call counts, latency, and published decisions, keyed by
-//! [`Algorithm::name`] plus `selected_model` and `outcome`.
-//! Metrics use the global meter provider and spans/logs the `tracing` facade: a
-//! host that installs an OTel SDK and a `tracing` subscriber (bridged with
-//! `tracing-opentelemetry` for OTLP spans) gets the full signal set; with
-//! neither installed, everything is a no-op.
-//!
-//! ## Algorithms
-//!
-//! Concrete algorithms are exported from the crate root:
+//! ## Built-in algorithms
 //!
 //! | Algorithm | Purpose |
 //! |---|---|
-//! | [`Noop`] | Return a fixed local response without making a model call. |
 //! | [`Passthrough`] | Always call one configured target. |
 //! | [`Random`] | Select among any number of targets using uniform or weighted routing. |
 //! | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 //! | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
+//!
+//! [`Noop`] is a test helper, not a production routing algorithm.
+//!
+//! ## Core concepts
+//!
+//! - [`Algorithm`] owns routing policy and can make one or more model calls per request.
+//! - [`LlmTarget`] gives an algorithm a semantic target name and optional default client.
+//! - [`Request`](switchyard_protocol::Request) and
+//!   [`Response`](switchyard_protocol::Response) carry the provider-neutral conversation.
+//! - [`Decision`](switchyard_protocol::Decision) records each selected target and its reasoning.
+//!
+//! ## Execution modes
+//!
+//! Use [`Algorithm::run`] when targets have default clients. Use
+//! [`Algorithm::run_stream`] when the host owns model transport and needs to fulfill each
+//! [`Step::CallLlm`] itself. Both return the same final response and decision trace.
+//!
+//! ## Operational notes
+//!
+//! Algorithm instances are shared with `Arc` and may serve concurrent requests; the full
+//! implementor contract is documented on [`Algorithm`]. Runs emit `tracing` and
+//! OpenTelemetry signals through host-installed global providers; see [`initialize_metrics`]
+//! when compatibility gauges must exist before the first request.
 
 mod core;
 pub use core::algorithm::{

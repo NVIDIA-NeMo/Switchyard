@@ -12,8 +12,9 @@ Request, response, client, and metadata types come from `switchyard-protocol`.
 
 ```toml
 [dependencies]
-switchyard-libsy = "0.2"
-switchyard-protocol = "0.2"
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-llm-client = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -21,28 +22,46 @@ Both crates must use compatible versions.
 
 ## Quick start
 
-Create `src/main.rs` with a no-op algorithm that verifies integration without
-making an upstream call:
+Set `LLM_BASE_URL`, `LLM_MODEL`, and optionally `LLM_API_KEY`, then create
+`src/main.rs`:
 
 ```rust
+use std::collections::BTreeMap;
+use std::error::Error;
 use std::sync::Arc;
 
-use switchyard_libsy::{Algorithm, Noop};
-use switchyard_protocol::{Context, Request, text_request};
+use switchyard_libsy::{Algorithm, LlmTarget, Passthrough};
+use switchyard_llm_client::{
+    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+};
+use switchyard_protocol::{Context, Request, completion_text, text_request};
 
 #[tokio::main]
-async fn main() -> switchyard_libsy::Result<()> {
-    let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let model = std::env::var("LLM_MODEL")?;
+    let client = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+        model.clone(),
+        Backend::OpenAiChat(HttpBackendConfig {
+            base_url: std::env::var("LLM_BASE_URL")?,
+            api_key: std::env::var("LLM_API_KEY").ok(),
+            extra_headers: BTreeMap::new(),
+            extra_body: BTreeMap::new(),
+            max_retries: 2,
+        }),
+        None,
+    )])?);
+    let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
+        semantic_name: model,
+        llm_client: Some(client),
+    }));
     let request = Request {
-        llm_request: text_request(Some("switchyard/noop".into()), "hello"),
+        llm_request: text_request(None, "Explain tail latency in one sentence."),
         ..Request::default()
     };
 
-    let (decisions, response) = algorithm.run(Context::default(), request).await?;
-    for decision in decisions {
-        println!("selected {}", decision.selected_model());
-    }
-    assert_eq!(response.selected_model(), Some("switchyard/noop"));
+    let (_decisions, response) = algorithm.run(Context::default(), request).await?;
+    let response = response.llm_response.into_agg().await?;
+    println!("{}", completion_text(&response));
     Ok(())
 }
 ```
@@ -144,7 +163,8 @@ lossy. They are convenient text views, not complete serialization APIs.
 | `Random` | Uniform or weighted selection across any number of targets. |
 | `LlmTaskClassifier` | Ask a judge to choose an efficient or capable target. |
 | `StageRouter` | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
-| `Noop` | Return a fixed local response for host integration and testing. |
+
+`Noop` is a test helper and should not be configured as a production route.
 
 ### Random routing
 
@@ -175,8 +195,7 @@ Implement `Algorithm::name` and `Algorithm::create_run_task`. Use the supplied
 algorithm instance runs concurrently and must own the synchronization for any
 shared state.
 
-The authoritative trait contract is in the generated
-[`Algorithm` documentation](https://docs.rs/switchyard-libsy/latest/switchyard_libsy/trait.Algorithm.html).
+The authoritative trait contract is in the generated `Algorithm` documentation.
 The [`ensemble`](examples/ensemble.rs) example shows a custom stateful algorithm.
 
 ## Observability
@@ -193,8 +212,7 @@ first request.
 
 ## Reference
 
-- [libsy API documentation](https://docs.rs/switchyard-libsy)
-- [protocol API documentation](https://docs.rs/switchyard-protocol)
+- [Generated Rust API reference](../../docs/reference/rust_api.md)
 - [`research_agent`](examples/research_agent.rs): default-client execution
 - [`research_agent_core`](examples/research_agent_core.rs): host-owned calls
 - [`streaming_agent`](examples/streaming_agent.rs): response streaming

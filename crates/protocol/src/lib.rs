@@ -3,38 +3,94 @@
 
 #![warn(missing_docs)]
 
-//! Shared request/response protocol for libsy — the vocabulary an [`Algorithm`] reasons
-//! over, decoupled from libsy's orchestration.
+//! Provider-neutral request, response, streaming, routing, and metadata types shared by
+//! Switchyard algorithms, clients, and translation codecs. This crate defines contracts;
+//! it does not route requests, translate wire payloads, or perform network calls.
 //!
-//! This crate owns Switchyard's neutral conversation IR: [`LlmRequest`] (model, messages,
-//! tools, sampling, …), the buffered [`AggLlmResponse`] (outputs, usage, …), and its
-//! streaming counterpart [`LlmResponseChunk`]; the [`Request`]/[`Response`] envelope that
-//! pairs them with correlation [`Metadata`]; plus the wire-[`format` module](crate::format)
-//! identifiers translation keys off. `switchyard-translation` re-exports the conversation
-//! and format modules, together with the most commonly used stream types. The IR
-//! carries no bare `prompt`/`completion`; the [`text_request`] / [`prompt_text`] /
-//! [`text_response`] / [`completion_text`] helpers bridge to and from plain text for the
-//! common single-turn case.
+//! ## Setup
 //!
-//! The streamed-response type itself — a live stream of chunks *or* the terminal
-//! aggregate — is the [`LlmResponse`] enum; it owns a `futures::Stream`, so it is the one
-//! non-`Clone`, non-data type in this crate.
+//! ```toml
+//! [dependencies]
+//! switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+//! serde_json = "1"
+//! ```
 //!
-//! ## Example
+//! ## Simple request
 //!
 //! ```
-//! use switchyard_protocol::{LlmRequest, Message, Role};
+//! use switchyard_protocol::{prompt_text, text_request};
 //!
-//! let request = LlmRequest {
-//!     model: Some("provider/model".into()),
-//!     messages: vec![Message::text(Role::User, "Explain tail latency")],
-//!     ..LlmRequest::default()
+//! let request = text_request(Some("provider/model".into()), "Explain tail latency");
+//!
+//! assert_eq!(request.model.as_deref(), Some("provider/model"));
+//! assert_eq!(prompt_text(&request), "Explain tail latency");
+//! ```
+//!
+//! ## Detailed request
+//!
+//! Use [`Request`] when routing also needs correlation metadata, and construct
+//! [`LlmRequest`] directly for instructions, tools, and generation controls:
+//!
+//! ```
+//! use serde_json::json;
+//! use switchyard_protocol::{
+//!     ContentBlock, InstructionBlock, LlmRequest, Message, Metadata, OutputParams,
+//!     Request, Role, SamplingParams, ToolChoice, ToolDefinition,
 //! };
 //!
-//! assert_eq!(request.messages.len(), 1);
+//! let request = Request {
+//!     llm_request: LlmRequest {
+//!         model: Some("provider/model".into()),
+//!         instructions: vec![InstructionBlock {
+//!             role: Role::System,
+//!             content: vec![ContentBlock::Text {
+//!                 text: "Answer with concise operational guidance.".into(),
+//!             }],
+//!         }],
+//!         messages: vec![Message::text(Role::User, "Why is p99 latency rising?")],
+//!         tools: vec![ToolDefinition {
+//!             name: "lookup_metric".into(),
+//!             description: Some("Read one service metric".into()),
+//!             parameters: json!({
+//!                 "type": "object",
+//!                 "properties": { "name": { "type": "string" } },
+//!                 "required": ["name"]
+//!             }),
+//!             strict: Some(true),
+//!         }],
+//!         tool_choice: Some(ToolChoice::Auto),
+//!         sampling: SamplingParams {
+//!             temperature: Some(0.2),
+//!             ..SamplingParams::default()
+//!         },
+//!         output: OutputParams {
+//!             max_output_tokens: Some(512),
+//!             ..OutputParams::default()
+//!         },
+//!         stream: true,
+//!         ..LlmRequest::default()
+//!     },
+//!     metadata: Some(Metadata {
+//!         session_id: Some("session-42".into()),
+//!         correlation_id: Some("request-7".into()),
+//!         ..Metadata::default()
+//!     }),
+//!     ..Request::default()
+//! };
+//!
+//! assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
+//! assert_eq!(
+//!     request
+//!         .metadata
+//!         .as_ref()
+//!         .and_then(|metadata| metadata.session_id.as_deref()),
+//!     Some("session-42")
+//! );
 //! ```
 //!
-//! [`Algorithm`]: https://docs.rs/switchyard-libsy/latest/switchyard_libsy/trait.Algorithm.html
+//! [`LlmResponse`] represents either a buffered [`AggLlmResponse`] or a
+//! single-consumption stream of [`LlmResponseChunk`]s. See each type's documentation for
+//! aggregation and preservation behavior.
 
 pub mod client;
 pub mod envelope;

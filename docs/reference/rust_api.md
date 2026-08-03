@@ -10,9 +10,6 @@ custom algorithm, or drive model calls through the host-facing step stream.
 
 <a href="../../rust/switchyard_libsy/">Open the generated libsy API documentation</a>
 
-The published crate is also available on
-[docs.rs](https://docs.rs/switchyard-libsy).
-
 ## `switchyard-protocol`
 
 Use protocol types for normalized conversations, response streams, routed LLM
@@ -20,17 +17,14 @@ clients, decisions, metadata, and wire-format identifiers.
 
 <a href="../../rust/switchyard_protocol/">Open the generated protocol API documentation</a>
 
-The published crate is also available on
-[docs.rs](https://docs.rs/switchyard-protocol).
-
 ## Crate boundary
 
 Applications embedding libsy normally depend on both crates:
 
 ```toml
 [dependencies]
-switchyard-libsy = "0.2"
-switchyard-protocol = "0.2"
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 ```
 
 Import algorithms and orchestration types from `switchyard_libsy`. Import

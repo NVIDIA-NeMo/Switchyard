@@ -12,7 +12,6 @@ license.workspace = true
 readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
-documentation = "https://docs.rs/switchyard-libsy"
 keywords = ["llm", "routing", "orchestration", "openai", "anthropic"]
 categories = ["asynchronous", "web-programming"]
 publish = ["crates-io"]
