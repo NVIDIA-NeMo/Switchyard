@@ -10,6 +10,7 @@ It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.
 | Run Claude Code, Codex, or OpenClaw through Switchyard | Launcher Path | [Install and launch an agent](getting_started.md#launcher-path) |
 | Run Switchyard as a standalone proxy for API clients | Server Path | [Build and run the Rust server](getting_started.md#server-path) |
 | Add Switchyard routing to a Rust application | Library Path | [`switchyard-libsy`](../crates/libsy/README.md) |
+| Add Switchyard routing to NeMo Relay | Native Plugin Path | [`switchyard-nemo-relay-plugin`](../crates/switchyard-nemo-relay-plugin/README.md) |
 
 The Launcher Path installs the `switchyard` CLI and hosts the native Rust server
 through its packaged PyO3 binding. The Server Path builds and runs the
@@ -30,3 +31,4 @@ standalone `switchyard-server` binary.
 - [`switchyard-libsy`](reference/rust_api.md#switchyard-libsy): embeddable routing algorithms
 - [`switchyard-protocol`](reference/rust_api.md#switchyard-protocol): provider-neutral API types
 - [`switchyard-translation`](../crates/switchyard-translation/README.md): protocol translation
+- [`switchyard-nemo-relay-plugin`](../crates/switchyard-nemo-relay-plugin/README.md): native NeMo Relay integration
