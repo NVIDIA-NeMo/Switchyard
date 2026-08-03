@@ -71,7 +71,7 @@ Only supported LLM execution names whose mapped protocol appears in
 SDK's explicit `Passthrough` path. These ordinary untargeted calls remain
 inside Relay's managed LLM lifecycle, but their provider events do not cross
 the plugin ABI. Targeted provider streams permit at most one pending pull;
-plugin output and direct pass-through use bounded 32-event host queues.
+plugin output and direct pass-through use Relay's bounded host queue.
 
 Provider failures use HTTP semantics. Relay supplies status, a bounded body,
 and safe response headers when it received an HTTP response; Switchyard passes
