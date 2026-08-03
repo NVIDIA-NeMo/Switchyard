@@ -114,7 +114,13 @@ async fn upstream_chat(
         return Sse::new(stream).into_response();
     }
 
-    let content = if model == "model/classifier" {
+    let content = if model == "model/classifier"
+        && body
+            .pointer("/response_format/json_schema/schema/properties/escalate")
+            .is_some()
+    {
+        r#"{"escalate":false,"reason":"making progress"}"#
+    } else if model == "model/classifier" {
         r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
     } else {
         "ok"
@@ -723,6 +729,103 @@ base_threshold = 0.5
         1
     );
     assert_eq!(stats["classifier"]["total_tokens"]["prompt"], 10);
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_prompt_overrides_reach_every_server_mode() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.capability]
+id = "switchyard/capability"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+prompt = "CUSTOM CAPABILITY\n{{RESPONSE_SCHEMA}}"
+
+[routes.escalation]
+id = "switchyard/escalation"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+prompt = "CUSTOM ESCALATION\n{{RESPONSE_SCHEMA}}"
+escalation = {{ confirmations = 1 }}
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.stage.classifier]
+target = "classifier"
+base_threshold = 0.5
+prompt = "CUSTOM STAGE\n{{RESPONSE_SCHEMA}}"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    for (route, prompt_prefix, schema_field) in [
+        ("switchyard/capability", "CUSTOM CAPABILITY", "p_solve"),
+        ("switchyard/escalation", "CUSTOM ESCALATION", "escalate"),
+        ("switchyard/stage", "CUSTOM STAGE", "p_solve"),
+    ] {
+        upstream.calls.lock().await.clear();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": "bounded task"}]
+            })),
+        )
+        .await?;
+
+        assert_eq!(response.status, StatusCode::OK);
+        let calls = upstream.calls.lock().await;
+        let judge_call = calls
+            .iter()
+            .find(|call| call["model"] == "model/classifier")
+            .ok_or("classifier target was not called")?;
+        let prompt = judge_call["messages"][0]["content"]
+            .as_str()
+            .ok_or("classifier prompt was not text")?;
+        assert!(prompt.starts_with(prompt_prefix), "{route}: {prompt}");
+        assert!(!prompt.contains("{{RESPONSE_SCHEMA}}"), "{route}: {prompt}");
+        assert!(
+            judge_call["response_format"]["json_schema"]["schema"]["properties"]
+                .get(schema_field)
+                .is_some(),
+            "{route}: missing {schema_field} in {judge_call}"
+        );
+    }
     Ok(())
 }
 

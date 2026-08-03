@@ -343,10 +343,11 @@ fn build_algorithm(
             // With `escalation`, the classifier target judges the weak tier's reply each turn
             // instead of picking a tier ahead of it.
             let algorithm = match escalation {
-                Some(judge_config) => LlmTaskClassifier::new_with_escalation(
+                Some(judge_config) => LlmTaskClassifier::new_with_escalation_contract(
                     classifier,
                     weak,
                     strong,
+                    classifier_config.contract.clone(),
                     judge_config.clone(),
                     classifier_config.max_output_tokens,
                 ),
@@ -567,6 +568,28 @@ target = "weak"
     }
 
     #[test]
+    fn classifier_prompts_are_configurable_in_both_modes() -> ServerResult<()> {
+        let capability = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nprompt = \"custom capability rubric\"",
+        );
+        server_state_from_toml(&capability)?;
+
+        let escalation = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nprompt = \"custom trajectory rubric\"\nescalation = { confirmations = 2 }",
+        );
+        server_state_from_toml(&escalation)?;
+
+        let empty = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nprompt = \"   \"",
+        );
+        assert!(error_message(&empty).contains("classifier prompt must not be empty"));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_unknown_fields_and_algorithm_types() {
         let unknown_field =
             VALID_CONFIG.replace("schema_version = 1", "schema_version = 1\nmagic = true");
@@ -577,6 +600,12 @@ target = "weak"
             "base_threshold = 0.5\nescalation = { max_output_tokens = 256 }",
         );
         assert!(error_message(&nested_completion_cap).contains("unknown field"));
+
+        let unknown_classifier_field = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nclassifier_magic = true",
+        );
+        assert!(error_message(&unknown_classifier_field).contains("unknown field"));
 
         let unknown_algorithm = VALID_CONFIG.replace("type = \"noop\"", "type = \"imaginary\"");
         assert!(error_message(&unknown_algorithm).contains("unknown variant"));
