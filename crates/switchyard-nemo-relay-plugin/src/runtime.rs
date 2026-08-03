@@ -185,7 +185,9 @@ impl SwitchyardRuntime {
         continuation: &LlmContinuationV2,
         metadata: &Json,
     ) -> Result<Json, String> {
-        let target_name = self.default_target(inbound);
+        let target_name = self
+            .default_target(inbound)
+            .map_err(|error| error.to_string())?;
         let target = self
             .target(target_name)
             .map_err(|error| error.to_string())?;
@@ -259,10 +261,13 @@ impl SwitchyardRuntime {
         protocol_from_call(name).filter(|protocol| self.default_targets.contains_key(protocol))
     }
 
-    fn default_target(&self, protocol: WireFormat) -> &str {
+    fn default_target(&self, protocol: WireFormat) -> Result<&str, LlmClientError> {
         self.default_targets
             .get(&protocol)
-            .expect("managed protocol must have a default target")
+            .map(String::as_str)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!("managed protocol {protocol} has no default target"),
+            })
     }
 
     fn mark(&self, name: &str, data: Json, metadata: &Json) {
@@ -579,7 +584,9 @@ impl SwitchyardRuntime {
         continuation: &LlmStreamContinuationV2,
         metadata: &Json,
     ) -> Result<ReturnedJsonStream, String> {
-        let target_name = self.default_target(inbound);
+        let target_name = self
+            .default_target(inbound)
+            .map_err(|error| error.to_string())?;
         self.mark(
             "switchyard.routing.fallback",
             json!({"selected_target": target_name}),

@@ -37,8 +37,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
-        size = int(self.headers.get("content-length", "0"))
-        request = json.loads(self.rfile.read(size) or b"{}")
+        if self.headers.get("transfer-encoding") is not None:
+            self._json(411, {"error": {"message": "chunked requests are unsupported"}})
+            return
+        content_length = self.headers.get("content-length")
+        if content_length is None:
+            self._json(411, {"error": {"message": "content-length is required"}})
+            return
+        try:
+            size = int(content_length)
+        except ValueError:
+            self._json(400, {"error": {"message": "content-length is invalid"}})
+            return
+        if size <= 0:
+            self._json(400, {"error": {"message": "request body is required"}})
+            return
+        request = json.loads(self.rfile.read(size))
         model = request.get("model", "unknown")
         attempt = call_number(model)
         if model == "fake/header-target" and (

@@ -1055,7 +1055,7 @@ def main() -> None:
             path
             for path in root.rglob("*")
             if path.suffix in {".jsonl", ".log", ".toml"}
-            and TARGET_AUTHORIZATION in path.read_text(encoding="utf-8")
+            and TARGET_AUTHORIZATION in path.read_text(encoding="utf-8", errors="replace")
         ]
         assert not recorded, f"target credential was recorded in {recorded}"
         summary["target_headers"] = {

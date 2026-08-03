@@ -32,6 +32,12 @@ def main() -> None:
     if not library.is_file():
         parser.error(f"compiled plugin library does not exist: {library}")
 
+    manifest = (CRATE_ROOT / "relay-plugin.toml").read_text(encoding="utf-8")
+    placeholders = ("<platform-library-file>", "<artifact-sha256>")
+    missing = [placeholder for placeholder in placeholders if placeholder not in manifest]
+    if missing:
+        parser.error(f"plugin manifest is missing placeholders: {', '.join(missing)}")
+
     output = args.output.resolve()
     if output.exists() and not output.is_dir():
         parser.error(f"bundle output exists and is not a directory: {output}")
@@ -45,7 +51,6 @@ def main() -> None:
     shutil.copy2(REPOSITORY_ROOT / "NOTICE", output / "NOTICE")
 
     artifact_digest = digest(artifact)
-    manifest = (CRATE_ROOT / "relay-plugin.toml").read_text(encoding="utf-8")
     manifest = manifest.replace("<platform-library-file>", artifact.name)
     manifest = manifest.replace("<artifact-sha256>", artifact_digest)
     (output / "relay-plugin.toml").write_text(manifest, encoding="utf-8")
