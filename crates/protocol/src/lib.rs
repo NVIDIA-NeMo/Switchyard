@@ -18,12 +18,21 @@
 //! ## Simple request
 //!
 //! ```
-//! use switchyard_protocol::{prompt_text, text_request};
+//! use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role};
 //!
-//! let request = text_request(Some("provider/model".into()), "Explain tail latency");
+//! let request = LlmRequest {
+//!     model: Some("provider/model".into()),
+//!     messages: vec![Message {
+//!         role: Role::User,
+//!         content: vec![ContentBlock::Text {
+//!             text: "Explain tail latency".into(),
+//!         }],
+//!     }],
+//!     ..LlmRequest::default()
+//! };
 //!
 //! assert_eq!(request.model.as_deref(), Some("provider/model"));
-//! assert_eq!(prompt_text(&request), "Explain tail latency");
+//! assert_eq!(request.messages.len(), 1);
 //! ```
 //!
 //! ## Detailed request
