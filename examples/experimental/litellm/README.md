@@ -44,8 +44,10 @@ This example uses these pinned gateway aliases and image:
 
 ### Prerequisites
 
-You need Python 3.12 or later, [uv](https://docs.astral.sh/uv/), Docker Compose,
-an `OPENROUTER_API_KEY`, and OpenRouter account access to both model IDs.
+You need Python 3.12, [uv](https://docs.astral.sh/uv/), Docker Compose, an
+`OPENROUTER_API_KEY`, and OpenRouter account access to both model IDs. The
+example intentionally standardizes on Python 3.12; the pinned LiteLLM release
+cannot build on Python 3.14.
 
 ### Configure
 
@@ -62,7 +64,7 @@ cp .env.example .env
 From the package directory:
 
 ```bash
-uv sync
+uv sync --locked --python 3.12
 ```
 
 ### Install the package from source in another uv environment
@@ -71,7 +73,7 @@ From the repository root:
 
 ```bash
 LITELLM_ENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/switchyard-litellm-env.XXXXXX")"
-uv venv "$LITELLM_ENV_DIR"
+uv venv --python 3.12 "$LITELLM_ENV_DIR"
 uv pip install --python "$LITELLM_ENV_DIR/bin/python" ./examples/experimental/litellm
 "$LITELLM_ENV_DIR/bin/python" -c "from switchyard_litellm import LiteLLMSyClient"
 rm -rf -- "$LITELLM_ENV_DIR"
@@ -90,7 +92,7 @@ curl -fsS http://127.0.0.1:4000/health/liveliness
 ### Run the example
 
 ```bash
-uv run python example.py
+uv run --locked --python 3.12 python example.py
 ```
 
 The bundled request includes an out-of-memory tool failure, so the Stage router
@@ -193,7 +195,8 @@ compatibility behavior when upgrading LiteLLM.
 From the package directory, run the offline tests without provider calls:
 
 ```bash
-PYTHONPATH=. uv run --project . pytest tests -m "not e2e" -v
+PYTHONPATH=. uv run --project . --locked --python 3.12 \
+  pytest tests -m "not e2e" -v
 ```
 
 The E2E test starts its own LiteLLM gateway and makes two paid OpenRouter Chat
@@ -203,7 +206,8 @@ Completions calls through one Stage router. A no-signal request falls open to
 
 ```bash
 SWITCHYARD_LITELLM_E2E=1 \
-uv run --project . --env-file .env pytest tests/test_e2e.py -m e2e -v
+uv run --project . --locked --python 3.12 --env-file .env \
+  pytest tests/test_e2e.py -m e2e -v
 ```
 
 ## Run the optional three-task Harbor smoke benchmark
@@ -332,8 +336,8 @@ deployment guidance before exposing it remotely.
 
 ## References
 
-- [OpenRouter Chat Completions](https://openrouter.ai/docs/api-reference/chat-completion)
+- [OpenRouter quickstart](https://openrouter.ai/docs/quickstart)
 - [GPT-5.6 Sol on OpenRouter](https://openrouter.ai/openai/gpt-5.6-sol)
-- [Kimi K3 on OpenRouter](https://openrouter.ai/moonshotai/kimi-k3-20260715)
+- [Kimi K3 on OpenRouter](https://openrouter.ai/moonshotai/kimi-k3)
 - [LiteLLM gateway quick start](https://docs.litellm.ai/docs/proxy/quick_start)
 - [Switchyard Stage-router docs](../../../docs/routing_algorithms/stage_router_routing.md)

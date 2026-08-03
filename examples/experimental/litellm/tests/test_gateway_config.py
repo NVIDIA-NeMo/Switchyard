@@ -1,11 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import tomllib
 from pathlib import Path
 
 import yaml
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+
+
+def test_example_targets_python_312() -> None:
+    project = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text())
+
+    assert project["project"]["requires-python"] == ">=3.12,<3.13"
+
+
+def test_lockfile_matches_root_package_version() -> None:
+    root_project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text())
+    lock = tomllib.loads((PACKAGE_ROOT / "uv.lock").read_text())
+    locked_root = next(
+        package for package in lock["package"] if package["name"] == "nemo-switchyard"
+    )
+
+    assert locked_root["version"] == root_project["project"]["version"]
 
 
 def test_gateway_uses_openrouter_models_and_credential() -> None:
