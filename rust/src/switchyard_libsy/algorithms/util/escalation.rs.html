@@ -185,8 +185,8 @@
 <a href=#185 id=185 data-nosnippet>185</a>/// message is this turn — no `+ 1`. Counting the caller's request instead would report the
 <a href=#186 id=186 data-nosnippet>186</a>/// turn after the one under judgement.
 <a href=#187 id=187 data-nosnippet>187</a>///
-<a href=#188 id=188 data-nosnippet>188</a>/// libsy receives messages already normalized by `switchyard-protocol`, so unlike the
-<a href=#189 id=189 data-nosnippet>189</a>/// wire-format-aware Python equivalent this needs no per-format branching.
+<a href=#188 id=188 data-nosnippet>188</a>/// Messages are already normalized by `switchyard-protocol`, so this needs no
+<a href=#189 id=189 data-nosnippet>189</a>/// per-format branching.
 <a href=#190 id=190 data-nosnippet>190</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>conversation_turn(request: <span class="kw-2">&amp;</span>Request) -&gt; usize {
 <a href=#191 id=191 data-nosnippet>191</a>    request
 <a href=#192 id=192 data-nosnippet>192</a>        .llm_request
