@@ -63,7 +63,8 @@ streamed and buffered while detecting whether it has tool calls; a passed-throug
 once. After the review fires, the session is pure passthrough (the upstream
 stream is returned directly — true streaming, full caching, zero overhead).
 Once-per-session is tracked in-process by a hash of the conversation's stable
-prefix (system + first user message); all of a task's turns hit the same per-run
+prefix — the client's ``cache_control``-marked system prefix plus the first user
+message (see ``_session_key``); all of a task's turns hit the same per-run
 switchyard pod. A pod restart mid-session could allow a second review (rare,
 harmless).
 """
