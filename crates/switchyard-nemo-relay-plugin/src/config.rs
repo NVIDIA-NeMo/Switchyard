@@ -125,6 +125,8 @@ enum AlgorithmConfig {
         classifier_target: String,
         weak_target: String,
         strong_target: String,
+        #[serde(default)]
+        escalation: Option<serde_json::Value>,
         #[serde(flatten)]
         config: TaskClassifierConfig,
     },
@@ -255,15 +257,24 @@ impl SwitchyardConfig {
                 classifier_target,
                 weak_target,
                 strong_target,
+                escalation,
                 config,
-            } => LlmTaskClassifier::new(
-                target(classifier_target)?,
-                target(weak_target)?,
-                target(strong_target)?,
-                config.clone(),
-            )
-            .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
-            .map_err(|error| error.to_string()),
+            } => {
+                if escalation.is_some() {
+                    return Err(
+                        "llm_classifier escalation mode is not supported by this plugin version"
+                            .into(),
+                    );
+                }
+                LlmTaskClassifier::new(
+                    target(classifier_target)?,
+                    target(weak_target)?,
+                    target(strong_target)?,
+                    config.clone(),
+                )
+                .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
+                .map_err(|error| error.to_string())
+            }
         }
     }
 }
@@ -476,6 +487,35 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_router_modes_are_rejected_explicitly() {
+        let mut classifier = config();
+        classifier.algorithm = serde_json::from_value(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "chat",
+            "weak_target": "responses",
+            "strong_target": "anthropic",
+            "base_threshold": 0.5,
+            "escalation": {"confirmations": 1}
+        }))
+        .unwrap();
+        assert_eq!(
+            classifier.validate().unwrap_err(),
+            "llm_classifier escalation mode is not supported by this plugin version"
+        );
+
+        let error = serde_json::from_value::<AlgorithmConfig>(json!({
+            "kind": "stage_router",
+            "capable_target": "anthropic",
+            "efficient_target": "responses",
+            "picker": "efficient_first",
+            "confidence_threshold": 0.5
+        }))
+        .err()
+        .expect("stage_router must remain outside the base plugin scope");
+        assert!(error.to_string().contains("unknown variant `stage_router`"));
+    }
+
+    #[test]
     fn validation_does_not_resolve_environment_backed_headers() {
         let mut config = config();
         config.targets.get_mut("chat").unwrap().header_env = BTreeMap::from([(
@@ -509,6 +549,7 @@ mod tests {
             classifier_target: "chat".into(),
             weak_target: "responses".into(),
             strong_target: "anthropic".into(),
+            escalation: None,
             config: TaskClassifierConfig {
                 base_threshold: 1.1,
                 ..Default::default()

@@ -20,6 +20,7 @@
       "default": 3
     },
     "algorithm": {
+      "description": "Router configuration. This release supports random and capability-based llm_classifier only.",
       "oneOf": [
         {
           "type": "object",

@@ -35,6 +35,20 @@ crates.io. Operators install a release bundle containing the compiled shared
 library, materialized `relay-plugin.toml`, `config.schema.json`, licensing
 files, and checksum.
 
+## Supported routers
+
+This initial plugin release supports exactly two libsy algorithms:
+
+- seeded, weighted `random` routing; and
+- capability-based `llm_classifier` routing, where a judge selects the weak or
+  strong target before the final provider call.
+
+`stage_router` and the response-judging escalation mode are intentionally not
+part of this release. Their configuration is rejected rather than silently
+mapped onto one of the supported algorithms. They are being developed as
+separate follow-ups so their request-mutation and streaming-response contracts
+can be reviewed independently.
+
 During development, `nemo-relay-plugin` is pinned to the Relay native API v2
 feature commit. Native API v2 remains unreleased, so every bundle must be
 rebuilt against the exact pinned revision; an older v2 bundle must not be used
@@ -132,7 +146,8 @@ process without putting them in configuration or libsy metadata.
 For `kind = "llm_classifier"`, the classifier thresholds, affinity options, and
 `recent_turn_window` use libsy's `TaskClassifierConfig` directly. The plugin
 adds only the semantic `classifier_target`, `weak_target`, and `strong_target`
-bindings required to resolve Relay continuations.
+bindings required to resolve Relay continuations. An `escalation` table is not
+accepted by this release.
 
 Version-1 service configuration is rejected with a migration error. The plugin
 does not provide decision-only or observe-only execution.
