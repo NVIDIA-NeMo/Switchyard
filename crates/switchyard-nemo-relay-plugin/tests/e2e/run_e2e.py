@@ -40,9 +40,9 @@ def capture(process: subprocess.Popen[str], sink: list[str]) -> None:
         sink.append(line.rstrip())
 
 
-def http_json(base: str, path: str) -> dict[str, int]:
+def http_json(base: str, path: str) -> dict[str, Any]:
     with urllib.request.urlopen(f"{base}{path}", timeout=5) as response:
-        return cast(dict[str, int], json.loads(response.read()))
+        return cast(dict[str, Any], json.loads(response.read()))
 
 
 def request(relay_url: str, path: str, body: dict[str, Any]) -> tuple[int, bytes]:
@@ -580,6 +580,127 @@ def run_classifier(
     }
 
 
+def stage_config(manifest: Path, provider_url: str, atof: Path) -> str:
+    return plugin_config(
+        manifest,
+        provider_url,
+        atof,
+        """\
+[plugins.dynamic.config.algorithm]
+kind = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_system_prompt = "diagnose before editing"
+efficient_system_prompt = "follow the settled plan"
+
+[plugins.dynamic.config.algorithm.handoff_notes]
+escalation_note = "continue the failed diagnosis"
+only_on_wrong_signal_escalation = true
+
+[plugins.dynamic.config.algorithm.classifier]
+target = "classifier"
+base_threshold = 0.5
+min_confidence = 0.5
+recent_turn_window = 3
+""",
+        """\
+[plugins.dynamic.config.targets.classifier]
+model = "fake/stage-classifier"
+protocol = "openai_chat"
+base_url = "{provider_url}/v1"
+
+[plugins.dynamic.config.targets.efficient]
+model = "fake/stage-efficient"
+protocol = "openai_chat"
+base_url = "{provider_url}/v1"
+
+[plugins.dynamic.config.targets.capable]
+model = "fake/stage-capable"
+protocol = "openai_chat"
+base_url = "{provider_url}/v1"
+""",
+        'openai_chat = "efficient"',
+    )
+
+
+def run_stage_router(
+    relay_bin: Path, root: Path, manifest: Path, provider_url: str
+) -> dict[str, object]:
+    config = stage_config(manifest, provider_url, root / "stage-router" / "atof")
+    with RelayScenario(relay_bin, root, provider_url, "stage-router", config) as relay:
+        ordinary = dict(CASES[0][2])
+        ordinary["stream"] = False
+        status, raw = request(relay.url, CASES[0][1], ordinary)
+        response = json.loads(raw)
+        assert status == 200
+        assert response["model"] == "fake/stage-efficient"
+
+        failed_turn = {
+            "model": "caller/chat",
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_stage",
+                            "type": "function",
+                            "function": {
+                                "name": "Bash",
+                                "arguments": json.dumps({"command": "cargo test"}),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_stage",
+                    "content": "fatal runtime error: out of memory",
+                },
+            ],
+            "caller_extension": {"preserve": True},
+            "stream": True,
+        }
+        status, raw = request(relay.url, CASES[0][1], failed_turn)
+        events = stream_events(raw)
+        assert status == 200
+        assert stream_text("openai_chat", events) == "chat from fake/stage-capable"
+
+    decisions = relay.marks("switchyard.routing.decision", 2)
+    assert [event["data"]["selected_target"] for event in decisions] == [  # type: ignore[index]
+        "efficient",
+        "capable",
+    ]
+    assert [event["data"]["routing_tier"] for event in decisions] == [  # type: ignore[index]
+        "weak",
+        "strong",
+    ]
+    requests = http_json(provider_url, "/requests")
+    classifier_requests = cast(list[dict[str, Any]], requests["fake/stage-classifier"])
+    capable_requests = cast(list[dict[str, Any]], requests["fake/stage-capable"])
+    assert len(classifier_requests) == 1, "only the ambiguous turn should reach the classifier"
+    assert len(capable_requests) == 1
+    capable = capable_requests[0]
+    assert capable["caller_extension"] == {"preserve": True}
+    messages = cast(list[dict[str, Any]], capable["messages"])
+    assert messages[0] == {"role": "system", "content": "diagnose before editing"}
+    assert any(
+        "continue the failed diagnosis" in str(message.get("content", ""))
+        for message in messages
+    )
+    return {
+        "efficient_decisions": 1,
+        "capable_decisions": 1,
+        "classifier_fallback_calls": len(classifier_requests),
+        "mutated_request_reached_provider": True,
+        "unknown_fields_preserved": True,
+    }
+
+
 def single_target_config(
     manifest: Path,
     provider_url: str,
@@ -1039,6 +1160,9 @@ def main() -> None:
             ),
             "random": run_random(relay_bin, root, bundle / "relay-plugin.toml", provider_url),
             "llm_classifier": run_classifier(
+                relay_bin, root, bundle / "relay-plugin.toml", provider_url
+            ),
+            "stage_router": run_stage_router(
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
             "reliability": run_retry_and_fallback(

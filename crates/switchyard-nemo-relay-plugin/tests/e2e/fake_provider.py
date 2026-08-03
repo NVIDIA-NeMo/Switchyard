@@ -12,12 +12,14 @@ from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CALLS: Counter[str] = Counter()
+REQUESTS: dict[str, list[dict[str, object]]] = {}
 CALLS_LOCK = threading.Lock()
 
 
-def call_number(model: str) -> int:
+def record_call(model: str, request: dict[str, object]) -> int:
     with CALLS_LOCK:
         CALLS[model] += 1
+        REQUESTS.setdefault(model, []).append(request)
         return CALLS[model]
 
 
@@ -33,6 +35,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/calls":
             with CALLS_LOCK:
                 self._json(200, dict(CALLS))
+        elif self.path == "/requests":
+            with CALLS_LOCK:
+                self._json(200, REQUESTS)
         else:
             self._json(404, {"error": "not found"})
 
@@ -53,8 +58,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": "request body is required"}})
             return
         request = json.loads(self.rfile.read(size))
-        model = request.get("model", "unknown")
-        attempt = call_number(model)
+        model = str(request.get("model", "unknown"))
+        attempt = record_call(model, request)
         if model == "fake/header-target" and (
             self.headers.get("authorization") != "Bearer target-e2e"
             or self.headers.get("x-switchyard-target") != "same"
@@ -81,7 +86,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _chat(self, request: dict[str, object]) -> None:
         model = str(request.get("model", "unknown"))
-        classifier = model in {"fake/classifier", "fake/classifier-strong"}
+        classifier = model in {
+            "fake/classifier",
+            "fake/classifier-strong",
+            "fake/stage-classifier",
+        }
         p_solve = 0.1 if model == "fake/classifier-strong" else 0.9
         recommended_route = "capable" if model == "fake/classifier-strong" else "efficient"
         answer = (

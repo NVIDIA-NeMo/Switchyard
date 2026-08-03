@@ -7,7 +7,8 @@ use std::sync::Arc;
 use http::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
 use switchyard_libsy::{
-    Algorithm, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random, TaskClassifierConfig,
+    Algorithm, HandoffNoteConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier,
+    PickerMode, Random, StageRouter, StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use switchyard_protocol::WireFormat;
 
@@ -130,6 +131,30 @@ enum AlgorithmConfig {
         #[serde(flatten)]
         config: TaskClassifierConfig,
     },
+    StageRouter {
+        capable_target: String,
+        efficient_target: String,
+        picker: PickerMode,
+        confidence_threshold: f64,
+        #[serde(default)]
+        recent_turn_window: Option<usize>,
+        #[serde(default)]
+        handoff_notes: Option<HandoffNoteConfig>,
+        #[serde(default)]
+        capable_system_prompt: Option<String>,
+        #[serde(default)]
+        efficient_system_prompt: Option<String>,
+        #[serde(default)]
+        classifier: Option<StageClassifierConfig>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageClassifierConfig {
+    target: String,
+    #[serde(flatten)]
+    config: TaskClassifierConfig,
 }
 
 #[derive(Deserialize)]
@@ -283,8 +308,85 @@ impl SwitchyardConfig {
                 .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
                 .map_err(|error| error.to_string())
             }
+            AlgorithmConfig::StageRouter {
+                capable_target,
+                efficient_target,
+                picker,
+                confidence_threshold,
+                recent_turn_window,
+                handoff_notes,
+                capable_system_prompt,
+                efficient_system_prompt,
+                classifier,
+            } => {
+                if capable_target == efficient_target {
+                    return Err(
+                        "stage_router capable_target and efficient_target must be distinct".into(),
+                    );
+                }
+                let capable = target(capable_target)?;
+                let efficient = target(efficient_target)?;
+                let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
+                config.recent_window = *recent_turn_window;
+                config.handoff_notes = handoff_notes.clone();
+                config.tier_prompts = tier_prompts(
+                    &capable.semantic_name,
+                    capable_system_prompt.as_deref(),
+                    &efficient.semantic_name,
+                    efficient_system_prompt.as_deref(),
+                );
+                if classifier.as_ref().is_some_and(|classifier| {
+                    classifier.config.session_affinity || classifier.config.message_hash_fallback
+                }) {
+                    return Err(
+                        "stage_router classifier session affinity is not supported because libsy evaluates its fallback per turn"
+                            .into(),
+                    );
+                }
+                config.llm_fallback = classifier
+                    .as_ref()
+                    .map(|classifier| {
+                        let classifier_binding =
+                            self.targets.get(&classifier.target).ok_or_else(|| {
+                                format!(
+                                    "algorithm target {:?} is not configured",
+                                    classifier.target
+                                )
+                            })?;
+                        if classifier_binding.protocol == WireFormat::AnthropicMessages {
+                            return Err(format!(
+                                "classifier target {:?} uses anthropic_messages, which cannot encode the required JSON-schema response format without loss; use an openai_chat or openai_responses target",
+                                classifier.target
+                            ));
+                        }
+                        target(&classifier.target).map(|judge_target| LlmFallback {
+                            judge_target,
+                            config: classifier.config.clone(),
+                        })
+                    })
+                    .transpose()?;
+                StageRouter::new(capable, efficient, config)
+                    .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
+                    .map_err(|error| error.to_string())
+            }
         }
     }
+}
+
+fn tier_prompts(
+    capable: &str,
+    capable_prompt: Option<&str>,
+    efficient: &str,
+    efficient_prompt: Option<&str>,
+) -> TargetPrompts {
+    let mut prompts = TargetPrompts::default();
+    if let Some(prompt) = capable_prompt {
+        prompts = prompts.with(capable, prompt);
+    }
+    if let Some(prompt) = efficient_prompt {
+        prompts = prompts.with(efficient, prompt);
+    }
+    prompts
 }
 
 fn validate_header_name(name: &str) -> Result<(), String> {
@@ -516,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_router_modes_are_rejected_explicitly() {
+    fn unsupported_classifier_escalation_is_rejected_explicitly() {
         let mut classifier = config();
         classifier.algorithm = serde_json::from_value(json!({
             "kind": "llm_classifier",
@@ -531,17 +633,134 @@ mod tests {
             classifier.validate().unwrap_err(),
             "llm_classifier escalation mode is not supported by this plugin version"
         );
+    }
 
-        let error = serde_json::from_value::<AlgorithmConfig>(json!({
+    #[test]
+    fn stage_router_reuses_libsy_configuration_with_semantic_targets() {
+        let mut config = config();
+        config.algorithm = serde_json::from_value(json!({
             "kind": "stage_router",
-            "capable_target": "anthropic",
+            "capable_target": "chat",
+            "efficient_target": "responses",
+            "picker": "efficient_first",
+            "confidence_threshold": 0.6,
+            "recent_turn_window": 4,
+            "handoff_notes": {
+                "escalation_note": "continue the diagnosis",
+                "only_on_wrong_signal_escalation": true
+            },
+            "capable_system_prompt": "diagnose before editing",
+            "efficient_system_prompt": "follow the settled plan",
+            "classifier": {
+                "target": "chat",
+                "base_threshold": 0.5,
+                "min_confidence": 0.4,
+                "recent_turn_window": 4,
+                "max_output_tokens": 512
+            }
+        }))
+        .unwrap();
+
+        let AlgorithmConfig::StageRouter {
+            classifier: Some(classifier),
+            ..
+        } = &config.algorithm
+        else {
+            panic!("expected stage classifier configuration");
+        };
+        assert_eq!(classifier.config.max_output_tokens, 512);
+
+        config.validate().unwrap();
+        assert_eq!(config.prepare().unwrap().algorithm.name(), "stage_router");
+    }
+
+    #[test]
+    fn stage_router_constructor_and_target_validation_are_preserved() {
+        let mut invalid_threshold = config();
+        invalid_threshold.algorithm = serde_json::from_value(json!({
+            "kind": "stage_router",
+            "capable_target": "chat",
+            "efficient_target": "responses",
+            "picker": "efficient_first",
+            "confidence_threshold": 1.1
+        }))
+        .unwrap();
+        assert!(
+            invalid_threshold
+                .validate()
+                .unwrap_err()
+                .contains("confidence_threshold must be between 0 and 1")
+        );
+
+        let mut missing_target = config();
+        missing_target.algorithm = serde_json::from_value(json!({
+            "kind": "stage_router",
+            "capable_target": "missing",
             "efficient_target": "responses",
             "picker": "efficient_first",
             "confidence_threshold": 0.5
         }))
-        .err()
-        .expect("stage_router must remain outside the base plugin scope");
-        assert!(error.to_string().contains("unknown variant `stage_router`"));
+        .unwrap();
+        assert!(
+            missing_target
+                .validate()
+                .unwrap_err()
+                .contains("algorithm target \"missing\" is not configured")
+        );
+
+        let mut ineffective_affinity = config();
+        ineffective_affinity.algorithm = serde_json::from_value(json!({
+            "kind": "stage_router",
+            "capable_target": "chat",
+            "efficient_target": "responses",
+            "picker": "efficient_first",
+            "confidence_threshold": 0.5,
+            "classifier": {
+                "target": "anthropic",
+                "base_threshold": 0.5,
+                "session_affinity": true
+            }
+        }))
+        .unwrap();
+        assert!(
+            ineffective_affinity
+                .validate()
+                .unwrap_err()
+                .contains("stage_router classifier session affinity is not supported")
+        );
+    }
+
+    #[test]
+    fn stage_router_rejects_ambiguous_tiers_and_anthropic_judges() {
+        let mut same_tiers = config();
+        same_tiers.algorithm = serde_json::from_value(json!({
+            "kind": "stage_router",
+            "capable_target": "chat",
+            "efficient_target": "chat",
+            "picker": "efficient_first",
+            "confidence_threshold": 0.5
+        }))
+        .unwrap();
+        assert_eq!(
+            same_tiers.validate().unwrap_err(),
+            "stage_router capable_target and efficient_target must be distinct"
+        );
+
+        let mut anthropic_judge = config();
+        anthropic_judge.algorithm = serde_json::from_value(json!({
+            "kind": "stage_router",
+            "capable_target": "chat",
+            "efficient_target": "responses",
+            "picker": "efficient_first",
+            "confidence_threshold": 0.5,
+            "classifier": {
+                "target": "anthropic",
+                "base_threshold": 0.5
+            }
+        }))
+        .unwrap();
+        let error = anthropic_judge.validate().unwrap_err();
+        assert!(error.contains("classifier target \"anthropic\" uses anthropic_messages"));
     }
 
     #[test]

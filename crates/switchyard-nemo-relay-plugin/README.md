@@ -37,17 +37,16 @@ files, and checksum.
 
 ## Supported routers
 
-This initial plugin release supports exactly two libsy algorithms:
+This follow-up supports three libsy algorithms:
 
-- seeded, weighted `random` routing; and
+- seeded, weighted `random` routing;
 - capability-based `llm_classifier` routing, where a judge selects the weak or
-  strong target before the final provider call.
+  strong target before the final provider call; and
+- `stage_router`, which uses tool-result signals, optional tier prompts, and an
+  optional classifier fallback to select the efficient or capable target.
 
-`stage_router` and the response-judging escalation mode are intentionally not
-part of this release. Their configuration is rejected rather than silently
-mapped onto one of the supported algorithms. They are being developed as
-separate follow-ups so their request-mutation and streaming-response contracts
-can be reviewed independently.
+The response-judging escalation mode remains a separate follow-up so its
+streaming-response contract can be reviewed independently.
 
 During development, `nemo-relay-plugin` is pinned to the Relay native API v2
 feature commit. Native API v2 remains unreleased, so every bundle must be
@@ -152,6 +151,44 @@ resolve Relay continuations. The classifier target must use `openai_chat` or
 format that cannot be encoded losslessly for Anthropic Messages. An
 `escalation` table is not accepted by this release.
 
+For `kind = "stage_router"`, libsy's tool-result signals route between a
+capable and efficient target. An optional capability classifier handles only
+turns the signals leave undecided:
+
+```toml
+[plugins.dynamic.config.algorithm]
+kind = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_system_prompt = "diagnose before editing"
+efficient_system_prompt = "follow the settled plan"
+
+[plugins.dynamic.config.algorithm.handoff_notes]
+escalation_note = "continue the failed diagnosis"
+only_on_wrong_signal_escalation = true
+
+[plugins.dynamic.config.algorithm.classifier]
+target = "classifier"
+base_threshold = 0.5
+min_confidence = 0.5
+recent_turn_window = 3
+max_output_tokens = 4096
+```
+
+The classifier target is a judge call, not a routing destination. The capable
+and efficient targets must be distinct, and the optional judge must use
+`openai_chat` or `openai_responses`. Tier prompts and handoff notes mutate
+libsy's normalized request. That mutation invalidates
+exact replay of the stale source body; `switchyard-translation` re-encodes the
+current request while retaining top-level unknown fields captured from the same
+provider format. Cross-protocol routes continue to carry only representable
+fields. Stage fallback classifiers are evaluated per turn, so the plugin
+rejects their standalone-only session-affinity options instead of accepting
+settings that libsy would ignore in this composition.
+
 Version-1 service configuration is rejected with a migration error. The plugin
 does not provide decision-only or observe-only execution.
 
@@ -203,6 +240,8 @@ test covers:
 - 12 concurrent independent random-router calls;
 - genuine requested and decision marks;
 - LLM-classifier weak and strong selections followed by their provider calls;
+- StageRouter efficient and capable selections, optional classifier fallback,
+  and same-format delivery of prompts, handoff notes, and unknown fields;
 - buffered and streaming retry reselection plus exactly-once trusted fallback;
 - empty-stream fallback and a committed late error with no retry;
 - untargeted buffered and streaming pass-through with no Switchyard marks; and
