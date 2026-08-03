@@ -104,7 +104,7 @@ assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
 [`LlmResponse`] contains either a completed [`AggLlmResponse`] or a
 single-consumption [`LlmResponseStream`] of [`LlmResponseStreamEvent`] values.
 Each event carries provider-neutral [`LlmResponseChunk`] values and may retain
-one opaque [`ProviderStreamEvent`] for exact same-format JSON replay. See
+one opaque [`ProviderStreamEvent`] for same-format parsed-JSON-value replay. See
 [`LlmResponse::into_agg`] for aggregation and [`PreservationMetadata`],
 [`Usage`], and [`Metadata`] for the data retained around a response.
 
