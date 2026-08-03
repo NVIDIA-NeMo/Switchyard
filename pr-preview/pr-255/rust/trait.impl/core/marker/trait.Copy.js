@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["switchyard_libsy",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.1/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"switchyard_libsy/enum.DecisionSource.html\" title=\"enum switchyard_libsy::DecisionSource\">DecisionSource</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.1/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"switchyard_libsy/enum.PickOutcome.html\" title=\"enum switchyard_libsy::PickOutcome\">PickOutcome</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.1/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"switchyard_libsy/enum.PickerMode.html\" title=\"enum switchyard_libsy::PickerMode\">PickerMode</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.1/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"switchyard_libsy/enum.Tier.html\" title=\"enum switchyard_libsy::Tier\">Tier</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.1/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"switchyard_libsy/struct.CodingAgentDimensions.html\" title=\"struct switchyard_libsy::CodingAgentDimensions\">CodingAgentDimensions</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.96.1/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"switchyard_libsy/struct.ScoreResult.html\" title=\"struct switchyard_libsy::ScoreResult\">ScoreResult</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1699]}
