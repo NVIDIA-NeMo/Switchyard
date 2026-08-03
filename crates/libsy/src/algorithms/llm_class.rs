@@ -471,7 +471,7 @@ impl LlmTaskClassifier {
         // Affinity comes first so a retained assignment short-circuits the judge call.
         // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
         // the affinity processor never fires — only the inner score() is called.
-        let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
+        let mut route = FallThrough::<State>::new_stateless(targets).with_name(ALGORITHM_NAME);
         if session_affinity {
             let affinity = if message_hash_fallback {
                 AffinityRouter::new().with_message_hash_fallback()
