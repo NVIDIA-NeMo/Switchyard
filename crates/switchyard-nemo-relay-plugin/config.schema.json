@@ -43,7 +43,11 @@
           ],
           "properties": {
             "kind": { "const": "llm_classifier" },
-            "classifier_target": { "type": "string", "minLength": 1 },
+            "classifier_target": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Semantic target name for the judge. The referenced target must use openai_chat or openai_responses because the judge requires a JSON-schema response format."
+            },
             "weak_target": { "type": "string", "minLength": 1 },
             "strong_target": { "type": "string", "minLength": 1 },
             "base_threshold": { "type": "number", "minimum": 0, "maximum": 1 },

@@ -146,8 +146,10 @@ process without putting them in configuration or libsy metadata.
 For `kind = "llm_classifier"`, the classifier thresholds, affinity options, and
 `recent_turn_window` use libsy's `TaskClassifierConfig` directly. The plugin
 adds only the semantic `classifier_target`, `weak_target`, and `strong_target`
-bindings required to resolve Relay continuations. An `escalation` table is not
-accepted by this release.
+bindings required to resolve Relay continuations. The classifier target must
+use `openai_chat` or `openai_responses`: libsy's judge request requires a JSON
+schema response format that cannot be encoded losslessly for Anthropic
+Messages. An `escalation` table is not accepted by this release.
 
 Version-1 service configuration is rejected with a migration error. The plugin
 does not provide decision-only or observe-only execution.

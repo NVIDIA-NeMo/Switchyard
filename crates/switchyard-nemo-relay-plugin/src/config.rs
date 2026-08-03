@@ -266,6 +266,14 @@ impl SwitchyardConfig {
                             .into(),
                     );
                 }
+                let classifier_binding = self.targets.get(classifier_target).ok_or_else(|| {
+                    format!("algorithm target {classifier_target:?} is not configured")
+                })?;
+                if classifier_binding.protocol == WireFormat::AnthropicMessages {
+                    return Err(format!(
+                        "classifier target {classifier_target:?} uses anthropic_messages, which cannot encode the required JSON-schema response format without loss; use an openai_chat or openai_responses target"
+                    ));
+                }
                 LlmTaskClassifier::new(
                     target(classifier_target)?,
                     target(weak_target)?,
@@ -484,6 +492,25 @@ mod tests {
             config.prepare().unwrap().algorithm.name(),
             "llm_task_classifier"
         );
+    }
+
+    #[test]
+    fn classifier_rejects_anthropic_judge_targets_before_dispatch() {
+        let mut config = config();
+        config.algorithm = AlgorithmConfig::LlmClassifier {
+            classifier_target: "anthropic".into(),
+            weak_target: "responses".into(),
+            strong_target: "chat".into(),
+            escalation: None,
+            config: TaskClassifierConfig {
+                base_threshold: 0.5,
+                ..Default::default()
+            },
+        };
+
+        let error = config.validate().unwrap_err();
+        assert!(error.contains("classifier target \"anthropic\" uses anthropic_messages"));
+        assert!(error.contains("use an openai_chat or openai_responses target"));
     }
 
     #[test]
