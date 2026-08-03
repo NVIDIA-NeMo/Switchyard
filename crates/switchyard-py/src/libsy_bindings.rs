@@ -217,7 +217,7 @@ impl PyAlgorithm {
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (decisions, response) = algorithm
-                .run(Context::default(), request)
+                .run(Context::default(), request, None)
                 .await
                 .map_err(py_libsy_error)?;
             let response = response

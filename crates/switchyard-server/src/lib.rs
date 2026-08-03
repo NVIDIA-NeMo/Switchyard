@@ -592,7 +592,7 @@ async fn handle_llm_request(
     };
     let observer = stats_observer(state.stats.clone());
     let (trace, response) = match algorithm
-        .run_observed(Context::default(), request, Some(observer))
+        .run(Context::default(), request, Some(observer))
         .await
     {
         Ok(result) => result,
