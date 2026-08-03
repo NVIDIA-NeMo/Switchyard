@@ -1047,10 +1047,16 @@ mod tests {
         let (_, response) = orch.run(Context::default(), request()).await?;
         match response.llm_response.into_agg().await {
             Ok(_) => panic!("expected a mid-stream error, got an aggregate"),
-            Err(err) => {
-                assert!(err.to_string().contains("upstream exploded"));
+            Err(LlmClientError::UpstreamHttp { status, body }) => {
+                assert_eq!(status, 502);
+                assert_eq!(body, "upstream exploded");
+                assert_eq!(
+                    LlmClientError::UpstreamHttp { status, body }.to_string(),
+                    "upstream returned HTTP 502"
+                );
                 Ok(())
             }
+            Err(error) => panic!("expected an upstream HTTP error, got {error:?}"),
         }
     }
 

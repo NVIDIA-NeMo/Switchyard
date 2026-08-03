@@ -26,6 +26,7 @@ static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
     LazyLock::new(TranslationPolicy::default);
 static DEFAULT_TRANSLATION_ENGINE: LazyLock<TranslationEngine> =
     LazyLock::new(TranslationEngine::default);
+const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// Decodes a `wire_format` request body into the neutral IR.
 pub fn decode_request(wire_format: WireFormat, body: &Value) -> Result<LlmRequest> {
@@ -188,8 +189,21 @@ where
     // an `io::Error` item so `into_async_read`'s error bound resolves cleanly. The
     // source error is boxed intact rather than stringified, so
     // `llm_client_error_from_io` can recover its original variant on the way out.
+    // Validate frame growth before the line reader allocates an unbounded
+    // `String` for a provider event without a delimiter.
+    let bounded_bytes: Pin<
+        Box<dyn Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send>,
+    > = Box::pin(try_stream! {
+        let mut bytes = Box::pin(bytes);
+        let mut tracker = SseFrameSizeTracker::default();
+        while let Some(chunk) = bytes.next().await {
+            let chunk = chunk?;
+            tracker.observe(&chunk, MAX_SSE_FRAME_BYTES)?;
+            yield chunk;
+        }
+    });
     let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> =
-        Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
+        Box::pin(bounded_bytes.map(|item| item.map_err(std::io::Error::other)));
     let lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
 
     let mut state = StreamTranslationState {
@@ -239,6 +253,36 @@ where
     Ok(stream)
 }
 
+#[derive(Default)]
+struct SseFrameSizeTracker {
+    frame_bytes: usize,
+    current_line_has_content: bool,
+}
+
+impl SseFrameSizeTracker {
+    // Tracks blank-line frame boundaries across arbitrary transport chunks.
+    fn observe(&mut self, bytes: &[u8], limit: usize) -> std::result::Result<(), LlmClientError> {
+        for byte in bytes {
+            self.frame_bytes = self.frame_bytes.saturating_add(1);
+            match byte {
+                b'\n' if !self.current_line_has_content => self.frame_bytes = 0,
+                b'\n' => self.current_line_has_content = false,
+                b'\r' => {}
+                _ => self.current_line_has_content = true,
+            }
+            if self.frame_bytes > limit {
+                return Err(LlmClientError::InvalidResponse {
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("provider SSE frame exceeded {limit} bytes"),
+                    )),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 // Recover transport errors wrapped for `AsyncRead`; other reader failures are
 // invalid upstream responses.
 fn llm_client_error_from_io(error: std::io::Error) -> LlmClientError {
@@ -265,8 +309,8 @@ mod tests {
     };
 
     use super::{
-        decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream, stamp_streamed_response_model,
+        SseFrameSizeTracker, decode_aggregated_response, decode_request, decode_stream,
+        encode_aggregated_response, encode_request, encode_stream, stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, WireFormat};
 
@@ -612,5 +656,17 @@ mod tests {
         };
         assert!(matches!(error, LlmClientError::ResponseTranslation(_)));
         Ok(())
+    }
+
+    #[test]
+    fn sse_frame_limit_spans_transport_chunks_and_resets_at_boundaries() {
+        let mut tracker = SseFrameSizeTracker::default();
+        tracker.observe(b"data: 1\n", 16).unwrap();
+        tracker.observe(b"\ndata: 2\n\n", 16).unwrap();
+
+        let mut oversized = SseFrameSizeTracker::default();
+        oversized.observe(b"data: ", 8).unwrap();
+        let error = oversized.observe(b"123", 8).unwrap_err();
+        assert!(matches!(error, LlmClientError::InvalidResponse { .. }));
     }
 }

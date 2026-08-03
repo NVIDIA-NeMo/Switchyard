@@ -71,7 +71,7 @@ pub enum LlmClientError {
     },
 
     /// The upstream rejected the request because it exceeds the model's context window.
-    #[error("context window exceeded for model {model}: {message}")]
+    #[error("context window exceeded for model {model}")]
     ContextWindowExceeded {
         /// Model whose context window was exceeded.
         model: String,
@@ -80,7 +80,7 @@ pub enum LlmClientError {
     },
 
     /// The upstream returned a non-success HTTP response.
-    #[error("upstream returned HTTP {status}: {body}")]
+    #[error("upstream returned HTTP {status}")]
     UpstreamHttp {
         /// Upstream HTTP status code.
         status: u16,

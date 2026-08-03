@@ -51,10 +51,11 @@ pub struct HttpBackendConfig {
 
 impl fmt::Debug for HttpBackendConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let extra_header_names = self.extra_headers.keys().collect::<Vec<_>>();
         f.debug_struct("HttpBackendConfig")
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
-            .field("extra_headers", &self.extra_headers)
+            .field("extra_header_names", &extra_header_names)
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
             .finish()
@@ -279,6 +280,18 @@ mod tests {
         assert!(Backend::Anthropic(config("x")).is_anthropic());
         assert!(!Backend::OpenAiChat(config("x")).is_anthropic());
         assert!(!Backend::OpenAiResponses(config("x")).is_anthropic());
+    }
+
+    #[test]
+    fn debug_redacts_static_header_values() {
+        let mut config = config("https://provider.example/v1");
+        config
+            .extra_headers
+            .insert("authorization".into(), "Bearer provider-secret".into());
+
+        let debug = format!("{config:?}");
+        assert!(debug.contains("authorization"));
+        assert!(!debug.contains("provider-secret"));
     }
 
     #[test]

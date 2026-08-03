@@ -173,6 +173,7 @@ fn build_multi_format_client(
   `authorization` / `x-api-key` / `anthropic-version` / `content-type`. So a
   caller's placeholder credential never overrides the backend's real key.
 - Per-backend static headers go in `HttpBackendConfig::extra_headers`.
+  Its `Debug` output includes header names but redacts all values.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
@@ -183,6 +184,9 @@ fn build_multi_format_client(
 Retries replay the same upstream request. A transport failure can therefore
 duplicate a request that the provider processed but did not finish returning,
 and the retry budget plus capped `Retry-After` delays determines total latency.
+Configured provider requests do not follow redirects. Connections time out
+after 10 seconds, and a 120-second read timeout resets after every successful
+read so active streams may continue while stalled providers are released.
 
 ## Errors
 
@@ -201,6 +205,12 @@ and the retry budget plus capped `Retry-After` delays determines total latency.
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
 | `InvalidResponse { source }` | the upstream response could not be decoded |
 | `Other(source)` | a client-specific failure outside the shared categories |
+
+Buffered success bodies are capped at 64 MiB and HTTP error bodies at 64 KiB.
+Typed HTTP errors retain the bounded body for explicit handling, but their
+default display text includes only the status so provider content is not copied
+into ordinary logs or spans. The shared stream decoder rejects an SSE frame
+larger than 8 MiB before its line buffer can grow without bound.
 
 [`switchyard_protocol::Request`]: ../libsy-protocol
 [`switchyard_protocol::Response`]: ../libsy-protocol
