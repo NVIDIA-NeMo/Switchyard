@@ -221,8 +221,9 @@ pub struct TaskClassifierConfig {
     pub max_output_tokens: u64,
 }
 
-/// Flat serialized shape that maps route-level prompt settings into the runtime contract group.
+/// Flat serialized shape that maps prompt settings into the runtime contract.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskClassifierConfigWire {
     base_threshold: f64,
     #[serde(default)]
@@ -1000,6 +1001,22 @@ mod tests {
         assert_eq!(selected(&strict, Some(&borderline))?, "capable");
         assert_eq!(selected(&lenient, Some(&borderline))?, "efficient");
         Ok(())
+    }
+
+    #[test]
+    fn classifier_config_rejects_unknown_fields() {
+        let error = serde_json::from_value::<TaskClassifierConfig>(serde_json::json!({
+            "base_threshold": 0.5,
+            "classifier_magic": true,
+        }))
+        .expect_err("unknown classifier fields must be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `classifier_magic`"),
+            "{error}"
+        );
     }
 
     #[test]

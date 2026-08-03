@@ -61,6 +61,8 @@ async def test_random_runs_with_a_python_client() -> None:
 
 
 async def test_classifier_config_accepts_a_prompt_override() -> None:
+    """Verify that a configured classifier prompt is rendered for the judge."""
+
     class JudgeClient(EchoClient):
         async def call(self, request: dict[str, Any]) -> dict[str, Any]:
             self.calls.append(request)
