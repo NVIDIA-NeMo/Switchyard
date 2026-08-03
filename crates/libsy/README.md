@@ -1,8 +1,10 @@
 # switchyard-libsy
 
-Provider-neutral routing and multi-model orchestration for LLM applications.
-An `Algorithm` chooses one or more semantic `LlmTarget`s; each target's
-`RoutedLlmClient` performs model I/O.
+Provider-neutral orchestration for multi-LLM optimization, with routing as the
+first use case. A libsy `Algorithm` decides which model targets to call, in what
+order, and how to combine their results. It can use target-owned clients or hand
+each call back to the host, allowing it to embed in proxies, gateways, and agent
+runtimes without owning an HTTP stack.
 
 ## Setup
 
