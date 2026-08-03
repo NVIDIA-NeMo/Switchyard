@@ -2,63 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![warn(missing_docs)]
-
-//! # switchyard-libsy
-//!
-//! Provider-neutral routing and multi-model orchestration for LLM applications.
-//! An [`Algorithm`] chooses one or more semantic [`LlmTarget`]s; each target's
-//! [`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient) performs model I/O.
-//! This separation lets the same algorithm run in a proxy, gateway, or agent runtime.
-//!
-//! ## Setup
-//!
-//! ```toml
-//! [dependencies]
-//! switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-//! switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-//! ```
-//!
-//! ## Quick start
-//!
-//! This complete `src/main.rs` constructs a uniform random router over two semantic
-//! targets. Add a client to each target before calling [`Algorithm::run`], or let the
-//! host fulfill calls through [`Algorithm::run_stream`].
-//!
-//! ```
-//! use std::sync::Arc;
-//!
-//! use switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
-//!
-//! fn main() -> switchyard_libsy::Result<()> {
-//!     let target = |name: &str| LlmTarget {
-//!         semantic_name: name.into(),
-//!         llm_client: None,
-//!     };
-//!     let targets = LlmTargetSet::new(vec![target("fast"), target("strong")]);
-//!     let router: Arc<dyn Algorithm> = Arc::new(Random::new(targets, None, None)?);
-//!     println!("{}", router.name());
-//!     Ok(())
-//! }
-//! ```
-//!
-//! ## Built-in algorithms
-//!
-//! | Algorithm | Purpose |
-//! |---|---|
-//! | [`Passthrough`] | Always call one configured target. |
-//! | [`Random`] | Select among any number of targets using uniform or weighted routing. |
-//! | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
-//! | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
-//!
-//! [`Noop`] is a test helper, not a production routing algorithm.
-//!
-//! ## How it fits together
-//!
-//! [`LlmTarget`] pairs a semantic routing name with an optional
-//! [`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient). An [`Algorithm`] selects
-//! targets and records decisions. Use [`Algorithm::run`] with target-owned clients, or
-//! [`Algorithm::run_stream`] when the host owns model transport. Request, response, usage,
-//! and streaming data are defined by [`switchyard-protocol`](switchyard_protocol).
+#![doc = include_str!("../README.md")]
 
 mod core;
 pub use core::algorithm::{

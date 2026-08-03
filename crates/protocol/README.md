@@ -1,22 +1,16 @@
 # switchyard-protocol
 
-`switchyard-protocol` defines the provider-neutral Rust contract shared by
-Switchyard routing, translation, HTTP clients, and host integrations.
+Provider-neutral request, response, streaming, routing, and metadata types
+shared by Switchyard algorithms, clients, and translation codecs. This crate
+defines contracts; it does not route, translate, or perform network calls.
 
-It contains data and interoperability traits. It does not perform translation,
-routing, or network calls.
-
-## Add the crate
+## Setup
 
 ```toml
 [dependencies]
 switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 serde_json = "1"
 ```
-
-Applications using libsy should depend on both `switchyard-libsy` and
-`switchyard-protocol`. `switchyard-translation` re-exports the conversation and
-format modules plus common stream types, but not every protocol module.
 
 ## Main types
 
@@ -29,10 +23,6 @@ format modules plus common stream types, but not every protocol module.
 | Envelope | `Context`, `Request`, `Response`, `Metadata` |
 | Routing I/O | `Decision`, `RoutedLlmClient`, `LlmClientError` |
 | Wire identity | `WireFormat`, `FormatId` |
-
-Types are also available through their owning modules, such as
-`switchyard_protocol::llm::LlmRequest`; the crate root re-exports them for
-concise imports.
 
 ## Simple request
 
@@ -109,53 +99,11 @@ let request = Request {
 assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
 ```
 
-## Buffered and streaming responses
+## Response forms
 
-`LlmResponse::Agg` contains a completed `AggLlmResponse`.
-`LlmResponse::Stream` owns a single-consumption stream of `LlmResponseChunk`
-events. `LlmResponse::into_agg` consumes a stream and surfaces decoding or
-upstream errors.
-
-`AggLlmResponse::into_stream` is a synthetic, lossy conversion. It emits text,
-reasoning, and tool-call events but cannot represent every aggregate content
-block. `ResponseAccumulator` similarly combines text and reasoning into one
-assistant output and should not be used when multiple output indices must be
-preserved.
-
-## Extensions and preservation
-
-`ProviderExtensions` stores provider fields that lack normalized equivalents.
-Codecs use these values when translating to another format.
-
-`PreservationMetadata` stores exact request and response bodies by `FormatId`.
-With translation's default preservation policy, encoding back to a stored source
-format returns that exact body instead of rebuilding it from normalized fields.
-Code that mutates the IR must clear the corresponding preserved body or use a
-translation policy with preservation disabled when those edits must be encoded.
-
-`Request::raw_request` is separate host envelope data. The protocol does not
-reconcile it with `LlmRequest::preservation`; hosts that populate both must
-choose which source they treat as authoritative.
-
-## Usage normalization
-
-`Usage::input_tokens` contains non-cached input tokens. Cache-read and
-cache-creation counts live in `InputCacheUsage`. Provider codecs may normalize
-an aggregate provider input count by subtracting cache detail. `total_tokens`
-is the provider-reported or codec-computed total and can therefore include
-non-cached input, cache detail, and output tokens.
-
-## Metadata
-
-`Metadata` carries session, agent, task, trace, forwarding-header, and source
-wire-format information. `Metadata::from_headers` normalizes the coding-agent,
-NeMo Relay, and Dynamo headers recognized by Switchyard. Explicit
-`x-switchyard-*` values take precedence.
-
-## Reference
-
-- [Generated Rust API reference](../../docs/reference/rust_api.md)
-- [Switchyard repository](https://github.com/NVIDIA-NeMo/Switchyard)
+`LlmResponse` contains either a completed `AggLlmResponse` or a
+single-consumption stream of `LlmResponseChunk` values. Detailed aggregation,
+preservation, usage, and metadata contracts live on their respective types.
 
 ## License
 
