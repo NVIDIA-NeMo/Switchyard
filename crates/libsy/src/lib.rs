@@ -14,23 +14,28 @@
 //!
 //! ## Quick start
 //!
-//! The [`Noop`] algorithm verifies host integration without making an upstream call:
+//! This complete `src/main.rs` uses [`Noop`] to verify host integration without
+//! making an upstream call:
 //!
 //! ```no_run
 //! use std::sync::Arc;
 //! use switchyard_libsy::{Algorithm, Noop};
 //! use switchyard_protocol::{Context, Request, text_request};
 //!
-//! # async fn example() -> switchyard_libsy::Result<()> {
-//! let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
-//! let request = Request {
-//!     llm_request: text_request(Some("switchyard/noop".into()), "hello"),
-//!     ..Request::default()
-//! };
-//! let (_decisions, response) = algorithm.run(Context::default(), request).await?;
-//! assert_eq!(response.selected_model(), Some("switchyard/noop"));
-//! # Ok(())
-//! # }
+//! #[tokio::main]
+//! async fn main() -> switchyard_libsy::Result<()> {
+//!     let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
+//!     let request = Request {
+//!         llm_request: text_request(Some("switchyard/noop".into()), "hello"),
+//!         ..Request::default()
+//!     };
+//!     let (decisions, response) = algorithm.run(Context::default(), request).await?;
+//!     for decision in decisions {
+//!         println!("selected {}", decision.selected_model());
+//!     }
+//!     assert_eq!(response.selected_model(), Some("switchyard/noop"));
+//!     Ok(())
+//! }
 //! ```
 //!
 //! ## The model

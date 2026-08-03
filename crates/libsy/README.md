@@ -14,13 +14,15 @@ Request, response, client, and metadata types come from `switchyard-protocol`.
 [dependencies]
 switchyard-libsy = "0.2"
 switchyard-protocol = "0.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 Both crates must use compatible versions.
 
 ## Quick start
 
-The no-op algorithm verifies integration without making an upstream call:
+Create `src/main.rs` with a no-op algorithm that verifies integration without
+making an upstream call:
 
 ```rust
 use std::sync::Arc;
@@ -28,7 +30,8 @@ use std::sync::Arc;
 use switchyard_libsy::{Algorithm, Noop};
 use switchyard_protocol::{Context, Request, text_request};
 
-async fn run() -> switchyard_libsy::Result<()> {
+#[tokio::main]
+async fn main() -> switchyard_libsy::Result<()> {
     let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
     let request = Request {
         llm_request: text_request(Some("switchyard/noop".into()), "hello"),
@@ -36,7 +39,9 @@ async fn run() -> switchyard_libsy::Result<()> {
     };
 
     let (decisions, response) = algorithm.run(Context::default(), request).await?;
-    println!("selected {}", decisions[0].selected_model());
+    for decision in decisions {
+        println!("selected {}", decision.selected_model());
+    }
     assert_eq!(response.selected_model(), Some("switchyard/noop"));
     Ok(())
 }
