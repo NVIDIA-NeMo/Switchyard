@@ -16,13 +16,13 @@ serde_json = "1"
 
 | Area | Types |
 |---|---|
-| Conversation | `LlmRequest`, `Message`, `InstructionBlock`, `ContentBlock` |
-| Tools | `ToolDefinition`, `ToolChoice`, `ToolCall`, `ToolResult` |
-| Response | `AggLlmResponse`, `ResponseOutput`, `Usage`, `StopReason` |
-| Streaming | `LlmResponse`, `LlmResponseChunk`, `LlmResponseStream` |
-| Envelope | `Context`, `Request`, `Response`, `Metadata` |
-| Routing I/O | `Decision`, `RoutedLlmClient`, `LlmClientError` |
-| Wire identity | `WireFormat`, `FormatId` |
+| Conversation | [`LlmRequest`], [`Message`], [`InstructionBlock`], [`ContentBlock`] |
+| Tools | [`ToolDefinition`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
+| Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
+| Streaming | [`LlmResponse`], [`LlmResponseChunk`], [`LlmResponseStream`] |
+| Envelope | [`Context`], [`Request`], [`Response`], [`Metadata`] |
+| Routing I/O | [`Decision`], [`RoutedLlmClient`], [`LlmClientError`] |
+| Wire identity | [`WireFormat`], [`FormatId`] |
 
 ## Simple request
 
@@ -46,7 +46,7 @@ assert_eq!(request.messages.len(), 1);
 
 ## Detailed request
 
-Construct the normalized request directly when routing needs instructions,
+Construct the normalized [`Request`] directly when routing needs instructions,
 tools, generation controls, and correlation metadata:
 
 ```rust
@@ -101,9 +101,10 @@ assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
 
 ## Response forms
 
-`LlmResponse` contains either a completed `AggLlmResponse` or a
-single-consumption stream of `LlmResponseChunk` values. Detailed aggregation,
-preservation, usage, and metadata contracts live on their respective types.
+[`LlmResponse`] contains either a completed [`AggLlmResponse`] or a
+single-consumption [`LlmResponseStream`] of [`LlmResponseChunk`] values. See
+[`LlmResponse::into_agg`] for aggregation and [`PreservationMetadata`],
+[`Usage`], and [`Metadata`] for the data retained around a response.
 
 ## License
 
