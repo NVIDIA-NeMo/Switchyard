@@ -171,6 +171,11 @@ impl TranslatingLlmClient {
         // which keeps the caller's original `model`; force the resolved model so
         // the upstream always sees the target id.
         set_json_model(&mut body, model);
+        // Strip before `merge_extra_body` so a target can reinstate either field
+        // deliberately via `extra_body`.
+        if matches!(backend, Backend::Anthropic(_)) {
+            strip_anthropic_incompatible_fields(&mut body);
+        }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
@@ -669,6 +674,21 @@ fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+// Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
+//
+// A router can serve earlier turns of a session from an OpenAI-format target and
+// later turns from an Anthropic one. Clients such as Claude Code send
+// `context_management` on every turn, so the Anthropic leg must strip it or the
+// upstream rejects the request (for example `clear_thinking_20251015` strategy
+// requires `thinking` to be enabled or adaptive). Mirrors
+// `switchyard-components`' `strip_anthropic_incompatible_fields`.
+fn strip_anthropic_incompatible_fields(body: &mut Value) {
+    if let Value::Object(object) = body {
+        object.remove("reasoning_effort");
+        object.remove("context_management");
+    }
+}
+
 // Applies target defaults without overriding fields supplied by the caller.
 fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     let Value::Object(object) = body else {
@@ -759,6 +779,14 @@ mod tests {
         let mut backend = config(base_url);
         backend.extra_body = extra_body;
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn anthropic_map(base_url: &str) -> Vec<ModelConfig> {
+        vec![ModelConfig::new(
+            "claude",
+            Backend::Anthropic(config(base_url)),
+            None,
+        )]
     }
 
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
@@ -1164,6 +1192,54 @@ mod tests {
                 None,
                 Some("gpt"),
                 WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    // A router can serve earlier turns from an OpenAI target and later turns from
+    // an Anthropic one, so the Anthropic leg must drop OpenAI-only fields the
+    // caller keeps sending or the upstream rejects the whole request.
+    #[tokio::test]
+    async fn anthropic_requests_drop_openai_only_fields()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                body.get("context_management").is_none() && body.get("reasoning_effort").is_none()
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&anthropic_map(&server.uri()))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 7,
+            "reasoning_effort": "high",
+            "context_management": {
+                "edits": [{"type": "clear_thinking_20251015"}]
+            }
+        });
+
+        client
+            .call_rewrite_model_raw(
+                Context::default(),
+                raw,
+                None,
+                Some("claude"),
+                WireFormat::AnthropicMessages,
             )
             .await?;
         Ok(())
