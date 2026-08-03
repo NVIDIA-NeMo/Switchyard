@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from switchyard.libsy import LibsyError, LlmTarget, algorithms
+from switchyard.libsy import LibsyError, LlmTarget, TaskClassifierConfig, algorithms
 
 
 def request_body() -> dict[str, Any]:
@@ -58,6 +58,52 @@ async def test_random_runs_with_a_python_client() -> None:
     ]
     assert response["model"] == "fast"
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "fast"}]
+
+
+async def test_classifier_config_accepts_a_prompt_override() -> None:
+    class JudgeClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    '{"recommended_route":"efficient","p_solve":0.9,'
+                                    '"confidence":0.9,"abstain":false,'
+                                    '"capability_boundary":"supported",'
+                                    '"primary_rule":"SUP-1","crux":"bounded task"}'
+                                ),
+                            }
+                        ],
+                        "stop_reason": "end_turn",
+                    }
+                ],
+            }
+
+    judge = JudgeClient("judge")
+    weak = EchoClient("weak")
+    algorithm = algorithms.llm_task_classifier(
+        LlmTarget("judge", judge),
+        LlmTarget("weak", weak),
+        LlmTarget("strong", EchoClient("strong")),
+        config=TaskClassifierConfig(
+            0.5,
+            prompt="Custom capability rubric:\n{{RESPONSE_SCHEMA}}",
+        ),
+    )
+
+    _, response = await algorithm.run(request_body())
+
+    prompt = judge.calls[0]["messages"][0]["content"][0]["text"]
+    assert prompt.startswith("Custom capability rubric:")
+    assert '"recommended_route"' in prompt
+    assert "{{RESPONSE_SCHEMA}}" not in prompt
+    assert response["model"] == "weak"
 
 
 async def test_random_weights_and_seed_are_reproducible() -> None:

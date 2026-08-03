@@ -10,9 +10,9 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, HandoffNoteConfig, LibsyError as RustLibsyError, LlmFallback, LlmTarget,
-    LlmTargetSet, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter, StageRouterConfig,
-    TaskClassifierConfig,
+    Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
+    LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode, Random, StageRouter,
+    StageRouterConfig, TaskClassifierConfig,
 };
 use switchyard_protocol::{
     AggLlmResponse, Context, Decision, LlmClientError, LlmResponse, Metadata, Request, Response,
@@ -97,7 +97,7 @@ impl PyLlmTarget {
     }
 }
 
-/// Classifier thresholds shared by standalone and stage-router classifiers.
+/// Classifier settings shared by standalone and stage-router classifiers.
 #[pyclass(
     name = "TaskClassifierConfig",
     module = "switchyard.libsy",
@@ -126,7 +126,8 @@ impl PyTaskClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
-        max_output_tokens=4096
+        max_output_tokens=4096,
+        prompt=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -137,7 +138,12 @@ impl PyTaskClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
+        prompt: Option<String>,
     ) -> Self {
+        let mut contract = ClassifierContractConfig::default();
+        if let Some(prompt) = prompt {
+            contract = contract.with_prompt(prompt);
+        }
         Self {
             inner: TaskClassifierConfig {
                 base_threshold,
@@ -146,6 +152,7 @@ impl PyTaskClassifierConfig {
                 session_affinity,
                 message_hash_fallback,
                 recent_turn_window,
+                contract,
                 max_output_tokens,
             },
         }
