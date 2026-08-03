@@ -223,8 +223,8 @@ python3 crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
 ```
 
 On macOS the library suffix is `.dylib`; Windows builds use `.dll`. The bundle
-builder copies the shared library, materialized manifest, JSON schema, README,
-LICENSE, and NOTICE, then writes `SHA256SUMS`.
+builder creates the minimal Relay package: the shared library, a materialized
+manifest with Relay's inline SHA-256 integrity digest, and the JSON schema.
 
 Install the materialized bundle with Relay's normal lifecycle commands:
 
