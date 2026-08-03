@@ -431,7 +431,7 @@ async fn anthropic_count_tokens(
     };
     let (algorithm, request) = match resolve_route(
         &state,
-        metadata_from_headers(&headers),
+        metadata_from_headers(headers),
         body,
         WireFormat::AnthropicMessages,
     ) {
@@ -477,15 +477,15 @@ async fn handle_endpoint(
 async fn handle_endpoint_inner(
     state: ServerState,
     started: RequestStart,
-    headers: HeaderMap,
+    http_headers: HeaderMap,
     body: std::result::Result<Json<Value>, JsonRejection>,
     wire_format: WireFormat,
 ) -> Response {
     let routing_log_context = state
         .routing_log
         .as_ref()
-        .map(|_| routing_log::RoutingLogContext::from_headers(&normalized_headers(&headers)));
-    let metadata = metadata_from_headers(&headers);
+        .map(|_| routing_log::RoutingLogContext::from_headers(&http_headers));
+    let metadata = metadata_from_headers(http_headers);
     let request_log = RequestLogContext {
         started: started.0,
         wire_format,
@@ -701,23 +701,21 @@ fn request_log_level(status: StatusCode) -> Level {
     }
 }
 
-fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
-    let headers = normalized_headers(headers);
+fn metadata_from_headers(http_headers: HeaderMap) -> Metadata {
+    // Converting `http::HeaderMap` to `BTreeMap<String, String>` avoids `protocol` crate taking a
+    // dependency on `http`. Probably we should take that dependency.
+    let mut headers = BTreeMap::new();
+    for (k, v) in http_headers {
+        let Some(k) = k else {
+            continue;
+        };
+        if let Ok(v) = v.to_str() {
+            headers.insert(k.as_str().to_string(), v.to_string());
+        }
+    }
     let mut metadata = Metadata::from_headers(&headers);
     metadata.http_headers = Some(headers);
     metadata
-}
-
-fn normalized_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
-        })
-        .collect()
 }
 
 fn attach_routing_headers(response: &mut Response, decision: &dyn Decision) {

@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use axum::http::HeaderMap;
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::Usage;
@@ -103,11 +104,11 @@ pub(crate) struct RoutingLogContext {
 }
 
 impl RoutingLogContext {
-    pub(crate) fn from_headers(headers: &BTreeMap<String, String>) -> Self {
+    pub(crate) fn from_headers(headers: &HeaderMap) -> Self {
         Self {
-            task: nonempty_header(headers, TASK_HEADER),
-            trial_id: nonempty_header(headers, TRIAL_ID_HEADER),
-            session_id: nonempty_header(headers, SESSION_ID_HEADER),
+            task: nonempty_header(headers, TASK_HEADER).map(|s| s.to_string()),
+            trial_id: nonempty_header(headers, TRIAL_ID_HEADER).map(|s| s.to_string()),
+            session_id: nonempty_header(headers, SESSION_ID_HEADER).map(|s| s.to_string()),
         }
     }
 }
@@ -206,8 +207,11 @@ impl SessionStatsSnapshot {
     }
 }
 
-fn nonempty_header(headers: &BTreeMap<String, String>, name: &str) -> Option<String> {
-    headers.get(name).filter(|value| !value.is_empty()).cloned()
+fn nonempty_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)
+        .filter(|value| !value.is_empty())
+        .and_then(|v| v.to_str().ok())
 }
 
 fn routing_log_error(path: &Path, error: std::io::Error) -> ServerError {

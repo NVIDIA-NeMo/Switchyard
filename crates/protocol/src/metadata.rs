@@ -205,8 +205,6 @@ impl Metadata {
     /// from an explicit `x-switchyard-is-subagent` header when present, and otherwise
     /// inferred from Claude Code lineage or Codex harness signals.
     pub fn from_headers(headers: &BTreeMap<String, String>) -> Self {
-        let headers = &normalize_headers(headers);
-
         let (parent_agent_id, is_subagent, is_delegated_work) = parse_sub_agent(headers);
 
         Metadata {
@@ -304,20 +302,6 @@ fn parse_bool(value: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
-}
-
-/// Lowercases header names and keeps the first non-empty, trimmed value per name.
-fn normalize_headers(headers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    let mut normalized = BTreeMap::new();
-    for (key, value) in headers {
-        let lower_key = key.to_ascii_lowercase();
-        let trimmed_value = value.trim();
-        if !normalized.contains_key(&lower_key) && !trimmed_value.is_empty() {
-            normalized.insert(lower_key, trimmed_value.to_string());
-        }
-    }
-
-    normalized
 }
 
 /// Resolves the logical field `key` against `headers` using [`HEADER_CONFIG`]'s paths.
@@ -651,15 +635,6 @@ mod tests {
             None
         );
         assert_eq!(sy_header(&headers, "x-not-a-field"), None);
-    }
-
-    #[test]
-    fn codex_session_header_is_case_insensitive() {
-        let metadata = Metadata::from_headers(&BTreeMap::from([(
-            "Session-ID".to_string(),
-            "codex-run".to_string(),
-        )]));
-        assert_eq!(metadata.session_id.as_deref(), Some("codex-run"));
     }
 
     #[test]
