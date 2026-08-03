@@ -1,53 +1,27 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="switchyard-libsy"><title>switchyard_libsy - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="switchyard_libsy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.1 (31fca3adb 2026-06-26)" data-channel="1.96.1" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate switchyard_libsy</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../switchyard_libsy/index.html">switchyard_<wbr>libsy</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#switchyard-libsy" title="switchyard-libsy">switchyard-libsy</a><ul><li><a href="#setup" title="Setup">Setup</a></li><li><a href="#quick-start" title="Quick start">Quick start</a></li><li><a href="#built-in-algorithms" title="Built-in algorithms">Built-in algorithms</a></li><li><a href="#core-concepts" title="Core concepts">Core concepts</a></li><li><a href="#execution-modes" title="Execution modes">Execution modes</a></li><li><a href="#operational-notes" title="Operational notes">Operational notes</a></li></ul></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#traits" title="Traits">Traits</a></li><li><a href="#functions" title="Functions">Functions</a></li><li><a href="#types" title="Type Aliases">Type Aliases</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>switchyard_<wbr>libsy</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/switchyard_libsy/lib.rs.html#4-141">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="switchyard-libsy"><a class="doc-anchor" href="#switchyard-libsy">§</a>switchyard-libsy</h2>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="switchyard-libsy"><title>switchyard_libsy - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="switchyard_libsy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.1 (31fca3adb 2026-06-26)" data-channel="1.96.1" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate switchyard_libsy</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../switchyard_libsy/index.html">switchyard_<wbr>libsy</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#switchyard-libsy" title="switchyard-libsy">switchyard-libsy</a><ul><li><a href="#setup" title="Setup">Setup</a></li><li><a href="#quick-start" title="Quick start">Quick start</a></li><li><a href="#built-in-algorithms" title="Built-in algorithms">Built-in algorithms</a></li><li><a href="#how-it-fits-together" title="How it fits together">How it fits together</a></li></ul></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#traits" title="Traits">Traits</a></li><li><a href="#functions" title="Functions">Functions</a></li><li><a href="#types" title="Type Aliases">Type Aliases</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>switchyard_<wbr>libsy</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/switchyard_libsy/lib.rs.html#4-102">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="switchyard-libsy"><a class="doc-anchor" href="#switchyard-libsy">§</a>switchyard-libsy</h2>
 <p>Provider-neutral routing and multi-model orchestration for LLM applications.
 An <a href="trait.Algorithm.html" title="trait switchyard_libsy::Algorithm"><code>Algorithm</code></a> chooses one or more semantic <a href="struct.LlmTarget.html" title="struct switchyard_libsy::LlmTarget"><code>LlmTarget</code></a>s; each target’s
 <a href="../switchyard_protocol/client/trait.RoutedLlmClient.html" title="trait switchyard_protocol::client::RoutedLlmClient"><code>RoutedLlmClient</code></a> performs model I/O.
 This separation lets the same algorithm run in a proxy, gateway, or agent runtime.</p>
 <h3 id="setup"><a class="doc-anchor" href="#setup">§</a>Setup</h3><div class="example-wrap"><pre class="language-toml"><code>[dependencies]
 switchyard-libsy = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
-switchyard-llm-client = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
-switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
-tokio = { version = &quot;1&quot;, features = [&quot;macros&quot;, &quot;rt-multi-thread&quot;] }</code></pre></div><h3 id="quick-start"><a class="doc-anchor" href="#quick-start">§</a>Quick start</h3>
-<p>This complete <code>src/main.rs</code> sends one request through <a href="struct.Passthrough.html" title="struct switchyard_libsy::Passthrough"><code>Passthrough</code></a> to an
-OpenAI-compatible backend. Set <code>LLM_BASE_URL</code>, <code>LLM_MODEL</code>, and optionally
-<code>LLM_API_KEY</code> before running it.</p>
+switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }</code></pre></div><h3 id="quick-start"><a class="doc-anchor" href="#quick-start">§</a>Quick start</h3>
+<p>This complete <code>src/main.rs</code> constructs a uniform random router over two semantic
+targets. Add a client to each target before calling <a href="trait.Algorithm.html#method.run" title="method switchyard_libsy::Algorithm::run"><code>Algorithm::run</code></a>, or let the
+host fulfill calls through <a href="trait.Algorithm.html#method.run_stream" title="method switchyard_libsy::Algorithm::run_stream"><code>Algorithm::run_stream</code></a>.</p>
 
-<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::collections::BTreeMap;
-<span class="kw">use </span>std::error::Error;
-<span class="kw">use </span>std::sync::Arc;
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::sync::Arc;
 
-<span class="kw">use </span>switchyard_libsy::{Algorithm, LlmTarget, Passthrough};
-<span class="kw">use </span>switchyard_llm_client::{
-    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
-};
-<span class="kw">use </span>switchyard_protocol::{Context, Request, completion_text, text_request};
+<span class="kw">use </span>switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
 
-<span class="attr">#[tokio::main]
-</span><span class="kw">async fn </span>main() -&gt; <span class="prelude-ty">Result</span>&lt;(), Box&lt;<span class="kw">dyn </span>Error + Send + Sync&gt;&gt; {
-    <span class="kw">let </span>model = std::env::var(<span class="string">"LLM_MODEL"</span>)<span class="question-mark">?</span>;
-    <span class="kw">let </span>client = Arc::new(TranslatingLlmClient::new(<span class="kw-2">&amp;</span>[ModelConfig::new(
-        model.clone(),
-        Backend::OpenAiChat(HttpBackendConfig {
-            base_url: std::env::var(<span class="string">"LLM_BASE_URL"</span>)<span class="question-mark">?</span>,
-            api_key: std::env::var(<span class="string">"LLM_API_KEY"</span>).ok(),
-            extra_headers: BTreeMap::new(),
-            extra_body: BTreeMap::new(),
-            max_retries: <span class="number">2</span>,
-        }),
-        <span class="prelude-val">None</span>,
-    )])<span class="question-mark">?</span>);
-    <span class="kw">let </span>algorithm: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(Passthrough::new(LlmTarget {
-        semantic_name: model,
-        llm_client: <span class="prelude-val">Some</span>(client),
-    }));
-    <span class="kw">let </span>request = Request {
-        llm_request: text_request(<span class="prelude-val">None</span>, <span class="string">"Explain tail latency in one sentence."</span>),
-        ..Request::default()
+<span class="kw">fn </span>main() -&gt; switchyard_libsy::Result&lt;()&gt; {
+    <span class="kw">let </span>target = |name: <span class="kw-2">&amp;</span>str| LlmTarget {
+        semantic_name: name.into(),
+        llm_client: <span class="prelude-val">None</span>,
     };
-
-    <span class="kw">let </span>(_decisions, response) = algorithm.run(Context::default(), request).<span class="kw">await</span><span class="question-mark">?</span>;
-    <span class="kw">let </span>response = response.llm_response.into_agg().<span class="kw">await</span><span class="question-mark">?</span>;
-    <span class="macro">println!</span>(<span class="string">"{}"</span>, completion_text(<span class="kw-2">&amp;</span>response));
+    <span class="kw">let </span>targets = LlmTargetSet::new(<span class="macro">vec!</span>[target(<span class="string">"fast"</span>), target(<span class="string">"strong"</span>)]);
+    <span class="kw">let </span>router: Arc&lt;<span class="kw">dyn </span>Algorithm&gt; = Arc::new(Random::new(targets, <span class="prelude-val">None</span>, <span class="prelude-val">None</span>)<span class="question-mark">?</span>);
+    <span class="macro">println!</span>(<span class="string">"{}"</span>, router.name());
     <span class="prelude-val">Ok</span>(())
 }</code></pre></div><h3 id="built-in-algorithms"><a class="doc-anchor" href="#built-in-algorithms">§</a>Built-in algorithms</h3><div><table><thead><tr><th>Algorithm</th><th>Purpose</th></tr></thead><tbody>
 <tr><td><a href="struct.Passthrough.html" title="struct switchyard_libsy::Passthrough"><code>Passthrough</code></a></td><td>Always call one configured target.</td></tr>
@@ -57,23 +31,12 @@ OpenAI-compatible backend. Set <code>LLM_BASE_URL</code>, <code>LLM_MODEL</code>
 </tbody></table>
 </div>
 <p><a href="struct.Noop.html" title="struct switchyard_libsy::Noop"><code>Noop</code></a> is a test helper, not a production routing algorithm.</p>
-<h3 id="core-concepts"><a class="doc-anchor" href="#core-concepts">§</a>Core concepts</h3>
-<ul>
-<li><a href="trait.Algorithm.html" title="trait switchyard_libsy::Algorithm"><code>Algorithm</code></a> owns routing policy and can make one or more model calls per request.</li>
-<li><a href="struct.LlmTarget.html" title="struct switchyard_libsy::LlmTarget"><code>LlmTarget</code></a> gives an algorithm a semantic target name and optional default client.</li>
-<li><a href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request"><code>Request</code></a> and
-<a href="../switchyard_protocol/envelope/struct.Response.html" title="struct switchyard_protocol::envelope::Response"><code>Response</code></a> carry the provider-neutral conversation.</li>
-<li><a href="../switchyard_protocol/client/trait.Decision.html" title="trait switchyard_protocol::client::Decision"><code>Decision</code></a> records each selected target and its reasoning.</li>
-</ul>
-<h3 id="execution-modes"><a class="doc-anchor" href="#execution-modes">§</a>Execution modes</h3>
-<p>Use <a href="trait.Algorithm.html#method.run" title="method switchyard_libsy::Algorithm::run"><code>Algorithm::run</code></a> when targets have default clients. Use
-<a href="trait.Algorithm.html#method.run_stream" title="method switchyard_libsy::Algorithm::run_stream"><code>Algorithm::run_stream</code></a> when the host owns model transport and needs to fulfill each
-<a href="enum.Step.html#variant.CallLlm" title="variant switchyard_libsy::Step::CallLlm"><code>Step::CallLlm</code></a> itself. Both return the same final response and decision trace.</p>
-<h3 id="operational-notes"><a class="doc-anchor" href="#operational-notes">§</a>Operational notes</h3>
-<p>Algorithm instances are shared with <code>Arc</code> and may serve concurrent requests; the full
-implementor contract is documented on <a href="trait.Algorithm.html" title="trait switchyard_libsy::Algorithm"><code>Algorithm</code></a>. Runs emit <code>tracing</code> and
-OpenTelemetry signals through host-installed global providers; see <a href="fn.initialize_metrics.html" title="fn switchyard_libsy::initialize_metrics"><code>initialize_metrics</code></a>
-when compatibility gauges must exist before the first request.</p>
+<h3 id="how-it-fits-together"><a class="doc-anchor" href="#how-it-fits-together">§</a>How it fits together</h3>
+<p><a href="struct.LlmTarget.html" title="struct switchyard_libsy::LlmTarget"><code>LlmTarget</code></a> pairs a semantic routing name with an optional
+<a href="../switchyard_protocol/client/trait.RoutedLlmClient.html" title="trait switchyard_protocol::client::RoutedLlmClient"><code>RoutedLlmClient</code></a>. An <a href="trait.Algorithm.html" title="trait switchyard_libsy::Algorithm"><code>Algorithm</code></a> selects
+targets and records decisions. Use <a href="trait.Algorithm.html#method.run" title="method switchyard_libsy::Algorithm::run"><code>Algorithm::run</code></a> with target-owned clients, or
+<a href="trait.Algorithm.html#method.run_stream" title="method switchyard_libsy::Algorithm::run_stream"><code>Algorithm::run_stream</code></a> when the host owns model transport. Request, response, usage,
+and streaming data are defined by <a href="../switchyard_protocol/index.html" title="mod switchyard_protocol"><code>switchyard-protocol</code></a>.</p>
 </div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.AffinityRouter.html" title="struct switchyard_libsy::AffinityRouter">Affinity<wbr>Router</a></dt><dd>Retains a model per request identity and forces it on later matching requests.</dd><dt><a class="struct" href="struct.CallLlmRequest.html" title="struct switchyard_libsy::CallLlmRequest">Call<wbr>LlmRequest</a></dt><dd>The host-facing half of an offloaded model call, surfaced inside <a href="enum.Step.html#variant.CallLlm" title="variant switchyard_libsy::Step::CallLlm"><code>Step::CallLlm</code></a>.</dd><dt><a class="struct" href="struct.CodingAgentDimensions.html" title="struct switchyard_libsy::CodingAgentDimensions">Coding<wbr>Agent<wbr>Dimensions</a></dt><dd>The two-axis feature view of a single <a href="struct.ToolSignals.html" title="struct switchyard_libsy::ToolSignals"><code>ToolSignals</code></a>.</dd><dt><a class="struct" href="struct.Driver.html" title="struct switchyard_libsy::Driver">Driver</a></dt><dd>The offload channel handed to an algorithm’s
 <a href="trait.Algorithm.html#tymethod.create_run_task" title="method switchyard_libsy::Algorithm::create_run_task"><code>create_run_task</code></a>. The algorithm makes model calls
 with <a href="struct.Driver.html#method.call_llm_target" title="method switchyard_libsy::Driver::call_llm_target"><code>call_llm_target</code></a> (or <a href="struct.Driver.html#method.call_llm" title="method switchyard_libsy::Driver::call_llm"><code>call_llm</code></a>) and
