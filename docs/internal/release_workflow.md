@@ -91,7 +91,7 @@ To preview the metadata stamp locally:
 
 ```bash
 python scripts/release/set_dev_wheel_version.py 0.0.1.dev0 --print-version
-python scripts/release/set_dev_wheel_version.py 0.0.1.dev0 --package-name nemo-switchyard
+python scripts/release/set_dev_wheel_version.py 0.0.1.dev0
 ```
 
 Do not commit the stamped package metadata unless the release process explicitly requires it.

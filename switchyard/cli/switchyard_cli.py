@@ -4,13 +4,11 @@
 
 """Switchyard command-line entry point."""
 
-from __future__ import annotations
-
 import argparse
 import logging
 import os
-from importlib.metadata import PackageNotFoundError, version
 
+from switchyard import __version__
 from switchyard.cli.command_utils import (
     quiet_dependency_loggers as _quiet_dependency_loggers,
 )
@@ -71,19 +69,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     )
 
 
-def _switchyard_version() -> str:
-    """Resolve the installed distribution version."""
-
-    try:
-        return version("nemo-switchyard")
-    except PackageNotFoundError:
-        from switchyard import __version__
-
-        return __version__
-
-
 def _add_launch_parser(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
 ) -> None:
     launch = subparsers.add_parser(
         "launch",
@@ -125,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {_switchyard_version()}",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command")
 

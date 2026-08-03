@@ -122,9 +122,7 @@ jobs:
       - name: Stamp dev source distribution metadata
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix }}
         run: |
-          python scripts/release/set_dev_wheel_version.py \
-            "${{ inputs.dev_version }}" \
-            --package-name "${DEV_PACKAGE_NAME}"
+          python scripts/release/set_dev_wheel_version.py "${{ inputs.dev_version }}"
       - name: Build sdist
         run: uv run maturin sdist --out dist
       - name: Verify sdist license files
@@ -197,9 +195,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_dev_matrix }}
         shell: bash
         run: |
-          python scripts/release/set_dev_wheel_version.py \
-            "${{ inputs.dev_version }}" \
-            --package-name "${DEV_PACKAGE_NAME}"
+          python scripts/release/set_dev_wheel_version.py "${{ inputs.dev_version }}"
       - name: Setup QEMU for Linux cross builds
         if: runner.os == 'Linux' && runner.arch != 'ARM64' && matrix.manylinux_arch == 'aarch64'
         uses: docker/setup-qemu-action@v3
@@ -314,9 +310,7 @@ jobs:
       - name: Stamp dev wheel metadata
         shell: bash
         run: |
-          python scripts/release/set_dev_wheel_version.py \
-            "${{ inputs.dev_version }}" \
-            --package-name "${DEV_PACKAGE_NAME}"
+          python scripts/release/set_dev_wheel_version.py "${{ inputs.dev_version }}"
       - name: Build manylinux x86_64 wheel
         shell: bash
         run: |

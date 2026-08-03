@@ -9,7 +9,7 @@ Switchyard has two command-line paths:
 
 ## Launcher Path: `switchyard launch`
 
-Install the launcher with `uv tool install "nemo-switchyard[cli,server]"`. The
+Install the launcher with `uv tool install --python 3.12 "nemo-switchyard[cli,server]"`. The
 selected coding agent must also be installed and available on `PATH`.
 
 ### Usage

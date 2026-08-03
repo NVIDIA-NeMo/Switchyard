@@ -25,7 +25,7 @@ source "$HOME/.local/bin/env"
 Then install the published Switchyard tool:
 
 ```bash
-uv tool install "nemo-switchyard[cli,server]"
+uv tool install --python 3.12 "nemo-switchyard[cli,server]"
 ```
 
 This creates an isolated Python tool environment containing the `switchyard`
