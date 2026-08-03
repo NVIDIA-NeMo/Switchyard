@@ -73,19 +73,25 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
     use super::*;
-    use std::collections::BTreeMap;
     use switchyard_protocol::text_request;
 
+    fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
+        let mut m = http::HeaderMap::with_capacity(sl.len());
+        for (k, v) in sl {
+            m.insert(
+                http::HeaderName::from_str(k).unwrap(),
+                (*v).try_into().unwrap(),
+            );
+        }
+        m
+    }
+
     fn request(headers: &[(&str, &str)]) -> Request {
-        let metadata = (!headers.is_empty()).then(|| {
-            Metadata::from_headers(
-                &headers
-                    .iter()
-                    .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
-                    .collect::<BTreeMap<_, _>>(),
-            )
-        });
+        let metadata =
+            (!headers.is_empty()).then(|| Metadata::from_headers(&slice_to_header_map(headers)));
         Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,

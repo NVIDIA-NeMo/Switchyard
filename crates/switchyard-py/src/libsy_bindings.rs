@@ -217,13 +217,20 @@ impl PyAlgorithm {
         &self,
         py: Python<'py>,
         request: &Bound<'_, PyAny>,
-        headers: Option<std::collections::BTreeMap<String, String>>,
+        headers: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let algorithm = Arc::clone(&self.inner);
+        let hm: Option<http::HeaderMap> = match headers {
+            Some(h) => Some((&h).try_into().map_err(|err: http::Error| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            })?),
+            None => None,
+        };
+
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
-            metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+            metadata: hm.map(|hm| Metadata::from_headers(&hm)),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (decisions, response) = algorithm

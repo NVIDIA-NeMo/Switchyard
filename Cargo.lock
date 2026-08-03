@@ -1973,6 +1973,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
+ "http",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
@@ -1996,6 +1997,7 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-util",
+ "http",
  "httpdate",
  "opentelemetry",
  "reqwest",
@@ -2013,6 +2015,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
+ "http",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2024,6 +2027,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
+ "http",
  "parking_lot",
  "pyo3",
  "pyo3-async-runtimes",
@@ -2049,6 +2053,7 @@ dependencies = [
  "axum-server",
  "clap",
  "futures-util",
+ "http",
  "http-body-util",
  "humantime",
  "opentelemetry",

@@ -433,7 +433,7 @@ impl TranslatingLlmClient {
         &self,
         ctx: Context,
         raw_http_request: Value,
-        http_headers: Option<BTreeMap<String, String>>,
+        http_headers: Option<http::HeaderMap>,
         model: Option<&str>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
@@ -655,7 +655,7 @@ fn forward_metadata_headers(
         return builder;
     };
     for (name, value) in headers {
-        if is_reserved_header(name) {
+        if is_reserved_header(name.as_str()) {
             continue;
         }
         builder = builder.header(name, value);
@@ -1667,10 +1667,16 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut headers = BTreeMap::new();
-        headers.insert("x-request-id".to_string(), "abc".to_string());
-        headers.insert("authorization".to_string(), "Bearer client-key".to_string());
-        headers.insert("accept-encoding".to_string(), "gzip, br".to_string());
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
+        headers.insert(
+            "accept-encoding",
+            http::HeaderValue::from_static("gzip, br"),
+        );
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("gpt".to_string()),
@@ -1887,9 +1893,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut headers = BTreeMap::new();
-        headers.insert("x-request-id".to_string(), "abc".to_string());
-        headers.insert("authorization".to_string(), "Bearer client-key".to_string());
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let raw = json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]});

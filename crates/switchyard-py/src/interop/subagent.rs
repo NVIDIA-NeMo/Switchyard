@@ -9,7 +9,7 @@
 //! classifier and the serve-path profile alike — answers "is this delegated work?"
 //! identically.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use pyo3::prelude::*;
 
@@ -19,8 +19,10 @@ use pyo3::prelude::*;
 /// `is_subagent_work` for the kind policy, so harness maintenance turns (Codex `compact`,
 /// `memory_consolidation`) stay on normal routing rather than being sent to a worker target.
 #[pyfunction]
-fn is_subagent_request(headers: BTreeMap<String, String>) -> bool {
-    switchyard_protocol::Metadata::from_headers(&headers).is_subagent_work()
+fn is_subagent_request(headers: HashMap<String, String>) -> bool {
+    // TODO: Can we change the signature to PyResult?
+    let h: http::HeaderMap = (&headers).try_into().unwrap();
+    switchyard_protocol::Metadata::from_headers(&h).is_subagent_work()
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -484,7 +484,7 @@ async fn handle_endpoint_inner(
     let routing_log_context = state
         .routing_log
         .as_ref()
-        .map(|_| routing_log::RoutingLogContext::from_headers(&normalized_headers(&headers)));
+        .map(|_| routing_log::RoutingLogContext::from_headers(&headers));
     let metadata = metadata_from_headers(&headers);
     let request_log = RequestLogContext {
         started: started.0,
@@ -702,22 +702,9 @@ fn request_log_level(status: StatusCode) -> Level {
 }
 
 fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
-    let headers = normalized_headers(headers);
-    let mut metadata = Metadata::from_headers(&headers);
-    metadata.http_headers = Some(headers);
+    let mut metadata = Metadata::from_headers(headers);
+    metadata.http_headers = Some(headers.clone());
     metadata
-}
-
-fn normalized_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
-        })
-        .collect()
 }
 
 fn attach_routing_headers(response: &mut Response, decision: &dyn Decision) {
