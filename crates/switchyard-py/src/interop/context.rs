@@ -145,7 +145,10 @@ impl Drop for PyProxyContextLease {
 
 #[pymethods]
 impl PyProxyContext {
-    /// Creates a Python proxy context from optional metadata and request ID.
+    /// Creates a context with a validated native request ID.
+    ///
+    /// Metadata is accepted for Python compatibility but remains in the
+    /// Python-owned `ProxyMetadata` rather than the native context.
     #[new]
     #[pyo3(signature = (metadata=None, request_id=None))]
     fn new(metadata: Option<&Bound<'_, PyAny>>, request_id: Option<String>) -> PyResult<Self> {

@@ -65,6 +65,7 @@ from switchyard.lib.profiles import (
     profile_config,
     profile_config_type,
 )
+from switchyard.lib.request_metadata import RequestMetadata
 from switchyard.lib.roles import (
     LLMBackend,
 )
@@ -164,6 +165,7 @@ __all__ = [
     "build_switchyard_app",
     # Route dispatch table
     "RouteTable",
+    "RequestMetadata",
     "RlLoggingRequestProcessor",
     "RlLoggingResponseProcessor",
     # Random Routing usage case
