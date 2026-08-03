@@ -1107,6 +1107,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/rust_api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1321,9 +1349,9 @@ mechanical work. Which tier a turn defaults to depends on the picker you choose
 (<code>capable_first</code> or <code>efficient_first</code>); the signals then move individual turns
 off that default. You configure it with a single knob, <code>confidence_threshold</code>,
 plus an optional LLM classifier.</p>
-<p>If the selected backend hits a context-window overflow, the router retries once
-against <code>fallback_target_on_evict</code>; a second overflow surfaces a
-context-pool-exhausted error (see <a href="../../operations/context_window/">Context-Window Handling</a>).</p>
+<p>If the selected target exceeds its context window, the router tries the next
+eligible target until one succeeds or all configured targets have been tried. See
+<a href="../../operations/context_window/">Context-Window Handling</a>.</p>
 <h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
 <p>A coding agent's run moves through stages: early on it explores the codebase and
 recovers from errors, and later it settles into more mechanical implementation.
@@ -1395,10 +1423,8 @@ cheaper tier:</p>
 clears the threshold to escalate to capable.</p>
 <p>(If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)</p>
-<p><strong>Set <code>0.5</code> explicitly.</strong> It's the recommended starting point and what the
-example below uses. When you omit the field the config default is <code>0.5</code> (for
-both the profile config and the deprecated route bundle) — but setting it
-explicitly keeps the intent clear.</p>
+<p><strong>Set <code>0.5</code> explicitly.</strong> <code>confidence_threshold</code> is required by the TOML schema;
+<code>0.5</code> is the recommended starting point and what the example below uses.</p>
 <table>
 <thead>
 <tr>
@@ -1416,7 +1442,7 @@ explicitly keeps the intent clear.</p>
 <tr>
 <td><code>0.5</code></td>
 <td>no</td>
-<td>Recommended starting point (config default). The scorer is corroborative — one full wrong signal scores ~<code>0.46</code>, just under <code>0.5</code> — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration.</td>
+<td>Recommended starting point. The scorer is corroborative — one full wrong signal scores ~<code>0.46</code>, just under <code>0.5</code> — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration.</td>
 </tr>
 <tr>
 <td><code>0.7</code> - <code>0.9</code></td>
@@ -1426,13 +1452,13 @@ explicitly keeps the intent clear.</p>
 <tr>
 <td><code>1.0</code></td>
 <td>yes (required)</td>
-<td>Classifier-driven. Equivalent to the legacy <code>coding_agent</code> profile.</td>
+<td>Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier.</td>
 </tr>
 </tbody>
 </table>
 <p>The signal-vs-classifier split is dataset-dependent. Measure it in
-production via <code>routing_decisions.stage_router</code> on <code>/v1/stats</code> rather than relying on
-priors from this doc.</p>
+production: <code>/v1/stats</code> reports traffic by tier and model, while response headers
+and structured decision logs explain individual selections.</p>
 <h3 id="calibrating-the-threshold-from-run-data">Calibrating the threshold from run data<a class="headerlink" href="#calibrating-the-threshold-from-run-data" title="Permanent link">&para;</a></h3>
 <p>The recommended <code>0.5</code> starting point was derived from SWE-Bench Pro Python-75
 calibration. To tune for a different task set or model pair, follow this
@@ -1618,8 +1644,8 @@ and can cause sustained 429s at scale.</p>
 </tbody>
 </table>
 <h3 id="decision-sources">Decision sources<a class="headerlink" href="#decision-sources" title="Permanent link">&para;</a></h3>
-<p>The <code>decision_source</code> recorded internally for each turn explains why the routing
-went the way it did. It appears in per-tier metrics tagged on the decision:</p>
+<p>The router records an internal <code>decision_source</code> for each turn to distinguish the
+paths through its cascade:</p>
 <table>
 <thead>
 <tr>
@@ -1652,7 +1678,7 @@ went the way it did. It appears in per-tier metrics tagged on the decision:</p>
 </table>
 <h2 id="when-not-to-use-stage-router">When <em>not</em> to use stage-router<a class="headerlink" href="#when-not-to-use-stage-router" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Single-model deployments.</strong> Use a <code>model</code> route instead.</li>
+<li><strong>Single-model deployments.</strong> Use a <code>passthrough</code> route instead.</li>
 <li><strong>Probabilistic A/B splits.</strong> Use
   <a href="../random_routing/">Random Routing</a> (<code>type = "random"</code>).
   The stage-router's signals are wasted on a fixed traffic ratio.</li>
