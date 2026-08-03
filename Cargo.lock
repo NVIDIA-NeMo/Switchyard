@@ -1110,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-plugin"
 version = "0.8.0"
-source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=070b6d3c7d5b681beebc1aa6f12bfcfafc5e1c0d#070b6d3c7d5b681beebc1aa6f12bfcfafc5e1c0d"
+source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=3a8f8f0745fc6545a9162bd585da2273fa052785#3a8f8f0745fc6545a9162bd585da2273fa052785"
 dependencies = [
  "futures",
  "nemo-relay-types",
@@ -1121,7 +1121,7 @@ dependencies = [
 [[package]]
 name = "nemo-relay-types"
 version = "0.8.0"
-source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=070b6d3c7d5b681beebc1aa6f12bfcfafc5e1c0d#070b6d3c7d5b681beebc1aa6f12bfcfafc5e1c0d"
+source = "git+https://github.com/bbednarski9/NeMo-Relay?rev=3a8f8f0745fc6545a9162bd585da2273fa052785#3a8f8f0745fc6545a9162bd585da2273fa052785"
 dependencies = [
  "bitflags",
  "chrono",
