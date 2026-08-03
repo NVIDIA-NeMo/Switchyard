@@ -32,6 +32,7 @@ use crate::core::processor::{Event, Processor};
 /// role — an empty conversation, or one ending on an assistant turn — takes a
 /// fresh user message.
 pub fn append_note(request: &mut Request, note: &str) {
+    request.llm_request.invalidate_preserved_requests();
     match request.llm_request.messages.last_mut() {
         Some(last) if last.role == Role::User => last.content.push(ContentBlock::Text {
             text: note.to_string(),
@@ -93,6 +94,7 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
         let Some(prompt) = self.prompts.get(decision.selected_model()) else {
             return Ok(());
         };
+        request.llm_request.invalidate_preserved_requests();
         // Ahead of the client's own instructions, so this framing is what the
         // model reads first.
         request.llm_request.instructions.insert(
@@ -111,7 +113,8 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{LlmRequest, ToolResult, text_request};
+    use serde_json::json;
+    use switchyard_protocol::{LlmRequest, ToolResult, WireFormat, text_request};
 
     const NOTE: &str = "recovering from an error";
     const STRONG_PROMPT: &str = "diagnose before you edit";
@@ -188,6 +191,24 @@ mod tests {
             .filter_map(|message| message.text_content("|"))
             .collect();
         assert_eq!(trail, vec![format!("fix the build|{NOTE}")]);
+    }
+
+    #[test]
+    fn a_note_invalidates_exact_replay_of_the_request_it_changes() {
+        let mut request = request_with(vec![Message::text(Role::User, "fix the build")]);
+        let format: switchyard_protocol::FormatId = WireFormat::OpenAiChat.into();
+        request
+            .llm_request
+            .preservation
+            .requests
+            .insert(format.clone(), json!({"messages": []}));
+
+        append_note(&mut request, NOTE);
+
+        assert_eq!(
+            request.llm_request.preservation.requests.get(&format),
+            Some(&serde_json::Value::Null)
+        );
     }
 
     /// A decision routed to `target`.
@@ -289,6 +310,34 @@ mod tests {
         assert_eq!(
             instructions(&request),
             vec![STRONG_PROMPT, "you are a coding agent"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_tier_prompt_invalidates_exact_replay_of_the_request_it_changes() -> Result<()> {
+        let processor = SystemPromptProcessor::new(prompts());
+        let mut request = Request::default();
+        let format: switchyard_protocol::FormatId = WireFormat::OpenAiChat.into();
+        request
+            .llm_request
+            .preservation
+            .requests
+            .insert(format.clone(), json!({"messages": []}));
+
+        processor
+            .process(
+                &mut (),
+                Event::Decision {
+                    request: &mut request,
+                    decision: &RoutedTo("strong"),
+                },
+            )
+            .await?;
+
+        assert_eq!(
+            request.llm_request.preservation.requests.get(&format),
+            Some(&serde_json::Value::Null)
         );
         Ok(())
     }

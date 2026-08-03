@@ -208,6 +208,11 @@ pub struct ProviderExtensions {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PreservationMetadata {
+    /// Exact request bodies by format.
+    ///
+    /// A null value records that the format was captured but its body became stale after a
+    /// normalized mutation. Provider request codecs accept objects only, so null is an
+    /// unambiguous internal invalidation marker.
     pub requests: BTreeMap<FormatId, Value>,
     pub responses: BTreeMap<FormatId, Value>,
 }
@@ -227,6 +232,18 @@ pub struct LlmRequest {
     pub stream: bool,
     pub extensions: ProviderExtensions,
     pub preservation: PreservationMetadata,
+}
+
+impl LlmRequest {
+    /// Prevents exact replay of every preserved request body after this request is mutated.
+    ///
+    /// Translation can still recover provider extension fields when encoding back to the
+    /// same format, while normalized fields are regenerated from the current request.
+    pub fn invalidate_preserved_requests(&mut self) {
+        for body in self.preservation.requests.values_mut() {
+            *body = Value::Null;
+        }
+    }
 }
 
 /// Normalized token usage counts.
