@@ -4,8 +4,8 @@
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="doccomment">//! Correlation metadata and harness header normalization.
 <a href=#5 id=5 data-nosnippet>5</a>//!
 <a href=#6 id=6 data-nosnippet>6</a>//! [`Metadata`] is the correlation/routing envelope carried alongside a request or
-<a href=#7 id=7 data-nosnippet>7</a>//! response. [`Metadata::from_headers`] normalizes the harness-specific HTTP headers
-<a href=#8 id=8 data-nosnippet>8</a>//! that Claude Code, Codex, NeMo Relay, and Dynamo attach into that neutral shape.
+<a href=#7 id=7 data-nosnippet>7</a>//! response. [`Metadata::from_headers`] normalizes host-specific HTTP headers into
+<a href=#8 id=8 data-nosnippet>8</a>//! that neutral shape.
 <a href=#9 id=9 data-nosnippet>9</a>
 <a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>std::collections::BTreeMap;
 <a href=#11 id=11 data-nosnippet>11</a>
@@ -34,11 +34,11 @@
 <a href=#34 id=34 data-nosnippet>34</a><span class="kw">const </span>SWITCHYARD_REQUEST_ID_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-switchyard-request-id"</span>;
 <a href=#35 id=35 data-nosnippet>35</a><span class="kw">const </span>SWITCHYARD_SESSION_FINAL_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-switchyard-session-final"</span>;
 <a href=#36 id=36 data-nosnippet>36</a>
-<a href=#37 id=37 data-nosnippet>37</a><span class="comment">// NeMo Relay correlation headers.
+<a href=#37 id=37 data-nosnippet>37</a><span class="comment">// Correlation-header aliases used by integrating hosts.
 <a href=#38 id=38 data-nosnippet>38</a></span><span class="kw">const </span>RELAY_SESSION_ID_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-nemo-relay-session-id"</span>;
 <a href=#39 id=39 data-nosnippet>39</a><span class="kw">const </span>RELAY_SUBAGENT_ID_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-nemo-relay-subagent-id"</span>;
 <a href=#40 id=40 data-nosnippet>40</a>
-<a href=#41 id=41 data-nosnippet>41</a><span class="comment">// Dynamo correlation headers.
+<a href=#41 id=41 data-nosnippet>41</a><span class="comment">// Additional correlation-header aliases used by integrating hosts.
 <a href=#42 id=42 data-nosnippet>42</a></span><span class="kw">const </span>DYNAMO_SESSION_ID_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-dynamo-session-id"</span>;
 <a href=#43 id=43 data-nosnippet>43</a><span class="kw">const </span>DYNAMO_PARENT_SESSION_ID_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-dynamo-parent-session-id"</span>;
 <a href=#44 id=44 data-nosnippet>44</a><span class="kw">const </span>DYNAMO_SESSION_FINAL_HEADER: <span class="kw-2">&amp;</span>str = <span class="string">"x-dynamo-session-final"</span>;
@@ -196,14 +196,14 @@
 <a href=#196 id=196 data-nosnippet>196</a><span class="kw">impl </span>Metadata {
 <a href=#197 id=197 data-nosnippet>197</a>    <span class="doccomment">/// Normalizes harness-specific request headers into correlation metadata.
 <a href=#198 id=198 data-nosnippet>198</a>    ///
-<a href=#199 id=199 data-nosnippet>199</a>    /// Explicit `x-switchyard-*` headers win. NeMo Relay and Dynamo correlation
-<a href=#200 id=200 data-nosnippet>200</a>    /// headers are accepted for observability without driving routing. Codex's
-<a href=#201 id=201 data-nosnippet>201</a>    /// structured turn metadata is preferred over its compatibility projections.
-<a href=#202 id=202 data-nosnippet>202</a>    /// Claude Code carries agent lineage in native headers: a request with a
-<a href=#203 id=203 data-nosnippet>203</a>    /// non-empty `x-claude-code-agent-id` is treated as a child agent (its parent
+<a href=#199 id=199 data-nosnippet>199</a>    /// Explicit `x-switchyard-*` headers win. Compatible host headers can populate
+<a href=#200 id=200 data-nosnippet>200</a>    /// correlation and session metadata, but do not by themselves mark a request as
+<a href=#201 id=201 data-nosnippet>201</a>    /// delegated work. Structured turn metadata is preferred over compatibility
+<a href=#202 id=202 data-nosnippet>202</a>    /// projections. A request with a non-empty `x-claude-code-agent-id` is treated
+<a href=#203 id=203 data-nosnippet>203</a>    /// as a child agent (its parent
 <a href=#204 id=204 data-nosnippet>204</a>    /// inferred from the session when not stated). Sub-agent routing status is taken
 <a href=#205 id=205 data-nosnippet>205</a>    /// from an explicit `x-switchyard-is-subagent` header when present, and otherwise
-<a href=#206 id=206 data-nosnippet>206</a>    /// inferred from Claude Code lineage or Codex harness signals.
+<a href=#206 id=206 data-nosnippet>206</a>    /// inferred from native agent lineage or structured harness signals.
 <a href=#207 id=207 data-nosnippet>207</a>    </span><span class="kw">pub fn </span>from_headers(headers: <span class="kw-2">&amp;</span>BTreeMap&lt;String, String&gt;) -&gt; <span class="self">Self </span>{
 <a href=#208 id=208 data-nosnippet>208</a>        <span class="kw">let </span>headers = <span class="kw-2">&amp;</span>normalize_headers(headers);
 <a href=#209 id=209 data-nosnippet>209</a>
@@ -240,10 +240,10 @@
 <a href=#240 id=240 data-nosnippet>240</a>
 <a href=#241 id=241 data-nosnippet>241</a><span class="doccomment">/// Returns `(parent_agent_id, is_subagent, is_delegated_work)` from the headers.
 <a href=#242 id=242 data-nosnippet>242</a>///
-<a href=#243 id=243 data-nosnippet>243</a>/// Recognized sub-agent signals: Claude Code `x-claude-code-agent-id`, Codex
-<a href=#244 id=244 data-nosnippet>244</a>/// `x-openai-subagent` / `x-codex-turn-metadata.subagent_kind`, and explicit
-<a href=#245 id=245 data-nosnippet>245</a>/// `x-switchyard-is-subagent`. Correlation-only headers (Relay, Dynamo, OpenCode
-<a href=#246 id=246 data-nosnippet>246</a>/// parent sessions) populate observability fields but do not drive routing.
+<a href=#243 id=243 data-nosnippet>243</a>/// Recognized sub-agent signals include `x-claude-code-agent-id`,
+<a href=#244 id=244 data-nosnippet>244</a>/// `x-openai-subagent`, `x-codex-turn-metadata.subagent_kind`, and explicit
+<a href=#245 id=245 data-nosnippet>245</a>/// `x-switchyard-is-subagent`. Other host correlation and parent-session headers
+<a href=#246 id=246 data-nosnippet>246</a>/// may populate metadata but do not drive sub-agent classification.
 <a href=#247 id=247 data-nosnippet>247</a>///
 <a href=#248 id=248 data-nosnippet>248</a>/// `is_delegated_work` is computed from raw harness signals, not from `agent_kind`,
 <a href=#249 id=249 data-nosnippet>249</a>/// which may be set by an unrelated operator label (`x-switchyard-agent-kind`).
@@ -257,8 +257,8 @@
 <a href=#257 id=257 data-nosnippet>257</a>    </span><span class="kw">let </span>harness_kind = resolve_path(headers, CODEX_SUBAGENT_KIND_PATH)
 <a href=#258 id=258 data-nosnippet>258</a>        .or_else(|| header(headers, OPENAI_SUBAGENT_HEADER).map(str::to_string));
 <a href=#259 id=259 data-nosnippet>259</a>
-<a href=#260 id=260 data-nosnippet>260</a>    <span class="comment">// Parent resolved via HEADER_CONFIG precedence (covers Dynamo/Codex correlation);
-<a href=#261 id=261 data-nosnippet>261</a>    // falls back to the Claude Code session the child was spawned under.
+<a href=#260 id=260 data-nosnippet>260</a>    <span class="comment">// Resolve the parent through the configured header precedence, then fall back
+<a href=#261 id=261 data-nosnippet>261</a>    // to the native agent session the child was spawned under.
 <a href=#262 id=262 data-nosnippet>262</a>    </span><span class="kw">let </span>parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
 <a href=#263 id=263 data-nosnippet>263</a>        .or_else(|| claude_parent.map(str::to_string));
 <a href=#264 id=264 data-nosnippet>264</a>
@@ -464,7 +464,7 @@
 <a href=#464 id=464 data-nosnippet>464</a>
 <a href=#465 id=465 data-nosnippet>465</a>    <span class="attr">#[test]
 <a href=#466 id=466 data-nosnippet>466</a>    </span><span class="kw">fn </span>normalizes_relay_and_dynamo_child_headers() {
-<a href=#467 id=467 data-nosnippet>467</a>        <span class="comment">// Relay and Dynamo headers are correlation data, not routing signals.
+<a href=#467 id=467 data-nosnippet>467</a>        <span class="comment">// Integrating-host headers are correlation data, not routing signals.
 <a href=#468 id=468 data-nosnippet>468</a>        // They populate observability fields but must not trigger sub-agent routing.
 <a href=#469 id=469 data-nosnippet>469</a>        </span><span class="kw">let </span>headers = BTreeMap::from([
 <a href=#470 id=470 data-nosnippet>470</a>            (

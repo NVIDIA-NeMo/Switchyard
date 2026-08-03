@@ -40,8 +40,10 @@
 <a href=#40 id=40 data-nosnippet>40</a>
 <a href=#41 id=41 data-nosnippet>41</a><span class="doccomment">/// Registers process-wide compatibility gauges with the global meter provider.
 <a href=#42 id=42 data-nosnippet>42</a>///
-<a href=#43 id=43 data-nosnippet>43</a>/// Hosts should call this after installing their OpenTelemetry meter provider.
-<a href=#44 id=44 data-nosnippet>44</a></span><span class="kw">pub fn </span>initialize_metrics() {
-<a href=#45 id=45 data-nosnippet>45</a>    observability::initialize_metrics();
-<a href=#46 id=46 data-nosnippet>46</a>}
+<a href=#43 id=43 data-nosnippet>43</a>/// Hosts should call this after installing their OpenTelemetry meter provider. Other
+<a href=#44 id=44 data-nosnippet>44</a>/// libsy metrics are created when recorded and do not require initialization. Spans
+<a href=#45 id=45 data-nosnippet>45</a>/// and structured logs require the host to install a `tracing` subscriber separately.
+<a href=#46 id=46 data-nosnippet>46</a></span><span class="kw">pub fn </span>initialize_metrics() {
+<a href=#47 id=47 data-nosnippet>47</a>    observability::initialize_metrics();
+<a href=#48 id=48 data-nosnippet>48</a>}
 </code></pre></div></section></main></body></html>
