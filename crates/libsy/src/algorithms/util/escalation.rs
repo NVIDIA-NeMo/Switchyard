@@ -10,7 +10,6 @@
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, LlmRequest, Message, OutputParams, Role};
 
-use super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
 use crate::core::algorithm::LlmTarget;
 use crate::core::classifier::{Classification, Score};
@@ -39,10 +38,10 @@ const MAX_REQUEST_CHARS: usize = 18_000;
 
 /// The tuning surface for the trajectory judge.
 ///
-/// Routing settings retain the benchmarked defaults, and the completion cap bounds one judge
-/// call. Everything else is a fixed invariant (the constants above).
+/// The routing settings retain their benchmarked defaults. Everything else is a fixed invariant
+/// (the constants above).
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EscalationJudgeConfig {
     /// Consecutive escalate verdicts required before a turn moves to the capable tier, which
     /// is also the turn that latches the session. Any decline clears the streak.
@@ -53,8 +52,6 @@ pub struct EscalationJudgeConfig {
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
-    /// Maximum completion tokens available to the escalation verdict.
-    pub max_output_tokens: u64,
 }
 
 impl EscalationJudgeConfig {
@@ -73,9 +70,6 @@ impl EscalationJudgeConfig {
                 self.window_message_chars
             ));
         }
-        if self.max_output_tokens == 0 {
-            return reject("max_output_tokens must be at least 1".to_string());
-        }
         Ok(())
     }
 }
@@ -86,7 +80,6 @@ impl Default for EscalationJudgeConfig {
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
 }
@@ -122,7 +115,7 @@ impl Judge for EscalationJudge {
                 ],
                 output: OutputParams {
                     response_format: self.rubric.response_schema.clone(),
-                    max_output_tokens: Some(self.config.max_output_tokens),
+                    max_output_tokens: Some(self.rubric.max_output_tokens),
                 },
                 ..LlmRequest::default()
             },
@@ -169,9 +162,16 @@ pub(crate) fn build_judge(
     capable: String,
     efficient: String,
     config: EscalationJudgeConfig,
+    max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
-    let rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    if max_output_tokens == 0 {
+        return Err(LibsyError::AlgorithmError {
+            message: "max_output_tokens must be at least 1".to_string(),
+        });
+    }
+    let mut rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+    rubric.max_output_tokens = max_output_tokens;
     Ok(JudgeClassifier::new(
         EscalationJudge { rubric, config },
         judge_target,
@@ -386,7 +386,7 @@ mod tests {
         // Bounded output, so a reasoning judge cannot run away mid-verdict.
         assert_eq!(
             built.llm_request.output.max_output_tokens,
-            Some(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
+            Some(super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
         );
         assert!(built.llm_request.output.response_format.is_some());
         Ok(())
@@ -394,12 +394,11 @@ mod tests {
 
     #[test]
     fn judge_request_uses_the_configured_completion_cap() -> Result<()> {
+        let mut rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
+        rubric.max_output_tokens = 512;
         let judge = EscalationJudge {
-            rubric: llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
-            config: EscalationJudgeConfig {
-                max_output_tokens: 512,
-                ..EscalationJudgeConfig::default()
-            },
+            rubric,
+            config: EscalationJudgeConfig::default(),
         };
 
         let built = judge.build_request(&State::default(), &request_at_turn(None, 1));

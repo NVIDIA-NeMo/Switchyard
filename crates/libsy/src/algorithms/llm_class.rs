@@ -507,12 +507,19 @@ impl LlmTaskClassifier {
         efficient_target: LlmTarget,
         capable_target: LlmTarget,
         config: EscalationJudgeConfig,
+        max_output_tokens: u64,
     ) -> Result<Self> {
         let capable_name = capable_target.semantic_name.clone();
         let efficient_name = efficient_target.semantic_name.clone();
         let confirmations = config.confirmations;
         let esc = Arc::new(EscalationClassifier {
-            judge: escalation::build_judge(judge_target, capable_name, efficient_name, config)?,
+            judge: escalation::build_judge(
+                judge_target,
+                capable_name,
+                efficient_name,
+                config,
+                max_output_tokens,
+            )?,
             capable: capable_target.clone(),
             efficient: efficient_target.clone(),
             confirmations,
@@ -1238,6 +1245,7 @@ mod tests {
                 confirmations: 1,
                 ..EscalationJudgeConfig::default()
             },
+            DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         )?))
     }
 
