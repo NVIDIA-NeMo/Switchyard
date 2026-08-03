@@ -35,6 +35,19 @@ const ANTHROPIC_OVERFLOW_PHRASES: &[&str] = &[
     "context length",
 ];
 
+// Phrases marking a request the model cannot serve at all, whatever its size:
+// multimodal content sent to a text-only deployment, or a server started without
+// its multimodal projector. The wording comes from the serving stack rather than
+// a provider error envelope, and no provider assigns it a structured `error.code`,
+// so one phrase list covers every backend variant.
+const CAPABILITY_REJECT_PHRASES: &[&str] = &[
+    "mmproj",
+    "image input",
+    "does not support image",
+    "does not support multimodal",
+    "no multimodal support",
+];
+
 /// Shared HTTP configuration for one upstream backend.
 #[derive(Clone)]
 pub struct HttpBackendConfig {
@@ -195,6 +208,16 @@ impl Backend {
             ),
             Backend::Anthropic(_) => is_overflow_body(body, |_| false, ANTHROPIC_OVERFLOW_PHRASES),
         }
+    }
+
+    /// Whether an upstream 400 `body` says the model cannot serve this request at
+    /// all — as opposed to it merely being too large.
+    ///
+    /// Provider-independent: the rejection is emitted by the serving stack, so the
+    /// same phrase list applies to every backend variant and there is no structured
+    /// check to short-circuit on.
+    pub(crate) fn is_capability_reject(&self, body: &str) -> bool {
+        is_overflow_body(body, |_| false, CAPABILITY_REJECT_PHRASES)
     }
 }
 
@@ -369,5 +392,37 @@ mod tests {
             )
         );
         assert!(!backend.is_context_overflow(r#"{"error":{"message":"overloaded"}}"#));
+    }
+
+    #[test]
+    fn detects_capability_reject_across_backends() {
+        // Provider-independent: the serving stack emits it, so every variant matches.
+        for backend in [
+            Backend::OpenAiChat(config("x")),
+            Backend::OpenAiResponses(config("x")),
+            Backend::Anthropic(config("x")),
+        ] {
+            assert!(backend.is_capability_reject(
+                r#"{"error":{"message":"image input is not supported by this model"}}"#
+            ));
+            assert!(backend.is_capability_reject(
+                r#"{"error":{"message":"server was started without an mmproj file"}}"#
+            ));
+            // Plain-text bodies from proxies still classify.
+            assert!(backend.is_capability_reject("this model does not support image content"));
+        }
+    }
+
+    #[test]
+    fn capability_reject_and_overflow_do_not_overlap() {
+        let backend = Backend::OpenAiChat(config("x"));
+        // An overflow is not a capability reject: a smaller request can still succeed.
+        let overflow = r#"{"error":{"code":"context_length_exceeded","message":"too long"}}"#;
+        assert!(backend.is_context_overflow(overflow));
+        assert!(!backend.is_capability_reject(overflow));
+        // And unrelated failures are neither.
+        let rate_limit = r#"{"error":{"message":"rate limit exceeded"}}"#;
+        assert!(!backend.is_context_overflow(rate_limit));
+        assert!(!backend.is_capability_reject(rate_limit));
     }
 }

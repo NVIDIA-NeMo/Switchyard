@@ -13,8 +13,9 @@
 //! private state value across turns with the same session ID. Requests without a session ID use
 //! unretained per-run state.
 //!
-//! Every composition retains one thing regardless: a target that overflows its context window is
-//! remembered for the rest of its session and skipped on later turns.
+//! Every composition retains one thing regardless: a target that overflows its context window,
+//! or that rejects the request as one it cannot serve at all, is remembered for the rest of its
+//! session and skipped on later turns.
 //! An unavailable target is skipped only for the current request.
 
 use std::collections::HashSet;
@@ -264,6 +265,7 @@ where
     ) -> Decision {
         let failure = match reason {
             RoutingFallbackReason::ContextWindow => "exceeded its context window",
+            RoutingFallbackReason::Capability => "cannot serve the request",
             RoutingFallbackReason::Unavailable => "was unavailable",
         };
         Decision::new(
@@ -798,6 +800,75 @@ mod tests {
             assert_eq!(run_turn(&router, serve).await?.0, "strong");
         }
         assert_eq!(calls.lock().iter().filter(|m| *m == "weak").count(), 1);
+        Ok(())
+    }
+
+    /// Rejects the named `rejecting` targets as unable to serve the request at all and
+    /// echoes for the rest. The capability counterpart of `overflowing`.
+    fn capability_rejecting(
+        rejecting: &'static [&'static str],
+        calls: Arc<Mutex<Vec<String>>>,
+    ) -> impl Serve {
+        move |decision: Decision, _request: Request| {
+            let calls = Arc::clone(&calls);
+            async move {
+                let model = decision.selected_model_id().to_string();
+                calls.lock().push(model.clone());
+                if rejecting.contains(&model.as_str()) {
+                    return Err(LlmClientError::CapabilityRejected {
+                        model,
+                        message: "image input is not supported".to_string(),
+                    });
+                }
+                Ok(reply(model))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capability_reject_falls_forward_and_evicts_like_an_overflow() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let router = Arc::new(
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        for _ in 0..3 {
+            let serve = capability_rejecting(&["weak"], calls.clone());
+            assert_eq!(run_turn(&router, serve).await?.0, "strong");
+        }
+        // Evicted after the first rejection: a capability reject is a property of the
+        // target, so later turns must not re-probe it.
+        assert_eq!(calls.lock().iter().filter(|m| *m == "weak").count(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_capability_reject_surfaces_once_the_pool_is_spent() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let router = Arc::new(
+            FallThrough::<()>::new(target_set(&["weak", "strong"]))
+                .with_classifier(fixed(vec![score("weak", 0.9)])),
+        );
+        // No target can serve it, so the caller sees the upstream rejection itself
+        // rather than an internal routing failure.
+        let serve = capability_rejecting(&["weak", "strong"], calls);
+        let error =
+            run_turn(&router, serve)
+                .await
+                .err()
+                .ok_or_else(|| LibsyError::AlgorithmError {
+                    message: "expected the call to fail, but it succeeded".to_string(),
+                })?;
+        assert!(
+            matches!(
+                error,
+                LibsyError::ClientCall {
+                    source: LlmClientError::CapabilityRejected { .. },
+                    ..
+                }
+            ),
+            "expected CapabilityRejected, got {error:?}"
+        );
         Ok(())
     }
 

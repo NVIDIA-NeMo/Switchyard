@@ -861,6 +861,14 @@ fn client_error(error: &LlmClientError) -> Response {
             "invalid_request_error",
             "context_length_exceeded",
         ),
+        // The pool is spent: every eligible target refused the request as unservable,
+        // which is a client-side problem with the request, not an upstream fault.
+        LlmClientError::CapabilityRejected { message, .. } => error_response(
+            StatusCode::BAD_REQUEST,
+            message,
+            "invalid_request_error",
+            "unsupported_content",
+        ),
         LlmClientError::UpstreamHttp { status, body } => error_response(
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
             upstream_error_message(body),

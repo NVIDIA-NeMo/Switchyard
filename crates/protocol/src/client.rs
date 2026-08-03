@@ -77,6 +77,19 @@ pub enum LlmClientError {
         message: String,
     },
 
+    /// The upstream rejected the request because the model cannot serve it at all —
+    /// multimodal content sent to a text-only deployment, a server built without its
+    /// multimodal projector, and similar. Unlike [`Self::ContextWindowExceeded`] this is
+    /// not a function of request size, so shrinking the request cannot recover it; a
+    /// routing host's only remedy is a different target.
+    #[error("model {model} cannot serve this request: {message}")]
+    CapabilityRejected {
+        /// Model that rejected the request.
+        model: String,
+        /// Upstream error message.
+        message: String,
+    },
+
     /// The upstream returned a non-success HTTP response.
     #[error("upstream returned HTTP {status}: {body}")]
     UpstreamHttp {
@@ -113,6 +126,9 @@ pub enum LlmClientError {
 pub enum RoutingFallbackReason {
     /// The selected target rejected the request because its context window was too small.
     ContextWindow,
+    /// The selected target rejected the request as one it cannot serve at all, such as an
+    /// unsupported modality or tool. Unlike an overflow, no smaller request would succeed.
+    Capability,
     /// The selected target was unavailable after its client retries finished.
     Unavailable,
 }
@@ -122,6 +138,7 @@ impl RoutingFallbackReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ContextWindow => "context_window",
+            Self::Capability => "capability",
             Self::Unavailable => "unavailable",
         }
     }

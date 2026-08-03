@@ -383,18 +383,27 @@ impl TranslatingLlmClient {
             }
         };
         metrics::record_upstream_attempt(Some(status.as_u16()));
-        let error =
-            if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
-                LlmClientError::ContextWindowExceeded {
-                    model: model.to_string(),
-                    message: body,
-                }
-            } else {
-                LlmClientError::UpstreamHttp {
-                    status: status.as_u16(),
-                    body,
-                }
-            };
+        let error = if status == reqwest::StatusCode::BAD_REQUEST
+            && backend.is_context_overflow(&body)
+        {
+            LlmClientError::ContextWindowExceeded {
+                model: model.to_string(),
+                message: body,
+            }
+        // Checked after overflow: an oversized request is recoverable on the same
+        // target, a capability reject never is.
+        } else if status == reqwest::StatusCode::BAD_REQUEST && backend.is_capability_reject(&body)
+        {
+            LlmClientError::CapabilityRejected {
+                model: model.to_string(),
+                message: body,
+            }
+        } else {
+            LlmClientError::UpstreamHttp {
+                status: status.as_u16(),
+                body,
+            }
+        };
         Err(AttemptFailure {
             error,
             status: Some(status.as_u16()),

@@ -464,6 +464,7 @@ fn classify_fallback(error: &LibsyError) -> Option<(&str, RoutingFallbackReason)
     };
     let reason = match source {
         LlmClientError::ContextWindowExceeded { .. } => RoutingFallbackReason::ContextWindow,
+        LlmClientError::CapabilityRejected { .. } => RoutingFallbackReason::Capability,
         LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => {
             RoutingFallbackReason::Unavailable
         }
@@ -509,7 +510,13 @@ pub(crate) async fn call_model_with_fallback(
             return Err(error);
         }
         match reason {
-            RoutingFallbackReason::ContextWindow => evictions.record(identity, failed),
+            // Both are permanent properties of the target for this conversation: an
+            // overflow recurs as history grows, and a capability reject never clears.
+            // Recording the eviction keeps the target out of later turns for the same
+            // identity, rather than re-probing it every turn.
+            RoutingFallbackReason::ContextWindow | RoutingFallbackReason::Capability => {
+                evictions.record(identity, failed)
+            }
             RoutingFallbackReason::Unavailable => target_unavailable(&request, failed),
         }
         let Ok(next) = targets.resolve_target(&target.semantic_name, excluded) else {
