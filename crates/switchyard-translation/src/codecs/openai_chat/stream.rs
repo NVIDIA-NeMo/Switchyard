@@ -156,6 +156,9 @@ fn encode_openai_chat_stream(
     match event {
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
+            // `finish_openai_chat_stream` uses this flag to decide whether a clean EOF needs a
+            // synthesized terminal chunk. Set it on the encode path as well as the decode path.
+            state.saw_message_start = true;
             if state.emitted_message_start
                 || (!state_source_is(state, WireFormat::AnthropicMessages)
                     && !state_source_is(state, WireFormat::OpenAiResponses))
