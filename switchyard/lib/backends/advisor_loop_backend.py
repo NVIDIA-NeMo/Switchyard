@@ -160,7 +160,10 @@ class AdvisorLoopBackend(LLMBackend):
         # hashed prefix mints a fresh key per turn, silently resetting the
         # ``max_reviews`` budget. That failure is otherwise invisible — it only
         # shows up as unexplained advisor spend — so warn once past a threshold
-        # no legitimate single-agent run should reach.
+        # no legitimate single-agent run should reach. Tracked over *every*
+        # request, not just reviewed ones: a gate that never fires still churns
+        # keys, and that must stay observable.
+        self._sessions_seen: set[str] = set()
         self._session_churn_warned = False
         # Resolve format: auto before wire selection; injected fakes must pin
         # a concrete format (probing a fake's endpoint makes no sense).
@@ -208,20 +211,26 @@ class AdvisorLoopBackend(LLMBackend):
         body = dict(normalized.body)
         messages: list[dict[str, Any]] = list(body.get("messages") or [])
         session = _session_key(body.get("system"), messages)
-        if (
-            not self._session_churn_warned
-            and session not in self._review_counts
-            and len(self._review_counts) >= _SESSION_CHURN_WARN_AT
-        ):
-            self._session_churn_warned = True
-            log.warning(
-                "AdvisorLoopBackend: %d distinct session keys seen on one backend "
-                "instance; the hashed conversation prefix is unstable for this "
-                "client, so the max_reviews=%d budget is resetting per turn and "
-                "the advisor is being consulted far more than configured",
+        if session not in self._sessions_seen:
+            self._sessions_seen.add(session)
+            log.info(
+                "AdvisorLoopBackend: new session key (%d distinct seen, %d reviewed)",
+                len(self._sessions_seen),
                 len(self._review_counts),
-                self._config.max_reviews,
             )
+            if (
+                not self._session_churn_warned
+                and len(self._sessions_seen) >= _SESSION_CHURN_WARN_AT
+            ):
+                self._session_churn_warned = True
+                log.warning(
+                    "AdvisorLoopBackend: %d distinct session keys seen on one backend "
+                    "instance; the hashed conversation prefix is unstable for this "
+                    "client, so the max_reviews=%d budget is resetting per turn and "
+                    "the advisor may be consulted far more than configured",
+                    len(self._sessions_seen),
+                    self._config.max_reviews,
+                )
 
         # Seed the session with upfront advisor advice (consulted once at the
         # session-opening request, cached, and re-injected identically on every
