@@ -477,7 +477,8 @@ mod tests {
             "weak_target": "responses",
             "strong_target": "anthropic",
             "base_threshold": 0.5,
-            "recent_turn_window": 4
+            "recent_turn_window": 4,
+            "max_output_tokens": 512
         }))
         .unwrap();
         let AlgorithmConfig::LlmClassifier {
@@ -487,6 +488,7 @@ mod tests {
             panic!("expected classifier configuration");
         };
         assert_eq!(classifier.recent_turn_window, Some(4));
+        assert_eq!(classifier.max_output_tokens, 512);
         config.validate().unwrap();
         assert_eq!(
             config.prepare().unwrap().algorithm.name(),

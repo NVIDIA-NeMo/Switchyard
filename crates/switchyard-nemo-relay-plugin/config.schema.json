@@ -61,6 +61,11 @@
               "type": ["integer", "null"],
               "minimum": 0
             },
+            "max_output_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 4096
+            },
             "session_affinity": { "type": "boolean", "default": false },
             "message_hash_fallback": { "type": "boolean", "default": false }
           }
