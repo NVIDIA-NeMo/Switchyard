@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::LlmResponseStreamEvent;
 use crate::codecs::FormatCodec;
 use crate::codecs::anthropic::AnthropicMessagesCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
@@ -20,7 +21,6 @@ use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
 use crate::llm::{AggLlmResponse, LlmRequest};
 use crate::policy::TranslationPolicy;
-use crate::LlmResponseStreamEvent;
 
 /// Encoded translation result with any diagnostics emitted along the way.
 #[derive(Debug)]
