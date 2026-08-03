@@ -7,7 +7,8 @@ use std::sync::Arc;
 use http::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
 use switchyard_libsy::{
-    Algorithm, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random, TaskClassifierConfig,
+    Algorithm, EscalationJudgeConfig, LlmTarget, LlmTargetSet, LlmTaskClassifier, Random,
+    TaskClassifierConfig,
 };
 use switchyard_protocol::WireFormat;
 
@@ -125,11 +126,74 @@ enum AlgorithmConfig {
         classifier_target: String,
         weak_target: String,
         strong_target: String,
-        #[serde(default)]
-        escalation: Option<serde_json::Value>,
         #[serde(flatten)]
-        config: TaskClassifierConfig,
+        mode: LlmClassifierModeConfig,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LlmClassifierModeConfig {
+    Escalation(EscalationModeConfig),
+    Capability(CapabilityModeConfig),
+}
+
+fn default_classifier_max_output_tokens() -> u64 {
+    TaskClassifierConfig::default().max_output_tokens
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EscalationModeConfig {
+    #[serde(default = "default_classifier_max_output_tokens")]
+    max_output_tokens: u64,
+    escalation: EscalationJudgeConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityModeConfig {
+    base_threshold: f64,
+    #[serde(default)]
+    min_confidence: f64,
+    #[serde(default)]
+    capability_elevated_floor: Option<f64>,
+    #[serde(default)]
+    session_affinity: bool,
+    #[serde(default)]
+    message_hash_fallback: bool,
+    #[serde(default)]
+    recent_turn_window: Option<usize>,
+    #[serde(default = "default_classifier_max_output_tokens")]
+    max_output_tokens: u64,
+}
+
+impl Default for CapabilityModeConfig {
+    fn default() -> Self {
+        Self {
+            base_threshold: 0.0,
+            min_confidence: 0.0,
+            capability_elevated_floor: None,
+            session_affinity: false,
+            message_hash_fallback: false,
+            recent_turn_window: None,
+            max_output_tokens: default_classifier_max_output_tokens(),
+        }
+    }
+}
+
+impl From<&CapabilityModeConfig> for TaskClassifierConfig {
+    fn from(config: &CapabilityModeConfig) -> Self {
+        Self {
+            base_threshold: config.base_threshold,
+            min_confidence: config.min_confidence,
+            capability_elevated_floor: config.capability_elevated_floor,
+            session_affinity: config.session_affinity,
+            message_hash_fallback: config.message_hash_fallback,
+            recent_turn_window: config.recent_turn_window,
+            max_output_tokens: config.max_output_tokens,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -257,15 +321,8 @@ impl SwitchyardConfig {
                 classifier_target,
                 weak_target,
                 strong_target,
-                escalation,
-                config,
+                mode,
             } => {
-                if escalation.is_some() {
-                    return Err(
-                        "llm_classifier escalation mode is not supported by this plugin version"
-                            .into(),
-                    );
-                }
                 let classifier_binding = self.targets.get(classifier_target).ok_or_else(|| {
                     format!("algorithm target {classifier_target:?} is not configured")
                 })?;
@@ -274,15 +331,26 @@ impl SwitchyardConfig {
                         "classifier target {classifier_target:?} uses anthropic_messages, which cannot encode the required JSON-schema response format without loss; use an openai_chat or openai_responses target"
                     ));
                 }
-                LlmTaskClassifier::new(
-                    target(classifier_target)?,
-                    target(weak_target)?,
-                    target(strong_target)?,
-                    config.clone(),
-                )
-                .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
-                .map_err(|error| error.to_string())
+                match mode {
+                    LlmClassifierModeConfig::Capability(config) => LlmTaskClassifier::new(
+                        target(classifier_target)?,
+                        target(weak_target)?,
+                        target(strong_target)?,
+                        config.into(),
+                    ),
+                    LlmClassifierModeConfig::Escalation(config) => {
+                        LlmTaskClassifier::new_with_escalation(
+                            target(classifier_target)?,
+                            target(weak_target)?,
+                            target(strong_target)?,
+                            config.escalation.clone(),
+                            config.max_output_tokens,
+                        )
+                    }
+                }
             }
+            .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
+            .map_err(|error| error.to_string()),
         }
     }
 }
@@ -482,7 +550,8 @@ mod tests {
         }))
         .unwrap();
         let AlgorithmConfig::LlmClassifier {
-            config: classifier, ..
+            mode: LlmClassifierModeConfig::Capability(classifier),
+            ..
         } = &config.algorithm
         else {
             panic!("expected classifier configuration");
@@ -499,16 +568,14 @@ mod tests {
     #[test]
     fn classifier_rejects_anthropic_judge_targets_before_dispatch() {
         let mut config = config();
-        config.algorithm = AlgorithmConfig::LlmClassifier {
-            classifier_target: "anthropic".into(),
-            weak_target: "responses".into(),
-            strong_target: "chat".into(),
-            escalation: None,
-            config: TaskClassifierConfig {
-                base_threshold: 0.5,
-                ..Default::default()
-            },
-        };
+        config.algorithm = serde_json::from_value(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "anthropic",
+            "weak_target": "responses",
+            "strong_target": "chat",
+            "base_threshold": 0.5
+        }))
+        .unwrap();
 
         let error = config.validate().unwrap_err();
         assert!(error.contains("classifier target \"anthropic\" uses anthropic_messages"));
@@ -516,20 +583,81 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_router_modes_are_rejected_explicitly() {
-        let mut classifier = config();
-        classifier.algorithm = serde_json::from_value(json!({
+    fn escalation_is_distinct_from_capability_classification() {
+        let mut escalation = config();
+        escalation.algorithm = serde_json::from_value(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "chat",
+            "weak_target": "responses",
+            "strong_target": "anthropic",
+            "max_output_tokens": 256,
+            "escalation": {"confirmations": 1}
+        }))
+        .unwrap();
+        let AlgorithmConfig::LlmClassifier {
+            mode: LlmClassifierModeConfig::Escalation(mode),
+            ..
+        } = &escalation.algorithm
+        else {
+            panic!("expected escalation configuration");
+        };
+        assert_eq!(mode.max_output_tokens, 256);
+        escalation.validate().unwrap();
+        assert_eq!(
+            escalation.prepare().unwrap().algorithm.name(),
+            "llm_task_classifier"
+        );
+
+        let mixed = serde_json::from_value::<AlgorithmConfig>(json!({
             "kind": "llm_classifier",
             "classifier_target": "chat",
             "weak_target": "responses",
             "strong_target": "anthropic",
             "base_threshold": 0.5,
             "escalation": {"confirmations": 1}
+        }));
+        assert!(mixed.is_err());
+
+        let typo = serde_json::from_value::<AlgorithmConfig>(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "chat",
+            "weak_target": "responses",
+            "strong_target": "anthropic",
+            "escalation": {"confirmtion": 1}
+        }));
+        assert!(typo.is_err());
+
+        let mut invalid = config();
+        invalid.algorithm = serde_json::from_value(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "chat",
+            "weak_target": "responses",
+            "strong_target": "anthropic",
+            "escalation": {"confirmations": 0}
         }))
         .unwrap();
-        assert_eq!(
-            classifier.validate().unwrap_err(),
-            "llm_classifier escalation mode is not supported by this plugin version"
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .contains("confirmations must be at least 1")
+        );
+
+        let mut unbounded = config();
+        unbounded.algorithm = serde_json::from_value(json!({
+            "kind": "llm_classifier",
+            "classifier_target": "chat",
+            "weak_target": "responses",
+            "strong_target": "anthropic",
+            "max_output_tokens": 0,
+            "escalation": {"confirmations": 1}
+        }))
+        .unwrap();
+        assert!(
+            unbounded
+                .validate()
+                .unwrap_err()
+                .contains("max_output_tokens must be at least 1")
         );
 
         let error = serde_json::from_value::<AlgorithmConfig>(json!({
@@ -578,11 +706,10 @@ mod tests {
             classifier_target: "chat".into(),
             weak_target: "responses".into(),
             strong_target: "anthropic".into(),
-            escalation: None,
-            config: TaskClassifierConfig {
+            mode: LlmClassifierModeConfig::Capability(CapabilityModeConfig {
                 base_threshold: 1.1,
                 ..Default::default()
-            },
+            }),
         };
         assert!(
             classifier

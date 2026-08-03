@@ -45,14 +45,21 @@ def http_json(base: str, path: str) -> dict[str, int]:
         return cast(dict[str, int], json.loads(response.read()))
 
 
-def request(relay_url: str, path: str, body: dict[str, Any]) -> tuple[int, bytes]:
+def request(
+    relay_url: str,
+    path: str,
+    body: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    request_headers = {
+        "content-type": "application/json",
+        "authorization": "Bearer e2e",
+    }
+    request_headers.update(headers or {})
     request = urllib.request.Request(
         f"{relay_url}{path}",
         data=json.dumps(body).encode(),
-        headers={
-            "content-type": "application/json",
-            "authorization": "Bearer e2e",
-        },
+        headers=request_headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -580,6 +587,197 @@ def run_classifier(
     }
 
 
+def escalation_config(
+    manifest: Path,
+    provider_url: str,
+    atof: Path,
+    suffix: str,
+    judge_model: str,
+) -> str:
+    return plugin_config(
+        manifest,
+        provider_url,
+        atof,
+        """\
+[plugins.dynamic.config.algorithm]
+kind = "llm_classifier"
+classifier_target = "judge"
+weak_target = "weak"
+strong_target = "strong"
+
+[plugins.dynamic.config.algorithm.escalation]
+confirmations = 1
+recent_turn_window = 8
+window_message_chars = 500
+""",
+        f"""\
+[plugins.dynamic.config.targets.judge]
+model = "{judge_model}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+
+[plugins.dynamic.config.targets.weak]
+model = "fake/escalation-weak-{suffix}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+
+[plugins.dynamic.config.targets.strong]
+model = "fake/escalation-strong-{suffix}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+
+[plugins.dynamic.config.targets.fallback]
+model = "fake/escalation-fallback-{suffix}"
+protocol = "openai_chat"
+base_url = "{{provider_url}}/v1"
+""",
+        'openai_chat = "fallback"',
+    )
+
+
+def run_escalation(
+    relay_bin: Path, root: Path, manifest: Path, provider_url: str
+) -> dict[str, object]:
+    path = "/v1/chat/completions"
+    template = dict(CASES[0][2])
+    hold_config = escalation_config(
+        manifest,
+        provider_url,
+        root / "escalation-hold" / "atof",
+        "hold",
+        "fake/escalation-judge-hold",
+    )
+    with RelayScenario(relay_bin, root, provider_url, "escalation-hold", hold_config) as relay:
+        buffered = dict(template, stream=False)
+        status, raw = request(
+            relay.url,
+            path,
+            buffered,
+            {"x-switchyard-session-id": "escalation-hold-buffered"},
+        )
+        response = json.loads(raw)
+        assert status == 200
+        assert response["model"] == "fake/escalation-weak-hold"
+        assert response_text("openai_chat", response) == "chat from fake/escalation-weak-hold"
+        assert response["system_fingerprint"] == "fp_dynamic_plugin"
+        assert response["provider_extension"] == {"preserved": True}
+
+        streaming = dict(template, stream=True)
+        status, raw = request(
+            relay.url,
+            path,
+            streaming,
+            {"x-switchyard-session-id": "escalation-hold-streaming"},
+        )
+        events = stream_events(raw)
+        assert status == 200
+        assert len(events) == 2
+        assert stream_text("openai_chat", events) == "chat from fake/escalation-weak-hold"
+        assert all(event["system_fingerprint"] == "fp_dynamic_plugin" for event in events)
+        assert all(event["provider_extension"] == {"preserved": True} for event in events)
+        hold_event_count = len(events)
+
+    hold_decisions = [
+        event
+        for event in relay.marks("switchyard.routing.decision", expected=2)
+        if event["data"].get("routing_tier") is not None  # type: ignore[union-attr]
+    ]
+    assert len(hold_decisions) == 2
+    assert all(
+        event["data"].get("selected_target") == "weak"  # type: ignore[union-attr]
+        and event["data"].get("routing_tier") == "weak"  # type: ignore[union-attr]
+        for event in hold_decisions
+    )
+
+    strong_config = escalation_config(
+        manifest,
+        provider_url,
+        root / "escalation-strong" / "atof",
+        "strong",
+        "fake/escalation-judge-strong",
+    )
+    with RelayScenario(
+        relay_bin, root, provider_url, "escalation-strong", strong_config
+    ) as relay:
+        buffered = dict(template, stream=False)
+        status, raw = request(
+            relay.url,
+            path,
+            buffered,
+            {"x-switchyard-session-id": "escalation-strong-buffered"},
+        )
+        response = json.loads(raw)
+        assert status == 200
+        assert response["model"] == "fake/escalation-strong-strong"
+        assert response_text("openai_chat", response) == "chat from fake/escalation-strong-strong"
+
+        streaming = dict(template, stream=True)
+        status, raw = request(
+            relay.url,
+            path,
+            streaming,
+            {"x-switchyard-session-id": "escalation-strong-streaming"},
+        )
+        events = stream_events(raw)
+        assert status == 200
+        assert len(events) == 2
+        assert stream_text("openai_chat", events) == "chat from fake/escalation-strong-strong"
+
+    strong_decisions = [
+        event
+        for event in relay.marks("switchyard.routing.decision", expected=2)
+        if event["data"].get("routing_tier") is not None  # type: ignore[union-attr]
+    ]
+    assert len(strong_decisions) == 2
+    assert all(
+        event["data"].get("selected_target") == "strong"  # type: ignore[union-attr]
+        and event["data"].get("routing_tier") == "strong"  # type: ignore[union-attr]
+        for event in strong_decisions
+    )
+
+    retry_config = escalation_config(
+        manifest,
+        provider_url,
+        root / "escalation-retry" / "atof",
+        "retry",
+        "fake/escalation-judge-hold",
+    )
+    with RelayScenario(
+        relay_bin, root, provider_url, "escalation-retry", retry_config
+    ) as relay:
+        streaming = dict(template, stream=True)
+        status, raw = request(
+            relay.url,
+            path,
+            streaming,
+            {"x-switchyard-session-id": "escalation-retry-streaming"},
+        )
+        events = stream_events(raw)
+        assert status == 200
+        assert stream_text("openai_chat", events) == "chat from fake/escalation-weak-retry"
+
+    retry_marks = relay.marks("switchyard.routing.retry", expected=1)
+    assert len(retry_marks) == 1
+    assert retry_marks[0]["data"]["retryable"] is True  # type: ignore[index]
+    assert not relay.marks("switchyard.routing.fallback", expected=0)
+
+    calls = http_json(provider_url, "/calls")
+    assert calls["fake/escalation-weak-hold"] == 2
+    assert calls["fake/escalation-judge-hold"] == 3
+    assert calls.get("fake/escalation-strong-hold", 0) == 0
+    assert calls["fake/escalation-weak-strong"] == 2
+    assert calls["fake/escalation-judge-strong"] == 2
+    assert calls["fake/escalation-strong-strong"] == 2
+    assert calls["fake/escalation-weak-retry"] == 2
+    assert calls.get("fake/escalation-fallback-retry", 0) == 0
+    return {
+        "hold_raw_events": hold_event_count,
+        "hold_weak_calls": calls["fake/escalation-weak-hold"],
+        "retry_weak_calls": calls["fake/escalation-weak-retry"],
+        "strong_calls": calls["fake/escalation-strong-strong"],
+    }
+
+
 def single_target_config(
     manifest: Path,
     provider_url: str,
@@ -1039,6 +1237,9 @@ def main() -> None:
             ),
             "random": run_random(relay_bin, root, bundle / "relay-plugin.toml", provider_url),
             "llm_classifier": run_classifier(
+                relay_bin, root, bundle / "relay-plugin.toml", provider_url
+            ),
+            "llm_escalation": run_escalation(
                 relay_bin, root, bundle / "relay-plugin.toml", provider_url
             ),
             "reliability": run_retry_and_fallback(

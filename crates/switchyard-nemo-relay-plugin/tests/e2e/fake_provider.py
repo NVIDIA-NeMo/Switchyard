@@ -70,6 +70,26 @@ class Handler(BaseHTTPRequestHandler):
         if model in {"fake/always-fail", "fake/always-fail-stream"}:
             self._json(400, {"error": {"message": "invalid routed request"}})
             return
+        if (
+            model == "fake/escalation-weak-retry"
+            and request.get("stream")
+            and attempt == 1
+        ):
+            self._sse_then_disconnect(
+                {
+                    "id": "chatcmpl-escalation-retry",
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "held before retry"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            return
         if self.path == "/v1/chat/completions":
             self._chat(request)
         elif self.path == "/v1/responses":
@@ -84,14 +104,19 @@ class Handler(BaseHTTPRequestHandler):
         classifier = model in {"fake/classifier", "fake/classifier-strong"}
         p_solve = 0.1 if model == "fake/classifier-strong" else 0.9
         recommended_route = "capable" if model == "fake/classifier-strong" else "efficient"
-        answer = (
-            f'{{"recommended_route":"{recommended_route}","p_solve":{p_solve},'
-            '"confidence":0.95,"abstain":false,'
-            '"capability_boundary":"supported","primary_rule":"SUP-1",'
-            '"crux":"bounded task"}'
-            if classifier
-            else f"chat from {model}"
-        )
+        if model == "fake/escalation-judge-hold":
+            answer = '{"escalate":false,"reason":"progressing"}'
+        elif model == "fake/escalation-judge-strong":
+            answer = '{"escalate":true,"reason":"stuck"}'
+        elif classifier:
+            answer = (
+                f'{{"recommended_route":"{recommended_route}","p_solve":{p_solve},'
+                '"confidence":0.95,"abstain":false,'
+                '"capability_boundary":"supported","primary_rule":"SUP-1",'
+                '"crux":"bounded task"}'
+            )
+        else:
+            answer = f"chat from {model}"
         if request.get("stream") and model == "fake/empty-stream":
             self._empty_sse()
             return

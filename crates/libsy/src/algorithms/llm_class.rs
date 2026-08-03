@@ -422,12 +422,9 @@ impl Classifier<State> for EscalationClassifier {
             llm_response,
             metadata,
         } = efficient_response;
-        let (agg, replay) =
-            aggregate_for_judge(llm_response)
-                .await
-                .map_err(|e| LibsyError::AlgorithmError {
-                    message: format!("failed to aggregate efficient response: {e}"),
-                })?;
+        let (agg, replay) = aggregate_for_judge(llm_response).await.map_err(|error| {
+            LibsyError::client_call(self.efficient.semantic_name.clone(), error)
+        })?;
         // Append the efficient reply so the judge reads this turn's completed trajectory.
         let mut judge_request = request.clone();
         judge_request
@@ -1437,6 +1434,51 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.contains("[assistant] weak answer"))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_preserves_typed_weak_stream_failures() -> Result<()> {
+        struct FailingStreamClient;
+
+        #[async_trait]
+        impl RoutedLlmClient for FailingStreamClient {
+            async fn call(
+                &self,
+                _ctx: Context,
+                request: Request,
+                _decision: Arc<dyn Decision>,
+            ) -> std::result::Result<Response, ClientError> {
+                Ok(Response {
+                    llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter([Err(
+                        LlmClientError::Timeout {
+                            source: Box::new(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "weak stream timed out",
+                            )),
+                        },
+                    )]))),
+                    metadata: request.metadata,
+                })
+            }
+        }
+
+        let judge = QueuedClient::new([r#"{"escalate":false,"reason":"unused"}"#]);
+        let router = escalation_router(Arc::new(FailingStreamClient), judge)?;
+        let mut request = classify_request();
+        request.llm_request.stream = true;
+
+        let error = match router.run(Context::default(), request).await {
+            Ok(_) => panic!("weak stream failure must escape the algorithm"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            LibsyError::ClientCall {
+                target,
+                source: LlmClientError::Timeout { .. }
+            } if target == "efficient"
+        ));
         Ok(())
     }
 

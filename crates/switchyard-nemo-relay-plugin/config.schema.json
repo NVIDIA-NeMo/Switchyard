@@ -20,7 +20,7 @@
       "default": 3
     },
     "algorithm": {
-      "description": "Router configuration. This release supports random and capability-based llm_classifier only.",
+      "description": "Router configuration. LLM classification supports either pre-call capability classification or response-judging escalation.",
       "oneOf": [
         {
           "type": "object",
@@ -68,6 +68,37 @@
             },
             "session_affinity": { "type": "boolean", "default": false },
             "message_hash_fallback": { "type": "boolean", "default": false }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "classifier_target",
+            "weak_target",
+            "strong_target",
+            "escalation"
+          ],
+          "properties": {
+            "kind": { "const": "llm_classifier" },
+            "classifier_target": { "type": "string", "minLength": 1 },
+            "weak_target": { "type": "string", "minLength": 1 },
+            "strong_target": { "type": "string", "minLength": 1 },
+            "max_output_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 4096
+            },
+            "escalation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "confirmations": { "type": "integer", "minimum": 1, "default": 2 },
+                "recent_turn_window": { "type": "integer", "minimum": 1, "default": 28 },
+                "window_message_chars": { "type": "integer", "minimum": 50, "default": 500 }
+              }
+            }
           }
         }
       ]

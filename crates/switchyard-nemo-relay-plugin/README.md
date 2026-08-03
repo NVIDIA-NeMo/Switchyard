@@ -37,17 +37,17 @@ files, and checksum.
 
 ## Supported routers
 
-This initial plugin release supports exactly two libsy algorithms:
+The plugin supports these libsy routing modes:
 
 - seeded, weighted `random` routing; and
 - capability-based `llm_classifier` routing, where a judge selects the weak or
-  strong target before the final provider call.
+  strong target before the final provider call; and
+- response-judging `llm_classifier` escalation, where the weak target serves
+  first and a trajectory judge decides whether to retain it or call the strong
+  target.
 
-`stage_router` and the response-judging escalation mode are intentionally not
-part of this release. Their configuration is rejected rather than silently
-mapped onto one of the supported algorithms. They are being developed as
-separate follow-ups so their request-mutation and streaming-response contracts
-can be reviewed independently.
+`stage_router` remains a separate follow-up so its request-mutation contract can
+be reviewed independently.
 
 During development, `nemo-relay-plugin` is pinned to the Relay native API v2
 feature commit. Native API v2 remains unreleased, so every bundle must be
@@ -144,13 +144,33 @@ names its trusted fallback. `header_env` resolves credentials in the plugin
 process without putting them in configuration or libsy metadata.
 
 For `kind = "llm_classifier"`, the classifier thresholds, affinity options,
-`recent_turn_window`, and `max_output_tokens` use libsy's
-`TaskClassifierConfig` directly. The plugin adds only the semantic
-`classifier_target`, `weak_target`, and `strong_target` bindings required to
-resolve Relay continuations. The classifier target must use `openai_chat` or
-`openai_responses`: libsy's judge request requires a JSON schema response
-format that cannot be encoded losslessly for Anthropic Messages. An
-`escalation` table is not accepted by this release.
+`recent_turn_window`, and `max_output_tokens` mirror libsy's classifier
+configuration and are converted without changing their semantics. The plugin
+adds only the semantic `classifier_target`, `weak_target`, and `strong_target`
+bindings required to resolve Relay continuations. The classifier target must
+use `openai_chat` or `openai_responses`: the required JSON schema response
+format cannot be encoded losslessly for Anthropic Messages. Capability mode
+requires `base_threshold`. Escalation mode instead requires an `escalation`
+table and does not accept unused capability thresholds:
+
+```toml
+[plugins.dynamic.config.algorithm]
+kind = "llm_classifier"
+classifier_target = "trajectory-judge"
+weak_target = "fast"
+strong_target = "capable"
+max_output_tokens = 4096
+
+[plugins.dynamic.config.algorithm.escalation]
+confirmations = 1
+recent_turn_window = 28
+window_message_chars = 500
+```
+
+For streaming calls, escalation buffers the weak response for the judge but
+retains the original provider events. If the judge keeps the weak response,
+those events continue through the ordinary same- or cross-protocol translation
+path without being replaced by a synthetic stream.
 
 Version-1 service configuration is rejected with a migration error. The plugin
 does not provide decision-only or observe-only execution.
