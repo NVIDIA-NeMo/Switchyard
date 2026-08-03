@@ -10,8 +10,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
-use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
+use switchyard_protocol::{
+    LlmClientError, LlmRequest, LlmResponseChunk, LlmResponseStream, Message, OutputParams,
+    ResponseAccumulator, Role, SimpleDecision,
+};
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
@@ -322,6 +326,41 @@ fn assistant_message(response: &AggLlmResponse) -> Message {
     }
 }
 
+/// Buffers a response for the judge while retaining original stream events for replay.
+async fn aggregate_for_judge(
+    response: LlmResponse,
+) -> std::result::Result<(AggLlmResponse, Option<LlmResponseStream>), LlmClientError> {
+    let mut stream = match response {
+        LlmResponse::Agg(response) => return Ok((response, None)),
+        LlmResponse::Stream(stream) => stream,
+    };
+
+    let mut accumulator = ResponseAccumulator::new();
+    let mut retained = Vec::new();
+    while let Some(item) = stream.next().await {
+        let event = item?;
+        for chunk in event.normalized().iter().cloned() {
+            match chunk {
+                LlmResponseChunk::DecodeError { message } => {
+                    return Err(LlmClientError::ResponseTranslation(message));
+                }
+                LlmResponseChunk::StreamError { message } => {
+                    return Err(LlmClientError::UpstreamHttp {
+                        status: 502,
+                        body: message,
+                    });
+                }
+                chunk => accumulator.push(chunk),
+            }
+        }
+        retained.push(event);
+    }
+    let replay: LlmResponseStream = Box::pin(futures::stream::iter(
+        retained.into_iter().map(Ok::<_, LlmClientError>),
+    ));
+    Ok((accumulator.finish(), Some(replay)))
+}
+
 /// Calls the efficient model, judges its response, and latches to capable once the streak
 /// confirms. Returns the efficient response directly when not escalating so the caller does
 /// not pay for a second model call.
@@ -379,13 +418,16 @@ impl Classifier<State> for EscalationClassifier {
                 }),
             )
             .await?;
-        let agg = efficient_response
-            .llm_response
-            .into_agg()
-            .await
-            .map_err(|e| LibsyError::AlgorithmError {
-                message: format!("failed to aggregate efficient response: {e}"),
-            })?;
+        let Response {
+            llm_response,
+            metadata,
+        } = efficient_response;
+        let (agg, replay) =
+            aggregate_for_judge(llm_response)
+                .await
+                .map_err(|e| LibsyError::AlgorithmError {
+                    message: format!("failed to aggregate efficient response: {e}"),
+                })?;
         // Append the efficient reply so the judge reads this turn's completed trajectory.
         let mut judge_request = request.clone();
         judge_request
@@ -394,11 +436,11 @@ impl Classifier<State> for EscalationClassifier {
             .push(assistant_message(&agg));
         let efficient_response = Response {
             llm_response: if request.llm_request.stream {
-                LlmResponse::Stream(agg.into_stream())
+                LlmResponse::Stream(replay.unwrap_or_else(|| agg.into_stream()))
             } else {
                 LlmResponse::Agg(agg)
             },
-            metadata: efficient_response.metadata,
+            metadata,
         };
 
         let (classification, _) = self
@@ -608,8 +650,10 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use serde_json::json;
     use switchyard_protocol::{
-        LlmClientError, Metadata, completion_text, text_request, text_response,
+        LlmClientError, LlmResponseStreamEvent, Metadata, WireFormat, completion_text,
+        text_request, text_response,
     };
 
     use crate::core::algorithm::Algorithm;
@@ -1264,6 +1308,134 @@ mod tests {
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_replays_the_stream_it_aggregated_for_the_judge() -> Result<()> {
+        fn raw_events() -> (Value, Value) {
+            (
+                json!({
+                    "id": "chatcmpl-weak",
+                    "object": "chat.completion.chunk",
+                    "system_fingerprint": "fp-weak",
+                    "provider_extension": {"retained": true},
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": "weak answer"},
+                        "finish_reason": null
+                    }]
+                }),
+                json!({
+                    "id": "chatcmpl-weak",
+                    "object": "chat.completion.chunk",
+                    "system_fingerprint": "fp-weak",
+                    "provider_extension": {"retained": true},
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                }),
+            )
+        }
+
+        struct StreamingClient;
+
+        #[async_trait]
+        impl RoutedLlmClient for StreamingClient {
+            async fn call(
+                &self,
+                _ctx: Context,
+                request: Request,
+                _decision: Arc<dyn Decision>,
+            ) -> std::result::Result<Response, ClientError> {
+                let (raw_delta, raw_stop) = raw_events();
+                let events = vec![
+                    LlmResponseStreamEvent::preserved(
+                        WireFormat::OpenAiChat,
+                        raw_delta,
+                        vec![LlmResponseChunk::TextDelta {
+                            index: 0,
+                            text: "weak answer".into(),
+                        }],
+                    ),
+                    LlmResponseStreamEvent::preserved(
+                        WireFormat::OpenAiChat,
+                        raw_stop,
+                        vec![LlmResponseChunk::MessageStop {
+                            reason: Some("stop".into()),
+                        }],
+                    ),
+                ];
+                Ok(Response {
+                    llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter(
+                        events.into_iter().map(Ok),
+                    ))),
+                    metadata: request.metadata,
+                })
+            }
+        }
+
+        #[derive(Default)]
+        struct RecordingJudge {
+            request: Mutex<Option<Request>>,
+        }
+
+        #[async_trait]
+        impl RoutedLlmClient for RecordingJudge {
+            async fn call(
+                &self,
+                _ctx: Context,
+                request: Request,
+                _decision: Arc<dyn Decision>,
+            ) -> std::result::Result<Response, ClientError> {
+                let metadata = request.metadata.clone();
+                *self.request.lock() = Some(request);
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(text_response(
+                        None,
+                        r#"{"escalate":false,"reason":"progressing"}"#,
+                    )),
+                    metadata,
+                })
+            }
+        }
+
+        let judge = Arc::new(RecordingJudge::default());
+        let router = escalation_router(Arc::new(StreamingClient), judge.clone())?;
+        let mut request = classify_request();
+        request.llm_request.stream = true;
+        let (_, response) = router.run(Context::default(), request).await?;
+
+        let LlmResponse::Stream(mut stream) = response.llm_response else {
+            return Err(LibsyError::AlgorithmError {
+                message: "expected the retained weak stream".into(),
+            });
+        };
+        let events = stream.by_ref().collect::<Vec<_>>().await;
+        assert_eq!(events.len(), 2);
+        let replayed = events
+            .iter()
+            .map(|event| {
+                event
+                    .as_ref()
+                    .expect("retained stream item must succeed")
+                    .preservation()
+                    .expect("retained stream item must preserve its provider event")
+                    .raw()
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        let (raw_delta, raw_stop) = raw_events();
+        assert_eq!(replayed, vec![raw_delta, raw_stop]);
+
+        let judged = judge.request.lock();
+        let judged_text = judged
+            .as_ref()
+            .and_then(|request| request.llm_request.messages.last())
+            .and_then(|message| message.text_content(""));
+        assert!(
+            judged_text
+                .as_deref()
+                .is_some_and(|text| text.contains("[assistant] weak answer"))
         );
         Ok(())
     }
