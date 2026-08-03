@@ -13,62 +13,35 @@ Request, response, client, and metadata types come from `switchyard-protocol`.
 ```toml
 [dependencies]
 switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-switchyard-llm-client = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 Both crates must use compatible versions.
 
 ## Quick start
 
-Set `LLM_BASE_URL`, `LLM_MODEL`, and optionally `LLM_API_KEY`, then create
-`src/main.rs`:
+Create `src/main.rs` to construct a uniform random router over two semantic
+targets:
 
 ```rust
-use std::collections::BTreeMap;
-use std::error::Error;
 use std::sync::Arc;
 
-use switchyard_libsy::{Algorithm, LlmTarget, Passthrough};
-use switchyard_llm_client::{
-    Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
-};
-use switchyard_protocol::{Context, Request, completion_text, text_request};
+use switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let model = std::env::var("LLM_MODEL")?;
-    let client = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
-        model.clone(),
-        Backend::OpenAiChat(HttpBackendConfig {
-            base_url: std::env::var("LLM_BASE_URL")?,
-            api_key: std::env::var("LLM_API_KEY").ok(),
-            extra_headers: BTreeMap::new(),
-            extra_body: BTreeMap::new(),
-            max_retries: 2,
-        }),
-        None,
-    )])?);
-    let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
-        semantic_name: model,
-        llm_client: Some(client),
-    }));
-    let request = Request {
-        llm_request: text_request(None, "Explain tail latency in one sentence."),
-        ..Request::default()
+fn main() -> switchyard_libsy::Result<()> {
+    let target = |name: &str| LlmTarget {
+        semantic_name: name.into(),
+        llm_client: None,
     };
-
-    let (_decisions, response) = algorithm.run(Context::default(), request).await?;
-    let response = response.llm_response.into_agg().await?;
-    println!("{}", completion_text(&response));
+    let targets = LlmTargetSet::new(vec![target("fast"), target("strong")]);
+    let router: Arc<dyn Algorithm> = Arc::new(Random::new(targets, None, None)?);
+    println!("{}", router.name());
     Ok(())
 }
 ```
 
-For real model calls, construct `LlmTarget` values with an
-`Arc<dyn RoutedLlmClient>` and pass them to an algorithm. The client maps each
-target's semantic name to its provider model and transport configuration.
+Attach an `Arc<dyn RoutedLlmClient>` to each target before using `run`, or use
+`run_stream` when the host owns model transport.
 
 ## Type ownership
 
@@ -96,13 +69,9 @@ An `LlmTarget` contains:
 - `llm_client`: the default client used by `Algorithm::run`, or `None` when the
   host will fulfill calls through `run_stream`
 
-`request.llm_request.model` remains the model requested by the inbound caller.
-The actual call target is `decision.selected_model()`. A client must use the
-decision and map its semantic name to the provider model it serves.
-
-`RoutedLlmClient::call` may return a buffered `LlmResponse::Agg` or a live
-`LlmResponse::Stream`. See the
-[`research_agent`](examples/research_agent.rs) example for a client-backed run.
+A client maps the selected semantic name to the provider model and transport it
+serves. See [`research_agent`](examples/research_agent.rs) for a client-backed
+run.
 
 ## Running algorithms
 
@@ -124,36 +93,11 @@ For a host-owned transport, use `run_stream(ctx, request, observer)`. Pass
 fulfilled exactly once with `CallLlmRequest::respond`; the terminal step is
 `Step::ReturnToAgent`.
 
-See [`research_agent_core`](examples/research_agent_core.rs) for a complete host-
-driven loop. The step stream is separate from the model response stream: one
-algorithm step can return either a buffered or streaming `LlmResponse`.
+See [`research_agent_core`](examples/research_agent_core.rs) for a complete
+host-driven loop.
 
-## Streaming responses
-
-`LlmResponse::into_agg` consumes a live stream and folds it into an
-`AggLlmResponse`, surfacing stream and decoding failures. Algorithms that must
-inspect a complete answer, such as judges, may buffer a response internally.
-
-`AggLlmResponse::into_stream` is a synthetic, lossy conversion. It represents
-text, reasoning, and tool calls, but omits content that has no neutral stream
-event, including refusals, tool results, media, files, unknown blocks,
-extensions, and preservation metadata. `ResponseAccumulator` also folds text
-and reasoning into one assistant output, regardless of source output indices.
-
-## Request preservation
-
-`LlmRequest::preservation` and `AggLlmResponse::preservation` retain exact source
-bodies for lossless same-format replay. With translation's default preservation
-policy, a stored same-format body takes precedence over reconstruction from the
-normalized fields.
-
-If code mutates normalized messages, instructions, tools, or sampling controls
-and those edits must reach a same-format upstream, clear the corresponding
-preserved body or encode with preservation disabled. `Request::raw_request` is a
-separate host envelope field; libsy does not read it.
-
-The `prompt_text` and `completion_text` protocol helpers are also intentionally
-lossy. They are convenient text views, not complete serialization APIs.
+Request, response, usage, preservation, and response-stream semantics belong to
+[`switchyard-protocol`](../protocol/README.md).
 
 ## Included algorithms
 

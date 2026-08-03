@@ -15,54 +15,28 @@
 //! ```toml
 //! [dependencies]
 //! switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-//! switchyard-llm-client = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
 //! switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git" }
-//! tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 //! ```
 //!
 //! ## Quick start
 //!
-//! This complete `src/main.rs` sends one request through [`Passthrough`] to an
-//! OpenAI-compatible backend. Set `LLM_BASE_URL`, `LLM_MODEL`, and optionally
-//! `LLM_API_KEY` before running it.
+//! This complete `src/main.rs` constructs a uniform random router over two semantic
+//! targets. Add a client to each target before calling [`Algorithm::run`], or let the
+//! host fulfill calls through [`Algorithm::run_stream`].
 //!
-//! ```no_run
-//! use std::collections::BTreeMap;
-//! use std::error::Error;
+//! ```
 //! use std::sync::Arc;
 //!
-//! use switchyard_libsy::{Algorithm, LlmTarget, Passthrough};
-//! use switchyard_llm_client::{
-//!     Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
-//! };
-//! use switchyard_protocol::{Context, Request, completion_text, text_request};
+//! use switchyard_libsy::{Algorithm, LlmTarget, LlmTargetSet, Random};
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-//!     let model = std::env::var("LLM_MODEL")?;
-//!     let client = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
-//!         model.clone(),
-//!         Backend::OpenAiChat(HttpBackendConfig {
-//!             base_url: std::env::var("LLM_BASE_URL")?,
-//!             api_key: std::env::var("LLM_API_KEY").ok(),
-//!             extra_headers: BTreeMap::new(),
-//!             extra_body: BTreeMap::new(),
-//!             max_retries: 2,
-//!         }),
-//!         None,
-//!     )])?);
-//!     let algorithm: Arc<dyn Algorithm> = Arc::new(Passthrough::new(LlmTarget {
-//!         semantic_name: model,
-//!         llm_client: Some(client),
-//!     }));
-//!     let request = Request {
-//!         llm_request: text_request(None, "Explain tail latency in one sentence."),
-//!         ..Request::default()
+//! fn main() -> switchyard_libsy::Result<()> {
+//!     let target = |name: &str| LlmTarget {
+//!         semantic_name: name.into(),
+//!         llm_client: None,
 //!     };
-//!
-//!     let (_decisions, response) = algorithm.run(Context::default(), request).await?;
-//!     let response = response.llm_response.into_agg().await?;
-//!     println!("{}", completion_text(&response));
+//!     let targets = LlmTargetSet::new(vec![target("fast"), target("strong")]);
+//!     let router: Arc<dyn Algorithm> = Arc::new(Random::new(targets, None, None)?);
+//!     println!("{}", router.name());
 //!     Ok(())
 //! }
 //! ```
@@ -78,26 +52,13 @@
 //!
 //! [`Noop`] is a test helper, not a production routing algorithm.
 //!
-//! ## Core concepts
+//! ## How it fits together
 //!
-//! - [`Algorithm`] owns routing policy and can make one or more model calls per request.
-//! - [`LlmTarget`] gives an algorithm a semantic target name and optional default client.
-//! - [`Request`](switchyard_protocol::Request) and
-//!   [`Response`](switchyard_protocol::Response) carry the provider-neutral conversation.
-//! - [`Decision`](switchyard_protocol::Decision) records each selected target and its reasoning.
-//!
-//! ## Execution modes
-//!
-//! Use [`Algorithm::run`] when targets have default clients. Use
-//! [`Algorithm::run_stream`] when the host owns model transport and needs to fulfill each
-//! [`Step::CallLlm`] itself. Both return the same final response and decision trace.
-//!
-//! ## Operational notes
-//!
-//! Algorithm instances are shared with `Arc` and may serve concurrent requests; the full
-//! implementor contract is documented on [`Algorithm`]. Runs emit `tracing` and
-//! OpenTelemetry signals through host-installed global providers; see [`initialize_metrics`]
-//! when compatibility gauges must exist before the first request.
+//! [`LlmTarget`] pairs a semantic routing name with an optional
+//! [`RoutedLlmClient`](switchyard_protocol::RoutedLlmClient). An [`Algorithm`] selects
+//! targets and records decisions. Use [`Algorithm::run`] with target-owned clients, or
+//! [`Algorithm::run_stream`] when the host owns model transport. Request, response, usage,
+//! and streaming data are defined by [`switchyard-protocol`](switchyard_protocol).
 
 mod core;
 pub use core::algorithm::{
