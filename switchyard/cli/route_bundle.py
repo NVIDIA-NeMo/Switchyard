@@ -1,356 +1,108 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a model-dispatch table from a YAML route bundle.
+"""Build a Python server route table from a minimal YAML bundle."""
 
-Each YAML route becomes one entry in a :class:`RouteTable`. Chains are
-built through the shared :mod:`switchyard.lib.route_table_builders` helpers — the
-same path the Claude/Codex launchers take — so the table has uniform shape
-no matter which front-end produced it.
-
-The flow is::
-
-    raw dict (from YAML / programmatic)
-        │
-        ▼  _parse_route_bundle_dict
-    RouteBundle (defaults + routes + optional pre/post processors)
-        │
-        ▼  build_table_from_bundle
-    RouteTable
-
-"""
+from __future__ import annotations
 
 import os
 import re
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Protocol, cast, overload
+from typing import Any, Protocol, cast
 
-from pydantic import ValidationError
-
-from switchyard.cli.model_catalog.model_discovery import fetch_model_ids
 from switchyard.lib.backends.llm_target import LlmTarget, coerce_llm_target
-from switchyard.lib.processors.llm_classifier import DEFAULT_MAX_REQUEST_CHARS
-from switchyard.lib.processors.llm_classifier.presets import PROFILE_FACTORIES
-from switchyard.lib.profiles import (
-    DeterministicRoutingProfileConfig,
-    EscalationRouterProfileConfig,
-    ProfileSwitchyard,
-    StageRouterProfileConfig,
+from switchyard.lib.backends.multi_llm_backend import build_native_backend
+from switchyard.lib.backends.stats_llm_backend import StatsLlmBackend
+from switchyard.lib.processors.stats_request_processor import StatsRequestProcessor
+from switchyard.lib.processors.stats_response_processor_accumulator import (
+    StatsResponseProcessor,
 )
-from switchyard.lib.profiles.deterministic_routing_config import DeterministicRoutingConfig
-from switchyard.lib.profiles.escalation_router_config import EscalationRouterConfig
-from switchyard.lib.profiles.random_routing import RandomRoutingConfig
-from switchyard.lib.profiles.stage_router_config import StageRouterConfig
-from switchyard.lib.profiles.subagent_override import SubagentOverrideRuntime
+from switchyard.lib.proxy_context import ProxyContext
+from switchyard.lib.roles import LLMBackend
 from switchyard.lib.route_table import ChainRuntime, RouteTable
-from switchyard.lib.route_table_builders import (
-    build_passthrough_table,
-    build_random_routing_switchyard,
-    build_random_routing_table,
-    build_tier_passthrough_switchyard,
-)
 from switchyard.lib.stats_accumulator import StatsAccumulator
-
-
-def _default_discovery_fn(base_url: str, api_key: str) -> list[str]:
-    """Wrap provider catalog fetching for the lib-level callable shape.
-
-    Same wrapping pattern the Claude/Codex launchers use, so a YAML route's
-    tier catalogs hydrate the same way the launchers do. Failures intentionally
-    raise so table builders can preserve non-fatal warning metadata for
-    ``/v1/models``.
-    """
-    return fetch_model_ids(base_url, api_key)
-
-
-def _merge_table(
-    table: RouteTable,
-    sub_table: RouteTable,
-) -> None:
-    """Merge entries, warnings, and listing defaults from *sub_table*."""
-    was_empty = not table.registered_models()
-    for sub_model, sub_chain, sub_metadata in sub_table.items():
-        table.register(sub_model, sub_chain, metadata=sub_metadata)
-    for warning in sub_table.model_listing_warnings():
-        table.add_model_listing_warning(warning)
-    if was_empty:
-        default_model = sub_table.default_model()
-        if default_model is not None and default_model in table.registered_models():
-            table.set_default_model(default_model)
-
-
-@dataclass(frozen=True)
-class RouteBundle:
-    """Parsed route-bundle config — input to :func:`build_table_from_bundle`.
-
-    The YAML loader produces one of these. The ``routes`` map is keyed by
-    inbound model id (the YAML route key) and each value is a ``dict``-shaped
-    route description matching the YAML schema.
-
-    ``stats_accumulator`` lets callers thread their own accumulator into the
-    builder so a launcher that's merging a YAML table on top of its own
-    can share the same instance with downstream readers (live stats footer,
-    ``/v1/routing/stats``). ``None`` makes the builder create a fresh one.
-
-    Per-chain processor injection (for example, custom hooks) is
-    call-site runtime state, not bundle data. ``serve`` and launchers may pass
-    processors through the table builder, but route YAML never declares
-    those processors itself.
-    """
-
-    defaults: Mapping[str, Any] = field(default_factory=dict)
-    routes: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    stats_accumulator: StatsAccumulator | None = None
-
-
-def llm_target_to_route_dict(target: LlmTarget) -> dict[str, Any]:
-    """Convert an :class:`LlmTarget` into the dict shape a route bundle accepts.
-
-    Used by launchers to construct :class:`RouteBundle` route entries from
-    already-built tier targets without serializing through YAML. Only emits
-    fields with non-default values so the loader's defaults cascade still
-    applies.
-    """
-    data: dict[str, Any] = {
-        "model": target.model,
-        "format": str(target.format),
-    }
-    if target.endpoint.api_key:
-        data["api_key"] = target.endpoint.api_key
-    if target.endpoint.base_url:
-        data["base_url"] = target.endpoint.base_url
-    if target.endpoint.timeout_secs is not None:
-        data["timeout_secs"] = target.endpoint.timeout_secs
-    return data
+from switchyard.lib.switchyard import Switchyard
+from switchyard_rust.core import ChatRequest, ChatRequestType, ChatResponse
+from switchyard_rust.translation import TranslationEngine
 
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_TARGET_DEFAULT_KEYS = frozenset({
-    "api_key",
-    "base_url",
-    "format",
-    "backend_format",
-    "timeout",
-    "timeout_secs",
-    "extra_body",
-    "extra_headers",
-    "endpoint",
-})
-# Envelope keys valid on every route type, whatever its own schema. They configure the
-# wrapper around a route's chain rather than the chain itself, so they are accepted by
-# _validate_route_keys and excluded from the per-profile config in _route_config.
-_ROUTE_ENVELOPE_KEYS = frozenset({
-    # Delegated sub-agent work is served by this target instead of the route's own
-    # chain. Consumed in _build_switchyard_for_route.
-    "subagent_target",
-})
-_COMMON_ROUTE_KEYS = frozenset({
-    "type",
-    "kind",
-    "defaults",
-    "display_name",
-    "description",
-}) | _ROUTE_ENVELOPE_KEYS
-_ROUTE_METADATA_KEYS = frozenset({
-    "type",
-    "kind",
-    "display_name",
-    "description",
-})
-_TARGET_KEYS = _TARGET_DEFAULT_KEYS | frozenset({
-    "id",
-    "model",
-    "tuning",
-})
-_TARGET_DEFAULT_ROUTE_KEYS = _TARGET_DEFAULT_KEYS | frozenset({"defaults"})
-_MODEL_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
-    "target",
-    "model",
-})
-_RANDOM_ROUTING_ROUTE_KEYS = _ROUTE_METADATA_KEYS | _TARGET_DEFAULT_ROUTE_KEYS | frozenset({
-    "strong",
-    "weak",
-    "strong_probability",
-    "enable_stats",
-    "rng_seed",
-    "preset",
-    "fallback_target_on_evict",
-})
-_DETERMINISTIC_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | _TARGET_DEFAULT_ROUTE_KEYS
-    | frozenset({
-        "classifier",
-        "strong",
-        "weak",
-        "profile",
-        "enable_stats",
-        "fallback_target_on_evict",
-        "tier_timeout_s",
-        "session_affinity",
-        "affinity_max_sessions",
-        "affinity_warmup_turns",
-    })
-)
-_STAGE_ROUTER_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | _TARGET_DEFAULT_ROUTE_KEYS
-    | frozenset({
-        "strong",
-        "weak",
-        "picker",
-        "confidence_threshold",
-        "signal_recent_window",
-        "classifier",
-        "handoff_notes",
-        "strong_system_prompt",
-        "weak_system_prompt",
-        "enable_stats",
-        "fallback_target_on_evict",
-    })
-)
-_ESCALATION_ROUTE_KEYS = (
-    _ROUTE_METADATA_KEYS
-    | _TARGET_DEFAULT_ROUTE_KEYS
-    | frozenset({
-        "judge",
-        "strong",
-        "weak",
-        "enable_stats",
-        "fallback_target_on_evict",
-        "tier_timeout_s",
-        "session_key_depth",
-        "affinity_max_sessions",
-        "affinity_store",
-        "affinity_store_url",
-        "affinity_store_ttl_seconds",
-        "affinity_key_prefix",
-    })
-)
-_ESCALATION_JUDGE_KEYS = frozenset({
-    "model",
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-    "min_turn",
-    "confirmations",
-    "confirmation_window",
-    "disable_reasoning",
-    "max_completion_tokens",
-    "dump_verdicts",
-    "recent_turn_window",
-    "window_message_chars",
-    "prompt",
-    "prompt_path",
-    "max_request_chars",
-})
-_DETERMINISTIC_CLASSIFIER_KEYS = frozenset({
-    "model",
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-    "min_confidence",
-    "fail_open",
-    "recent_turn_window",
-    "prompt",
-    "max_request_chars",
-})
-_STAGE_ROUTER_CLASSIFIER_KEYS = frozenset({
-    "model",
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-    "recent_turn_window",
-})
-_CLASSIFIER_DEFAULT_KEYS = frozenset({
-    "api_key",
-    "base_url",
-    "timeout",
-    "timeout_secs",
-})
-_ROUTE_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
-    "model": _MODEL_ROUTE_KEYS,
-    "random_routing": _RANDOM_ROUTING_ROUTE_KEYS,
-    "deterministic": _DETERMINISTIC_ROUTE_KEYS,
-    "escalation_router": _ESCALATION_ROUTE_KEYS,
-    "stage_router": _STAGE_ROUTER_ROUTE_KEYS,
+_TOP_LEVEL_KEYS = frozenset({"defaults", "routes"})
+_ROUTE_METADATA_KEYS = frozenset({"display_name", "description"})
+_ROUTE_KEYS = {
+    "noop": frozenset({"type"}) | _ROUTE_METADATA_KEYS,
+    "passthrough": frozenset({"type", "target"}) | _ROUTE_METADATA_KEYS,
 }
-_DEFAULT_KEYS_BY_TYPE: Mapping[str, frozenset[str]] = {
-    "model": _TARGET_DEFAULT_KEYS,
-    "random_routing": _TARGET_DEFAULT_KEYS,
-    "deterministic": _TARGET_DEFAULT_KEYS,
-    "escalation_router": _TARGET_DEFAULT_KEYS,
-    "stage_router": _TARGET_DEFAULT_KEYS,
-}
-
-def _deterministic_profile_factories() -> dict[
-    str, Any,
-]:
-    """LLM-classifier presets recognized by ``type: deterministic`` routes."""
-    return dict(PROFILE_FACTORIES)
-
-
-_DETERMINISTIC_PROFILE_FACTORIES = _deterministic_profile_factories()
 
 
 class RouteBundleConfigError(ValueError):
-    """Raised when a YAML route bundle is malformed."""
+    """Raised when a Python server route bundle is invalid."""
 
 
 class _YamlModule(Protocol):
-    YAMLError: type[Exception]
-
     def safe_load(self, stream: str) -> object: ...
 
 
-def parse_routing_profiles_file(path: str | Path) -> dict[str, object]:
-    """Read *path* and return the parsed YAML dict (no env-var expansion)."""
-    yaml = cast(_YamlModule, import_module("yaml"))
+class _NoopBackend(LLMBackend):
+    """Return a fixed response without making an upstream request."""
+
+    @property
+    def supported_request_types(self) -> list[ChatRequestType]:
+        return list(ChatRequestType)
+
+    async def call(self, ctx: ProxyContext, request: ChatRequest) -> ChatResponse:
+        model = request.model or "switchyard/noop"
+        ctx.selected_model = model
+        ctx.selected_target = model
+        return ChatResponse.openai_completion({
+            "id": "switchyard-noop",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "OK"},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        })
+
+
+def parse_route_bundle_file(path: str | Path) -> dict[str, object]:
+    """Read a YAML route bundle and return its top-level mapping."""
     resolved = Path(path)
     try:
-        raw = resolved.read_text(encoding="utf-8")
-        loaded = yaml.safe_load(raw)
-    except FileNotFoundError as exc:
-        raise RouteBundleConfigError(f"{resolved}: file not found") from exc
-    except (OSError, UnicodeError) as exc:
-        raise RouteBundleConfigError(
-            f"{resolved}: cannot read: {_format_exception_one_line(exc)}"
-        ) from exc
-    except yaml.YAMLError as exc:
-        raise RouteBundleConfigError(
-            f"{resolved}: invalid YAML: {_format_exception_one_line(exc)}"
-        ) from exc
-    return loaded if isinstance(loaded, dict) else {}
+        contents = resolved.read_text()
+    except FileNotFoundError as error:
+        raise RouteBundleConfigError(f"{resolved}: file not found") from error
+    except (OSError, UnicodeError) as error:
+        raise RouteBundleConfigError(f"{resolved}: cannot read: {error}") from error
 
-
-def _format_exception_one_line(exc: BaseException) -> str:
-    return " ".join(str(exc).split())
+    try:
+        yaml = cast(_YamlModule, import_module("yaml"))
+        raw = yaml.safe_load(contents)
+    except Exception as error:
+        message = " ".join(str(error).splitlines())
+        raise RouteBundleConfigError(f"{resolved}: invalid YAML: {message}") from error
+    return _mapping(raw, "route bundle")
 
 
 def load_route_bundle_table(
     path: str | Path,
+    *,
     stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> RouteTable:
-    """Load *path* and return a table keyed by route model id.
-
-    Pass ``stats_accumulator`` when a caller is merging this YAML table into
-    an existing runtime so YAML-declared chains
-    record into the same accumulator surfaced at ``/v1/routing/stats`` and the
-    live stats footer. ``None`` (default) creates a fresh accumulator — what
-    standalone ``switchyard serve`` callers want.
-
-    ``pre_routing_request_processors`` / ``extra_response_processors`` let
-    callers attach process-level components to every YAML-declared route.
-    """
+    """Load a YAML route bundle into a server dispatch table."""
     return build_route_bundle_table(
-        parse_routing_profiles_file(path),
+        parse_route_bundle_file(path),
         stats_accumulator=stats_accumulator,
         pre_routing_request_processors=pre_routing_request_processors,
         extra_response_processors=extra_response_processors,
@@ -359,1014 +111,121 @@ def load_route_bundle_table(
 
 def build_route_bundle_table(
     raw: object,
+    *,
     stats_accumulator: StatsAccumulator | None = None,
     pre_routing_request_processors: Sequence[Any] = (),
     extra_response_processors: Sequence[Any] = (),
 ) -> RouteTable:
-    """Parse *raw* dict and build a :class:`RouteTable`.
-
-    Thin entrypoint that the YAML loader and any other dict-driven caller
-    uses. Parses + env-expands + validates the dict into a :class:`RouteBundle`,
-    then delegates to :func:`build_table_from_bundle`. Optional
-    ``stats_accumulator`` overrides the parsed bundle's default ``None``.
-    """
-    bundle = _parse_route_bundle_dict(raw)
-    if stats_accumulator is not None:
-        bundle = replace(bundle, stats_accumulator=stats_accumulator)
-    return build_table_from_bundle(
-        bundle,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-
-
-def _parse_route_bundle_dict(raw: object) -> RouteBundle:
-    """Validate *raw* and return a :class:`RouteBundle`.
-
-    Performs env-var expansion, top-level-key validation, and the
-    "routes must contain at least one route" check. Per-route schema
-    validation runs inside :func:`build_table_from_bundle` so callers
-    that construct a bundle programmatically still benefit.
-    """
-    return _validate_route_bundle_dict(_expand_env(raw))
-
-
-def _validate_route_bundle_dict(raw: object) -> RouteBundle:
-    """Validate bundle structure without expanding environment references."""
-    bundle = _require_mapping(raw, "route bundle")
-    _validate_allowed_keys(bundle, frozenset({"defaults", "routes"}), "route bundle")
-    defaults = _optional_mapping(bundle.get("defaults", {}), "defaults")
-    _validate_allowed_keys(defaults, _TARGET_DEFAULT_KEYS, "defaults")
-    routes_raw = _require_mapping(bundle.get("routes"), "routes")
-    if not routes_raw:
+    """Build a table containing only noop and passthrough routes."""
+    bundle = _mapping(_expand_env(raw), "route bundle")
+    _reject_unknown_keys(bundle, _TOP_LEVEL_KEYS, "route bundle")
+    defaults = _mapping(bundle.get("defaults", {}), "defaults")
+    routes = _mapping(bundle.get("routes"), "routes")
+    if not routes:
         raise RouteBundleConfigError("routes must contain at least one route")
-    routes: dict[str, Mapping[str, Any]] = {
-        name: _require_mapping(spec, f"routes.{name}")
-        for name, spec in routes_raw.items()
-    }
-    return RouteBundle(defaults=defaults, routes=routes)
 
-
-def build_table_from_bundle(
-    bundle: RouteBundle,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> RouteTable:
-    """Build a :class:`RouteTable` from a :class:`RouteBundle`.
-
-    Single assembly path for both the YAML loader and the launchers.
-
-    If ``bundle.stats_accumulator`` is set, the same accumulator is shared
-    across every produced chain so the live stats footer and
-    ``/v1/routing/stats`` see consistent numbers.
-
-    ``pre_routing_request_processors`` / ``extra_response_processors`` are
-    call-time kwargs (not bundle data). ``serve`` and launchers pass
-    process-level processors here; YAML routes never declare those processors
-    themselves.
-    """
+    stats = stats_accumulator or StatsAccumulator()
     table = RouteTable()
-    stats = bundle.stats_accumulator or StatsAccumulator()
-    for model_id, route_raw in bundle.routes.items():
-        if not isinstance(model_id, str) or not model_id:
-            raise RouteBundleConfigError("routes keys must be non-empty strings")
-        route = _normalize_route(model_id, route_raw)
-        route_type = _route_type(model_id, route)
-        _validate_route_keys(model_id, route, route_type)
-        route_defaults = _target_defaults(bundle.defaults, route)
-
-        # `random_routing` always expands into the launcher-shaped N+1 entries:
-        # each tier's configured model registered as a direct passthrough +
-        # a virtual routing-policy id under the route's YAML key, plus each
-        # tier's GET /v1/models catalog hydrated into the same table. This
-        # matches the Claude/Codex launcher behavior so client model pickers
-        # always see strong/weak (and the rest of the catalog) as direct
-        # overrides.
-        if route_type == "random_routing":
-            _merge_random_routing_route(
-                table, model_id, route,
-                target_defaults=route_defaults, stats=stats,
-                pre_routing_request_processors=pre_routing_request_processors,
-                extra_response_processors=extra_response_processors,
+    for route_id, raw_route in routes.items():
+        if not route_id:
+            raise RouteBundleConfigError("route ids must be non-empty strings")
+        route = _mapping(raw_route, f"route {route_id!r}")
+        route_type = route.get("type")
+        if not isinstance(route_type, str):
+            raise RouteBundleConfigError(f"route {route_id!r}: missing string 'type'")
+        if route_type not in _ROUTE_KEYS:
+            raise RouteBundleConfigError(
+                f"route {route_id!r}: unsupported route type {route_type!r}; "
+                "expected 'noop' or 'passthrough'"
             )
-            continue
+        _reject_unknown_keys(route, _ROUTE_KEYS[route_type], f"route {route_id!r}")
 
-        # `stage_router` and `deterministic` routes register the routing-policy chain
-        # at the route key AND hydrate each tier's catalog (`strong` + `weak`)
-        # into the table as direct passthroughs — same client-facing
-        # model-picker experience as random_routing's discovery path.
-        if route_type in ("stage_router", "deterministic", "escalation_router"):
-            _merge_multi_target_discovery(
-                table,
-                model_id,
-                route,
-                route_type=route_type,
-                target_defaults=route_defaults,
-                stats=stats,
-                pre_routing_request_processors=pre_routing_request_processors,
-                extra_response_processors=extra_response_processors,
+        if route_type == "noop":
+            runtime = _build_runtime(
+                _NoopBackend(),
+                stats,
+                pre_routing_request_processors,
+                extra_response_processors,
             )
-            continue
+        else:
+            target = _target(route_id, route.get("target"), defaults)
+            runtime = _build_runtime(
+                StatsLlmBackend(build_native_backend(target), stats),
+                stats,
+                pre_routing_request_processors,
+                extra_response_processors,
+            )
 
-        switchyard = _build_switchyard_for_route(
-            model_id,
-            route,
-            route_type=route_type,
-            target_defaults=route_defaults,
-            stats=stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-        table.register(
-            model_id,
-            switchyard,
-            metadata=_route_metadata(model_id, route, route_type),
-        )
+        metadata = {
+            key: value
+            for key in _ROUTE_METADATA_KEYS
+            if (value := route.get(key)) is not None
+        }
+        table.register(route_id, runtime, metadata=metadata, default=table.default_model() is None)
     return table
 
 
-def _merge_random_routing_route(
-    table: RouteTable,
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
+def _build_runtime(
+    backend: LLMBackend,
     stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> None:
-    """Expand a ``random_routing`` route into virtual id + tier passthroughs.
-
-    Always goes through :func:`build_random_routing_table` from
-    :mod:`switchyard.lib.route_table_builders` — the same path the Claude/Codex
-    launchers take. Registration order matches the unified rule (YAML route
-    key first, discovered/tier entries after):
-
-      - The route's YAML key registered as the virtual routing-policy id.
-      - Each tier's configured model registered as a direct passthrough.
-      - Each tier's ``GET /v1/models`` catalog hydrated alongside.
-
-    Tier registration and catalog hydration both happen unconditionally so
-    client model pickers see strong/weak (and the rest of the catalog) as
-    direct overrides for the random-routing default.
-    """
-    was_empty = not table.registered_models()
-    random_config = RandomRoutingConfig.model_validate(
-        _route_config(route, target_defaults, ("strong", "weak"))
-    )
-    sub_table = build_random_routing_table(
-        config=random_config,
-        stats=stats,
-        random_routing_switchyard=build_random_routing_switchyard(
-            random_config,
-            stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        ),
-        routing_model=model_id,
-        discovery_fn=_default_discovery_fn,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    # Register the YAML key (the routing-policy virtual id) first so
-    # `registered_models()[0]` matches the user's declared route key,
-    # then the tier passthroughs + catalog entries the builder produced.
-    for sub_model, sub_chain, sub_metadata in sorted(
-        sub_table.items(), key=lambda item: item[0] != model_id,
-    ):
-        table.register(sub_model, sub_chain, metadata=sub_metadata)
-    for warning in sub_table.model_listing_warnings():
-        table.add_model_listing_warning(warning)
-    if was_empty:
-        default_model = sub_table.default_model()
-        if default_model is not None and default_model in table.registered_models():
-            table.set_default_model(default_model)
-
-
-def _merge_multi_target_discovery(
-    table: RouteTable,
-    model_id: str,
-    route: Mapping[str, object],
-    *,
-    route_type: str,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> None:
-    """Expand a ``stage_router``/``deterministic`` route with catalog discovery.
-
-    Registers two layers, route key first so ``registered_models()[0]`` is the
-    user-declared YAML key:
-
-    1. The route's primary routing-policy chain at the route key (the regular
-       stage_router/deterministic switchyard).
-    2. Each tier (``strong`` + ``weak``) registered as a direct passthrough with
-       its catalog hydrated via :func:`_default_discovery_fn` — same shape the
-       launcher's per-tier registration produces, so client model pickers see
-       strong/weak as standalone choices alongside the routing policy.
-
-    The ``classifier`` tier (when present on the route) is intentionally not
-    discovered — it is an internal-only LLM call, not a user-facing target.
-    """
-    was_empty = not table.registered_models()
-    switchyard = _build_switchyard_for_route(
-        model_id,
-        route,
-        route_type=route_type,
-        target_defaults=target_defaults,
-        stats=stats,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    table.register(
-        model_id,
-        switchyard,
-        metadata=_route_metadata(model_id, route, route_type),
-    )
-
-    strong = _target_value(
-        route.get("strong"), target_defaults, default_id="strong", where="strong",
-    )
-    weak = _target_value(
-        route.get("weak"), target_defaults, default_id="weak", where="weak",
-    )
-    sub_table = build_passthrough_table(
-        (strong, weak),
-        stats,
-        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
-        discovery_fn=_default_discovery_fn,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    for sub_model, sub_chain, sub_metadata in sub_table.items():
-        # The route key wins over any discovered/configured model id collision.
-        if sub_model == model_id:
-            continue
-        table.register(sub_model, sub_chain, metadata=sub_metadata)
-    for warning in sub_table.model_listing_warnings():
-        table.add_model_listing_warning(warning)
-    if was_empty and model_id in table.registered_models():
-        table.set_default_model(model_id)
-
-
-def _build_switchyard_for_route(
-    model_id: str,
-    route: Mapping[str, object],
-    route_type: str,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
+    request_processors: Sequence[Any],
+    response_processors: Sequence[Any],
 ) -> ChainRuntime:
-    """Build the route's chain, wrapping it when the route sets ``subagent_target``."""
-    chain = _build_route_chain(
-        model_id,
-        route,
-        route_type=route_type,
-        target_defaults=target_defaults,
-        stats=stats,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    worker = _subagent_worker_runtime(
-        model_id,
-        route,
-        target_defaults=target_defaults,
-        stats=stats,
-        pre_routing_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
-    )
-    return chain if worker is None else SubagentOverrideRuntime(chain, worker)
-
-
-def _subagent_worker_runtime(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime | None:
-    """Build the route's sub-agent worker chain, or ``None`` when unset.
-
-    The worker is a plain passthrough to one target: delegated work is served directly
-    rather than re-routed through the route's own policy.
-    """
-    subagent_raw = route.get("subagent_target")
-    if subagent_raw is None:
-        return None
-    return build_tier_passthrough_switchyard(
-        _target_value(
-            subagent_raw,
-            target_defaults,
-            default_id=f"{model_id}#subagent",
-            where=f"route {model_id!r} subagent_target",
-        ),
-        stats,
-        enable_stats=_optional_bool(route.get("enable_stats"), default=True),
-        extra_request_processors=pre_routing_request_processors,
-        extra_response_processors=extra_response_processors,
+    return Switchyard(
+        request_processors=[StatsRequestProcessor(), *request_processors],
+        backend=backend,
+        response_processors=[StatsResponseProcessor(stats), *response_processors],
+        translator=TranslationEngine(),
     )
 
 
-def _build_route_chain(
-    model_id: str,
-    route: Mapping[str, object],
-    route_type: str,
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    if route_type == "model":
-        # Resolves to a single-tier passthrough chain — same shape the launcher
-        # produces via build_passthrough_table's per-tier registration.
-        target = _passthrough_target(model_id, route, target_defaults)
-        return build_tier_passthrough_switchyard(
-            target,
-            stats,
-            enable_stats=_optional_bool(route.get("enable_stats"), default=True),
-            extra_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "deterministic":
-        return _deterministic_switchyard(
-            model_id,
-            route,
-            target_defaults=target_defaults,
-            stats=stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "escalation_router":
-        return _escalation_router_switchyard(
-            model_id,
-            route,
-            target_defaults=target_defaults,
-            stats=stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
-    if route_type == "stage_router":
-        return _stage_router_switchyard(
-            model_id,
-            route,
-            target_defaults=target_defaults,
-            stats=stats,
-            pre_routing_request_processors=pre_routing_request_processors,
-            extra_response_processors=extra_response_processors,
-        )
-
-    raise RouteBundleConfigError(f"unsupported route type {route_type!r}")
-
-
-def _deterministic_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any],
-    extra_response_processors: Sequence[Any],
-) -> ChainRuntime:
-    """Build the LLM-classifier deterministic-routing chain for a route.
-
-    Wires the chain assembled from the LLM-classifier router primitives:
-
-        StatsRequestProcessor
-          → LLMClassifierRequestProcessor    (real LLM call → RouteSignals)
-          → SignalTierSelectorRequestProcessor   (collapse to strong/weak)
-          → DeterministicRoutingLLMBackend       (per-tier OpenAI backend)
-          → DefaultResponseTranslator
-
-    YAML schema::
-
-        type: deterministic
-        profile: general            # general | coding_agent | openclaw
-        classifier:
-          model: google/gemini-3.5-flash
-          api_key: ${OPENROUTER_API_KEY}
-          base_url: https://openrouter.ai/api/v1
-          timeout_secs: 30.0
-          min_confidence: 0.6       # tier-selector confidence floor
-          fail_open: true           # on classifier error, route to strong
-          recent_turn_window: 4
-        strong:
-          model: anthropic/claude-opus-4.7
-          api_key: ${OPENROUTER_API_KEY}
-          base_url: https://openrouter.ai/api/v1
-        weak:
-          model: moonshotai/kimi-k2.6
-          api_key: ${OPENROUTER_API_KEY}
-          base_url: https://openrouter.ai/api/v1
-    """
-    classifier_raw = route.get("classifier")
-    if not isinstance(classifier_raw, Mapping):
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: type=deterministic requires a `classifier:` "
-            "mapping with model/api_key/base_url",
-        )
-    classifier = _classifier_mapping(
-        classifier_raw,
-        target_defaults,
-        allowed_keys=_DETERMINISTIC_CLASSIFIER_KEYS,
-        where=f"{model_id}.classifier",
-    )
-
-    strong = _target_value(
-        route.get("strong"), target_defaults, default_id="strong", where="strong",
-    )
-    weak = _target_value(
-        route.get("weak"), target_defaults, default_id="weak", where="weak",
-    )
-
-    fallback_target_on_evict = _required_str(
-        route.get("fallback_target_on_evict"),
-        f"{model_id}.fallback_target_on_evict",
-    )
-    valid_ids = {strong.id, weak.id}
-    if fallback_target_on_evict not in valid_ids:
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: fallback_target_on_evict="
-            f"{fallback_target_on_evict!r} must match one of {sorted(valid_ids)} "
-            f"(the configured strong/weak target ids)",
-        )
-
-    profile_name = _optional_str(route.get("profile")) or "general"
-    if profile_name not in _DETERMINISTIC_PROFILE_FACTORIES:
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: unknown profile {profile_name!r}; "
-            f"expected one of {sorted(_DETERMINISTIC_PROFILE_FACTORIES)}",
-        )
-
-    config_data: dict[str, object] = {
-        "strong": strong,
-        "weak": weak,
-        "classifier": {
-            "id": "classifier",
-            "model": _required_str(
-                classifier.get("model"), f"{model_id}.classifier.model"
-            ),
-            "api_key": _required_str(
-                classifier.get("api_key"), f"{model_id}.classifier.api_key"
-            ),
-            "base_url": _required_str(
-                classifier.get("base_url"), f"{model_id}.classifier.base_url"
-            ),
-            "timeout_secs": _optional_float(
-                classifier.get("timeout_secs"),
-                default=30.0,
-            ),
-        },
-        "fallback_target_on_evict": fallback_target_on_evict,
-        "profile_name": profile_name,
-        "classifier_min_confidence": _optional_float(
-            classifier.get("min_confidence"), default=0.6,
-        ),
-        "classifier_fail_open": _optional_bool(
-            classifier.get("fail_open"), default=True
-        ),
-        "classifier_recent_turn_window": _optional_int(
-            classifier.get("recent_turn_window"), default=4,
-        ),
-        "classifier_system_prompt": _optional_str(classifier.get("prompt")),
-        "classifier_max_request_chars": _optional_int(
-            classifier.get("max_request_chars"),
-            default=DEFAULT_MAX_REQUEST_CHARS,
-        ),
-        "classifier_timeout_s": _optional_float(
-            classifier.get("timeout_secs"), default=30.0
-        ),
-        "enable_stats": _optional_bool(route.get("enable_stats"), default=True),
-    }
-    if "tier_timeout_s" in route:
-        config_data["tier_timeout_s"] = _optional_float(
-            route.get("tier_timeout_s"),
-            default=None,
-        )
-    if "session_affinity" in route:
-        config_data["session_affinity"] = _optional_bool(
-            route.get("session_affinity"), default=False
-        )
-    if "affinity_max_sessions" in route:
-        config_data["affinity_max_sessions"] = _optional_int(
-            route.get("affinity_max_sessions"), default=10_000
-        )
-    if "affinity_warmup_turns" in route:
-        config_data["affinity_warmup_turns"] = _optional_int(
-            route.get("affinity_warmup_turns"), default=0
-        )
-
-    config = DeterministicRoutingConfig.model_validate(config_data)
-    return ProfileSwitchyard(
-        DeterministicRoutingProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=pre_routing_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
-def _judge_prompt_value(judge: Mapping[str, object], model_id: str) -> str | None:
-    """Resolve the judge prompt override from ``prompt`` or ``prompt_path``.
-
-    ``prompt`` inlines the text; ``prompt_path`` reads it from a file
-    (relative paths resolve against the server's working directory).
-    ``None`` keeps the built-in default.
-    """
-    inline = _optional_str(judge.get("prompt"))
-    path = _optional_str(judge.get("prompt_path"))
-    if inline is not None and path is not None:
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: judge.prompt and judge.prompt_path are "
-            "mutually exclusive",
-        )
-    if path is None:
-        return inline
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: judge.prompt_path {path!r}: cannot read: "
-            f"{_format_exception_one_line(exc)}"
-        ) from exc
-
-
-def _escalation_router_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any],
-    extra_response_processors: Sequence[Any],
-) -> ChainRuntime:
-    """Build the judge-latched escalation-routing chain for a route.
-
-    Every conversation starts on ``weak``; an LLM judge watches the
-    trajectory and, on a clear pattern of trouble, latches the conversation
-    to ``strong`` for the rest of the task. Requires ``judge``/``strong``/
-    ``weak`` targets plus ``fallback_target_on_evict``; the full YAML schema
-    and knob reference live in ``docs/routing_algorithms/
-    escalation_router_routing.md``.
-    """
-    judge_raw = route.get("judge")
-    if not isinstance(judge_raw, Mapping):
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: type=escalation_router requires a `judge:` "
-            "mapping with model/api_key/base_url",
-        )
-    judge = _classifier_mapping(
-        judge_raw,
-        target_defaults,
-        allowed_keys=_ESCALATION_JUDGE_KEYS,
-        where=f"{model_id}.judge",
-    )
-
-    strong = _target_value(
-        route.get("strong"), target_defaults, default_id="strong", where="strong",
-    )
-    weak = _target_value(
-        route.get("weak"), target_defaults, default_id="weak", where="weak",
-    )
-
-    fallback_target_on_evict = _required_str(
-        route.get("fallback_target_on_evict"),
-        f"{model_id}.fallback_target_on_evict",
-    )
-    valid_ids = {strong.id, weak.id}
-    if fallback_target_on_evict not in valid_ids:
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: fallback_target_on_evict="
-            f"{fallback_target_on_evict!r} must match one of {sorted(valid_ids)} "
-            f"(the configured strong/weak target ids)",
-        )
-
-    config_data: dict[str, object] = {
-        "strong": strong,
-        "weak": weak,
-        "judge": {
-            "id": "judge",
-            "model": _required_str(
-                judge.get("model"), f"{model_id}.judge.model"
-            ),
-            "api_key": _required_str(
-                judge.get("api_key"), f"{model_id}.judge.api_key"
-            ),
-            "base_url": _required_str(
-                judge.get("base_url"), f"{model_id}.judge.base_url"
-            ),
-        },
-        "fallback_target_on_evict": fallback_target_on_evict,
-        "judge_system_prompt": _judge_prompt_value(judge, model_id),
-    }
-    # Optional knobs are forwarded verbatim and only when present, so
-    # ``EscalationRouterConfig`` stays the single owner of every default and
-    # of value validation; re-declaring defaults here is exactly the config
-    # drift this compatibility path must not accumulate.
-    judge_key_map = {
-        "timeout_secs": "judge_timeout_s",
-        "min_turn": "judge_min_turn",
-        "confirmations": "judge_escalate_confirmations",
-        "confirmation_window": "judge_confirmation_window",
-        "disable_reasoning": "judge_disable_reasoning",
-        "max_completion_tokens": "judge_max_completion_tokens",
-        "dump_verdicts": "judge_dump_verdicts",
-        "recent_turn_window": "judge_recent_turn_window",
-        "window_message_chars": "judge_window_message_chars",
-        "max_request_chars": "judge_max_request_chars",
-    }
-    for source_key, config_key in judge_key_map.items():
-        if judge.get(source_key) is not None:
-            config_data[config_key] = judge[source_key]
-    for route_key in (
-        "enable_stats",
-        "tier_timeout_s",
-        "session_key_depth",
-        "affinity_max_sessions",
-        "affinity_store",
-        "affinity_store_url",
-        "affinity_store_ttl_seconds",
-        "affinity_key_prefix",
-    ):
-        if route.get(route_key) is not None:
-            config_data[route_key] = route[route_key]
-
-    try:
-        config = EscalationRouterConfig.model_validate(config_data)
-    except ValidationError as exc:
-        # Surface config mistakes as the CLI's one-line diagnostic instead of
-        # a raw pydantic traceback (see the RouteBundleConfigError handler in
-        # switchyard_cli.main).
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: invalid escalation_router config: {exc}"
-        ) from exc
-    return ProfileSwitchyard(
-        EscalationRouterProfileConfig.from_config(config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=config.enable_stats,
-            pre_request_processors=pre_routing_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
-def _stage_router_switchyard(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    stats: StatsAccumulator,
-    pre_routing_request_processors: Sequence[Any] = (),
-    extra_response_processors: Sequence[Any] = (),
-) -> ChainRuntime:
-    """Build a stage-router-routing Switchyard from a YAML ``type: stage_router`` route.
-
-    Schema (mapped onto :class:`StageRouterConfig`)::
-
-        route:
-          type: stage_router
-          picker: capable_first       # or efficient_first
-          confidence_threshold: 0.7            # default; range [0.0, 1.0]
-          signal_recent_window: 3              # Rust sliding-window size
-          strong: <target spec>                # e.g. { id: strong, model: ..., api_key: ..., format: anthropic }
-          weak:   <target spec>                # e.g. { id: weak,   model: ..., api_key: ..., format: openai }
-          classifier:                          # optional; omit to skip the LLM fallback
-            model: google/gemini-3.5-flash
-            api_key: ${SWITCHYARD_CLASSIFIER_API_KEY}
-            base_url: https://openrouter.ai/api/v1
-            timeout_secs: 30.0
-            recent_turn_window: 3
-          enable_stats: true
-
-    Each tier spec accepts the same shapes as other route types
-    (``{ id, model, api_key, base_url, ... }`` or a model-id string);
-    per-target tuning fields are honoured via :func:`_target_value`.
-    """
-    if route.get("strong") is None or route.get("weak") is None:
-        raise RouteBundleConfigError(
-            f"route {model_id!r}: stage_router route requires both 'strong' and "
-            f"'weak' target specs",
-        )
-    if route.get("classifier") is not None:
-        route = dict(route)
-        route["classifier"] = _classifier_mapping(
-            route["classifier"],
-            target_defaults,
-            allowed_keys=_STAGE_ROUTER_CLASSIFIER_KEYS,
-            where=f"{model_id}.classifier",
-        )
-    # The YAML schema shares strong/weak tier keys with deterministic routing;
-    # map them onto StageRouterConfig's capable/efficient fields.
-    resolved = _route_config(route, target_defaults, ("strong", "weak"))
-    resolved["capable"] = resolved.pop("strong")
-    resolved["efficient"] = resolved.pop("weak")
-    stage_router_config = StageRouterConfig.model_validate(resolved)
-    return ProfileSwitchyard(
-        StageRouterProfileConfig.from_config(stage_router_config)
-        .build()
-        .with_runtime_components(
-            stats_accumulator=stats,
-            enable_stats=stage_router_config.enable_stats,
-            pre_request_processors=pre_routing_request_processors,
-            response_processors=extra_response_processors,
-        )
-    )
-
-
-def _passthrough_target(
-    model_id: str,
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-) -> LlmTarget:
-    """Resolve the LlmTarget for a ``model`` route.
-
-    A ``model`` route requires an explicit ``target`` or ``model`` field; the
-    target is built from that plus the route defaults and inline fields.
-    """
-    target_raw = route.get("target", route.get("model"))
-    if target_raw is None:
-        raise RouteBundleConfigError(f"route {model_id!r} requires target or model")
-    return coerce_llm_target(
-        _target_mapping(target_raw, target_defaults, default_id=model_id, where="target"),
-        default_id=model_id,
-    )
-
-
-def _route_config(
-    route: Mapping[str, object],
-    target_defaults: Mapping[str, object],
-    target_fields: tuple[str, ...],
-) -> dict[str, object]:
-    data = {
-        key: value
-        for key, value in route.items()
-        if key not in _COMMON_ROUTE_KEYS
-        and key not in _TARGET_DEFAULT_KEYS
-    }
-    for tier_field in target_fields:
-        data[tier_field] = _target_value(
-            route.get(tier_field),
-            target_defaults,
-            default_id=tier_field,
-            where=tier_field,
-        )
-    return data
-
-
-def _target_value(
-    raw: object,
-    defaults: Mapping[str, object],
-    default_id: str,
-    where: str,
-) -> LlmTarget:
-    if raw is None:
-        raise RouteBundleConfigError(f"{where} target is required")
-    return coerce_llm_target(
-        _target_mapping(raw, defaults, default_id=default_id, where=where),
-        default_id=default_id,
-    )
-
-
-def _classifier_mapping(
-    raw: object,
-    defaults: Mapping[str, object],
-    *,
-    allowed_keys: frozenset[str],
-    where: str,
-) -> dict[str, object]:
-    classifier = {
-        key: value
-        for key, value in defaults.items()
-        if key in _CLASSIFIER_DEFAULT_KEYS
-    }
-    classifier_mapping = _require_mapping(raw, where)
-    _validate_allowed_keys(classifier_mapping, allowed_keys, where)
-    classifier.update(classifier_mapping)
-    if "timeout" in classifier_mapping and "timeout_secs" not in classifier_mapping:
-        classifier["timeout_secs"] = classifier_mapping["timeout"]
-    elif "timeout_secs" not in classifier and "timeout" in classifier:
-        classifier["timeout_secs"] = classifier["timeout"]
-    classifier.pop("timeout", None)
-    return classifier
-
-
-def _target_mapping(
-    raw: object,
-    defaults: Mapping[str, object],
-    default_id: str,
-    where: str,
-) -> dict[str, object]:
-    target = dict(defaults)
-    if isinstance(raw, str):
-        target["model"] = raw
-    elif isinstance(raw, Mapping):
-        target_mapping = _require_mapping(raw, where)
-        _validate_allowed_keys(target_mapping, _TARGET_KEYS, where)
-        target.update(target_mapping)
+def _target(route_id: str, value: object, defaults: Mapping[str, object]) -> LlmTarget:
+    if isinstance(value, str):
+        target: dict[str, object] = {"model": value}
     else:
-        raise RouteBundleConfigError(f"{where} must be a string or mapping")
-    target.setdefault("id", default_id)
-    return target
-
-
-def _target_defaults(
-    bundle_defaults: Mapping[str, object],
-    route: Mapping[str, object],
-) -> dict[str, object]:
-    defaults = dict(bundle_defaults)
-    nested = route.get("defaults")
-    if nested is not None:
-        defaults.update(_require_mapping(nested, "route.defaults"))
-    for key in _TARGET_DEFAULT_KEYS:
-        if key in route:
-            defaults[key] = route[key]
-    return defaults
-
-
-def _normalize_route(model_id: str, raw: object) -> Mapping[str, object]:
-    if isinstance(raw, str):
-        return {"type": "model", "target": raw}
-    if isinstance(raw, Mapping):
-        return _require_mapping(raw, f"route {model_id!r}")
-    raise RouteBundleConfigError(f"route {model_id!r} must be a string or mapping")
-
-
-def _route_type(model_id: str, route: Mapping[str, object]) -> str:
-    raw_type = route.get("type", route.get("kind"))
-    if raw_type is None:
-        if not route:
-            raise RouteBundleConfigError(f"route {model_id!r}: missing 'type'")
-        if "strong" in route and "weak" in route:
-            return "random_routing"
-        if "target" in route or "model" in route:
-            return "model"
-        raise RouteBundleConfigError(
-            f"route {model_id!r} requires an explicit type or a recognizable route shape"
-        )
-    if not isinstance(raw_type, str):
-        raise RouteBundleConfigError("route type must be a string")
-
-    normalized = raw_type.lower().replace("-", "_")
-    aliases = {
-        "direct": "model",
-        "llm_target": "model",
-        "model": "model",
-        "target": "model",
-        "random": "random_routing",
-        "random_routing": "random_routing",
-        "deterministic": "deterministic",
-        "llm_classifier": "deterministic",
-        "llm_classifier_routing": "deterministic",
-        "escalation": "escalation_router",
-        "escalation_router": "escalation_router",
-        "stage_router": "stage_router",
-        "stage_router_routing": "stage_router",
-    }
+        target = _mapping(value, f"route {route_id!r} target")
     try:
-        return aliases[normalized]
-    except KeyError as exc:
-        raise RouteBundleConfigError(f"unsupported route type {raw_type!r}") from exc
-
-
-def _validate_route_keys(
-    model_id: str,
-    route: Mapping[str, object],
-    route_type: str,
-) -> None:
-    where = f"route {model_id!r}"
-    _validate_allowed_keys(route, _ROUTE_KEYS_BY_TYPE[route_type] | _ROUTE_ENVELOPE_KEYS, where)
-    if "defaults" in route:
-        defaults = _require_mapping(route["defaults"], f"{where}.defaults")
-        _validate_allowed_keys(
-            defaults,
-            _DEFAULT_KEYS_BY_TYPE[route_type],
-            f"{where}.defaults",
-        )
-
-
-def _validate_allowed_keys(
-    mapping: Mapping[str, object],
-    allowed_keys: frozenset[str],
-    where: str,
-) -> None:
-    unknown = sorted(set(mapping) - allowed_keys)
-    if unknown:
-        raise RouteBundleConfigError(
-            f"unknown key(s) for {where}: {', '.join(unknown)}"
-        )
-
-
-def _route_metadata(
-    model_id: str,
-    route: Mapping[str, object],
-    route_type: str,
-) -> dict[str, object]:
-    metadata: dict[str, object] = {
-        "display_name": _optional_str(route.get("display_name")) or model_id,
-        "switchyard": {"profile": route_type},
-    }
-    description = _optional_str(route.get("description"))
-    if description is not None:
-        metadata["description"] = description
-    return metadata
+        return coerce_llm_target({**defaults, **target}, default_id=route_id)
+    except (TypeError, ValueError) as error:
+        raise RouteBundleConfigError(f"route {route_id!r}: invalid target: {error}") from error
 
 
 def _expand_env(value: object) -> object:
-    if isinstance(value, str):
-        return _expand_env_string(value)
+    if isinstance(value, dict):
+        return {key: _expand_env(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_expand_env(item) for item in value]
-    if isinstance(value, Mapping):
-        result: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise RouteBundleConfigError("route bundle keys must be strings")
-            result[key] = _expand_env(item)
-        return result
-    return value
+    if not isinstance(value, str):
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in os.environ:
+            raise RouteBundleConfigError(f"environment variable {name} is not set")
+        return os.environ[name]
+
+    return _ENV_REF_RE.sub(replace, value)
 
 
-def _expand_env_string(value: str) -> str:
-    missing = [name for name in _ENV_REF_RE.findall(value) if name not in os.environ]
-    if missing:
-        raise RouteBundleConfigError(
-            f"missing environment variable(s): {', '.join(sorted(set(missing)))}"
-        )
-    return os.path.expandvars(value)
-
-
-def _require_mapping(value: object, where: str) -> dict[str, object]:
+def _mapping(value: object, where: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise RouteBundleConfigError(f"{where} must be a mapping")
-    result: dict[str, object] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise RouteBundleConfigError(f"{where} keys must be strings")
-        result[key] = item
-    return result
+    if not all(isinstance(key, str) for key in value):
+        raise RouteBundleConfigError(f"{where} keys must be strings")
+    return {str(key): item for key, item in value.items()}
 
 
-def _optional_mapping(value: object, where: str) -> dict[str, object]:
-    if value is None:
-        return {}
-    return _require_mapping(value, where)
-
-
-def _required_str(value: object, where: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise RouteBundleConfigError(f"{where} must be a non-empty string")
-    return value
-
-
-def _optional_str(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise RouteBundleConfigError(f"expected string, got {type(value).__name__}")
-    return value
-
-
-@overload
-def _optional_float(value: object, default: float) -> float: ...
-
-
-@overload
-def _optional_float(value: object, default: None = None) -> float | None: ...
-
-
-def _optional_float(value: object, default: float | None = None) -> float | None:
-    if value is None:
-        return default
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise RouteBundleConfigError(f"expected number, got {type(value).__name__}")
-    return float(value)
-
-
-def _optional_int(value: object, default: int) -> int:
-    if value is None:
-        return default
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise RouteBundleConfigError(f"expected integer, got {type(value).__name__}")
-    return value
-
-
-def _optional_bool(value: object, default: bool) -> bool:
-    if value is None:
-        return default
-    if not isinstance(value, bool):
-        raise RouteBundleConfigError(f"expected boolean, got {type(value).__name__}")
-    return value
+def _reject_unknown_keys(
+    value: Mapping[str, object], allowed: frozenset[str], where: str
+) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise RouteBundleConfigError(f"unknown key(s) for {where}: {', '.join(unknown)}")
 
 
 __all__ = [
     "RouteBundleConfigError",
     "build_route_bundle_table",
     "load_route_bundle_table",
-    "parse_routing_profiles_file",
+    "parse_route_bundle_file",
 ]

@@ -124,8 +124,8 @@ binaries are not published yet.
 
 ### Configure
 
-The Rust server reads an explicit TOML file. It does not use the legacy Python
-CLI's saved configuration or YAML routing profiles.
+The Rust server reads an explicit TOML file. It does not use the Python
+server's minimal YAML route bundle.
 
 Create `routes.toml` with an LLM-classifier route:
 

@@ -373,7 +373,7 @@ def build_and_serve(
             port=port,
             display_model=default_model or "switchyard",
             strategy_summary=strategy_summary,
-            profile_routes=table.registered_models() if table else None,
+            routes=table.registered_models() if table else None,
             default_route=default_model,
         )
 

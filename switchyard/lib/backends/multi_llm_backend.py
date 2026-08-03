@@ -1,27 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rust-owned multi-LLM backend helpers."""
+"""Build a native backend for a single LLM target."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
-from typing import cast
 
 from switchyard.lib.backends.backend_format_resolver import BackendFormatResolver
 from switchyard.lib.backends.llm_target import (
     BackendFormat,
     LlmTarget,
-    coerce_llm_target,
     llm_target_with_format,
     llm_target_with_runtime_defaults,
 )
 from switchyard.lib.roles import LLMBackend
 from switchyard_rust.components import (
     AnthropicNativeBackend,
-    LlmTargetBackend,
-    MultiLlmBackend,
     OpenAiNativeBackend,
 )
 
@@ -53,38 +48,7 @@ def build_native_backend(target: LlmTarget) -> LLMBackend:
     raise ValueError(f"Unsupported backend format: {target.format!r}")
 
 
-def build_target_backend(target: LlmTarget) -> LlmTargetBackend:
-    """Build one target/backend pair for ``MultiLlmBackend``."""
-    target = llm_target_with_runtime_defaults(resolve_llm_target(target))
-    return LlmTargetBackend(target, build_native_backend(target))
-
-
-def build_multi_llm_backend(
-    targets: Iterable[LlmTarget] | Mapping[str, LlmTarget],
-    *,
-    default_target_id: str | None = None,
-) -> MultiLlmBackend:
-    """Build a Rust ``MultiLlmBackend`` from configured targets."""
-    if isinstance(targets, Mapping):
-        target_values: Iterable[LlmTarget] = [
-            coerce_llm_target(target, default_id=str(target_id))
-            for target_id, target in targets.items()
-        ]
-    else:
-        target_values = targets
-    return cast(  # type: ignore[redundant-cast]
-        MultiLlmBackend,
-        MultiLlmBackend(
-            [build_target_backend(target) for target in target_values],
-            default_target_id=default_target_id,
-        ),
-    )
-
-
 __all__ = [
-    "MultiLlmBackend",
-    "build_multi_llm_backend",
     "build_native_backend",
-    "build_target_backend",
     "resolve_llm_target",
 ]

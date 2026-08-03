@@ -3,10 +3,10 @@
 
 //! Python binding for the canonical sub-agent detection policy.
 //!
-//! Profiles must not sniff lineage headers themselves: the fact (explicit
+//! Routing implementations must not sniff lineage headers themselves: the fact (explicit
 //! `x-switchyard-is-subagent`, Claude Code agent lineage, Codex/relay markers) and the
 //! work-vs-maintenance policy both live in the protocol crate, so every engine — the libsy
-//! classifier and the serve-path profile alike — answers "is this delegated work?"
+//! classifier and the server alike — answers "is this delegated work?"
 //! identically.
 
 use std::collections::BTreeMap;

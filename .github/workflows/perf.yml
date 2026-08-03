@@ -56,7 +56,7 @@ jobs:
 
       # ------------------------------------------------------------------
       # Start a local zero-latency mock OpenAI upstream. This replaces the
-      # removed noop route: the proxy serves a real `type: model` chain that
+      # The proxy serves a real `type: passthrough` chain that
       # forwards to this loopback stub, which returns a fixed completion
       # instantly. The extra loopback hop adds a small constant overhead.
       # ------------------------------------------------------------------
@@ -127,7 +127,7 @@ jobs:
           echo "STUB_PID=$!" >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------------
-      # Start the proxy: a `type: model` route pointed at the local stub.
+      # Start the proxy: a `type: passthrough` route pointed at the local stub.
       # ------------------------------------------------------------------
       - name: Start switchyard proxy
         run: |
@@ -138,10 +138,10 @@ jobs:
             format: openai
           routes:
             mock-model:
-              type: model
-              model: mock-model
+              type: passthrough
+              target: mock-model
           YAML
-          uv run switchyard serve --routing-profiles bench.yaml --port $PROXY_PORT &
+          uv run switchyard serve --routes bench.yaml --port $PROXY_PORT &
           echo "PROXY_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for proxy to be ready

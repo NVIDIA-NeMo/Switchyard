@@ -116,8 +116,8 @@ def _records(log_file: Path) -> list[dict]:
 async def test_openai_completion_record_carries_task_and_usage(tmp_path: Path) -> None:
     log_file = tmp_path / "routing_requests.jsonl"
     ctx = _ctx(headers=TASK_HEADERS)
-    ctx.selected_model = "configured-profile"
-    ctx.metadata["_random_routing_tier"] = "weak"
+    ctx.selected_model = "configured-route"
+    ctx.selected_target = "weak"
     await RoutingLogResponseProcessor(log_file).process(ctx, _openai_completion())
 
     (record,) = _records(log_file)
@@ -288,7 +288,7 @@ def test_serve_parser_accepts_routing_log_file() -> None:
     args = parser.parse_args(
         [
             "serve",
-            "--routing-profiles",
+            "--routes",
             "routes.yaml",
             "--routing-log-file",
             "tmp/routing.jsonl",

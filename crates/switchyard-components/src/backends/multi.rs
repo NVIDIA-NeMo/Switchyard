@@ -6,7 +6,7 @@
 //! This backend owns the mechanical part of routing once a processor or caller
 //! has selected a target: rewrite the request model, stamp typed context, and
 //! delegate to the configured backend for that target. Selection policy stays
-//! outside this type; processors and profiles decide which target should run.
+//! outside this type; processors and algorithms decide which target should run.
 
 use std::collections::HashSet;
 use std::fmt;

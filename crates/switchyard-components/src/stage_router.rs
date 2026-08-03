@@ -7,7 +7,7 @@
 //! Its input, a [`ToolResultSignal`][crate::dimension_collector::ToolResultSignal],
 //! is already libsy's `ToolSignals`, so no request adaptation is needed here — this
 //! module simply re-exports the API so the crate's processors decide a turn's tier
-//! through the same implementation the libsy profile uses.
+//! through the same implementation as the libsy algorithm.
 
 pub use switchyard_libsy::{
     CodingAgentDimensions, DecisionSource, PickOutcome, PickerMode, ScoreResult, StageClassifier,

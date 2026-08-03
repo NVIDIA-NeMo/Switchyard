@@ -1744,14 +1744,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-affinity-redis = [
-    { name = "redis" },
-]
 all = [
     { name = "ddtrace" },
     { name = "fastapi" },
     { name = "prompt-toolkit" },
-    { name = "redis" },
     { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1797,15 +1793,14 @@ requires-dist = [
     { name = "ddtrace", marker = "extra == 'tracing'", specifier = ">=2.9,<4" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.136.1,<1.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0" },
-    { name = "nemo-switchyard", extras = ["server", "cli", "tracing", "affinity-redis"], marker = "extra == 'all'" },
+    { name = "nemo-switchyard", extras = ["server", "cli", "tracing"], marker = "extra == 'all'" },
     { name = "openai", specifier = ">=2.7,<3.0" },
     { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.52,<4.0" },
     { name = "pydantic", specifier = ">=2.13.3,<3.0" },
-    { name = "redis", marker = "extra == 'affinity-redis'", specifier = ">=5.0.1,<6" },
     { name = "sse-starlette", marker = "extra == 'server'", specifier = ">=3.4.1,<4.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.46.0,<1.0" },
 ]
-provides-extras = ["server", "cli", "tracing", "affinity-redis", "all"]
+provides-extras = ["server", "cli", "tracing", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2629,18 +2624,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b2/a2/0328d49d3b5fb427068e9200e7de5b0d708d021a1ad98d004bc685d2529e/realtime-2.30.0.tar.gz", hash = "sha256:7aa593da52ed5f92c34ec4e50e32043afa62f219c94f717ad64a66ab0ef9f1ba", size = 18718, upload-time = "2026-05-06T17:35:23.925Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b4/75/1b2cfc949595e22d8c05a2aa2cfc222921f7f94177d7e8a90542f3f73b33/realtime-2.30.0-py3-none-any.whl", hash = "sha256:7c93b63d2cf99aa1da4fa8826b03b00cd32f7b38abb27ff47b19eb5dcb5707c6", size = 22376, upload-time = "2026-05-06T17:35:22.568Z" },
-]
-
-[[package]]
-name = "redis"
-version = "5.3.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyjwt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/cf/128b1b6d7086200c9f387bd4be9b2572a30b90745ef078bd8b235042dc9f/redis-5.3.1.tar.gz", hash = "sha256:ca49577a531ea64039b5a36db3d6cd1a0c7a60c34124d46924a45b956e8cf14c", size = 4626200, upload-time = "2025-07-25T08:06:27.778Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/26/5c5fa0e83c3621db835cfc1f1d789b37e7fa99ed54423b5f519beb931aa7/redis-5.3.1-py3-none-any.whl", hash = "sha256:dc1909bd24669cc31b5f67a039700b16ec30571096c5f1f0d9d2324bff31af97", size = 272833, upload-time = "2025-07-25T08:06:26.317Z" },
 ]
 
 [[package]]

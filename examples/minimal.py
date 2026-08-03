@@ -8,41 +8,27 @@ Minimal Switchyard Example
 This example demonstrates how to use Switchyard as a Python library
 to route LLM requests through a backend.
 
-Configuration (in priority order):
-    1. Environment variables: OPENAI_API_KEY, OPENAI_BASE_URL
-    2. Secrets file: secrets/secrets.json
-
 Usage:
-    export OPENAI_API_KEY="sk-..."
+    export OPENROUTER_API_KEY="sk-or-..."
     python examples/minimal.py
 """
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
 # Add package to path for development (not needed when installed via pip)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from switchyard import ChatRequest, PassthroughProfileConfig, ProfileSwitchyard
+from switchyard import ChatRequest
+from switchyard.cli.route_bundle import load_route_bundle_table
 
 
-async def main():
+async def main() -> None:
     """Run a minimal Switchyard example."""
 
-    # Get API key from environment or secrets file
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY not set")
-        print("Set it with: export OPENAI_API_KEY='sk-...'")
-        return
-
-    # Create a passthrough proxy that forwards to OpenAI
-    switchyard = ProfileSwitchyard(PassthroughProfileConfig(
-        api_key=api_key,
-        base_url="https://api.openai.com/v1",
-    ).build())
+    routes = load_route_bundle_table(Path(__file__).with_name("route.yaml"))
+    switchyard = routes.lookup_switchyard("fast-kimi")
 
     print("=" * 60)
     print("Switchyard Minimal Example")
@@ -50,7 +36,7 @@ async def main():
 
     # Create a chat request
     request = ChatRequest.openai_chat({
-        "model": "gpt-4o-mini",
+            "model": "fast-kimi",
         "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "What is 2+2?"},

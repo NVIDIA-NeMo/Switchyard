@@ -30,7 +30,7 @@ from switchyard.server.server_util import (
 logger = logging.getLogger(__name__)
 
 def _cmd_serve(args: argparse.Namespace) -> None:
-    """Serve an explicit routing-profile bundle."""
+    """Serve an explicit Python route bundle."""
 
     request_processors, response_processors = build_rl_logging_processors(
         resolve_rl_log_dir(args)
@@ -43,24 +43,24 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         response_processors.append(RoutingLogResponseProcessor(args.routing_log_file))
 
     table = load_route_bundle_table(
-        args.routing_profiles,
+        args.routes,
         pre_routing_request_processors=request_processors,
         extra_response_processors=response_processors,
     )
     logger.info(
         "Switchyard route bundle loaded %d route(s) from %s",
         len(table.registered_models()),
-        args.routing_profiles,
+        args.routes,
     )
     strategy_summary: str | None = None
     default_model = table.default_model()
     if default_model:
         from switchyard.cli.launchers.launcher_runtime import (
-            routing_profiles_strategy_summary,
+            route_bundle_strategy_summary,
         )
 
-        strategy_summary = routing_profiles_strategy_summary(
-            args.routing_profiles,
+        strategy_summary = route_bundle_strategy_summary(
+            args.routes,
             default_model,
         )
     build_and_serve(
@@ -129,13 +129,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    serve = subparsers.add_parser("serve", help="Serve a routing-profile bundle")
+    serve = subparsers.add_parser("serve", help="Serve a Python route bundle")
     serve.add_argument(
-        "--routing-profiles",
+        "--routes",
         "-c",
         required=True,
         metavar="PATH",
-        help="Routing-profile YAML bundle.",
+        help="YAML bundle containing noop and passthrough routes.",
     )
     serve.add_argument("--enable-rl-logging", action="store_true")
     serve.add_argument("--rl-log-dir", default="./rl_data", metavar="DIR")

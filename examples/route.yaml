@@ -4,35 +4,9 @@ defaults:
   format: openai
 
 routes:
-  fast-kimi:                        # `type: model` — single model
-    type: model
+  fast-kimi:
+    type: passthrough
     target: moonshotai/kimi-k2.6
 
-  random-router:                    # `type: random_routing` — weighted coin
-    type: random_routing
-    strong: anthropic/claude-opus-4.7
-    weak: moonshotai/kimi-k2.6
-    strong_probability: 0.3
-    fallback_target_on_evict: strong
-
-  llm-classifier:                   # `type: deterministic` — LLM-as-classifier
-    type: deterministic
-    profile: coding_agent           # general | coding_agent | openclaw
-    fallback_target_on_evict: strong  # tier to retry on context-window evict
-
-    classifier:
-      model: google/gemini-3.5-flash
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-      timeout_secs: 30.0
-      min_confidence: 0.6           # tier-selector confidence floor
-      fail_open: true               # on classifier error, route to strong
-      recent_turn_window: 4
-    strong:
-      model: anthropic/claude-opus-4.7
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
-    weak:
-      model: moonshotai/kimi-k2.6
-      api_key: ${OPENROUTER_API_KEY}
-      base_url: https://openrouter.ai/api/v1
+  smoke-test:
+    type: noop

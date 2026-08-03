@@ -214,10 +214,7 @@ MODEL_PRICING: dict[str, ModelPriceData] = {
     # --- Anthropic Claude on Azure (via NVIDIA Inference Hub) ---
     # Same per-token pricing as the Bedrock tier at parity versions;
     # listed separately so routing decisions that pick the Azure-hosted
-    # variant don't silently report $0 in cost dashboards.  Used by
-    # ``RandomRoutingPresets.opus_kimi`` as the Bedrock-avoidance path
-    # for Claude Code (Bedrock's 64-char ``toolSpec.name`` cap breaks
-    # on auto-injected MCP tool names).
+    # variant doesn't silently report $0 in cost dashboards.
     "azure/anthropic/claude-opus-4-6": ModelPriceData(
         input=5.00, output=25.00, cached=0.50, cache_write=6.25,
     ),

@@ -185,9 +185,6 @@ jobs:
           uv run --isolated --no-project --python 3.14 \
             --with "${SWITCHYARD_DEFAULT_PACKAGE}" \
             python -c "import switchyard; print('import OK, version:', switchyard.__version__)"
-          uv run --isolated --no-project --python 3.12 \
-            --with "${SWITCHYARD_DEFAULT_PACKAGE}" \
-            python -c "from switchyard import RandomRoutingPresets; print('preset import OK:', sorted(RandomRoutingPresets.PRESETS))"
       - name: Assert heavy packages absent from slim install
         working-directory: /tmp
         run: |

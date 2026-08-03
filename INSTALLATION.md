@@ -109,13 +109,20 @@ pip install nemo-switchyard[all]
 Embed Switchyard with minimal overhead:
 
 ```python
-from switchyard import PassthroughProfileConfig, ProfileSwitchyard
+from switchyard import LlmTarget, OpenAiNativeBackend, Switchyard, TranslationEngine
 
 # Core library only — no server/CLI dependencies
-switchyard = ProfileSwitchyard(PassthroughProfileConfig(
+target = LlmTarget(
+    id="direct",
+    model="gpt-4o-mini",
+    format="openai",
     api_key="sk-...",
     base_url="https://api.openai.com/v1",
-).build())
+)
+switchyard = Switchyard(
+    backend=OpenAiNativeBackend(target),
+    translator=TranslationEngine(),
+)
 ```
 
 ## Troubleshooting

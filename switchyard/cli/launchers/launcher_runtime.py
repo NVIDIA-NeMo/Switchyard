@@ -113,59 +113,28 @@ def stdin_is_tty() -> bool:
         return False
 
 
-def routing_profiles_strategy_summary(routing_profiles: str, default_model: str) -> str:
-    """Return the strategy summary for the default route in a routing-profiles launch.
-
-    Parses the YAML to find the default route (first key) and describes its type.
-    Falls back to ``routing-profiles: <default_model>`` if parsing fails.
-    """
+def route_bundle_strategy_summary(route_bundle: str, default_model: str) -> str:
+    """Describe the default route in a Python server bundle."""
     try:
         from collections.abc import Mapping as _Mapping
         from importlib import import_module
         yaml = import_module("yaml")
-        raw = yaml.safe_load(Path(routing_profiles).read_text())
+        raw = yaml.safe_load(Path(route_bundle).read_text())
         routes = raw.get("routes") if isinstance(raw, dict) else None
         if isinstance(routes, _Mapping) and routes:
             first_key = next(iter(routes))
             route = routes[first_key]
             route_type = route.get("type") if isinstance(route, _Mapping) else None
             if isinstance(route_type, str):
-                return _route_type_summary(route_type.lower().replace("-", "_"), route, first_key)
+                if route_type == "noop":
+                    return "noop"
+                if route_type == "passthrough":
+                    target = route.get("target")
+                    model = target.get("model") if isinstance(target, _Mapping) else target
+                    return f"passthrough: model={model or first_key}"
     except Exception:
         pass
-    return f"routing-profiles: {default_model}"
-
-
-def _route_type_summary(route_type: str, route: object, route_key: str) -> str:
-    """Describe a single route by type for the startup banner."""
-    from collections.abc import Mapping as _Mapping
-    r = route if isinstance(route, _Mapping) else {}
-
-    def _model(tier: object) -> str:
-        return tier.get("model", "") if isinstance(tier, _Mapping) else ""
-
-    def _classifier_part(r: _Mapping) -> str:  # type: ignore[type-arg]
-        clf = r.get("classifier")
-        m = _model(clf)
-        return f", llm-classifier={m}" if m else ""
-
-    if route_type == "stage_router":
-        clf = _classifier_part(r)
-        threshold = r.get("confidence_threshold")
-        threshold_part = f", confidence_threshold={threshold}" if threshold is not None else ""
-        return f"stage_router: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{clf}{threshold_part}"
-    if route_type in ("deterministic", "llm_classifier"):
-        clf = _classifier_part(r)
-        profile = r.get("profile")
-        profile_part = f", profile={profile}" if profile else ""
-        return f"llm-classifier: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}{clf}{profile_part}"
-    if route_type == "random_routing":
-        p = r.get("strong_probability", "")
-        return f"random-routing: strong={_model(r.get('strong'))}, weak={_model(r.get('weak'))}, p_strong={p}"
-    if route_type == "model":
-        target = r.get("model") or r.get("target") or route_key
-        return f"passthrough → {target}"
-    return f"{route_type}: {route_key}"
+    return f"route: {default_model}"
 
 
 # Keys that are abbreviated in the banner display.
@@ -183,7 +152,7 @@ def _format_strategy_lines(summary: str) -> list[str]:
     """Expand a strategy summary string into one or more banner lines.
 
     ``type: k1=v1, k2=v2`` → type on first line, each k=v pair indented.
-    ``passthrough → model`` → single line (no key=value pairs to split).
+    ``noop`` → single line (no key=value pairs to split).
     """
     col = "  routing   "  # label column: 2 indent + 7 label + 3 gap = 12 chars
     pad = " " * len(col)
@@ -227,7 +196,7 @@ def print_ready_banner(
     display_model: str,
     log_path: Path | None = None,
     strategy_summary: str | None = None,
-    profile_routes: list[str] | None = None,
+    routes: list[str] | None = None,
     default_route: str | None = None,
 ) -> None:
     """Write proxy/stats/routing details to stderr before the child takes over."""
@@ -248,11 +217,11 @@ def print_ready_banner(
         f"  {bold('switchyard')}  {green('ready')}  →  {bold(display_model)}",
     ]
 
-    if profile_routes:
-        col = "  profiles  "
+    if routes:
+        col = "  routes    "
         pad = " " * len(col)
         lines.append("")
-        shown, rest = profile_routes[:5], profile_routes[5:]
+        shown, rest = routes[:5], routes[5:]
         for i, route in enumerate(shown):
             is_default = route == default_route
             marker = amber("▶") + " " if is_default else dim("○") + " "

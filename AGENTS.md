@@ -167,9 +167,7 @@ switchyard/
 │   ├── roles.py                    # Python LLMBackend re-export and translation aliases
 │   ├── switchyard.py               # Switchyard — chain executor
 │   ├── proxy_context.py            # ProxyContext — per-request state carrier
-│   ├── profiles/                   # Profile configs/runtimes for pre-built routing behavior
 │   ├── route_table.py              # RouteTable — model-id dispatch to runnable chains
-│   ├── route_table_builders.py     # Shared profile-backed table builders
 │   ├── llm_client.py               # OpenAILLMClient
 │   ├── cost_estimator.py           # Token-cost bookkeeping
 │   ├── stats_accumulator.py        # Stats accumulation helpers
@@ -189,7 +187,6 @@ switchyard/
 │   │   └── backend_format_resolver.py      # BackendFormatResolver
 │   ├── processors/                 # Request-side / response-side component implementations
 │   │   ├── format_translate.py
-│   │   ├── random_routing_request_processor.py
 │   │   ├── stats_request_processor.py
 │   │   └── stats_response_processor_accumulator.py
 │   ├── endpoints/                  # FastAPI endpoint wrappers (require `nemo-switchyard[server]`)
@@ -245,8 +242,8 @@ and their transitives never appear in downstream vulnerability scans.
 ```bash
 export OPENROUTER_API_KEY="sk-or-..."
 
-# Serve a routing bundle. Routes live in YAML; see docs/routing_algorithms/overview.md.
-switchyard serve --routing-profiles routes.yaml --port 4000
+# Serve the minimal Python YAML bundle (noop and passthrough only).
+switchyard serve --routes examples/route.yaml --port 4000
 
 # Launch against the packaged OpenRouter deployment.
 switchyard launch claude --model switchyard
@@ -264,7 +261,7 @@ uv run pytest tests/ -v
 
 # Single test file / function
 uv run pytest tests/test_switchyard.py -v
-uv run pytest tests/test_random_routing_llm_backend.py::test_server_config -v
+uv run pytest tests/test_route_bundle.py::test_noop_route_returns_ok_without_an_upstream -v
 
 # Live end-to-end tests are not part of the public test suite; if you write
 # one, set the provider key explicitly and run it directly, e.g.:
@@ -280,7 +277,7 @@ uv run mypy switchyard
 1. Pick the right stage: request component (pre-call), response component (post-call), `LLMBackend` (rare), or Rust translation codec work.
 2. Create a file with the explicit name (`snake_case` of the class name), one class per file.
 3. Implement the async method for that stage (`process` for components, `call` for backends).
-4. Wire into the owning programmatic profile config or route-bundle builder.
+4. Wire it into the owning explicit chain or route-bundle builder.
 5. Add tests under `tests/`.
 6. Export from the relevant `__init__.py` and from `switchyard/__init__.py`'s `__all__`.
 
@@ -297,16 +294,24 @@ class MyRequestComponent:
         return request
 ```
 
-### Profiles and app factory
+### App factory
 
 ```python
-from switchyard import PassthroughProfileConfig, ProfileSwitchyard, build_switchyard_app
+from switchyard import BackendFormat, LlmTarget, Switchyard, TranslationEngine
+from switchyard.lib.backends import OpenAiNativeBackend
+from switchyard import build_switchyard_app
 import uvicorn
 
-switchyard = ProfileSwitchyard(PassthroughProfileConfig(
+target = LlmTarget(
+    model="gpt-4o",
+    format=BackendFormat.OPENAI,
     api_key="sk-...",
     base_url="https://api.openai.com/v1",
-).build())
+)
+switchyard = Switchyard(
+    backend=OpenAiNativeBackend(target),
+    translator=TranslationEngine(),
+)
 uvicorn.run(build_switchyard_app(switchyard), port=4000)
 ```
 

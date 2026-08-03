@@ -34,12 +34,12 @@ trajectory step (tool_use + tool_result)
   → dc.process(ctx, request)          # DimensionCollector — one per task, accumulates state
   → get_tool_result_signal(ctx)       # read signal from ctx
   → stage_score_signal(signal)        # raw (score, confidence) from the Rust scorer (for analysis)
-  → pick_capable_first(ctx, threshold)         # actual cf decision (same ctx, no re-process)
-  → pick_efficient_first(ctx, threshold)       # actual ef decision (same ctx, no re-process)
+  → stage_pick_tier(signal, "capable_first", threshold)   # actual cf decision
+  → stage_pick_tier(signal, "efficient_first", threshold) # actual ef decision
 ```
 
-**Key:** `dc.process()` is called **once per turn** on a single ctx. Both pickers read the signal
-already stored in that ctx — no duplicate processing.
+**Key:** `dc.process()` is called **once per turn** on a single context. Both picker modes use the
+same extracted signal, with no duplicate processing.
 
 **What the picker does beyond raw score:**
 - **escalate** (`should_escalate`): `compacted` OR `severity >= 1.0` → force CAPABLE
@@ -78,7 +78,7 @@ opus_pct_cf, nemotron_pct_cf, opus_pct_ef, nemotron_pct_ef`
 |------|-------------|------------|------------|
 | strong_clear | ≥ T | Opus | Opus |
 | strong_uncertain | (0, T) | Opus (fall_open) | Nemotron (fall_open) |
-| weak_uncertain | (-T, 0) | Nemotron (fall_open) | Nemotron (fall_open) |
+| weak_uncertain | (-T, 0) | Opus (fall_open) | Nemotron (fall_open) |
 | weak_clear | ≤ -T | Nemotron | Nemotron |
 
 Overrides can change any band. Use `pick_cf`/`pick_ef` for the true decision.
@@ -92,6 +92,6 @@ Overrides can change any band. Use `pick_cf`/`pick_ef` for the true decision.
 
 ## Anti-patterns
 
-- Don't call `dc.process()` multiple times per turn for different pickers — both pickers read from the same ctx. One `dc.process()` call per turn is correct.
+- Don't call `dc.process()` multiple times per turn for different picker modes. Extract one signal per turn and reuse it.
 - Don't infer routing split from score bands alone — overrides and fall_open change the actual decision. Always use `pick_cf` / `pick_ef`.
 - Don't compare cost directly across configs: Nemotron has ~39% cache hit rate vs ~92% for Opus.

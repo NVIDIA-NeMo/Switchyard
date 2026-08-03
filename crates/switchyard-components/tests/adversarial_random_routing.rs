@@ -35,7 +35,7 @@ fn openai_request(model: &str) -> ChatRequest {
     }))
 }
 
-// Runs one request through the engine and applies the profile-local model rewrite.
+// Runs one request through the engine and applies the route-local model rewrite.
 fn route_once(engine: &RandomRoutingEngine, mut request: ChatRequest) -> Result<ChatRequest> {
     let decision = engine.select(request.model().map(str::to_owned))?;
     request.set_model(decision.selected_model.as_str());

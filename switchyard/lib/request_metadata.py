@@ -10,7 +10,7 @@ from typing import Any
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
 
 CTX_REQUEST_METADATA = "_request_metadata"
-CTX_PROFILE_REQUEST_HEADERS = "_profile_request_headers"
+CTX_REQUEST_HEADERS = "_request_headers"
 
 # Existing Switchyard session header. Do not add aliases here unless a
 # concrete client requires one; keeping one spelling avoids ambiguity.
@@ -30,11 +30,10 @@ _CALLER_KEY_SENTINELS = frozenset({"switchyard", ""})
 # behind such a proxy stays correctly attributed for upstream inference spend.
 CALLER_API_KEY_HEADER = "x-switchyard-api-key"  # pragma: allowlist secret
 
-# Request headers whose values carry a caller credential. Redacted before the
-# header map is retained on the context (``CTX_PROFILE_REQUEST_HEADERS``), so the
-# caller's key never reaches profile metadata, logs, or traces. The key
-# is still forwarded upstream via ``CTX_CALLER_API_KEY`` (extracted by
-# ``attach_caller_api_key`` from the raw headers, before redaction).
+# Request headers whose values carry a caller credential. Values are redacted
+# in the map retained as ``CTX_REQUEST_HEADERS``. The raw key remains separately
+# in ``CTX_CALLER_API_KEY`` for upstream forwarding and is not serialized by
+# logging or tracing.
 _SENSITIVE_HEADERS = frozenset({"authorization", "x-api-key", CALLER_API_KEY_HEADER})
 _REDACTED = "[REDACTED]"
 
@@ -68,7 +67,7 @@ def attach_request_metadata(
         # already extracted into ``CTX_CALLER_API_KEY`` for upstream forwarding,
         # so nothing downstream needs the raw value, and a retained/logged header
         # map must not expose it.
-        ctx.metadata[CTX_PROFILE_REQUEST_HEADERS] = redact_sensitive_headers(headers)
+        ctx.metadata[CTX_REQUEST_HEADERS] = redact_sensitive_headers(headers)
 
 
 def _nonempty_header(headers: Mapping[str, str], name: str) -> str | None:
@@ -132,7 +131,7 @@ def extract_caller_api_key(headers: Mapping[str, str]) -> str | None:
 __all__ = [
     "CALLER_API_KEY_HEADER",
     "CTX_REQUEST_METADATA",
-    "CTX_PROFILE_REQUEST_HEADERS",
+    "CTX_REQUEST_HEADERS",
     "INTAKE_TASK_HEADER",
     "PROXY_SESSION_ID_HEADER",
     "RequestMetadata",

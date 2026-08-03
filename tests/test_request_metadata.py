@@ -9,7 +9,7 @@ import pytest
 
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY, ProxyContext
 from switchyard.lib.request_metadata import (
-    CTX_PROFILE_REQUEST_HEADERS,
+    CTX_REQUEST_HEADERS,
     RequestMetadata,
     attach_caller_api_key,
     attach_request_metadata,
@@ -109,8 +109,7 @@ class TestRedactSensitiveHeaders:
 
 class TestCallerKeyForwardedButNotRetained:
     """The endpoint extracts the caller key for upstream use, then retains a
-    redacted header map so the key cannot leak into profile metadata, logs, or
-    traces."""
+    redacted header map so the key cannot leak into logs or traces."""
 
     def test_key_extracted_but_redacted_in_stored_headers(self) -> None:
         headers = {
@@ -125,6 +124,6 @@ class TestCallerKeyForwardedButNotRetained:
         # Extracted for upstream forwarding...
         assert ctx.metadata[CTX_CALLER_API_KEY] == "nvapi-secret"  # pragma: allowlist secret
         # ...but the retained header map carries no raw credential.
-        stored = ctx.metadata[CTX_PROFILE_REQUEST_HEADERS]
+        stored = ctx.metadata[CTX_REQUEST_HEADERS]
         assert stored["x-switchyard-api-key"] == "[REDACTED]"
         assert stored["x-switchyard-intake-task"] == "demo"

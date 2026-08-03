@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""RouteTable — route inbound requests to per-model profile runtimes.
+"""RouteTable — route inbound requests to per-model runtimes.
 
 Stores a static mapping of model name → callable runtime. The launcher
-populates the table at startup after building all runtimes from profile
-configuration. The three V2 HTTP endpoints read ``body["model"]``, call
+populates the table at startup after building all configured runtimes. The
+three HTTP endpoints read ``body["model"]``, call
 :meth:`lookup_switchyard`, and dispatch to the returned chain before making any
 backend calls.
 """
@@ -46,7 +46,7 @@ SwitchyardApp: TypeAlias = "ChainRuntime | RouteTable"
 
 
 class RouteTable:
-    """Table that maps model names to pre-built profile runtimes.
+    """Table that maps model names to pre-built runtimes.
 
     Register one chain per model the proxy should handle explicitly. Unknown
     models raise ``KeyError`` so endpoint handlers can return ``model_not_found``
@@ -104,8 +104,7 @@ class RouteTable:
         """Iterate ``(model_id, chain, metadata)`` triples in registration order.
 
         Used when a caller needs to merge one table into another — e.g. a
-        YAML route-bundle entry that expands into multiple model registrations
-        via :func:`switchyard.lib.route_table_builders.build_random_routing_table`.
+        caller that composes multiple route tables.
         """
         for model in self._by_model:
             yield model, self._by_model[model], dict(self._metadata_by_model.get(model, {}))

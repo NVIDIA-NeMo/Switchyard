@@ -9,7 +9,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from switchyard.lib.backends.llm_target import BackendFormat, LlmTarget
 from switchyard.lib.endpoints.anthropic_messages_endpoint import (
     AnthropicMessagesEndpoint,
 )
@@ -17,8 +16,6 @@ from switchyard.lib.endpoints.openai_chat_endpoint import OpenAIChatEndpoint
 from switchyard.lib.endpoints.responses_endpoint import ResponsesEndpoint
 from switchyard.lib.proxy_context import CTX_CALLER_API_KEY
 from switchyard.lib.route_table import RouteTable
-from switchyard.lib.route_table_builders import build_passthrough_table
-from switchyard.lib.stats_accumulator import StatsAccumulator
 from switchyard.lib.switchyard import Switchyard
 from switchyard.server.switchyard_app import build_switchyard_app
 
@@ -122,7 +119,7 @@ def test_models_endpoint_lists_registered_models() -> None:
             "display_name": "Switchyard random routing",
             "description": "Random routes strong and weak.",
             "switchyard": {
-                "profile": "random_routing",
+                "algorithm": "random",
                 "strong_model": "strong/model",
                 "weak_model": "weak/model",
                 "strong_probability": 0.5,
@@ -149,7 +146,7 @@ def test_models_endpoint_lists_registered_models() -> None:
     ]
     assert body["data"][0]["display_name"] == "Switchyard random routing"
     assert body["data"][0]["description"] == "Random routes strong and weak."
-    assert body["data"][0]["switchyard"]["profile"] == "random_routing"
+    assert body["data"][0]["switchyard"]["algorithm"] == "random"
     assert body["data"][0]["capabilities"]["streaming"] is True
     assert body["data"][0]["capabilities"]["supported_inbound_formats"] == [
         "openai-chat-completions",
@@ -180,93 +177,6 @@ def test_models_endpoint_uses_table_default_model() -> None:
         "strong/model",
         "weak/model",
         "switchyard-route",
-    ]
-
-
-def test_models_endpoint_lists_discovered_catalog_models() -> None:
-    def discover(base_url: str, api_key: str) -> list[str]:
-        assert base_url == "https://primary.example/v1"
-        assert api_key == "k-primary"
-        return ["catalog/a", "catalog/b"]
-
-    table = build_passthrough_table(
-        (
-            LlmTarget(
-                model="configured/model",
-                format=BackendFormat.AUTO,
-                api_key="k-primary",
-                base_url="https://primary.example/v1",
-            ),
-        ),
-        StatsAccumulator(),
-        discovery_fn=discover,
-    )
-
-    with TestClient(build_switchyard_app(table), raise_server_exceptions=False) as client:
-        response = client.get("/v1/models")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["model_pool"] == [
-        "configured/model",
-        "catalog/a",
-        "catalog/b",
-    ]
-    assert [item["switchyard"]["source"] for item in body["data"]] == [
-        "configured",
-        "discovered",
-        "discovered",
-    ]
-
-
-def test_large_discovered_catalog_registers_stats_endpoint_once() -> None:
-    discovered_models = [f"catalog/model-{index}" for index in range(340)]
-    table = build_passthrough_table(
-        (
-            LlmTarget(
-                model="configured/model",
-                format=BackendFormat.AUTO,
-                api_key="k-primary",
-                base_url="https://primary.example/v1",
-            ),
-        ),
-        StatsAccumulator(),
-        discovery_fn=lambda _base_url, _api_key: discovered_models,
-    )
-
-    app = build_switchyard_app(table)
-
-    for path in ("/v1/stats", "/v1/routing/stats", "/metrics"):
-        assert sum(route.path == path for route in app.routes) == 1
-    with TestClient(app, raise_server_exceptions=False) as client:
-        assert client.get("/health").status_code == 200
-
-
-def test_models_endpoint_returns_static_models_and_warning_when_discovery_fails() -> None:
-    def discover(_base_url: str, _api_key: str) -> list[str]:
-        raise RuntimeError("catalog timed out")
-
-    table = build_passthrough_table(
-        (
-            LlmTarget(
-                model="configured/model",
-                format=BackendFormat.AUTO,
-                api_key="k-primary",
-                base_url="https://primary.example/v1",
-            ),
-        ),
-        StatsAccumulator(),
-        discovery_fn=discover,
-    )
-
-    with TestClient(build_switchyard_app(table), raise_server_exceptions=False) as client:
-        response = client.get("/v1/models")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["model_pool"] == ["configured/model"]
-    assert body["warnings"] == [
-        "Model discovery failed for https://primary.example/v1: catalog timed out"
     ]
 
 

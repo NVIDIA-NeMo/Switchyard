@@ -5,9 +5,8 @@
 //!
 //! Exposes [`switchyard_components::stage_router::pick_tier`] as
 //! `stage_pick_tier(signal, picker_mode, confidence_threshold) -> PickOutcome`
-//! so the Python `processor.py` runs the exact same routing decision as the Rust
-//! profile. The async classifier and the `no_signal` case stay in Python: this
-//! returns a resolved decision, or a request to consult the classifier.
+//! for Python analysis tools. This returns a resolved decision or a request to
+//! consult a classifier.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

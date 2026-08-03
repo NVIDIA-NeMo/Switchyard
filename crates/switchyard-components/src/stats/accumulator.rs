@@ -138,7 +138,7 @@ impl StatsAccumulator {
 
     /// Records usage after the corresponding success call was already attributed.
     ///
-    /// `StatsLlmBackend` and profile runtimes record success before the response
+    /// `StatsLlmBackend` and routing runtimes record success before the response
     /// processor records tokens. Those internal paths must not consume a legacy
     /// pending untiered success that belongs to some other direct accumulator caller.
     pub fn record_usage_after_success_attribution(
@@ -281,7 +281,7 @@ impl StatsAccumulator {
         Ok(())
     }
 
-    /// Records one routing decision source for a profile family.
+    /// Records one routing decision source for a routing algorithm.
     ///
     /// This is intentionally separate from model/tier accounting: a stage-router can
     /// choose `efficient` because of an override, a dimensions score, an LLM-classifier

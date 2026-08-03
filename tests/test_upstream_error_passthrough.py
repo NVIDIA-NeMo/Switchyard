@@ -172,7 +172,7 @@ def test_rust_openai_route_upstream_401_returns_structured_openai_error() -> Non
             },
             "routes": {
                 "bad-key": {
-                    "type": "model",
+                    "type": "passthrough",
                     "target": "nvidia/nvidia/nemotron-nano-9b-v2",
                 }
             },
@@ -212,7 +212,7 @@ def test_rust_openai_route_upstream_401_returns_same_error_shape_for_anthropic_i
             },
             "routes": {
                 "bad-key": {
-                    "type": "model",
+                    "type": "passthrough",
                     "target": "nvidia/nvidia/nemotron-nano-9b-v2",
                 }
             },
@@ -253,7 +253,7 @@ def test_rust_openai_route_upstream_401_returns_same_error_shape_for_responses_i
             },
             "routes": {
                 "bad-key": {
-                    "type": "model",
+                    "type": "passthrough",
                     "target": "nvidia/nvidia/nemotron-nano-9b-v2",
                 }
             },
@@ -297,7 +297,7 @@ def test_model_not_found_404_header_labels_switchyard_on_the_wire() -> None:
             },
             "routes": {
                 "registered": {
-                    "type": "model",
+                    "type": "passthrough",
                     "target": "nvidia/nvidia/nemotron-nano-9b-v2",
                 }
             },

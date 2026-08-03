@@ -12,11 +12,11 @@ What happened? One or two sentences.
 
 ## Reproduction
 
-Minimal steps to reproduce. Include the command line, the inbound request shape, and the configured recipe.
+Minimal steps to reproduce. Include the command line, the inbound request shape, and the configured route.
 
 ```bash
 # example
-switchyard serve --config profiles.yaml --port 4000
+switchyard serve --routes examples/route.yaml --port 4000
 curl -s http://localhost:4000/v1/chat/completions -d '{"model":"...","messages":[...]}'
 ```
 

@@ -4,13 +4,13 @@
 """Score a benchmark run directory via the stage-router Rust scorer.
 
 Reads trajectory.json from each completed task, feeds each tool-use turn through:
-  DimensionCollector.process(ctx, request)  →  pick_capable_first / pick_efficient_first
+  DimensionCollector.process(ctx, request)  →  stage_pick_tier
 
 The picker functions replicate live routing exactly: overrides, scorer, and fall_open.
 
 Usage:
-    uv run python benchmark/score_run.py --run benchmark/tb_runs/<run-name>
-    uv run python benchmark/score_run.py --run benchmark/tb_runs/<run-name> \\
+    uv run python benchmark/score_staged_run.py --run benchmark/tb_runs/<run-name>
+    uv run python benchmark/score_staged_run.py --run benchmark/tb_runs/<run-name> \\
         --output /tmp/scores.jsonl --threshold 0.20 --window 3
 """
 import argparse
@@ -22,19 +22,16 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 
-from switchyard.lib.processors.stage_router.picker import (
-    CAPABLE,
-    pick_capable_first,
-    pick_efficient_first,
-)
 from switchyard_rust.components import (
     DimensionCollector,
     get_tool_result_signal,
+    stage_pick_tier,
     stage_score_signal,
 )
 from switchyard_rust.core import ChatRequest, ProxyContext
 
 RECENT_WINDOW = 3
+CAPABLE = 1
 
 
 def _tool_use_id(message: str) -> str:
@@ -119,10 +116,13 @@ async def score_trajectory(
         # histogram shows the capable/efficient separation directly.
         score, confidence = stage_score_signal(signal)
 
-        # Actual picker decisions on the same ctx — both just read the signal,
-        # no extra dc.process() calls needed
-        tier_cf = await pick_capable_first(ctx, confidence_threshold)
-        tier_ef = await pick_efficient_first(ctx, confidence_threshold)
+        # Apply both picker modes to the same signal without reprocessing the turn.
+        outcome_cf = stage_pick_tier(signal, "capable_first", confidence_threshold)
+        outcome_ef = stage_pick_tier(signal, "efficient_first", confidence_threshold)
+        tier_cf_name = outcome_cf.tier if outcome_cf.resolved else outcome_cf.default_tier
+        tier_ef_name = outcome_ef.tier if outcome_ef.resolved else outcome_ef.default_tier
+        tier_cf = int(tier_cf_name == "capable")
+        tier_ef = int(tier_ef_name == "capable")
 
         rows.append({
             "task_name":        task_name,

@@ -21,7 +21,3 @@ def test_all_symbols_accessible() -> None:
         except AttributeError:
             missing.append(name)
     assert missing == [], f"Symbols in __all__ not importable from switchyard: {missing}"
-
-
-def test_random_routing_config_importable() -> None:
-    from switchyard import RandomRoutingConfig  # noqa: F401

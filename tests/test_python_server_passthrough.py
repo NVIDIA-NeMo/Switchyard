@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end profile tests with mocked upstream model providers.
+"""End-to-end Python server passthrough tests with a mocked upstream.
 
 This file is the highest-leverage entry in the mocked-test suite added after
 the post-PR-#12 wiring regressions. Where ``test_inference_e2e.py`` swaps in
@@ -34,7 +34,7 @@ from typing import Any
 import httpx
 import pytest
 
-from switchyard import PassthroughProfileConfig, ProfileSwitchyard
+from switchyard.cli.route_bundle import build_route_bundle_table
 from switchyard.lib.endpoints import outcome_metrics
 from switchyard.server.switchyard_app import build_switchyard_app
 
@@ -173,20 +173,18 @@ def passthrough_upstream() -> Iterator[_OpenAICompatStub]:
 async def passthrough_client(
     passthrough_upstream: _OpenAICompatStub,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """A FastAPI client wired through the real passthrough profile.
-
-    The profile builds a real ``OpenAiPassthroughBackend`` pointed at
-    a local OpenAI-compatible stub to control the upstream response.
-    """
-    switchyard = ProfileSwitchyard(
-        PassthroughProfileConfig(
-            api_key="test-key-not-used",
-            base_url=passthrough_upstream.base_url,
-        )
-        .build()
-        .with_runtime_components(enable_stats=False)
-    )
-    app = build_switchyard_app(switchyard)
+    """Return a client using the retained passthrough route."""
+    table = build_route_bundle_table({
+        "defaults": {
+            "api_key": "test-key-not-used",
+            "base_url": passthrough_upstream.base_url,
+            "format": "openai",
+        },
+        "routes": {
+            "any-model": {"type": "passthrough", "target": "any-model"},
+        },
+    })
+    app = build_switchyard_app(table)
     # ``raise_app_exceptions=False`` mirrors what uvicorn does in
     # production: an unhandled exception inside a route is mapped to a
     # 500 response, not propagated up the call stack.  Without this the
@@ -200,12 +198,12 @@ async def passthrough_client(
 
 
 # ---------------------------------------------------------------------------
-# Passthrough profile — OpenAI inbound, OpenAI upstream
+# Passthrough route — OpenAI inbound, OpenAI upstream
 # ---------------------------------------------------------------------------
 
 
-class TestPassthroughProfileOpenAI:
-    """Inbound OpenAI Chat Completions through the real passthrough profile."""
+class TestPassthroughOpenAI:
+    """Inbound OpenAI Chat Completions through the passthrough route."""
 
     async def test_non_streaming_round_trip(
         self,
@@ -268,11 +266,11 @@ class TestPassthroughProfileOpenAI:
 
 
 # ---------------------------------------------------------------------------
-# Passthrough profile — Anthropic inbound, OpenAI upstream
+# Passthrough route — Anthropic inbound, OpenAI upstream
 # ---------------------------------------------------------------------------
 
 
-class TestPassthroughProfileAnthropic:
+class TestPassthroughAnthropic:
     """Inbound Anthropic Messages, translated to OpenAI for the upstream call."""
 
     async def test_non_streaming_translates_both_directions(
@@ -308,11 +306,11 @@ class TestPassthroughProfileAnthropic:
 
 
 # ---------------------------------------------------------------------------
-# Passthrough profile — Responses API inbound, OpenAI Chat upstream
+# Passthrough route — Responses API inbound, OpenAI Chat upstream
 # ---------------------------------------------------------------------------
 
 
-class TestPassthroughProfileResponsesApi:
+class TestPassthroughResponsesApi:
     """Inbound OpenAI Responses API, translated to Chat Completions upstream."""
 
     async def test_non_streaming_translates_both_directions(
@@ -342,7 +340,7 @@ class TestPassthroughProfileResponsesApi:
 # ---------------------------------------------------------------------------
 
 
-class TestPassthroughProfileBackendErrors:
+class TestPassthroughBackendErrors:
     """Upstream HTTP errors must surface as HTTP errors to the client.
 
     A regression where the chain swallows an upstream 4xx/5xx and still
@@ -398,7 +396,7 @@ class TestPassthroughProfileBackendErrors:
 # ---------------------------------------------------------------------------
 
 
-class TestPassthroughProfileUpstreamAttemptCounters:
+class TestPassthroughUpstreamAttemptCounters:
     """`switchyard_upstream_attempts_total` must populate for passthrough chains.
 
     The endpoint-layer fallback records one upstream attempt per request for

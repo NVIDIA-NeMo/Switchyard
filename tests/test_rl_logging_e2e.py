@@ -40,7 +40,9 @@ def _build_app(stub: _OpenAICompatStub, log_dir: Path):
                 "base_url": stub.base_url,
                 "format": "openai",
             },
-            "routes": {"mock-model": {"type": "model", "target": "mock-model"}},
+            "routes": {
+                "mock-model": {"type": "passthrough", "target": "mock-model"}
+            },
         },
         pre_routing_request_processors=rl_request,
         extra_response_processors=rl_response,

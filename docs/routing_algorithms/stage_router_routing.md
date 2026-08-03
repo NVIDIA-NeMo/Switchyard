@@ -156,7 +156,7 @@ From the overlap tasks (those with both capable and efficient results):
 Replay your runs through the real Rust scorer and picker with
 `benchmark/score_staged_run.py` (the `switchyard-stage-router-scorer` skill). It emits
 per-turn scores and per-task routing splits at a given threshold and window —
-the actual `pick_capable_first` / `pick_efficient_first` decisions, not a
+the actual `capable_first` / `efficient_first` picker decisions, not a
 counterfactual:
 
 ```bash

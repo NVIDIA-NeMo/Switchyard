@@ -291,8 +291,8 @@ def test_rl_flags_are_scoped_to_serve() -> None:
     args = parser.parse_args(
         [
             "serve",
-            "--routing-profiles",
-            "profiles.yaml",
+            "--routes",
+            "routes.yaml",
             "--enable-rl-logging",
             "--rl-log-dir",
             "/tmp/x",
@@ -304,7 +304,7 @@ def test_rl_flags_are_scoped_to_serve() -> None:
 
 
 def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> None:
-    """`serve --routing-profiles --enable-rl-logging` wires the trace logger into the chain."""
+    """`serve --routes --enable-rl-logging` wires the trace logger into the chain."""
     import switchyard.cli.switchyard_cli as cli
 
     captured: dict[str, list] = {}
@@ -316,7 +316,7 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
         def default_model(self) -> str | None:
             return None
 
-    def _fake_load(routing_profiles, *, pre_routing_request_processors=(),
+    def _fake_load(routes, *, pre_routing_request_processors=(),
                    extra_response_processors=(), **_kwargs):
         captured["request"] = list(pre_routing_request_processors)
         captured["response"] = list(extra_response_processors)
@@ -326,7 +326,7 @@ def test_serve_attaches_rl_logging_processors(monkeypatch, tmp_path: Path) -> No
     monkeypatch.setattr(cli, "build_and_serve", lambda *a, **k: None)
 
     args = argparse.Namespace(
-        routing_profiles="profiles.yaml",
+        routes="routes.yaml",
         enable_rl_logging=True, rl_log_dir=str(tmp_path),
         routing_log_file=None,
     )

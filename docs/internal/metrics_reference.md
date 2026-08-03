@@ -14,7 +14,8 @@ a drop-in scrape config and starter alert rules.
 | Auth | None |
 | Default scrape interval | 15s |
 
-`GET /metrics` is served by `switchyard-server`.
+`GET /metrics` is served by the Python route-bundle server started with
+`switchyard serve --routes PATH` and by the native Rust server.
 
 A JSON summary of the same traffic lives at `GET /v1/stats`.
 

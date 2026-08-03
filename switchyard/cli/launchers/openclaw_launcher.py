@@ -221,7 +221,7 @@ def _run_openclaw_with_switchyard(
             display_model=display_model,
             log_path=log_path,
             strategy_summary=strategy_summary,
-            profile_routes=[display_model],
+            routes=[display_model],
             default_route=display_model,
         )
         if stdin_is_tty():
