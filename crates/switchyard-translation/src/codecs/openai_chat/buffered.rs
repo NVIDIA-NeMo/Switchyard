@@ -21,9 +21,10 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    capture_request_preservation, capture_response_preservation,
+    copy_invalidated_request_extensions, embed_preservation, exact_preserved_request,
+    exact_preserved_response, json_string, object, push_lossy, stable_id, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -235,6 +236,7 @@ impl FormatCodec for OpenAiChatCodec {
             body.insert("response_format".to_string(), format.clone());
         }
         copy_openai_chat_request_extensions(&mut body, &request.extensions.fields);
+        copy_invalidated_request_extensions(&mut body, request, WireFormat::OpenAiChat);
 
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })

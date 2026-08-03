@@ -86,6 +86,26 @@ fn custom_stream_codec_can_participate_in_registered_stream_translation() -> Tes
     Ok(())
 }
 
+#[test]
+fn custom_stream_codec_replays_preserved_same_format_event() -> TestResult {
+    let mut registry = StreamCodecRegistry::new();
+    registry.register(CustomStreamCodec);
+    let engine = TranslationEngine::with_registries(FormatRegistry::new(), registry);
+    let format = FormatId::new("custom_stream");
+    let mut state = StreamTranslationState::new(format.clone(), format.clone());
+    let event = json!({
+        "kind": "delta",
+        "text": "hello",
+        "vendor_only": {"must": "survive"}
+    });
+
+    let preserved = engine.decode_stream_event(&mut state, format.clone(), event.clone())?;
+    let replayed = engine.encode_stream_event(&mut state, format, preserved)?;
+
+    assert_eq!(replayed, vec![event]);
+    Ok(())
+}
+
 // Verifies target capability policy can reject unsupported request features.
 #[test]
 fn capability_profile_can_fail_fast_when_target_cannot_accept_request_features() {

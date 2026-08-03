@@ -7,7 +7,8 @@
 //! offloaded as a [`Step::CallLlm`]. The agent serves it with a *streaming* response
 //! ([`LlmResponse::Stream`]) rather than a buffered one. That stream rides untouched
 //! through the algorithm and returns as [`Step::ReturnToAgent`], where the agent drives it
-//! and prints each [`LlmResponseChunk`] as it arrives — true token streaming end to end.
+//! and prints the normalized [`LlmResponseChunk`]s in each event as they arrive — true
+//! token streaming end to end.
 //! Contrast [`Algorithm::run`], which would aggregate the same stream into one buffered
 //! answer. Run with:
 //!   cargo run -p libsy --example streaming_agent
@@ -40,7 +41,8 @@ fn streaming_response(model: &str, tokens: &[&str]) -> Response {
         reason: Some("stop".to_string()),
     });
 
-    let stream: LlmResponseStream = futures::stream::iter(chunks.into_iter().map(Ok)).boxed();
+    let stream: LlmResponseStream =
+        futures::stream::iter(chunks.into_iter().map(|chunk| Ok(chunk.into()))).boxed();
     Response {
         llm_response: LlmResponse::Stream(stream),
         metadata: None,
@@ -81,15 +83,17 @@ async fn main() -> Result<()> {
             }
             Step::ReturnToAgent(response) => match response.llm_response {
                 // The stream reached the agent untouched: print each token as it arrives.
-                LlmResponse::Stream(mut chunks) => {
+                LlmResponse::Stream(mut events) => {
                     print!("agent sees: ");
-                    while let Some(chunk) = chunks.next().await {
-                        let chunk = chunk.map_err(|error| {
+                    while let Some(event) = events.next().await {
+                        let event = event.map_err(|error| {
                             LibsyError::external("reading response stream", error)
                         })?;
-                        if let LlmResponseChunk::TextDelta { text, .. } = chunk {
-                            print!("{text}");
-                            std::io::stdout().flush().ok();
+                        for chunk in event.normalized() {
+                            if let LlmResponseChunk::TextDelta { text, .. } = chunk {
+                                print!("{text}");
+                                std::io::stdout().flush().ok();
+                            }
                         }
                     }
                     println!();

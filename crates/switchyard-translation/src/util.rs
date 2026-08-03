@@ -229,7 +229,8 @@ pub fn capture_request_preservation(
 ) -> PreservationMetadata {
     let mut preservation = extract_preservation(body);
     if policy.preservation != PreservationPolicy::Disabled {
-        preservation.requests.insert(format.into(), body.clone());
+        let format = format.into();
+        preservation.requests.insert(format, body.clone());
     }
     preservation
 }
@@ -254,9 +255,35 @@ pub fn exact_preserved_request(
     policy: &TranslationPolicy,
 ) -> Option<Value> {
     let format = format.into();
-    (policy.preservation != PreservationPolicy::Disabled)
-        .then(|| preservation.requests.get(&format).cloned())
-        .flatten()
+    if policy.preservation == PreservationPolicy::Disabled {
+        None
+    } else {
+        preservation
+            .requests
+            .get(&format)
+            .filter(|body| !body.is_null())
+            .cloned()
+    }
+}
+
+/// Re-emits unknown fields captured from a now-invalidated same-format request.
+pub(crate) fn copy_invalidated_request_extensions(
+    body: &mut Map<String, Value>,
+    request: &LlmRequest,
+    format: impl Into<FormatId>,
+) {
+    let format = format.into();
+    if !request
+        .preservation
+        .requests
+        .get(&format)
+        .is_some_and(Value::is_null)
+    {
+        return;
+    }
+    for (name, value) in &request.extensions.fields {
+        body.entry(name.clone()).or_insert_with(|| value.clone());
+    }
 }
 
 /// Returns an exact preserved response for the target format when available.

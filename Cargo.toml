@@ -12,6 +12,7 @@ members = [
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-translation",
+    "crates/switchyard-nemo-relay-plugin",
 ]
 
 [workspace.package]
@@ -26,7 +27,9 @@ rust-version = "1.96.1"
 async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3"
+futures-timer = "3"
 futures-util = "0.3"
+http = "1"
 httpdate = "1"
 parking_lot = "0.12"
 rand = "0.10"

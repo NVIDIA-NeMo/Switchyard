@@ -185,6 +185,9 @@ fn encode_responses_stream(
 
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = ensure_responses_created(state);
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index

@@ -43,7 +43,7 @@ pub enum LibsyError {
     #[error(transparent)]
     Driver(#[from] DriverError),
 
-    /// The spawned algorithm task failed before returning normally.
+    /// A host-spawned algorithm task failed before returning normally.
     #[error("algorithm task failed: {source}")]
     AlgorithmTask {
         /// Tokio task failure, including panic and unexpected cancellation details.

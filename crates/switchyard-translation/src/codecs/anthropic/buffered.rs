@@ -21,8 +21,9 @@ use crate::llm::{
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::sanitize_anthropic_tool_use_id;
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response,
+    capture_request_preservation, capture_response_preservation,
+    copy_invalidated_request_extensions, embed_preservation, exact_preserved_request,
+    exact_preserved_response,
 };
 use crate::util::{
     json_string, push_lossy, stable_id, string_value, validate_request_capabilities,
@@ -222,6 +223,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             body.insert("thinking".to_string(), json!({"type": "adaptive"}));
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
+        copy_invalidated_request_extensions(&mut body, request, WireFormat::AnthropicMessages);
 
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })

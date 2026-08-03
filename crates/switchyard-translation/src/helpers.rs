@@ -15,10 +15,11 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use serde_json::Value;
 use switchyard_protocol::LlmClientError;
 
+use crate::codecs::stream::encode_response_stream_event;
 use crate::sse;
 use crate::{
-    AggLlmResponse, LlmRequest, LlmResponseStream, Result, StreamCodecRegistry,
-    StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
+    AggLlmResponse, FormatId, LlmRequest, LlmResponseStream, LlmResponseStreamEvent, Result,
+    StreamCodecRegistry, StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
@@ -85,17 +86,19 @@ pub fn encode_stream(
     target: WireFormat,
     served_model: Option<String>,
 ) -> std::result::Result<RawEventStream, LlmClientError> {
+    let target_format: FormatId = target.into();
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
     let codec = StreamCodecRegistry::with_builtins()
-        .codec(target)
+        .codec(target_format.clone())
         // Currently the only error is that the codec is missing, which is Configuration
         .map_err(|err| LlmClientError::Configuration {
             message: err.to_string(),
         })?;
 
+    let served_model_for_events = served_model.clone();
     let mut state = StreamTranslationState {
-        target: Some(target.into()),
+        target: Some(target_format.clone()),
         target_model: served_model,
         ..Default::default()
     };
@@ -103,17 +106,60 @@ pub fn encode_stream(
 
     let events = try_stream! {
         while let Some(item) = chunks.next().await {
-            let chunk = item?;
-            for value in codec.encode_event(&mut state, chunk) {
+            let event = item?;
+            for mut value in
+                encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event)
+            {
+                stamp_streamed_response_model(
+                    &mut value,
+                    target,
+                    served_model_for_events.as_deref(),
+                );
                 yield value;
             }
         }
-        for value in codec.finish(&mut state) {
+        for mut value in codec.finish(&mut state) {
+            stamp_streamed_response_model(
+                &mut value,
+                target,
+                served_model_for_events.as_deref(),
+            );
             yield value;
         }
     };
 
     Ok(Box::pin(events))
+}
+
+// The raw-response helper promises that the caller sees the model that served the
+// request. Same-format preservation bypasses provider codecs, so apply that
+// helper-specific override after replay without disturbing any other raw fields.
+fn stamp_streamed_response_model(
+    event: &mut Value,
+    target: WireFormat,
+    served_model: Option<&str>,
+) {
+    let Some(served_model) = served_model else {
+        return;
+    };
+
+    match target {
+        WireFormat::OpenAiChat => {
+            if let Some(event) = event.as_object_mut() {
+                event.insert("model".to_string(), Value::String(served_model.to_string()));
+            }
+        }
+        WireFormat::OpenAiResponses => {
+            if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+                response.insert("model".to_string(), Value::String(served_model.to_string()));
+            }
+        }
+        WireFormat::AnthropicMessages => {
+            if let Some(message) = event.get_mut("message").and_then(Value::as_object_mut) {
+                message.insert("model".to_string(), Value::String(served_model.to_string()));
+            }
+        }
+    }
 }
 
 /// Decodes a byte stream of `source`-format SSE frames into neutral IR chunks.
@@ -130,10 +176,11 @@ where
     S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
 {
     let marker = sse::done_marker(source);
+    let source_format: FormatId = source.into();
     // The source is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
     let codec = StreamCodecRegistry::with_builtins()
-        .codec(source)
+        .codec(source_format.clone())
         .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
     // Adapt the byte-chunk stream into an async line reader. The BufReader
     // reassembles data split across network chunks (including multi-byte UTF-8),
@@ -145,7 +192,10 @@ where
         Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
     let lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
 
-    let mut state = StreamTranslationState::default();
+    let mut state = StreamTranslationState {
+        source: Some(source_format.clone()),
+        ..StreamTranslationState::default()
+    };
     let mut frame = String::new();
     let stream = Box::pin(try_stream! {
         futures::pin_mut!(lines);
@@ -160,9 +210,12 @@ where
                     sse::SseFrame::Empty => {}
                     sse::SseFrame::Done => break,
                     sse::SseFrame::Data(value) => {
-                        for event in codec.decode_event(&mut state, &value) {
-                            yield event;
-                        }
+                        let normalized = codec.decode_event(&mut state, &value);
+                        yield LlmResponseStreamEvent::preserved(
+                            source_format.clone(),
+                            value,
+                            normalized,
+                        );
                     }
                 }
             } else {
@@ -178,9 +231,8 @@ where
             let parsed = sse::parse_json_sse_frame(&frame, marker)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             if let sse::SseFrame::Data(value) = parsed {
-                for event in codec.decode_event(&mut state, &value) {
-                    yield event;
-                }
+                let normalized = codec.decode_event(&mut state, &value);
+                yield LlmResponseStreamEvent::preserved(source_format, value, normalized);
             }
         }
     });
@@ -208,11 +260,13 @@ mod tests {
     use futures::executor::block_on;
     use futures::{Stream, StreamExt, stream};
     use serde_json::{Value, json};
-    use switchyard_protocol::{LlmClientError, LlmResponseChunk, completion_text};
+    use switchyard_protocol::{
+        LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, completion_text,
+    };
 
     use super::{
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream,
+        encode_request, encode_stream, stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, WireFormat};
 
@@ -223,19 +277,23 @@ mod tests {
     fn decode_all(
         bytes: impl Stream<Item = Result<Vec<u8>, LlmClientError>> + Send + 'static,
         source: WireFormat,
-    ) -> Result<Vec<LlmResponseChunk>, LlmClientError> {
+    ) -> Result<Vec<LlmResponseStreamEvent>, LlmClientError> {
         block_on(decode_stream(bytes, source)?.collect::<Vec<_>>())
             .into_iter()
             .collect()
     }
 
     // Concatenates the text of every `TextDelta` chunk.
-    fn text_of(chunks: &[LlmResponseChunk]) -> String {
-        chunks
+    fn text_of(events: &[LlmResponseStreamEvent]) -> String {
+        events
             .iter()
-            .filter_map(|chunk| match chunk {
-                LlmResponseChunk::TextDelta { text, .. } => Some(text.as_str()),
-                _ => None,
+            .flat_map(LlmResponseStreamEvent::normalized)
+            .filter_map(|chunk| {
+                if let LlmResponseChunk::TextDelta { text, .. } = chunk {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -281,14 +339,17 @@ mod tests {
             Ok(LlmResponseChunk::TextDelta {
                 index: 0,
                 text: "Hello".to_string(),
-            }),
+            }
+            .into()),
             Ok(LlmResponseChunk::TextDelta {
                 index: 0,
                 text: " world".to_string(),
-            }),
+            }
+            .into()),
             Ok(LlmResponseChunk::MessageStop {
                 reason: Some("stop".to_string()),
-            }),
+            }
+            .into()),
         ])
         .boxed();
 
@@ -321,11 +382,13 @@ mod tests {
             Ok(LlmResponseChunk::MessageStart {
                 id: Some("msg_1".to_string()),
                 model: Some("upstream/model".to_string()),
-            }),
+            }
+            .into()),
             Ok(LlmResponseChunk::TextDelta {
                 index: 0,
                 text: "hi".to_string(),
-            }),
+            }
+            .into()),
         ])
         .boxed();
 
@@ -353,11 +416,13 @@ mod tests {
             Ok(LlmResponseChunk::MessageStart {
                 id: Some("msg_1".to_string()),
                 model: Some("upstream/model".to_string()),
-            }),
+            }
+            .into()),
             Ok(LlmResponseChunk::TextDelta {
                 index: 0,
                 text: "hi".to_string(),
-            }),
+            }
+            .into()),
         ])
         .boxed();
 
@@ -374,7 +439,7 @@ mod tests {
     #[test]
     fn encode_stream_propagates_chunk_errors() -> Result<(), BoxError> {
         let chunks: LlmResponseStream =
-            stream::iter(vec![Err::<LlmResponseChunk, LlmClientError>(
+            stream::iter(vec![Err::<LlmResponseStreamEvent, LlmClientError>(
                 LlmClientError::General("chunk exploded".to_string()),
             )])
             .boxed();
@@ -395,6 +460,87 @@ mod tests {
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "Hello world");
         Ok(())
+    }
+
+    #[test]
+    fn stream_helpers_replay_same_format_provider_fields() -> Result<(), BoxError> {
+        let provider_event = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "system_fingerprint": "fp_provider_specific",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "Hello"},
+                "finish_reason": "stop"
+            }]
+        });
+        let bytes = stream::once({
+            let frame = format!("data: {provider_event}\n\n").into_bytes();
+            async move { Ok::<Vec<u8>, LlmClientError>(frame) }
+        });
+        let decoded = decode_stream(bytes, WireFormat::OpenAiChat)?;
+        let replayed =
+            block_on(encode_stream(decoded, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
+                .into_iter()
+                .collect::<Result<Vec<Value>, BoxError>>()?;
+
+        assert_eq!(replayed, vec![provider_event]);
+        Ok(())
+    }
+
+    #[test]
+    fn openai_chat_replay_stamps_the_served_model_without_losing_extensions() {
+        let mut event = json!({
+            "choices": [{"delta": {"content": "Hello"}}],
+            "system_fingerprint": "fp_provider_specific",
+        });
+
+        stamp_streamed_response_model(&mut event, WireFormat::OpenAiChat, Some("served/model"));
+
+        assert_eq!(event["model"], "served/model");
+        assert_eq!(event["system_fingerprint"], "fp_provider_specific");
+    }
+
+    #[test]
+    fn responses_replay_stamps_the_served_model_inside_response() {
+        let mut event = json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        stamp_streamed_response_model(
+            &mut event,
+            WireFormat::OpenAiResponses,
+            Some("served/model"),
+        );
+
+        assert_eq!(event["response"]["model"], "served/model");
+        assert_eq!(event["response"]["provider_extension"], true);
+    }
+
+    #[test]
+    fn anthropic_replay_stamps_the_served_model_inside_message() {
+        let mut event = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        stamp_streamed_response_model(
+            &mut event,
+            WireFormat::AnthropicMessages,
+            Some("served/model"),
+        );
+
+        assert_eq!(event["message"]["model"], "served/model");
+        assert_eq!(event["message"]["provider_extension"], true);
     }
 
     #[test]

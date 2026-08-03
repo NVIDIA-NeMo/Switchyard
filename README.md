@@ -89,6 +89,12 @@ Verify the proxy in another terminal:
 curl http://localhost:4000/health
 ```
 
+NeMo Relay can instead load libsy in process through the native API v2
+`nvidia.switchyard` plugin. Relay performs provider I/O while the plugin drives
+`run_stream` and uses `switchyard-translation` for every request and response.
+See the
+[`switchyard-nemo-relay-plugin` guide](crates/switchyard-nemo-relay-plugin/README.md).
+
 For a complete configuration and a test request, follow
 [Getting Started](docs/getting_started.md).
 
@@ -119,6 +125,7 @@ configured LLM client selects one upstream format.
 - **[`switchyard-libsy`](crates/libsy/README.md)**: embed routing algorithms in a Rust application
 - **[`switchyard-protocol`](crates/protocol/README.md)**: provider-neutral request, response, and streaming types
 - **[`switchyard-translation`](crates/switchyard-translation/README.md)**: request, response, and stream translation
+- **[`switchyard-nemo-relay-plugin`](crates/switchyard-nemo-relay-plugin/README.md)**: in-process routing for NeMo Relay
 
 ## Community
 
