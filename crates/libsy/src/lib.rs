@@ -96,9 +96,13 @@
 //!
 //! Concrete algorithms are exported from the crate root:
 //!
-//! [`Random`] provides uniform or weighted random routing.
-//!
-//! [`LlmTaskClassifier`] uses one model to classify and route to its selected target.
+//! | Algorithm | Purpose |
+//! |---|---|
+//! | [`Noop`] | Return a fixed local response without making a model call. |
+//! | [`Passthrough`] | Always call one configured target. |
+//! | [`Random`] | Select among any number of targets using uniform or weighted routing. |
+//! | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
+//! | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
 
 mod core;
 pub use core::algorithm::{
