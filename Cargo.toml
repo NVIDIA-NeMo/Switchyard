@@ -12,6 +12,7 @@ members = [
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-translation",
+    "crates/switchyard-nemo-relay-plugin",
 ]
 
 [workspace.package]

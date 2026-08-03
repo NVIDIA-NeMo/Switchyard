@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-nemo-relay-plugin"
+version = "0.1.0"
+description = "Switchyard-owned HTTP routing plugin for NeMo Relay"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+http = "1"
+# Use the published release candidate during development. This becomes `0.7.0`
+# before the integration lands, after the stable crate is published.
+nemo-relay-plugin = "=0.7.0-rc.4"
+serde.workspace = true
+serde_json.workspace = true
+switchyard-libsy.workspace = true
+switchyard-llm-client.workspace = true
+switchyard-protocol.workspace = true
+switchyard-translation.workspace = true
+tokio.workspace = true
