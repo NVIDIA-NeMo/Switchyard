@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
-//! routing/optimization algorithm implements, and the offload channel it makes model
-//! calls and publishes [`Decision`]s over. See the crate root for the narrative model.
+//! algorithm implements, and the offload channel it uses to make model calls and
+//! publish [`Decision`]s.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -60,6 +60,10 @@ pub enum RunObservation {
 }
 
 /// Request-scoped callback for algorithm-run observations.
+///
+/// The runner invokes this callback inline while resolving observations. Several
+/// runs may invoke the same observer concurrently, so implementations must be
+/// thread-safe, fast, and non-blocking.
 pub type RunObserver = Arc<dyn Fn(RunObservation) + Send + Sync>;
 
 /// A request paired with the routing [`Decision`] that produced it — the offload
@@ -413,7 +417,7 @@ impl LlmTargetSet {
     }
 }
 
-/// Matches the cap the Python stack uses. Dropping a live session's entry costs one
+/// Bounds process-local overflow history. Dropping a live session's entry costs one
 /// rediscovered overflow, so the victim choice does not need to be exact.
 const MAX_EVICTION_SESSIONS: usize = 1_024;
 
@@ -537,11 +541,25 @@ pub(crate) async fn call_llm_with_overflow_fallback(
 ///
 /// Methods take `self: Arc<Self>`: one algorithm (`Arc<dyn Algorithm>`) is shared across
 /// requests and run concurrently, so it owns its thread-safety and any shared state.
+///
+/// # Concurrency
+///
+/// A host may run the same algorithm concurrently for many requests. Implementations
+/// must synchronize their own mutable shared state. Each call to [`run_stream`](Self::run_stream)
+/// creates an independent [`Driver`], so model-call promises and emitted [`Step`]s cannot
+/// cross between runs.
+///
+/// # Observability
+///
+/// [`run_stream`](Self::run_stream) creates a `libsy.run` span, and each offloaded model
+/// call creates a `libsy.llm_call` span. [`run`](Self::run) additionally wraps calls it
+/// serves through a target's default client in `libsy.client_call`. Decisions and failures
+/// are emitted through `tracing`; metrics use the global OpenTelemetry meter provider.
 #[async_trait]
 pub trait Algorithm: Send + Sync + 'static {
     /// Stable, low-cardinality name identifying this algorithm — the
     /// `algorithm` attribute on every span, metric, and log line the crate
-    /// emits for its runs (see the crate docs' Observability section).
+    /// emits for its runs.
     fn name(&self) -> &str;
 
     /// Run one request to completion: make model calls with [`Driver::call_llm_target`],
@@ -598,9 +616,14 @@ pub trait Algorithm: Send + Sync + 'static {
     }
 
     /// Process a request to completion, returning a stream of [`Step`]s.
-    /// Each [`Step::CallLlm`] is an offloaded model call the consumer must serve.
-    /// The stream ends with a [`Step::ReturnToAgent`] on success, or an `Err` item on failure.
-    /// Report each model call to `observer`.
+    ///
+    /// The consumer must fulfill every [`Step::CallLlm`] before the algorithm can
+    /// continue. The bounded step channel applies backpressure when the consumer is
+    /// not polling. A successful run ends with [`Step::ReturnToAgent`]; a failure is
+    /// emitted as an `Err` item. Dropping the stream aborts the spawned algorithm task.
+    ///
+    /// Every invocation owns a separate [`Driver`]. `observer`, when present, receives
+    /// each completed model call and, after a successful routed run, its routing overhead.
     fn run_stream(
         self: Arc<Self>,
         ctx: Context,
@@ -634,7 +657,7 @@ pub trait Algorithm: Send + Sync + 'static {
             }
             .instrument(span),
         );
-        // Dropping the stream aborts the algorithm task, so it doesn't keep running after the
+        // Dropping the stream aborts the algorithm task when its consumer goes away.
         let abort_guard = AbortOnDrop(handle.abort_handle());
 
         let finish_driver = driver.clone();

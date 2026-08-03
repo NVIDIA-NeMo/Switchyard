@@ -27,8 +27,8 @@ const MID_STREAM_UPSTREAM_STATUS: u16 = 502;
 pub type LlmResponseStream =
     Pin<Box<dyn Stream<Item = Result<LlmResponseChunk, LlmClientError>> + Send>>;
 
-/// A model response: either a live [`Stream`](LlmResponse::Stream) of chunks or the
-/// terminal buffered [`Agg`](LlmResponse::Agg)regate.
+/// A model response: either a live [`Stream`](LlmResponse::Stream) of chunks or a
+/// terminal buffered [`LlmResponse::Agg`] response.
 ///
 /// Not `Clone` — the `Stream` variant owns a single-consumption stream. A buffered
 /// backend returns `Agg` directly; a streaming one returns `Stream` and the consumer
@@ -213,8 +213,10 @@ pub enum LlmResponseChunk {
 ///
 /// Text and reasoning deltas concatenate; tool-call deltas assemble by index (name,
 /// id, and a growing arguments string parsed as JSON at the end); `MessageStart`,
-/// `Usage`, and `MessageStop` set the corresponding fields. `Error` chunks are
-/// ignored here — a driver consuming the stream is expected to surface them.
+/// `Usage`, and `MessageStop` set the corresponding fields.
+/// [`DecodeError`](LlmResponseChunk::DecodeError) and
+/// [`StreamError`](LlmResponseChunk::StreamError) chunks are ignored here; use
+/// [`LlmResponse::into_agg`] when they must become errors.
 ///
 /// Folding is lossy for multiple outputs: text and reasoning indices are ignored,
 /// and [`finish`](Self::finish) produces one assistant output. Prefer

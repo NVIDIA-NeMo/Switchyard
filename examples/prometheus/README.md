@@ -58,7 +58,7 @@ series:
 ```
 
 You should see the families documented in `metrics_reference.md` —
-top-line gauges, per-endpoint counters/summaries, and outcome counters.
+top-line gauges, per-endpoint counters and histograms, and outcome counters.
 
 ## Alert tuning notes
 
@@ -68,8 +68,5 @@ or single-poll blips. Review them against your SLOs before enabling
 notifications:
 
 * `RouterOverheadHigh` is set at the success-criterion threshold (p99 >
-  1 ms for 5 m). Retry-heavy workloads inflate this — cross-check
-  `switchyard_upstream_attempts_total{outcome="retryable_error"}` rate
-  before treating it as a routing-decision regression.
-* `RouterNotRescuing` requires upstream failures to be occurring before
-  it fires, so it does not flap on a healthy chain.
+  1 ms for 5 m). Check its `algorithm` label and `/v1/stats` classifier
+  traffic before treating it as a routing-decision regression.

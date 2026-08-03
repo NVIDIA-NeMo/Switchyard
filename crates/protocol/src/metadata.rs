@@ -4,8 +4,8 @@
 //! Correlation metadata and harness header normalization.
 //!
 //! [`Metadata`] is the correlation/routing envelope carried alongside a request or
-//! response. [`Metadata::from_headers`] normalizes the harness-specific HTTP headers
-//! that Claude Code, Codex, NeMo Relay, and Dynamo attach into that neutral shape.
+//! response. [`Metadata::from_headers`] normalizes host-specific HTTP headers into
+//! that neutral shape.
 
 use std::collections::BTreeMap;
 
@@ -34,11 +34,11 @@ const SWITCHYARD_TURN_ID_HEADER: &str = "x-switchyard-turn-id";
 const SWITCHYARD_REQUEST_ID_HEADER: &str = "x-switchyard-request-id";
 const SWITCHYARD_SESSION_FINAL_HEADER: &str = "x-switchyard-session-final";
 
-// NeMo Relay correlation headers.
+// Correlation-header aliases used by integrating hosts.
 const RELAY_SESSION_ID_HEADER: &str = "x-nemo-relay-session-id";
 const RELAY_SUBAGENT_ID_HEADER: &str = "x-nemo-relay-subagent-id";
 
-// Dynamo correlation headers.
+// Additional correlation-header aliases used by integrating hosts.
 const DYNAMO_SESSION_ID_HEADER: &str = "x-dynamo-session-id";
 const DYNAMO_PARENT_SESSION_ID_HEADER: &str = "x-dynamo-parent-session-id";
 const DYNAMO_SESSION_FINAL_HEADER: &str = "x-dynamo-session-final";
@@ -196,14 +196,14 @@ pub struct Metadata {
 impl Metadata {
     /// Normalizes harness-specific request headers into correlation metadata.
     ///
-    /// Explicit `x-switchyard-*` headers win. NeMo Relay and Dynamo correlation
-    /// headers are accepted for observability without driving routing. Codex's
-    /// structured turn metadata is preferred over its compatibility projections.
-    /// Claude Code carries agent lineage in native headers: a request with a
-    /// non-empty `x-claude-code-agent-id` is treated as a child agent (its parent
+    /// Explicit `x-switchyard-*` headers win. Compatible host headers can populate
+    /// correlation and session metadata, but do not by themselves mark a request as
+    /// delegated work. Structured turn metadata is preferred over compatibility
+    /// projections. A request with a non-empty `x-claude-code-agent-id` is treated
+    /// as a child agent (its parent
     /// inferred from the session when not stated). Sub-agent routing status is taken
     /// from an explicit `x-switchyard-is-subagent` header when present, and otherwise
-    /// inferred from Claude Code lineage or Codex harness signals.
+    /// inferred from native agent lineage or structured harness signals.
     pub fn from_headers(headers: &BTreeMap<String, String>) -> Self {
         let headers = &normalize_headers(headers);
 
@@ -240,10 +240,10 @@ impl Metadata {
 
 /// Returns `(parent_agent_id, is_subagent, is_delegated_work)` from the headers.
 ///
-/// Recognized sub-agent signals: Claude Code `x-claude-code-agent-id`, Codex
-/// `x-openai-subagent` / `x-codex-turn-metadata.subagent_kind`, and explicit
-/// `x-switchyard-is-subagent`. Correlation-only headers (Relay, Dynamo, OpenCode
-/// parent sessions) populate observability fields but do not drive routing.
+/// Recognized sub-agent signals include `x-claude-code-agent-id`,
+/// `x-openai-subagent`, `x-codex-turn-metadata.subagent_kind`, and explicit
+/// `x-switchyard-is-subagent`. Other host correlation and parent-session headers
+/// may populate metadata but do not drive sub-agent classification.
 ///
 /// `is_delegated_work` is computed from raw harness signals, not from `agent_kind`,
 /// which may be set by an unrelated operator label (`x-switchyard-agent-kind`).
@@ -257,8 +257,8 @@ fn parse_sub_agent(headers: &BTreeMap<String, String>) -> (Option<String>, bool,
     let harness_kind = resolve_path(headers, CODEX_SUBAGENT_KIND_PATH)
         .or_else(|| header(headers, OPENAI_SUBAGENT_HEADER).map(str::to_string));
 
-    // Parent resolved via HEADER_CONFIG precedence (covers Dynamo/Codex correlation);
-    // falls back to the Claude Code session the child was spawned under.
+    // Resolve the parent through the configured header precedence, then fall back
+    // to the native agent session the child was spawned under.
     let parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
         .or_else(|| claude_parent.map(str::to_string));
 
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn normalizes_relay_and_dynamo_child_headers() {
-        // Relay and Dynamo headers are correlation data, not routing signals.
+        // Integrating-host headers are correlation data, not routing signals.
         // They populate observability fields but must not trigger sub-agent routing.
         let headers = BTreeMap::from([
             (

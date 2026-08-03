@@ -161,6 +161,12 @@ impl Decision for SimpleDecision {
 /// library does not own — a host implements it over its own transport (HTTP SDK,
 /// in-process model, mock). It serves a call the stream consumer chose not to
 /// override, reached as a routed request's `default_client`.
+///
+/// # Concurrency
+///
+/// A client may be shared by many targets and concurrent algorithm runs. Calls may
+/// overlap, so implementations must synchronize mutable state internally and should
+/// not serialize requests unless their transport requires it.
 #[async_trait]
 pub trait RoutedLlmClient: Send + Sync {
     /// Serve the call, returning the model's response. Call the model named by

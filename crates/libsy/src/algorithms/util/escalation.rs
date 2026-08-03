@@ -185,8 +185,8 @@ pub(crate) fn build_judge(
 /// message is this turn — no `+ 1`. Counting the caller's request instead would report the
 /// turn after the one under judgement.
 ///
-/// libsy receives messages already normalized by `switchyard-protocol`, so unlike the
-/// wire-format-aware Python equivalent this needs no per-format branching.
+/// Messages are already normalized by `switchyard-protocol`, so this needs no
+/// per-format branching.
 pub(crate) fn conversation_turn(request: &Request) -> usize {
     request
         .llm_request

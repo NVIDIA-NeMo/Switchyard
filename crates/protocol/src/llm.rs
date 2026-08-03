@@ -320,7 +320,9 @@ pub struct LlmRequest {
     pub stream: bool,
     /// Provider fields without first-class normalized equivalents.
     pub extensions: ProviderExtensions,
-    /// Exact provider bodies retained for lossless round trips.
+    /// Exact provider bodies used by codecs for lossless same-format round trips.
+    /// This is separate from a host's optional
+    /// [`Request::raw_request`](crate::Request::raw_request).
     pub preservation: PreservationMetadata,
 }
 

@@ -11,29 +11,12 @@
 groups:
   - name: switchyard.routing.evidence
     rules:
-      - alert: RouterNotRescuing
-        # Upstream is throwing retryable errors but the router isn't
-        # absorbing them via retry. This fires only when there IS
-        # something to rescue — does not flap on a healthy chain.
-        expr: |
-          rate(switchyard_router_retry_recovered_total[5m]) == 0
-          and
-          rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m]) > 0
-        for: 5m
-        labels:
-          severity: warning
-          component: switchyard
-        annotations:
-          summary: "Switchyard observed upstream errors but no retry recoveries"
-          description: |
-            Upstream attempts are returning retryable errors (429 / 500
-            / 504) but no request has been rescued by retry in the same
-            5 m window. Likely cause: every configured endpoint is
-            degraded simultaneously, so the retry loop has nowhere to
-            steer.
-
       - alert: RouterOverheadHigh
-        expr: switchyard_routing_overhead_ms{quantile="0.99"} > 1.0
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(switchyard_routing_overhead_ms_bucket[5m]))
+          ) > 1.0
         for: 5m
         labels:
           severity: warning
@@ -42,10 +25,9 @@ groups:
           summary: "Switchyard router overhead p99 above 1 ms"
           description: |
             switchyard_routing_overhead_ms p99 has exceeded 1 ms for 5
-            minutes. Routing overhead bundles format translation,
-            endpoint selection, body mutation, and retry wall time —
-            retries are the most common cause of inflation. Cross-check
-            rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m]).
+            minutes. Routing overhead includes classifier calls, target
+            resolution, and decision publication. Cross-check the algorithm
+            label and classifier traffic in /v1/stats.
 
       - alert: RouterErrorRateNotReducing
         # Headline success criterion. The router should serve a lower
@@ -62,6 +44,8 @@ groups:
             sum(rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m]))
             / clamp_min(sum(rate(switchyard_upstream_attempts_total[5m])), 1)
           )
+          and
+          sum(rate(switchyard_upstream_attempts_total{outcome="retryable_error"}[5m])) > 0
         for: 10m
         labels:
           severity: warning

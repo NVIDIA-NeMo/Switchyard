@@ -9,9 +9,9 @@ mechanical work. Which tier a turn defaults to depends on the picker you choose
 off that default. You configure it with a single knob, `confidence_threshold`,
 plus an optional LLM classifier.
 
-If the selected backend hits a context-window overflow, the router retries once
-against `fallback_target_on_evict`; a second overflow surfaces a
-context-pool-exhausted error (see [Context-Window Handling](../operations/context_window.md)).
+If the selected target exceeds its context window, the router tries the next
+eligible target until one succeeds or all configured targets have been tried. See
+[Context-Window Handling](../operations/context_window.md).
 
 ## How it works
 
@@ -98,21 +98,19 @@ clears the threshold to escalate to capable.
 (If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)
 
-**Set `0.5` explicitly.** It's the recommended starting point and what the
-example below uses. When you omit the field the config default is `0.5` (for
-both the profile config and the deprecated route bundle) — but setting it
-explicitly keeps the intent clear.
+**Set `0.5` explicitly.** `confidence_threshold` is required by the TOML schema;
+`0.5` is the recommended starting point and what the example below uses.
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
 | `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
-| `0.5` | no | Recommended starting point (config default). The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
+| `0.5` | no | Recommended starting point. The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
 | `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. |
-| `1.0` | yes (required) | Classifier-driven. Equivalent to the legacy `coding_agent` profile. |
+| `1.0` | yes (required) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
 
 The signal-vs-classifier split is dataset-dependent. Measure it in
-production via `routing_decisions.stage_router` on `/v1/stats` rather than relying on
-priors from this doc.
+production: `/v1/stats` reports traffic by tier and model, while response headers
+and structured decision logs explain individual selections.
 
 ### Calibrating the threshold from run data
 
@@ -275,8 +273,8 @@ Each response carries two routing headers:
 
 ### Decision sources
 
-The `decision_source` recorded internally for each turn explains why the routing
-went the way it did. It appears in per-tier metrics tagged on the decision:
+The router records an internal `decision_source` for each turn to distinguish the
+paths through its cascade:
 
 | Source | When |
 |---|---|
@@ -288,7 +286,7 @@ went the way it did. It appears in per-tier metrics tagged on the decision:
 
 ## When *not* to use stage-router
 
-- **Single-model deployments.** Use a `model` route instead.
+- **Single-model deployments.** Use a `passthrough` route instead.
 - **Probabilistic A/B splits.** Use
   [Random Routing](random_routing.md) (`type = "random"`).
   The stage-router's signals are wasted on a fixed traffic ratio.

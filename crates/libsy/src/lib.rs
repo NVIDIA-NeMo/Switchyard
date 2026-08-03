@@ -40,7 +40,9 @@ mod observability;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 ///
-/// Hosts should call this after installing their OpenTelemetry meter provider.
+/// Hosts should call this after installing their OpenTelemetry meter provider. Other
+/// libsy metrics are created when recorded and do not require initialization. Spans
+/// and structured logs require the host to install a `tracing` subscriber separately.
 pub fn initialize_metrics() {
     observability::initialize_metrics();
 }

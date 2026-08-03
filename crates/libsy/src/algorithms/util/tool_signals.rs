@@ -3,11 +3,9 @@
 
 //! Tool-result context signals extracted from the conversation history.
 //!
-//! The [`DimensionCollector`][`crate::DimensionCollector`] runs this
-//! alongside the 15 prompt-text scorers: it walks the `messages[]` /
-//! `input[]` array of the incoming request, finds tool-execution results,
+//! The extractor walks normalized messages, finds tool calls and results,
 //! pattern-matches their text against a curated error table, and aggregates
-//! conversation-history metrics that the stage_router pickers need.
+//! conversation-history metrics used by [`crate::StageRouter`].
 //!
 //! All logic is pure and deterministic — no I/O, no shared state.
 
@@ -192,8 +190,10 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
 // ─── output type ─────────────────────────────────────────────────────────────
 
-/// Tool-execution signals stamped on `ProxyContext`. Read by stage_router pickers
-/// via the `get_tool_result_signal` binding.
+/// Tool-execution signals extracted from a normalized [`Request`].
+///
+/// A request-side processor stores these signals in [`State`](crate::State) for
+/// [`crate::StageRouter`] and its classifier to consume.
 #[derive(Clone, Debug, Default)]
 pub struct ToolSignals {
     /// Max severity across the recent window (last `recent_window` tool results):
@@ -324,19 +324,10 @@ fn classify_tool_call(name: &str, command: Option<&str>) -> ToolCategory {
 
 // ─── extraction entry point ───────────────────────────────────────────────────
 
-/// Extract all tool-execution signals from a [`Request`].
+/// Extract all tool-execution signals from a normalized [`Request`].
 ///
-/// Dispatches on the request's wire format:
-///
-/// * **OpenAI chat** — `messages[]` with `role: "tool"` for results;
-///   `role: "assistant"` with `tool_calls[]` for call names.
-/// * **Anthropic** — `messages[]` with `role: "user"` + `content[].type:
-///   "tool_result"`; `role: "assistant"` with `content[].type: "tool_use"`.
-/// * **OpenAI responses** — `input[]` with `type: "function_call_output"`;
-///   `type: "function_call"` for call names.
-///
-/// Returns [`ToolSignals::default()`] when the wire format or body is absent or
-/// the messages list is empty — callers can always read `signal.severity`.
+/// Returns [`ToolSignals::default()`] when the message history contains no tool
+/// activity, so callers can always inspect the signal fields.
 fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
     // Read the decoded conversation, not the raw body: every inbound format lands
     // in the same shape here, so the signals do not depend on knowing which one it

@@ -77,7 +77,9 @@ pub trait Classifier<S = ()>: Send + Sync {
     }
 
     /// Score the classifier's targets given the current state and request.
-    /// driver is optional. It is used to offload model calls
+    ///
+    /// When present, `driver` lets a classifier offload model calls. It is `None`
+    /// when the classifier is evaluated outside an algorithm run.
     ///
     /// `request` is borrowed mutably so a classifier may rewrite it in place — inject a
     /// system prompt, drop tools, compact history. The edit is not scoped to this call:

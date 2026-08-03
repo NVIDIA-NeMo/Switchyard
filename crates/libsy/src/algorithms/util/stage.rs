@@ -3,11 +3,9 @@
 
 //! Stage-router scoring and tier selection — the shared routing core.
 //!
-//! Given a [`ToolSignals`] (extracted by the dimension collector), this
-//! module decides whether a coding-agent turn should go to the **capable**
-//! or **efficient** tier. It is the single source of truth for
-//! the decision, shared by the Rust profile and the Python processor via
-//! bindings — only the outer shell differs in how it fetches the decision.
+//! Given [`ToolSignals`] extracted from a normalized request, this module decides
+//! whether a coding-agent turn should go to the **capable** or **efficient** tier.
+//! [`StageClassifier`] applies that decision inside [`crate::StageRouter`].
 //!
 //! Two axes:
 //!

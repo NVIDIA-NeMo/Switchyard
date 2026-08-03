@@ -429,7 +429,12 @@ impl Classifier<State> for EscalationClassifier {
     }
 }
 
-/// A task-level capability routing algorithm with an internal fall-through cascade.
+/// Routes each task between an efficient and capable target using an LLM judge.
+///
+/// The judge is consulted before the routed model call. Valid, confident output
+/// selects a tier; invalid output, abstention, or a judge failure falls back to the
+/// capable target. Optional session affinity can retain a prior assignment and skip
+/// the judge on later turns.
 pub struct LlmTaskClassifier {
     route: FallThrough<State>,
     /// The active classifier — either capability-based or escalation-based.
@@ -437,7 +442,18 @@ pub struct LlmTaskClassifier {
 }
 
 impl LlmTaskClassifier {
-    /// Routes according to `config` and returns errors for invalid thresholds.
+    /// Builds task-level capability routing over `efficient_target` and `capable_target`.
+    ///
+    /// `judge_target` serves the classification call and is not itself a routing
+    /// destination. When enabled, session affinity runs before the judge and can
+    /// short-circuit it with a retained assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when thresholds are outside `[0, 1]`, the elevated floor is
+    /// not above the base threshold, the output-token budget is zero, message-hash
+    /// fallback is enabled without affinity, or the packaged judge prompt/schema
+    /// cannot be loaded.
     pub fn new(
         judge_target: LlmTarget,
         efficient_target: LlmTarget,
