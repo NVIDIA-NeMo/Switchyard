@@ -127,6 +127,19 @@ impl<S> FallThrough<S>
 where
     S: Default + Send + 'static,
 {
+    /// Creates a router whose state exists only for one run.
+    pub fn new_stateless(targets: LlmTargetSet) -> Self {
+        Self {
+            name: "fall_through".to_string(),
+            decision_reason: default_decision_reason,
+            processors: Vec::new(),
+            classifiers: Vec::new(),
+            targets,
+            session_states: None,
+            session_evictions: SessionEvictions::default(),
+        }
+    }
+
     /// Creates a router that retains one private `S` per session.
     pub fn new_with_state(targets: LlmTargetSet) -> Self {
         Self {
@@ -1181,6 +1194,16 @@ mod tests {
         assert_eq!(second_session, "weak");
         assert_eq!(anonymous1, "weak");
         assert_eq!(anonymous2, "weak");
+
+        let stateless = Arc::new(
+            FallThrough::<TurnState>::new_stateless(target_set(&["strong", "weak"]))
+                .with_processor(Arc::new(CountingProcessor))
+                .with_classifier(Arc::new(ThresholdClassifier)),
+        );
+        let (stateless_first, _) = run_turn(&stateless).await?;
+        let (stateless_second, _) = run_turn(&stateless).await?;
+        assert_eq!(stateless_first, "weak");
+        assert_eq!(stateless_second, "weak");
         Ok(())
     }
 }

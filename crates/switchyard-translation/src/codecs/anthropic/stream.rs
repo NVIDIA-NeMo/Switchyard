@@ -37,6 +37,28 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         encode_anthropic_stream(state, event)
     }
 
+    fn observe_replayed_event(
+        &self,
+        state: &mut StreamTranslationState,
+        raw: &Value,
+        normalized: Vec<LlmResponseChunk>,
+    ) {
+        let normalized_stop = normalized
+            .iter()
+            .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }));
+        for chunk in normalized {
+            drop(encode_anthropic_stream(state, chunk));
+        }
+
+        match raw.get("type").and_then(Value::as_str) {
+            // Anthropic carries the stop reason and usage in `message_delta`, but the separate
+            // `message_stop` event is what actually terminates the stream.
+            Some("message_delta") if normalized_stop => state.emitted_message_delta = true,
+            Some("message_stop") => state.finished = true,
+            _ => {}
+        }
+    }
+
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
         finish_anthropic_stream(state)
     }
@@ -189,6 +211,9 @@ fn encode_anthropic_stream(
 
 // Emits any missing Anthropic terminal events and closes open content blocks.
 fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
+    if state.finished {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     if !state.emitted_message_start {
         out.extend(encode_anthropic_stream(
@@ -227,14 +252,17 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         out.push(json!({"type": "content_block_stop", "index": 0}));
     }
 
-    out.push(json!({
-        "type": "message_delta",
-        "delta": {
-            "stop_reason": anthropic_stop_reason(state.stop_reason.as_deref()),
-            "stop_sequence": Value::Null,
-        },
-        "usage": anthropic_stream_usage(state),
-    }));
+    if !state.emitted_message_delta {
+        out.push(json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": anthropic_stop_reason(state.stop_reason.as_deref()),
+                "stop_sequence": Value::Null,
+            },
+            "usage": anthropic_stream_usage(state),
+        }));
+        state.emitted_message_delta = true;
+    }
     out.push(json!({"type": "message_stop"}));
     state.finished = true;
     out

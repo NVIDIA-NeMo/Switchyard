@@ -6,15 +6,14 @@
 //!
 //! This crate owns Switchyard's neutral conversation IR: [`LlmRequest`] (model, messages,
 //! tools, sampling, …), the buffered [`AggLlmResponse`] (outputs, usage, …), and its
-//! streaming counterpart [`LlmResponseChunk`]; the [`Request`]/[`Response`] envelope that
-//! pairs them with correlation [`Metadata`]; plus the wire-[`format`] identifiers
-//! translation keys off. `switchyard-translation` re-exports the IR types under its own
-//! `ConversationRequest` / `ConversationResponse` / `ConversationStreamEvent` names. The IR
-//! carries no bare `prompt`/`completion`; the [`text_request`] / [`prompt_text`] /
-//! [`text_response`] / [`completion_text`] helpers bridge to and from plain text for the
-//! common single-turn case.
+//! provider-neutral streaming counterpart [`LlmResponseChunk`]. [`LlmResponseStreamEvent`]
+//! composes those chunks with optional provider preservation while crossing the
+//! host/algorithm boundary. The [`Request`]/[`Response`] envelope pairs calls with
+//! correlation [`Metadata`]; wire-[`mod@format`] identifiers are translation keys. The IR carries
+//! no bare `prompt`/`completion`; the [`text_request`] / [`prompt_text`] / [`text_response`] /
+//! [`completion_text`] helpers bridge to and from plain text for the common single-turn case.
 //!
-//! The streamed-response type itself — a live stream of chunks *or* the terminal
+//! The streamed-response type itself — a live stream of events *or* the terminal
 //! aggregate — is the [`LlmResponse`] enum; it owns a `futures::Stream`, so it is the one
 //! non-`Clone`, non-data type in this crate.
 //!

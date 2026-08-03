@@ -40,6 +40,7 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
+    pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,
     pub(crate) text_block_index: Option<usize>,
@@ -108,6 +109,30 @@ pub trait StreamCodec: Send + Sync {
         state: &mut StreamTranslationState,
         event: LlmResponseChunk,
     ) -> Vec<Value>;
+
+    /// Advances encoder state after an exact same-format event replay.
+    ///
+    /// Exact replay returns the preserved provider JSON instead of the JSON emitted by
+    /// [`Self::encode_event`]. The encoder must nevertheless observe the normalized chunks so
+    /// [`Self::finish`] can close an incomplete stream without duplicating an already replayed
+    /// terminal event. Codecs whose terminal state cannot be inferred from `MessageStop` alone
+    /// may override this hook and inspect `raw`.
+    fn observe_replayed_event(
+        &self,
+        state: &mut StreamTranslationState,
+        _raw: &Value,
+        normalized: Vec<LlmResponseChunk>,
+    ) {
+        let replayed_terminal = normalized
+            .iter()
+            .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }));
+        for chunk in normalized {
+            drop(self.encode_event(state, chunk));
+        }
+        if replayed_terminal {
+            state.finished = true;
+        }
+    }
 
     /// Emits any terminal provider events needed after the source stream ends.
     ///
@@ -213,6 +238,31 @@ pub fn decode_stream_event(
                 message: error.to_string(),
             }]
         })
+}
+
+pub(crate) fn encode_response_stream_event(
+    state: &mut StreamTranslationState,
+    target_codec: &dyn StreamCodec,
+    target: &FormatId,
+    event: crate::LlmResponseStreamEvent,
+) -> Vec<Value> {
+    let (preservation, normalized) = event.into_parts();
+    if let Some(preservation) = preservation {
+        let (source, raw) = preservation.into_parts();
+        if &source == target {
+            // Exact replay bypasses the target encoder's emitted JSON, but the encoder must
+            // still observe every normalized chunk. Otherwise `finish` starts from empty state:
+            // a clean EOF after a nonterminal provider event can omit or synthesize malformed
+            // terminal events, while a replayed terminal can be emitted twice.
+            target_codec.observe_replayed_event(state, &raw, normalized);
+            return vec![raw];
+        }
+    }
+
+    normalized
+        .into_iter()
+        .flat_map(|chunk| target_codec.encode_event(state, chunk))
+        .collect()
 }
 
 /// Encodes one neutral stream event with the built-in codec registry.
