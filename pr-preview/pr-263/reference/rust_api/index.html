@@ -1133,19 +1133,15 @@ library and provider-neutral protocol types.</p>
 <p>Use libsy to construct targets, run built-in routing algorithms, implement a
 custom algorithm, or drive model calls through the host-facing step stream.</p>
 <p><a href="../../rust/switchyard_libsy/">Open the generated libsy API documentation</a></p>
-<p>The published crate is also available on
-<a href="https://docs.rs/switchyard-libsy">docs.rs</a>.</p>
 <h2 id="switchyard-protocol"><code>switchyard-protocol</code><a class="headerlink" href="#switchyard-protocol" title="Permanent link">&para;</a></h2>
 <p>Use protocol types for normalized conversations, response streams, routed LLM
 clients, decisions, metadata, and wire-format identifiers.</p>
 <p><a href="../../rust/switchyard_protocol/">Open the generated protocol API documentation</a></p>
-<p>The published crate is also available on
-<a href="https://docs.rs/switchyard-protocol">docs.rs</a>.</p>
 <h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
 <p>Applications embedding libsy normally depend on both crates:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[dependencies]</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.2&quot;</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.2&quot;</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p>Import algorithms and orchestration types from <code>switchyard_libsy</code>. Import
 requests, responses, metadata, decisions, and LLM client traits from
