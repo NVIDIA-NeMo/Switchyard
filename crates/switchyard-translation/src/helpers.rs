@@ -153,14 +153,18 @@ where
             let line = line.map_err(llm_client_error_from_io)?;
             // A blank line (allowing a bare CR for CRLF streams) ends the frame.
             if line.trim_end().is_empty() {
-                if let Some(value) = sse::parse_json_sse_frame(&frame, marker)
-                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?
-                {
-                    for event in codec.decode_event(&mut state, &value) {
-                        yield event;
+                let parsed = sse::parse_json_sse_frame(&frame, marker)
+                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+                frame.clear();
+                match parsed {
+                    sse::SseFrame::Empty => {}
+                    sse::SseFrame::Done => break,
+                    sse::SseFrame::Data(value) => {
+                        for event in codec.decode_event(&mut state, &value) {
+                            yield event;
+                        }
                     }
                 }
-                frame.clear();
             } else {
                 frame.push_str(&line);
                 frame.push('\n');
@@ -171,9 +175,9 @@ where
         // complete frame instead of losing its last chunk.
         #[allow(clippy::collapsible_if)]
         if !frame.trim_end().is_empty() {
-            if let Some(value) = sse::parse_json_sse_frame(&frame, marker)
-                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?
-            {
+            let parsed = sse::parse_json_sse_frame(&frame, marker)
+                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+            if let sse::SseFrame::Data(value) = parsed {
                 for event in codec.decode_event(&mut state, &value) {
                     yield event;
                 }
@@ -384,7 +388,8 @@ mod tests {
     fn decode_stream_parses_sse_bytes_into_ir_chunks() -> Result<(), LlmClientError> {
         let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
-             data: [DONE]\n\n"
+             data: [DONE]\n\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\" ignored\"}}]}\n\n"
             .to_vec();
         let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;

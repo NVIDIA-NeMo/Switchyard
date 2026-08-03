@@ -28,7 +28,10 @@ pub(crate) fn observe(
         metadata,
     } = response;
     let model = model.to_string();
-    let tier = tier.map(str::to_string);
+    let tier = tier
+        .map(str::trim)
+        .filter(|tier| !tier.is_empty())
+        .map(str::to_string);
 
     let llm_response = match llm_response {
         LlmResponse::Agg(agg) => {

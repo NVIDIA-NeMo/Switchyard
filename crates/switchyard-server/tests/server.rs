@@ -1130,6 +1130,7 @@ async fn streaming_success_records_only_final_usage_and_one_latency() -> TestRes
 }
 
 #[tokio::test]
+// A terminal stream failure records errors without usage or terminal latency.
 async fn streaming_error_records_error_without_usage_or_latency() -> TestResult {
     const MODEL: &str = "model/stream-error";
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &[MODEL])]).await?;
