@@ -1,343 +1,200 @@
-# libsy — Switchyard-Lib
+# switchyard-libsy
 
-A lightweight, provider-agnostic library for multi-LLM agent optimization, with
-**routing** as the first case. libsy *decides* how to serve each request — which
-model(s) to call, in what order, how to combine them — and either makes the calls
-itself or hands them back for you to make. It owns no HTTP client and no provider SDK,
-so it drops into a proxy, gateway, or agent runtime.
+`switchyard-libsy` is Switchyard's provider-neutral Rust library for routing and
+multi-model orchestration. An algorithm decides which semantic target to call.
+The target's `RoutedLlmClient` performs the provider I/O, or a host can drive the
+algorithm's step stream and perform each call itself.
 
-## Example
+The package name is `switchyard-libsy`; Rust imports use `switchyard_libsy`.
+Request, response, client, and metadata types come from `switchyard-protocol`.
 
-Build the targets, pick an algorithm, run a request:
+## Add the crates
+
+```toml
+[dependencies]
+switchyard-libsy = "0.2"
+switchyard-protocol = "0.2"
+```
+
+Both crates must use compatible versions.
+
+## Quick start
+
+The no-op algorithm verifies integration without making an upstream call:
 
 ```rust
-use switchyard_libsy::{Algorithm, Context, RoutedLlmClient, LlmTarget, Request};
-use switchyard_libsy::algorithms::{LlmTaskClassifier, TaskClassifierConfig};
-use switchyard_protocol::{completion_text, text_request};
 use std::sync::Arc;
 
-// Targets the algorithm routes among, each backed by your RoutedLlmClient (see below).
-let client = Arc::new(MyClient { /* .. */ }) as Arc<dyn RoutedLlmClient>;
-let target = |name: &str| LlmTarget { semantic_name: name.into(), llm_client: Some(client.clone()) };
+use switchyard_libsy::{Algorithm, Noop};
+use switchyard_protocol::{Context, Request, text_request};
 
-let algo: Arc<dyn Algorithm> = Arc::new(LlmTaskClassifier::new(
-    target("classifier"),   // the judge
-    target("weak"),         // efficient tier
-    target("strong"),       // capable tier
-    // Every field but `base_threshold` has a default; see "Tuning the classifier" below.
-    TaskClassifierConfig { base_threshold: 0.5, ..Default::default() },
-)?);
+async fn run() -> switchyard_libsy::Result<()> {
+    let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
+    let request = Request {
+        llm_request: text_request(Some("switchyard/noop".into()), "hello"),
+        ..Request::default()
+    };
 
-let req = Request {
-    // `text_request` is the single-turn shortcut; build an `LlmRequest` directly for
-    // multi-turn conversations, tools, or sampling parameters.
-    llm_request: text_request(Some("auto".into()), "explain tail latency"),
-    raw_request: None,
-    metadata: None,
-};
-let (trace, response) = algo.clone().run(Context::default(), req).await?;  // calls in, trace + response out
-println!("routed to {}", trace.last().unwrap().selected_model());
-// `response.llm_response` is buffered or streamed; fold it to the aggregate to read text.
-println!("answer: {}", completion_text(&response.llm_response.into_agg().await?));
-```
-
-Runnable: [`research_agent`](examples/research_agent.rs)
-
-## Requests & responses
-
-```rust
-pub struct Request {
-    pub llm_request: LlmRequest,
-    pub raw_request: Option<serde_json::Value>, // optional original provider body for exact-fidelity hosts
-    pub metadata: Option<Metadata>,             // correlation: session / agent / task / correlation_id / extra
-}
-
-// `Response` is a plain struct. The buffered-or-streamed choice lives one level down,
-// in its `llm_response` — which *is* an enum.
-pub struct Response {
-    pub llm_response: LlmResponse,
-    pub metadata: Option<Metadata>,
-}
-
-pub enum LlmResponse {
-    Stream(LlmResponseStream), // a live stream of `LlmResponseChunk`s (token-by-token)
-    Agg(AggLlmResponse),       // the buffered aggregate — outputs, usage, stop reason
+    let (decisions, response) = algorithm.run(Context::default(), request).await?;
+    println!("selected {}", decisions[0].selected_model());
+    assert_eq!(response.selected_model(), Some("switchyard/noop"));
+    Ok(())
 }
 ```
 
-`switchyard-protocol` owns the conversation IR: `LlmRequest`, the buffered
-`AggLlmResponse`, the streaming `LlmResponseChunk`, and the building blocks `Message`,
-`ContentBlock`, `ResponseOutput`, `Usage`, and `Role`. `libsy` re-exports the envelope
-(`Request`/`Response`/`Metadata`) plus `LlmRequest`, `LlmResponse`, `AggLlmResponse`,
-`LlmResponseChunk`, `LlmResponseStream`, and `Usage`; import the rest (`Message`, `Role`, …)
-and the `text_request` / `text_response` / `completion_text` helpers from
-`switchyard_protocol`. Construct and inspect the conversation model directly so tools,
-sampling parameters, reasoning, and provider extensions stay visible instead of being hidden
-behind a second convenience API. `raw_request` remains available when a host needs exact
-source-body fidelity.
+For real model calls, construct `LlmTarget` values with an
+`Arc<dyn RoutedLlmClient>` and pass them to an algorithm. The client maps each
+target's semantic name to its provider model and transport configuration.
+
+## Type ownership
+
+`switchyard-protocol` owns the provider-neutral contract:
+
+- `Context`, `Request`, `Response`, and `Metadata`
+- `LlmRequest`, `AggLlmResponse`, and `LlmResponse`
+- `Message`, `ContentBlock`, tools, usage, and streaming chunks
+- `Decision`, `RoutedLlmClient`, and `LlmClientError`
+
+`switchyard-libsy` owns orchestration:
+
+- `Algorithm`, `Driver`, `Step`, and routed-call types
+- `LlmTarget` and `LlmTargetSet`
+- routing algorithms and their configuration
+- routing errors, observations, tracing, and metrics
+
+Import protocol types from `switchyard_protocol`; libsy does not re-export them.
 
 ## Targets and clients
 
-An `LlmTarget` pairs a routing `semantic_name` with an optional `RoutedLlmClient`. Mapping that
-name to a provider model id is the client's job, not the algorithm's — `RoutedLlmClient` is
-meant to be implemented by you.
+An `LlmTarget` contains:
+
+- `semantic_name`: the logical name selected by an algorithm
+- `llm_client`: the default client used by `Algorithm::run`, or `None` when the
+  host will fulfill calls through `run_stream`
+
+`request.llm_request.model` remains the model requested by the inbound caller.
+The actual call target is `decision.selected_model()`. A client must use the
+decision and map its semantic name to the provider model it serves.
+
+`RoutedLlmClient::call` may return a buffered `LlmResponse::Agg` or a live
+`LlmResponse::Stream`. See the
+[`research_agent`](examples/research_agent.rs) example for a client-backed run.
+
+## Running algorithms
+
+Hold algorithms as `Arc<dyn Algorithm>` so one thread-safe instance can serve
+concurrent requests.
 
 ```rust
-struct MyClient { /* http client, base url, key */ }
-
-#[async_trait::async_trait]
-impl RoutedLlmClient for MyClient {
-    async fn call(&self, ctx: Context, request: Request, decision: Arc<dyn Decision>)
-        -> Result<Response, LlmClientError> {
-        let model = decision.selected_model();   // the routed target — map it to a provider id
-        // request.llm_request.model is the agent's original name (not a call target)
-        // ... POST to your endpoint, read the completion ...
-        let completion = String::from("provider response text");
-        Ok(Response {
-            // Buffered: wrap the aggregate in `LlmResponse::Agg`. `text_response` builds a
-            // single-turn `AggLlmResponse`; construct one directly for tool calls, usage, etc.
-            llm_response: LlmResponse::Agg(text_response(None, completion)),
-            metadata: None,
-        })
-    }
-}
+let (decisions, response) = algorithm
+    .clone()
+    .run(Context::default(), request)
+    .await?;
 ```
 
-To stream instead, return `LlmResponse::Stream(..)` — a boxed
-`Stream<Item = Result<LlmResponseChunk, _>>` — and emit chunks as they arrive from your
-upstream. See [Streaming responses](#streaming-responses) below.
+`run` serves every routed call through the target's default client. It fails
+with `LibsyError::MissingClient` when a selected target has no client.
 
-A `RoutedRequest` bundles the `request` with the routing `decision`, the target's
-`default_client`, and the request's `ctx`; the model to call is
-`decision.selected_model()`, never a mutated request field. `semantic_name` is the label an algorithm routes by; the client maps it to
-the id it calls — they can differ (`"strong"` → `"openai/gpt-4o"`) or coincide.
+For a host-owned transport, use `run_stream(ctx, request, observer)`. Pass
+`None` when model-call observations are not needed. Each `Step::CallLlm` must be
+fulfilled exactly once with `CallLlmRequest::respond`; the terminal step is
+`Step::ReturnToAgent`.
 
-## Running a request
-
-Hold the algorithm as `Arc<dyn Algorithm>` and choose one of two entry points:
-
-```rust
-// run: libsy drives the request to completion, serving each call with the target's
-// client, and returns (trace, response). Errors if a routed target has no client.
-let (trace, response) = algo.clone().run(Context::default(), req).await?;
-
-// run_stream: "ask, don't call" — you drive the stream and make the calls.
-let stream = algo.clone().run_stream(Context::default(), req);
-```
-
-Under the hood every model call is *offloaded* to the request's `Step` stream; `run` is
-the convenience that serves each one via the target's client. The step stream is bounded,
-so pulling it paces the algorithm; each run is independent, so many run concurrently.
+See [`research_agent_core`](examples/research_agent_core.rs) for a complete host-
+driven loop. The step stream is separate from the model response stream: one
+algorithm step can return either a buffered or streaming `LlmResponse`.
 
 ## Streaming responses
 
-A `Response` carries an `LlmResponse` that is either buffered (`Agg`) or a live token
-stream (`Stream`). An `RoutedLlmClient` — or an algorithm — chooses: return
-`LlmResponse::Agg(..)` for a whole answer, or `LlmResponse::Stream(..)` to forward tokens
-as they arrive. libsy never buffers a stream on your behalf; it flows through the algorithm
-untouched, so `run` / `run_stream` hand back whatever was produced and **the caller
-decides**:
+`LlmResponse::into_agg` consumes a live stream and folds it into an
+`AggLlmResponse`, surfacing stream and decoding failures. Algorithms that must
+inspect a complete answer, such as judges, may buffer a response internally.
 
-```rust
-use futures::StreamExt;
+`AggLlmResponse::into_stream` is a synthetic, lossy conversion. It represents
+text, reasoning, and tool calls, but omits content that has no neutral stream
+event, including refusals, tool results, media, files, unknown blocks,
+extensions, and preservation metadata. `ResponseAccumulator` also folds text
+and reasoning into one assistant output, regardless of source output indices.
 
-let (_trace, response) = algo.clone().run(Context::default(), req).await?;
-match response.llm_response {
-    // Forward tokens as they arrive — e.g. re-encode each chunk to your client's SSE.
-    LlmResponse::Stream(mut chunks) => {
-        while let Some(chunk) = chunks.next().await {
-            let chunk: LlmResponseChunk = chunk?;   // TextDelta / ToolCallDelta / Usage / MessageStop / ..
-            /* emit chunk */
-        }
-    }
-    // Already buffered — read it directly.
-    LlmResponse::Agg(agg) => println!("{}", completion_text(&agg)),
-}
-```
+## Request preservation
 
-Need the whole answer regardless of how it arrived? `into_agg()` folds a `Stream` (or
-returns an `Agg` unchanged) into a single `AggLlmResponse`, surfacing any mid-stream error:
+`LlmRequest::preservation` and `AggLlmResponse::preservation` retain exact source
+bodies for lossless same-format replay. With translation's default preservation
+policy, a stored same-format body takes precedence over reconstruction from the
+normalized fields.
 
-```rust
-let agg = response.llm_response.into_agg().await?;   // drives the stream to completion
-println!("{}", completion_text(&agg));
-```
+If code mutates normalized messages, instructions, tools, or sampling controls
+and those edits must reach a same-format upstream, clear the corresponding
+preserved body or encode with preservation disabled. `Request::raw_request` is a
+separate host envelope field; libsy does not read it.
 
-An `LlmResponseChunk` is the provider-neutral streaming event (`MessageStart`, `TextDelta`,
-`ReasoningDelta`, `ToolCallDelta`, `Usage`, `MessageStop`, `Error`); `ResponseAccumulator`
-is the fold behind `into_agg()` if you need to assemble one yourself. Runnable end-to-end
-demo: [`streaming_agent`](examples/streaming_agent.rs).
+The `prompt_text` and `completion_text` protocol helpers are also intentionally
+lossy. They are convenient text views, not complete serialization APIs.
 
-## Driving the calls yourself (`run_stream`)
+## Included algorithms
 
-`run_stream` yields `CallLlm` promises you fulfill with your own transport (or the call's
-`default_client`), streams each `Decision` as it happens, and ends with `ReturnToAgent`.
-This is the *step* stream (one `Step` at a time); it is orthogonal to whether any single
-response is itself streamed — see [Streaming responses](#streaming-responses).
-Runnable: [`research_agent_core`](examples/research_agent_core.rs).
+| Algorithm | Purpose |
+|---|---|
+| `Passthrough` | Always call one target. |
+| `Random` | Uniform or weighted selection across any number of targets. |
+| `LlmTaskClassifier` | Ask a judge to choose an efficient or capable target. |
+| `StageRouter` | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
+| `Noop` | Return a fixed local response for host integration and testing. |
 
-```rust
-let stream = algo.clone().run_stream(Context::default(), req);
-tokio::pin!(stream);
-while let Some(step) = stream.next().await {
-    match step? {
-        Step::CallLlm(call) => {
-            let routed = call.get_routed().clone();                  // which target, and its default client
-            let response = call_model(routed.decision.selected_model(), &routed.request).await;  // your real call
-            call.respond(Ok(response))?;                             // or Err(..) to propagate a failure
-        }
-        Step::Decision(decision) => { /* decision.selected_model(), decision.reasoning() */ }
-        Step::ReturnToAgent(response) => { /* done */ }
-    }
-}
-```
+### Random routing
 
-## Building an algorithm (`Algorithm`)
+`Random::new(targets, weights, seed)` accepts relative nonnegative weights; they
+do not need to sum to one. Missing weights default to one per target. A seed
+makes the generated sequence reproducible for a given shared algorithm instance.
 
-Implement `Algorithm` to add a strategy. You write `create_run_task` — one call per
-request; `run` / `run_stream` are provided and drive it. Make model calls on the `Driver`
-you're handed, and publish a `Decision` for each so consumers (and clients) see *which*
-model and *why*.
-
-```rust
-#[async_trait]
-pub trait Algorithm: Send + Sync + 'static {
-    // Stable telemetry label: the `algorithm` attribute on libsy's spans/metrics/logs.
-    fn name(&self) -> &str;
-    // `self: Arc<Self>` (not `&mut`): one algorithm serves requests concurrently — use
-    // interior mutability for state. Offload calls/decisions on `driver`.
-    async fn create_run_task(self: Arc<Self>, ctx: Context, driver: Driver, request: Request)
-        -> switchyard_libsy::Result<Response>;
-    async fn process_signals(self: Arc<Self>, signals: Signals)
-        -> switchyard_libsy::Result<()>;
-    // provided: run(ctx, request) -> (trace, response), run_stream(ctx, request) -> Stream<Step>
-}
-
-pub trait Decision: Send + Sync {
-    fn selected_model(&self) -> &str;          // the model chosen — the client's call target
-    fn reasoning(&self) -> Option<&str>;       // human-readable "why"
-    fn as_any(&self) -> &dyn std::any::Any;    // downcast to the concrete decision
-}
-```
-
-`LlmTaskClassifier` owns its fall-through cascade: it calls the judge, applies its policy, and
-then invokes the selected target:
-
-```rust
-let router = LlmTaskClassifier::new(
-    judge_target,
-    weak_target,
-    strong_target,
-    TaskClassifierConfig { base_threshold: 0.5, ..Default::default() },
-)?;
-```
-
-### Tuning the classifier
-
-The judge returns a `p_solve` — its estimate that the efficient tier completes the task
-correctly — plus a confidence and a capability boundary. `TaskClassifierConfig` decides what
-to do with that verdict. Anything invalid, abstained, or below a threshold routes to the
-capable target, so every knob below trades cost against quality in the same direction.
+### Task classifier configuration
 
 | Field | Default | Meaning |
 |---|---|---|
-| `base_threshold` | *required* | Lowest `p_solve` that routes a supported task to the efficient target. Raise it to send less traffic to the cheap model. |
-| `min_confidence` | `0.0` | Lowest judge confidence that permits efficient routing. `0.0` disables the gate. |
-| `capability_elevated_floor` | `None` | A higher `p_solve` floor applied only when the judge marks the task `uncertain`, `unsupported`, or `unmatched`. `None` reuses `base_threshold`. |
-| `session_affinity` | `false` | Retains the first decision per session and reuses it on later turns, so the judge is called once per session instead of once per turn. |
-| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on a hash of the first user message. Requires `session_affinity`. |
+| `base_threshold` | `0.0` | Minimum solve probability for the efficient target. Set this deliberately for production routing. |
+| `min_confidence` | `0.0` | Minimum judge confidence for efficient routing. |
+| `capability_elevated_floor` | `None` | Higher threshold for uncertain, unsupported, or unmatched tasks. |
+| `session_affinity` | `false` | Reuse the first decision for later requests in the same session. |
+| `message_hash_fallback` | `false` | Derive affinity from the first user message when session metadata is absent. Requires session affinity. |
+| `recent_turn_window` | `None` | Judge only the newest user message. `Some(n)` includes instructions, the opening task, and the last `n` turns. |
+| `max_output_tokens` | `4096` | Maximum tokens available to the judge verdict. |
 
-Two things to understand before enabling affinity. The retained decision is **sticky for the
-process lifetime** — including a fail-closed `capable` verdict produced when the judge was
-unreachable — so a transient judge failure pins that identity until restart. And
-`message_hash_fallback` keys on request *content*, not a correlation id, so unrelated callers
-sending identical text share one assignment.
+Affinity state lasts for the process lifetime. Message-hash fallback is based on
+content, so unrelated callers with identical opening messages can share an
+assignment.
 
-## Errors
+## Implementing an algorithm
 
-All libsy-owned APIs return [`switchyard_libsy::Result<T>`], whose error is
-`LibsyError`. Callers can match routing failures (`TargetNotFound`, `NoTargets`,
-`MissingClient`), algorithm-specific failures (`AlgorithmError`), driver failures,
-algorithm task failures, incomplete runs, and client-call failures without inspecting error
-strings.
+Implement `Algorithm::name` and `Algorithm::create_run_task`. Use the supplied
+`Driver` to call targets and publish decisions. `self: Arc<Self>` means one
+algorithm instance runs concurrently and must own the synchronization for any
+shared state.
 
-`RoutedLlmClient` is owned by `switchyard-protocol` and returns
-`LlmClientError`. Callers can distinguish invalid requests, configuration
-failures, request/response translation failures, request encoding failures, transport
-failures, timeouts, context-window overflows, upstream HTTP responses, invalid responses,
-and uncategorized client-specific failures. When [`Algorithm::run`] serves a target,
-libsy preserves that error as the source of `LibsyError::ClientCall`.
-Custom algorithms, classifiers, and processors that need to surface their own errors can use
-`LibsyError::external("operation", error)`.
+The authoritative trait contract is in the generated
+[`Algorithm` documentation](https://docs.rs/switchyard-libsy/latest/switchyard_libsy/trait.Algorithm.html).
+The [`ensemble`](examples/ensemble.rs) example shows a custom stateful algorithm.
 
 ## Observability
 
-libsy instruments every algorithm at the core — the `Decision` hook plus the offload
-boundary — so algorithms carry no telemetry code beyond `Algorithm::name()`, the
-`algorithm` attribute everything below is keyed by.
+libsy emits `tracing` spans and structured events plus OpenTelemetry metrics
+through the global provider. Hosts install the subscriber, trace exporter, and
+meter provider. Without them, instrumentation is a no-op.
 
-- **Spans** (`tracing`): one `libsy.run` per request, carrying the `Metadata`
-  correlation ids, any host-defined `extra_metadata` labels, and the outcome,
-  with one child `libsy.llm_call` per model call
-  (selected model, outcome, token counts; measures *fulfillment* as the algorithm
-  observes it, host serving included — a streamed response resolves when its stream
-  handle arrives). When `run` serves a call via the target's default client, the
-  actual API call gets its own `libsy.client_call` span — hosts serving calls over
-  their own transport should span their `RoutedLlmClient` equivalently.
-- **Structured logs** (`tracing`, target `libsy`): an info event per published
-  `Decision` (selected model + reasoning), warn events for failed calls and runs.
-- **Metrics** (OpenTelemetry, scope `switchyard`, via the global meter provider): counters
-  `switchyard.runs`, `switchyard.llm_calls`, and `switchyard.decisions`; histograms
-  `switchyard.run_duration_ms` and `switchyard.llm_call_duration_ms`. Attributes are
-  `algorithm`, `selected_model`, and `outcome` (`ok`/`error`) — failure rates are the
-  `outcome="error"` share of runs/calls.
+The primary spans are `libsy.run`, `libsy.llm_call`, and `libsy.client_call`.
+Metrics include run, call, decision, latency, error, and compatibility request
+families. Call `switchyard_libsy::initialize_metrics()` after installing the
+meter provider when zero-valued compatibility gauges must exist before the
+first request.
 
-libsy also records compatibility metrics for final routed calls:
+## Reference
 
-| OpenTelemetry instrument | Prometheus family | Type | Labels | Meaning |
-|---|---|---|---|---|
-| `switchyard.total_requests` | `switchyard_total_requests` | gauge | none | Successful and failed routed calls |
-| `switchyard.total_errors` | `switchyard_total_errors` | gauge | none | Failed routed calls |
-| `switchyard.requests` | `switchyard_requests_total` | counter | `model`, optional `tier` | Successful routed calls |
-| `switchyard.errors` | `switchyard_errors_total` | counter | `model`, optional `tier` | Failed routed calls |
-| `switchyard.model_call_latency_ms` | `switchyard_model_call_latency_ms` | histogram | `model`, optional `tier` | Successful routed-call latency |
+- [libsy API documentation](https://docs.rs/switchyard-libsy)
+- [protocol API documentation](https://docs.rs/switchyard-protocol)
+- [`research_agent`](examples/research_agent.rs): default-client execution
+- [`research_agent_core`](examples/research_agent_core.rs): host-owned calls
+- [`streaming_agent`](examples/streaming_agent.rs): response streaming
+- [`ensemble`](examples/ensemble.rs): custom stateful algorithm
 
-Classifier calls remain visible in the general LLM-call instruments but are excluded from these
-compatibility families. The `tier` label is present only when a decision supplies a stable tier.
-Hosts that need the two zero-valued gauges before the first call must invoke
-`libsy::initialize_metrics()` after installing the global meter provider.
+## License
 
-libsy owns no exporter. The host installs an OpenTelemetry SDK meter provider
-(`opentelemetry::global::set_meter_provider`) and a `tracing` subscriber (bridge spans
-into OTel with `tracing-opentelemetry` if desired); with neither installed, all
-instrumentation is a no-op.
-
-## Explore
-
-The core crate includes weighted random routing and a judge-backed LLM classifier. Runnable
-agents live in [`examples`](examples/) folder.
-
-**Reference algorithms** — implementations to read and route with:
-
-- [`Random`](src/algorithms/rand.rs) — uniform or weighted random over the set
-  (one call).
-- [`LlmTaskClassifier`](src/algorithms/llm_class.rs) — task-level capability routing with an
-  internal [`FallThrough`](src/algorithms/fall_through.rs) cascade.
-- [`EnsembleOrchAlgo`](examples/ensemble.rs) — stateful: fan out to
-  candidates, judge the best, commit to the winner after N exploration turns.
-
-**Runnable agents** (`cargo run -p switchyard-libsy --example <name>`):
-
-- [`ensemble`](examples/ensemble.rs) — query three NVIDIA-hosted candidates, then judge and commit.
-- [`research_agent`](examples/research_agent.rs) — client-backed
-  targets, `run` (libsy makes the calls).
-- [`research_agent_core`](examples/research_agent_core.rs) — client-less
-  targets, `run_stream` (the agent makes the calls).
-- [`streaming_agent`](examples/streaming_agent.rs) — a target that streams
-  its response; the agent forwards each `LlmResponseChunk` to the caller token-by-token.
-
-## Not yet built
-
-- **`Signals` events** — `process_signals` / `Signals` exist but carry nothing yet.
-- **`Context` fields** — `values: HashMap<String, String>` carries the algorithm telemetry label and `state: S` the caller's per-session state; correlation ids, budgets, and deadlines still to come.
-- **Config-driven construction**.
+Licensed under the Apache License, Version 2.0.

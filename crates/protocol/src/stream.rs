@@ -34,7 +34,9 @@ pub type LlmResponseStream =
 /// backend returns `Agg` directly; a streaming one returns `Stream` and the consumer
 /// drives it, folding to an [`AggLlmResponse`] when it needs the whole response.
 pub enum LlmResponse {
+    /// Live, single-consumption response stream.
     Stream(LlmResponseStream),
+    /// Fully buffered terminal response.
     Agg(AggLlmResponse),
 }
 
@@ -79,6 +81,10 @@ impl LlmResponse {
         }
     }
 
+    /// Returns the model recorded by a buffered response.
+    ///
+    /// Returns `None` for a live stream because reading its model-bearing
+    /// [`LlmResponseChunk::MessageStart`] event would consume the stream.
     pub fn selected_model(&self) -> Option<&str> {
         match self {
             LlmResponse::Agg(agg) => agg.model.as_deref(),
@@ -94,6 +100,10 @@ impl AggLlmResponse {
     /// Useful when a caller had to buffer the response (e.g. to judge it) but the
     /// downstream expects `LlmResponse::Stream` — for instance when `stream: true` was
     /// requested and the algorithm had to aggregate before it could return.
+    ///
+    /// This conversion is lossy: only text, reasoning, and tool-call content has
+    /// a synthetic chunk representation. Refusals, tool results, media, files,
+    /// unknown blocks, response extensions, and preservation metadata are omitted.
     pub fn into_stream(self) -> LlmResponseStream {
         let mut chunks: Vec<LlmResponseChunk> = Vec::new();
         chunks.push(LlmResponseChunk::MessageStart {
@@ -145,36 +155,56 @@ impl AggLlmResponse {
 }
 
 /// One provider-neutral streaming event — the normalized counterpart to
-/// [`AggLlmResponse`](crate::AggLlmResponse), sitting between stream decoders and
-/// encoders. `switchyard-translation` re-exports it as `ConversationStreamEvent`.
+/// [`AggLlmResponse`], sitting between stream decoders and encoders.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
+    /// Starts a response message.
     MessageStart {
+        /// Provider response identifier.
         id: Option<String>,
+        /// Model reported by the provider.
         model: Option<String>,
     },
+    /// Adds text to one output index.
     TextDelta {
+        /// Provider output index.
         index: usize,
+        /// Text fragment.
         text: String,
     },
+    /// Adds reasoning text to one output index.
     ReasoningDelta {
+        /// Provider output index.
         index: usize,
+        /// Reasoning fragment.
         text: String,
     },
+    /// Adds or updates a tool call at one index.
     ToolCallDelta {
+        /// Tool-call index within the response.
         index: usize,
+        /// Tool-call identifier, normally supplied by the first delta.
         id: Option<String>,
+        /// Tool name, normally supplied by the first delta.
         name: Option<String>,
+        /// Fragment of the serialized tool arguments.
         arguments_delta: Option<String>,
     },
+    /// Reports token usage, normally near the end of the stream.
     Usage(Usage),
+    /// Ends a response message.
     MessageStop {
+        /// Provider stop-reason string before normalization.
         reason: Option<String>,
     },
+    /// Reports that an inbound stream event could not be decoded.
     DecodeError {
+        /// Human-readable decoding failure.
         message: String,
     },
+    /// Reports an upstream failure delivered inside an otherwise successful stream.
     StreamError {
+        /// Human-readable upstream failure.
         message: String,
     },
 }
@@ -185,6 +215,10 @@ pub enum LlmResponseChunk {
 /// id, and a growing arguments string parsed as JSON at the end); `MessageStart`,
 /// `Usage`, and `MessageStop` set the corresponding fields. `Error` chunks are
 /// ignored here — a driver consuming the stream is expected to surface them.
+///
+/// Folding is lossy for multiple outputs: text and reasoning indices are ignored,
+/// and [`finish`](Self::finish) produces one assistant output. Prefer
+/// [`LlmResponse::into_agg`] when stream errors must be surfaced.
 ///
 /// Drive it by `push`-ing each chunk in order, then call [`finish`](Self::finish).
 #[derive(Default)]

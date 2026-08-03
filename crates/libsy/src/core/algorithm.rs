@@ -36,11 +36,13 @@ pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
 /// One completed model call observed at the algorithm offload boundary.
 #[derive(Clone, Debug)]
 pub struct LlmCallObservation {
+    /// Model selected for the completed call.
     pub selected_model: String,
     /// Routing tier attached to the selected model, when present.
     pub tier: Option<String>,
     /// Whether this was the routed backend call rather than classifier or judge overhead.
     pub is_routed: bool,
+    /// Whether the call completed successfully.
     pub is_success: bool,
     /// Time spent waiting for the model call to resolve.
     pub duration: Duration,

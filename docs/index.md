@@ -21,11 +21,12 @@ standalone `switchyard-server` binary.
 - [Routing Algorithms](routing_algorithms/overview.md): choose how requests select a model
 - [Architecture](architecture.md): understand the proxy and library components
 - [CLI Reference](cli_reference.md): inspect supported launcher commands and options
+- [Rust API](reference/rust_api.md): browse libsy and protocol crate documentation
 - [Context-Window Handling](operations/context_window.md): configure eviction and retry behavior
 
 ## Reference
 
 - [`switchyard-server`](../crates/switchyard-server/README.md): server configuration, endpoints, and metrics
-- [`switchyard-libsy`](../crates/libsy/README.md): embeddable routing algorithms
-- [`switchyard-protocol`](../crates/protocol/README.md): provider-neutral API types
+- [`switchyard-libsy`](reference/rust_api.md#switchyard-libsy): embeddable routing algorithms
+- [`switchyard-protocol`](reference/rust_api.md#switchyard-protocol): provider-neutral API types
 - [`switchyard-translation`](../crates/switchyard-translation/README.md): protocol translation

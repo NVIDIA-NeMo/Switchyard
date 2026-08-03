@@ -109,3 +109,4 @@ selected target uses a different upstream protocol.
 - [Architecture](architecture.md): follow a request through the server and Rust crates.
 - [`switchyard-server`](../crates/switchyard-server/README.md): complete TOML schema, endpoints, and metrics.
 - [`switchyard-libsy`](../crates/libsy/README.md): embed and extend routing algorithms in Rust.
+- [Rust API reference](reference/rust_api.md): generated libsy and protocol documentation.

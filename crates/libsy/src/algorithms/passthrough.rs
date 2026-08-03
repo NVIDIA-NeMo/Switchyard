@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Router that only routes to a single backend, always.
-//! - For testing if issues come from backend or from Switchyard
-//! - For logging request / responses for RL
+//! Single-target routing for direct model calls and integration diagnostics.
 
 use std::sync::Arc;
 
@@ -13,17 +11,19 @@ use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget};
 use switchyard_protocol::{Context, Decision, RoutedLlmClient};
 
-/// See module comment
+/// Routing algorithm that always calls one configured target.
 pub struct Passthrough {
     target: LlmTarget,
 }
 
 impl Passthrough {
+    /// Creates an algorithm that always calls `target`.
     pub fn new(target: LlmTarget) -> Self {
         Passthrough { target }
     }
 }
 
+/// Decision emitted before [`Passthrough`] calls its configured target.
 pub struct PassthroughDecision {
     model_id: String,
 }

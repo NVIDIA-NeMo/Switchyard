@@ -34,6 +34,7 @@ nav:
   - Reference:
       - CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
+      - Rust API: reference/rust_api.md
 
 exclude_docs: |
   internal/**

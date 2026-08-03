@@ -237,9 +237,7 @@ export SWITCHYARD_TELEMETRY_OPT_OUT=1
 - [Core Concepts](core_concepts.md): LLM clients, targets, and routes
 - [`switchyard-server`](../crates/switchyard-server/README.md): server configuration,
   routing algorithms, TLS, and metrics
-- [`switchyard-libsy`](../crates/libsy/README.md): embed routing algorithms in a
-  Rust application
-- [`switchyard-protocol`](../crates/protocol/README.md): provider-neutral
-  request, response, and streaming types
+- [Rust API reference](reference/rust_api.md): generated libsy and protocol
+  documentation, crate setup, and API boundaries
 - [`switchyard-translation`](../crates/switchyard-translation/README.md):
   request, response, and stream translation

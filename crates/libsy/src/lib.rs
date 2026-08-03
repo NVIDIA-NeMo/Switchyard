@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![warn(missing_docs)]
+
 //! # libsy — multi-LLM agent optimization (routing first)
 //!
 //! `libsy` decides, per request, *how* to serve an LLM call: which model(s) to
@@ -9,6 +11,27 @@
 //! ensembles, cascades, and other optimizations. The library owns no HTTP client
 //! and no provider SDK — it decides, and the host makes (or is asked to make) the
 //! actual calls — so it embeds cleanly in a proxy, gateway, or agent runtime.
+//!
+//! ## Quick start
+//!
+//! The [`Noop`] algorithm verifies host integration without making an upstream call:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use switchyard_libsy::{Algorithm, Noop};
+//! use switchyard_protocol::{Context, Request, text_request};
+//!
+//! # async fn example() -> switchyard_libsy::Result<()> {
+//! let algorithm: Arc<dyn Algorithm> = Arc::new(Noop {});
+//! let request = Request {
+//!     llm_request: text_request(Some("switchyard/noop".into()), "hello"),
+//!     ..Request::default()
+//! };
+//! let (_decisions, response) = algorithm.run(Context::default(), request).await?;
+//! assert_eq!(response.selected_model(), Some("switchyard/noop"));
+//! # Ok(())
+//! # }
+//! ```
 //!
 //! ## The model
 //!
@@ -42,6 +65,7 @@
 //!   [`Step::ReturnToAgent`] carrying the final response. The step stream is bounded,
 //!   so pulling it paces the algorithm one step at a time — an "ask, don't call" mode
 //!   that lets a host that owns its transport keep control of every call.
+//!   Pass `None` for its optional observer when per-call observations are not needed.
 //!
 //! ## Concurrency
 //!
@@ -70,11 +94,11 @@
 //!
 //! ## Algorithms
 //!
-//! Concrete algorithms live in [`algorithms`]:
+//! Concrete algorithms are exported from the crate root:
 //!
-//! [`algorithms::Random`] provides uniform or weighted random routing.
+//! [`Random`] provides uniform or weighted random routing.
 //!
-//! [`algorithms::LlmTaskClassifier`] uses one model to classify and route to its selected target.
+//! [`LlmTaskClassifier`] uses one model to classify and route to its selected target.
 
 mod core;
 pub use core::algorithm::{

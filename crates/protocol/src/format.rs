@@ -11,10 +11,13 @@ use serde::{Deserialize, Serialize};
 /// Built-in provider API formats.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum WireFormat {
+    /// OpenAI Chat Completions API.
     #[serde(rename = "openai_chat")]
     OpenAiChat,
+    /// Anthropic Messages API.
     #[serde(rename = "anthropic_messages")]
     AnthropicMessages,
+    /// OpenAI Responses API.
     #[serde(rename = "openai_responses")]
     OpenAiResponses,
 }

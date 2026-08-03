@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![warn(missing_docs)]
+
 //! Shared request/response protocol for libsy — the vocabulary an [`Algorithm`] reasons
 //! over, decoupled from libsy's orchestration.
 //!
 //! This crate owns Switchyard's neutral conversation IR: [`LlmRequest`] (model, messages,
 //! tools, sampling, …), the buffered [`AggLlmResponse`] (outputs, usage, …), and its
 //! streaming counterpart [`LlmResponseChunk`]; the [`Request`]/[`Response`] envelope that
-//! pairs them with correlation [`Metadata`]; plus the wire-[`format`] identifiers
-//! translation keys off. `switchyard-translation` re-exports the IR types under its own
-//! `ConversationRequest` / `ConversationResponse` / `ConversationStreamEvent` names. The IR
+//! pairs them with correlation [`Metadata`]; plus the wire-[`format` module](crate::format)
+//! identifiers translation keys off. `switchyard-translation` re-exports the conversation
+//! and format modules, together with the most commonly used stream types. The IR
 //! carries no bare `prompt`/`completion`; the [`text_request`] / [`prompt_text`] /
 //! [`text_response`] / [`completion_text`] helpers bridge to and from plain text for the
 //! common single-turn case.
@@ -18,7 +20,21 @@
 //! aggregate — is the [`LlmResponse`] enum; it owns a `futures::Stream`, so it is the one
 //! non-`Clone`, non-data type in this crate.
 //!
-//! [`Algorithm`]: https://docs.rs/libsy
+//! ## Example
+//!
+//! ```
+//! use switchyard_protocol::{LlmRequest, Message, Role};
+//!
+//! let request = LlmRequest {
+//!     model: Some("provider/model".into()),
+//!     messages: vec![Message::text(Role::User, "Explain tail latency")],
+//!     ..LlmRequest::default()
+//! };
+//!
+//! assert_eq!(request.messages.len(), 1);
+//! ```
+//!
+//! [`Algorithm`]: https://docs.rs/switchyard-libsy/latest/switchyard_libsy/trait.Algorithm.html
 
 pub mod client;
 pub mod envelope;
@@ -34,7 +50,10 @@ pub use llm::*;
 pub use metadata::*;
 pub use stream::*;
 
-/// Build a single-turn request: one user message carrying `prompt`, for `model`.
+/// Builds a single-turn request: one user message carrying `prompt`, for `model`.
+///
+/// This deliberately creates only the common text shape. Construct [`LlmRequest`]
+/// directly for instructions, tools, multimodal content, or sampling controls.
 pub fn text_request(model: Option<String>, prompt: impl Into<String>) -> LlmRequest {
     LlmRequest {
         model,
@@ -43,8 +62,10 @@ pub fn text_request(model: Option<String>, prompt: impl Into<String>) -> LlmRequ
     }
 }
 
-/// The user's prompt text — the text of every user message, joined by newlines. Empty
-/// when the request has no user text.
+/// Returns a lossy text view of all user messages, joined by newlines.
+///
+/// Only text and refusal blocks are included. Instructions, tool content,
+/// reasoning, and media are omitted. Returns an empty string when no user text exists.
 pub fn prompt_text(request: &LlmRequest) -> String {
     request
         .messages
@@ -55,7 +76,10 @@ pub fn prompt_text(request: &LlmRequest) -> String {
         .join("\n")
 }
 
-/// Build a single-turn response: one assistant message carrying `completion`, for `model`.
+/// Builds a single-turn response: one assistant message carrying `completion`, for `model`.
+///
+/// Construct [`AggLlmResponse`] directly when usage, tools, reasoning, or multiple
+/// output items must be represented.
 pub fn text_response(model: Option<String>, completion: impl Into<String>) -> AggLlmResponse {
     AggLlmResponse {
         model,
@@ -70,8 +94,11 @@ pub fn text_response(model: Option<String>, completion: impl Into<String>) -> Ag
     }
 }
 
-/// The assistant's completion text — the text blocks of the first output, concatenated.
-/// Empty when the response has no textual output.
+/// Returns a lossy text view of the first assistant output.
+///
+/// Only text blocks from the first output are concatenated. Refusals, reasoning,
+/// tools, media, and additional outputs are omitted. Returns an empty string when
+/// no such text exists.
 pub fn completion_text(response: &AggLlmResponse) -> String {
     response
         .outputs

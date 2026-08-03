@@ -54,6 +54,9 @@ pub struct Request {
 }
 
 impl Request {
+    /// Returns the model name supplied by the inbound request, when present.
+    ///
+    /// This is not necessarily the target selected by a routing decision.
     pub fn requested_model(&self) -> Option<&str> {
         self.llm_request.model.as_deref()
     }
@@ -71,6 +74,10 @@ pub struct Response {
 }
 
 impl Response {
+    /// Returns the model recorded by a buffered response.
+    ///
+    /// Returns `None` for a live stream because inspecting its `MessageStart`
+    /// event would require consuming the stream.
     pub fn selected_model(&self) -> Option<&str> {
         self.llm_response.selected_model()
     }

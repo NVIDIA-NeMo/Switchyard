@@ -54,8 +54,13 @@ jobs:
       - run: uv sync --only-group docs --locked
       - name: Build documentation
         run: uv run --only-group docs mkdocs build --strict
-      - name: Build libsy crate documentation
-        run: cargo doc --locked --no-deps --package switchyard-libsy
+      - name: Build Rust crate documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc --locked --no-deps
+          --package switchyard-libsy
+          --package switchyard-protocol
       - name: Add crate documentation to site
         run: |
           mkdir -p site/rust

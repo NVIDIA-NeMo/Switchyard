@@ -203,7 +203,9 @@ pub struct ToolSignals {
     pub severity: f32,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
+    /// Total edit-style tool calls in the request.
     pub edit_count: u32,
+    /// Total write-style tool calls in the request.
     pub write_count: u32,
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
@@ -236,6 +238,10 @@ pub struct ToolSignals {
 }
 
 impl ToolSignals {
+    /// Extracts tool and progress signals from `request`.
+    ///
+    /// `window_size` limits recent counters to the newest tool results. `None`
+    /// uses [`DEFAULT_RECENT_WINDOW`].
     pub fn from_request(request: &Request, window_size: Option<usize>) -> Self {
         extract_tool_signals_with_window(request, window_size.unwrap_or(DEFAULT_RECENT_WINDOW))
     }

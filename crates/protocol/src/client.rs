@@ -30,7 +30,10 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub enum LlmClientError {
     /// The request cannot be served as supplied.
     #[error("invalid request: {message}")]
-    InvalidRequest { message: String },
+    InvalidRequest {
+        /// Human-readable request validation failure.
+        message: String,
+    },
 
     /// Decoding the inbound request failed in the translation engine.
     #[error("request translation failed: {0}")]
@@ -46,7 +49,10 @@ pub enum LlmClientError {
 
     /// The client is not configured to serve the selected target.
     #[error("client configuration error: {message}")]
-    Configuration { message: String },
+    Configuration {
+        /// Human-readable configuration failure.
+        message: String,
+    },
 
     /// The upstream could not be reached or the request could not be sent.
     #[error("upstream transport error: {source}")]
@@ -131,7 +137,9 @@ pub trait Decision: Send + Sync {
 /// A minimal [`Decision`] implementation for one-off calls that don't belong to a
 /// named algorithm step — judge side calls, classifier side calls, etc.
 pub struct SimpleDecision {
+    /// Model or semantic target selected for the call.
     pub selected_model: String,
+    /// Optional explanation recorded with the call.
     pub reasoning: Option<String>,
 }
 

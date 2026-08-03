@@ -13,8 +13,6 @@
 //! joined in unchanged — and then to the picker's default tier. The judge is
 //! asked per turn and its verdict is never pinned to the session.
 //!
-//! Callers needing a different composition can assemble the parts themselves.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
