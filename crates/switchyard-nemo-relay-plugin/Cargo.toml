@@ -19,7 +19,7 @@ crate-type = ["cdylib"]
 async-stream.workspace = true
 futures-util.workspace = true
 http.workspace = true
-nemo-relay-plugin = { git = "https://github.com/bbednarski9/NeMo-Relay", rev = "f2d1c1b22a4f54622464e1bb8c07bddbf2411a16" }
+nemo-relay-plugin = { git = "https://github.com/bbednarski9/NeMo-Relay", rev = "cb9b843e6e9e37c16d504038d13cd7d94328e2d2" }
 serde.workspace = true
 serde_json.workspace = true
 switchyard-libsy.workspace = true
