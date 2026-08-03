@@ -109,6 +109,8 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         session.id = tracing::field::Empty,
         agent_id = tracing::field::Empty,
         task_id = tracing::field::Empty,
+        task_kind = tracing::field::Empty,
+        agent_role = tracing::field::Empty,
         correlation_id = tracing::field::Empty,
         extra_metadata = tracing::field::Empty,
         outcome = tracing::field::Empty,
@@ -122,6 +124,8 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
             ("session_id", &metadata.session_id),
             ("agent_id", &metadata.agent_id),
             ("task_id", &metadata.task_id),
+            ("task_kind", &metadata.task_kind),
+            ("agent_role", &metadata.agent_role),
             ("correlation_id", &metadata.correlation_id),
         ] {
             if let Some(value) = value {

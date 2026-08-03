@@ -455,6 +455,8 @@ fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
         metadata: Some(Metadata {
             session_id: Some(session_id.to_string()),
             correlation_id: Some(correlation_id.to_string()),
+            task_kind: Some("code_review".to_string()),
+            agent_role: Some("reviewer".to_string()),
             extra_metadata: Some(BTreeMap::from([(
                 "tenant".to_string(),
                 "obs-tenant-1".to_string(),
@@ -722,6 +724,15 @@ async fn successful_run_records_metrics_spans_and_decision_log() -> switchyard_l
     assert_eq!(
         run_span.fields.get("outcome").map(String::as_str),
         Some("ok")
+    );
+    // Semantic harness labels: bounded classes, distinct from the high-cardinality ids above.
+    assert_eq!(
+        run_span.fields.get("task_kind").map(String::as_str),
+        Some("code_review")
+    );
+    assert_eq!(
+        run_span.fields.get("agent_role").map(String::as_str),
+        Some("reviewer")
     );
     // Host-defined labels ride in generically via Metadata.extra_metadata.
     assert!(
