@@ -617,7 +617,7 @@ target = "weak"
             (
                 VALID_CONFIG.replace(
                     "base_threshold = 0.5",
-                    "base_threshold = 0.5\nmax_output_tokens = 0",
+                    "base_threshold = 0.5\nescalation = { max_output_tokens = 0 }",
                 ),
                 "max_output_tokens must be at least 1",
             ),
