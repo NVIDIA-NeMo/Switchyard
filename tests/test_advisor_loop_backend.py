@@ -469,6 +469,39 @@ def test_session_key_stable_across_turns() -> None:
     assert _session_key("sys", msgs) != _session_key("OTHER sys", msgs)  # system is part of the key
 
 
+def test_session_key_ignores_volatile_system_tail() -> None:
+    """A harness that re-renders volatile system context must not reset the budget.
+
+    Claude Code rewrites reminders / todo state / environment into the system
+    prompt on every request. Hashing all of it minted a fresh session key per
+    turn, silently resetting ``max_reviews`` — observed as 87 advisor reviews on
+    one Terminal-Bench task instead of the configured 2. Only the client's
+    cache_control-marked prefix is stable by construction, so only it counts.
+    """
+    msgs = [{"role": "user", "content": "the task"}]
+    stable = {"type": "text", "text": "you are an agent", "cache_control": {"type": "ephemeral"}}
+    turn1 = [stable, {"type": "text", "text": "<reminder>todo: 1 of 5</reminder>"}]
+    turn2 = [stable, {"type": "text", "text": "<reminder>todo: 4 of 5</reminder>"}]
+
+    assert _session_key(turn1, msgs) == _session_key(turn2, msgs)
+
+    # A genuinely different cached prefix is still a different session.
+    other = {"type": "text", "text": "you are something else", "cache_control": {"type": "ephemeral"}}
+    assert _session_key(turn1, msgs) != _session_key([other], msgs)
+
+    # ...and a different task under the same prefix is still a different session.
+    assert _session_key(turn1, msgs) != _session_key(turn1, [{"role": "user", "content": "other task"}])
+
+
+def test_session_key_without_breakpoint_falls_back_to_first_user_message() -> None:
+    """No cache_control breakpoint -> identity rests on the stable task statement."""
+    msgs = [{"role": "user", "content": "the task"}]
+    a = [{"type": "text", "text": "volatile A"}]
+    b = [{"type": "text", "text": "volatile B"}]
+    assert _session_key(a, msgs) == _session_key(b, msgs)
+    assert _session_key(a, msgs) != _session_key(a, [{"role": "user", "content": "other task"}])
+
+
 def test_build_advisor_caller_is_anthropic() -> None:
     assert isinstance(_build_advisor_caller(_config()), _AnthropicAdvisorCaller)
 

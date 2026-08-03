@@ -109,6 +109,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _ANTHROPIC_VERSION = "2023-06-01"
+#: Distinct session keys on one backend instance past which the hashed
+#: conversation prefix is assumed unstable (see ``_session_key``). A single
+#: agent run legitimately opens a handful of conversations (the main thread plus
+#: any sub-agents); dozens means the key is churning per turn.
+_SESSION_CHURN_WARN_AT = 12
 
 
 class AdvisorCaller(Protocol):
@@ -151,6 +156,12 @@ class AdvisorLoopBackend(LLMBackend):
         self._stall_fired: set[str] = set()
         # Per-session seed advice cache for seed_plan_advice ("" = unseeded).
         self._seed_advice: dict[str, str] = {}
+        # Guard against session-key instability: a harness that mutates the
+        # hashed prefix mints a fresh key per turn, silently resetting the
+        # ``max_reviews`` budget. That failure is otherwise invisible — it only
+        # shows up as unexplained advisor spend — so warn once past a threshold
+        # no legitimate single-agent run should reach.
+        self._session_churn_warned = False
         # Resolve format: auto before wire selection; injected fakes must pin
         # a concrete format (probing a fake's endpoint makes no sense).
         executor_target = (
@@ -197,6 +208,20 @@ class AdvisorLoopBackend(LLMBackend):
         body = dict(normalized.body)
         messages: list[dict[str, Any]] = list(body.get("messages") or [])
         session = _session_key(body.get("system"), messages)
+        if (
+            not self._session_churn_warned
+            and session not in self._review_counts
+            and len(self._review_counts) >= _SESSION_CHURN_WARN_AT
+        ):
+            self._session_churn_warned = True
+            log.warning(
+                "AdvisorLoopBackend: %d distinct session keys seen on one backend "
+                "instance; the hashed conversation prefix is unstable for this "
+                "client, so the max_reviews=%d budget is resetting per turn and "
+                "the advisor is being consulted far more than configured",
+                len(self._review_counts),
+                self._config.max_reviews,
+            )
 
         # Seed the session with upfront advisor advice (consulted once at the
         # session-opening request, cached, and re-injected identically on every
@@ -823,13 +848,48 @@ def _count_tool_results(messages: list[dict[str, Any]]) -> int:
 
 
 def _session_key(system: Any, messages: list[dict[str, Any]]) -> str:
-    """Stable per-session key: hash of system prompt + first user message."""
-    parts: list[str] = ["S:" + _blocks_text(system)]
+    """Stable per-session key: hash of the cache-stable system prefix + first user message.
+
+    The system prompt is *not* constant across a session on real agent harnesses:
+    Claude Code re-renders volatile context (reminders, todo state, environment)
+    into it on every request. Hashing the whole thing minted a fresh key per turn,
+    silently resetting the ``max_reviews`` budget — observed as 87 reviews on a
+    single Terminal-Bench task instead of the configured 2.
+
+    Only the portion up to and including the client's last ``cache_control``
+    breakpoint is used: that prefix is stable by construction, because the client
+    is asserting it is byte-identical across turns for prompt caching. Anything
+    after the final breakpoint is volatile by definition and must not affect
+    session identity. Clients that set no breakpoint fall back to the first user
+    message alone, which is the stable task statement.
+    """
+    parts: list[str] = ["S:" + _cache_stable_system_text(system)]
     for m in messages:
         if m.get("role") == "user":
             parts.append("U:" + _blocks_text(m.get("content")))
             break
     return hashlib.sha256("\n".join(parts).encode("utf-8", "ignore")).hexdigest()
+
+
+def _cache_stable_system_text(system: Any) -> str:
+    """System text through the last ``cache_control`` breakpoint (stable prefix).
+
+    Returns "" when the client marks no breakpoint, so session identity then rests
+    on the first user message rather than on volatile per-turn system content.
+    """
+    if isinstance(system, str):
+        # A bare string carries no breakpoint information; it is echoed verbatim
+        # by clients that do not use structured system blocks.
+        return system
+    if not isinstance(system, list):
+        return ""
+    last_breakpoint = -1
+    for index, block in enumerate(system):
+        if isinstance(block, dict) and block.get("cache_control"):
+            last_breakpoint = index
+    if last_breakpoint < 0:
+        return ""
+    return _blocks_text(system[: last_breakpoint + 1])
 
 
 def _blocks_text(content: Any) -> str:
