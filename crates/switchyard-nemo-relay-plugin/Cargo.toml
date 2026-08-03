@@ -13,7 +13,7 @@ rust-version.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 async-trait.workspace = true
