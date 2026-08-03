@@ -258,7 +258,12 @@ target = "strong"          # target the judge is called through (not a routing d
 base_threshold = 0.5       # p_solve floor to route efficient; below this → capable
 min_confidence = 0.7       # judge confidence floor; below this → abstain
 recent_turn_window = 3     # conversation span the judge sees
+prompt = "Estimate whether the efficient target can complete this request."
 ```
+
+`prompt` replaces the packaged capability-classifier prompt. Add
+`{{RESPONSE_SCHEMA}}` where the active capability schema should appear in the
+prompt. The verdict schema and routing thresholds remain unchanged.
 
 Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn

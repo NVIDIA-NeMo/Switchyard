@@ -78,6 +78,32 @@ more traffic to the strong model.
 | `recent_turn_window` | unset | When unset, the judge sees only the newest user message. When set to `N`, it sees client system/developer instructions, the opening user task, and the last `N` conversation messages after that task. `0` keeps only the instructions and opening task. |
 | `session_affinity` | `false` | Retains the first selected target for a session and reuses it on later requests. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `session_affinity = true`. |
+| `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
+| `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+
+### Override the classifier prompt
+
+Set `prompt` on the route when the packaged capability rubric does not describe
+your weak model. A `{{RESPONSE_SCHEMA}}` placeholder is optional. When present,
+Switchyard replaces it with the packaged capability-verdict schema.
+
+```toml
+[routes.smart]
+id = "smart"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+prompt = """
+Estimate whether the weak target can complete the request.
+Return JSON matching this schema:
+{{RESPONSE_SCHEMA}}
+"""
+```
+
+The override changes the instructions only. The judge must still return the
+packaged fields such as `p_solve`, `confidence`, and `capability_boundary`.
 
 ### Classifier calibration
 
@@ -91,8 +117,6 @@ and its message-hash fallback so the first request is judged and later requests
 with the same opening task reuse that decision. If you use a different weak
 model or per-request routing, tune the thresholds before treating classifier
 decisions as production policy.
-
-Support for supplying your own classifier prompt is coming soon.
 
 ## Session affinity
 

@@ -39,6 +39,7 @@ classifier_target = "judge"
 strong_target = "strong"
 weak_target = "weak"
 base_threshold = 0.5
+prompt = "Judge whether the weak model is stuck. Return the required structured verdict."
 escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
 ```
 
@@ -47,6 +48,9 @@ clients send; the judge is not exposed as a client-selectable model.
 
 `base_threshold` is still required, but escalation ignores it, along with
 `min_confidence`, `capability_elevated_floor`, and `session_affinity`.
+The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
+uses the escalation verdict schema rather than the capability verdict schema.
+Include `{{RESPONSE_SCHEMA}}` when the schema should also appear in the prompt.
 
 ## How the decision works
 
@@ -102,8 +106,9 @@ strong tier. `2` or higher requires a session identity, because the streak is
 retained per session — without one, every turn starts from zero and the route
 never latches. Clients supply it with `x-switchyard-session-id`.
 
-Everything else is fixed: anchor and transcript caps, the judge's reply budget,
-and the streak rule that any decline resets to zero.
+Anchor and transcript caps remain fixed. Set the route-level
+`max_output_tokens` key to change the judge's reply budget. Any decline still
+resets the streak to zero.
 
 ## Run the route
 

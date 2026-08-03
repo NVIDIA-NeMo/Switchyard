@@ -99,6 +99,8 @@ tuning.
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | Trailing turns the judge sees. |
+| `prompt` | No | packaged prompt | Replaces the capability prompt, or the trajectory-judge prompt when `escalation` is set. `{{RESPONSE_SCHEMA}}` expands to the active packaged schema. |
+| `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `escalation` | No | unset | Switches the route to escalation judging. |
 
 Add an `escalation` table to judge each completed turn instead of classifying up
@@ -111,8 +113,9 @@ front. See
 | `recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `window_message_chars` | No | `500` | Per-message cap inside that window. |
 
-`base_threshold` stays required, but escalation ignores it and the other
-classifier keys.
+`base_threshold` stays required, but escalation ignores the capability thresholds,
+affinity settings, and route-level `recent_turn_window`. The shared `prompt` and
+`max_output_tokens` keys still configure its judge.
 
 ### `stage_router`
 
