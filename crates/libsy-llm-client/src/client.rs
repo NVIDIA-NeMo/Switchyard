@@ -51,6 +51,29 @@ const RESERVED_HEADERS: &[&str] = &[
     "accept-encoding",
 ];
 
+// Body phrases marking a 4xx as a rejection of a request *parameter* rather than of
+// the request's content. A server that refuses an unknown top-level field names it
+// one of these ways; the reasoning-control knobs are listed explicitly because they
+// are the fields operators most often configure per target. Matched against the raw
+// body, which covers both JSON error envelopes and the plain-text bodies some
+// proxies return.
+const PARAM_REJECT_PHRASES: &[&str] = &[
+    "chat_template_kwargs",
+    "enable_thinking",
+    "unexpected keyword",
+    "unknown parameter",
+    "unknown field",
+    "unrecognized",
+    "extra_forbidden",
+    "additional properties",
+    "extra fields not permitted",
+    "invalid parameter",
+];
+
+// Statuses that can mean "request malformed / unknown parameter". A 429 or 5xx is a
+// transient fault and must never be treated as a parameter reject.
+const PARAM_REJECT_STATUSES: &[u16] = &[400, 422];
+
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -221,7 +244,7 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
-        merge_extra_body(&mut body, backend.extra_body());
+        let injected_extra_body = merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
@@ -267,6 +290,19 @@ impl TranslatingLlmClient {
                     return Ok(response);
                 }
                 Err(failure) => {
+                    // The upstream refused a parameter and this target injects some. The
+                    // caller's request was serviceable; the deployment is misconfigured, and
+                    // it will be misconfigured on every later request too, so this is
+                    // reported as a configuration error naming the keys rather than passed
+                    // through as an upstream failure.
+                    if !injected_extra_body.is_empty() && failure.is_param_reject() {
+                        span.record("outcome", "error");
+                        if let Some(status) = failure.status {
+                            span.record("status_code", status.as_u16());
+                        }
+                        span.record("will_retry", false);
+                        return Err(extra_body_rejected(model, &injected_extra_body));
+                    }
                     let will_retry = attempt < max_retries && failure.is_retryable();
                     span.record("outcome", "error");
                     if let Some(status) = failure.status {
@@ -574,6 +610,27 @@ struct AttemptFailure {
 }
 
 impl AttemptFailure {
+    /// Whether this failure is the upstream refusing a request *parameter* rather than
+    /// the request's content.
+    ///
+    /// Deliberately narrow: only a 400 or 422 whose body names a parameter qualifies. A
+    /// rate limit or server error is transient and must surface unchanged, and content
+    /// rejections such as a context overflow carry their own variant and never match
+    /// here. A false positive turns a genuine upstream error into a configuration error,
+    /// so the phrase list stays specific.
+    fn is_param_reject(&self) -> bool {
+        let LlmClientError::UpstreamHttp { status, body } = &self.error else {
+            return false;
+        };
+        if !PARAM_REJECT_STATUSES.contains(&status.as_u16()) {
+            return false;
+        }
+        let lowered = body.to_ascii_lowercase();
+        PARAM_REJECT_PHRASES
+            .iter()
+            .any(|phrase| lowered.contains(phrase))
+    }
+
     fn is_retryable(&self) -> bool {
         match &self.error {
             LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
@@ -745,12 +802,35 @@ fn is_unsigned_thinking_block(block: &Value) -> bool {
 }
 
 // Applies target defaults without overriding fields supplied by the caller.
-fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
+// Returns the keys actually injected, so a parameter reject can name exactly those
+// and leave the caller's own fields alone.
+fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) -> Vec<String> {
     let Value::Object(object) = body else {
-        return;
+        return Vec::new();
     };
+    let mut injected = Vec::new();
     for (key, value) in extra_body {
-        object.entry(key.clone()).or_insert_with(|| value.clone());
+        if !object.contains_key(key) {
+            object.insert(key.clone(), value.clone());
+            injected.push(key.clone());
+        }
+    }
+    injected
+}
+
+/// Builds the error returned when an upstream rejects a parameter this target injected.
+///
+/// Names the keys so the operator can correct `extra_body` in the deployment TOML. The
+/// upstream body is deliberately omitted: it can quote the request back, and the key
+/// names are enough to act on.
+fn extra_body_rejected(model: &ModelId, injected: &[String]) -> LlmClientError {
+    LlmClientError::Configuration {
+        message: format!(
+            "upstream rejected a request parameter for model {model}. This target sets \
+             extra_body keys [{}], which the model does not accept. Remove or correct them \
+             in the target's extra_body.",
+            injected.join(", ")
+        ),
     }
 }
 
@@ -1730,6 +1810,136 @@ mod tests {
             "recovered"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn param_reject_classification_is_narrow() {
+        let failure = |status: u16, body: &str| {
+            let status = http::StatusCode::from_u16(status).expect("valid status");
+            AttemptFailure {
+                error: LlmClientError::UpstreamHttp {
+                    status,
+                    body: body.to_string(),
+                },
+                status: Some(status),
+                retry_after: None,
+            }
+        };
+        let named = r#"{"error":{"message":"unknown parameter: enable_thinking"}}"#;
+
+        for (status, body, expected) in [
+            (400, named, true),
+            (422, named, true),
+            (400, "extra fields not permitted", true),
+            // An unrelated 400 is a real request error, not a config problem.
+            (400, r#"{"error":{"message":"invalid api key"}}"#, false),
+            // Transient faults must never qualify: reporting a rate limit as a
+            // configuration error sends the operator to edit a TOML that is correct.
+            (429, named, false),
+            (503, named, false),
+        ] {
+            assert_eq!(
+                failure(status, body).is_param_reject(),
+                expected,
+                "HTTP {status} with body {body}"
+            );
+        }
+
+        // A content rejection carries its own variant and never matches.
+        assert!(
+            !AttemptFailure {
+                error: LlmClientError::ContextWindowExceeded {
+                    model: ModelId::new("gpt"),
+                    message: "unknown parameter".to_string(),
+                },
+                status: Some(http::StatusCode::BAD_REQUEST),
+                retry_after: None,
+            }
+            .is_param_reject()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_extra_body_reject_is_reported_as_a_configuration_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let reject = || {
+            ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: enable_thinking"}
+            }))
+        };
+        let request =
+            || json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]});
+
+        // With an injected key, the deployment is at fault. `.expect(1)` pins that the
+        // request is sent once: extra_body is static, so retrying would fail identically
+        // on every later request too.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(reject())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let extra_body = BTreeMap::from([("enable_thinking".to_string(), json!(false))]);
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            extra_body,
+        ))?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                request(),
+                None,
+                Some(&ModelId::new("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to fail")?;
+
+        let LlmClientError::Configuration { message } = &error else {
+            return Err(format!("expected a configuration error, got {error:?}").into());
+        };
+        assert!(message.contains("enable_thinking"), "{message}");
+        assert!(message.contains("extra_body"), "{message}");
+        // The upstream body is not echoed: it can quote the request back.
+        assert!(!message.contains("unknown parameter"), "{message}");
+        drop(server);
+
+        // With nothing injected, the rejected parameter is the caller's, so the upstream
+        // error passes through unchanged.
+        let bare = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(reject())
+            .mount(&bare)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", bare.uri()),
+            BTreeMap::new(),
+        ))?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                request(),
+                None,
+                Some(&ModelId::new("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to fail")?;
+        assert!(
+            matches!(
+                error,
+                LlmClientError::UpstreamHttp {
+                    status: http::StatusCode::BAD_REQUEST,
+                    ..
+                }
+            ),
+            "expected the upstream 400 to surface, got {error:?}"
+        );
         Ok(())
     }
 
