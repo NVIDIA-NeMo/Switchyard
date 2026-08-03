@@ -10,14 +10,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::AffinityRouter;
+use super::util::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
-use super::util::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use super::util::llm_judge::{Judge, JudgeClassifier, JudgePolicy};
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
@@ -90,7 +91,8 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
 }
 
 struct CapabilityJudge {
-    config: JudgeConfig,
+    contract: ClassifierContract,
+    max_output_tokens: u64,
     recent_turn_window: Option<usize>,
 }
 
@@ -114,15 +116,15 @@ impl Judge for CapabilityJudge {
         };
         messages.insert(
             0,
-            Message::text(Role::System, self.config.system_prompt.clone()),
+            Message::text(Role::System, self.contract.system_prompt().to_string()),
         );
         Request {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
                 messages,
                 output: OutputParams {
-                    max_output_tokens: Some(self.config.max_output_tokens),
-                    response_format: self.config.response_schema.clone(),
+                    max_output_tokens: Some(self.max_output_tokens),
+                    response_format: Some(self.contract.response_format().clone()),
                 },
                 ..LlmRequest::default()
             },
@@ -135,30 +137,33 @@ impl Judge for CapabilityJudge {
 struct TaskClassifierPolicy {
     efficient_target: String,
     capable_target: String,
-    config: TaskClassifierConfig,
+    base_threshold: f64,
+    min_confidence: f64,
+    capability_elevated_floor: Option<f64>,
 }
 
 impl TaskClassifierPolicy {
     fn new(
         efficient_target: impl Into<String>,
         capable_target: impl Into<String>,
-        config: TaskClassifierConfig,
+        config: &TaskClassifierConfig,
     ) -> Self {
         Self {
             efficient_target: efficient_target.into(),
             capable_target: capable_target.into(),
-            config,
+            base_threshold: config.base_threshold,
+            min_confidence: config.min_confidence,
+            capability_elevated_floor: config.capability_elevated_floor,
         }
     }
 
     /// Returns the required solve probability for one validated verdict.
     fn threshold(&self, verdict: &TaskClassifierVerdict) -> f64 {
         if verdict.is_capability_elevated() {
-            self.config
-                .capability_elevated_floor
-                .unwrap_or(self.config.base_threshold)
+            self.capability_elevated_floor
+                .unwrap_or(self.base_threshold)
         } else {
-            self.config.base_threshold
+            self.base_threshold
         }
     }
 }
@@ -171,8 +176,8 @@ impl JudgePolicy for TaskClassifierPolicy {
         // clears the configured confidence decides. Anything else is "I could not tell" —
         // reported as ambiguous so the composition around this classifier chooses the
         // fallback, rather than this policy silently imposing one.
-        let Some(verdict) = verdict
-            .filter(|v| v.is_valid() && !v.abstain && v.confidence >= self.config.min_confidence)
+        let Some(verdict) =
+            verdict.filter(|v| v.is_valid() && !v.abstain && v.confidence >= self.min_confidence)
         else {
             return Classification::Ambiguous(vec![]);
         };
@@ -190,22 +195,18 @@ impl JudgePolicy for TaskClassifierPolicy {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-/// Thresholds that control capability classifier routing.
+#[derive(Clone, Debug)]
+/// Settings that control capability classifier prompting and routing.
 pub struct TaskClassifierConfig {
     /// Lowest solve probability that routes a supported task to the efficient target.
     pub base_threshold: f64,
     /// Lowest judge confidence that permits efficient routing.
-    #[serde(default)]
     pub min_confidence: f64,
     /// Higher solve-probability floor for uncertain, unmatched, and unsupported tasks.
-    #[serde(default)]
     pub capability_elevated_floor: Option<f64>,
     /// Enables session affinity before the judge-backed classifier.
-    #[serde(default)]
     pub session_affinity: bool,
     /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
-    #[serde(default)]
     pub message_hash_fallback: bool,
     /// Trailing conversation turns the judge sees on top of the client
     /// instructions and the opening task.
@@ -213,11 +214,54 @@ pub struct TaskClassifierConfig {
     /// `None` (the default) judges the newest user message alone — the task, with
     /// no history. `Some(n)` widens that to the client instructions, the opening
     /// task, and the last `n` turns after it.
-    #[serde(default)]
     pub recent_turn_window: Option<usize>,
+    /// Prompt and verdict contract settings for the classifier judge.
+    pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
-    #[serde(default = "default_judge_max_output_tokens")]
     pub max_output_tokens: u64,
+}
+
+/// Flat serialized shape that maps route-level prompt settings into the runtime contract group.
+#[derive(Deserialize)]
+struct TaskClassifierConfigWire {
+    base_threshold: f64,
+    #[serde(default)]
+    min_confidence: f64,
+    #[serde(default)]
+    capability_elevated_floor: Option<f64>,
+    #[serde(default)]
+    session_affinity: bool,
+    #[serde(default)]
+    message_hash_fallback: bool,
+    #[serde(default)]
+    recent_turn_window: Option<usize>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default = "default_judge_max_output_tokens")]
+    max_output_tokens: u64,
+}
+
+impl<'de> Deserialize<'de> for TaskClassifierConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = TaskClassifierConfigWire::deserialize(deserializer)?;
+        let mut contract = ClassifierContractConfig::default();
+        if let Some(prompt) = wire.prompt {
+            contract = contract.with_prompt(prompt);
+        }
+        Ok(Self {
+            base_threshold: wire.base_threshold,
+            min_confidence: wire.min_confidence,
+            capability_elevated_floor: wire.capability_elevated_floor,
+            session_affinity: wire.session_affinity,
+            message_hash_fallback: wire.message_hash_fallback,
+            recent_turn_window: wire.recent_turn_window,
+            contract,
+            max_output_tokens: wire.max_output_tokens,
+        })
+    }
 }
 
 const fn default_judge_max_output_tokens() -> u64 {
@@ -233,6 +277,7 @@ impl Default for TaskClassifierConfig {
             session_affinity: false,
             message_hash_fallback: false,
             recent_turn_window: None,
+            contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
@@ -445,22 +490,22 @@ impl LlmTaskClassifier {
         config: TaskClassifierConfig,
     ) -> Result<Self> {
         config.validate()?;
-        let mut judge_config = Self::load_judge_config()?;
-        judge_config.max_output_tokens = config.max_output_tokens;
+        let contract = Self::load_capability_contract(&config.contract)?;
         let targets = LlmTargetSet::new(vec![efficient_target.clone(), capable_target.clone()]);
         let session_affinity = config.session_affinity;
         let message_hash_fallback = config.message_hash_fallback;
         let classifier = Arc::new(TaskClassifier {
             classifier: JudgeClassifier::new(
                 CapabilityJudge {
-                    config: judge_config,
+                    contract,
+                    max_output_tokens: config.max_output_tokens,
                     recent_turn_window: config.recent_turn_window,
                 },
                 judge_target.clone(),
                 TaskClassifierPolicy::new(
                     efficient_target.semantic_name.clone(),
                     capable_target.semantic_name.clone(),
-                    config,
+                    &config,
                 ),
             ),
             efficient_target: efficient_target.semantic_name.clone(),
@@ -509,6 +554,25 @@ impl LlmTaskClassifier {
         config: EscalationJudgeConfig,
         max_output_tokens: u64,
     ) -> Result<Self> {
+        Self::new_with_escalation_contract(
+            judge_target,
+            efficient_target,
+            capable_target,
+            ClassifierContractConfig::default(),
+            config,
+            max_output_tokens,
+        )
+    }
+
+    /// Constructs an escalation variant with a configurable classifier contract.
+    pub fn new_with_escalation_contract(
+        judge_target: LlmTarget,
+        efficient_target: LlmTarget,
+        capable_target: LlmTarget,
+        contract_config: ClassifierContractConfig,
+        config: EscalationJudgeConfig,
+        max_output_tokens: u64,
+    ) -> Result<Self> {
         let capable_name = capable_target.semantic_name.clone();
         let efficient_name = efficient_target.semantic_name.clone();
         let confirmations = config.confirmations;
@@ -517,6 +581,7 @@ impl LlmTaskClassifier {
                 judge_target,
                 capable_name,
                 efficient_name,
+                &contract_config,
                 config,
                 max_output_tokens,
             )?,
@@ -534,9 +599,9 @@ impl LlmTaskClassifier {
         })
     }
 
-    /// Loads the judge configuration from the packaged prompt and schema.
-    fn load_judge_config() -> Result<JudgeConfig> {
-        llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
+    /// Loads the packaged capability-classifier contract.
+    fn load_capability_contract(config: &ClassifierContractConfig) -> Result<ClassifierContract> {
+        ClassifierContract::from_config(config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
     }
 }
 
@@ -625,7 +690,7 @@ mod tests {
     }
 
     fn policy() -> TaskClassifierPolicy {
-        TaskClassifierPolicy::new("efficient", "capable", test_config(TEST_THRESHOLD))
+        TaskClassifierPolicy::new("efficient", "capable", &test_config(TEST_THRESHOLD))
     }
 
     /// A verdict whose non-routing fields are fixed — only the three the policy reads vary.
@@ -658,6 +723,7 @@ mod tests {
     struct PerRequestClient {
         calls: Mutex<Vec<String>>,
         judge_max_output_tokens: Mutex<Vec<Option<u64>>>,
+        judge_system_prompts: Mutex<Vec<String>>,
     }
 
     impl PerRequestClient {
@@ -667,6 +733,10 @@ mod tests {
 
         fn judge_max_output_tokens(&self) -> Vec<Option<u64>> {
             self.judge_max_output_tokens.lock().clone()
+        }
+
+        fn judge_system_prompts(&self) -> Vec<String> {
+            self.judge_system_prompts.lock().clone()
         }
     }
 
@@ -684,6 +754,13 @@ mod tests {
                 self.judge_max_output_tokens
                     .lock()
                     .push(request.llm_request.output.max_output_tokens);
+                self.judge_system_prompts.lock().extend(
+                    request
+                        .llm_request
+                        .messages
+                        .first()
+                        .and_then(|message| message.text_content("\n")),
+                );
                 r#"{"recommended_route":"efficient","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#.to_string()
             } else {
                 format!("answer from {model}")
@@ -816,6 +893,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn classifier_config_overrides_the_packaged_prompt() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(client.clone()),
+        };
+        let router = Arc::new(LlmTaskClassifier::new(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            TaskClassifierConfig {
+                contract: ClassifierContractConfig::default()
+                    .with_prompt("Custom capability rubric:\n{{RESPONSE_SCHEMA}}"),
+                ..test_config(TEST_THRESHOLD)
+            },
+        )?);
+
+        router.run(Context::default(), classify_request()).await?;
+
+        let prompts = client.judge_system_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].starts_with("Custom capability rubric:"));
+        assert!(prompts[0].contains("\"recommended_route\""));
+        assert!(!prompts[0].contains("{{RESPONSE_SCHEMA}}"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn classifier_config_enables_session_affinity() -> Result<()> {
         let client = Arc::new(PerRequestClient::default());
         let target = |name: &str| LlmTarget {
@@ -890,8 +995,8 @@ mod tests {
     #[test]
     fn the_threshold_moves_the_routing_boundary() -> Result<()> {
         let borderline = verdict(0.5, 1.0, false);
-        let strict = TaskClassifierPolicy::new("efficient", "capable", test_config(0.9));
-        let lenient = TaskClassifierPolicy::new("efficient", "capable", test_config(0.1));
+        let strict = TaskClassifierPolicy::new("efficient", "capable", &test_config(0.9));
+        let lenient = TaskClassifierPolicy::new("efficient", "capable", &test_config(0.1));
         assert_eq!(selected(&strict, Some(&borderline))?, "capable");
         assert_eq!(selected(&lenient, Some(&borderline))?, "efficient");
         Ok(())
@@ -976,7 +1081,7 @@ mod tests {
         let policy = TaskClassifierPolicy::new(
             "efficient",
             "capable",
-            TaskClassifierConfig {
+            &TaskClassifierConfig {
                 capability_elevated_floor: Some(0.45),
                 ..test_config(0.25)
             },
@@ -1001,7 +1106,10 @@ mod tests {
     /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
     fn judged_contents(recent_turn_window: usize) -> Result<Vec<String>> {
         let judge = CapabilityJudge {
-            config: LlmTaskClassifier::load_judge_config()?,
+            contract: LlmTaskClassifier::load_capability_contract(
+                &ClassifierContractConfig::default(),
+            )?,
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             recent_turn_window: Some(recent_turn_window),
         };
         let request = Request {
@@ -1052,7 +1160,10 @@ mod tests {
     #[test]
     fn capability_judge_builds_a_structured_request() -> Result<()> {
         let judge = CapabilityJudge {
-            config: LlmTaskClassifier::load_judge_config()?,
+            contract: LlmTaskClassifier::load_capability_contract(
+                &ClassifierContractConfig::default(),
+            )?,
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             recent_turn_window: None,
         };
         let request = Request {
@@ -1091,7 +1202,7 @@ mod tests {
         assert!(!contents.contains(&"client instructions".to_string()));
         assert_eq!(
             judge_request.llm_request.output.response_format,
-            judge.config.response_schema
+            Some(judge.contract.response_format().clone())
         );
         assert_eq!(
             judge_request.llm_request.output.max_output_tokens,
@@ -1135,16 +1246,13 @@ mod tests {
     /// rejecting every production verdict.
     #[test]
     fn every_schema_property_round_trips_through_the_judge_parser() -> Result<()> {
-        let config = LlmTaskClassifier::load_judge_config()?;
-        let schema = config
-            .response_schema
-            .as_ref()
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "packaged judge config has no response schema".to_string(),
-            })?;
+        let contract =
+            LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?;
+        let schema = contract.response_format();
         let reply = schema_shaped_verdict(schema)?;
         let judge = CapabilityJudge {
-            config: config.clone(),
+            contract,
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             recent_turn_window: None,
         };
 
@@ -1157,8 +1265,9 @@ mod tests {
 
     #[test]
     fn prompt_includes_concrete_rules_and_schema() -> Result<()> {
-        let config = LlmTaskClassifier::load_judge_config()?;
-        let prompt = config.system_prompt;
+        let contract =
+            LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?;
+        let prompt = contract.system_prompt();
         assert!(prompt.contains("SUP-1 [supported]"));
         assert!(!prompt.contains("{{CAPABILITY_RULES}}"));
         assert!(!prompt.contains("{{PRIMARY_RULE_VALUES}}"));
@@ -1166,10 +1275,9 @@ mod tests {
         assert!(prompt.contains("\"type\": \"object\""));
         assert!(!prompt.contains("\"json_schema\""));
         assert!(!prompt.contains("\"CapabilityClassifierDecision\""));
-        let rule_values = config
-            .response_schema
-            .as_ref()
-            .and_then(|schema| schema.pointer("/json_schema/schema/properties/primary_rule/enum"))
+        let rule_values = contract
+            .response_format()
+            .pointer("/json_schema/schema/properties/primary_rule/enum")
             .and_then(Value::as_array)
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "rendered response schema has no primary rule enum".to_string(),
@@ -1265,6 +1373,36 @@ mod tests {
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_config_overrides_the_packaged_prompt() -> Result<()> {
+        let client = Arc::new(PerRequestClient::default());
+        let target = |name: &str| LlmTarget {
+            semantic_name: name.to_string(),
+            llm_client: Some(client.clone()),
+        };
+        let router = Arc::new(LlmTaskClassifier::new_with_escalation_contract(
+            target("judge"),
+            target("efficient"),
+            target("capable"),
+            ClassifierContractConfig::default()
+                .with_prompt("Custom trajectory rubric:\n{{RESPONSE_SCHEMA}}"),
+            EscalationJudgeConfig {
+                confirmations: 1,
+                ..EscalationJudgeConfig::default()
+            },
+            DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        )?);
+
+        router.run(Context::default(), classify_request()).await?;
+
+        let prompts = client.judge_system_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].starts_with("Custom trajectory rubric:"));
+        assert!(prompts[0].contains("\"escalate\""));
+        assert!(!prompts[0].contains("{{RESPONSE_SCHEMA}}"));
         Ok(())
     }
 

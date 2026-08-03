@@ -10,7 +10,8 @@
 use serde::Deserialize;
 use switchyard_protocol::{ContentBlock, LlmRequest, Message, OutputParams, Role};
 
-use super::llm_judge::{self, Judge, JudgeClassifier, JudgeConfig, JudgePolicy};
+use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
+use super::llm_judge::{Judge, JudgeClassifier, JudgePolicy};
 use crate::core::algorithm::LlmTarget;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
@@ -94,7 +95,8 @@ pub(crate) struct EscalationVerdict {
 
 /// Builds the judge request from the conversation so far.
 pub(crate) struct EscalationJudge {
-    rubric: JudgeConfig,
+    contract: ClassifierContract,
+    max_output_tokens: u64,
     config: EscalationJudgeConfig,
 }
 
@@ -110,12 +112,12 @@ impl Judge for EscalationJudge {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
                 messages: vec![
-                    Message::text(Role::System, self.rubric.system_prompt.clone()),
+                    Message::text(Role::System, self.contract.system_prompt().to_string()),
                     Message::text(Role::User, summary),
                 ],
                 output: OutputParams {
-                    response_format: self.rubric.response_schema.clone(),
-                    max_output_tokens: Some(self.rubric.max_output_tokens),
+                    response_format: Some(self.contract.response_format().clone()),
+                    max_output_tokens: Some(self.max_output_tokens),
                 },
                 ..LlmRequest::default()
             },
@@ -161,6 +163,7 @@ pub(crate) fn build_judge(
     judge_target: LlmTarget,
     capable: String,
     efficient: String,
+    contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
@@ -170,10 +173,14 @@ pub(crate) fn build_judge(
             message: "max_output_tokens must be at least 1".to_string(),
         });
     }
-    let mut rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-    rubric.max_output_tokens = max_output_tokens;
+    let contract =
+        ClassifierContract::from_config(contract_config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
     Ok(JudgeClassifier::new(
-        EscalationJudge { rubric, config },
+        EscalationJudge {
+            contract,
+            max_output_tokens,
+            config,
+        },
         judge_target,
         EscalationPolicy { capable, efficient },
     ))
@@ -362,7 +369,12 @@ mod tests {
     #[test]
     fn judge_request_is_rubric_plus_summary_under_a_completion_cap() -> Result<()> {
         let judge = EscalationJudge {
-            rubric: llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?,
+            contract: ClassifierContract::from_config(
+                &ClassifierContractConfig::default(),
+                PROMPT_TEMPLATE,
+                SCHEMA_TEMPLATE,
+            )?,
+            max_output_tokens: super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             config: EscalationJudgeConfig::default(),
         };
 
@@ -394,10 +406,13 @@ mod tests {
 
     #[test]
     fn judge_request_uses_the_configured_completion_cap() -> Result<()> {
-        let mut rubric = llm_judge::load_judge_config(PROMPT_TEMPLATE, SCHEMA_TEMPLATE)?;
-        rubric.max_output_tokens = 512;
         let judge = EscalationJudge {
-            rubric,
+            contract: ClassifierContract::from_config(
+                &ClassifierContractConfig::default(),
+                PROMPT_TEMPLATE,
+                SCHEMA_TEMPLATE,
+            )?,
+            max_output_tokens: 512,
             config: EscalationJudgeConfig::default(),
         };
 

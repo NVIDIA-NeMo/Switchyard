@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use switchyard_protocol::{AggLlmResponse, completion_text};
 
 use crate::core::algorithm::{Driver, LlmTarget};
@@ -19,29 +18,6 @@ use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Decision, Request, Response};
-
-use super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-
-#[derive(Clone, Debug)]
-/// Prompt and structured-output contract for one judge.
-pub struct JudgeConfig {
-    /// Prepended instructions that define what the judge evaluates.
-    pub system_prompt: String,
-    /// Optional provider response format that constrains the judge verdict.
-    pub response_schema: Option<Value>,
-    /// Maximum completion tokens available to the judge verdict.
-    pub max_output_tokens: u64,
-}
-
-impl Default for JudgeConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: String::new(),
-            response_schema: None,
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-        }
-    }
-}
 
 /// Builds and parses requests for one algorithm-specific LLM judge.
 pub trait Judge: Send + Sync {
@@ -157,36 +133,6 @@ where
         // A judge consultation is a side call, never the turn's answer.
         Ok((self.policy.to_classification(verdict.as_ref()), None))
     }
-}
-
-/// Builds a [`JudgeConfig`] from a prompt template and a JSON schema template.
-///
-/// `schema_template` must be a `{ "type": "json_schema", "json_schema": { "schema": ... } }`
-/// object; the inner `schema` is substituted into the `{{RESPONSE_SCHEMA}}` placeholder in
-/// `prompt_template`.
-pub(crate) fn load_judge_config(
-    prompt_template: &str,
-    schema_template: &str,
-) -> Result<JudgeConfig> {
-    let response_schema: Value =
-        serde_json::from_str(schema_template).map_err(|error| LibsyError::AlgorithmError {
-            message: format!("response schema is invalid: {error}"),
-        })?;
-    let prompt_schema = response_schema
-        .pointer("/json_schema/schema")
-        .ok_or_else(|| LibsyError::AlgorithmError {
-            message: "response schema has no json_schema.schema".to_string(),
-        })?;
-    let prompt_schema = serde_json::to_string_pretty(prompt_schema).map_err(|error| {
-        LibsyError::AlgorithmError {
-            message: format!("prompt schema could not be rendered: {error}"),
-        }
-    })?;
-    Ok(JudgeConfig {
-        system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
-        response_schema: Some(response_schema),
-        max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-    })
 }
 
 fn parse_json_verdict<T: DeserializeOwned>(response: &AggLlmResponse) -> Result<T> {
