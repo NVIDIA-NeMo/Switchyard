@@ -1018,6 +1018,10 @@ mod tests {
             classify_tool_call("terminal", Some("grep foo /app")),
             ToolCategory::Read,
         );
+        assert_eq!(
+            classify_tool_call("terminal", Some("./run_tests.sh")),
+            ToolCategory::Other,
+        );
     }
 
     #[test]
