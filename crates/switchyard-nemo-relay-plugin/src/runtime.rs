@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
 use nemo_relay_plugin::{
@@ -59,13 +60,20 @@ impl SwitchyardRuntime {
         let max_attempts = self.max_retries + 1;
         let mut attempt = 1;
         loop {
+            let terminal_control = TerminalContinuationControl::default();
             self.mark(
                 "switchyard.routing.requested",
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
                 &metadata,
             );
             match self
-                .drive_buffered(libsy_request.clone(), &continuation, attempt, &metadata)
+                .drive_buffered(
+                    libsy_request.clone(),
+                    &continuation,
+                    &terminal_control,
+                    attempt,
+                    &metadata,
+                )
                 .await
             {
                 Ok(response) => {
@@ -92,6 +100,9 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
+                    if !fallback_allowed(&failure) {
+                        return Err(failure.to_string());
+                    }
                     return self
                         .fallback_buffered(inbound, libsy_request, &continuation, &metadata)
                         .await;
@@ -104,6 +115,7 @@ impl SwitchyardRuntime {
         &self,
         request: Request,
         continuation: &LlmContinuationV2,
+        terminal_control: &TerminalContinuationControl,
         attempt: u32,
         mark_metadata: &Json,
     ) -> Result<Response, LibsyError> {
@@ -112,12 +124,21 @@ impl SwitchyardRuntime {
             .clone()
             .run_stream(Context::default(), request, None);
         while let Some(step) = steps.next().await {
+            if let Some(failure) = terminal_control.failure() {
+                return Err(failure);
+            }
             match step {
                 Ok(Step::Decision(decision)) => {
                     self.emit_decision(decision.as_ref(), attempt, mark_metadata);
                 }
                 Ok(Step::CallLlm(call)) => {
-                    self.serve_buffered_call(*call, continuation).await?;
+                    let result = self
+                        .serve_buffered_call(*call, continuation, terminal_control)
+                        .await;
+                    if let Some(failure) = terminal_control.failure() {
+                        return Err(failure);
+                    }
+                    result?;
                 }
                 Ok(Step::ReturnToAgent(response)) => return Ok(*response),
                 Err(error) => return Err(error),
@@ -130,13 +151,17 @@ impl SwitchyardRuntime {
         &self,
         call: CallLlmRequest,
         continuation: &LlmContinuationV2,
+        terminal_control: &TerminalContinuationControl,
     ) -> switchyard_libsy::Result<()> {
         let target_name = call.get_decision().selected_model().to_string();
         let request = call.get_request().llm_request.clone();
         let result = async {
             let target = self.target(&target_name)?;
             let request = self.dispatch_request(target, request, false)?;
-            let response = continuation.call(request).await.map_err(client_error)?;
+            let response = continuation
+                .call(request)
+                .await
+                .map_err(|error| client_error_with_control(error, terminal_control))?;
             let response =
                 translation::decode_response(&self.translation, target.protocol, &response)
                     .map_err(LlmClientError::ResponseTranslation)?;
@@ -287,6 +312,7 @@ impl SwitchyardRuntime {
         let max_attempts = self.max_retries + 1;
         let mut attempt = 1;
         loop {
+            let terminal_control = TerminalContinuationControl::default();
             self.mark(
                 "switchyard.routing.requested",
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
@@ -296,6 +322,7 @@ impl SwitchyardRuntime {
                 .drive_stream(
                     request.clone(),
                     &continuation,
+                    &terminal_control,
                     attempt,
                     &metadata,
                 )
@@ -315,6 +342,7 @@ impl SwitchyardRuntime {
                                 yield event;
                             }
                             Some(Err(failure)) if committed => {
+                                let failure = terminal_control.failure().unwrap_or(failure);
                                 self.mark(
                                     "switchyard.routing.error",
                                     failure_mark_data(attempt, &failure),
@@ -331,6 +359,7 @@ impl SwitchyardRuntime {
                 }
                 Err(failure) => failure,
             };
+            let failure = terminal_control.failure().unwrap_or(failure);
             if libsy_error_retryable(&failure) && attempt < max_attempts {
                 self.mark(
                     "switchyard.routing.retry",
@@ -345,6 +374,9 @@ impl SwitchyardRuntime {
                 failure_mark_data(attempt, &failure),
                 &metadata,
             );
+            if !fallback_allowed(&failure) {
+                Err(format!("Switchyard routing stopped by downstream policy: {failure}"))?;
+            }
             let mut fallback = self
                 .fallback_stream(inbound, request.clone(), &continuation, &metadata)
                 .await?;
@@ -362,6 +394,7 @@ impl SwitchyardRuntime {
         &self,
         request: Request,
         continuation: &LlmStreamContinuationV2,
+        terminal_control: &TerminalContinuationControl,
         attempt: u32,
         mark_metadata: &Json,
     ) -> Result<Response, LibsyError> {
@@ -370,12 +403,21 @@ impl SwitchyardRuntime {
             .clone()
             .run_stream(Context::default(), request, None);
         while let Some(step) = steps.next().await {
+            if let Some(failure) = terminal_control.failure() {
+                return Err(failure);
+            }
             match step {
                 Ok(Step::Decision(decision)) => {
                     self.emit_decision(decision.as_ref(), attempt, mark_metadata);
                 }
                 Ok(Step::CallLlm(call)) => {
-                    self.serve_stream_call(*call, continuation).await?;
+                    let result = self
+                        .serve_stream_call(*call, continuation, terminal_control)
+                        .await;
+                    if let Some(failure) = terminal_control.failure() {
+                        return Err(failure);
+                    }
+                    result?;
                 }
                 Ok(Step::ReturnToAgent(response)) => return Ok(*response),
                 Err(error) => return Err(error),
@@ -388,13 +430,20 @@ impl SwitchyardRuntime {
         &self,
         call: CallLlmRequest,
         continuation: &LlmStreamContinuationV2,
+        terminal_control: &TerminalContinuationControl,
     ) -> switchyard_libsy::Result<()> {
         let target_name = call.get_decision().selected_model().to_string();
         let request = call.get_request();
         let llm_request = request.llm_request.clone();
         let metadata = request.metadata.clone();
         let result = self
-            .provider_stream_response(&target_name, llm_request, metadata, continuation)
+            .provider_stream_response(
+                &target_name,
+                llm_request,
+                metadata,
+                continuation,
+                terminal_control,
+            )
             .await
             .map_err(|source| LibsyError::client_call(target_name, source));
         call.respond(result)
@@ -406,16 +455,19 @@ impl SwitchyardRuntime {
         request: SwitchyardLlmRequest,
         metadata: Option<Metadata>,
         continuation: &LlmStreamContinuationV2,
+        terminal_control: &TerminalContinuationControl,
     ) -> Result<Response, LlmClientError> {
         let target = self.target(target_name)?;
         let dispatch = self.dispatch_request(target, request, true)?;
         let mut upstream = continuation
             .open_stream(dispatch)
             .await
-            .map_err(client_error)?;
+            .map_err(|error| client_error_with_control(error, terminal_control))?;
         let first_raw = match upstream.next().await {
             Some(Ok(first)) => first,
-            Some(Err(error)) => return Err(client_error(error)),
+            Some(Err(error)) => {
+                return Err(client_error_with_control(error, terminal_control));
+            }
             None => {
                 return Err(LlmClientError::InvalidResponse {
                     source: Box::new(std::io::Error::new(
@@ -430,10 +482,13 @@ impl SwitchyardRuntime {
             decode_provider_event(&self.translation, &mut state, target.protocol, first_raw)?;
         let protocol = target.protocol;
         let translation = Arc::clone(&self.translation);
+        let terminal_control = terminal_control.clone();
         let stream: LlmResponseStream = Box::pin(async_stream::try_stream! {
             yield first;
             while let Some(item) = upstream.next().await {
-                let raw = item.map_err(client_error)?;
+                let raw = item.map_err(|error| {
+                    client_error_with_control(error, &terminal_control)
+                })?;
                 yield decode_provider_event(&translation, &mut state, protocol, raw)?;
             }
         });
@@ -530,12 +585,14 @@ impl SwitchyardRuntime {
             json!({"selected_target": target_name}),
             metadata,
         );
+        let terminal_control = TerminalContinuationControl::default();
         let response = self
             .provider_stream_response(
                 target_name,
                 request.llm_request,
                 request.metadata,
                 continuation,
+                &terminal_control,
             )
             .await
             .map_err(|error| format!("trusted fallback stream failed: {error}"))?;
@@ -548,6 +605,80 @@ impl SwitchyardRuntime {
 }
 
 type ReturnedJsonStream = Pin<Box<dyn Stream<Item = Result<Json, LibsyError>> + Send>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalContinuationKind {
+    Guardrail,
+    Cancelled,
+}
+
+impl TerminalContinuationKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Guardrail => "guardrail",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TerminalContinuationFailure {
+    kind: TerminalContinuationKind,
+}
+
+impl fmt::Display for TerminalContinuationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            TerminalContinuationKind::Guardrail => {
+                formatter.write_str("downstream LLM continuation was blocked by a guardrail")
+            }
+            TerminalContinuationKind::Cancelled => {
+                formatter.write_str("downstream LLM continuation was cancelled")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TerminalContinuationFailure {}
+
+#[derive(Clone, Default)]
+struct TerminalContinuationControl {
+    failure: Arc<Mutex<Option<TerminalContinuationKind>>>,
+}
+
+impl TerminalContinuationControl {
+    fn record(&self, error: &LlmContinuationFailureV2) {
+        let kind = match error {
+            LlmContinuationFailureV2::NonHttp {
+                kind: LlmNonHttpFailureKindV2::Guardrail,
+                ..
+            } => TerminalContinuationKind::Guardrail,
+            LlmContinuationFailureV2::NonHttp {
+                kind: LlmNonHttpFailureKindV2::Cancelled,
+                ..
+            } => TerminalContinuationKind::Cancelled,
+            _ => return,
+        };
+        let mut failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        failure.get_or_insert(kind);
+    }
+
+    fn failure(&self) -> Option<LibsyError> {
+        let kind = *self
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        kind.map(|kind| {
+            LibsyError::external(
+                "downstream LLM continuation",
+                TerminalContinuationFailure { kind },
+            )
+        })
+    }
+}
 
 fn decode_provider_event(
     translation: &TranslationEngine,
@@ -594,6 +725,27 @@ fn libsy_error_retryable(error: &LibsyError) -> bool {
     }
 }
 
+fn terminal_continuation_failure(error: &LibsyError) -> Option<&TerminalContinuationFailure> {
+    let LibsyError::External { source, .. } = error else {
+        return None;
+    };
+    source
+        .as_ref()
+        .downcast_ref::<TerminalContinuationFailure>()
+}
+
+fn fallback_allowed(error: &LibsyError) -> bool {
+    terminal_continuation_failure(error).is_none()
+}
+
+fn client_error_with_control(
+    error: LlmContinuationFailureV2,
+    terminal_control: &TerminalContinuationControl,
+) -> LlmClientError {
+    terminal_control.record(&error);
+    client_error(error)
+}
+
 fn client_error(error: LlmContinuationFailureV2) -> LlmClientError {
     match error {
         LlmContinuationFailureV2::Http { status, body, .. } => {
@@ -624,23 +776,28 @@ fn failure_mark_data(attempt: u32, failure: &LibsyError) -> Json {
             Json::from(libsy_error_retryable(failure)),
         ),
     ]);
-    match failure {
-        LibsyError::ClientCall {
-            source: LlmClientError::UpstreamHttp { status, .. },
-            ..
-        } => {
-            data.insert("failure_kind".into(), Json::from("http"));
-            data.insert("http_status".into(), Json::from(*status));
-        }
-        LibsyError::ClientCall { source, .. } => {
-            data.insert("failure_kind".into(), Json::from("non_http"));
-            data.insert(
-                "non_http_kind".into(),
-                Json::from(client_error_label(source)),
-            );
-        }
-        _ => {
-            data.insert("failure_kind".into(), Json::from("algorithm"));
+    if let Some(terminal) = terminal_continuation_failure(failure) {
+        data.insert("failure_kind".into(), Json::from("non_http"));
+        data.insert("non_http_kind".into(), Json::from(terminal.kind.label()));
+    } else {
+        match failure {
+            LibsyError::ClientCall {
+                source: LlmClientError::UpstreamHttp { status, .. },
+                ..
+            } => {
+                data.insert("failure_kind".into(), Json::from("http"));
+                data.insert("http_status".into(), Json::from(*status));
+            }
+            LibsyError::ClientCall { source, .. } => {
+                data.insert("failure_kind".into(), Json::from("non_http"));
+                data.insert(
+                    "non_http_kind".into(),
+                    Json::from(client_error_label(source)),
+                );
+            }
+            _ => {
+                data.insert("failure_kind".into(), Json::from("algorithm"));
+            }
         }
     }
     Json::Object(data)
@@ -745,6 +902,54 @@ mod tests {
             },
         )));
         assert!(!libsy_error_retryable(&LibsyError::MissingFinalResponse));
+    }
+
+    #[test]
+    fn terminal_downstream_controls_never_retry_or_fallback() {
+        for (kind, label) in [
+            (LlmNonHttpFailureKindV2::Guardrail, "guardrail"),
+            (LlmNonHttpFailureKindV2::Cancelled, "cancelled"),
+        ] {
+            let control = TerminalContinuationControl::default();
+            let _ = client_error_with_control(
+                LlmContinuationFailureV2::NonHttp {
+                    kind,
+                    message: "detail must not appear in routing marks".into(),
+                },
+                &control,
+            );
+            let failure = control.failure().expect("terminal failure is retained");
+
+            assert!(!libsy_error_retryable(&failure));
+            assert!(!fallback_allowed(&failure));
+            assert_eq!(
+                failure_mark_data(2, &failure),
+                json!({
+                    "attempt": 2,
+                    "retryable": false,
+                    "failure_kind": "non_http",
+                    "non_http_kind": label,
+                })
+            );
+        }
+
+        for kind in [
+            LlmNonHttpFailureKindV2::InvalidRequest,
+            LlmNonHttpFailureKindV2::Internal,
+        ] {
+            let control = TerminalContinuationControl::default();
+            let mapped = client_error_with_control(
+                LlmContinuationFailureV2::NonHttp {
+                    kind,
+                    message: "ordinary failure".into(),
+                },
+                &control,
+            );
+            assert!(control.failure().is_none());
+            assert!(fallback_allowed(&LibsyError::client_call(
+                "provider", mapped
+            )));
+        }
     }
 
     #[test]
