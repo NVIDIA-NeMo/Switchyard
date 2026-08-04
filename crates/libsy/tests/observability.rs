@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -344,6 +345,7 @@ struct UsageClient {
 struct ClassifierClient {
     classifier_delay: Duration,
     routed_delay: Duration,
+    judge_calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -359,6 +361,7 @@ impl RoutedLlmClient for ClassifierClient {
             tokio::time::sleep(self.routed_delay).await;
             "routed response"
         } else {
+            self.judge_calls.fetch_add(1, Ordering::Relaxed);
             tokio::time::sleep(self.classifier_delay).await;
             r#"{"recommended_route":"weak","p_solve":0.9,"confidence":0.9,"abstain":false,"capability_boundary":"supported","primary_rule":"SUP-1","crux":"bounded task"}"#
         };
@@ -1032,6 +1035,7 @@ async fn classifier_metrics_count_only_the_final_routed_call() -> switchyard_lib
     let client = Arc::new(ClassifierClient {
         classifier_delay: Duration::from_millis(60),
         routed_delay: Duration::from_millis(200),
+        judge_calls: Arc::new(AtomicUsize::new(0)),
     });
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
@@ -1208,9 +1212,11 @@ async fn affinity_reuse_keeps_the_tier_label() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (_store, exporter, provider, _, _) = telemetry();
 
+    let judge_calls = Arc::new(AtomicUsize::new(0));
     let client = Arc::new(ClassifierClient {
         classifier_delay: Duration::from_millis(5),
         routed_delay: Duration::from_millis(5),
+        judge_calls: judge_calls.clone(),
     });
     let target = |name: &str| LlmTarget {
         semantic_name: name.to_string(),
@@ -1243,6 +1249,10 @@ async fn affinity_reuse_keeps_the_tier_label() -> switchyard_libsy::Result<()> {
             Some("weak")
         );
     }
+
+    // The judge ran once: the second request reused the affinity pin
+    // instead of classifying again.
+    assert_eq!(judge_calls.load(Ordering::Relaxed), 1);
 
     let snapshots = flushed_metrics(exporter, provider);
     // The judged first turn and the affinity-reuse second turn land in the
