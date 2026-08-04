@@ -176,6 +176,17 @@ pub fn decode_stream<S>(
 where
     S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
 {
+    decode_stream_with_limit(bytes, source, MAX_SSE_FRAME_BYTES)
+}
+
+fn decode_stream_with_limit<S>(
+    bytes: S,
+    source: WireFormat,
+    max_frame_bytes: usize,
+) -> std::result::Result<LlmResponseStream, LlmClientError>
+where
+    S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
+{
     let marker = sse::done_marker(source);
     let source_format: FormatId = source.into();
     // The source is always a built-in wire format, so this lookup cannot fail; a
@@ -198,7 +209,7 @@ where
         let mut tracker = SseFrameSizeTracker::default();
         while let Some(chunk) = bytes.next().await {
             let chunk = chunk?;
-            tracker.observe(&chunk, MAX_SSE_FRAME_BYTES)?;
+            tracker.observe(&chunk, max_frame_bytes)?;
             yield chunk;
         }
     });
@@ -215,8 +226,8 @@ where
         futures::pin_mut!(lines);
         while let Some(line) = lines.next().await {
             let line = line.map_err(llm_client_error_from_io)?;
-            // A blank line (allowing a bare CR for CRLF streams) ends the frame.
-            if line.trim_end().is_empty() {
+            // An ASCII-whitespace-only line ends the frame.
+            if is_sse_frame_boundary(&line) {
                 let parsed = sse::parse_json_sse_frame(&frame, marker)
                     .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                 frame.clear();
@@ -241,7 +252,7 @@ where
         // A non-standard upstream might omit the final blank line; parse a trailing
         // complete frame instead of losing its last chunk.
         #[allow(clippy::collapsible_if)]
-        if !frame.trim_end().is_empty() {
+        if !is_sse_frame_boundary(&frame) {
             let parsed = sse::parse_json_sse_frame(&frame, marker)
                 .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
             if let sse::SseFrame::Data(value) = parsed {
@@ -251,6 +262,14 @@ where
         }
     });
     Ok(stream)
+}
+
+fn is_sse_whitespace(byte: &u8) -> bool {
+    byte.is_ascii_whitespace()
+}
+
+fn is_sse_frame_boundary(line: &str) -> bool {
+    line.as_bytes().iter().all(is_sse_whitespace)
 }
 
 #[derive(Default)]
@@ -267,7 +286,7 @@ impl SseFrameSizeTracker {
             match byte {
                 b'\n' if !self.current_line_has_non_whitespace => self.frame_bytes = 0,
                 b'\n' => self.current_line_has_non_whitespace = false,
-                byte if byte.is_ascii_whitespace() => {}
+                byte if is_sse_whitespace(byte) => {}
                 _ => self.current_line_has_non_whitespace = true,
             }
             if self.frame_bytes > limit {
@@ -310,7 +329,8 @@ mod tests {
 
     use super::{
         SseFrameSizeTracker, decode_aggregated_response, decode_request, decode_stream,
-        encode_aggregated_response, encode_request, encode_stream, stamp_streamed_response_model,
+        decode_stream_with_limit, encode_aggregated_response, encode_request, encode_stream,
+        stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, WireFormat};
 
@@ -668,5 +688,22 @@ mod tests {
         oversized.observe(b"data: ", 8).unwrap();
         let error = oversized.observe(b"123", 8).unwrap_err();
         assert!(matches!(error, LlmClientError::InvalidResponse { .. }));
+    }
+
+    #[test]
+    fn decode_stream_resets_frame_limit_at_whitespace_boundaries() -> Result<(), LlmClientError> {
+        let bytes = stream::iter(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n \n".to_vec()),
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n".to_vec()),
+        ]);
+
+        let events = block_on(
+            decode_stream_with_limit(bytes, WireFormat::OpenAiChat, 50)?.collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(text_of(&events), "ab");
+        Ok(())
     }
 }
