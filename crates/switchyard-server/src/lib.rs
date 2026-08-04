@@ -8,6 +8,7 @@ mod metrics;
 mod observability;
 mod response;
 mod routing_log;
+mod shutdown;
 mod sse;
 mod stats;
 mod usage_metrics;
@@ -247,7 +248,7 @@ pub async fn run_server(state: ServerState, options: ServerRunOptions) -> Server
 
     let server = BoundServer::bind(state, options)?;
     println!("{}", server.startup_banner(std::io::stdout().is_terminal()));
-    server.serve(shutdown_signal()).await
+    server.serve(shutdown::signal()).await
 }
 
 /// A configured server with its listening socket already bound.
@@ -436,44 +437,6 @@ fn bind_tcp_listener(addr: SocketAddr, backlog: u32) -> ServerResult<TcpListener
 
 fn server_io_error(error: std::io::Error) -> ServerError {
     ServerError::new(error.to_string())
-}
-
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    tokio::select! {
-        _ = ctrl_c_signal() => {},
-        _ = terminate_signal() => {},
-    }
-
-    #[cfg(not(unix))]
-    ctrl_c_signal().await;
-}
-
-async fn ctrl_c_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::warn!(
-            error = %error,
-            "ctrl-c shutdown signal unavailable; continuing without shutdown trigger"
-        );
-        std::future::pending::<()>().await;
-    }
-}
-
-#[cfg(unix)]
-async fn terminate_signal() {
-    let mut signal = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-    {
-        Ok(signal) => signal,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "SIGTERM shutdown signal unavailable; continuing without SIGTERM trigger"
-            );
-            std::future::pending::<()>().await;
-            return;
-        }
-    };
-    signal.recv().await;
 }
 
 async fn openai_chat_completions(
