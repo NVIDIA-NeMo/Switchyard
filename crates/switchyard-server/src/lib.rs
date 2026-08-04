@@ -309,18 +309,13 @@ async fn serve_tls(
     let config = RustlsConfig::from_pem_file(tls.cert, tls.key)
         .await
         .map_err(server_io_error)?;
-    let handle = axum_server::Handle::new();
-    let shutdown_task = schedule_shutdown(handle.clone(), shutdown_timeout, shutdown);
-
     let std_listener = listener.into_std().map_err(server_io_error)?;
-    let result = axum_server::from_tcp_rustls(std_listener, config)
-        .map_err(server_io_error)?
-        .handle(handle)
-        .serve(router.into_make_service())
-        .await
-        .map_err(server_io_error);
-    shutdown_task.abort();
-    result
+    let server = axum_server::from_tcp_rustls(std_listener, config).map_err(server_io_error)?;
+    let handle = axum_server::Handle::new();
+    let server = server
+        .handle(handle.clone())
+        .serve(router.into_make_service());
+    serve_until_shutdown(server, handle, shutdown_timeout, shutdown).await
 }
 
 async fn serve(
@@ -329,32 +324,34 @@ async fn serve(
     shutdown_timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> ServerResult<()> {
-    let handle = axum_server::Handle::new();
-    let shutdown_task = schedule_shutdown(handle.clone(), shutdown_timeout, shutdown);
     let std_listener = listener.into_std().map_err(server_io_error)?;
-    let result = axum_server::from_tcp(std_listener)
-        .map_err(server_io_error)?
-        .handle(handle)
-        .serve(router.into_make_service())
-        .await
-        .map_err(server_io_error);
-    shutdown_task.abort();
-    result
+    let server = axum_server::from_tcp(std_listener).map_err(server_io_error)?;
+    let handle = axum_server::Handle::new();
+    let server = server
+        .handle(handle.clone())
+        .serve(router.into_make_service());
+    serve_until_shutdown(server, handle, shutdown_timeout, shutdown).await
 }
 
-fn schedule_shutdown(
+/// Runs the server until it exits or shutdown begins, then drains active requests.
+async fn serve_until_shutdown(
+    server: impl Future<Output = std::io::Result<()>>,
     handle: axum_server::Handle<SocketAddr>,
     timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> task::JoinHandle<()> {
-    tokio::spawn(async move {
-        shutdown.await;
-        tracing::info!(
-            ?timeout,
-            "shutdown signal received; draining active requests"
-        );
-        handle.graceful_shutdown(Some(timeout));
-    })
+) -> ServerResult<()> {
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result.map_err(server_io_error),
+        _ = shutdown => {
+            tracing::info!(
+                ?timeout,
+                "shutdown signal received; draining active requests"
+            );
+            handle.graceful_shutdown(Some(timeout));
+            server.await.map_err(server_io_error)
+        }
+    }
 }
 
 /// Ingress timestamp for one request, taken before any body is read.
