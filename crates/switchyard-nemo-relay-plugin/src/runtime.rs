@@ -115,9 +115,15 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
-                    return self
-                        .fallback_buffered(inbound, request, marks, &metadata)
-                        .await;
+                    let response = self
+                        .fallback_response(inbound, request, marks, &metadata)
+                        .await?;
+                    let LlmResponse::Agg(response) = response.llm_response else {
+                        return Err(
+                            "trusted fallback returned a stream for a buffered request".into()
+                        );
+                    };
+                    return translation::encode_response(&self.translation, inbound, &response);
                 }
             }
         }
@@ -320,22 +326,6 @@ impl SwitchyardRuntime {
             )),
         };
         call.respond(result)
-    }
-
-    async fn fallback_buffered(
-        &self,
-        inbound: WireFormat,
-        request: Request,
-        marks: &mut Vec<RoutingMark>,
-        metadata: &Json,
-    ) -> Result<Json, String> {
-        let response = self
-            .fallback_response(inbound, request, marks, metadata)
-            .await?;
-        let LlmResponse::Agg(response) = response.llm_response else {
-            return Err("trusted fallback returned a stream for a buffered request".into());
-        };
-        translation::encode_response(&self.translation, inbound, &response)
     }
 
     async fn fallback_response(

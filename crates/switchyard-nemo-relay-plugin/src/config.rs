@@ -162,8 +162,6 @@ enum AlgorithmConfig {
         classifier_target: String,
         weak_target: String,
         strong_target: String,
-        #[serde(default)]
-        escalation: Option<serde_json::Value>,
         #[serde(flatten)]
         config: TaskClassifierConfig,
     },
@@ -296,15 +294,8 @@ impl SwitchyardConfig {
                 classifier_target,
                 weak_target,
                 strong_target,
-                escalation,
                 config,
             } => {
-                if escalation.is_some() {
-                    return Err(
-                        "llm_classifier escalation mode is not supported by this plugin version"
-                            .into(),
-                    );
-                }
                 let classifier_binding = self.targets.get(classifier_target).ok_or_else(|| {
                     format!("algorithm target {classifier_target:?} is not configured")
                 })?;
@@ -357,7 +348,7 @@ fn validate_dispatch_url(
     }
 
     // The current switchyard-llm-client accepts provider base URLs and complete
-    // canonical endpoints. Reject a custom terminal route here instead of
+    // canonical endpoints. Reject a custom terminal route to avoid
     // allowing Backend::url() to append another provider suffix silently.
     let expected_suffix = match protocol {
         WireFormat::OpenAiChat => "/chat/completions",
@@ -686,7 +677,6 @@ mod tests {
             classifier_target: "anthropic".into(),
             weak_target: "responses".into(),
             strong_target: "chat".into(),
-            escalation: None,
             config: TaskClassifierConfig {
                 base_threshold: 0.5,
                 ..Default::default()
@@ -743,7 +733,6 @@ mod tests {
             classifier_target: "chat".into(),
             weak_target: "responses".into(),
             strong_target: "anthropic".into(),
-            escalation: None,
             config: TaskClassifierConfig {
                 base_threshold: 1.1,
                 ..Default::default()

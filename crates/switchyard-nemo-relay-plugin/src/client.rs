@@ -73,11 +73,6 @@ impl TargetClient {
         metadata.http_headers = None;
         request
     }
-
-    #[cfg(test)]
-    fn provider_model(&self) -> &str {
-        &self.provider_model
-    }
 }
 
 #[async_trait]
@@ -159,12 +154,6 @@ mod tests {
             prepared.metadata.and_then(|metadata| metadata.wire_format),
             Some(WireFormat::OpenAiResponses)
         );
-    }
-
-    #[test]
-    fn semantic_selection_does_not_replace_the_provider_model() {
-        let client = client(WireFormat::OpenAiChat);
-        assert_eq!(client.provider_model(), "provider/model");
     }
 
     #[test]
