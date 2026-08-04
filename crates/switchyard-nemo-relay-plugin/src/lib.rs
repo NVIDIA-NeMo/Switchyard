@@ -4,39 +4,28 @@
 mod client;
 mod config;
 mod executor;
-mod ffi;
 mod runtime;
 mod translation;
 
-use std::ffi::c_void;
-use std::mem;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use futures_util::FutureExt;
 use nemo_relay_plugin::{
-    ConfigDiagnostic, DiagnosticLevel, Json, NEMO_RELAY_NATIVE_ABI_VERSION_ASYNC_MIDDLEWARE,
-    NativePlugin, NemoRelayNativeAsyncCallbackState, NemoRelayNativeAsyncCompletion,
-    NemoRelayNativeAsyncMiddlewareKind, NemoRelayNativeAsyncNext, NemoRelayNativeAsyncStream,
-    NemoRelayNativeHostApiV3, NemoRelayNativeString, NemoRelayStatus, PluginContext,
+    ConfigDiagnostic, DiagnosticLevel, Json, LlmJsonStream, LlmNext, LlmRequest, LlmStreamNext,
+    NativePlugin, PluginContext, PluginRuntime,
 };
-use serde::Deserialize;
 use serde_json::Map;
+use tokio::task::AbortHandle;
 
 use crate::config::SwitchyardConfig;
 use crate::executor::PluginExecutor;
-use crate::runtime::SwitchyardRuntime;
-
-#[derive(Deserialize)]
-struct Invocation {
-    name: String,
-    request: nemo_relay_plugin::LlmRequest,
-}
+use crate::runtime::{RoutingMark, StreamMessage, SwitchyardRuntime};
 
 struct CallbackState {
-    host: NemoRelayNativeHostApiV3,
     runtime: Arc<SwitchyardRuntime>,
     executor: PluginExecutor,
+    relay: PluginRuntime,
 }
 
 #[derive(Default)]
@@ -69,77 +58,26 @@ impl NativePlugin for SwitchyardPlugin {
         plugin_config: &Map<String, Json>,
         ctx: &mut PluginContext<'_>,
     ) -> nemo_relay_plugin::Result<()> {
-        let host_v1 = ctx.host_api();
-        if host_v1.abi_version < NEMO_RELAY_NATIVE_ABI_VERSION_ASYNC_MIDDLEWARE
-            || host_v1.struct_size < mem::size_of::<NemoRelayNativeHostApiV3>()
-        {
-            return Err(
-                "Switchyard requires Relay 0.7 or newer with the generic asynchronous native host table"
-                    .into(),
-            );
-        }
-        let host = unsafe { *(host_v1 as *const _ as *const NemoRelayNativeHostApiV3) };
         let config = parse_config(plugin_config)?;
         let priority = config.priority;
         let state = Arc::new(CallbackState {
-            host,
             runtime: Arc::new(SwitchyardRuntime::new(config)?),
             executor: PluginExecutor::new()?,
+            relay: ctx.runtime(),
         });
 
-        register_buffered(ctx, priority, Arc::clone(&state))?;
-        register_stream(ctx, priority, state)?;
-        Ok(())
-    }
-}
-
-fn register_buffered(
-    ctx: &mut PluginContext<'_>,
-    priority: i32,
-    state: Arc<CallbackState>,
-) -> Result<(), String> {
-    let user_data = Box::into_raw(Box::new(state)).cast::<c_void>();
-    let status = unsafe {
-        ctx.register_async_middleware_raw(
-            NemoRelayNativeAsyncMiddlewareKind::LlmExecutionIntercept,
+        let buffered = Arc::clone(&state);
+        ctx.register_llm_execution_intercept(
             "switchyard.run_stream.buffered",
             priority,
-            false,
-            buffered_callback,
-            user_data,
-            Some(free_callback_state),
-        )
-    };
-    if status == NemoRelayStatus::Ok {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to register Switchyard buffered execution: {status:?}"
-        ))
-    }
-}
-
-fn register_stream(
-    ctx: &mut PluginContext<'_>,
-    priority: i32,
-    state: Arc<CallbackState>,
-) -> Result<(), String> {
-    let user_data = Box::into_raw(Box::new(state)).cast::<c_void>();
-    let status = unsafe {
-        ctx.register_async_stream_middleware_raw(
+            move |name, request, next| execute_buffered(&buffered, name, request, next),
+        )?;
+        ctx.register_llm_stream_execution_intercept(
             "switchyard.run_stream.streaming",
             priority,
-            stream_callback,
-            user_data,
-            Some(free_callback_state),
-        )
-    };
-    if status == NemoRelayStatus::Ok {
+            move |name, request, next| execute_stream(&state, name, request, next),
+        )?;
         Ok(())
-    } else {
-        Err(format!(
-            "failed to register Switchyard streaming execution: {status:?}"
-        ))
     }
 }
 
@@ -159,205 +97,112 @@ fn parse_config(plugin_config: &Map<String, Json>) -> Result<SwitchyardConfig, S
         .map_err(|error| format!("invalid Switchyard configuration: {error}"))
 }
 
-unsafe extern "C" fn free_callback_state(user_data: *mut c_void) {
-    if !user_data.is_null() {
-        unsafe { drop(Box::from_raw(user_data.cast::<Arc<CallbackState>>())) };
+fn execute_buffered(
+    state: &CallbackState,
+    name: &str,
+    request: LlmRequest,
+    next: LlmNext<'_>,
+) -> nemo_relay_plugin::Result<Json> {
+    let Some(inbound) = state.runtime.managed_protocol(name) else {
+        return next.call(request);
+    };
+    let request = state.runtime.decode_request(inbound, &request, false)?;
+    let runtime = Arc::clone(&state.runtime);
+    let (result, marks) = state.executor.run(async move {
+        let mut marks = Vec::new();
+        let result = AssertUnwindSafe(runtime.execute_buffered(inbound, request, &mut marks))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err("Switchyard buffered execution panicked".into()));
+        (result, marks)
+    })?;
+    emit_marks(&state.relay, marks);
+    result
+}
+
+fn execute_stream(
+    state: &CallbackState,
+    name: &str,
+    request: LlmRequest,
+    next: LlmStreamNext<'_>,
+) -> nemo_relay_plugin::Result<LlmJsonStream> {
+    let Some(inbound) = state.runtime.managed_protocol(name) else {
+        return Ok(Box::new(next.call(request)?));
+    };
+    let request = state.runtime.decode_request(inbound, &request, true)?;
+    let (sender, receiver) = async_channel::bounded(32);
+    let runtime = Arc::clone(&state.runtime);
+    let task = state.executor.spawn(async move {
+        let result = AssertUnwindSafe(runtime.execute_stream(inbound, request, &sender))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err("Switchyard streaming execution panicked".into()));
+        if let Err(error) = result {
+            let _ = sender.send(StreamMessage::Error(error)).await;
+        }
+    });
+    Ok(Box::new(SwitchyardStream {
+        receiver,
+        task: Some(task),
+        relay: state.relay.clone(),
+        finished: false,
+    }))
+}
+
+fn emit_marks(relay: &PluginRuntime, marks: Vec<RoutingMark>) {
+    for mark in marks {
+        emit_mark(relay, mark);
     }
 }
 
-unsafe extern "C" fn buffered_callback(
-    user_data: *mut c_void,
-    invocation_json: *const NemoRelayNativeString,
-    next: *const NemoRelayNativeAsyncNext,
-    completion: *const NemoRelayNativeAsyncCompletion,
-) -> u32 {
-    if user_data.is_null() || completion.is_null() || next.is_null() {
-        return NemoRelayNativeAsyncCallbackState::Complete as u32;
+fn emit_mark(relay: &PluginRuntime, mark: RoutingMark) {
+    if let Err(error) = relay.emit_mark(&mark.name, Some(&mark.data), Some(&mark.metadata)) {
+        eprintln!(
+            "Switchyard could not emit routing mark {:?}: {error}",
+            mark.name
+        );
     }
-    let state = unsafe { &*user_data.cast::<Arc<CallbackState>>() }.clone();
-    let invocation = ffi::read_json(&state.host.v1, invocation_json).and_then(|value| {
-        serde_json::from_value::<Invocation>(value).map_err(|error| error.to_string())
-    });
-    let next = next as usize;
-    let completion = completion as usize;
-    let invocation = match invocation {
-        Ok(invocation) => invocation,
-        Err(error) => {
-            let _ = ffi::reject_completion(
-                &state.host,
-                completion as *const NemoRelayNativeAsyncCompletion,
-                &format!("invalid Relay LLM invocation: {error}"),
-            );
-            unsafe {
-                ffi::release_next(&state.host, next as *const NemoRelayNativeAsyncNext);
-                ffi::release_completion(
-                    &state.host,
-                    completion as *const NemoRelayNativeAsyncCompletion,
-                );
+}
+
+struct SwitchyardStream {
+    receiver: async_channel::Receiver<StreamMessage>,
+    task: Option<AbortHandle>,
+    relay: PluginRuntime,
+    finished: bool,
+}
+
+impl Iterator for SwitchyardStream {
+    type Item = nemo_relay_plugin::Result<Json>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.receiver.recv_blocking() {
+                Ok(StreamMessage::Mark(mark)) => emit_mark(&self.relay, mark),
+                Ok(StreamMessage::Event(event)) => return Some(Ok(event)),
+                Ok(StreamMessage::Error(error)) => {
+                    self.finished = true;
+                    self.task.take();
+                    return Some(Err(error));
+                }
+                Err(_) => {
+                    self.finished = true;
+                    self.task.take();
+                    return None;
+                }
             }
-            return NemoRelayNativeAsyncCallbackState::Pending as u32;
         }
-    };
-    let Some(inbound) = state.runtime.managed_protocol(&invocation.name) else {
-        if let Err(error) =
-            ffi::invoke_next_buffered(&state.host, next, completion, &invocation.request)
+    }
+}
+
+impl Drop for SwitchyardStream {
+    fn drop(&mut self) {
+        self.receiver.close();
+        if !self.finished
+            && let Some(task) = self.task.take()
         {
-            let _ = ffi::reject_completion(
-                &state.host,
-                completion as *const NemoRelayNativeAsyncCompletion,
-                &error,
-            );
+            task.abort();
         }
-        unsafe {
-            ffi::release_next(&state.host, next as *const NemoRelayNativeAsyncNext);
-            ffi::release_completion(
-                &state.host,
-                completion as *const NemoRelayNativeAsyncCompletion,
-            );
-        }
-        return NemoRelayNativeAsyncCallbackState::Pending as u32;
-    };
-    let request = match state
-        .runtime
-        .decode_request(inbound, &invocation.request, false)
-    {
-        Ok(request) => request,
-        Err(error) => {
-            let _ = ffi::reject_completion(
-                &state.host,
-                completion as *const NemoRelayNativeAsyncCompletion,
-                &error,
-            );
-            unsafe {
-                ffi::release_next(&state.host, next as *const NemoRelayNativeAsyncNext);
-                ffi::release_completion(
-                    &state.host,
-                    completion as *const NemoRelayNativeAsyncCompletion,
-                );
-            }
-            return NemoRelayNativeAsyncCallbackState::Pending as u32;
-        }
-    };
-    let parent = ffi::ParentScope::capture(&state.host.v1);
-    let task_state = Arc::clone(&state);
-    state.executor.spawn(async move {
-        let execution = AssertUnwindSafe(task_state.runtime.execute_buffered(
-            inbound,
-            request,
-            parent.as_ref(),
-        ))
-        .catch_unwind();
-        tokio::pin!(execution);
-        let result = tokio::select! {
-            biased;
-            () = ffi::wait_for_completion_cancellation(&task_state.host, completion) => None,
-            result = &mut execution => Some(
-                result.unwrap_or_else(|_| Err("Switchyard buffered execution panicked".into()))
-            ),
-        };
-
-        let completion_ptr = completion as *const NemoRelayNativeAsyncCompletion;
-        if let Some(result) = result {
-            match result {
-                Ok(response) => {
-                    let _ = ffi::resolve_completion(&task_state.host, completion_ptr, &response);
-                }
-                Err(error) => {
-                    let _ = ffi::reject_completion(&task_state.host, completion_ptr, &error);
-                }
-            }
-        }
-        unsafe {
-            ffi::release_next(&task_state.host, next as *const NemoRelayNativeAsyncNext);
-            ffi::release_completion(&task_state.host, completion_ptr);
-        }
-    });
-    NemoRelayNativeAsyncCallbackState::Pending as u32
-}
-
-unsafe extern "C" fn stream_callback(
-    user_data: *mut c_void,
-    invocation_json: *const NemoRelayNativeString,
-    next: *const NemoRelayNativeAsyncNext,
-    output: *const NemoRelayNativeAsyncStream,
-) -> u32 {
-    if user_data.is_null() || output.is_null() || next.is_null() {
-        return NemoRelayNativeAsyncCallbackState::Complete as u32;
     }
-    let state = unsafe { &*user_data.cast::<Arc<CallbackState>>() }.clone();
-    let invocation = ffi::read_json(&state.host.v1, invocation_json).and_then(|value| {
-        serde_json::from_value::<Invocation>(value).map_err(|error| error.to_string())
-    });
-    let managed_protocol = invocation
-        .as_ref()
-        .ok()
-        .and_then(|invocation| state.runtime.managed_protocol(&invocation.name));
-    let parent = managed_protocol.and_then(|_| ffi::ParentScope::capture(&state.host.v1));
-    let next = next as usize;
-    let output = output as usize;
-    let task_state = Arc::clone(&state);
-    state.executor.spawn(async move {
-        let execution = AssertUnwindSafe(async {
-            match invocation {
-                Ok(invocation) => {
-                    if let Some(inbound) = managed_protocol {
-                        match task_state
-                            .runtime
-                            .decode_request(inbound, &invocation.request, true)
-                        {
-                            Ok(request) => {
-                                task_state
-                                    .runtime
-                                    .execute_stream(
-                                        &task_state.host,
-                                        output,
-                                        inbound,
-                                        request,
-                                        parent.as_ref(),
-                                    )
-                                    .await
-                            }
-                            Err(error) => Err(error),
-                        }
-                    } else {
-                        ffi::invoke_next_stream(&task_state.host, next, output, &invocation.request)
-                            .await
-                    }
-                }
-                Err(error) => Err(format!("invalid Relay LLM stream invocation: {error}")),
-            }
-        })
-        .catch_unwind();
-        tokio::pin!(execution);
-        let result = tokio::select! {
-            biased;
-            () = ffi::wait_for_stream_cancellation(&task_state.host, output) => None,
-            result = &mut execution => Some(
-                result.unwrap_or_else(|_| Err("Switchyard streaming execution panicked".into()))
-            ),
-        };
-
-        match result {
-            Some(Ok(())) => {
-                let _ = ffi::finish_stream(
-                    &task_state.host,
-                    output as *const NemoRelayNativeAsyncStream,
-                );
-            }
-            Some(Err(error)) => {
-                let _ = ffi::reject_stream(&task_state.host, output, &error).await;
-            }
-            None => {}
-        }
-        unsafe {
-            ffi::release_next(&task_state.host, next as *const NemoRelayNativeAsyncNext);
-            ffi::release_stream(
-                &task_state.host,
-                output as *const NemoRelayNativeAsyncStream,
-            );
-        }
-    });
-    NemoRelayNativeAsyncCallbackState::Pending as u32
 }
 
 nemo_relay_plugin::nemo_relay_plugin!(nemo_relay_register_plugin, SwitchyardPlugin::default);

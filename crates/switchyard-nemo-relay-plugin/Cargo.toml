@@ -16,6 +16,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+async-channel.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 http = "1"

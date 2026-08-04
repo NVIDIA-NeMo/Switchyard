@@ -11,10 +11,10 @@ use tokio::task::AbortHandle;
 
 /// Plugin-owned async executor.
 ///
-/// Relay's generic V3 host table lets the plugin return `Pending`, so neither
-/// buffered nor streaming callbacks block Relay runtime workers. Keeping the
-/// runtime on a dedicated thread also avoids entering Relay's Tokio runtime
-/// from a separately linked cdylib.
+/// The public native-plugin SDK uses synchronous Rust callbacks and pull-based
+/// iterators at the dynamic-library boundary. Switchyard performs provider I/O
+/// on this dedicated runtime rather than entering Relay's Tokio runtime from a
+/// separately linked cdylib.
 #[derive(Clone)]
 pub(crate) struct PluginExecutor {
     inner: Arc<ExecutorInner>,
@@ -74,6 +74,20 @@ impl PluginExecutor {
     {
         self.inner.handle.spawn(future).abort_handle()
     }
+
+    pub(crate) fn run<F>(&self, future: F) -> Result<F::Output, String>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.inner.handle.spawn(async move {
+            let _ = sender.send(future.await);
+        });
+        receiver
+            .recv()
+            .map_err(|_| "Switchyard HTTP runtime stopped before completing work".to_string())
+    }
 }
 
 impl Drop for ExecutorInner {
@@ -113,6 +127,7 @@ mod tests {
     #[test]
     fn executor_runs_buffered_and_spawned_work() {
         let executor = PluginExecutor::new().unwrap();
+        assert_eq!(executor.run(async { 42 }).unwrap(), 42);
         let (sender, receiver) = mpsc::sync_channel(1);
         executor.spawn(async move {
             sender.send("done").unwrap();

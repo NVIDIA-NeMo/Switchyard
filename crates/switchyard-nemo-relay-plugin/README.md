@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 This crate builds the external `nvidia.switchyard` native plugin. It embeds
 `switchyard-libsy`, drives `Algorithm::run_stream`, and uses
 `switchyard-llm-client` for provider HTTP calls. Managed calls use Relay's
-generic asynchronous middleware hooks and do not require a targeted provider
+public Rust LLM execution-intercept SDK and do not require a targeted provider
 continuation from Relay.
 
 The plugin uses NeMo Relay native API v1. It depends on the small
@@ -59,47 +59,87 @@ This boundary has two important consequences:
   transport activity is therefore not represented as nested Relay LLM
   lifecycle events. Relay records the outer managed call and the plugin emits
   Switchyard routing marks; bridging Switchyard transport spans into Relay is
-  future work. With an exported Agent or turn scope, Relay 0.7 projects the
-  outer LLM span and routing-decision span as siblings in one OpenInference
-  trace. The native callback cannot parent an asynchronous decision mark
-  directly under the active LLM event; an embedded host that invokes an LLM
-  without an exported parent scope would therefore produce an orphan decision
-  span.
+  future work. Routing marks are delivered through the public SDK while Relay
+  is polling the active execution callback or stream, so they remain attached
+  to the current Relay scope stack.
 - Switchyard owns provider URLs, credentials, HTTP retry behavior, and
   translation for managed calls. Relay neither validates nor transports those
   target details.
 
-## Native API v1 and asynchronous execution
+## Native API v1 and the public Rust SDK
 
-The manifest remains `compat.native_api = "1"`, but this rebuilt plugin requires
-the generic C host-table v3 extension shipped by Relay 0.7. It registers through
-v3's completion-based buffered and incremental streaming hooks, returns
-`Pending` immediately, and performs libsy and HTTP work on a plugin-owned Tokio
-runtime. Relay's runtime workers therefore do not wait synchronously for
-provider I/O.
+The manifest uses `compat.native_api = "1"`. The implementation registers with
+`PluginContext::register_llm_execution_intercept` and
+`PluginContext::register_llm_stream_execution_intercept`, receives typed
+`LlmRequest`, `LlmNext`, and `LlmStreamNext` values, and returns the SDK's JSON
+result or `LlmJsonStream`. The `nemo-relay-plugin` SDK owns the C callback
+trampolines, host strings, continuation handles, panic containment, and native
+stream lifecycle. Switchyard contains no raw C callback or host-table adapter.
 
-The v3 stream hook retains Relay's bounded 32-event output queue. The plugin
-retries a logical event when that queue is full, checks cancellation between
-attempts, and releases every completion, continuation, stream, and captured
-scope handle exactly once. Managed HTTP work is selected against Relay caller
-cancellation, so dropping a buffered or streaming call drops its in-flight
-request future.
+Switchyard performs libsy and provider I/O on a plugin-owned Tokio runtime. A
+buffered SDK callback waits for that executor to finish. A managed streaming
+callback returns a pull-based Rust iterator backed by a bounded 32-message
+channel; the async producer waits when the consumer is slow. Dropping that
+iterator closes the channel and aborts its in-flight routing task.
 
-Unmanaged profiles use the same generic v3 continuation hooks for pass-through.
-V3's downstream stream callback has continue/cancel control but no asynchronous
-acknowledgement, so it cannot provide true end-to-end backpressure. The adapter
-uses a nonblocking bridge capped at 8 MiB of queued, encoded event payloads; it
-also caps the queue at 256 events and safely rejects a pass-through stream that
-outruns either bound. The byte cap does not include transient JSON parsing or
-in-memory representation overhead. Direct host forwarding without this bound would
-still require a small generic Relay hook, but not a targeted-provider contract.
-Managed Switchyard streams do not use this pass-through bridge. None of the
-managed HTTP or routing operations requires a targeted LLM continuation.
+The public native API v1 callback shapes do not provide full in-flight caller
+cancellation. A buffered callback has no cancellation token, so a provider
+request already in progress continues until it responds or reaches the client
+timeout after the caller disconnects. Relay can cancel a streaming iterator
+between pulls, but its synchronous `Iterator::next` call cannot be interrupted
+while it is waiting for the next provider event. The configured 120-second
+inactivity timeout bounds both cases. Supporting prompt disconnect propagation
+would require an asynchronous public SDK callback or stream-polling contract;
+the plugin does not bypass the SDK to recover that behavior.
 
-This is still a raw C boundary: Switchyard contains a small ownership adapter
-for host strings and v3 handles because Relay 0.7 does not expose a safe Rust
-facade for the generic async surface. That adapter is transport-independent;
-all HTTP and routing behavior remains in Switchyard.
+### Relay runtime capacity
+
+In Relay 0.7, the safe native LLM callbacks run directly in Relay's asynchronous
+middleware future; Relay does not move them to Tokio's separate blocking pool.
+Consequently, each active buffered Switchyard call occupies a normal Relay
+Tokio worker while it waits for the plugin executor, and a streaming call
+occupies a worker while its synchronous `Iterator::next` waits for the next
+provider event. Exhausting those workers can delay unrelated Relay work.
+
+The Relay CLI constructs a Tokio multi-thread runtime without setting an
+explicit worker count. Tokio therefore defaults to the number of CPU cores
+available to the process and honors its `TOKIO_WORKER_THREADS` environment
+variable. Operators can provide additional capacity while using this native API
+v1 integration, for example:
+
+```bash
+TOKIO_WORKER_THREADS=32 nemo-relay ...
+```
+
+This adjusts the normal asynchronous worker pool, not Tokio's blocking pool;
+increasing `max_blocking_threads` does not address this integration. There is no
+universal recommended value. Size the pool with headroom above the expected
+number of concurrent managed calls and Relay's other work, then validate it
+under representative provider latency and streaming concurrency. Increasing
+the worker count mitigates starvation but does not restore cancellation or make
+the synchronous boundary non-blocking.
+
+Embedded Relay hosts own their Tokio runtime and should configure the same
+capacity explicitly:
+
+```rust
+let runtime = tokio::runtime::Builder::new_multi_thread()
+    .worker_threads(32)
+    .enable_all()
+    .build()?;
+```
+
+The durable resolution is a public Relay SDK callback and stream-polling
+contract that can yield while provider I/O is pending and receive caller
+cancellation. Until that exists, keep the provider timeout bounded, provision
+worker capacity, and load-test the intended concurrency rather than relying on
+thread-pool growth alone.
+
+Unmanaged profiles call the typed `LlmNext` or `LlmStreamNext` continuation and
+return its result directly. Managed streams use the bounded Switchyard channel;
+unmanaged streams use Relay's SDK-owned pull iterator without an additional
+bridge. None of the managed HTTP or routing operations requires a targeted LLM
+continuation or direct access to Relay's C ABI.
 
 ## Supported routers
 
@@ -144,11 +184,10 @@ preservation contract and an explicit reject-lossy stream policy.
 During release-candidate validation the manifest declares
 `compat.native_api = "1"` and Relay `>=0.7.0-rc.4,<1.0`, and the Rust SDK uses
 the exact published `0.7.0-rc.4` crate. Before release, move both lower bounds
-to stable `0.7.0`. The manifest API value selects the released v1 plugin
-contract; the binary is built against the V3 C host table shipped on the Relay
-0.7 line, which is why the minimum Relay version is not 0.6. Rebuild the bundle
-when changing SDK versions rather than assuming Rust dynamic-library
-compatibility from the manifest value alone.
+to stable `0.7.0`. The manifest API value selects Relay's released native
+plugin contract; plugin authors use its safe Rust SDK rather than the underlying
+C table directly. Rebuild the bundle when changing SDK versions rather than
+assuming Rust dynamic-library compatibility from the manifest value alone.
 
 A Relay project can configure a seeded weighted-random router as follows:
 

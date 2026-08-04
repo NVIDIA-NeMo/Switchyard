@@ -24,6 +24,7 @@ repository = "https://github.com/NVIDIA-NeMo/Switchyard"
 rust-version = "1.96.1"
 
 [workspace.dependencies]
+async-channel = "2"
 async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3"
