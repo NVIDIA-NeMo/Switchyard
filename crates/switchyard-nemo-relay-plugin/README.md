@@ -87,10 +87,9 @@ cancellation. A buffered callback has no cancellation token, so a provider
 request already in progress continues until it responds or reaches the client
 timeout after the caller disconnects. Relay can cancel a streaming iterator
 between pulls, but its synchronous `Iterator::next` call cannot be interrupted
-while it is waiting for the next provider event. The configured 120-second
-inactivity timeout bounds both cases. Supporting prompt disconnect propagation
-would require an asynchronous public SDK callback or stream-polling contract;
-the plugin does not bypass the SDK to recover that behavior.
+while it is waiting for the next provider event. Supporting prompt disconnect
+propagation would require an asynchronous public SDK callback or stream-polling
+contract; the plugin does not bypass the SDK to recover that behavior.
 
 ### Relay runtime capacity
 
@@ -131,9 +130,8 @@ let runtime = tokio::runtime::Builder::new_multi_thread()
 
 The durable resolution is a public Relay SDK callback and stream-polling
 contract that can yield while provider I/O is pending and receive caller
-cancellation. Until that exists, keep the provider timeout bounded, provision
-worker capacity, and load-test the intended concurrency rather than relying on
-thread-pool growth alone.
+cancellation. Until that exists, provision worker capacity and load-test the
+intended concurrency rather than relying on thread-pool growth alone.
 
 Unmanaged profiles call the typed `LlmNext` or `LlmStreamNext` continuation and
 return its result directly. Managed streams use the bounded Switchyard channel;
@@ -233,13 +231,6 @@ for managed calls. Each variable supplies the complete header value, so an
 Common credential headers, including `authorization` and `x-api-key`, are
 rejected in static `headers` and must use `header_env`. Static headers remain
 appropriate for non-secret routing or tenancy metadata.
-
-The Switchyard client does not follow provider redirects, applies a 10-second
-connect timeout and a 120-second inactivity timeout, caps buffered provider
-responses at 64 MiB, and caps retained HTTP error bodies at 64 KiB. Default
-error display and Relay rejection messages do not include provider bodies. The
-shared SSE decoder rejects an individual provider event above 8 MiB before its
-line buffer can grow without bound.
 
 For `kind = "llm_classifier"`, the classifier target must use `openai_chat` or
 `openai_responses`; libsy's judge request uses a JSON-schema response format
