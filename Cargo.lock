@@ -1973,7 +1973,6 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
- "http",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
