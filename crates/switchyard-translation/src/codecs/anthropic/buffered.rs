@@ -204,7 +204,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(max_tokens) = request.output.max_output_tokens {
             body.insert("max_tokens".to_string(), json!(max_tokens));
         } else {
-            body.insert("max_tokens".to_string(), json!(128_000));
+            body.insert("max_tokens".to_string(), json!(64_000));
         }
         if let Some(value) = request.sampling.temperature {
             body.insert("temperature".to_string(), json!(value));

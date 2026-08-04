@@ -994,7 +994,7 @@ fn openai_request_to_anthropic_adds_required_default_max_tokens() -> TestResult 
         )?
         .body;
 
-    assert_eq!(output["max_tokens"], 128_000);
+    assert_eq!(output["max_tokens"], 64_000);
     Ok(())
 }
 
