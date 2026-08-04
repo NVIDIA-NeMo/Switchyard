@@ -612,7 +612,92 @@ fn context_from_metadata(metadata: Option<&Metadata>) -> Context {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use switchyard_libsy::{LlmTarget, Passthrough};
+    use switchyard_protocol::{LlmResponseStream, RoutedLlmClient};
+
     use super::*;
+
+    #[derive(Clone, Copy)]
+    enum StreamBehavior {
+        Empty,
+        Failing,
+    }
+
+    struct StreamClient {
+        behavior: StreamBehavior,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl RoutedLlmClient for StreamClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            _decision: Arc<dyn Decision>,
+        ) -> Result<Response, LlmClientError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let stream: LlmResponseStream = match self.behavior {
+                StreamBehavior::Empty => Box::pin(stream::empty()),
+                StreamBehavior::Failing => Box::pin(stream::once(async {
+                    Err(LlmClientError::Transport {
+                        source: Box::new(std::io::Error::other("fallback stream failed")),
+                    })
+                })),
+            };
+            Ok(Response {
+                llm_response: LlmResponse::Stream(stream),
+                metadata: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_selected_stream_does_not_invoke_failing_fallback_twice() {
+        let selected = Arc::new(StreamClient {
+            behavior: StreamBehavior::Empty,
+            calls: AtomicUsize::new(0),
+        });
+        let fallback = Arc::new(StreamClient {
+            behavior: StreamBehavior::Failing,
+            calls: AtomicUsize::new(0),
+        });
+        let runtime = SwitchyardRuntime {
+            max_retries: 0,
+            algorithm: Arc::new(Passthrough::new(LlmTarget {
+                semantic_name: "selected".into(),
+                llm_client: Some(selected.clone()),
+            })),
+            targets: BTreeMap::from([
+                (
+                    "selected".into(),
+                    PreparedTargetBinding {
+                        client: selected.clone(),
+                    },
+                ),
+                (
+                    "fallback".into(),
+                    PreparedTargetBinding {
+                        client: fallback.clone(),
+                    },
+                ),
+            ]),
+            default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
+            translation: TranslationEngine::default(),
+        };
+        let (output, _messages) = async_channel::bounded(32);
+
+        let error = runtime
+            .execute_stream(WireFormat::OpenAiChat, Request::default(), &output)
+            .await
+            .expect_err("the failing fallback stream must fail the request");
+
+        assert_eq!(error, "trusted fallback stream: provider transport failure");
+        assert_eq!(selected.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fallback.calls.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn retry_backoff_increases_exponentially_and_is_capped() {
