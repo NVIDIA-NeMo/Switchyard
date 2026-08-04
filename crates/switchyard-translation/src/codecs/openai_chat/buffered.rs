@@ -6,7 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    is_known_role_name, provider_extensions, raw_tool_for_target, reasoning_text_from_blocks,
+    text_from_blocks,
 };
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -163,7 +164,9 @@ impl FormatCodec for OpenAiChatCodec {
                 "tools",
                 "tool_choice",
             ],
-        );
+            &mut diagnostics,
+            policy,
+        )?;
 
         Ok(DecodedRequest {
             request,
@@ -208,9 +211,12 @@ impl FormatCodec for OpenAiChatCodec {
         body.insert("messages".to_string(), Value::Array(messages));
 
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_openai_tools(&request.tools));
-            if let Some(choice) = &request.tool_choice {
-                body.insert("tool_choice".to_string(), encode_openai_tool_choice(choice));
+            let tools = encode_openai_tools(&request.tools, &mut diagnostics, policy)?;
+            if !tools.is_empty() {
+                body.insert("tools".to_string(), Value::Array(tools));
+                if let Some(choice) = &request.tool_choice {
+                    body.insert("tool_choice".to_string(), encode_openai_tool_choice(choice));
+                }
             }
         }
         if let Some(value) = request.output.max_output_tokens {
@@ -240,12 +246,9 @@ impl FormatCodec for OpenAiChatCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
+        let mut diagnostics = Vec::new();
         let mut response = AggLlmResponse {
             id: object
                 .get("id")
@@ -258,12 +261,17 @@ impl FormatCodec for OpenAiChatCodec {
             outputs: Vec::new(),
             usage: decode_openai_usage(object.get("usage")),
             extensions: ProviderExtensions {
-                fields: provider_extensions(object, &["id", "model", "choices", "usage"]),
+                fields: provider_extensions(
+                    object,
+                    &["id", "model", "choices", "usage"],
+                    &mut diagnostics,
+                    policy,
+                )?,
             },
             preservation: capture_response_preservation(
                 WireFormat::OpenAiChat,
                 &Value::Object(object.clone()),
-                _policy,
+                policy,
             ),
         };
         if let Some(choice) = object
@@ -307,7 +315,7 @@ impl FormatCodec for OpenAiChatCodec {
 
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 
@@ -637,7 +645,7 @@ pub(crate) fn decode_openai_tools(
         if name.is_empty() {
             continue;
         }
-        definitions.push(ToolDefinition {
+        definitions.push(ToolDefinition::Function {
             name,
             description: function
                 .get("description")
@@ -1031,23 +1039,45 @@ fn media_source_text(source: &MediaSource) -> String {
 }
 
 /// Encodes normalized tool definitions into OpenAI tool JSON.
-pub(crate) fn encode_openai_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
+pub(crate) fn encode_openai_tools(
+    tools: &[ToolDefinition],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
+    let mut encoded = Vec::new();
+    for (index, tool) in tools.iter().enumerate() {
+        match tool {
+            ToolDefinition::Function {
+                name,
+                description,
+                parameters,
+                strict,
+            } => {
                 let mut function = json!({
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "parameters": tool.parameters,
+                    "name": name,
+                    "description": description.clone().unwrap_or_default(),
+                    "parameters": parameters,
                 });
-                if let Some(strict) = tool.strict {
-                    function["strict"] = Value::Bool(strict);
+                if let Some(strict) = strict {
+                    function["strict"] = Value::Bool(*strict);
                 }
-                json!({"type": "function", "function": function})
-            })
-            .collect(),
-    )
+                encoded.push(json!({"type": "function", "function": function}));
+            }
+            ToolDefinition::Raw { provider, raw } => {
+                if let Some(raw) = raw_tool_for_target(
+                    provider,
+                    raw,
+                    index,
+                    WireFormat::OpenAiChat,
+                    diagnostics,
+                    policy,
+                )? {
+                    encoded.push(raw);
+                }
+            }
+        }
+    }
+    Ok(encoded)
 }
 
 /// Encodes normalized tool choice into OpenAI Chat JSON.

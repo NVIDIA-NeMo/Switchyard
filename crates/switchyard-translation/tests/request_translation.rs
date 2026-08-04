@@ -5,7 +5,10 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    LossyConversionPolicy, PreservationPolicy, ToolDefinition, TranslationEngine,
+    TranslationPolicy, UnknownFieldPolicy, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -1089,6 +1092,166 @@ fn json_contains_content_type(value: &Value, expected: &str) -> bool {
             .any(|child| json_contains_content_type(child, expected)),
         _ => false,
     }
+}
+
+// Provider-specific tools and unknown extensions must follow explicit translation policy.
+#[test]
+fn provider_tools_and_unknown_fields_follow_translation_policy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let preserve = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let raw_tool = json!({"type": "web_search_preview", "search_context_size": "medium"});
+    let responses_request = json!({
+        "model": "gpt-5",
+        "input": "search",
+        "tools": [raw_tool.clone()],
+        "vendor_extension": true
+    });
+
+    let decoded =
+        engine.decode_request(WireFormat::OpenAiResponses, &responses_request, &preserve)?;
+    assert!(matches!(
+        decoded.request.tools.as_slice(),
+        [ToolDefinition::Raw { provider, raw }]
+            if provider.as_str() == WireFormat::OpenAiResponses.as_str() && raw == &raw_tool
+    ));
+    let replayed =
+        engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &preserve)?;
+    assert_eq!(replayed.body["tools"], json!([raw_tool]));
+
+    let translated = engine.encode_request(WireFormat::OpenAiChat, &decoded.request, &preserve)?;
+    assert!(translated.body.get("tools").is_none());
+    assert_eq!(translated.diagnostics.len(), 1);
+    let diagnostic = &translated.diagnostics[0];
+    assert_eq!(diagnostic.code, "lossy_conversion");
+    assert_eq!(diagnostic.path.as_deref(), Some("$.tools[0]"));
+    assert_eq!(
+        diagnostic.source.as_ref().map(|format| format.as_str()),
+        Some(WireFormat::OpenAiResponses.as_str())
+    );
+    assert_eq!(
+        diagnostic.target.as_ref().map(|format| format.as_str()),
+        Some(WireFormat::OpenAiChat.as_str())
+    );
+
+    let reject_lossy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let error = engine
+        .encode_request(WireFormat::OpenAiChat, &decoded.request, &reject_lossy)
+        .expect_err("strict policy must reject a provider-specific tool");
+    assert_eq!(error.kind(), "LossyConversion");
+
+    let request_cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": [], "vendor_extension": true}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "model": "claude",
+                "messages": [],
+                "max_tokens": 8,
+                "vendor_extension": true
+            }),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "hi", "vendor_extension": true}),
+        ),
+    ];
+    let response_cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({"id": "chat", "choices": [], "vendor_extension": true}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"id": "message", "content": [], "vendor_extension": true}),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"id": "response", "output": [], "vendor_extension": true}),
+        ),
+    ];
+
+    for (format, body) in &request_cases {
+        let output = engine.decode_request(*format, body, &preserve)?;
+        assert_eq!(output.request.extensions.fields["vendor_extension"], true);
+    }
+    for (format, body) in &response_cases {
+        let output = engine.decode_response(*format, body, &preserve)?;
+        assert_eq!(output.response.extensions.fields["vendor_extension"], true);
+    }
+
+    let drop_unknown = TranslationPolicy {
+        unknown_field_policy: UnknownFieldPolicy::DropWithWarning,
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    for (format, body) in &request_cases {
+        let output = engine.decode_request(*format, body, &drop_unknown)?;
+        assert!(
+            !output
+                .request
+                .extensions
+                .fields
+                .contains_key("vendor_extension")
+        );
+        assert_eq!(output.diagnostics.len(), 1);
+        assert_eq!(output.diagnostics[0].code, "unknown_field_dropped");
+        assert_eq!(
+            output.diagnostics[0].path.as_deref(),
+            Some("$.vendor_extension")
+        );
+    }
+    for (format, body) in &response_cases {
+        let output = engine.decode_response(*format, body, &drop_unknown)?;
+        assert!(
+            !output
+                .response
+                .extensions
+                .fields
+                .contains_key("vendor_extension")
+        );
+        assert_eq!(output.diagnostics.len(), 1);
+        assert_eq!(output.diagnostics[0].code, "unknown_field_dropped");
+        assert_eq!(
+            output.diagnostics[0].path.as_deref(),
+            Some("$.vendor_extension")
+        );
+    }
+
+    let reject_unknown = TranslationPolicy {
+        unknown_field_policy: UnknownFieldPolicy::Reject,
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    for (format, body) in &request_cases {
+        let error = engine
+            .decode_request(*format, body, &reject_unknown)
+            .expect_err("reject policy must reject request extensions");
+        assert_eq!(
+            error.to_string(),
+            "unknown field rejected at $.vendor_extension"
+        );
+    }
+    for (format, body) in &response_cases {
+        let error = engine
+            .decode_response(*format, body, &reject_unknown)
+            .expect_err("reject policy must reject response extensions");
+        assert_eq!(
+            error.to_string(),
+            "unknown field rejected at $.vendor_extension"
+        );
+    }
+
+    Ok(())
 }
 
 // Malformed provider fields must fail before normalization can change their meaning.

@@ -1035,7 +1035,7 @@ mod tests {
                 Message::text(Role::System, "be terse"),
                 Message::text(Role::User, "add 2 and 2"),
             ],
-            tools: vec![ToolDefinition {
+            tools: vec![ToolDefinition::Function {
                 name: "calc".to_string(),
                 description: Some("do math".to_string()),
                 parameters: serde_json::json!({"type": "object"}),

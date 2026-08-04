@@ -95,6 +95,29 @@ pub fn push_lossy(
     }
 }
 
+/// Applies lossy-conversion policy with structured location and format metadata.
+pub(crate) fn push_lossy_at(
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+    message: impl Into<String>,
+    path: impl Into<String>,
+    source: impl Into<FormatId>,
+    target: impl Into<FormatId>,
+) -> Result<()> {
+    let message = message.into();
+    match policy.lossy_conversion_policy {
+        LossyConversionPolicy::AllowWithDiagnostics => {
+            diagnostics.push(
+                TranslationDiagnostic::warning("lossy_conversion", message)
+                    .with_formats(source, target)
+                    .at_path(path),
+            );
+            Ok(())
+        }
+        LossyConversionPolicy::Reject => Err(TranslationError::LossyConversion(message)),
+    }
+}
+
 /// Generates a stable, human-readable ID from a prefix and counter.
 pub fn stable_id(prefix: &str, counter: usize) -> String {
     format!("{prefix}_{counter:08}")

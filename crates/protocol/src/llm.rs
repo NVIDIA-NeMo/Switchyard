@@ -209,17 +209,28 @@ pub struct ToolResult {
     pub is_error: Option<bool>,
 }
 
-/// Normalized tool definition.
+/// Tool definition available to a model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    /// Tool name exposed to the model.
-    pub name: String,
-    /// Human-readable tool description.
-    pub description: Option<String>,
-    /// JSON Schema describing accepted arguments.
-    pub parameters: Value,
-    /// Whether the provider should enforce the schema strictly.
-    pub strict: Option<bool>,
+#[serde(untagged)]
+pub enum ToolDefinition {
+    /// Portable function tool normalized across provider APIs.
+    Function {
+        /// Tool name exposed to the model.
+        name: String,
+        /// Human-readable tool description.
+        description: Option<String>,
+        /// JSON Schema describing accepted arguments.
+        parameters: Value,
+        /// Whether the provider should enforce the schema strictly.
+        strict: Option<bool>,
+    },
+    /// Exact provider tool with no normalized representation.
+    Raw {
+        /// Wire format that owns the raw definition.
+        provider: FormatId,
+        /// Original provider tool definition.
+        raw: Value,
+    },
 }
 
 /// Normalized tool choice policy.

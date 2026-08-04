@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    is_known_role_name, provider_extensions, raw_tool_for_target, reasoning_text_from_blocks,
+    text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
@@ -106,7 +107,9 @@ impl FormatCodec for OpenAiResponsesCodec {
                 "top_p",
                 "stream",
             ],
-        );
+            &mut diagnostics,
+            policy,
+        )?;
         Ok(DecodedRequest {
             request,
             diagnostics,
@@ -150,7 +153,10 @@ impl FormatCodec for OpenAiResponsesCodec {
             encode_responses_input(&request.messages, &mut diagnostics, _policy)?,
         );
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_responses_tools(&request.tools));
+            let tools = encode_responses_tools(&request.tools, &mut diagnostics, _policy)?;
+            if !tools.is_empty() {
+                body.insert("tools".to_string(), Value::Array(tools));
+            }
         }
         if let Some(choice) = &request.tool_choice
             && let Some(choice) = encode_responses_tool_choice(choice)
@@ -229,7 +235,9 @@ impl FormatCodec for OpenAiResponsesCodec {
                 fields: provider_extensions(
                     body,
                     &["id", "model", "object", "output", "usage", "status"],
-                ),
+                    &mut diagnostics,
+                    policy,
+                )?,
             },
             preservation: capture_response_preservation(
                 WireFormat::OpenAiResponses,
@@ -700,7 +708,7 @@ fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
                 if let Some(name) = function.get("name").and_then(Value::as_str)
                     && !name.is_empty()
                 {
-                    out.push(ToolDefinition {
+                    out.push(ToolDefinition::Function {
                         name: name.to_string(),
                         description: function
                             .get("description")
@@ -720,8 +728,18 @@ fn decode_responses_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
             }
         } else if tool.get("type").is_none() && tool.contains_key("name") {
             push_responses_function_tool(&mut out, tool);
+        } else if tool.get("type").is_some() {
+            out.push(ToolDefinition::Raw {
+                provider: WireFormat::OpenAiResponses.into(),
+                raw: Value::Object(tool.clone()),
+            });
         } else {
-            push_responses_id_tool(&mut out, tool);
+            if !push_responses_id_tool(&mut out, tool) {
+                out.push(ToolDefinition::Raw {
+                    provider: WireFormat::OpenAiResponses.into(),
+                    raw: Value::Object(tool.clone()),
+                });
+            }
         }
     }
     out
@@ -739,7 +757,7 @@ fn push_responses_function_tool(
         return false;
     }
 
-    out.push(ToolDefinition {
+    out.push(ToolDefinition::Function {
         name: name.to_string(),
         description: tool
             .get("description")
@@ -763,7 +781,7 @@ fn push_responses_id_tool(
         return false;
     }
 
-    out.push(ToolDefinition {
+    out.push(ToolDefinition::Function {
         name: id.to_string(),
         description: tool
             .get("description")
@@ -1004,24 +1022,46 @@ fn encode_responses_content(
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
-fn encode_responses_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
+fn encode_responses_tools(
+    tools: &[ToolDefinition],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
+    let mut encoded = Vec::new();
+    for (index, tool) in tools.iter().enumerate() {
+        match tool {
+            ToolDefinition::Function {
+                name,
+                description,
+                parameters,
+                strict,
+            } => {
                 let mut item = json!({
                     "type": "function",
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "parameters": tool.parameters,
+                    "name": name,
+                    "description": description.clone().unwrap_or_default(),
+                    "parameters": parameters,
                 });
-                if let Some(strict) = tool.strict {
-                    item["strict"] = Value::Bool(strict);
+                if let Some(strict) = strict {
+                    item["strict"] = Value::Bool(*strict);
                 }
-                item
-            })
-            .collect(),
-    )
+                encoded.push(item);
+            }
+            ToolDefinition::Raw { provider, raw } => {
+                if let Some(raw) = raw_tool_for_target(
+                    provider,
+                    raw,
+                    index,
+                    WireFormat::OpenAiResponses,
+                    diagnostics,
+                    policy,
+                )? {
+                    encoded.push(raw);
+                }
+            }
+        }
+    }
+    Ok(encoded)
 }
 
 // Encodes normalized tool choice into Responses JSON.

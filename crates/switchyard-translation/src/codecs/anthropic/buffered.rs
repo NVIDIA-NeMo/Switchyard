@@ -5,7 +5,9 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::codecs::common::{is_known_role_name, provider_extensions, text_from_blocks};
+use crate::codecs::common::{
+    is_known_role_name, provider_extensions, raw_tool_for_target, text_from_blocks,
+};
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
@@ -148,7 +150,9 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "output_config",
                 "stream",
             ],
-        );
+            &mut diagnostics,
+            policy,
+        )?;
 
         Ok(DecodedRequest {
             request,
@@ -199,7 +203,10 @@ impl FormatCodec for AnthropicMessagesCodec {
         );
 
         if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_anthropic_tools(&request.tools));
+            let tools = encode_anthropic_tools(&request.tools, &mut diagnostics, policy)?;
+            if !tools.is_empty() {
+                body.insert("tools".to_string(), Value::Array(tools));
+            }
         }
         if let Some(choice) = &request.tool_choice {
             body.insert(
@@ -238,12 +245,9 @@ impl FormatCodec for AnthropicMessagesCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
+        let mut diagnostics = Vec::new();
         let mut content = Vec::new();
         if let Some(blocks) = body.get("content").and_then(Value::as_array) {
             for (index, block) in blocks.iter().enumerate() {
@@ -292,17 +296,19 @@ impl FormatCodec for AnthropicMessagesCodec {
                         "stop_reason",
                         "usage",
                     ],
-                ),
+                    &mut diagnostics,
+                    policy,
+                )?,
             },
             preservation: capture_response_preservation(
                 WireFormat::AnthropicMessages,
                 &Value::Object(body.clone()),
-                _policy,
+                policy,
             ),
         };
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 
@@ -540,7 +546,7 @@ fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
         .filter_map(Value::as_object)
         .filter_map(|tool| {
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
-            (!name.is_empty()).then(|| ToolDefinition {
+            (!name.is_empty()).then(|| ToolDefinition::Function {
                 name,
                 description: tool
                     .get("description")
@@ -825,19 +831,39 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
 }
 
 // Encodes normalized tool definitions into Anthropic tool JSON.
-fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                json!({
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "input_schema": tool.parameters,
-                })
-            })
-            .collect(),
-    )
+fn encode_anthropic_tools(
+    tools: &[ToolDefinition],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
+    let mut encoded = Vec::new();
+    for (index, tool) in tools.iter().enumerate() {
+        match tool {
+            ToolDefinition::Function {
+                name,
+                description,
+                parameters,
+                ..
+            } => encoded.push(json!({
+                "name": name,
+                "description": description.clone().unwrap_or_default(),
+                "input_schema": parameters,
+            })),
+            ToolDefinition::Raw { provider, raw } => {
+                if let Some(raw) = raw_tool_for_target(
+                    provider,
+                    raw,
+                    index,
+                    WireFormat::AnthropicMessages,
+                    diagnostics,
+                    policy,
+                )? {
+                    encoded.push(raw);
+                }
+            }
+        }
+    }
+    Ok(encoded)
 }
 
 // Encodes normalized tool choice into Anthropic tool-choice JSON.
