@@ -169,15 +169,15 @@ layer. It decodes caller JSON into Switchyard's neutral protocol, encodes each
 selected call for the target protocol, decodes provider results, and encodes
 `ReturnToAgent` back to the caller protocol. Relay codecs are not used.
 
-The current streaming contract uses the normalized `LlmResponseChunk`
-representation and does not preserve a raw provider-event envelope.
-Common text, usage, finish-reason, and tool-call fields can be translated, but
-unknown provider-specific fields in same-protocol SSE events are not guaranteed
-to survive the decode/libsy/encode round trip. The streaming helpers also do not
-expose the buffered translation engine's reject-lossy diagnostics, so unsupported
-cross-protocol stream fields may be normalized or omitted. Do not claim
-lossless streaming until Switchyard exposes both a raw provider-event
-preservation contract and an explicit reject-lossy stream policy.
+The streaming contract carries each parsed provider JSON event in a preservation
+envelope alongside its normalized `LlmResponseChunk` representation.
+Same-protocol routes replay the preserved JSON unchanged, including
+provider-specific fields; this preserves parsed events, not raw SSE bytes or
+framing. Cross-protocol routes encode only normalized chunks, and the streaming
+helpers still do not expose the buffered translation engine's reject-lossy
+diagnostics, so unsupported fields may be normalized or omitted. Replacing
+normalized stream content or folding a stream into an aggregate drops the
+per-event preservation envelope.
 
 ## Configuration
 

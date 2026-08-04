@@ -96,13 +96,15 @@ impl SwitchyardRuntime {
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
                 &metadata,
             );
-            match self.drive(request.clone(), attempt, marks, &metadata).await {
-                Ok(response) => {
-                    let LlmResponse::Agg(response) = response.llm_response else {
-                        return Err("libsy returned a stream for a buffered request".into());
-                    };
-                    return translation::encode_response(&self.translation, inbound, &response);
-                }
+            let result = self
+                .drive(request.clone(), attempt, marks, &metadata)
+                .await
+                .and_then(|response| {
+                    finalize_buffered_response(&self.translation, inbound, response)
+                        .map_err(|source| LibsyError::client_call("return_to_agent", source))
+                });
+            match result {
+                Ok(response) => return Ok(response),
                 Err(failure) if libsy_error_retryable(&failure) && attempt < max_attempts => {
                     self.mark(
                         marks,
@@ -123,12 +125,10 @@ impl SwitchyardRuntime {
                     let response = self
                         .fallback_response(inbound, request, marks, &metadata)
                         .await?;
-                    let LlmResponse::Agg(response) = response.llm_response else {
-                        return Err(
-                            "trusted fallback returned a stream for a buffered request".into()
-                        );
-                    };
-                    return translation::encode_response(&self.translation, inbound, &response);
+                    return finalize_buffered_response(&self.translation, inbound, response)
+                        .map_err(|error| {
+                            public_response_failure("trusted fallback response", &error)
+                        });
                 }
             }
         }
@@ -432,6 +432,22 @@ async fn send_event(
 type ReturnedEventStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Json, LibsyError>> + Send>>;
 
+fn finalize_buffered_response(
+    translation_engine: &TranslationEngine,
+    inbound: WireFormat,
+    response: Response,
+) -> Result<Json, LlmClientError> {
+    let LlmResponse::Agg(response) = response.llm_response else {
+        return Err(LlmClientError::InvalidResponse {
+            source: Box::new(std::io::Error::other(
+                "libsy returned a stream for a buffered request",
+            )),
+        });
+    };
+    translation::encode_response(translation_engine, inbound, &response)
+        .map_err(LlmClientError::ResponseTranslation)
+}
+
 async fn returned_events(
     response: Response,
     inbound: WireFormat,
@@ -545,6 +561,16 @@ fn public_libsy_failure(prefix: &str, error: &LibsyError) -> String {
     }
 }
 
+fn public_response_failure(prefix: &str, error: &LlmClientError) -> String {
+    match error {
+        LlmClientError::InvalidResponse { .. } => format!("{prefix}: invalid response"),
+        LlmClientError::ResponseTranslation(_) => {
+            format!("{prefix}: response translation failure")
+        }
+        _ => format!("{prefix}: response finalization failure"),
+    }
+}
+
 fn public_client_failure(prefix: &str, error: &LlmClientError) -> String {
     match error {
         LlmClientError::UpstreamHttp { status, .. } => {
@@ -630,6 +656,10 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct BufferedClient {
+        calls: AtomicUsize,
+    }
+
     #[async_trait::async_trait]
     impl RoutedLlmClient for StreamClient {
         async fn call(
@@ -654,6 +684,122 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl RoutedLlmClient for BufferedClient {
+        async fn call(
+            &self,
+            _ctx: Context,
+            _request: Request,
+            _decision: Arc<dyn Decision>,
+        ) -> Result<Response, LlmClientError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Response {
+                llm_response: LlmResponse::Agg(Default::default()),
+                metadata: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_finalization_failure_uses_fallback_once() {
+        let selected = Arc::new(StreamClient {
+            behavior: StreamBehavior::Empty,
+            calls: AtomicUsize::new(0),
+        });
+        let fallback = Arc::new(BufferedClient {
+            calls: AtomicUsize::new(0),
+        });
+        let runtime = SwitchyardRuntime {
+            max_retries: 1,
+            algorithm: Arc::new(Passthrough::new(LlmTarget {
+                semantic_name: "selected".into(),
+                llm_client: Some(selected.clone()),
+            })),
+            targets: BTreeMap::from([(
+                "fallback".into(),
+                PreparedTargetBinding {
+                    client: fallback.clone(),
+                },
+            )]),
+            default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
+            translation: TranslationEngine::default(),
+        };
+        let mut marks = Vec::new();
+
+        let response = runtime
+            .execute_buffered(WireFormat::OpenAiChat, Request::default(), &mut marks)
+            .await
+            .expect("the buffered fallback response should be encoded");
+
+        assert!(response.is_object());
+        assert_eq!(selected.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fallback.calls.load(Ordering::Relaxed), 1);
+        assert!(
+            !marks
+                .iter()
+                .any(|mark| mark.name == "switchyard.routing.retry")
+        );
+        let error = marks
+            .iter()
+            .find(|mark| mark.name == "switchyard.routing.error")
+            .expect("finalization failure should emit an error mark");
+        assert_eq!(error.data["retryable"], false);
+        assert_eq!(error.data["non_http_kind"], "invalid_response");
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|mark| mark.name == "switchyard.routing.fallback")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn returned_events_replays_preserved_openai_chat_without_duplicate_terminal() {
+        let content = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "system_fingerprint": "fp_provider_specific",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "Hi"},
+                "finish_reason": null
+            }]
+        });
+        let terminal = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        });
+        let body = format!("data: {content}\n\ndata: {terminal}\n\ndata: [DONE]\n\n").into_bytes();
+        let stream = switchyard_translation::decode_stream(
+            stream::once(async move { Ok::<_, LlmClientError>(body) }),
+            WireFormat::OpenAiChat,
+        )
+        .expect("provider SSE should decode");
+        let response = Response {
+            llm_response: LlmResponse::Stream(stream),
+            metadata: None,
+        };
+
+        let replayed = returned_events(response, WireFormat::OpenAiChat)
+            .await
+            .expect("return stream should encode")
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("return stream should not fail");
+
+        assert_eq!(replayed, vec![content, terminal]);
+    }
+
     #[tokio::test]
     async fn invalid_selected_stream_does_not_invoke_failing_fallback_twice() {
         let selected = Arc::new(StreamClient {
@@ -670,20 +816,12 @@ mod tests {
                 semantic_name: "selected".into(),
                 llm_client: Some(selected.clone()),
             })),
-            targets: BTreeMap::from([
-                (
-                    "selected".into(),
-                    PreparedTargetBinding {
-                        client: selected.clone(),
-                    },
-                ),
-                (
-                    "fallback".into(),
-                    PreparedTargetBinding {
-                        client: fallback.clone(),
-                    },
-                ),
-            ]),
+            targets: BTreeMap::from([(
+                "fallback".into(),
+                PreparedTargetBinding {
+                    client: fallback.clone(),
+                },
+            )]),
             default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
             translation: TranslationEngine::default(),
         };
