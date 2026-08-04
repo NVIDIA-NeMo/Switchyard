@@ -291,7 +291,15 @@ where
         let decision: Arc<dyn Decision> = Arc::new(FallThroughDecision {
             selected_model: target.semantic_name.clone(),
             reasoning,
-            tier: deciding.and_then(|c| c.routing_tier(&target.semantic_name)),
+            tier: deciding
+                .and_then(|c| c.routing_tier(&target.semantic_name))
+                .or_else(|| {
+                    // Fallback/reuse deciders carry no tier; resolve it across
+                    // the cascade, as fallback_decision does.
+                    self.classifiers
+                        .iter()
+                        .find_map(|c| c.routing_tier(&target.semantic_name))
+                }),
         });
         driver.info(ctx.clone(), decision.clone()).await?;
 
