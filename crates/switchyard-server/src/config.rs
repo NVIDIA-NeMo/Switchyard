@@ -9,9 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libsy::{
-    Algorithm, ClassifierContractConfig, EscalationJudgeConfig, HandoffNoteConfig, LlmFallback,
-    LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
-    StageRouterConfig, TargetPrompts, TaskClassifierConfig,
+    Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
+    EscalationJudgeConfig, HandoffNoteConfig, LlmFallback, LlmTarget, LlmTargetSet,
+    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig,
+    TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -171,6 +172,71 @@ enum ClientFormat {
     AnthropicMessages,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum ClassifierPolicyConfig {
+    TargetSelector { selector: String },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ClassifierMode {
+    Capability,
+    Escalation,
+    Custom,
+}
+
+impl ClassifierPolicyConfig {
+    fn into_libsy(self) -> CustomClassifierPolicy {
+        match self {
+            Self::TargetSelector { selector } => CustomClassifierPolicy::target_selector(selector),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LlmClassifierModeConfig {
+    Capability(CapabilityClassifierRouteConfig),
+    Escalation(EscalationClassifierRouteConfig),
+    Custom(CustomClassifierRouteConfig),
+}
+
+#[derive(Debug)]
+struct CapabilityClassifierRouteConfig {
+    strong_target: String,
+    weak_target: String,
+    base_threshold: f64,
+    min_confidence: f64,
+    capability_elevated_floor: Option<f64>,
+    session_affinity: bool,
+    message_hash_fallback: bool,
+    recent_turn_window: Option<usize>,
+    prompt: Option<String>,
+    max_output_tokens: u64,
+}
+
+#[derive(Debug)]
+struct EscalationClassifierRouteConfig {
+    strong_target: String,
+    weak_target: String,
+    prompt: Option<String>,
+    max_output_tokens: u64,
+    judge: EscalationJudgeConfig,
+}
+
+#[derive(Debug)]
+struct CustomClassifierRouteConfig {
+    targets: Vec<String>,
+    default_target: String,
+    prompt: String,
+    response_schema: String,
+    policy: ClassifierPolicyConfig,
+    session_affinity: bool,
+    message_hash_fallback: bool,
+    recent_turn_window: Option<usize>,
+    max_output_tokens: u64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RouteConfig {
@@ -190,11 +256,16 @@ enum RouteConfig {
     LlmClassifier {
         id: String,
         classifier_target: String,
-        strong_target: String,
-        weak_target: String,
-        base_threshold: f64,
         #[serde(default)]
-        min_confidence: f64,
+        mode: Option<ClassifierMode>,
+        #[serde(default)]
+        strong_target: Option<String>,
+        #[serde(default)]
+        weak_target: Option<String>,
+        #[serde(default)]
+        base_threshold: Option<f64>,
+        #[serde(default)]
+        min_confidence: Option<f64>,
         #[serde(default)]
         capability_elevated_floor: Option<f64>,
         #[serde(default)]
@@ -207,14 +278,16 @@ enum RouteConfig {
         prompt: Option<String>,
         #[serde(default = "default_classifier_max_output_tokens")]
         max_output_tokens: u64,
-        /// Present to route by escalation instead of up-front classification.
-        ///
-        /// The classifier target becomes a trajectory judge: every unlatched turn is served by
-        /// the weak tier and judged, and the session latches to the strong tier once
-        /// `confirmations` consecutive escalate verdicts accumulate. Absent, the classifier
-        /// picks a tier before the turn's call, as usual.
         #[serde(default)]
         escalation: Option<EscalationJudgeConfig>,
+        #[serde(default)]
+        targets: Option<Vec<String>>,
+        #[serde(default)]
+        default_target: Option<String>,
+        #[serde(default)]
+        response_schema: Option<String>,
+        #[serde(default)]
+        policy: Option<ClassifierPolicyConfig>,
     },
     StageRouter {
         id: String,
@@ -289,6 +362,194 @@ impl RouteConfig {
             | StageRouter { id, .. } => id,
         }
     }
+
+    fn classifier_mode(&self, route_name: &str) -> ServerResult<LlmClassifierModeConfig> {
+        let Self::LlmClassifier {
+            mode,
+            strong_target,
+            weak_target,
+            base_threshold,
+            min_confidence,
+            capability_elevated_floor,
+            session_affinity,
+            message_hash_fallback,
+            recent_turn_window,
+            prompt,
+            max_output_tokens,
+            escalation,
+            targets,
+            default_target,
+            response_schema,
+            policy,
+            ..
+        } = self
+        else {
+            return Err(ServerError::new("route is not an llm_classifier"));
+        };
+
+        let selected_mode = match (mode, escalation.is_some()) {
+            (Some(mode), _) => *mode,
+            (None, true) => ClassifierMode::Escalation,
+            (None, false) => ClassifierMode::Capability,
+        };
+
+        match selected_mode {
+            ClassifierMode::Capability => {
+                if escalation.is_some() {
+                    return Err(classifier_field_error(
+                        route_name,
+                        "escalation",
+                        "capability",
+                    ));
+                }
+                reject_custom_fields(
+                    route_name,
+                    "capability",
+                    targets,
+                    default_target,
+                    response_schema,
+                    policy,
+                )?;
+                Ok(LlmClassifierModeConfig::Capability(
+                    CapabilityClassifierRouteConfig {
+                        strong_target: required_classifier_field(
+                            route_name,
+                            "strong_target",
+                            strong_target,
+                        )?,
+                        weak_target: required_classifier_field(
+                            route_name,
+                            "weak_target",
+                            weak_target,
+                        )?,
+                        base_threshold: required_classifier_field(
+                            route_name,
+                            "base_threshold",
+                            base_threshold,
+                        )?,
+                        min_confidence: min_confidence.unwrap_or_default(),
+                        capability_elevated_floor: *capability_elevated_floor,
+                        session_affinity: *session_affinity,
+                        message_hash_fallback: *message_hash_fallback,
+                        recent_turn_window: *recent_turn_window,
+                        prompt: prompt.clone(),
+                        max_output_tokens: *max_output_tokens,
+                    },
+                ))
+            }
+            ClassifierMode::Escalation => {
+                reject_custom_fields(
+                    route_name,
+                    "escalation",
+                    targets,
+                    default_target,
+                    response_schema,
+                    policy,
+                )?;
+                if mode.is_some()
+                    && (base_threshold.is_some()
+                        || min_confidence.is_some()
+                        || capability_elevated_floor.is_some()
+                        || *session_affinity
+                        || *message_hash_fallback
+                        || recent_turn_window.is_some())
+                {
+                    return Err(ServerError::new(format!(
+                        "llm_classifier route {route_name} mode escalation cannot use capability routing settings"
+                    )));
+                }
+                Ok(LlmClassifierModeConfig::Escalation(
+                    EscalationClassifierRouteConfig {
+                        strong_target: required_classifier_field(
+                            route_name,
+                            "strong_target",
+                            strong_target,
+                        )?,
+                        weak_target: required_classifier_field(
+                            route_name,
+                            "weak_target",
+                            weak_target,
+                        )?,
+                        prompt: prompt.clone(),
+                        max_output_tokens: *max_output_tokens,
+                        judge: required_classifier_field(route_name, "escalation", escalation)?,
+                    },
+                ))
+            }
+            ClassifierMode::Custom => {
+                if strong_target.is_some()
+                    || weak_target.is_some()
+                    || base_threshold.is_some()
+                    || min_confidence.is_some()
+                    || capability_elevated_floor.is_some()
+                    || escalation.is_some()
+                {
+                    return Err(ServerError::new(format!(
+                        "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
+                    )));
+                }
+                Ok(LlmClassifierModeConfig::Custom(
+                    CustomClassifierRouteConfig {
+                        targets: required_classifier_field(route_name, "targets", targets)?,
+                        default_target: required_classifier_field(
+                            route_name,
+                            "default_target",
+                            default_target,
+                        )?,
+                        prompt: required_classifier_field(route_name, "prompt", prompt)?,
+                        response_schema: required_classifier_field(
+                            route_name,
+                            "response_schema",
+                            response_schema,
+                        )?,
+                        policy: required_classifier_field(route_name, "policy", policy)?,
+                        session_affinity: *session_affinity,
+                        message_hash_fallback: *message_hash_fallback,
+                        recent_turn_window: *recent_turn_window,
+                        max_output_tokens: *max_output_tokens,
+                    },
+                ))
+            }
+        }
+    }
+}
+
+fn reject_custom_fields(
+    route_name: &str,
+    mode: &str,
+    targets: &Option<Vec<String>>,
+    default_target: &Option<String>,
+    response_schema: &Option<String>,
+    policy: &Option<ClassifierPolicyConfig>,
+) -> ServerResult<()> {
+    if targets.is_some()
+        || default_target.is_some()
+        || response_schema.is_some()
+        || policy.is_some()
+    {
+        return Err(ServerError::new(format!(
+            "llm_classifier route {route_name} mode {mode} cannot use custom classifier fields"
+        )));
+    }
+    Ok(())
+}
+
+fn classifier_field_error(route_name: &str, field: &str, mode: &str) -> ServerError {
+    ServerError::new(format!(
+        "llm_classifier route {route_name} mode {mode} cannot use {field}"
+    ))
+}
+
+fn required_classifier_field<T: Clone>(
+    route_name: &str,
+    field: &str,
+    value: &Option<T>,
+) -> ServerResult<T> {
+    value.clone().ok_or_else(|| {
+        ServerError::new(format!(
+            "llm_classifier route {route_name} requires {field}"
+        ))
+    })
 }
 
 fn build_backend(
@@ -371,46 +632,70 @@ fn build_algorithm(
             Ok(Arc::new(Passthrough::new(target)))
         }
         RouteConfig::LlmClassifier {
-            classifier_target,
-            strong_target,
-            weak_target,
-            base_threshold,
-            min_confidence,
-            capability_elevated_floor,
-            session_affinity,
-            message_hash_fallback,
-            recent_turn_window,
-            prompt,
-            max_output_tokens,
-            escalation,
-            ..
+            classifier_target, ..
         } => {
             let classifier = resolve_target(route_name, classifier_target, targets)?;
-            let strong = resolve_target(route_name, strong_target, targets)?;
-            let weak = resolve_target(route_name, weak_target, targets)?;
-            let classifier_config = TaskClassifierConfig {
-                base_threshold: *base_threshold,
-                min_confidence: *min_confidence,
-                capability_elevated_floor: *capability_elevated_floor,
-                session_affinity: *session_affinity,
-                message_hash_fallback: *message_hash_fallback,
-                recent_turn_window: *recent_turn_window,
-                contract: classifier_contract(prompt.as_deref()),
-                max_output_tokens: *max_output_tokens,
-            };
-            // The weak model is the efficient tier; the strong model is the capable one.
-            // With `escalation`, the classifier target judges the weak tier's reply each turn
-            // instead of picking a tier ahead of it.
-            let algorithm = match escalation {
-                Some(judge_config) => LlmTaskClassifier::new_with_escalation_contract(
-                    classifier,
-                    weak,
-                    strong,
-                    classifier_config.contract,
-                    judge_config.clone(),
-                    classifier_config.max_output_tokens,
-                ),
-                None => LlmTaskClassifier::new(classifier, weak, strong, classifier_config),
+            let mode = config.classifier_mode(route_name)?;
+            let algorithm = match mode {
+                LlmClassifierModeConfig::Capability(config) => {
+                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    let classifier_config = TaskClassifierConfig {
+                        base_threshold: config.base_threshold,
+                        min_confidence: config.min_confidence,
+                        capability_elevated_floor: config.capability_elevated_floor,
+                        session_affinity: config.session_affinity,
+                        message_hash_fallback: config.message_hash_fallback,
+                        recent_turn_window: config.recent_turn_window,
+                        contract: classifier_contract(config.prompt.as_deref()),
+                        max_output_tokens: config.max_output_tokens,
+                    };
+                    LlmTaskClassifier::new(classifier, weak, strong, classifier_config)
+                }
+                LlmClassifierModeConfig::Escalation(config) => {
+                    let strong = resolve_target(route_name, &config.strong_target, targets)?;
+                    let weak = resolve_target(route_name, &config.weak_target, targets)?;
+                    LlmTaskClassifier::new_with_escalation_contract(
+                        classifier,
+                        weak,
+                        strong,
+                        classifier_contract(config.prompt.as_deref()),
+                        config.judge,
+                        config.max_output_tokens,
+                    )
+                }
+                LlmClassifierModeConfig::Custom(config) => {
+                    let resolved_targets = config
+                        .targets
+                        .iter()
+                        .map(|name| {
+                            resolve_target(route_name, name, targets)
+                                .map(|target| (name.clone(), target))
+                        })
+                        .collect::<ServerResult<Vec<_>>>()?;
+                    let response_schema = serde_json::from_str(&config.response_schema).map_err(
+                        |error| {
+                            ServerError::new(format!(
+                                "llm_classifier route {route_name}: response_schema is invalid JSON: {error}"
+                            ))
+                        },
+                    )?;
+                    let mut classifier_config = CustomClassifierConfig::new(
+                        config.prompt,
+                        response_schema,
+                        config.policy.into_libsy(),
+                    );
+                    classifier_config.session_affinity = config.session_affinity;
+                    classifier_config.message_hash_fallback = config.message_hash_fallback;
+                    classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.max_output_tokens = config.max_output_tokens;
+                    LlmTaskClassifier::new_custom(
+                        classifier,
+                        resolved_targets,
+                        &config.default_target,
+                        classifier_config,
+                    )
+                }
             }
             .map_err(|error| {
                 ServerError::new(format!("llm_classifier route {route_name}: {error}"))
@@ -656,6 +941,19 @@ target = "weak"
         );
         assert!(error_message(&empty).contains("classifier prompt must not be empty"));
         Ok(())
+    }
+
+    #[test]
+    fn mode_custom_rejects_capability_fields() {
+        let mixed = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "mode = \"custom\"\nbase_threshold = 0.5",
+        );
+
+        assert!(
+            error_message(&mixed)
+                .contains("mode custom cannot use capability or escalation fields")
+        );
     }
 
     #[test]
