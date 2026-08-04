@@ -186,7 +186,10 @@ duplicate a request that the provider processed but did not finish returning,
 and the retry budget plus capped `Retry-After` delays determines total latency.
 Configured provider requests do not follow redirects. Connections time out
 after 10 seconds, and a 120-second read timeout resets after every successful
-read so active streams may continue while stalled providers are released.
+read so active streams may continue while stalled providers are released. Use
+`TranslatingLlmClient::new_with_transport_config` with an
+`HttpTransportConfig` to change either timeout; setting `read_timeout` to `None`
+disables the idle-read timeout for providers that may remain silent for longer.
 
 ## Errors
 

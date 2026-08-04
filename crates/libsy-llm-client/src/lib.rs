@@ -18,7 +18,7 @@ pub mod metrics;
 pub mod raw;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
-pub use client::{ModelConfig, TranslatingLlmClient};
+pub use client::{HttpTransportConfig, ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use raw::RawResponse;
 pub use switchyard_translation::RawEventStream;

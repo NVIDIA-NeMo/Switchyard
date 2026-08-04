@@ -57,6 +57,24 @@ const MAX_BUFFERED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 const TRUNCATED_BODY_SUFFIX: &str = "...[truncated]";
 
+/// Connection and idle-read timeouts for a [`TranslatingLlmClient`]'s shared HTTP client.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpTransportConfig {
+    /// Maximum time allowed to establish an upstream connection.
+    pub connect_timeout: Duration,
+    /// Maximum idle time between response reads. `None` disables the idle-read timeout.
+    pub read_timeout: Option<Duration>,
+}
+
+impl Default for HttpTransportConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            read_timeout: Some(DEFAULT_READ_TIMEOUT),
+        }
+    }
+}
+
 /// How one model is served: the `default_backend` used when the request does not
 /// pin a wire format, plus any `other_backends` reachable over additional formats.
 #[derive(Clone, Debug)]
@@ -97,16 +115,27 @@ pub struct TranslatingLlmClient {
 
 impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
-    /// client and the built-in translation codecs.
+    /// client, the default transport timeouts, and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        Self::new_with_transport_config(model_configs, HttpTransportConfig::default())
+    }
+
+    /// Builds a client with explicit connection and idle-read timeouts.
+    pub fn new_with_transport_config(
+        model_configs: &[ModelConfig],
+        transport: HttpTransportConfig,
+    ) -> Result<Self> {
+        let mut client_builder = reqwest::Client::builder()
             // A configured target is an authority boundary. Do not let a
             // provider redirect credentials or request bodies elsewhere.
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+            .connect_timeout(transport.connect_timeout);
+        if let Some(read_timeout) = transport.read_timeout {
             // Read timeout resets after each successful read, so active LLM
             // streams may run indefinitely while stalled providers cannot.
-            .read_timeout(DEFAULT_READ_TIMEOUT)
+            client_builder = client_builder.read_timeout(read_timeout);
+        }
+        let client = client_builder
             .build()
             .map_err(|error| LlmClientError::Transport {
                 source: Box::new(error),
@@ -1803,10 +1832,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
-        client.client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(10))
-            .build()?;
+        let client = TranslatingLlmClient::new_with_transport_config(
+            &chat_map(&format!("{}/v1", server.uri())),
+            HttpTransportConfig {
+                connect_timeout: Duration::from_secs(1),
+                read_timeout: Some(Duration::from_millis(10)),
+            },
+        )?;
         let decision: std::sync::Arc<dyn Decision> = std::sync::Arc::new(FixedDecision("gpt"));
 
         let Err(error) = client
