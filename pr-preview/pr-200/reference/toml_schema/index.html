@@ -1489,9 +1489,8 @@ upstream model. Use it for local smoke tests.</p>
 </tbody>
 </table>
 <h3 id="llm_classifier"><code>llm_classifier</code><a class="headerlink" href="#llm_classifier" title="Permanent link">&para;</a></h3>
-<p>Classifies each task, then routes to the weak or strong target. See
-<a href="../../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a> for
-tuning.</p>
+<p>Runs one of three judge-backed modes: <code>capability</code>, <code>escalation</code>, or <code>custom</code>.
+<code>classifier_target</code> and <code>max_output_tokens</code> apply to all three.</p>
 <table>
 <thead>
 <tr>
@@ -1503,11 +1502,37 @@ tuning.</p>
 </thead>
 <tbody>
 <tr>
+<td><code>mode</code></td>
+<td style="text-align: center;">No</td>
+<td><code>capability</code></td>
+<td>Classifier behavior. Set it explicitly for new configurations.</td>
+</tr>
+<tr>
 <td><code>classifier_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
 <td>Target the judge is called through. Not a routing destination.</td>
 </tr>
+<tr>
+<td><code>max_output_tokens</code></td>
+<td style="text-align: center;">No</td>
+<td><code>4096</code></td>
+<td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Capability mode classifies before serving. See
+<a href="../../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
 <tr>
 <td><code>strong_target</code></td>
 <td style="text-align: center;">Yes</td>
@@ -1560,24 +1585,11 @@ tuning.</p>
 <td><code>prompt</code></td>
 <td style="text-align: center;">No</td>
 <td>packaged prompt</td>
-<td>Replaces the capability prompt, or the trajectory-judge prompt when <code>escalation</code> is set. <code>{{RESPONSE_SCHEMA}}</code> expands to the active packaged schema.</td>
-</tr>
-<tr>
-<td><code>max_output_tokens</code></td>
-<td style="text-align: center;">No</td>
-<td><code>4096</code></td>
-<td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
-</tr>
-<tr>
-<td><code>escalation</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>Switches the route to escalation judging.</td>
+<td>Replaces the capability prompt. <code>{{RESPONSE_SCHEMA}}</code> expands to its packaged schema.</td>
 </tr>
 </tbody>
 </table>
-<p>Add an <code>escalation</code> table to judge each completed turn instead of classifying up
-front. See
+<p>Escalation mode serves the weak target first and judges the completed turn. See
 <a href="../../routing_algorithms/escalation_router_routing/">Escalation-Router Routing</a>.</p>
 <table>
 <thead>
@@ -1590,28 +1602,106 @@ front. See
 </thead>
 <tbody>
 <tr>
-<td><code>confirmations</code></td>
+<td><code>strong_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Target used after the session latches.</td>
+</tr>
+<tr>
+<td><code>weak_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Target served before the latch.</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the trajectory-judge prompt.</td>
+</tr>
+<tr>
+<td><code>escalation.confirmations</code></td>
 <td style="text-align: center;">No</td>
 <td><code>2</code></td>
 <td>Consecutive escalate verdicts required to latch. Above <code>1</code> needs a session ID.</td>
 </tr>
 <tr>
-<td><code>recent_turn_window</code></td>
+<td><code>escalation.recent_turn_window</code></td>
 <td style="text-align: center;">No</td>
 <td><code>28</code></td>
 <td>Trailing messages shown to the judge.</td>
 </tr>
 <tr>
-<td><code>window_message_chars</code></td>
+<td><code>escalation.window_message_chars</code></td>
 <td style="text-align: center;">No</td>
 <td><code>500</code></td>
 <td>Per-message cap inside that window.</td>
 </tr>
 </tbody>
 </table>
-<p><code>base_threshold</code> stays required, but escalation ignores the capability thresholds,
-affinity settings, and route-level <code>recent_turn_window</code>. The shared <code>prompt</code> and
-<code>max_output_tokens</code> keys still configure its judge.</p>
+<p>Existing configurations that contain <code>escalation</code> but omit <code>mode</code> remain valid.</p>
+<p>Custom mode validates the judge's JSON against <code>response_schema</code>, resolves the
+policy selector, and routes to any configured target label.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>targets</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Two or more target names available to the policy.</td>
+</tr>
+<tr>
+<td><code>default_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Target used when the judge fails or its verdict cannot be routed.</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Judge system prompt. <code>{{RESPONSE_SCHEMA}}</code> expands to the configured inner schema.</td>
+</tr>
+<tr>
+<td><code>response_schema</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper.</td>
+</tr>
+<tr>
+<td><code>policy</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Policy table. <code>target_selector</code> accepts a JSON Pointer such as <code>/decision/target</code>.</td>
+</tr>
+<tr>
+<td><code>session_affinity</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Reuses a session's first decision on later turns.</td>
+</tr>
+<tr>
+<td><code>message_hash_fallback</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+</tr>
+<tr>
+<td><code>recent_turn_window</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Trailing turns the judge sees.</td>
+</tr>
+</tbody>
+</table>
 <h3 id="stage_router"><code>stage_router</code><a class="headerlink" href="#stage_router" title="Permanent link">&para;</a></h3>
 <p>Scores tool signals to pick a tier per turn. See
 <a href="../../routing_algorithms/stage_router_routing/">Stage-Router Routing</a> for the

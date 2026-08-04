@@ -1226,18 +1226,16 @@ going well.</p>
 </span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="k">[routes.agent]</span>
 </span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;agent&quot;</span>
 </span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
-</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;judge&quot;</span>
-</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
-</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;escalation&quot;</span>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;judge&quot;</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
 </span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Judge whether the weak model is stuck. Return the required structured verdict.&quot;</span>
 </span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">escalation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">confirmations</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">recent_turn_window</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">28</span><span class="p">,</span><span class="w"> </span><span class="n">window_message_chars</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">500</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p><code>classifier_target</code> is the judge. The route's <code>id</code>, <code>agent</code>, is the model name
 clients send; the judge is not exposed as a client-selectable model.</p>
-<p><code>base_threshold</code> is still required, but escalation ignores it, along with
-<code>min_confidence</code>, <code>capability_elevated_floor</code>, and <code>session_affinity</code>.
-The route-level <code>prompt</code> key replaces the packaged trajectory-judge prompt. It
+<p>The route-level <code>prompt</code> key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
 Include <code>{{RESPONSE_SCHEMA}}</code> when the schema should also appear in the prompt.</p>
 <h2 id="how-the-decision-works">How the decision works<a class="headerlink" href="#how-the-decision-works" title="Permanent link">&para;</a></h2>
@@ -1336,8 +1334,7 @@ token cost and latency remain visible as routing overhead.</p>
 <h2 id="when-not-to-use-escalation-routing">When not to use escalation routing<a class="headerlink" href="#when-not-to-use-escalation-routing" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>One-shot requests.</strong> No trajectory to judge. Use
-  <a href="../llm_classifier_routing/">LLM Classifier Routing</a> without the <code>escalation</code>
-  table.</li>
+  <a href="../llm_classifier_routing/">LLM Classifier Routing</a> in <code>capability</code> mode.</li>
 <li><strong>Traffic without session identity.</strong> With <code>confirmations</code> above <code>1</code>, the route
   cannot accumulate a streak and never latches.</li>
 <li><strong>Fixed traffic experiments.</strong> Use <a href="../random_routing/">Random Routing</a>.</li>
