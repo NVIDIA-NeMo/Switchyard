@@ -298,22 +298,43 @@ impl FormatCodec for AnthropicMessagesCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) = exact_preserved_response(
             &response.preservation,
             WireFormat::AnthropicMessages,
-            _policy,
+            policy,
         ) {
             return Ok(EncodedResponse {
                 body,
                 diagnostics: Vec::new(),
             });
         }
-        let output = response.first_output();
-        let content = output
-            .map(|output| encode_anthropic_content(&output.content))
-            .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
+        let mut diagnostics = Vec::new();
+        if response.outputs.len() > 1 {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                "Anthropic response encoding cannot represent multiple outputs",
+            )?;
+        }
+        let output = response
+            .outputs
+            .iter()
+            .find(|output| {
+                output.content.iter().any(|block| {
+                    !matches!(
+                        block,
+                        ContentBlock::Unknown { provider, .. }
+                            if provider.as_str() != WireFormat::AnthropicMessages.as_str()
+                    )
+                })
+            })
+            .or_else(|| response.first_output());
+        let content = match output {
+            Some(output) => encode_anthropic_content(&output.content, &mut diagnostics, policy)?,
+            None => vec![json!({"type": "text", "text": ""})],
+        };
         let body = json!({
             "id": response.id.clone().unwrap_or_else(|| "msg_switchyard".to_string()),
             "type": "message",
@@ -328,8 +349,8 @@ impl FormatCodec for AnthropicMessagesCodec {
             "usage": encode_anthropic_usage(&response.usage),
         });
         Ok(EncodedResponse {
-            body: embed_preservation(body, &response.preservation, _policy),
-            diagnostics: Vec::new(),
+            body: embed_preservation(body, &response.preservation, policy),
+            diagnostics,
         })
     }
 }
@@ -684,16 +705,31 @@ fn encode_anthropic_content_with_policy(
     Ok(blocks)
 }
 
-// Encodes content without producing diagnostics for response paths.
-fn encode_anthropic_content(content: &[ContentBlock]) -> Vec<Value> {
-    let mut blocks = content
-        .iter()
-        .flat_map(encode_one_anthropic_response_block)
-        .collect::<Vec<_>>();
+// Encodes response content without leaking foreign provider block shapes.
+fn encode_anthropic_content(
+    content: &[ContentBlock],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
+    let mut blocks = Vec::new();
+    for block in content {
+        match block {
+            ContentBlock::Unknown { provider, .. }
+                if provider.as_str() != WireFormat::AnthropicMessages.as_str() =>
+            {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic response encoding drops foreign unknown content blocks",
+                )?;
+            }
+            other => blocks.extend(encode_one_anthropic_response_block(other)),
+        }
+    }
     if blocks.is_empty() {
         blocks.push(json!({"type": "text", "text": ""}));
     }
-    blocks
+    Ok(blocks)
 }
 
 // Encodes response content, where synthetic reasoning may be shown to clients.

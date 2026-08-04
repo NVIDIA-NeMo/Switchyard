@@ -5,9 +5,42 @@
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
+use switchyard_translation::{
+    LossyConversionPolicy, PreservationPolicy, TranslationEngine, TranslationOutput,
+    TranslationPolicy, WireFormat,
+};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+fn reject_lossy_policy() -> TranslationPolicy {
+    TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    }
+}
+
+fn translate_lossy_allowed_after_reject(
+    source: WireFormat,
+    target: WireFormat,
+    body: &serde_json::Value,
+) -> std::result::Result<TranslationOutput, Box<dyn std::error::Error + Send + Sync>> {
+    let engine = TranslationEngine::default();
+    let mut policy = reject_lossy_policy();
+    let error = engine
+        .translate_response(source, target, body, &policy)
+        .expect_err("lossy response translation should be rejected");
+    assert_eq!(error.kind(), "LossyConversion");
+
+    policy.lossy_conversion_policy = LossyConversionPolicy::AllowWithDiagnostics;
+    let output = engine.translate_response(source, target, body, &policy)?;
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "lossy_conversion")
+    );
+    Ok(output)
+}
 
 // Verifies OpenAI Chat responses map to Anthropic message responses.
 #[test]
@@ -480,5 +513,161 @@ fn openai_chat_cache_only_usage_still_emits_reasoning_details() -> TestResult {
         output["usage"]["output_tokens_details"],
         json!({"reasoning_tokens": 0})
     );
+    Ok(())
+}
+
+#[test]
+fn strict_response_translation_allows_text_and_provider_extensions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet",
+        "content": [{"type": "text", "text": "Hello"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+        "provider_trace_id": "trace_test"
+    });
+    let output = engine.translate_response(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &body,
+        &reject_lossy_policy(),
+    )?;
+
+    assert_eq!(output.body["choices"][0]["message"]["content"], "Hello");
+    assert!(output.diagnostics.is_empty());
+    Ok(())
+}
+
+#[test]
+fn foreign_server_tool_use_response_block_obeys_lossy_policy() -> TestResult {
+    let body = json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet",
+        "content": [{
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "rust"}
+        }],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    });
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        translate_lossy_allowed_after_reject(WireFormat::AnthropicMessages, target, &body)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn unknown_responses_output_preserves_the_known_answer() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": "gpt-4o",
+        "status": "completed",
+        "output": [{
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed"
+        }, {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Known answer"}]
+        }],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    });
+    let same_format = engine.translate_response(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &body,
+        &reject_lossy_policy(),
+    )?;
+    assert_eq!(same_format.body, body);
+    assert!(same_format.diagnostics.is_empty());
+
+    let mut without_preservation = reject_lossy_policy();
+    without_preservation.preservation = PreservationPolicy::Disabled;
+    let error = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &body,
+            &without_preservation,
+        )
+        .expect_err("unknown output cannot be reconstructed without preservation");
+    assert_eq!(error.kind(), "LossyConversion");
+
+    let output = translate_lossy_allowed_after_reject(
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &body,
+    )?;
+    assert_eq!(
+        output.body["content"],
+        json!([{"type": "text", "text": "Known answer"}])
+    );
+    Ok(())
+}
+
+#[test]
+fn extra_response_outputs_obey_lossy_policy() -> TestResult {
+    let body = json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": "gpt-4o",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "first"}]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "second"}]
+            }
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    });
+    let output = translate_lossy_allowed_after_reject(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &body,
+    )?;
+    assert_eq!(output.body["choices"][0]["message"]["content"], "first");
+    translate_lossy_allowed_after_reject(
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &body,
+    )?;
+
+    let chat_body = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-4o",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "first"},
+                "finish_reason": "stop"
+            },
+            {
+                "index": 1,
+                "message": {"role": "assistant", "content": "second"},
+                "finish_reason": "stop"
+            }
+        ]
+    });
+    translate_lossy_allowed_after_reject(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &chat_body,
+    )?;
     Ok(())
 }

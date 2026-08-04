@@ -266,43 +266,43 @@ impl FormatCodec for OpenAiChatCodec {
                 _policy,
             ),
         };
-        if let Some(choice) = object
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(Value::as_object)
-        {
-            let message = choice
-                .get("message")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            let mut content = decode_openai_content(
-                message.get("content").unwrap_or(&Value::Null),
-                WireFormat::OpenAiChat,
-                &mut Vec::new(),
-                &TranslationPolicy::default(),
-                "$.choices[0].message.content",
-            )?;
-            prepend_openai_reasoning_blocks(&mut content, &message);
-            if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-                for (index, tool_call) in tool_calls.iter().enumerate() {
-                    if let Some(call) = decode_openai_tool_call(
-                        tool_call,
-                        index + 1,
-                        &TranslationPolicy::default(),
-                    )? {
-                        content.push(ContentBlock::ToolCall(call));
+        if let Some(choices) = object.get("choices").and_then(Value::as_array) {
+            for (choice_index, choice) in choices.iter().enumerate() {
+                let Some(choice) = choice.as_object() else {
+                    continue;
+                };
+                let message = choice
+                    .get("message")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut content = decode_openai_content(
+                    message.get("content").unwrap_or(&Value::Null),
+                    WireFormat::OpenAiChat,
+                    &mut Vec::new(),
+                    &TranslationPolicy::default(),
+                    format!("$.choices[{choice_index}].message.content"),
+                )?;
+                prepend_openai_reasoning_blocks(&mut content, &message);
+                if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+                    for (index, tool_call) in tool_calls.iter().enumerate() {
+                        if let Some(call) = decode_openai_tool_call(
+                            tool_call,
+                            index + 1,
+                            &TranslationPolicy::default(),
+                        )? {
+                            content.push(ContentBlock::ToolCall(call));
+                        }
                     }
                 }
+                response.outputs.push(ResponseOutput {
+                    role: Role::Assistant,
+                    content,
+                    stop_reason: Some(map_openai_finish_reason(
+                        choice.get("finish_reason").and_then(Value::as_str),
+                    )),
+                });
             }
-            response.outputs.push(ResponseOutput {
-                role: Role::Assistant,
-                content,
-                stop_reason: Some(map_openai_finish_reason(
-                    choice.get("finish_reason").and_then(Value::as_str),
-                )),
-            });
         }
 
         Ok(DecodedResponse {
@@ -314,17 +314,58 @@ impl FormatCodec for OpenAiChatCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =
-            exact_preserved_response(&response.preservation, WireFormat::OpenAiChat, _policy)
+            exact_preserved_response(&response.preservation, WireFormat::OpenAiChat, policy)
         {
             return Ok(EncodedResponse {
                 body,
                 diagnostics: Vec::new(),
             });
         }
-        let output = response.first_output();
+        let mut diagnostics = Vec::new();
+        if response.outputs.len() > 1 {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                "OpenAI Chat response encoding cannot represent multiple outputs",
+            )?;
+        }
+        let output = response
+            .outputs
+            .iter()
+            .find(|output| {
+                output.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Text { .. }
+                            | ContentBlock::Refusal { .. }
+                            | ContentBlock::Reasoning { .. }
+                            | ContentBlock::ToolCall(_)
+                    )
+                })
+            })
+            .or_else(|| response.first_output());
+        if output.is_some_and(|output| {
+            output.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Image { .. }
+                        | ContentBlock::Audio { .. }
+                        | ContentBlock::Video { .. }
+                        | ContentBlock::File { .. }
+                        | ContentBlock::ToolResult(_)
+                        | ContentBlock::Unknown { .. }
+                )
+            })
+        }) {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                "OpenAI Chat response encoding drops unsupported content blocks",
+            )?;
+        }
         let content = output
             .map(|output| text_from_blocks(&output.content, ""))
             .unwrap_or_default();
@@ -381,8 +422,8 @@ impl FormatCodec for OpenAiChatCodec {
             "usage": encode_openai_usage(&response.usage),
         });
         Ok(EncodedResponse {
-            body: embed_preservation(body, &response.preservation, _policy),
-            diagnostics: Vec::new(),
+            body: embed_preservation(body, &response.preservation, policy),
+            diagnostics,
         })
     }
 }
