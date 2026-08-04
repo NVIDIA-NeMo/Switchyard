@@ -202,9 +202,7 @@ where
     // `llm_client_error_from_io` can recover its original variant on the way out.
     // Validate frame growth before the line reader allocates an unbounded
     // `String` for a provider event without a delimiter.
-    let bounded_bytes: Pin<
-        Box<dyn Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send>,
-    > = Box::pin(try_stream! {
+    let bounded_bytes = try_stream! {
         let mut bytes = Box::pin(bytes);
         let mut tracker = SseFrameSizeTracker::default();
         while let Some(chunk) = bytes.next().await {
@@ -212,9 +210,12 @@ where
             tracker.observe(&chunk, max_frame_bytes)?;
             yield chunk;
         }
-    });
-    let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> =
-        Box::pin(bounded_bytes.map(|item| item.map_err(std::io::Error::other)));
+    };
+    let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> = Box::pin(
+        bounded_bytes.map(|item: std::result::Result<Vec<u8>, LlmClientError>| {
+            item.map_err(std::io::Error::other)
+        }),
+    );
     let lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
 
     let mut state = StreamTranslationState {
