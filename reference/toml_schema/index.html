@@ -1397,7 +1397,43 @@ must exist and be non-empty when the server loads.</p>
 </tbody>
 </table>
 <h2 id="routesname"><code>[routes.&lt;name&gt;]</code><a class="headerlink" href="#routesname" title="Permanent link">&para;</a></h2>
-<p>Every route takes <code>id</code> and <code>type</code>, plus the keys for that type.</p>
+<p>Every route takes the common keys below, plus the keys for its type.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Public model ID that callers send in requests.</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Routing algorithm for this route.</td>
+</tr>
+<tr>
+<td><code>context_window</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Positive token count advertised for this route by <code>GET /v1/models</code>. Unset values appear as <code>null</code>. This does not enforce a request limit.</td>
+</tr>
+<tr>
+<td><code>tool_calling</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Whether <code>GET /v1/models</code> advertises tool-calling support for this route. Unset values appear as <code>null</code>.</td>
+</tr>
+</tbody>
+</table>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
 upstream model. Use it for local smoke tests.</p>
