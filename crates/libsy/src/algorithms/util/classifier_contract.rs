@@ -3,8 +3,9 @@
 
 //! Prompt and structured-output contracts shared by LLM classifiers.
 
+use jsonschema::Validator;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{LibsyError, Result};
 
@@ -35,6 +36,7 @@ impl ClassifierContractConfig {
 pub(crate) struct ClassifierContract {
     system_prompt: String,
     response_format: Value,
+    validator: Option<Validator>,
 }
 
 impl ClassifierContract {
@@ -49,23 +51,56 @@ impl ClassifierContract {
         response_format_json: &str,
     ) -> Result<Self> {
         let prompt_template = config.prompt().unwrap_or(default_prompt);
-        if prompt_template.trim().is_empty() {
-            return Err(LibsyError::AlgorithmError {
-                message: "classifier prompt must not be empty".to_string(),
-            });
-        }
         let response_format: Value =
             serde_json::from_str(response_format_json).map_err(|error| {
                 LibsyError::AlgorithmError {
                     message: format!("response schema is invalid: {error}"),
                 }
             })?;
-        let prompt_schema = response_format
+        Self::from_response_format(prompt_template, response_format, None)
+    }
+
+    /// Builds a provider response format around a user-supplied inner JSON Schema.
+    pub(crate) fn from_inner_schema(prompt_template: &str, schema: Value) -> Result<Self> {
+        if schema.get("json_schema").is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message:
+                    "response_schema must be the inner JSON Schema, not a response_format wrapper"
+                        .to_string(),
+            });
+        }
+        let validator = compile_schema(&schema)?;
+        Self::from_response_format(
+            prompt_template,
+            json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "switchyard_classifier_response",
+                    "strict": true,
+                    "schema": schema,
+                }
+            }),
+            Some(validator),
+        )
+    }
+
+    fn from_response_format(
+        prompt_template: &str,
+        response_format: Value,
+        validator: Option<Validator>,
+    ) -> Result<Self> {
+        if prompt_template.trim().is_empty() {
+            return Err(LibsyError::AlgorithmError {
+                message: "classifier prompt must not be empty".to_string(),
+            });
+        }
+        let response_schema = response_format
             .pointer("/json_schema/schema")
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "response schema has no json_schema.schema".to_string(),
-            })?;
-        let prompt_schema = serde_json::to_string_pretty(prompt_schema).map_err(|error| {
+            })?
+            .clone();
+        let prompt_schema = serde_json::to_string_pretty(&response_schema).map_err(|error| {
             LibsyError::AlgorithmError {
                 message: format!("prompt schema could not be rendered: {error}"),
             }
@@ -74,6 +109,7 @@ impl ClassifierContract {
         Ok(Self {
             system_prompt: prompt_template.replace("{{RESPONSE_SCHEMA}}", &prompt_schema),
             response_format,
+            validator,
         })
     }
 
@@ -83,6 +119,37 @@ impl ClassifierContract {
 
     pub(crate) fn response_format(&self) -> &Value {
         &self.response_format
+    }
+
+    /// Validates a dynamic verdict when this contract carries a runtime schema validator.
+    pub(crate) fn validate_verdict(&self, verdict: &Value) -> Result<()> {
+        let Some(validator) = &self.validator else {
+            return Ok(());
+        };
+        validator
+            .validate(verdict)
+            .map_err(|error| LibsyError::AlgorithmError {
+                message: format!("classifier verdict did not match response_schema: {error}"),
+            })
+    }
+}
+
+fn compile_schema(schema: &Value) -> Result<Validator> {
+    if !schema.is_object() {
+        return Err(algorithm_error("response_schema must be a JSON object"));
+    }
+    jsonschema::meta::validate(schema).map_err(|error| {
+        algorithm_error(format!(
+            "response_schema is not a valid JSON Schema: {error}"
+        ))
+    })?;
+    jsonschema::validator_for(schema)
+        .map_err(|error| algorithm_error(format!("response_schema could not be compiled: {error}")))
+}
+
+fn algorithm_error(message: impl Into<String>) -> LibsyError {
+    LibsyError::AlgorithmError {
+        message: message.into(),
     }
 }
 
@@ -141,5 +208,64 @@ mod tests {
         .expect_err("empty prompt should be rejected");
 
         assert!(error.to_string().contains("prompt must not be empty"));
+    }
+
+    #[test]
+    fn a_custom_contract_wraps_and_validates_its_inner_schema() -> Result<()> {
+        let contract = ClassifierContract::from_inner_schema(
+            "Choose a target:\n{{RESPONSE_SCHEMA}}",
+            json!({
+                "type": "object",
+                "$defs": {
+                    "decision": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string", "enum": ["sonnet", "opus"]}
+                        },
+                        "required": ["target"],
+                        "additionalProperties": false
+                    }
+                },
+                "properties": {
+                    "decision": {"$ref": "#/$defs/decision"}
+                },
+                "required": ["decision"],
+                "additionalProperties": false
+            }),
+        )?;
+
+        assert_eq!(
+            contract
+                .response_format()
+                .pointer("/json_schema/name")
+                .and_then(Value::as_str),
+            Some("switchyard_classifier_response")
+        );
+        assert_eq!(
+            contract
+                .response_format()
+                .pointer("/json_schema/strict")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(contract.system_prompt().contains("\"target\""));
+        contract.validate_verdict(&json!({"decision": {"target": "sonnet"}}))?;
+        assert!(
+            contract
+                .validate_verdict(&json!({"decision": {"target": "unknown"}}))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_provider_wrapper_is_rejected_as_an_inner_schema() {
+        let error = ClassifierContract::from_inner_schema(
+            "classify",
+            json!({"json_schema": {"schema": {"type": "object"}}}),
+        )
+        .expect_err("provider wrapper should be rejected");
+
+        assert!(error.to_string().contains("inner JSON Schema"));
     }
 }

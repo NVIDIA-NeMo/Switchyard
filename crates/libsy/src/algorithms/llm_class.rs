@@ -1,24 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Task-level capability routing with a judge-backed classifier.
-//!
-//! The algorithm owns a [`FallThrough`] cascade. Its classifier judges the
-//! full inbound request and selects one decisive target. Invalid, abstained, or unavailable judge
-//! output always selects the capable target.
+//! Judge-backed capability, escalation, and custom-policy routing.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
-use switchyard_protocol::{LlmRequest, Message, OutputParams, Role, SimpleDecision};
+use serde_json::Value;
+use switchyard_protocol::{Message, Role, SimpleDecision};
 
 use super::fall_through::{DefaultTarget, FallThrough};
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::AffinityRouter;
 use super::util::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
-use super::util::llm_judge::{Judge, JudgeClassifier, JudgePolicy};
+use super::util::llm_judge::{
+    ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
+    SerdeDecoder, StructuredJudge,
+};
+use super::util::target_selector::TargetSelectorPolicy;
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
@@ -90,19 +92,16 @@ fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message
     kept.into_iter().cloned().collect()
 }
 
-struct CapabilityJudge {
-    contract: ClassifierContract,
-    max_output_tokens: u64,
+/// Selects the task messages shown to capability and custom-schema classifiers.
+struct TaskInput {
     recent_turn_window: Option<usize>,
 }
 
-impl Judge for CapabilityJudge {
-    type Verdict = TaskClassifierVerdict;
-
-    fn build_request(&self, _state: &State, request: &Request) -> Request {
+impl ClassifierInput for TaskInput {
+    fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
         // Task-based routing judges the newest user message alone. A configured
         // window widens that to the surrounding conversation.
-        let mut messages = match self.recent_turn_window {
+        match self.recent_turn_window {
             Some(window) => trim_messages(&request.llm_request.messages, window),
             None => request
                 .llm_request
@@ -112,27 +111,12 @@ impl Judge for CapabilityJudge {
                 .find(|message| message.role == Role::User)
                 .cloned()
                 .into_iter()
-                .collect::<Vec<_>>(),
-        };
-        messages.insert(
-            0,
-            Message::text(Role::System, self.contract.system_prompt().to_string()),
-        );
-        Request {
-            llm_request: LlmRequest {
-                model: request.llm_request.model.clone(),
-                messages,
-                output: OutputParams {
-                    max_output_tokens: Some(self.max_output_tokens),
-                    response_format: Some(self.contract.response_format().clone()),
-                },
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: request.metadata.clone(),
+                .collect(),
         }
     }
 }
+
+type CapabilityJudge = StructuredJudge<TaskInput, SerdeDecoder<TaskClassifierVerdict>>;
 
 struct TaskClassifierPolicy {
     efficient_target: String,
@@ -333,6 +317,91 @@ impl TaskClassifierConfig {
     }
 }
 
+/// Policy that maps a custom classifier verdict to a routing target.
+#[derive(Clone, Debug)]
+pub enum CustomClassifierPolicy {
+    /// Resolves a JSON Pointer and treats its string value as a configured target label.
+    TargetSelector {
+        /// JSON Pointer evaluated against each schema-validated verdict.
+        selector: String,
+    },
+}
+
+impl CustomClassifierPolicy {
+    /// Creates a policy that selects a target label through a JSON Pointer.
+    pub fn target_selector(selector: impl Into<String>) -> Self {
+        Self::TargetSelector {
+            selector: selector.into(),
+        }
+    }
+}
+
+/// Settings for a classifier whose JSON Schema and target-selection policy are user supplied.
+#[derive(Clone, Debug)]
+pub struct CustomClassifierConfig {
+    /// System prompt sent to the classifier judge.
+    pub prompt: String,
+    /// Inner JSON Schema placed inside the provider's structured-output wrapper.
+    pub response_schema: Value,
+    /// Deterministic policy applied after the verdict passes schema validation.
+    pub policy: CustomClassifierPolicy,
+    /// Enables session affinity before the judge-backed classifier.
+    pub session_affinity: bool,
+    /// Uses the first user message when session metadata is unavailable.
+    pub message_hash_fallback: bool,
+    /// Trailing conversation turns shown to the classifier judge.
+    pub recent_turn_window: Option<usize>,
+    /// Maximum completion tokens available to the classifier verdict.
+    pub max_output_tokens: u64,
+}
+
+impl CustomClassifierConfig {
+    /// Creates a custom-schema classifier contract with conservative runtime defaults.
+    pub fn new(
+        prompt: impl Into<String>,
+        response_schema: Value,
+        policy: CustomClassifierPolicy,
+    ) -> Self {
+        Self {
+            prompt: prompt.into(),
+            response_schema,
+            policy,
+            session_affinity: false,
+            message_hash_fallback: false,
+            recent_turn_window: None,
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.max_output_tokens == 0 {
+            return Err(LibsyError::AlgorithmError {
+                message: "max_output_tokens must be at least 1".to_string(),
+            });
+        }
+        if self.message_hash_fallback && !self.session_affinity {
+            return Err(LibsyError::AlgorithmError {
+                message: "message_hash_fallback requires session_affinity".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+enum CustomPolicyRuntime {
+    TargetSelector(TargetSelectorPolicy),
+}
+
+impl JudgePolicy for CustomPolicyRuntime {
+    type Verdict = Value;
+
+    fn to_classification(&self, verdict: Option<&Self::Verdict>) -> Classification {
+        match self {
+            Self::TargetSelector(policy) => policy.to_classification(verdict),
+        }
+    }
+}
+
 struct TaskClassifier {
     classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
     efficient_target: String,
@@ -475,16 +544,17 @@ impl Classifier<State> for EscalationClassifier {
     }
 }
 
-/// Routes each task between an efficient and capable target using an LLM judge.
-///
-/// The judge is consulted before the routed model call. Valid, confident output
-/// selects a tier; invalid output, abstention, or a judge failure falls back to the
-/// capable target. Optional session affinity can retain a prior assignment and skip
-/// the judge on later turns.
+/// Routes requests through a capability, escalation, or custom classifier mode.
 pub struct LlmTaskClassifier {
     route: FallThrough<State>,
-    /// The active classifier — either capability-based or escalation-based.
+    /// Classifier used when this router is embedded in another cascade.
     inner: Arc<dyn Classifier<State>>,
+}
+
+struct ClassifierRouteConfig {
+    default_target: String,
+    session_affinity: bool,
+    message_hash_fallback: bool,
 }
 
 impl LlmTaskClassifier {
@@ -513,11 +583,14 @@ impl LlmTaskClassifier {
         let message_hash_fallback = config.message_hash_fallback;
         let classifier = Arc::new(TaskClassifier {
             classifier: JudgeClassifier::new(
-                CapabilityJudge {
+                StructuredJudge::new(
+                    TaskInput {
+                        recent_turn_window: config.recent_turn_window,
+                    },
                     contract,
-                    max_output_tokens: config.max_output_tokens,
-                    recent_turn_window: config.recent_turn_window,
-                },
+                    SerdeDecoder::new(),
+                    JudgeRuntimeConfig::new(config.max_output_tokens)?,
+                ),
                 judge_target.clone(),
                 TaskClassifierPolicy::new(
                     efficient_target.semantic_name.clone(),
@@ -529,32 +602,109 @@ impl LlmTaskClassifier {
             capable_target: capable_target.semantic_name.clone(),
         });
         let inner: Arc<dyn Classifier<State>> = classifier.clone();
-
-        // Affinity comes first so a retained assignment short-circuits the judge call.
-        // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
-        // the affinity processor never fires — only the inner score() is called.
-        let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
-        if session_affinity {
-            let affinity = if message_hash_fallback {
-                AffinityRouter::new().with_message_hash_fallback()
-            } else {
-                AffinityRouter::new()
-            };
-            // Both roles must share one `Arc` so the classifier reads what the processor wrote.
-            let affinity = Arc::new(affinity);
-            route = route
-                .with_processor(affinity.clone())
-                .with_classifier(affinity);
-        }
-        // The judge abstains when it cannot tell; the capable tier catches those turns
-        // rather than letting the cascade come back empty-handed.
-        let capable_fallback = DefaultTarget::new(classifier.capable_target.clone());
-        Ok(Self {
-            route: route
-                .with_classifier(inner.clone())
-                .with_classifier(Arc::new(capable_fallback)),
+        Self::from_classifier(
+            targets,
             inner,
-        })
+            ClassifierRouteConfig {
+                default_target: classifier.capable_target.clone(),
+                session_affinity,
+                message_hash_fallback,
+            },
+        )
+    }
+
+    /// Builds routing over named targets using a user-supplied schema and policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the contract, targets, fallback, or runtime settings are invalid.
+    pub fn new_custom(
+        judge_target: LlmTarget,
+        targets: Vec<(String, LlmTarget)>,
+        default_target: &str,
+        config: CustomClassifierConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        if targets.len() < 2 {
+            return Err(LibsyError::AlgorithmError {
+                message: "custom classifier requires at least two targets".to_string(),
+            });
+        }
+
+        let mut labels = BTreeSet::new();
+        let mut semantic_names = BTreeSet::new();
+        let mut target_map = BTreeMap::new();
+        let mut resolved_targets = Vec::with_capacity(targets.len());
+        for (label, target) in targets {
+            if label.trim().is_empty() || label.trim() != label {
+                return Err(LibsyError::AlgorithmError {
+                    message: "custom classifier target labels must be non-empty and have no surrounding whitespace"
+                        .to_string(),
+                });
+            }
+            if !labels.insert(label.clone()) {
+                return Err(LibsyError::AlgorithmError {
+                    message: format!("custom classifier target label {label:?} is duplicated"),
+                });
+            }
+            if !semantic_names.insert(target.semantic_name.clone()) {
+                return Err(LibsyError::AlgorithmError {
+                    message: format!(
+                        "custom classifier resolved target {:?} is duplicated",
+                        target.semantic_name
+                    ),
+                });
+            }
+            target_map.insert(label, target.semantic_name.clone());
+            resolved_targets.push(target);
+        }
+        let default_semantic_name =
+            target_map
+                .get(default_target)
+                .cloned()
+                .ok_or_else(|| LibsyError::AlgorithmError {
+                    message: format!(
+                        "default_target {default_target:?} must be one of the configured targets"
+                    ),
+                })?;
+
+        let CustomClassifierConfig {
+            prompt,
+            response_schema,
+            policy,
+            session_affinity,
+            message_hash_fallback,
+            recent_turn_window,
+            max_output_tokens,
+        } = config;
+        let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
+        let policy = match policy {
+            CustomClassifierPolicy::TargetSelector { selector } => {
+                CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(
+                    selector, target_map,
+                )?)
+            }
+        };
+        let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
+            StructuredJudge::new(
+                TaskInput { recent_turn_window },
+                contract,
+                JsonSchemaDecoder::new(),
+                JudgeRuntimeConfig::new(max_output_tokens)?,
+            ),
+            judge_target,
+            policy,
+        ));
+
+        Self::from_classifier(
+            LlmTargetSet::new(resolved_targets),
+            classifier,
+            ClassifierRouteConfig {
+                default_target: default_semantic_name,
+                session_affinity,
+                message_hash_fallback,
+            },
+        )
     }
 
     /// Constructs an escalation variant that calls the efficient model each turn, judges its
@@ -619,6 +769,43 @@ impl LlmTaskClassifier {
     /// Loads the packaged capability-classifier contract.
     fn load_capability_contract(config: &ClassifierContractConfig) -> Result<ClassifierContract> {
         ClassifierContract::from_config(config, PROMPT_TEMPLATE, SCHEMA_TEMPLATE)
+    }
+
+    /// Keeps affinity and fallback ordering identical across judge-backed modes.
+    fn from_classifier(
+        targets: LlmTargetSet,
+        inner: Arc<dyn Classifier<State>>,
+        config: ClassifierRouteConfig,
+    ) -> Result<Self> {
+        targets.get_target(&config.default_target)?;
+        if config.message_hash_fallback && !config.session_affinity {
+            return Err(LibsyError::AlgorithmError {
+                message: "message_hash_fallback requires session_affinity".to_string(),
+            });
+        }
+        // Affinity comes first so a retained assignment short-circuits the judge call.
+        // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
+        // the affinity processor never fires — only the inner score() is called.
+        let mut route = FallThrough::<State>::new_with_state(targets).with_name(ALGORITHM_NAME);
+        if config.session_affinity {
+            let affinity = if config.message_hash_fallback {
+                AffinityRouter::new().with_message_hash_fallback()
+            } else {
+                AffinityRouter::new()
+            };
+            // Both roles must share one `Arc` so the classifier reads what the processor wrote.
+            let affinity = Arc::new(affinity);
+            route = route
+                .with_processor(affinity.clone())
+                .with_classifier(affinity);
+        }
+        let fallback = DefaultTarget::new(config.default_target);
+        Ok(Self {
+            route: route
+                .with_classifier(inner.clone())
+                .with_classifier(Arc::new(fallback)),
+            inner,
+        })
     }
 }
 
@@ -691,9 +878,10 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        LlmClientError, Metadata, completion_text, text_request, text_response,
+        LlmClientError, LlmRequest, Metadata, completion_text, text_request, text_response,
     };
 
+    use crate::algorithms::util::llm_judge::Judge;
     use crate::core::algorithm::Algorithm;
     use switchyard_protocol::{Context, LlmResponse, Response, RoutedLlmClient};
 
@@ -1137,14 +1325,17 @@ mod tests {
 
     /// The text of each message a judge with `recent_turn_window` would be sent.
     /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
+    fn capability_judge(recent_turn_window: Option<usize>) -> Result<CapabilityJudge> {
+        Ok(StructuredJudge::new(
+            TaskInput { recent_turn_window },
+            LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
+        ))
+    }
+
     fn judged_contents(recent_turn_window: usize) -> Result<Vec<String>> {
-        let judge = CapabilityJudge {
-            contract: LlmTaskClassifier::load_capability_contract(
-                &ClassifierContractConfig::default(),
-            )?,
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-            recent_turn_window: Some(recent_turn_window),
-        };
+        let judge = capability_judge(Some(recent_turn_window))?;
         let request = Request {
             llm_request: LlmRequest {
                 messages: vec![
@@ -1192,13 +1383,7 @@ mod tests {
 
     #[test]
     fn capability_judge_builds_a_structured_request() -> Result<()> {
-        let judge = CapabilityJudge {
-            contract: LlmTaskClassifier::load_capability_contract(
-                &ClassifierContractConfig::default(),
-            )?,
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-            recent_turn_window: None,
-        };
+        let judge = capability_judge(None)?;
         let request = Request {
             llm_request: LlmRequest {
                 model: Some("inbound".to_string()),
@@ -1235,7 +1420,7 @@ mod tests {
         assert!(!contents.contains(&"client instructions".to_string()));
         assert_eq!(
             judge_request.llm_request.output.response_format,
-            Some(judge.contract.response_format().clone())
+            Some(judge.contract().response_format().clone())
         );
         assert_eq!(
             judge_request.llm_request.output.max_output_tokens,
@@ -1283,11 +1468,14 @@ mod tests {
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?;
         let schema = contract.response_format();
         let reply = schema_shaped_verdict(schema)?;
-        let judge = CapabilityJudge {
+        let judge: CapabilityJudge = StructuredJudge::new(
+            TaskInput {
+                recent_turn_window: None,
+            },
             contract,
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
-            recent_turn_window: None,
-        };
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
+        );
 
         let verdict = judge.parse(&text_response(None, reply))?;
 

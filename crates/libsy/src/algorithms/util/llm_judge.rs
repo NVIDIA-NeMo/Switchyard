@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use switchyard_protocol::{
     AggLlmResponse, LlmRequest, Message, OutputParams, Role, completion_text,
 };
@@ -67,6 +68,29 @@ where
     }
 }
 
+/// Parses a JSON value and enforces the custom contract's compiled response schema.
+pub(crate) struct JsonSchemaDecoder;
+
+impl JsonSchemaDecoder {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl VerdictDecoder for JsonSchemaDecoder {
+    type Verdict = Value;
+
+    fn decode(
+        &self,
+        response: &AggLlmResponse,
+        contract: &ClassifierContract,
+    ) -> Result<Self::Verdict> {
+        let verdict = parse_json_verdict(response)?;
+        contract.validate_verdict(&verdict)?;
+        Ok(verdict)
+    }
+}
+
 /// Runtime limits shared by structured classifier judges.
 pub(crate) struct JudgeRuntimeConfig {
     max_output_tokens: u64,
@@ -106,6 +130,10 @@ impl<I, D> StructuredJudge<I, D> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn contract(&self) -> &ClassifierContract {
+        &self.contract
+    }
 }
 
 impl<I, D> Judge for StructuredJudge<I, D>
