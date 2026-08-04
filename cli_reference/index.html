@@ -1227,7 +1227,7 @@
   clients and custom deployments.</li>
 </ul>
 <h2 id="launcher-path-switchyard-launch">Launcher Path: <code>switchyard launch</code><a class="headerlink" href="#launcher-path-switchyard-launch" title="Permanent link">&para;</a></h2>
-<p>Install the launcher with <code>uv tool install "nemo-switchyard[cli,server]"</code>. The
+<p>Install the launcher with <code>uv tool install --python 3.12 "nemo-switchyard[cli,server]"</code>. The
 selected coding agent must also be installed and available on <code>PATH</code>.</p>
 <h3 id="usage">Usage<a class="headerlink" href="#usage" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard<span class="w"> </span>launch<span class="w"> </span>&lt;agent&gt;<span class="w"> </span>--model<span class="w"> </span>&lt;route-id&gt;<span class="w"> </span><span class="o">[</span>--config<span class="w"> </span>&lt;deployment.toml&gt;<span class="o">]</span><span class="w"> </span><span class="o">[</span>--<span class="w"> </span>&lt;agent<span class="w"> </span>args&gt;<span class="o">]</span>
@@ -1345,7 +1345,7 @@ TOML deployment schema accepted by the launcher.</p>
 <h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../getting_started/">Getting Started</a>: installation, configuration, and verification for both paths</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ffca4e8c3f80e3f55978fcc5da78028aaf9e52a3/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/38f20128165f233869dc87b123f754852f69932b/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, TLS, and metrics</li>
 </ul>
 
 
