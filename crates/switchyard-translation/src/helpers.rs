@@ -256,7 +256,7 @@ where
 #[derive(Default)]
 struct SseFrameSizeTracker {
     frame_bytes: usize,
-    current_line_has_content: bool,
+    current_line_has_non_whitespace: bool,
 }
 
 impl SseFrameSizeTracker {
@@ -265,10 +265,10 @@ impl SseFrameSizeTracker {
         for byte in bytes {
             self.frame_bytes = self.frame_bytes.saturating_add(1);
             match byte {
-                b'\n' if !self.current_line_has_content => self.frame_bytes = 0,
-                b'\n' => self.current_line_has_content = false,
-                b'\r' => {}
-                _ => self.current_line_has_content = true,
+                b'\n' if !self.current_line_has_non_whitespace => self.frame_bytes = 0,
+                b'\n' => self.current_line_has_non_whitespace = false,
+                byte if byte.is_ascii_whitespace() => {}
+                _ => self.current_line_has_non_whitespace = true,
             }
             if self.frame_bytes > limit {
                 return Err(LlmClientError::InvalidResponse {
@@ -661,8 +661,8 @@ mod tests {
     #[test]
     fn sse_frame_limit_spans_transport_chunks_and_resets_at_boundaries() {
         let mut tracker = SseFrameSizeTracker::default();
-        tracker.observe(b"data: 1\n", 16).unwrap();
-        tracker.observe(b"\ndata: 2\n\n", 16).unwrap();
+        tracker.observe(b"data: 1\n", 10).unwrap();
+        tracker.observe(b" \ndata: 2\n\n", 10).unwrap();
 
         let mut oversized = SseFrameSizeTracker::default();
         oversized.observe(b"data: ", 8).unwrap();
