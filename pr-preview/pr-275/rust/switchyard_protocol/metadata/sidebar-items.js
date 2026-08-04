@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Metadata"]};
+window.SIDEBAR_ITEMS = {"fn":["slice_to_header_map"],"struct":["Metadata"]};
