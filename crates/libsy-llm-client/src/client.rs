@@ -279,7 +279,13 @@ impl TranslatingLlmClient {
         model: &str,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
-        let builder = self.client.post(url).json(body);
+        let mut builder = self.client.post(url).json(body);
+        // Per attempt, not per call: the retry loop re-enters here, so each try gets
+        // its own budget. Without this the shared client has no timeout at all and a
+        // hung upstream holds the request open indefinitely.
+        if let Some(timeout) = backend.timeout() {
+            builder = builder.timeout(timeout);
+        }
         let builder = forward_metadata_headers(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
@@ -818,12 +824,14 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
+            timeout_secs: None,
         }
     }
 
     fn config_with_retries(base_url: &str, max_retries: u32) -> HttpBackendConfig {
         HttpBackendConfig {
             max_retries,
+            timeout_secs: None,
             ..config(base_url)
         }
     }
@@ -1595,6 +1603,48 @@ mod tests {
             "recovered"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_configured_timeout_bounds_each_attempt()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        // Answers far later than the configured timeout, so only the timeout can end it.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(30))
+                    .set_body_json(json!({"id": "1", "model": "gpt", "choices": [], "usage": {}})),
+            )
+            .mount(&server)
+            .await;
+
+        let mut backend = config(&format!("{}/v1", server.uri()));
+        backend.timeout_secs = Some(0.05);
+        backend.max_retries = 0;
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(backend),
+            None,
+        )])?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+                Some("gpt"),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to time out")?;
+
+        assert!(
+            matches!(error, LlmClientError::Timeout { .. }),
+            "expected a timeout, got {error:?}"
+        );
         Ok(())
     }
 

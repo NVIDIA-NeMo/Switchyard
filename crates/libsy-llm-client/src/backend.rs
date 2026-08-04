@@ -3,7 +3,7 @@
 
 //! Per-provider backend configuration: wire format, upstream URL, and auth.
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, time::Duration};
 
 use reqwest::RequestBuilder;
 use serde_json::Value;
@@ -48,6 +48,8 @@ pub struct HttpBackendConfig {
     pub extra_body: BTreeMap<String, Value>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
+    /// Per-attempt request timeout in seconds. `None` leaves the request unbounded.
+    pub timeout_secs: Option<f64>,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -58,6 +60,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_headers", &self.extra_headers)
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
+            .field("timeout_secs", &self.timeout_secs)
             .finish()
     }
 }
@@ -145,6 +148,14 @@ impl Backend {
         self.config().max_retries
     }
 
+    /// Per-attempt request timeout, when one is configured.
+    ///
+    /// Applies to each attempt rather than the call as a whole, so a call that
+    /// exhausts its retry budget can take up to `(max_retries + 1)` times this.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.config().timeout_secs.map(Duration::from_secs_f64)
+    }
+
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {
@@ -209,6 +220,7 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             max_retries: 0,
+            timeout_secs: None,
         }
     }
 

@@ -244,6 +244,9 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    /// Per-attempt request timeout in seconds. Omit to leave requests unbounded.
+    #[serde(default)]
+    timeout_secs: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -773,6 +776,13 @@ fn build_backend(
             "llm client {client_name} base_url must not be empty"
         )));
     }
+    if let Some(timeout_secs) = config.timeout_secs
+        && (!timeout_secs.is_finite() || timeout_secs <= 0.0)
+    {
+        return Err(ServerError::new(format!(
+            "llm client {client_name} timeout_secs must be finite and positive, got {timeout_secs}"
+        )));
+    }
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(ServerError::new(format!(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
@@ -806,6 +816,7 @@ fn build_backend(
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         max_retries: config.max_retries,
+        timeout_secs: config.timeout_secs,
     };
     Ok(match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),

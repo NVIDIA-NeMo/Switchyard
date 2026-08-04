@@ -214,6 +214,7 @@ fn random_state(base_url: &str, routes: &[(&str, &[&str])]) -> TestResult<Server
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         max_retries: 0,
+        timeout_secs: None,
     });
     let target_models = routes
         .iter()

@@ -47,6 +47,10 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `extra_headers` | No | `{}` | Extra HTTP headers sent upstream. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
+| `timeout_secs` | No | unset | Per-attempt request timeout, in seconds. Must be positive. Omit to leave requests unbounded. |
+
+`timeout_secs` bounds each attempt, not the call as a whole, so a call that
+exhausts its retry budget can take up to `(max_retries + 1) x timeout_secs`.
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
