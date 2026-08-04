@@ -18,7 +18,7 @@
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>async_trait::async_trait;
 <a href=#19 id=19 data-nosnippet>19</a>
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">super</span>::fall_through::{DefaultTarget, FallThrough};
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">super</span>::llm_class::{LlmTaskClassifier, TaskClassifierConfig};
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">super</span>::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">super</span>::util::prompts::{SystemPromptProcessor, TargetPrompts};
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">super</span>::util::stage::{
 <a href=#24 id=24 data-nosnippet>24</a>    DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, StageTargets,
@@ -197,12 +197,12 @@
 <a href=#197 id=197 data-nosnippet>197</a>        <span class="comment">// The capability judge takes its tiers in the same order the capability
 <a href=#198 id=198 data-nosnippet>198</a>        // route passes them: efficient first, capable second.
 <a href=#199 id=199 data-nosnippet>199</a>        </span>router = router.with_classifier(Arc::new(SourceStamp {
-<a href=#200 id=200 data-nosnippet>200</a>            inner: Arc::new(LlmTaskClassifier::new(
-<a href=#201 id=201 data-nosnippet>201</a>                fallback.judge_target,
-<a href=#202 id=202 data-nosnippet>202</a>                efficient,
-<a href=#203 id=203 data-nosnippet>203</a>                capable,
-<a href=#204 id=204 data-nosnippet>204</a>                fallback.config,
-<a href=#205 id=205 data-nosnippet>205</a>            )<span class="question-mark">?</span>),
+<a href=#200 id=200 data-nosnippet>200</a>            inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+<a href=#201 id=201 data-nosnippet>201</a>                judge_target: fallback.judge_target,
+<a href=#202 id=202 data-nosnippet>202</a>                efficient_target: efficient,
+<a href=#203 id=203 data-nosnippet>203</a>                capable_target: capable,
+<a href=#204 id=204 data-nosnippet>204</a>                config: fallback.config,
+<a href=#205 id=205 data-nosnippet>205</a>            })<span class="question-mark">?</span>),
 <a href=#206 id=206 data-nosnippet>206</a>            source: DecisionSource::LlmClassifier,
 <a href=#207 id=207 data-nosnippet>207</a>        }));
 <a href=#208 id=208 data-nosnippet>208</a>    }
