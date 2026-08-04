@@ -222,17 +222,17 @@ authorization = "PROVIDER_AUTHORIZATION"
 
 Target map keys such as `fast` are stable semantic names visible to libsy. The
 target binding is authoritative for the provider model, protocol, endpoint,
-base URL, weight, and headers. Each `default_targets` key both enables that
-inbound protocol and names its trusted fallback.
+base URL, weight, and environment-backed headers. Each `default_targets` key
+both enables that inbound protocol and names its trusted fallback.
 
-`header_env` resolves target credentials in the plugin process at registration
-time. Environment values must not appear in configuration, errors, routing
-marks, spans, or debug output. The plugin does not inherit caller credentials
-for managed calls. Each variable supplies the complete header value, so an
-`authorization` value must include its scheme, such as `Bearer`.
-Common credential headers, including `authorization` and `x-api-key`, are
-rejected in static `headers` and must use `header_env`. Static headers remain
-appropriate for non-secret routing or tenancy metadata.
+`header_env` is the only custom provider-header source. It resolves values in
+the plugin process at registration time so literal header values never appear
+in configuration. Environment values must not appear in errors, routing marks,
+spans, or debug output. The plugin does not inherit caller credentials for
+managed calls. Each variable supplies the complete header value, so an
+`authorization` value must include its scheme, such as `Bearer`. Literal
+`headers` configuration is rejected; non-secret routing or tenancy headers must
+also use `header_env`.
 
 For `kind = "llm_classifier"`, the classifier target must use `openai_chat` or
 `openai_responses`; libsy's judge request uses a JSON-schema response format

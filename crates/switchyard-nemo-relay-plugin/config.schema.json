@@ -96,14 +96,9 @@
             "pattern": "^https?://"
           },
           "weight": { "type": "number", "minimum": 0, "default": 1 },
-          "headers": {
-            "type": "object",
-            "description": "Static non-secret provider headers. Credential-bearing headers must use header_env.",
-            "additionalProperties": { "type": "string" }
-          },
           "header_env": {
             "type": "object",
-            "description": "Maps provider header names to environment-variable names resolved by the plugin process.",
+            "description": "Sole custom provider-header source. Maps header names to environment-variable names resolved by the plugin process so literal values are never stored in configuration.",
             "additionalProperties": { "type": "string", "minLength": 1 }
           }
         }

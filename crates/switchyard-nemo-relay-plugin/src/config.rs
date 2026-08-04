@@ -42,8 +42,6 @@ struct TargetBinding {
     #[serde(default = "default_weight")]
     weight: f64,
     #[serde(default)]
-    headers: BTreeMap<String, String>,
-    #[serde(default)]
     header_env: BTreeMap<String, String>,
 }
 
@@ -87,24 +85,11 @@ impl TargetBinding {
 
     fn validate_headers(&self, target_name: &str) -> Result<(), String> {
         let mut normalized = BTreeSet::new();
-        for (name, value) in &self.headers {
-            let canonical = validate_header(name, value)?;
-            if is_sensitive_target_header(&canonical) {
-                return Err(format!(
-                    "target {target_name:?} header {name:?} must be supplied through header_env so its value is not stored in Relay configuration"
-                ));
-            }
-            if !normalized.insert(canonical) {
-                return Err(format!(
-                    "target {target_name:?} configures header {name:?} more than once (header names are case-insensitive)"
-                ));
-            }
-        }
         for (name, variable) in &self.header_env {
             let canonical = validate_header_name(name)?;
             if !normalized.insert(canonical) {
                 return Err(format!(
-                    "target {target_name:?} configures header {name:?} more than once across headers and header_env"
+                    "target {target_name:?} configures header {name:?} more than once (header names are case-insensitive)"
                 ));
             }
             if variable.trim().is_empty() {
@@ -122,7 +107,7 @@ impl TargetBinding {
     }
 
     fn prepare(&self) -> Result<PreparedTargetBinding, String> {
-        let mut headers = self.headers.clone();
+        let mut headers = BTreeMap::new();
         for (name, variable) in &self.header_env {
             let value = std::env::var(variable)
                 .map_err(|_| format!("environment variable {variable:?} is not set"))?;
@@ -399,18 +384,6 @@ fn is_forbidden_target_header(name: &str) -> bool {
     ) || name.starts_with("x-nemo-relay-internal-")
 }
 
-fn is_sensitive_target_header(name: &str) -> bool {
-    matches!(
-        name,
-        "authorization"
-            | "cookie"
-            | "x-api-key"
-            | "api-key"
-            | "anthropic-api-key"
-            | "x-goog-api-key"
-    )
-}
-
 const fn default_max_retries() -> u32 {
     3
 }
@@ -431,7 +404,6 @@ mod tests {
             endpoint: String::new(),
             base_url: "https://provider.example/v1".into(),
             weight: 1.0,
-            headers: BTreeMap::new(),
             header_env: BTreeMap::new(),
         }
     }
@@ -533,11 +505,10 @@ mod tests {
     }
 
     #[test]
-    fn transport_owned_and_case_duplicate_headers_are_rejected() {
+    fn transport_owned_and_case_duplicate_environment_headers_are_rejected() {
         let mut host_header_config = config();
         let chat = host_header_config.targets.get_mut("chat").unwrap();
-        chat.headers
-            .insert("Host".into(), "attacker.example".into());
+        chat.header_env.insert("Host".into(), "TARGET_HOST".into());
         assert!(
             host_header_config
                 .validate()
@@ -545,25 +516,12 @@ mod tests {
                 .contains("HTTP transport")
         );
 
-        let mut static_secret_config = config();
-        static_secret_config
-            .targets
-            .get_mut("chat")
-            .unwrap()
-            .headers
-            .insert("Authorization".into(), "Bearer target-secret".into());
-        assert!(
-            static_secret_config
-                .validate()
-                .unwrap_err()
-                .contains("must be supplied through header_env")
-        );
-
         let mut duplicate_config = config();
         let chat = duplicate_config.targets.get_mut("chat").unwrap();
-        chat.headers.insert("X-Tenant".into(), "blue".into());
         chat.header_env
-            .insert("x-tenant".into(), "TARGET_TENANT".into());
+            .insert("X-Tenant".into(), "TARGET_TENANT_A".into());
+        chat.header_env
+            .insert("x-tenant".into(), "TARGET_TENANT_B".into());
         assert!(
             duplicate_config
                 .validate()
@@ -632,6 +590,29 @@ mod tests {
             .err()
             .expect("unknown target field must be rejected");
         assert!(error.to_string().contains("unexpected_setting"));
+    }
+
+    #[test]
+    fn literal_target_headers_are_rejected() {
+        let value = json!({
+            "version": 2,
+            "algorithm": {"kind": "random"},
+            "targets": {
+                "chat": {
+                    "model": "provider/chat",
+                    "protocol": "openai_chat",
+                    "base_url": "https://provider.example/v1",
+                    "headers": {"x-provider-token": "plaintext-secret"}
+                }
+            },
+            "default_targets": {"openai_chat": "chat"}
+        });
+        let error = serde_json::from_value::<SwitchyardConfig>(value)
+            .err()
+            .expect("literal target headers must be rejected")
+            .to_string();
+        assert!(error.contains("unknown field `headers`"));
+        assert!(!error.contains("plaintext-secret"));
     }
 
     #[test]

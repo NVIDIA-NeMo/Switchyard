@@ -66,7 +66,7 @@ impl TargetClient {
     ///
     /// Correlation and agent identity remain available to libsy, while inbound
     /// HTTP headers are deliberately removed. Provider credentials come solely
-    /// from this target's `headers` / `header_env` configuration.
+    /// from this target's `header_env` configuration.
     fn prepare_request(&self, mut request: Request) -> Request {
         let metadata = request.metadata.get_or_insert_default();
         metadata.wire_format = Some(self.target_format);
