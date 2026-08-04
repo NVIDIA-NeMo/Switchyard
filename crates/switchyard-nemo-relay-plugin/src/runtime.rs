@@ -146,7 +146,7 @@ impl SwitchyardRuntime {
                 json!({"algorithm": self.algorithm.name(), "attempt": attempt}),
                 &metadata,
             );
-            let (response, fallback_used) = match self
+            let (response, mut fallback_used) = match self
                 .drive(request.clone(), attempt, &mut marks, &metadata)
                 .await
             {
@@ -202,6 +202,7 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
+                    fallback_used = true;
                     let fallback = self
                         .fallback_response(inbound, request.clone(), &mut marks, &metadata)
                         .await?;
