@@ -139,7 +139,7 @@ impl SwitchyardRuntime {
         let max_attempts = self.max_retries + 1;
         let mut attempt = 1;
         let mut marks = Vec::new();
-        loop {
+        'attempts: loop {
             self.mark(
                 &mut marks,
                 "switchyard.routing.requested",
@@ -237,7 +237,7 @@ impl SwitchyardRuntime {
                         );
                         attempt += 1;
                         send_marks(output, &mut marks).await?;
-                        break;
+                        continue 'attempts;
                     }
                     Err(failure) if !fallback_used && !committed => {
                         self.mark(
@@ -283,9 +283,7 @@ impl SwitchyardRuntime {
             if committed {
                 return Ok(());
             }
-            // A retry path breaks the event loop before commitment and starts a
-            // fresh libsy run. A successfully encoded stream always emits at
-            // least one event because `returned_events` rejects empty inputs.
+            return Err("Switchyard response stream produced no caller events".into());
         }
     }
 
