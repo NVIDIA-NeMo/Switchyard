@@ -62,10 +62,15 @@ streamed and buffered while detecting whether it has tool calls; a passed-throug
 / approved turn's buffered events are replayed verbatim, so the turn is generated
 once. After the review fires, the session is pure passthrough (the upstream
 stream is returned directly — true streaming, full caching, zero overhead).
-Once-per-session is tracked in-process by a hash of the conversation's stable
-prefix — the client's ``cache_control``-marked system prefix plus the first user
-message (see ``_session_key``); all of a task's turns hit the same per-run
-switchyard pod. A pod restart mid-session could allow a second review (rare,
+The review budget is enforced at two levels. ``max_reviews`` caps reviews per
+backend instance — one instance serves one run, so that is the per-task ceiling
+and the authoritative bound on advisor spend. Beneath it, the same value caps
+reviews per conversation, keyed by a hash of the conversation's stable prefix
+(the client's ``cache_control``-marked system prefix plus the first user
+message; see ``_session_key``). The instance ceiling exists because that hash is
+not reliably stable: harnesses compact history, spawn sub-conversations, and
+re-render system context, each of which mints a fresh key and would otherwise
+refill a purely per-session budget. A pod restart mid-run resets both (rare,
 harmless).
 """
 
@@ -166,6 +171,13 @@ class AdvisorLoopBackend(LLMBackend):
         # keys, and that must stay observable.
         self._sessions_seen: set[str] = set()
         self._session_churn_warned = False
+        # Reviews spent across the whole backend instance. One instance serves
+        # one run, so this is the per-task ceiling and the authoritative bound
+        # on advisor spend; ``_review_counts`` remains the per-conversation
+        # bound beneath it. See the budget check in ``call`` for why a
+        # session-keyed budget alone is not sufficient.
+        self._reviews_this_instance = 0
+        self._instance_budget_logged = False
         # Resolve format: auto before wire selection; injected fakes must pin
         # a concrete format (probing a fake's endpoint makes no sense).
         executor_target = (
@@ -248,9 +260,30 @@ class AdvisorLoopBackend(LLMBackend):
                 body = {**body, "messages": messages}
                 normalized = request_with_type(self._request_type_name, body)
 
-        # Once the session's review budget (``max_reviews``) is spent, every
-        # turn is pure passthrough — return the upstream stream directly
-        # (true streaming, caching intact, no buffering).
+        # Once the review budget is spent, every turn is pure passthrough —
+        # return the upstream stream directly (true streaming, caching intact,
+        # no buffering).
+        #
+        # The budget is enforced at TWO levels, and the instance level is the
+        # one that actually bounds spend. Session identity is a content hash and
+        # is not reliably stable: agent harnesses compact history, spawn
+        # sub-conversations, and re-render system context, each of which mints a
+        # fresh key and silently refills a purely per-session budget. Measured on
+        # Terminal-Bench, one task minted up to 194 keys and drew 107 reviews
+        # against a configured ``max_reviews`` of 2. A backend instance serves a
+        # single run, so capping per instance expresses what ``max_reviews``
+        # is meant to mean — reviews for *this task* — regardless of how the
+        # client slices the conversation.
+        if self._reviews_this_instance >= self._config.max_reviews:
+            if not self._instance_budget_logged:
+                self._instance_budget_logged = True
+                log.info(
+                    "AdvisorLoopBackend: instance review budget (max_reviews=%d) "
+                    "spent across %d session key(s); remaining turns pass through",
+                    self._config.max_reviews,
+                    len(self._sessions_seen),
+                )
+            return await self._passthrough(ctx, normalized)
         if self._review_counts.get(session, 0) >= self._config.max_reviews:
             return await self._passthrough(ctx, normalized)
 
@@ -287,6 +320,7 @@ class AdvisorLoopBackend(LLMBackend):
         if stall and not triggered:
             self._stall_fired.add(session)
         self._review_counts[session] = self._review_counts.get(session, 0) + 1
+        self._reviews_this_instance += 1
         verdict, plan = await self._review(messages, turn.content)
         if verdict != "REDO":
             return await self._finish(ctx, turn)

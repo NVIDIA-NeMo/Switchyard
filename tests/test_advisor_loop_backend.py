@@ -228,6 +228,39 @@ async def test_review_is_once_per_session() -> None:
     assert exec_b.call.await_count == 2
 
 
+async def test_review_budget_survives_session_key_churn() -> None:
+    """A changing conversation prefix must not refill the review budget.
+
+    Real harnesses compact history and re-render system context, minting a fresh
+    session key mid-run. With a purely per-session budget the gate silently
+    refilled: one Terminal-Bench task drew 107 reviews against max_reviews=2.
+    The instance-level ceiling is what bounds it.
+    """
+    exec_b = _exec_backend(*[_completion_resp(text=f"done{i}") for i in range(6)])
+    adv = _reviewer(*["APPROVE"] * 6)
+    backend = _backend(_config(max_reviews=2), exec_b, adv)
+    # each call carries a DIFFERENT first user message -> a different session key
+    for i in range(6):
+        await backend.call(
+            ProxyContext(),
+            _request(messages=[{"role": "user", "content": f"distinct task {i}"}]),
+        )
+    assert adv.advise.await_count == 2, "instance ceiling must hold across new session keys"
+
+
+async def test_instance_budget_allows_configured_reviews() -> None:
+    """The instance ceiling must not fire early — max_reviews reviews still happen."""
+    exec_b = _exec_backend(*[_completion_resp(text=f"done{i}") for i in range(4)])
+    adv = _reviewer(*["APPROVE"] * 4)
+    backend = _backend(_config(max_reviews=2), exec_b, adv)
+    for i in range(4):
+        await backend.call(
+            ProxyContext(),
+            _request(messages=[{"role": "user", "content": f"distinct task {i}"}]),
+        )
+    assert adv.advise.await_count == 2
+
+
 async def test_reviewed_session_passes_through_verbatim() -> None:
     """After the gate fires, later turns are pure passthrough (no advisor, returned as-is)."""
     exec_b = _exec_backend(
