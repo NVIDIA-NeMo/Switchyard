@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
@@ -284,7 +285,7 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
     assert manifest["agent_versions"] == {
         "CLAUDE_CODE_VERSION": "2.1.211",
         "CODEX_VERSION": "0.144.5",
-        "HERMES_VERSION": "main",
+        "HERMES_VERSION": "v2026.8.3",
         "NODE_VERSION": "20.11.1",
         "OPENCODE_VERSION": "1.18.3",
     }
@@ -307,3 +308,39 @@ def test_generated_compose_bakes_task_id_into_proxy_env(tmp_path: Path) -> None:
     proxy_env = "\n".join(compose["services"]["proxy"]["environment"])
     assert "SWITCHYARD_TASK_ID=task-id-check" in proxy_env
     assert "SWITCHYARD_TRIAL_DIR=${HOST_AGENT_LOGS_PATH:-}" in proxy_env
+
+def test_a_moving_hermes_ref_is_rejected() -> None:
+    """A moving ref cannot be recorded as a pin.
+
+    The dataset manifest presents HERMES_VERSION as a reproducibility guarantee. Two
+    builds recording the same string while installing different Hermes code is worse
+    than recording nothing, so the build fails rather than asserting a pin it does not
+    have.
+    """
+    base = {
+        "CLAUDE_CODE_VERSION": "1",
+        "CODEX_VERSION": "2",
+        "OPENCODE_VERSION": "3",
+        "NODE_VERSION": "4",
+    }
+    for moving in ("main", "master", "HEAD"):
+        with pytest.raises(SystemExit, match="moving ref"):
+            _load_generator_module()._install_layer({**base, "HERMES_VERSION": moving})
+
+
+def test_the_hermes_installer_is_fetched_at_the_pinned_ref() -> None:
+    """Pinning the agent but running main's installer reintroduces the same drift."""
+    pins = {
+        "CLAUDE_CODE_VERSION": "1",
+        "CODEX_VERSION": "2",
+        "OPENCODE_VERSION": "3",
+        "NODE_VERSION": "4",
+        "HERMES_VERSION": "v2026.8.3",
+    }
+
+    layer = _load_generator_module()._install_layer(pins)
+
+    assert "hermes-agent/v2026.8.3/scripts/install.sh" in layer
+    assert "hermes-agent/main/" not in layer
+    assert "--branch v2026.8.3" in layer
+

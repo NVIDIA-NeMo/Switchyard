@@ -188,14 +188,22 @@ def _install_layer(pins: dict[str, str]) -> str:
     codex_version = pins["CODEX_VERSION"]
     opencode_version = pins["OPENCODE_VERSION"]
     # Hermes (NousResearch hermes-agent) is a per-user uv app installed from
-    # GitHub, not an npm package. Default to main; pin a tag/commit via
-    # HERMES_VERSION for reproducibility. Baking it here (build-time, with host
-    # network) means the runtime install() skip-guard short-circuits, so tasks
-    # need no egress for it — enabling closed-book Hermes runs.
-    hermes_version = pins.get("HERMES_VERSION", "main")
-    hermes_branch_flag = (
-        f" --branch {hermes_version}" if hermes_version and hermes_version != "main" else ""
-    )
+    # GitHub, not an npm package. Baking it here (build-time, with host network)
+    # means the runtime install() skip-guard short-circuits, so tasks need no
+    # egress for it — enabling closed-book Hermes runs.
+    #
+    # HERMES_VERSION must name an immutable ref. A moving ref would let two builds
+    # record the same version string while installing different code, which is worse
+    # than not recording it: the manifest would assert a reproducibility it does not
+    # have. The installer script is fetched from the same ref for the same reason —
+    # pinning the agent but running whatever installer main has today reintroduces
+    # exactly the drift the pin exists to prevent.
+    hermes_version = pins["HERMES_VERSION"]
+    if hermes_version in ("main", "master", "HEAD"):
+        raise SystemExit(
+            f"HERMES_VERSION={hermes_version!r} is a moving ref and cannot be recorded "
+            "as a reproducible pin; use a tag or commit SHA"
+        )
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
@@ -250,8 +258,8 @@ RUN set -eux; \\
     elif command -v apk >/dev/null 2>&1; then \\
         apk add --no-cache git ripgrep xz; \\
     fi; \\
-    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \\
-        | bash -s -- --skip-setup{hermes_branch_flag}; \\
+    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/{hermes_version}/scripts/install.sh \\
+        | bash -s -- --skip-setup --branch {hermes_version}; \\
     hermes version
 """
 
