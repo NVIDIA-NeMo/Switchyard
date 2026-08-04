@@ -88,6 +88,32 @@ A judge that times out, errors, or returns an unparseable verdict fails open: th
 turn serves the buffered weak reply and the existing streak is held rather than
 cleared. A judge failure never creates a strong-tier latch.
 
+## Judge model compatibility
+
+The trajectory judge has the same response contract as capability routing: it
+must return complete, schema-valid JSON in normal assistant `content`.
+Switchyard does not parse provider-specific reasoning fields such as
+`reasoning_content`. If `content` is empty or unparseable, the client request can
+still succeed, but the weak reply is served and the turn cannot confirm an
+escalation.
+
+When a vLLM-compatible provider supports `enable_thinking`, configure it on the
+judge target through `extra_body`:
+
+```toml
+[targets.judge]
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+```
+
+`enable_thinking` is a provider-specific vLLM option, not a general requirement
+for reasoning models. Other model/provider pairs may work with reasoning enabled
+or use a different control. Verify the judge response shape before deployment.
+If reasoning remains enabled, set the route-level `max_output_tokens` high enough
+for both the reasoning and final JSON. A truncated verdict has the same fail-open
+result. See the
+[target-level `extra_body` reference](../../crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target)
+for the server merge behavior.
+
 ## Tuning options
 
 The judge exposes three settings. Their defaults are the benchmarked

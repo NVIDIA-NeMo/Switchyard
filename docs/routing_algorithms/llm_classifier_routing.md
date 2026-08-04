@@ -69,15 +69,29 @@ An abstention, an invalid or unparseable verdict, a judge failure, or confidence
 below `min_confidence` routes to `strong_target`. Raising either threshold sends
 more traffic to the strong model.
 
-!!! note "Reasoning-model compatibility"
+## Judge model compatibility
 
-    The verdict must be returned in normal assistant `content`. Some
-    model/provider pairs put it only in `reasoning_content`, which causes
-    fail-open routing. Where supported, a provider-specific override such as
-    `extra_body = { chat_template_kwargs = { enable_thinking = false } }` can
-    disable reasoning for the classifier target. Only use this override when
-    the provider supports it and the judge would otherwise return the verdict
-    outside normal `content`.
+The judge must return complete, schema-valid JSON in normal assistant `content`.
+Switchyard does not parse provider-specific reasoning fields such as
+`reasoning_content`. If `content` is empty or unparseable, the route falls back
+to `strong_target` even when the judge request returned HTTP 200. With session
+affinity, that fallback can be reused without another judge call.
+
+When a vLLM-compatible provider supports `enable_thinking`, configure it on the
+judge target through `extra_body`:
+
+```toml
+[targets.classifier]
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+```
+
+`enable_thinking` is a provider-specific vLLM option, not a general requirement
+for reasoning models. Other model/provider pairs may work with reasoning enabled
+or use a different control. Verify the judge response shape before deployment.
+If reasoning remains enabled, set `max_output_tokens` high enough for both the
+reasoning and final JSON. A truncated verdict has the same fail-open result. See
+the [target-level `extra_body` reference](../../crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target)
+for the server merge behavior.
 
 ## Tuning options
 

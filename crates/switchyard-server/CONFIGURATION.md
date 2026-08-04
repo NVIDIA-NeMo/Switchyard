@@ -20,6 +20,11 @@ extra_body = { chat_template_kwargs = { enable_thinking = false } }
 `extra_body` is target-specific. It shallow-merges top-level provider options into
 the outbound request, while explicit request fields win on conflicts.
 
+The `chat_template_kwargs.enable_thinking` example is a provider/model-specific
+vLLM option. It is not a portable Switchyard reasoning switch. Use it on a judge
+target only when the upstream supports it and would otherwise return the verdict
+outside normal assistant `content`.
+
 To support another wire format, add its `ClientFormat` variant and explicit construction match in
 `src/config.rs`. Add a client type only when a second implementation exists.
 
