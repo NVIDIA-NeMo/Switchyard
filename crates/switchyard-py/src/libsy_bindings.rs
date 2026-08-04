@@ -20,6 +20,7 @@ use switchyard_protocol::{
 };
 
 use crate::errors::py_libsy_error;
+use crate::interop::subagent::header_map_from_python;
 use crate::py_serde::{from_python, to_python};
 
 /// Adapts a Python object with `async call(request)` to libsy.
@@ -220,17 +221,12 @@ impl PyAlgorithm {
         headers: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let algorithm = Arc::clone(&self.inner);
-        let hm: Option<http::HeaderMap> = match headers {
-            Some(h) => Some((&h).try_into().map_err(|err: http::Error| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
-            })?),
-            None => None,
-        };
+        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
 
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
-            metadata: hm.map(|hm| Metadata::from_headers(&hm)),
+            metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let (decisions, response) = algorithm
