@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ContentBlock","FileSource","ImageSource","MediaSource","Role","StopReason","ToolChoice","ToolDefinition"],"struct":["AggLlmResponse","InputCacheUsage","InstructionBlock","LlmRequest","Message","OutputParams","PreservationMetadata","ProviderExtensions","ReasoningParams","ResponseOutput","SamplingParams","ToolCall","ToolResult","Usage"]};
