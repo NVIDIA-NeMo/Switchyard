@@ -7,17 +7,139 @@
 //! [`JudgeClassifier`] owns the judge model call and hands its verdict to a policy that chooses
 //! the route.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use switchyard_protocol::{AggLlmResponse, completion_text};
+use switchyard_protocol::{
+    AggLlmResponse, LlmRequest, Message, OutputParams, Role, completion_text,
+};
 
+use super::classifier_contract::ClassifierContract;
 use crate::core::algorithm::{Driver, LlmTarget};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Decision, Request, Response};
+
+/// Builds the classifier-specific message view presented to a structured judge.
+pub(crate) trait ClassifierInput: Send + Sync {
+    fn build_messages(&self, state: &State, request: &Request) -> Vec<Message>;
+}
+
+/// Converts one structured model response into the verdict type consumed by a policy.
+pub(crate) trait VerdictDecoder: Send + Sync {
+    type Verdict: DeserializeOwned + Send + Sync;
+
+    fn decode(
+        &self,
+        response: &AggLlmResponse,
+        contract: &ClassifierContract,
+    ) -> Result<Self::Verdict>;
+}
+
+/// Deserializes a structured response directly into a typed verdict.
+pub(crate) struct SerdeDecoder<V> {
+    verdict: PhantomData<fn() -> V>,
+}
+
+impl<V> SerdeDecoder<V> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            verdict: PhantomData,
+        }
+    }
+}
+
+impl<V> VerdictDecoder for SerdeDecoder<V>
+where
+    V: DeserializeOwned + Send + Sync,
+{
+    type Verdict = V;
+
+    fn decode(
+        &self,
+        response: &AggLlmResponse,
+        _contract: &ClassifierContract,
+    ) -> Result<Self::Verdict> {
+        parse_json_verdict(response)
+    }
+}
+
+/// Runtime limits shared by structured classifier judges.
+pub(crate) struct JudgeRuntimeConfig {
+    max_output_tokens: u64,
+}
+
+impl JudgeRuntimeConfig {
+    pub(crate) fn new(max_output_tokens: u64) -> Result<Self> {
+        if max_output_tokens == 0 {
+            return Err(LibsyError::AlgorithmError {
+                message: "max_output_tokens must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { max_output_tokens })
+    }
+}
+
+/// Reusable structured judge assembled from an input view, contract, and verdict decoder.
+pub(crate) struct StructuredJudge<I, D> {
+    input: I,
+    contract: ClassifierContract,
+    decoder: D,
+    runtime: JudgeRuntimeConfig,
+}
+
+impl<I, D> StructuredJudge<I, D> {
+    pub(crate) fn new(
+        input: I,
+        contract: ClassifierContract,
+        decoder: D,
+        runtime: JudgeRuntimeConfig,
+    ) -> Self {
+        Self {
+            input,
+            contract,
+            decoder,
+            runtime,
+        }
+    }
+
+}
+
+impl<I, D> Judge for StructuredJudge<I, D>
+where
+    I: ClassifierInput,
+    D: VerdictDecoder,
+{
+    type Verdict = D::Verdict;
+
+    fn build_request(&self, state: &State, request: &Request) -> Request {
+        let mut messages = self.input.build_messages(state, request);
+        messages.insert(
+            0,
+            Message::text(Role::System, self.contract.system_prompt().to_string()),
+        );
+        Request {
+            llm_request: LlmRequest {
+                model: request.llm_request.model.clone(),
+                messages,
+                output: OutputParams {
+                    max_output_tokens: Some(self.runtime.max_output_tokens),
+                    response_format: Some(self.contract.response_format().clone()),
+                },
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: request.metadata.clone(),
+        }
+    }
+
+    fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
+        self.decoder.decode(response, &self.contract)
+    }
+}
 
 /// Builds and parses requests for one algorithm-specific LLM judge.
 pub trait Judge: Send + Sync {
