@@ -157,8 +157,10 @@ Each target's built-in HTTP retry count is set to zero to avoid retrying a
 failed target invisibly before reselection. A random target with `weight = 0`
 is fallback-only and is not considered by the algorithm. Trusted fallback is
 attempted at most once and, for streaming responses, only before the first
-caller event is emitted. Outer routing retries are immediate and do not honor
-provider `Retry-After` headers.
+caller event is emitted. Outer routing retries use exponential backoff starting
+at 250 milliseconds and capped at 2 seconds. They do not currently honor
+provider `Retry-After` headers because the client error contract does not expose
+that metadata to the routing loop.
 
 ## Translation and stream fidelity
 

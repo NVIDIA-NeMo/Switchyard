@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
 use nemo_relay_plugin::{Json, LlmRequest as RelayRequest};
@@ -16,6 +17,9 @@ use switchyard_translation::{TranslationEngine, encode_stream};
 
 use crate::config::{PreparedTargetBinding, SwitchyardConfig, protocol_from_call};
 use crate::translation;
+
+const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(crate) struct RoutingMark {
@@ -106,6 +110,7 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
+                    sleep_before_retry(attempt).await;
                     attempt += 1;
                 }
                 Err(failure) => {
@@ -158,8 +163,9 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
-                    attempt += 1;
                     send_marks(output, &mut marks).await?;
+                    sleep_before_retry(attempt).await;
+                    attempt += 1;
                     continue;
                 }
                 Err(failure) => {
@@ -191,8 +197,9 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
-                    attempt += 1;
                     send_marks(output, &mut marks).await?;
+                    sleep_before_retry(attempt).await;
+                    attempt += 1;
                     continue;
                 }
                 Err(failure) if !fallback_used => {
@@ -235,8 +242,9 @@ impl SwitchyardRuntime {
                             failure_mark_data(attempt, &failure),
                             &metadata,
                         );
-                        attempt += 1;
                         send_marks(output, &mut marks).await?;
+                        sleep_before_retry(attempt).await;
+                        attempt += 1;
                         continue 'attempts;
                     }
                     Err(failure) if !fallback_used && !committed => {
@@ -471,6 +479,17 @@ fn libsy_error_retryable(error: &LibsyError) -> bool {
     }
 }
 
+fn retry_backoff(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(3);
+    INITIAL_RETRY_BACKOFF
+        .saturating_mul(1_u32 << exponent)
+        .min(MAX_RETRY_BACKOFF)
+}
+
+async fn sleep_before_retry(attempt: u32) {
+    tokio::time::sleep(retry_backoff(attempt)).await;
+}
+
 fn failure_mark_data(attempt: u32, failure: &LibsyError) -> Json {
     let mut data = Map::from_iter([
         ("attempt".into(), Json::from(attempt)),
@@ -594,6 +613,15 @@ fn context_from_metadata(metadata: Option<&Metadata>) -> Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_backoff_increases_exponentially_and_is_capped() {
+        assert_eq!(retry_backoff(1), Duration::from_millis(250));
+        assert_eq!(retry_backoff(2), Duration::from_millis(500));
+        assert_eq!(retry_backoff(3), Duration::from_secs(1));
+        assert_eq!(retry_backoff(4), Duration::from_secs(2));
+        assert_eq!(retry_backoff(u32::MAX), Duration::from_secs(2));
+    }
 
     #[test]
     fn context_carries_identity_without_http_headers() {
