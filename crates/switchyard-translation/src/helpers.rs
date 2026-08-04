@@ -649,6 +649,16 @@ mod tests {
     }
 
     #[test]
+    fn decode_stream_accepts_data_fields_without_the_optional_space() -> Result<(), BoxError> {
+        let sse = b"data:{\"choices\":[{\"delta\":{\"content\":\"compact\"}}]}\n\ndata:[DONE]\n\n"
+            .to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
+        assert_eq!(text_of(&chunks), "compact");
+        Ok(())
+    }
+
+    #[test]
     fn decode_stream_propagates_source_errors() -> Result<(), BoxError> {
         // A transport error mid-stream surfaces as an error item, not a panic.
         let bytes = stream::iter(vec![
