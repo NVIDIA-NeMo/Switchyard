@@ -175,11 +175,11 @@ impl SwitchyardRuntime {
                         failure_mark_data(attempt, &failure),
                         &metadata,
                     );
-                    (
-                        self.fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                            .await?,
-                        true,
-                    )
+                    let fallback = self
+                        .fallback_response(inbound, request.clone(), &mut marks, &metadata)
+                        .await;
+                    send_marks(output, &mut marks).await?;
+                    (fallback?, true)
                 }
             };
             send_marks(output, &mut marks).await?;
@@ -212,8 +212,9 @@ impl SwitchyardRuntime {
                     fallback_used = true;
                     let fallback = self
                         .fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                        .await?;
+                        .await;
                     send_marks(output, &mut marks).await?;
+                    let fallback = fallback?;
                     returned_events(fallback, inbound)
                         .await
                         .map_err(|error| public_libsy_failure("trusted fallback stream", &error))?
@@ -256,8 +257,9 @@ impl SwitchyardRuntime {
                         );
                         let fallback = self
                             .fallback_response(inbound, request.clone(), &mut marks, &metadata)
-                            .await?;
+                            .await;
                         send_marks(output, &mut marks).await?;
+                        let fallback = fallback?;
                         let mut fallback =
                             returned_events(fallback, inbound).await.map_err(|error| {
                                 public_libsy_failure("trusted fallback stream", &error)
@@ -649,6 +651,7 @@ mod tests {
     enum StreamBehavior {
         Empty,
         Failing,
+        CallFailure,
     }
 
     struct StreamClient {
@@ -676,6 +679,11 @@ mod tests {
                         source: Box::new(std::io::Error::other("fallback stream failed")),
                     })
                 })),
+                StreamBehavior::CallFailure => {
+                    return Err(LlmClientError::Transport {
+                        source: Box::new(std::io::Error::other("fallback call failed")),
+                    });
+                }
             };
             Ok(Response {
                 llm_response: LlmResponse::Stream(stream),
@@ -835,6 +843,58 @@ mod tests {
         assert_eq!(error, "trusted fallback stream: provider transport failure");
         assert_eq!(selected.calls.load(Ordering::Relaxed), 1);
         assert_eq!(fallback.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn failing_fallback_call_flushes_error_and_fallback_marks() {
+        let selected = Arc::new(StreamClient {
+            behavior: StreamBehavior::Empty,
+            calls: AtomicUsize::new(0),
+        });
+        let fallback = Arc::new(StreamClient {
+            behavior: StreamBehavior::CallFailure,
+            calls: AtomicUsize::new(0),
+        });
+        let runtime = SwitchyardRuntime {
+            max_retries: 0,
+            algorithm: Arc::new(Passthrough::new(LlmTarget {
+                semantic_name: "selected".into(),
+                llm_client: Some(selected.clone()),
+            })),
+            targets: BTreeMap::from([(
+                "fallback".into(),
+                PreparedTargetBinding {
+                    client: fallback.clone(),
+                },
+            )]),
+            default_targets: BTreeMap::from([(WireFormat::OpenAiChat, "fallback".into())]),
+            translation: TranslationEngine::default(),
+        };
+        let (output, messages) = async_channel::bounded(32);
+
+        let error = runtime
+            .execute_stream(WireFormat::OpenAiChat, Request::default(), &output)
+            .await
+            .expect_err("the failing fallback call must fail the request");
+
+        assert_eq!(error, "trusted fallback: provider transport failure");
+        assert_eq!(selected.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(fallback.calls.load(Ordering::Relaxed), 1);
+        let mut terminal_marks = Vec::new();
+        while let Ok(message) = messages.try_recv() {
+            if let StreamMessage::Mark(mark) = message
+                && matches!(
+                    mark.name.as_str(),
+                    "switchyard.routing.error" | "switchyard.routing.fallback"
+                )
+            {
+                terminal_marks.push(mark.name);
+            }
+        }
+        assert_eq!(
+            terminal_marks,
+            ["switchyard.routing.error", "switchyard.routing.fallback"]
+        );
     }
 
     #[test]
