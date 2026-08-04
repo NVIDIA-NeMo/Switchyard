@@ -1467,10 +1467,11 @@ CLI's saved configuration or YAML routing profiles.</p>
 </span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
 </span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
-</span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
-</span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capability&quot;</span>
+</span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="n">classifier_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="n">strong_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-9-23"><a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
 </span></code></pre></div>
 <p><code>format</code> selects the upstream protocol and must be <code>openai_chat</code>,
 <code>openai_responses</code>, or <code>anthropic_messages</code>. <code>api_key_env</code> names the environment
@@ -1526,7 +1527,7 @@ request should use the weak or strong target. The Rust server also supports:</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5ad7c0ed462546e3ed8b279abfa908b9bd92da46/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4ae99c215891495b646c3af9fc296688cde79f57/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
@@ -1547,11 +1548,11 @@ release attribution. No request or response content is included. To disable:</p>
 <h3 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h3>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5ad7c0ed462546e3ed8b279abfa908b9bd92da46/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4ae99c215891495b646c3af9fc296688cde79f57/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5ad7c0ed462546e3ed8b279abfa908b9bd92da46/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4ae99c215891495b646c3af9fc296688cde79f57/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
