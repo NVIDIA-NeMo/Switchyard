@@ -20,7 +20,7 @@ The network has some kind of throttling. Not good for evals, but fine for poking
 
 ## Details
 
-This VM ping times maybe vary. `crates.io` appears throttled.
+This VM ping times maybe vary. `crates.io` appears throttled. Trying to `sudo` will trigger Silverfort.
 
 ### Manage
 
@@ -43,20 +43,24 @@ cd Switchyard/
 git pull
 export RUSTFLAGS="-Ctarget-cpu=native -Cforce-frame-pointers=yes"
 cargo build --release
-cp target/release/switchyard-server /usr/local/bin/
+sudo cp target/release/switchyard-server /usr/local/bin/
+sudo systemctl restart switchyard
 ```
 
-The VM has weird network so have to retry sometimes.
+The VM has weird network so have to retry sometimes. Check the status and logs after restarting (see 'Manage' above), because systemd won't tell you that it failed on startup.
 
 #### config
 
-Config is in `switchyard.toml`. Edit it here, copy to `/etc/switchyard/config.toml`
+Config is in `/etc/switchyard/config.toml`. Edit it in the repo though, then copy over.
 
 #### TLS
 
 Config and TLS key/cert are in `/etc/switchyard/`.
 
 Re-generate:
-`openssl genpkey -algorithm Ed25519 -out key.pem`
-`openssl req -new -x509 -key key.pem -days 1460 -out cert.pem -subj "/C=US/ST=CA/L=Santa Clara/O=LocalDev/OU=Switchyard/CN=switchyard-dev.nvidia.com"`
+```
+openssl genpkey -algorithm Ed25519 -out key.pem
+openssl req -new -x509 -key key.pem -days 1460 -out cert.pem -subj "/C=US/ST=CA/L=Santa Clara/O=LocalDev/OU=Switchyard/CN=switchyard-dev.nvidia.com"
+cp {cert,key}.pem /etc/switchyard/
+```
 
