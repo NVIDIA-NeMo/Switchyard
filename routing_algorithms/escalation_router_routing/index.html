@@ -769,6 +769,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#judge-model-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Judge model compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#tuning-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1120,6 +1131,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#judge-model-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Judge model compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#tuning-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1270,6 +1292,10 @@ flowchart LR
 <p>A judge that times out, errors, or returns an unparseable verdict fails open: the
 turn serves the buffered weak reply and the existing streak is held rather than
 cleared. A judge failure never creates a strong-tier latch.</p>
+<h2 id="judge-model-compatibility">Judge model compatibility<a class="headerlink" href="#judge-model-compatibility" title="Permanent link">&para;</a></h2>
+<p>The trajectory judge uses the same response contract and provider/model
+compatibility guidance as the LLM classifier judge. See
+<a href="../llm_classifier_routing/#judge-model-compatibility">Judge model compatibility</a>.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <p>The judge exposes three settings. Their defaults are the benchmarked
 configuration, so a bare <code>escalation = {}</code> is a valid, tuned route:</p>
