@@ -527,13 +527,10 @@ async fn collect_response_body(
     response: reqwest::Response,
     limit: usize,
 ) -> std::result::Result<CollectedBody, reqwest::Error> {
-    let mut bytes = Vec::with_capacity(
-        response
-            .content_length()
-            .and_then(|length| usize::try_from(length).ok())
-            .unwrap_or_default()
-            .min(limit),
-    );
+    // Content-Length is provider-controlled and may be much larger than the
+    // bytes actually received. Grow from received chunks instead of reserving
+    // the advertised size up front.
+    let mut bytes = Vec::new();
     let mut chunks = response.bytes_stream();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk?;
@@ -1199,6 +1196,60 @@ mod tests {
             body.len(),
             MAX_ERROR_BODY_BYTES + TRUNCATED_BODY_SUFFIX.len()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn response_body_does_not_preallocate_advertised_content_length()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        struct InflatedContentLengthBody {
+            data: Option<bytes::Bytes>,
+            advertised_length: u64,
+        }
+
+        impl http_body::Body for InflatedContentLengthBody {
+            type Data = bytes::Bytes;
+            type Error = std::convert::Infallible;
+
+            fn poll_frame(
+                self: std::pin::Pin<&mut Self>,
+                _context: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<
+                Option<std::result::Result<http_body::Frame<Self::Data>, Self::Error>>,
+            > {
+                std::task::Poll::Ready(
+                    self.get_mut()
+                        .data
+                        .take()
+                        .map(http_body::Frame::data)
+                        .map(Ok),
+                )
+            }
+
+            fn size_hint(&self) -> http_body::SizeHint {
+                let mut hint = http_body::SizeHint::new();
+                hint.set_exact(self.advertised_length);
+                hint
+            }
+        }
+
+        let advertised_length = MAX_BUFFERED_RESPONSE_BYTES as u64;
+        let response_body = reqwest::Body::wrap(InflatedContentLengthBody {
+            data: Some(bytes::Bytes::from_static(b"{}")),
+            advertised_length,
+        });
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .header(reqwest::header::CONTENT_LENGTH, advertised_length)
+                .body(response_body)?,
+        );
+        assert_eq!(response.content_length(), Some(advertised_length));
+
+        let body = collect_response_body(response, MAX_BUFFERED_RESPONSE_BYTES).await?;
+
+        assert_eq!(body.bytes, b"{}");
+        assert!(body.bytes.capacity() < MAX_BUFFERED_RESPONSE_BYTES);
+        assert!(!body.truncated);
         Ok(())
     }
 

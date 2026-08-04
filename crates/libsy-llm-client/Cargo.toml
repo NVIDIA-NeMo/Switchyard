@@ -25,5 +25,8 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+bytes = "1"
 futures.workspace = true
+http = "1"
+http-body = "1"
 wiremock = "0.6"
