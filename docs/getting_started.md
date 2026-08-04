@@ -148,6 +148,7 @@ llm_client = "openrouter"
 [routes.smart]
 id = "switchyard"
 type = "llm_classifier"
+mode = "capability"
 classifier_target = "weak"
 strong_target = "strong"
 weak_target = "weak"

@@ -84,13 +84,20 @@ Splits traffic across targets. See
 
 ### `llm_classifier`
 
-Classifies each task, then routes to the weak or strong target. See
-[LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md) for
-tuning.
+Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
+`classifier_target` and `max_output_tokens` apply to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
+| `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
+| `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+
+Capability mode classifies before serving. See
+[LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
 | `strong_target` | Yes | — | Capable tier. |
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
@@ -99,23 +106,35 @@ tuning.
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | Trailing turns the judge sees. |
-| `prompt` | No | packaged prompt | Replaces the capability prompt, or the trajectory-judge prompt when `escalation` is set. `{{RESPONSE_SCHEMA}}` expands to the active packaged schema. |
-| `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
-| `escalation` | No | unset | Switches the route to escalation judging. |
+| `prompt` | No | packaged prompt | Replaces the capability prompt. `{{RESPONSE_SCHEMA}}` expands to its packaged schema. |
 
-Add an `escalation` table to judge each completed turn instead of classifying up
-front. See
+Escalation mode serves the weak target first and judges the completed turn. See
 [Escalation-Router Routing](../routing_algorithms/escalation_router_routing.md).
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
-| `recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
-| `window_message_chars` | No | `500` | Per-message cap inside that window. |
+| `strong_target` | Yes | — | Target used after the session latches. |
+| `weak_target` | Yes | — | Target served before the latch. |
+| `prompt` | No | packaged prompt | Replaces the trajectory-judge prompt. |
+| `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
+| `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
+| `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
 
-`base_threshold` stays required, but escalation ignores the capability thresholds,
-affinity settings, and route-level `recent_turn_window`. The shared `prompt` and
-`max_output_tokens` keys still configure its judge.
+Existing configurations that contain `escalation` but omit `mode` remain valid.
+
+Custom mode validates the judge's JSON against `response_schema`, resolves the
+policy selector, and routes to any configured target label.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `targets` | Yes | — | Two or more target names available to the policy. |
+| `default_target` | Yes | — | Target used when the judge fails or its verdict cannot be routed. |
+| `prompt` | Yes | — | Judge system prompt. `{{RESPONSE_SCHEMA}}` expands to the configured inner schema. |
+| `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
+| `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
+| `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
+| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
+| `recent_turn_window` | No | unset | Trailing turns the judge sees. |
 
 ### `stage_router`
 

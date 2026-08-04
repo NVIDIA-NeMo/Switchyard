@@ -35,10 +35,10 @@ llm_client = "openrouter"
 [routes.agent]
 id = "agent"
 type = "llm_classifier"
+mode = "escalation"
 classifier_target = "judge"
 strong_target = "strong"
 weak_target = "weak"
-base_threshold = 0.5
 prompt = "Judge whether the weak model is stuck. Return the required structured verdict."
 escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
 ```
@@ -46,8 +46,6 @@ escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars 
 `classifier_target` is the judge. The route's `id`, `agent`, is the model name
 clients send; the judge is not exposed as a client-selectable model.
 
-`base_threshold` is still required, but escalation ignores it, along with
-`min_confidence`, `capability_elevated_floor`, and `session_affinity`.
 The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
 Include `{{RESPONSE_SCHEMA}}` when the schema should also appear in the prompt.
@@ -151,8 +149,7 @@ token cost and latency remain visible as routing overhead.
 ## When not to use escalation routing
 
 - **One-shot requests.** No trajectory to judge. Use
-  [LLM Classifier Routing](llm_classifier_routing.md) without the `escalation`
-  table.
+  [LLM Classifier Routing](llm_classifier_routing.md) in `capability` mode.
 - **Traffic without session identity.** With `confirmations` above `1`, the route
   cannot accumulate a streak and never latches.
 - **Fixed traffic experiments.** Use [Random Routing](random_routing.md).

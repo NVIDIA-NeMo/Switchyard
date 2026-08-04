@@ -1,7 +1,7 @@
 # LLM Classifier Routing
 
-LLM classifier routing asks a judge model whether the efficient model is likely
-to complete a request, then routes the request to a weak or strong target.
+LLM classifier routing supports capability classification, trajectory escalation,
+and custom schema-driven routing across two or more targets.
 
 ## Configure a classifier route
 
@@ -32,6 +32,7 @@ llm_client = "openrouter"
 [routes.smart]
 id = "smart"
 type = "llm_classifier"
+mode = "capability"
 classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
@@ -91,6 +92,7 @@ Switchyard replaces it with the packaged capability-verdict schema.
 [routes.smart]
 id = "smart"
 type = "llm_classifier"
+mode = "capability"
 classifier_target = "classifier"
 strong_target = "strong"
 weak_target = "weak"
@@ -104,6 +106,55 @@ Return JSON matching this schema:
 
 The override changes the instructions only. The judge must still return the
 packaged fields such as `p_solve`, `confidence`, and `capability_boundary`.
+
+## Custom multi-target routing
+
+Custom mode accepts an inner JSON Schema and a policy that reads the validated
+verdict. This example routes across four configured targets:
+
+```toml
+[routes.smart]
+id = "smart"
+type = "llm_classifier"
+mode = "custom"
+classifier_target = "classifier"
+targets = ["fast", "balanced", "reasoning", "premium"]
+default_target = "premium"
+prompt = """
+Choose the best configured target for this request.
+Return JSON matching:
+{{RESPONSE_SCHEMA}}
+"""
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": ["fast", "balanced", "reasoning", "premium"]
+        }
+      },
+      "required": ["target"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["decision"],
+  "additionalProperties": false
+}
+'''
+
+[routes.smart.policy]
+type = "target_selector"
+selector = "/decision/target"
+```
+
+The names in `targets` reference existing target tables. Switchyard passes the
+schema to the provider in a strict structured-output wrapper and validates the
+returned JSON again. `jsonptr` resolves the selector against that verdict. A
+missing, non-string, or unknown target falls back to `default_target`.
 
 ### Classifier calibration
 

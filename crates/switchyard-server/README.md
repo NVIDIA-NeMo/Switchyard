@@ -33,6 +33,7 @@ seed = 42
 [routes.classified]
 id = "switchyard/classified"
 type = "llm_classifier"
+mode = "capability"
 classifier_target = "model_a"
 strong_target = "model_a"
 weak_target = "model_b"
