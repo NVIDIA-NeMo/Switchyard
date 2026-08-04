@@ -122,6 +122,60 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
     Ok(())
 }
 
+// Verifies Responses reasoning and its following message remain one semantic assistant output.
+#[test]
+fn responses_reasoning_and_message_preserve_the_final_answer() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_test",
+        "object": "response",
+        "model": "gpt-reasoning",
+        "status": "completed",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "private reasoning"}]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Visible answer"}]
+            }
+        ]
+    });
+
+    let anthropic = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        anthropic["content"],
+        json!([
+            {"type": "thinking", "thinking": "private reasoning", "signature": ""},
+            {"type": "text", "text": "Visible answer"}
+        ])
+    );
+
+    let chat = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(chat["choices"][0]["message"]["content"], "Visible answer");
+    assert_eq!(
+        chat["choices"][0]["message"]["reasoning_content"],
+        "private reasoning"
+    );
+    Ok(())
+}
+
 // Verifies OpenAI cache usage survives the Chat-to-Responses translation used by Codex.
 #[test]
 fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult {

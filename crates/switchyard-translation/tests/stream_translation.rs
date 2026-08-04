@@ -837,6 +837,64 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
     Ok(())
 }
 
+// Equivalent buffered and streamed Responses results must normalize to the same output.
+#[test]
+fn responses_buffered_and_streamed_outputs_match() -> TestResult {
+    let engine = TranslationEngine::default();
+    let buffered = engine
+        .decode_response(
+            WireFormat::OpenAiResponses,
+            &json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt-reasoning",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "private reasoning"}]
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Visible answer"}]
+                    }
+                ]
+            }),
+            &Default::default(),
+        )?
+        .response;
+
+    let events = [
+        json!({
+            "type": "response.created",
+            "response": {"id": "resp_1", "model": "gpt-reasoning"}
+        }),
+        json!({
+            "type": "response.reasoning_summary_text.delta",
+            "output_index": 0,
+            "delta": "private reasoning"
+        }),
+        json!({
+            "type": "response.output_text.delta",
+            "output_index": 1,
+            "delta": "Visible answer"
+        }),
+        json!({"type": "response.completed", "response": {}}),
+    ];
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiResponses);
+    let mut accumulator = ResponseAccumulator::new();
+    for event in &events {
+        for chunk in decode_stream_event(&mut state, WireFormat::OpenAiResponses, event) {
+            accumulator.push(chunk);
+        }
+    }
+
+    assert_eq!(buffered.outputs, accumulator.finish().outputs);
+    Ok(())
+}
+
 // An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
 // instead of a bare message start that silently drops the upstream message.
 #[test]

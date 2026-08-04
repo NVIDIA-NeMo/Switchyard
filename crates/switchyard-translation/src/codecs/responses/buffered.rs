@@ -182,24 +182,38 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
         let mut diagnostics = Vec::new();
-        let mut outputs = Vec::new();
+        let mut content = Vec::new();
+        let mut role = Role::Assistant;
+        let mut stop_reason = None;
+        let mut has_output = false;
         if let Some(items) = body.get("output").and_then(Value::as_array) {
             for item in items {
                 if let Some(output) = decode_responses_output_item(item, &mut diagnostics, policy)?
                 {
-                    outputs.push(output);
+                    has_output = true;
+                    role = output.role;
+                    content.extend(output.content);
+                    if output.stop_reason.is_some() {
+                        stop_reason = output.stop_reason;
+                    }
                 }
             }
         }
-        if outputs.is_empty() {
-            outputs.push(ResponseOutput {
+        let outputs = vec![if has_output {
+            ResponseOutput {
+                role,
+                content,
+                stop_reason,
+            }
+        } else {
+            ResponseOutput {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: String::new(),
                 }],
                 stop_reason: Some(StopReason::EndTurn),
-            });
-        }
+            }
+        }];
         let response = AggLlmResponse {
             id: body
                 .get("id")
