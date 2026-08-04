@@ -15,14 +15,11 @@ use rand::SeedableRng;
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::rngs::StdRng;
 
-use crate::algorithms::fall_through::{FallThrough, FallThroughDecision};
+use crate::algorithms::fall_through::FallThrough;
 use crate::core::algorithm::{Algorithm, Driver, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Request, Response, RoutedLlmClient};
-
-/// Compatibility name for the decision produced by [`Random`].
-pub type RandomDecision = FallThroughDecision;
 
 /// Stateless weighted classifier used by random fall-through routing.
 pub struct RandomClassifier {
@@ -181,11 +178,12 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use switchyard_protocol::{Metadata, completion_text, text_request, text_response};
-
     use crate::DriverError;
+    use crate::algorithms::fall_through::FallThroughDecision;
     use crate::algorithms::util::affinity::AffinityRouter;
     use crate::core::algorithm::LlmTarget;
+    use crate::text::{completion_text, text_request, text_response};
+    use switchyard_protocol::Metadata;
     use switchyard_protocol::{Decision, LlmResponse, Request, RoutedLlmClient, Signals};
 
     /// Echoes the selected target so tests can inspect which target was called.
@@ -456,10 +454,10 @@ mod tests {
         );
         let concrete = decision
             .as_any()
-            .downcast_ref::<RandomDecision>()
+            .downcast_ref::<FallThroughDecision>()
             .ok_or_else(|| {
                 LibsyError::from(DriverError::TypeMismatch {
-                    expected: "RandomDecision",
+                    expected: "FallThroughDecision",
                 })
             })?;
         assert_eq!(concrete.selected_model, "only/model");

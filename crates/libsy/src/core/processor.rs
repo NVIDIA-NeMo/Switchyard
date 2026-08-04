@@ -10,7 +10,8 @@ use switchyard_protocol::{AggLlmResponse, Decision, Request, Signals};
 /// Request-bearing variants ([`Event::Request`], [`Event::Decision`]) borrow the request
 /// mutably, so a processor may rewrite it in place and the edit propagates to the rest of
 /// the chain and to the model call. The observation-only variants stay immutable.
-pub enum Event<'a> {
+#[allow(dead_code)]
+pub(crate) enum Event<'a> {
     /// The inbound request that begins a turn.
     Request(&'a mut Request),
     /// An out-of-band agentic-stack signal (tool results, budget updates, …).
@@ -31,7 +32,7 @@ pub enum Event<'a> {
 
 /// Collects events as the algorithm runs and mutates the composition's state.
 #[async_trait]
-pub trait Processor<S = ()>: Send + Sync {
+pub(crate) trait Processor<S = ()>: Send + Sync {
     /// Process an event, accumulating facts into `state`. Request-bearing events
     /// ([`Event::Request`], [`Event::Decision`]) may also be rewritten in place.
     async fn process(&self, state: &mut S, event: Event<'_>) -> Result<()>;
@@ -40,8 +41,8 @@ pub trait Processor<S = ()>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{text_request, text_response};
     use std::collections::HashMap;
-    use switchyard_protocol::{text_request, text_response};
 
     type TestState = HashMap<&'static str, u32>;
 

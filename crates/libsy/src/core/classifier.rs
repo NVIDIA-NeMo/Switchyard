@@ -8,16 +8,16 @@ use switchyard_protocol::{Request, Response};
 
 /// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Score {
+pub(crate) struct Score {
     /// `[0.0, 1.0]` confidence in `target`.
-    pub confidence: f64,
+    pub(crate) confidence: f64,
     /// The target (model / tier) being recommended.
-    pub target: String,
+    pub(crate) target: String,
 }
 
 /// A classifier's verdict for a request: a set of target [`Score`]s, flagged by how
 /// confident the classifier is that they are decisive.
-pub enum Classification {
+pub(crate) enum Classification {
     /// Definite recommendations; [`argmax`](Self::argmax) always yields the top target.
     Scores(Vec<Score>),
     /// Recommendations the classifier considers ambiguous; [`argmax`](Self::argmax) yields
@@ -31,7 +31,7 @@ impl Classification {
     /// An [`Ambiguous`](Self::Ambiguous) classification also yields `None` unless
     /// `ignore_ambiguous` is set, in which case it falls back to the plain argmax.
     /// Errors if any confidence is `NaN` (an unorderable score the caller should surface).
-    pub fn argmax(&self, ignore_ambiguous: bool) -> Result<Option<Score>> {
+    pub(crate) fn argmax(&self, ignore_ambiguous: bool) -> Result<Option<Score>> {
         match self {
             Classification::Scores(scores) => argmax(scores),
             Classification::Ambiguous(scores) => {
@@ -70,7 +70,7 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 
 /// Scores targets from the current request and the composition's state.
 #[async_trait]
-pub trait Classifier<S = ()>: Send + Sync {
+pub(crate) trait Classifier<S = ()>: Send + Sync {
     /// Stable tier represented by `selected_model`, when this classifier defines one.
     fn routing_tier(&self, _selected_model: &str) -> Option<&'static str> {
         None
@@ -97,7 +97,7 @@ pub trait Classifier<S = ()>: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::text_request;
+    use crate::text::text_request;
 
     /// Terse `Score` builder for the assertions below.
     fn score(target: &str, confidence: f64) -> Score {

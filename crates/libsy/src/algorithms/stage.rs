@@ -223,11 +223,12 @@ fn build_route(
 mod tests {
     use std::sync::Arc;
 
+    use crate::text::text_response;
     use async_trait::async_trait;
     use parking_lot::Mutex;
     use serde_json::json;
     use switchyard_protocol::{
-        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat, text_response,
+        ContentBlock, LlmRequest, Message, Role, ToolCall, ToolResult, WireFormat,
     };
 
     use super::*;

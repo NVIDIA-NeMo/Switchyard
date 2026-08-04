@@ -24,7 +24,7 @@ impl Passthrough {
 }
 
 /// Decision emitted before [`Passthrough`] calls its configured target.
-pub struct PassthroughDecision {
+pub(crate) struct PassthroughDecision {
     model_id: String,
 }
 
@@ -77,10 +77,8 @@ mod tests {
 
     use super::Passthrough;
     use crate::core::algorithm::{Algorithm, LlmTarget};
-    use switchyard_protocol::{
-        Context, Decision, LlmResponse, Request, Response, RoutedLlmClient, completion_text,
-        text_request, text_response,
-    };
+    use crate::text::{completion_text, text_request, text_response};
+    use switchyard_protocol::{Context, Decision, LlmResponse, Request, Response, RoutedLlmClient};
 
     /// Echoes the selected target so tests can inspect which target was called.
     /// TODO: Duplicated from rand.rs

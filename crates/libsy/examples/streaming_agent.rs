@@ -17,10 +17,11 @@ use std::io::Write;
 use std::sync::Arc;
 
 use futures::StreamExt;
+mod support;
+use support::{completion_text, text_request};
 use switchyard_libsy::{Algorithm, LibsyError, LlmTarget, LlmTargetSet, Random, Result, Step};
 use switchyard_protocol::{
-    Context, LlmResponse, LlmResponseChunk, LlmResponseStream, Request, Response, completion_text,
-    text_request,
+    Context, LlmResponse, LlmResponseChunk, LlmResponseStream, Request, Response,
 };
 
 /// The "real" model call the agent makes to fulfill an offloaded promise: a response

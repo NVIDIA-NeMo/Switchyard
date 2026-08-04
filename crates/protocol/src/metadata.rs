@@ -7,7 +7,7 @@
 //! response. [`Metadata::from_headers`] normalizes host-specific HTTP headers into
 //! that neutral shape.
 
-use std::{collections::BTreeMap, str::FromStr as _};
+use std::collections::BTreeMap;
 
 use crate::WireFormat;
 
@@ -345,21 +345,21 @@ fn header<'a>(headers: &'a http::HeaderMap, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-/// Utility to convert a slice of string pairs into an `http::HeaderMap`.
-pub fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
-    let mut m = http::HeaderMap::with_capacity(sl.len());
-    for (k, v) in sl {
-        m.insert(
-            http::HeaderName::from_str(k).unwrap(),
-            (*v).try_into().unwrap(),
-        );
-    }
-    m
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr as _;
+
+    fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
+        let mut m = http::HeaderMap::with_capacity(sl.len());
+        for (k, v) in sl {
+            m.insert(
+                http::HeaderName::from_str(k).unwrap(),
+                (*v).try_into().unwrap(),
+            );
+        }
+        m
+    }
 
     /// Header carrying Codex's structured turn metadata as a JSON object.
     const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";

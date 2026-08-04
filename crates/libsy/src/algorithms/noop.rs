@@ -17,7 +17,7 @@ use switchyard_protocol::{Context, Decision};
 pub struct Noop {}
 
 /// Test decision carrying the inbound model or a fixed placeholder.
-pub struct NoopDecision {
+pub(crate) struct NoopDecision {
     model: String,
 }
 

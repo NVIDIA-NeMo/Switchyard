@@ -353,12 +353,10 @@ mod tests {
     use super::*;
     use crate::algorithms::util::prompts;
     use crate::core::classifier::Classification;
+    use crate::text::{completion_text, text_request, text_response};
     use crate::{SystemPromptProcessor, TargetPrompts};
 
-    use switchyard_protocol::{
-        LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role, completion_text,
-        text_request, text_response,
-    };
+    use switchyard_protocol::{LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Role};
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]

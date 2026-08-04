@@ -524,8 +524,9 @@ impl Classifier<State> for StageClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::text_request;
     use serde_json::json;
-    use switchyard_protocol::{Metadata, Request, WireFormat, text_request};
+    use switchyard_protocol::{Metadata, Request, WireFormat};
 
     fn signal_from(messages: serde_json::Value) -> ToolSignals {
         let raw_request = Some(json!({"model": "m", "messages": messages}));

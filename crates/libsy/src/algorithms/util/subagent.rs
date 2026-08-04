@@ -74,15 +74,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{slice_to_header_map, text_request};
+    use crate::text::text_request;
+
+    fn metadata_from_headers(headers: &[(&str, &str)]) -> Option<Metadata> {
+        if headers.is_empty() {
+            return None;
+        }
+        let mut metadata = Metadata::default();
+        for (name, value) in headers {
+            match *name {
+                "x-claude-code-session-id" => metadata.session_id = Some((*value).to_string()),
+                "x-claude-code-agent-id" => {
+                    metadata.agent_id = Some((*value).to_string());
+                    metadata.is_subagent = true;
+                    metadata.is_delegated_work = true;
+                }
+                "x-openai-subagent" => {
+                    metadata.agent_kind = Some((*value).to_string());
+                    metadata.is_subagent = true;
+                    metadata.is_delegated_work = matches!(*value, "collab_spawn" | "review");
+                }
+                "x-switchyard-is-subagent" if *value == "false" => {
+                    metadata.is_subagent = false;
+                    metadata.is_delegated_work = false;
+                }
+                _ => {}
+            }
+        }
+        Some(metadata)
+    }
 
     fn request(headers: &[(&str, &str)]) -> Request {
-        let metadata =
-            (!headers.is_empty()).then(|| Metadata::from_headers(&slice_to_header_map(headers)));
         Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,
-            metadata,
+            metadata: metadata_from_headers(headers),
         }
     }
 

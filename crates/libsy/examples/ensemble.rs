@@ -27,12 +27,11 @@ use parking_lot::Mutex;
 
 use tokio::sync::Notify;
 
+mod support;
+use support::{completion_text, prompt_text, text_request};
 use switchyard_libsy::{Algorithm, Driver, LibsyError, LlmTarget, LlmTargetSet, Result};
 use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
-use switchyard_protocol::{
-    Context, Decision, LlmResponse, Request, Response, RoutedLlmClient, completion_text,
-    prompt_text, text_request,
-};
+use switchyard_protocol::{Context, Decision, LlmResponse, Request, Response, RoutedLlmClient};
 
 const CANDIDATE_MODELS: [&str; 3] = [
     "nvidia/qwen/qwen3.6-27b",
@@ -553,12 +552,12 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use crate::support::{completion_text, prompt_text, text_request, text_response};
     use futures::StreamExt;
     use switchyard_libsy::LlmTarget;
     use switchyard_protocol::{
         LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Message, Response, Role,
-        RoutedLlmClient, SamplingParams, Signals, ToolChoice, ToolDefinition, completion_text,
-        prompt_text, text_request, text_response,
+        RoutedLlmClient, SamplingParams, Signals, ToolChoice, ToolDefinition,
     };
     use tokio::sync::Semaphore;
 

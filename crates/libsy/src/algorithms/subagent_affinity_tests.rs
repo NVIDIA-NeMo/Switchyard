@@ -17,10 +17,33 @@ use super::util::subagent::SubagentOverride;
 use crate::Result;
 use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::text::{completion_text, text_request, text_response};
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, completion_text,
-    slice_to_header_map, text_request, text_response,
+    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient,
 };
+
+fn metadata_from_headers(headers: &[(&str, &str)]) -> Metadata {
+    let mut metadata = Metadata::default();
+    for (name, value) in headers {
+        match *name {
+            "x-claude-code-session-id" | "x-codex-session-id" => {
+                metadata.session_id = Some((*value).to_string());
+            }
+            "x-claude-code-agent-id" => {
+                metadata.agent_id = Some((*value).to_string());
+                metadata.is_subagent = true;
+                metadata.is_delegated_work = true;
+            }
+            "x-openai-subagent" => {
+                metadata.agent_kind = Some((*value).to_string());
+                metadata.is_subagent = true;
+                metadata.is_delegated_work = matches!(*value, "collab_spawn" | "review");
+            }
+            _ => {}
+        }
+    }
+    metadata
+}
 
 /// A client that echoes the routed target name back as the completion.
 struct EchoClient;
@@ -77,7 +100,7 @@ fn request(headers: &[(&str, &str)]) -> Request {
     Request {
         llm_request: text_request(Some("auto".to_string()), "hi"),
         raw_request: None,
-        metadata: Some(Metadata::from_headers(&slice_to_header_map(headers))),
+        metadata: Some(metadata_from_headers(headers)),
     }
 }
 

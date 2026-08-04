@@ -13,14 +13,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use switchyard_protocol::{
-    AggLlmResponse, LlmRequest, Message, OutputParams, Role, completion_text,
-};
+use switchyard_protocol::{AggLlmResponse, LlmRequest, Message, OutputParams, Role};
 
 use super::classifier_contract::ClassifierContract;
 use crate::core::algorithm::{Driver, LlmTarget};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::State;
+use crate::text::completion_text;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Context, Decision, Request, Response};
 
@@ -333,10 +332,11 @@ mod tests {
 
     use futures::StreamExt;
     use serde::Deserialize;
-    use switchyard_protocol::{ContentBlock, LlmClientError, text_request, text_response};
+    use switchyard_protocol::{ContentBlock, LlmClientError};
 
     use crate::core::algorithm::Step;
     use crate::core::classifier::Score;
+    use crate::text::{text_request, text_response};
     use switchyard_protocol::{LlmResponse, LlmResponseChunk, Response};
 
     const VERDICT: &str = r#"{"ok":true}"#;

@@ -200,7 +200,7 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
 /// Tool-execution signals extracted from a normalized [`Request`].
 ///
-/// A request-side processor stores these signals in [`State`](crate::State) for
+/// A request-side processor stores these signals in libsy's internal state for
 /// [`crate::StageRouter`] and its classifier to consume.
 #[derive(Clone, Debug, Default)]
 pub struct ToolSignals {

@@ -813,10 +813,9 @@ pub trait Algorithm: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{completion_text, text_request, text_response};
     use futures::StreamExt;
-    use switchyard_protocol::{
-        LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
-    };
+    use switchyard_protocol::{LlmResponse, LlmResponseChunk};
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]

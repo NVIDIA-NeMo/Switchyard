@@ -111,7 +111,8 @@ impl<S: Send> Processor<S> for SystemPromptProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{LlmRequest, ToolResult, text_request};
+    use crate::text::text_request;
+    use switchyard_protocol::{LlmRequest, ToolResult};
 
     const NOTE: &str = "recovering from an error";
     const STRONG_PROMPT: &str = "diagnose before you edit";

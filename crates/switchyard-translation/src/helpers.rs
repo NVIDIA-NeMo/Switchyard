@@ -261,7 +261,7 @@ mod tests {
     use futures::{Stream, StreamExt, stream};
     use serde_json::{Value, json};
     use switchyard_protocol::{
-        LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, completion_text,
+        AggLlmResponse, ContentBlock, LlmClientError, LlmResponseChunk, LlmResponseStreamEvent,
     };
 
     use super::{
@@ -272,6 +272,23 @@ mod tests {
 
     // A boxed stream item error, matching the streamed IR contract.
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    fn completion_text(response: &AggLlmResponse) -> String {
+        response
+            .outputs
+            .first()
+            .map(|output| {
+                output
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    }
 
     // Collects a decoded IR stream, surfacing the first error instead of panicking.
     fn decode_all(

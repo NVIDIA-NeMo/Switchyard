@@ -212,12 +212,11 @@ fn evict_if_full(assignments: &mut HashMap<AffinityKey, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::text_request;
 
     use std::sync::Arc;
 
-    use switchyard_protocol::{
-        ContentBlock, Decision, LlmRequest, Message, Metadata, text_request,
-    };
+    use switchyard_protocol::{ContentBlock, Decision, LlmRequest, Message, Metadata};
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;

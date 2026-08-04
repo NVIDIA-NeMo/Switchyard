@@ -772,12 +772,37 @@ mod tests {
     use std::thread::JoinHandle;
 
     use serde_json::json;
-    use switchyard_protocol::{LlmRequest, completion_text, text_request};
+    use switchyard_protocol::{AggLlmResponse, ContentBlock, LlmRequest, Message, Role};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::backend::HttpBackendConfig;
+
+    fn text_request(model: Option<String>, prompt: impl Into<String>) -> LlmRequest {
+        LlmRequest {
+            model,
+            messages: vec![Message::text(Role::User, prompt)],
+            ..LlmRequest::default()
+        }
+    }
+
+    fn completion_text(response: &AggLlmResponse) -> String {
+        response
+            .outputs
+            .first()
+            .map(|output| {
+                output
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    }
 
     fn config(base_url: &str) -> HttpBackendConfig {
         HttpBackendConfig {

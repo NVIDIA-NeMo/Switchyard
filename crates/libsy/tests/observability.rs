@@ -37,12 +37,10 @@ use switchyard_libsy::{
     Step, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, Usage,
+    AggLlmResponse, ContentBlock, Context, Decision, LlmRequest, LlmResponse, Message, Metadata,
+    Request, Response, ResponseOutput, Role, RoutedLlmClient, Usage,
 };
-use switchyard_protocol::{
-    LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
-    text_response,
-};
+use switchyard_protocol::{LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -50,6 +48,28 @@ struct TestError(&'static str);
 
 fn test_error(message: &'static str) -> LibsyError {
     LibsyError::external("test", TestError(message))
+}
+
+fn text_request(model: Option<String>, prompt: impl Into<String>) -> LlmRequest {
+    LlmRequest {
+        model,
+        messages: vec![Message::text(Role::User, prompt)],
+        ..LlmRequest::default()
+    }
+}
+
+fn text_response(model: Option<String>, completion: impl Into<String>) -> AggLlmResponse {
+    AggLlmResponse {
+        model,
+        outputs: vec![ResponseOutput {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: completion.into(),
+            }],
+            stop_reason: None,
+        }],
+        ..AggLlmResponse::default()
+    }
 }
 
 /// One captured span: its name, contextual parent span name, and fields

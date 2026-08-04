@@ -915,9 +915,8 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use switchyard_protocol::{
-        LlmClientError, LlmRequest, Metadata, completion_text, text_request, text_response,
-    };
+    use crate::text::{completion_text, text_request, text_response};
+    use switchyard_protocol::{LlmClientError, LlmRequest, Metadata};
 
     use crate::algorithms::util::llm_judge::Judge;
     use crate::core::algorithm::Algorithm;

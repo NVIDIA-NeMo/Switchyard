@@ -76,11 +76,14 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
 
 ```rust
 use switchyard_llm_client::{LlmClientError, TranslatingLlmClient};
-use switchyard_protocol::{completion_text, text_request, Context, LlmResponse, Request};
+use switchyard_protocol::{ContentBlock, Context, LlmRequest, LlmResponse, Message, Request, Role};
 
 async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<String> {
     let request = Request {
-        llm_request: text_request(None, "Say hello in five words."),
+        llm_request: LlmRequest {
+            messages: vec![Message::text(Role::User, "Say hello in five words.")],
+            ..LlmRequest::default()
+        },
         raw_request: None,
         metadata: None,
     };
@@ -91,7 +94,15 @@ async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<Str
         .await?;
 
     match response.llm_response {
-        LlmResponse::Agg(agg) => Ok(completion_text(&agg)),
+        LlmResponse::Agg(agg) => Ok(agg
+            .outputs
+            .first()
+            .and_then(|output| output.content.first())
+            .and_then(|block| match block {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()),
         LlmResponse::Stream(_) => Err(LlmClientError::InvalidResponse {
             source: "expected a buffered response".into(),
         }),
@@ -106,13 +117,16 @@ Set `stream` on the IR request and drive the returned chunk stream:
 ```rust
 use futures_util::StreamExt;
 use switchyard_llm_client::TranslatingLlmClient;
-use switchyard_protocol::{text_request, Context, LlmResponse, LlmResponseChunk, Request};
+use switchyard_protocol::{Context, LlmRequest, LlmResponse, LlmResponseChunk, Message, Request, Role};
 
 async fn stream(
     client: &TranslatingLlmClient,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut llm_request = text_request(None, "Count to five.");
-    llm_request.stream = true;
+    let llm_request = LlmRequest {
+        messages: vec![Message::text(Role::User, "Count to five.")],
+        stream: true,
+        ..LlmRequest::default()
+    };
     let request = Request { llm_request, raw_request: None, metadata: None };
 
     let response = client
