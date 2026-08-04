@@ -10,7 +10,7 @@ kind = "rust_dynamic"
 [compat]
 # Development lower bound for validation against the published Relay RC. Move
 # this to `>=0.7.0,<1.0` together with the SDK dependency before release.
-relay = ">=0.7.0-rc.4,<1.0"
+relay = ">=0.7.0-rc.5,<1.0"
 native_api = "1"
 
 [defaults]

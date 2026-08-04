@@ -182,8 +182,8 @@ per-event preservation envelope.
 ## Configuration
 
 During release-candidate validation the manifest declares
-`compat.native_api = "1"` and Relay `>=0.7.0-rc.4,<1.0`, and the Rust SDK uses
-the exact published `0.7.0-rc.4` crate. Before release, move both lower bounds
+`compat.native_api = "1"` and Relay `>=0.7.0-rc.5,<1.0`, and the Rust SDK uses
+the exact published `0.7.0-rc.5` crate. Before release, move both lower bounds
 to stable `0.7.0`. The manifest API value selects Relay's released native
 plugin contract; plugin authors use its safe Rust SDK rather than the underlying
 C table directly. Rebuild the bundle when changing SDK versions rather than
