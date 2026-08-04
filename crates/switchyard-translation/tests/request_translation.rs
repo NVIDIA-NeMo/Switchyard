@@ -1091,6 +1091,57 @@ fn json_contains_content_type(value: &Value, expected: &str) -> bool {
     }
 }
 
+// Malformed provider fields must fail before normalization can change their meaning.
+#[test]
+fn malformed_request_fields_are_rejected() {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            "Anthropic object system",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "system": {}, "messages": []}),
+            "expected string or array of text blocks at $.system",
+        ),
+        (
+            "Anthropic boolean system",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": 8, "system": true, "messages": []}),
+            "expected string or array of text blocks at $.system",
+        ),
+        (
+            "Anthropic negative max_tokens",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": -1, "messages": []}),
+            "invalid value at $.max_tokens: expected a positive integer",
+        ),
+        (
+            "Anthropic string max_tokens",
+            WireFormat::AnthropicMessages,
+            json!({"model": "claude", "max_tokens": "8", "messages": []}),
+            "invalid value at $.max_tokens: expected a positive integer",
+        ),
+        (
+            "Responses boolean input",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": true}),
+            "expected string or array at $.input",
+        ),
+        (
+            "Responses null input",
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": null}),
+            "expected string or array at $.input",
+        ),
+    ];
+
+    for (case, format, body, expected) in cases {
+        match engine.decode_request(format, &body, &TranslationPolicy::default()) {
+            Ok(_) => panic!("{case} should be rejected"),
+            Err(error) => assert_eq!(error.to_string(), expected, "{case}"),
+        }
+    }
+}
+
 // --- Invalid-role rejection ----------------------------------
 // A transparent router must reject the same payloads the upstream provider
 // would, rather than silently coercing an unknown role (e.g. "api") to `user`

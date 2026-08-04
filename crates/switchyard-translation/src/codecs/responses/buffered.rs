@@ -442,10 +442,10 @@ fn decode_responses_input(
             }
             Ok(messages)
         }
-        other => Ok(vec![Message::text(
-            Role::User,
-            string_value(other).unwrap_or_default(),
-        )]),
+        _ => Err(TranslationError::InvalidType {
+            path: "$.input".to_string(),
+            expected: "string or array",
+        }),
     }
 }
 
