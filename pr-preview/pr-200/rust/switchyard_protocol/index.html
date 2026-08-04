@@ -1,0 +1,93 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="switchyard-protocol"><title>switchyard_protocol - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="switchyard_protocol" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.1 (31fca3adb 2026-06-26)" data-channel="1.96.1" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-41dd4d93.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate switchyard_protocol</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../switchyard_protocol/index.html">switchyard_<wbr>protocol</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#switchyard-protocol" title="switchyard-protocol">switchyard-protocol</a><ul><li><a href="#setup" title="Setup">Setup</a></li><li><a href="#main-types" title="Main types">Main types</a></li><li><a href="#simple-request" title="Simple request">Simple request</a></li><li><a href="#detailed-request" title="Detailed request">Detailed request</a></li><li><a href="#response-forms" title="Response forms">Response forms</a></li><li><a href="#license" title="License">License</a></li></ul></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>switchyard_<wbr>protocol</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/switchyard_protocol/lib.rs.html#4-109">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="switchyard-protocol"><a class="doc-anchor" href="#switchyard-protocol">§</a>switchyard-protocol</h2>
+<p>Provider-neutral request, response, streaming, routing, and metadata types
+shared by Switchyard algorithms, clients, and translation codecs. This crate
+defines contracts; it does not route, translate, or perform network calls.</p>
+<h3 id="setup"><a class="doc-anchor" href="#setup">§</a>Setup</h3><div class="example-wrap"><pre class="language-toml"><code>[dependencies]
+switchyard-protocol = { git = &quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot; }
+serde_json = &quot;1&quot;</code></pre></div><h3 id="main-types"><a class="doc-anchor" href="#main-types">§</a>Main types</h3><div><table><thead><tr><th>Area</th><th>Types</th></tr></thead><tbody>
+<tr><td>Conversation</td><td><a href="llm/struct.LlmRequest.html" title="struct switchyard_protocol::llm::LlmRequest"><code>LlmRequest</code></a>, <a href="llm/struct.Message.html" title="struct switchyard_protocol::llm::Message"><code>Message</code></a>, <a href="llm/struct.InstructionBlock.html" title="struct switchyard_protocol::llm::InstructionBlock"><code>InstructionBlock</code></a>, <a href="llm/enum.ContentBlock.html" title="enum switchyard_protocol::llm::ContentBlock"><code>ContentBlock</code></a></td></tr>
+<tr><td>Tools</td><td><a href="llm/struct.ToolDefinition.html" title="struct switchyard_protocol::llm::ToolDefinition"><code>ToolDefinition</code></a>, <a href="llm/enum.ToolChoice.html" title="enum switchyard_protocol::llm::ToolChoice"><code>ToolChoice</code></a>, <a href="llm/struct.ToolCall.html" title="struct switchyard_protocol::llm::ToolCall"><code>ToolCall</code></a>, <a href="llm/struct.ToolResult.html" title="struct switchyard_protocol::llm::ToolResult"><code>ToolResult</code></a></td></tr>
+<tr><td>Response</td><td><a href="llm/struct.AggLlmResponse.html" title="struct switchyard_protocol::llm::AggLlmResponse"><code>AggLlmResponse</code></a>, <a href="llm/struct.ResponseOutput.html" title="struct switchyard_protocol::llm::ResponseOutput"><code>ResponseOutput</code></a>, <a href="llm/struct.Usage.html" title="struct switchyard_protocol::llm::Usage"><code>Usage</code></a>, <a href="llm/enum.StopReason.html" title="enum switchyard_protocol::llm::StopReason"><code>StopReason</code></a></td></tr>
+<tr><td>Streaming</td><td><a href="stream/enum.LlmResponse.html" title="enum switchyard_protocol::stream::LlmResponse"><code>LlmResponse</code></a>, <a href="stream/type.LlmResponseStream.html" title="type switchyard_protocol::stream::LlmResponseStream"><code>LlmResponseStream</code></a>, <a href="stream/struct.LlmResponseStreamEvent.html" title="struct switchyard_protocol::stream::LlmResponseStreamEvent"><code>LlmResponseStreamEvent</code></a>, <a href="stream/enum.LlmResponseChunk.html" title="enum switchyard_protocol::stream::LlmResponseChunk"><code>LlmResponseChunk</code></a>, <a href="stream/struct.ProviderStreamEvent.html" title="struct switchyard_protocol::stream::ProviderStreamEvent"><code>ProviderStreamEvent</code></a></td></tr>
+<tr><td>Envelope</td><td><a href="envelope/struct.Context.html" title="struct switchyard_protocol::envelope::Context"><code>Context</code></a>, <a href="envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request"><code>Request</code></a>, <a href="envelope/struct.Response.html" title="struct switchyard_protocol::envelope::Response"><code>Response</code></a>, <a href="metadata/struct.Metadata.html" title="struct switchyard_protocol::metadata::Metadata"><code>Metadata</code></a></td></tr>
+<tr><td>Routing I/O</td><td><a href="client/trait.Decision.html" title="trait switchyard_protocol::client::Decision"><code>Decision</code></a>, <a href="client/trait.RoutedLlmClient.html" title="trait switchyard_protocol::client::RoutedLlmClient"><code>RoutedLlmClient</code></a>, <a href="client/enum.LlmClientError.html" title="enum switchyard_protocol::client::LlmClientError"><code>LlmClientError</code></a></td></tr>
+<tr><td>Wire identity</td><td><a href="format/enum.WireFormat.html" title="enum switchyard_protocol::format::WireFormat"><code>WireFormat</code></a>, <a href="format/struct.FormatId.html" title="struct switchyard_protocol::format::FormatId"><code>FormatId</code></a></td></tr>
+</tbody></table>
+</div><h3 id="simple-request"><a class="doc-anchor" href="#simple-request">§</a>Simple request</h3>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>switchyard_protocol::{ContentBlock, LlmRequest, Message, Role};
+
+<span class="kw">let </span>request = LlmRequest {
+    model: <span class="prelude-val">Some</span>(<span class="string">"provider/model"</span>.into()),
+    messages: <span class="macro">vec!</span>[Message {
+        role: Role::User,
+        content: <span class="macro">vec!</span>[ContentBlock::Text {
+            text: <span class="string">"Explain tail latency"</span>.into(),
+        }],
+    }],
+    ..LlmRequest::default()
+};
+
+<span class="macro">assert_eq!</span>(request.model.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"provider/model"</span>));
+<span class="macro">assert_eq!</span>(request.messages.len(), <span class="number">1</span>);</code></pre></div><h3 id="detailed-request"><a class="doc-anchor" href="#detailed-request">§</a>Detailed request</h3>
+<p>Construct the normalized <a href="envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request"><code>Request</code></a> directly when routing needs instructions,
+tools, generation controls, and correlation metadata:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>serde_json::json;
+<span class="kw">use </span>switchyard_protocol::{
+    ContentBlock, InstructionBlock, LlmRequest, Message, Metadata, OutputParams,
+    Request, Role, SamplingParams, ToolChoice, ToolDefinition,
+};
+
+<span class="kw">let </span>request = Request {
+    llm_request: LlmRequest {
+        model: <span class="prelude-val">Some</span>(<span class="string">"provider/model"</span>.into()),
+        instructions: <span class="macro">vec!</span>[InstructionBlock {
+            role: Role::System,
+            content: <span class="macro">vec!</span>[ContentBlock::Text {
+                text: <span class="string">"Answer with concise operational guidance."</span>.into(),
+            }],
+        }],
+        messages: <span class="macro">vec!</span>[Message::text(Role::User, <span class="string">"Why is p99 latency rising?"</span>)],
+        tools: <span class="macro">vec!</span>[ToolDefinition {
+            name: <span class="string">"lookup_metric"</span>.into(),
+            description: <span class="prelude-val">Some</span>(<span class="string">"Read one service metric"</span>.into()),
+            parameters: <span class="macro">json!</span>({
+                <span class="string">"type"</span>: <span class="string">"object"</span>,
+                <span class="string">"properties"</span>: { <span class="string">"name"</span>: { <span class="string">"type"</span>: <span class="string">"string" </span>} },
+                <span class="string">"required"</span>: [<span class="string">"name"</span>]
+            }),
+            strict: <span class="prelude-val">Some</span>(<span class="bool-val">true</span>),
+        }],
+        tool_choice: <span class="prelude-val">Some</span>(ToolChoice::Auto),
+        sampling: SamplingParams {
+            temperature: <span class="prelude-val">Some</span>(<span class="number">0.2</span>),
+            ..SamplingParams::default()
+        },
+        output: OutputParams {
+            max_output_tokens: <span class="prelude-val">Some</span>(<span class="number">512</span>),
+            ..OutputParams::default()
+        },
+        stream: <span class="bool-val">true</span>,
+        ..LlmRequest::default()
+    },
+    metadata: <span class="prelude-val">Some</span>(Metadata {
+        session_id: <span class="prelude-val">Some</span>(<span class="string">"session-42"</span>.into()),
+        correlation_id: <span class="prelude-val">Some</span>(<span class="string">"request-7"</span>.into()),
+        ..Metadata::default()
+    }),
+    ..Request::default()
+};
+
+<span class="macro">assert_eq!</span>(request.llm_request.tools[<span class="number">0</span>].name, <span class="string">"lookup_metric"</span>);</code></pre></div><h3 id="response-forms"><a class="doc-anchor" href="#response-forms">§</a>Response forms</h3>
+<p><a href="stream/enum.LlmResponse.html" title="enum switchyard_protocol::stream::LlmResponse"><code>LlmResponse</code></a> contains either a completed <a href="llm/struct.AggLlmResponse.html" title="struct switchyard_protocol::llm::AggLlmResponse"><code>AggLlmResponse</code></a> or a
+single-consumption <a href="stream/type.LlmResponseStream.html" title="type switchyard_protocol::stream::LlmResponseStream"><code>LlmResponseStream</code></a> of <a href="stream/struct.LlmResponseStreamEvent.html" title="struct switchyard_protocol::stream::LlmResponseStreamEvent"><code>LlmResponseStreamEvent</code></a> values.
+Each event carries provider-neutral <a href="stream/enum.LlmResponseChunk.html" title="enum switchyard_protocol::stream::LlmResponseChunk"><code>LlmResponseChunk</code></a> values and may retain
+one opaque <a href="stream/struct.ProviderStreamEvent.html" title="struct switchyard_protocol::stream::ProviderStreamEvent"><code>ProviderStreamEvent</code></a> for same-format parsed-JSON-value replay. See
+<a href="stream/enum.LlmResponse.html#method.into_agg" title="method switchyard_protocol::stream::LlmResponse::into_agg"><code>LlmResponse::into_agg</code></a> for aggregation and <a href="llm/struct.PreservationMetadata.html" title="struct switchyard_protocol::llm::PreservationMetadata"><code>PreservationMetadata</code></a>,
+<a href="llm/struct.Usage.html" title="struct switchyard_protocol::llm::Usage"><code>Usage</code></a>, and <a href="metadata/struct.Metadata.html" title="struct switchyard_protocol::metadata::Metadata"><code>Metadata</code></a> for the data retained around a response.</p>
+<h3 id="license"><a class="doc-anchor" href="#license">§</a>License</h3>
+<p>Licensed under the Apache License, Version 2.0.</p>
+</div></details><h2 id="reexports" class="section-header">Re-exports<a href="#reexports" class="anchor">§</a></h2><dl class="item-table reexports"><dt><code>pub use <a class="mod" href="client/index.html" title="mod switchyard_protocol::client">client</a>::*;</code></dt><dt><code>pub use <a class="mod" href="envelope/index.html" title="mod switchyard_protocol::envelope">envelope</a>::*;</code></dt><dt><code>pub use <a class="mod" href="format/index.html" title="mod switchyard_protocol::format">format</a>::*;</code></dt><dt><code>pub use <a class="mod" href="llm/index.html" title="mod switchyard_protocol::llm">llm</a>::*;</code></dt><dt><code>pub use <a class="mod" href="metadata/index.html" title="mod switchyard_protocol::metadata">metadata</a>::*;</code></dt><dt><code>pub use <a class="mod" href="stream/index.html" title="mod switchyard_protocol::stream">stream</a>::*;</code></dt></dl><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="client/index.html" title="mod switchyard_protocol::client">client</a></dt><dd>The routed-call server trait and the routing decision it carries.</dd><dt><a class="mod" href="envelope/index.html" title="mod switchyard_protocol::envelope">envelope</a></dt><dd>The request/response envelope: the normalized <a href="llm/struct.LlmRequest.html" title="struct switchyard_protocol::llm::LlmRequest"><code>LlmRequest</code></a>/<a href="stream/enum.LlmResponse.html" title="enum switchyard_protocol::stream::LlmResponse"><code>LlmResponse</code></a> paired
+with the original provider payload and correlation <a href="metadata/struct.Metadata.html" title="struct switchyard_protocol::metadata::Metadata"><code>Metadata</code></a>.</dd><dt><a class="mod" href="format/index.html" title="mod switchyard_protocol::format">format</a></dt><dd>Wire-format identifiers carried by the shared protocol types.</dd><dt><a class="mod" href="llm/index.html" title="mod switchyard_protocol::llm">llm</a></dt><dd>Provider-neutral conversation types shared by routing, clients, and translation.</dd><dt><a class="mod" href="metadata/index.html" title="mod switchyard_protocol::metadata">metadata</a></dt><dd>Correlation metadata and harness header normalization.</dd><dt><a class="mod" href="stream/index.html" title="mod switchyard_protocol::stream">stream</a></dt><dd>Streaming half of the neutral IR: incremental response chunks (<a href="stream/enum.LlmResponseChunk.html" title="enum switchyard_protocol::stream::LlmResponseChunk"><code>LlmResponseChunk</code></a>),
+their stream envelope (<a href="stream/struct.LlmResponseStreamEvent.html" title="struct switchyard_protocol::stream::LlmResponseStreamEvent"><code>LlmResponseStreamEvent</code></a>), and the streamed response
+(<a href="stream/enum.LlmResponse.html" title="enum switchyard_protocol::stream::LlmResponse"><code>LlmResponse</code></a>) that carries either a live stream or the terminal <a href="llm/struct.AggLlmResponse.html" title="struct switchyard_protocol::llm::AggLlmResponse"><code>AggLlmResponse</code></a>.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.completion_text.html" title="fn switchyard_protocol::completion_text">completion_<wbr>text</a></dt><dd>Returns a lossy text view of the first assistant output.</dd><dt><a class="fn" href="fn.prompt_text.html" title="fn switchyard_protocol::prompt_text">prompt_<wbr>text</a></dt><dd>Returns a lossy text view of all user messages, joined by newlines.</dd><dt><a class="fn" href="fn.text_request.html" title="fn switchyard_protocol::text_request">text_<wbr>request</a></dt><dd>Builds a single-turn request: one user message carrying <code>prompt</code>, for <code>model</code>.</dd><dt><a class="fn" href="fn.text_response.html" title="fn switchyard_protocol::text_response">text_<wbr>response</a></dt><dd>Builds a single-turn response: one assistant message carrying <code>completion</code>, for <code>model</code>.</dd></dl></section></div></main></body></html>
