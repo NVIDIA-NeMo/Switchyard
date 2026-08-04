@@ -136,7 +136,8 @@ impl PyTaskClassifierConfig {
         message_hash_fallback=false,
         recent_turn_window=None,
         max_output_tokens=4096,
-        prompt=None
+        prompt=None,
+        judge_deadline_ms=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -147,6 +148,7 @@ impl PyTaskClassifierConfig {
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
         prompt: Option<String>,
+        judge_deadline_ms: Option<u64>,
     ) -> Self {
         let mut contract = ClassifierContractConfig::default();
         if let Some(prompt) = prompt {
@@ -161,6 +163,7 @@ impl PyTaskClassifierConfig {
                 recent_turn_window,
                 contract,
                 max_output_tokens,
+                judge_deadline_ms,
             },
         }
     }

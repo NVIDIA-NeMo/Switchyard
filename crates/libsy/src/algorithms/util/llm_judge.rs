@@ -8,6 +8,7 @@
 //! the route.
 
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -95,6 +96,8 @@ impl VerdictDecoder for JsonSchemaDecoder {
 /// Runtime limits shared by structured classifier judges.
 pub(crate) struct JudgeRuntimeConfig {
     max_output_tokens: u64,
+    /// Bounds one consultation. `None` leaves it unbounded.
+    deadline: Option<Duration>,
 }
 
 impl JudgeRuntimeConfig {
@@ -104,7 +107,26 @@ impl JudgeRuntimeConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        Ok(Self { max_output_tokens })
+        Ok(Self {
+            max_output_tokens,
+            deadline: None,
+        })
+    }
+
+    /// Bounds how long one consultation may take before the judge counts as
+    /// unavailable.
+    ///
+    /// The judge call sits in front of the routed call, so a stalled judge stalls the
+    /// turn behind it with no bound of its own. Expiry folds into the same fail-open
+    /// path as any other judge failure, so the turn is still served.
+    pub(crate) fn with_deadline(mut self, deadline: Option<Duration>) -> Result<Self> {
+        if deadline.is_some_and(|d| d.is_zero()) {
+            return Err(LibsyError::AlgorithmError {
+                message: "judge_deadline_ms must be greater than 0".to_string(),
+            });
+        }
+        self.deadline = deadline;
+        Ok(self)
     }
 }
 
@@ -142,6 +164,10 @@ where
     I: ClassifierInput,
     D: VerdictDecoder,
 {
+    fn deadline(&self) -> Option<Duration> {
+        self.runtime.deadline
+    }
+
     type Verdict = D::Verdict;
 
     fn build_request(&self, state: &State, request: &Request) -> Request {
@@ -179,6 +205,13 @@ pub trait Judge: Send + Sync {
 
     fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
         parse_json_verdict(response)
+    }
+
+    /// Bounds one consultation, when the judge is configured with a deadline.
+    ///
+    /// Defaulted so a judge that does not care about liveness need not implement it.
+    fn deadline(&self) -> Option<Duration> {
+        None
     }
 }
 
@@ -227,36 +260,57 @@ where
     ) -> Option<J::Verdict> {
         let judge_model = self.target.semantic_name.as_str();
 
-        let response = driver
-            .call_model(
-                self.judge.build_request(state, request),
-                Decision::new(
-                    self.target.semantic_name.to_string(),
-                    Some("llm judge consultation".to_string()),
-                    false,
-                ),
-            )
-            .await
-            .inspect_err(|error| {
-                report_fail_open(
-                    judge_model,
-                    safe_error_summary(error),
-                    libsy_error_reason(error),
+        // The whole consultation is bounded, not just the HTTP call: a judge that
+        // returns its headers promptly and then stalls mid-stream would otherwise hold
+        // the turn open just as long.
+        let consult = async {
+            let response = driver
+                .call_model(
+                    self.judge.build_request(state, request),
+                    Decision::new(
+                        self.target.semantic_name.to_string(),
+                        Some("llm judge consultation".to_string()),
+                        false,
+                    ),
                 )
-            })
-            .ok()?;
-        let aggregate = response
-            .llm_response
-            .into_agg()
-            .await
-            .inspect_err(|error| {
-                report_fail_open(
-                    judge_model,
-                    safe_client_error(error),
-                    client_error_reason(error),
-                )
-            })
-            .ok()?;
+                .await
+                .inspect_err(|error| {
+                    report_fail_open(
+                        judge_model,
+                        safe_error_summary(error),
+                        libsy_error_reason(error),
+                    )
+                })
+                .ok()?;
+            response
+                .llm_response
+                .into_agg()
+                .await
+                .inspect_err(|error| {
+                    report_fail_open(
+                        judge_model,
+                        safe_client_error(error),
+                        client_error_reason(error),
+                    )
+                })
+                .ok()
+        };
+
+        let aggregate = match self.judge.deadline() {
+            Some(deadline) => match tokio::time::timeout(deadline, consult).await {
+                Ok(aggregate) => aggregate,
+                Err(_) => {
+                    // Libsy-authored text with a configured duration: no upstream content.
+                    report_fail_open(
+                        judge_model,
+                        format!("judge deadline of {} ms exceeded", deadline.as_millis()),
+                        "deadline_exceeded",
+                    );
+                    None
+                }
+            },
+            None => consult.await,
+        }?;
         self.judge
             .parse(&aggregate)
             .inspect_err(|error| {
@@ -354,6 +408,24 @@ fn strip_json_fence(text: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn a_zero_judge_deadline_is_rejected() {
+        let runtime = JudgeRuntimeConfig::new(4096).expect("valid token budget");
+        assert!(runtime.with_deadline(Some(Duration::ZERO)).is_err());
+
+        // A positive deadline, and no deadline at all, both configure cleanly.
+        let runtime = JudgeRuntimeConfig::new(4096).expect("valid token budget");
+        assert!(
+            runtime
+                .with_deadline(Some(Duration::from_millis(50)))
+                .is_ok()
+        );
+        let runtime = JudgeRuntimeConfig::new(4096).expect("valid token budget");
+        assert!(runtime.with_deadline(None).is_ok());
+    }
+
     use super::*;
 
     use futures::StreamExt;

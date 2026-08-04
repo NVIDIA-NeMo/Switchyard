@@ -305,6 +305,8 @@ struct CapabilityClassifierRouteConfig {
     recent_turn_window: Option<usize>,
     prompt: Option<String>,
     max_output_tokens: u64,
+    /// Bounds one judge consultation, in milliseconds. Omit to leave it unbounded.
+    judge_deadline_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -392,6 +394,13 @@ enum RouteConfig {
         prompt: Option<String>,
         #[serde(default = "default_classifier_max_output_tokens")]
         max_output_tokens: u64,
+        /// Bounds one judge consultation, in milliseconds.
+        ///
+        /// The judge call sits in front of the routed call, so a stalled judge stalls
+        /// the turn. On expiry the judge counts as unavailable and the route falls back
+        /// as it does for any other judge failure. Omit to leave it unbounded.
+        #[serde(default)]
+        judge_deadline_ms: Option<u64>,
         #[serde(default)]
         escalation: Option<EscalationJudgeConfig>,
         #[serde(default)]
@@ -452,6 +461,9 @@ struct StageClassifierConfig {
     prompt: Option<String>,
     #[serde(default = "default_classifier_max_output_tokens")]
     max_output_tokens: u64,
+    /// Bounds one judge consultation, in milliseconds. Omit to leave it unbounded.
+    #[serde(default)]
+    judge_deadline_ms: Option<u64>,
 }
 
 impl StageClassifierConfig {
@@ -464,6 +476,7 @@ impl StageClassifierConfig {
             recent_turn_window: self.recent_turn_window,
             contract: classifier_contract(self.prompt.as_deref()),
             max_output_tokens: self.max_output_tokens,
+            judge_deadline_ms: self.judge_deadline_ms,
         }
     }
 }
@@ -589,6 +602,7 @@ impl RouteConfig {
             recent_turn_window,
             prompt,
             max_output_tokens,
+            judge_deadline_ms,
             escalation,
             targets,
             default_target,
@@ -646,6 +660,7 @@ impl RouteConfig {
                         recent_turn_window: *recent_turn_window,
                         prompt: prompt.clone(),
                         max_output_tokens: *max_output_tokens,
+                        judge_deadline_ms: *judge_deadline_ms,
                     },
                 ))
             }
@@ -858,6 +873,7 @@ fn build_algorithm(
                         recent_turn_window: config.recent_turn_window,
                         contract: classifier_contract(config.prompt.as_deref()),
                         max_output_tokens: config.max_output_tokens,
+                        judge_deadline_ms: config.judge_deadline_ms,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         judge_target: classifier,

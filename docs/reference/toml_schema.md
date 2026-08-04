@@ -118,6 +118,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `judge_deadline_ms` | No | unset | Bounds one judge consultation, in milliseconds. On expiry the judge counts as unavailable and the route falls back as it does for any other judge failure. |
 
 Capability mode classifies before serving. See
 [LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).

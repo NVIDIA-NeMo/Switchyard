@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
@@ -244,6 +245,13 @@ pub struct TaskClassifierConfig {
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Bounds one judge consultation, in milliseconds.
+    ///
+    /// The judge call sits in front of the routed call, so a stalled judge stalls the
+    /// turn. On expiry the judge counts as unavailable and routing falls back exactly
+    /// as it does for any other judge failure. `None` (the default) leaves it
+    /// unbounded, preserving existing behaviour.
+    pub judge_deadline_ms: Option<u64>,
 }
 
 /// Flat serialized shape that maps prompt settings into the runtime contract.
@@ -263,6 +271,8 @@ struct TaskClassifierConfigWire {
     prompt: Option<String>,
     #[serde(default = "default_judge_max_output_tokens")]
     max_output_tokens: u64,
+    #[serde(default)]
+    judge_deadline_ms: Option<u64>,
 }
 
 impl<'de> Deserialize<'de> for TaskClassifierConfig {
@@ -283,6 +293,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             recent_turn_window: wire.recent_turn_window,
             contract,
             max_output_tokens: wire.max_output_tokens,
+            judge_deadline_ms: wire.judge_deadline_ms,
         })
     }
 }
@@ -301,6 +312,7 @@ impl Default for TaskClassifierConfig {
             recent_turn_window: None,
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            judge_deadline_ms: None,
         }
     }
 }
@@ -694,7 +706,8 @@ impl LlmTaskClassifier {
                     },
                     contract,
                     SerdeDecoder::new(),
-                    JudgeRuntimeConfig::new(config.max_output_tokens)?,
+                    JudgeRuntimeConfig::new(config.max_output_tokens)?
+                        .with_deadline(config.judge_deadline_ms.map(Duration::from_millis))?,
                 ),
                 judge_target.clone(),
                 TaskClassifierPolicy::new(
