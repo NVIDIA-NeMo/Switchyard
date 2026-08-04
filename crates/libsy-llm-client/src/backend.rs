@@ -52,14 +52,24 @@ pub struct HttpBackendConfig {
 impl fmt::Debug for HttpBackendConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let extra_header_names = self.extra_headers.keys().collect::<Vec<_>>();
+        let base_url = redacted_base_url(&self.base_url);
         f.debug_struct("HttpBackendConfig")
-            .field("base_url", &self.base_url)
+            .field("base_url", &base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("extra_header_names", &extra_header_names)
             .field("extra_body_keys", &self.extra_body.keys())
             .field("max_retries", &self.max_retries)
             .finish()
     }
+}
+
+fn redacted_base_url(base_url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(base_url) else {
+        return "[INVALID URL]".into();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.into()
 }
 
 /// A configured upstream backend, one variant per built-in wire format.
@@ -216,6 +226,21 @@ mod tests {
     fn openai_chat_url_joins_bare_v1() {
         let backend = Backend::OpenAiChat(config("https://api.openai.com/v1"));
         assert_eq!(backend.url(), "https://api.openai.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn debug_redacts_base_url_userinfo() {
+        let debug = format!("{:?}", config("https://user:pass@provider.example/v1"));
+        assert!(debug.contains("provider.example/v1"));
+        assert!(!debug.contains("user"));
+        assert!(!debug.contains("pass"));
+    }
+
+    #[test]
+    fn debug_does_not_emit_an_invalid_base_url() {
+        let debug = format!("{:?}", config("not a valid url with a secret"));
+        assert!(debug.contains("[INVALID URL]"));
+        assert!(!debug.contains("secret"));
     }
 
     #[test]
