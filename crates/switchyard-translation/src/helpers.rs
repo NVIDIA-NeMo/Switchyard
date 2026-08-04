@@ -204,9 +204,10 @@ where
     // `String` for a provider event without a delimiter.
     let bounded_bytes = try_stream! {
         let mut bytes = Box::pin(bytes);
+        let mut line_endings = SseLineEndingNormalizer::default();
         let mut tracker = SseFrameSizeTracker::default();
         while let Some(chunk) = bytes.next().await {
-            let chunk = chunk?;
+            let chunk = line_endings.normalize(chunk?);
             tracker.observe(&chunk, max_frame_bytes)?;
             yield chunk;
         }
@@ -274,6 +275,31 @@ fn is_sse_frame_boundary(line: &str) -> bool {
 }
 
 #[derive(Default)]
+struct SseLineEndingNormalizer {
+    previous_byte_was_cr: bool,
+}
+
+impl SseLineEndingNormalizer {
+    // SSE accepts CR, LF, and CRLF. Normalize all three to one LF while
+    // retaining enough state to collapse a CRLF pair split across chunks.
+    fn normalize(&mut self, mut bytes: Vec<u8>) -> Vec<u8> {
+        let mut write = 0;
+        for read in 0..bytes.len() {
+            let byte = bytes[read];
+            if self.previous_byte_was_cr && byte == b'\n' {
+                self.previous_byte_was_cr = false;
+                continue;
+            }
+            self.previous_byte_was_cr = byte == b'\r';
+            bytes[write] = if byte == b'\r' { b'\n' } else { byte };
+            write += 1;
+        }
+        bytes.truncate(write);
+        bytes
+    }
+}
+
+#[derive(Default)]
 struct SseFrameSizeTracker {
     frame_bytes: usize,
     current_line_has_non_whitespace: bool,
@@ -329,9 +355,9 @@ mod tests {
     };
 
     use super::{
-        SseFrameSizeTracker, decode_aggregated_response, decode_request, decode_stream,
-        decode_stream_with_limit, encode_aggregated_response, encode_request, encode_stream,
-        stamp_streamed_response_model,
+        SseFrameSizeTracker, SseLineEndingNormalizer, decode_aggregated_response, decode_request,
+        decode_stream, decode_stream_with_limit, encode_aggregated_response, encode_request,
+        encode_stream, stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, WireFormat};
 
@@ -649,6 +675,16 @@ mod tests {
     }
 
     #[test]
+    fn decode_stream_decodes_bare_cr_delimited_frames() -> Result<(), BoxError> {
+        let sse =
+            b"data:{\"choices\":[{\"delta\":{\"content\":\"cr\"}}]}\r\rdata:[DONE]\r\r".to_vec();
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
+        let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
+        assert_eq!(text_of(&chunks), "cr");
+        Ok(())
+    }
+
+    #[test]
     fn decode_stream_accepts_data_fields_without_the_optional_space() -> Result<(), BoxError> {
         let sse = b"data:{\"choices\":[{\"delta\":{\"content\":\"compact\"}}]}\n\ndata:[DONE]\n\n"
             .to_vec();
@@ -702,10 +738,35 @@ mod tests {
     }
 
     #[test]
+    fn sse_line_endings_collapse_crlf_split_across_chunks() {
+        let mut normalizer = SseLineEndingNormalizer::default();
+        assert_eq!(normalizer.normalize(b"data: {}\r".to_vec()), b"data: {}\n");
+        assert_eq!(normalizer.normalize(b"\n\r".to_vec()), b"\n");
+        assert!(normalizer.normalize(b"\n".to_vec()).is_empty());
+    }
+
+    #[test]
     fn decode_stream_resets_frame_limit_at_whitespace_boundaries() -> Result<(), LlmClientError> {
         let bytes = stream::iter(vec![
             Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n \n".to_vec()),
             Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n".to_vec()),
+        ]);
+
+        let events = block_on(
+            decode_stream_with_limit(bytes, WireFormat::OpenAiChat, 50)?.collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(text_of(&events), "ab");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_resets_frame_limit_at_bare_cr_boundaries() -> Result<(), LlmClientError> {
+        let bytes = stream::iter(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\r\r".to_vec()),
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\r\r".to_vec()),
         ]);
 
         let events = block_on(
