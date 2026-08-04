@@ -7,7 +7,6 @@
 //! *which* target delegated work belongs on, affinity decides *how long* that decision
 //! lives.
 
-use std::str::FromStr as _;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,7 +19,7 @@ use crate::core::algorithm::{Algorithm, Driver, LlmTarget, LlmTargetSet};
 use crate::core::classifier::{Classification, Classifier, Score};
 use switchyard_protocol::{
     Context, Decision, LlmResponse, Metadata, Request, Response, RoutedLlmClient, completion_text,
-    text_request, text_response,
+    slice_to_header_map, text_request, text_response,
 };
 
 /// A client that echoes the routed target name back as the completion.
@@ -72,17 +71,6 @@ fn targets() -> LlmTargetSet {
             })
             .collect(),
     )
-}
-
-fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
-    let mut m = http::HeaderMap::with_capacity(sl.len());
-    for (k, v) in sl {
-        m.insert(
-            http::HeaderName::from_str(k).unwrap(),
-            (*v).try_into().unwrap(),
-        );
-    }
-    m
 }
 
 fn request(headers: &[(&str, &str)]) -> Request {

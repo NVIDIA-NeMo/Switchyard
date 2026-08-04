@@ -73,21 +73,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr as _;
-
     use super::*;
-    use switchyard_protocol::text_request;
-
-    fn slice_to_header_map(sl: &[(&str, &str)]) -> http::HeaderMap {
-        let mut m = http::HeaderMap::with_capacity(sl.len());
-        for (k, v) in sl {
-            m.insert(
-                http::HeaderName::from_str(k).unwrap(),
-                (*v).try_into().unwrap(),
-            );
-        }
-        m
-    }
+    use switchyard_protocol::{slice_to_header_map, text_request};
 
     fn request(headers: &[(&str, &str)]) -> Request {
         let metadata =

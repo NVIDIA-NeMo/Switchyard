@@ -431,7 +431,7 @@ async fn anthropic_count_tokens(
     };
     let (algorithm, request) = match resolve_route(
         &state,
-        metadata_from_headers(&headers),
+        metadata_from_headers(headers),
         body,
         WireFormat::AnthropicMessages,
     ) {
@@ -485,7 +485,7 @@ async fn handle_endpoint_inner(
         .routing_log
         .as_ref()
         .map(|_| routing_log::RoutingLogContext::from_headers(&headers));
-    let metadata = metadata_from_headers(&headers);
+    let metadata = metadata_from_headers(headers);
     let request_log = RequestLogContext {
         started: started.0,
         wire_format,
@@ -701,9 +701,9 @@ fn request_log_level(status: StatusCode) -> Level {
     }
 }
 
-fn metadata_from_headers(headers: &HeaderMap) -> Metadata {
-    let mut metadata = Metadata::from_headers(headers);
-    metadata.http_headers = Some(headers.clone());
+fn metadata_from_headers(headers: HeaderMap) -> Metadata {
+    let mut metadata = Metadata::from_headers(&headers);
+    metadata.http_headers = Some(headers);
     metadata
 }
 
